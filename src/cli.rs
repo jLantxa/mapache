@@ -16,37 +16,24 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
 use colored::Colorize;
 
-use backup::{cli, cmd};
-
-#[derive(Parser, Debug)]
-struct Args {
-    #[command(subcommand)]
-    command: Command,
+pub fn log_success(tag: &str, str: &str) {
+    println!("{}: {}", tag.bold().green(), str);
 }
 
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Initialize a new repository
-    Init(cmd::init::CmdArgs),
+pub fn log_info(tag: &str, str: &str) {
+    println!("{}: {}", tag.bold().cyan(), str);
 }
 
-fn parse_args(args: &Args) -> Result<()> {
-    match &args.command {
-        Command::Init(cmd_args) => cmd::init::run(cmd_args),
-    }
+pub fn log_purple(tag: &str, str: &str) {
+    println!("{}: {}", tag.bold().purple(), str);
 }
 
-fn main() {
-    let args = Args::parse();
+pub fn log_warning(str: &str) {
+    eprintln!("{}: {}", "Warning".bold().yellow(), str);
+}
 
-    if let Err(e) = parse_args(&args) {
-        cli::log_error(e.to_string().as_str());
-        std::process::exit(1);
-    }
-
-    println!("{}", "Finished".bold().green());
+pub fn log_error(str: &str) {
+    eprintln!("{}: {}", "Error".bold().red(), str);
 }

@@ -16,37 +16,5 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use colored::Colorize;
-
-use backup::{cli, cmd};
-
-#[derive(Parser, Debug)]
-struct Args {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Initialize a new repository
-    Init(cmd::init::CmdArgs),
-}
-
-fn parse_args(args: &Args) -> Result<()> {
-    match &args.command {
-        Command::Init(cmd_args) => cmd::init::run(cmd_args),
-    }
-}
-
-fn main() {
-    let args = Args::parse();
-
-    if let Err(e) = parse_args(&args) {
-        cli::log_error(e.to_string().as_str());
-        std::process::exit(1);
-    }
-
-    println!("{}", "Finished".bold().green());
-}
+pub mod meta;
+pub mod repo;

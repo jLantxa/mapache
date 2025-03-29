@@ -16,37 +16,28 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use std::path::Path;
+
 use anyhow::Result;
-use clap::{Parser, Subcommand};
-use colored::Colorize;
+use clap::Args;
 
-use backup::{cli, cmd};
+use crate::repository::repo::Repository;
 
-#[derive(Parser, Debug)]
-struct Args {
-    #[command(subcommand)]
-    command: Command,
+#[derive(Args, Debug)]
+pub struct CmdArgs {
+    /// Repository path
+    #[clap(short, long, value_parser)]
+    repo: String,
 }
 
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Initialize a new repository
-    Init(cmd::init::CmdArgs),
-}
+pub fn run(args: &CmdArgs) -> Result<()> {
+    let repo_path = Path::new(&args.repo);
+    println!(
+        "Initializing a new repository in {}",
+        repo_path.to_string_lossy()
+    );
 
-fn parse_args(args: &Args) -> Result<()> {
-    match &args.command {
-        Command::Init(cmd_args) => cmd::init::run(cmd_args),
-    }
-}
+    Repository::init(&repo_path)?;
 
-fn main() {
-    let args = Args::parse();
-
-    if let Err(e) = parse_args(&args) {
-        cli::log_error(e.to_string().as_str());
-        std::process::exit(1);
-    }
-
-    println!("{}", "Finished".bold().green());
+    Ok(())
 }

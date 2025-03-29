@@ -16,37 +16,27 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
+
 use anyhow::Result;
-use clap::{Parser, Subcommand};
-use colored::Colorize;
+use serde::{Deserialize, Serialize};
 
-use backup::{cli, cmd};
+pub fn save_json<T: Serialize, P: AsRef<Path>>(data: &T, path: P) -> Result<()> {
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
 
-#[derive(Parser, Debug)]
-struct Args {
-    #[command(subcommand)]
-    command: Command,
+    serde_json::to_writer_pretty(writer, data)?;
+
+    Ok(())
 }
 
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Initialize a new repository
-    Init(cmd::init::CmdArgs),
-}
+pub fn load_json<T: for<'de> Deserialize<'de>, P: AsRef<Path>>(path: P) -> Result<T> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
 
-fn parse_args(args: &Args) -> Result<()> {
-    match &args.command {
-        Command::Init(cmd_args) => cmd::init::run(cmd_args),
-    }
-}
+    let data = serde_json::from_reader(reader)?;
 
-fn main() {
-    let args = Args::parse();
-
-    if let Err(e) = parse_args(&args) {
-        cli::log_error(e.to_string().as_str());
-        std::process::exit(1);
-    }
-
-    println!("{}", "Finished".bold().green());
+    Ok(data)
 }

@@ -18,14 +18,32 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use colored::Colorize;
+use anyhow::{Context, Result, bail};
+
+use super::{config::Config, meta};
 
 pub struct Repository {
-    path: PathBuf,
+    root_path: PathBuf,
+    data_path: PathBuf,
+    snapshot_path: PathBuf,
+    tree_path: PathBuf,
+
+    config: Config,
 }
 
 impl Repository {
+    fn new(root_path: &Path, config: Config) -> Self {
+        Self {
+            root_path: root_path.to_owned(),
+            data_path: root_path.join("data").to_owned(),
+            snapshot_path: root_path.join("snapshot").to_owned(),
+            tree_path: root_path.join("tree").to_owned(),
+
+            config: config,
+        }
+    }
+
+    /// Create and initialize a new repository
     pub fn init(repo_path: &Path) -> Result<Self> {
         if repo_path.exists() {
             bail!(format!(
@@ -34,13 +52,17 @@ impl Repository {
             ));
         }
 
-        Self::init_repo_structure(repo_path)?;
+        let repo = Self::new(repo_path, Config::default());
 
-        Ok(Self {
-            path: repo_path.to_owned(),
-        })
+        repo.init_structure()
+            .with_context(|| "Could not initialize repository structure")?;
+
+        repo.persist_config()?;
+
+        Ok(repo)
     }
 
+    /// Open an existing repository from a directory
     pub fn open(repo_path: &Path) -> Result<Self> {
         if !repo_path.exists() {
             bail!(
@@ -54,25 +76,47 @@ impl Repository {
             );
         }
 
-        Ok(Self {
-            path: repo_path.to_owned(),
-        })
+        let loaded_config = Self::load_config(repo_path)?;
+
+        Ok(Self::new(repo_path, loaded_config))
     }
 
-    fn init_repo_structure(repo_path: &Path) -> Result<()> {
-        std::fs::create_dir_all(repo_path).with_context(|| "Could not create root directory");
+    pub fn get_config(&self) -> &Config {
+        &self.config
+    }
 
-        // Data
-        let data_path = repo_path.join("data");
-        std::fs::create_dir(&data_path)?;
+    pub fn set_config(&mut self, config: &Config) {
+        self.config = config.clone();
+    }
+
+    /**
+     * Create the repository structure.
+     * This includes the data subdirectories, meta, etc.
+     */
+    fn init_structure(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.root_path)
+            .with_context(|| "Could not create root directory")?;
+
+        std::fs::create_dir(&self.data_path)?;
         for n in 0x00..=0xff {
-            std::fs::create_dir(&data_path.join(format!("{:02x}", n)))?;
+            std::fs::create_dir(&self.data_path.join(format!("{:02x}", n)))?;
         }
 
-        // Meta
-        let meta_path = repo_path.join("meta");
-        std::fs::create_dir(meta_path)?;
+        std::fs::create_dir(&self.snapshot_path)?;
+        std::fs::create_dir(&self.tree_path)?;
 
         Ok(())
+    }
+
+    /// Load config
+    fn load_config(repo_path: &Path) -> Result<Config> {
+        let config_path = repo_path.join("config");
+        let config = meta::load_json(&config_path)?;
+        Ok(config)
+    }
+
+    fn persist_config(&self) -> Result<()> {
+        meta::save_json(&self.config, self.root_path.join("config"))
+            .with_context(|| "Could not persist config file")
     }
 }

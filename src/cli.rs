@@ -16,7 +16,36 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use clap::{Parser, Subcommand};
 use colored::Colorize;
+
+use crate::cmd;
+
+/// CLI arguments
+#[derive(Parser, Debug)]
+pub struct Cli {
+    // Subcommand
+    #[command(subcommand)]
+    pub command: Command,
+
+    // Global arguments
+    #[command(flatten)]
+    pub global_args: GlobalArgs,
+}
+
+/// List of commands
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Initialize a new repository
+    Init(cmd::init::CmdArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct GlobalArgs {
+    /// Repository path
+    #[clap(short, long, value_parser)]
+    pub repo: String,
+}
 
 pub fn log_success(tag: &str, str: &str) {
     println!("{}: {}", tag.bold().green(), str);

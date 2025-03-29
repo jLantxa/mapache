@@ -17,33 +17,22 @@
 */
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use colored::Colorize;
 
+use backup::cli::Cli;
 use backup::{cli, cmd};
 
-#[derive(Parser, Debug)]
-struct Args {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Initialize a new repository
-    Init(cmd::init::CmdArgs),
-}
-
-fn parse_args(args: &Args) -> Result<()> {
+fn run(args: &Cli) -> Result<()> {
     match &args.command {
-        Command::Init(cmd_args) => cmd::init::run(cmd_args),
+        cli::Command::Init(cmd_args) => cmd::init::run(&args.global_args, cmd_args),
     }
 }
 
 fn main() {
-    let args = Args::parse();
+    let args = Cli::parse();
 
-    if let Err(e) = parse_args(&args) {
+    if let Err(e) = run(&args) {
         cli::log_error(e.to_string().as_str());
         std::process::exit(1);
     }

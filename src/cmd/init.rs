@@ -21,17 +21,14 @@ use std::path::Path;
 use anyhow::Result;
 use clap::Args;
 
+use crate::cli::GlobalArgs;
 use crate::repository::repo::Repository;
 
 #[derive(Args, Debug)]
-pub struct CmdArgs {
-    /// Repository path
-    #[clap(short, long, value_parser)]
-    repo: String,
-}
+pub struct CmdArgs {}
 
-pub fn run(args: &CmdArgs) -> Result<()> {
-    let repo_path = Path::new(&args.repo);
+pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let repo_path = Path::new(&global.repo);
     println!(
         "Initializing a new repository in {}",
         repo_path.to_string_lossy()

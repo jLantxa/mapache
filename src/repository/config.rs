@@ -16,7 +16,31 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-pub mod config;
-pub mod meta;
-pub mod repo;
-pub mod snapshot;
+use chrono::Duration;
+use serde::{Deserialize, Serialize};
+
+/// Repository config
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Config {
+    compression_level: CompressionLevel,
+    retention_policy: SnapshotRetentionPolicy,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub enum CompressionLevel {
+    #[default]
+    Auto,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub enum SnapshotRetentionPolicy {
+    #[default]
+    /// Keep all snapshots
+    KeepAll,
+
+    /// Keep the last N snapshots
+    KeepLastN(usize),
+
+    /// Keep snapshots for the specified duration
+    KeepForTime(Duration),
+}

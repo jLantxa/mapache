@@ -16,7 +16,30 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-pub mod config;
-pub mod meta;
-pub mod repo;
-pub mod snapshot;
+use blake3::Hasher;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::utils::hashing::{Hash, Hashable};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The snapshot timestamp is the UTC time at which the snapshot was created
+    pub timestamp: DateTime<Utc>,
+
+    pub root: Hash,
+
+    pub description: String,
+}
+
+impl Hashable for Snapshot {
+    fn hash(&self) -> String {
+        let mut hasher = Hasher::new();
+
+        hasher.update(self.timestamp.to_rfc3339().as_bytes());
+        hasher.update(self.description.as_bytes());
+
+        let hash = hasher.finalize();
+        format!("{}", hash)
+    }
+}

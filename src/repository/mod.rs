@@ -20,3 +20,4 @@ pub mod config;
 pub mod meta;
 pub mod repo;
 pub mod snapshot;
+pub mod tree;

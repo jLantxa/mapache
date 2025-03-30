@@ -21,20 +21,22 @@ use std::path::Path;
 use anyhow::Result;
 use clap::Args;
 
-use crate::cli::GlobalArgs;
+use crate::cli::{self, GlobalArgs};
 use crate::repository::repo::Repository;
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {}
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let password = cli::request_new_password();
+
     let repo_path = Path::new(&global.repo);
     println!(
         "Initializing a new repository in {}",
         repo_path.to_string_lossy()
     );
 
-    Repository::init(&repo_path)?;
+    Repository::init(&repo_path, password)?;
 
     Ok(())
 }

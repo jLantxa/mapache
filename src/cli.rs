@@ -18,6 +18,7 @@
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use dialoguer::Password;
 
 use crate::cmd;
 
@@ -65,4 +66,19 @@ pub fn log_warning(str: &str) {
 
 pub fn log_error(str: &str) {
     eprintln!("{}: {}", "Error".bold().red(), str);
+}
+
+pub fn request_new_password() -> String {
+    Password::new()
+        .with_prompt("Enter new password")
+        .with_confirmation("Confirm password", "Passwords mismatching")
+        .interact()
+        .unwrap()
+}
+
+pub fn request_password() -> String {
+    Password::new()
+        .with_prompt("Enter password")
+        .interact()
+        .unwrap()
 }

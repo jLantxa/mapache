@@ -27,9 +27,11 @@ use crate::utils::hashing::{Hash, Hashable};
 
 use super::{
     config::Config,
-    meta::{self},
+    storage::SecureStorage,
     tree::{DirectoryNode, FileEntry, SerializableDirectoryNode},
 };
+
+const DEFAULT_META_COMPRESSION_LEVEL: i32 = 22;
 
 pub struct Repository {
     root_path: PathBuf,
@@ -37,23 +39,25 @@ pub struct Repository {
     snapshot_path: PathBuf,
     tree_path: PathBuf,
 
+    secure_storage: SecureStorage,
     config: Config,
 }
 
 impl Repository {
-    fn new(root_path: &Path, config: Config) -> Self {
+    fn new(root_path: &Path, password: String) -> Self {
         Self {
             root_path: root_path.to_owned(),
             data_path: root_path.join("data").to_owned(),
             snapshot_path: root_path.join("snapshot").to_owned(),
             tree_path: root_path.join("tree").to_owned(),
 
-            config: config,
+            secure_storage: SecureStorage::new(password),
+            config: Config::default(),
         }
     }
 
     /// Create and initialize a new repository
-    pub fn init(repo_path: &Path) -> Result<Self> {
+    pub fn init(repo_path: &Path, password: String) -> Result<Self> {
         if repo_path.exists() {
             bail!(format!(
                 "Could not initialize a repository because a directory already exists in \'{}\'",
@@ -61,7 +65,7 @@ impl Repository {
             ));
         }
 
-        let repo = Self::new(repo_path, Config::default());
+        let repo = Self::new(repo_path, password);
 
         repo.init_structure()
             .with_context(|| "Could not initialize repository structure")?;
@@ -72,7 +76,7 @@ impl Repository {
     }
 
     /// Open an existing repository from a directory
-    pub fn open(repo_path: &Path) -> Result<Self> {
+    pub fn open(repo_path: &Path, password: String) -> Result<Self> {
         if !repo_path.exists() {
             bail!(
                 "Could not open a repository. \'{}\' doesn't exist",
@@ -85,9 +89,10 @@ impl Repository {
             );
         }
 
-        let loaded_config = Self::load_config(repo_path)?;
+        let mut repo = Repository::new(repo_path, password);
+        repo.load_config()?;
 
-        Ok(Self::new(repo_path, loaded_config))
+        Ok(repo)
     }
 
     pub fn get_config(&self) -> &Config {
@@ -128,7 +133,12 @@ impl Repository {
          * I am assuming that if two trees have the same hash, the content is the same.
          */
         if !serialized_tree_path.exists() {
-            meta::save_json(&serializable_directory_node, serialized_tree_path)
+            self.secure_storage
+                .save_json(
+                    &serializable_directory_node,
+                    &serialized_tree_path,
+                    DEFAULT_META_COMPRESSION_LEVEL,
+                )
                 .with_context(|| format!("Could not serialize tree \'{}\'", &hash))?;
         }
 
@@ -147,7 +157,9 @@ impl Repository {
             ));
         }
 
-        let serialized_node: SerializableDirectoryNode = meta::load_json(&tree_path)
+        let serialized_node: SerializableDirectoryNode = self
+            .secure_storage
+            .load_json(&tree_path)
             .with_context(|| format!("Could not deserialize metadata tree \'{}\'", hash))?;
 
         let mut files: BTreeMap<String, FileEntry> = BTreeMap::new();
@@ -192,14 +204,20 @@ impl Repository {
     }
 
     /// Load config
-    fn load_config(repo_path: &Path) -> Result<Config> {
-        let config_path = repo_path.join("config");
-        let config = meta::load_json(&config_path)?;
-        Ok(config)
+    fn load_config(&mut self) -> Result<()> {
+        let config_path = self.root_path.join("config");
+        self.config = self.secure_storage.load_json(&config_path)?;
+
+        Ok(())
     }
 
     fn persist_config(&self) -> Result<()> {
-        meta::save_json(&self.config, self.root_path.join("config"))
+        self.secure_storage
+            .save_json(
+                &self.config,
+                &self.root_path.join("config"),
+                DEFAULT_META_COMPRESSION_LEVEL,
+            )
             .with_context(|| "Could not persist config file")
     }
 }
@@ -216,7 +234,7 @@ mod test {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        let repo = Repository::init(&temp_repo_path)?;
+        let repo = Repository::init(&temp_repo_path, String::from("mapachito"))?;
 
         let mut root_tree = DirectoryNode {
             name: "root".to_string(),

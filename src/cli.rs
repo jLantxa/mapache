@@ -22,22 +22,26 @@ use dialoguer::Password;
 
 use crate::cmd;
 
-/// CLI arguments
+// CLI arguments
 #[derive(Parser, Debug)]
+#[clap(
+    version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
+    about = "Incremental backup tool"
+)]
 pub struct Cli {
     // Subcommand
     #[command(subcommand)]
     pub command: Command,
 
     // Global arguments
-    #[command(flatten)]
+    #[clap(flatten)]
     pub global_args: GlobalArgs,
 }
 
-/// List of commands
+// List of commands
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Initialize a new repository
+    #[clap(about = "Initialize a new repository")]
     Init(cmd::init::CmdArgs),
 }
 

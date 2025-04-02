@@ -16,8 +16,25 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-pub mod cli;
-pub mod cmd;
-pub mod repository;
-pub mod testing;
-pub mod utils;
+use std::{fs::File, path::Path};
+
+use anyhow::Result;
+use serde::{Serialize, de::DeserializeOwned};
+
+pub fn save_json<T: Serialize>(data: &T, path: &Path) -> Result<()> {
+    let file = File::create(path)?;
+    serde_json::to_writer(file, data)?;
+    Ok(())
+}
+
+pub fn save_json_pretty<T: Serialize>(data: &T, path: &Path) -> Result<()> {
+    let file = File::create(path)?;
+    serde_json::to_writer_pretty(file, data)?;
+    Ok(())
+}
+
+pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let file = File::open(path)?;
+    let data = serde_json::from_reader(file)?;
+    Ok(data)
+}

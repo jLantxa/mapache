@@ -1,0 +1,39 @@
+{
+  "name": "/",
+  "metadata": null,
+  "files": {
+    "file0": {
+      "name": "file0",
+      "metadata": null,
+      "chunks": [
+        "0123",
+        "1234"
+      ]
+    }
+  },
+  "children": {
+    "dir0": {
+      "name": "dir0",
+      "metadata": null,
+      "files": {
+        "file1": {
+          "name": "file1",
+          "metadata": null,
+          "chunks": [
+            "abcd",
+            "1a2b"
+          ]
+        },
+        "file2": {
+          "name": "file2",
+          "metadata": null,
+          "chunks": [
+            "0c0c",
+            "aaaa"
+          ]
+        }
+      },
+      "children": {}
+    }
+  }
+}

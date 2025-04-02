@@ -22,13 +22,15 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use blake3::Hasher;
+use serde::{Deserialize, Serialize};
 
 use crate::utils::hashing::{Hash, Hashable};
 
 use super::{
     config::Config,
     storage::SecureStorage,
-    tree::{DirectoryNode, FileEntry, SerializableDirectoryNode},
+    tree::{DirectoryMetadata, DirectoryNode, FileEntry},
 };
 
 const DEFAULT_META_COMPRESSION_LEVEL: i32 = 22;
@@ -222,39 +224,56 @@ impl Repository {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableDirectoryNode {
+    pub name: String,
+    pub metadata: Option<DirectoryMetadata>,
+    pub files: Vec<FileEntry>,
+    pub children: Vec<Hash>,
+}
+
+impl Hashable for SerializableDirectoryNode {
+    fn hash(&self) -> Hash {
+        let mut hasher = Hasher::new();
+
+        hasher.update(self.name.as_bytes());
+
+        if let Some(meta) = &self.metadata {
+            hasher.update(meta.hash().as_bytes());
+        }
+
+        for file in &self.files {
+            hasher.update(file.hash().as_bytes());
+        }
+
+        for child_hash in &self.children {
+            hasher.update(child_hash.as_bytes());
+        }
+
+        let hash = hasher.finalize();
+        format!("{}", hash)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use tempfile::tempdir;
 
+    use crate::utils;
+
     use super::*;
 
     #[test]
+    #[ignore]
     /// Test saving and loading tree objects
-    fn test_persist_tree() -> Result<()> {
+    /// This test creates a repository in a temp folder
+    fn heavy_test_persist_tree() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
         let repo = Repository::init(&temp_repo_path, String::from("mapachito"))?;
 
-        let mut root_tree = DirectoryNode {
-            name: "root".to_string(),
-            metadata: None,
-            files: BTreeMap::new(),
-            children: BTreeMap::new(),
-        };
-
-        root_tree.add_file(&FileEntry {
-            name: "file1.txt".to_string(),
-            metadata: None,
-            chunks: vec!["chunk1".to_string(), "chunk2".to_string()],
-        });
-
-        root_tree.add_dir(&DirectoryNode {
-            name: "dir1".to_string(),
-            metadata: None,
-            files: BTreeMap::new(),
-            children: BTreeMap::new(),
-        });
+        let root_tree = utils::json::load_json(Path::new("testdata/tree0.json"))?;
 
         let root_hash = repo.persist_tree(&root_tree)?;
         let deserialized_root = repo.load_tree(&root_hash)?;

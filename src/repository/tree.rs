@@ -16,7 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,34 @@ use serde::{Deserialize, Serialize};
 use crate::utils::hashing::{Hash, Hashable};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntry {
+    pub name: String,
+    pub metadata: Option<FileMetadata>,
+    pub chunks: Vec<Hash>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryNode {
     pub name: String,
     pub metadata: Option<DirectoryMetadata>,
     pub files: BTreeMap<String, FileEntry>,
     pub children: BTreeMap<String, DirectoryNode>,
+}
+
+#[derive(Debug)]
+pub enum TreeNode<'a> {
+    File(&'a FileEntry),
+    Directory(&'a DirectoryNode),
+}
+
+impl FileEntry {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            metadata: None,
+            chunks: Vec::new(),
+        }
+    }
 }
 
 impl DirectoryNode {
@@ -49,24 +72,57 @@ impl DirectoryNode {
     pub fn add_dir(&mut self, dir: &DirectoryNode) {
         self.children.insert(dir.name.clone(), dir.clone());
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileEntry {
-    pub name: String,
-    pub metadata: Option<FileMetadata>,
-    pub chunks: Vec<Hash>,
-}
+    /// Find a tree element (file or directory in the tree)
+    pub fn find<'a>(&'a self, path: &Path) -> Option<TreeNode<'a>> {
+        let mut current = self;
+        let mut stack = Vec::new();
+        let mut components = path.components().peekable();
 
-impl FileEntry {
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            metadata: None,
-            chunks: Vec::new(),
+        while let Some(component) = components.next() {
+            match component {
+                std::path::Component::CurDir => continue, // Ignore "."
+                std::path::Component::ParentDir => {
+                    //
+                    if let Some(parent) = stack.pop() {
+                        current = parent;
+                    } else {
+                        return None; // We can't go above the root
+                    }
+                }
+                std::path::Component::Normal(os_str) => {
+                    let name = os_str.to_str()?;
+
+                    // Last component: check if it's a file or directory
+                    if components.peek().is_none() {
+                        return current
+                            .files
+                            .get(name)
+                            .map(TreeNode::File)
+                            .or_else(|| current.children.get(name).map(TreeNode::Directory));
+                    }
+
+                    // Traverse deeper if it's a directory
+                    if let Some(dir) = current.children.get(name) {
+                        stack.push(current);
+                        current = dir;
+                    } else {
+                        return None;
+                    }
+                }
+                _ => continue, // Ignore root and prefix components
+            }
         }
+
+        None
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DirectoryMetadata {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileMetadata {}
 
 impl Hashable for FileEntry {
     fn hash(&self) -> Hash {
@@ -87,40 +143,6 @@ impl Hashable for FileEntry {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableDirectoryNode {
-    pub name: String,
-    pub metadata: Option<DirectoryMetadata>,
-    pub files: Vec<FileEntry>,
-    pub children: Vec<Hash>,
-}
-
-impl Hashable for SerializableDirectoryNode {
-    fn hash(&self) -> Hash {
-        let mut hasher = Hasher::new();
-
-        hasher.update(self.name.as_bytes());
-
-        if let Some(meta) = &self.metadata {
-            hasher.update(meta.hash().as_bytes());
-        }
-
-        for file in &self.files {
-            hasher.update(file.hash().as_bytes());
-        }
-
-        for child_hash in &self.children {
-            hasher.update(child_hash.as_bytes());
-        }
-
-        let hash = hasher.finalize();
-        format!("{}", hash)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DirectoryMetadata {}
-
 impl Hashable for DirectoryMetadata {
     fn hash(&self) -> Hash {
         let hasher = Hasher::new();
@@ -130,14 +152,72 @@ impl Hashable for DirectoryMetadata {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FileMetadata {}
-
 impl Hashable for FileMetadata {
     fn hash(&self) -> Hash {
         let hasher = Hasher::new();
 
         let hash = hasher.finalize();
         format!("{}", hash)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::path::Path;
+
+    use anyhow::Result;
+
+    use crate::{repository::tree::TreeNode, testing, utils};
+
+    use super::DirectoryNode;
+
+    /// Test finding an element inside the DirectoryNode
+    #[test]
+    fn test_find_in_tree() -> Result<()> {
+        let tree_path = Path::new(testing::TEST_DATA_PATH).join("tree0.json");
+        let root: DirectoryNode = utils::json::load_json(&tree_path)?;
+
+        // Matches
+        let dir0 = root.find(Path::new("dir0"));
+        assert!(
+            matches!(dir0, Some(TreeNode::Directory(_))),
+            "Expected dir0 to be a Directory"
+        );
+
+        let file1 = root.find(Path::new("dir0/file1"));
+        assert!(
+            matches!(file1, Some(TreeNode::File(_))),
+            "Expected dir0/file1 to be a File"
+        );
+
+        let file2 = root.find(Path::new("dir0/file2"));
+        assert!(
+            matches!(file2, Some(TreeNode::File(_))),
+            "Expected dir0/file2 to be a File"
+        );
+
+        let file0 = root.find(Path::new("file0"));
+        assert!(
+            matches!(file0, Some(TreeNode::File(_))),
+            "Expected file0 to be a File"
+        );
+
+        // Not found
+        let dir1 = root.find(Path::new("dir1"));
+        assert!(dir1.is_none(), "Expected dir1 to be None");
+
+        let file_x = root.find(Path::new("dir0/fileX"));
+        assert!(file_x.is_none(), "Expected dir0/fileX to be None");
+
+        let deep_path = root.find(Path::new("dir0/does_not_exist"));
+        assert!(
+            deep_path.is_none(),
+            "Expected dir0/does_not_exist to be None"
+        );
+
+        let abs_path = root.find(Path::new("/dir0/file0"));
+        assert!(abs_path.is_none(), "Expected /dir0/file0 to be None");
+
+        Ok(())
     }
 }

@@ -21,7 +21,7 @@ use blake3::Hasher;
 pub type Hash = String;
 
 /// Calculates the 256-bit hash of a byte array
-fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash {
+pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash {
     let mut hasher = Hasher::new();
     hasher.update(data.as_ref());
     let hash = hasher.finalize();

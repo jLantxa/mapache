@@ -27,7 +27,7 @@ use crate::repository::repo::Repository;
 #[derive(Args, Debug)]
 pub struct CmdArgs {}
 
-pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let password = cli::request_new_password();
 
     let repo_path = Path::new(&global.repo);

@@ -16,8 +16,10 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-pub mod cli;
-pub mod cmd;
-pub mod repository;
-pub mod testing;
-pub mod utils;
+use std::path::{Path, PathBuf};
+
+pub const TEST_DATA_PATH: &str = "testdata";
+
+pub fn get_test_path(name: &str) -> PathBuf {
+    return Path::new(TEST_DATA_PATH).join(name);
+}

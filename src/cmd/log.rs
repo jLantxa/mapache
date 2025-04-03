@@ -21,14 +21,25 @@ use std::path::Path;
 use anyhow::Result;
 use clap::Args;
 
-use crate::cli::{self, GlobalArgs};
+use crate::{
+    cli::{self, GlobalArgs},
+    repository::repo::Repository,
+};
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {}
 
 pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    let _password = cli::request_password();
-    let _repo_path = Path::new(&global.repo);
+    let password = cli::request_password();
+    let repo_path = Path::new(&global.repo);
 
-    todo!()
+    let repo = Repository::open(repo_path, password)?;
+
+    let snapshots = repo
+        .get_snapshots()?
+        .sort_by_key(|(_, snapshot)| snapshot.timestamp); // Sort by timestamp
+
+    dbg!(snapshots);
+
+    Ok(())
 }

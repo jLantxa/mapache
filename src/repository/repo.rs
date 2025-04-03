@@ -29,11 +29,18 @@ use crate::utils::hashing::{Hash, Hashable};
 
 use super::{
     config::Config,
+    snapshot::Snapshot,
     storage::SecureStorage,
     tree::{DirectoryMetadata, DirectoryNode, FileEntry},
 };
 
+const CHECKWORD: &str = "mapachito";
+
 const DEFAULT_META_COMPRESSION_LEVEL: i32 = 22;
+
+const DATA_DIR: &str = "data";
+const SNAPSHOT_DIR: &str = "snapshot";
+const TREE_DIR: &str = "tree";
 
 pub struct Repository {
     root_path: PathBuf,
@@ -49,9 +56,9 @@ impl Repository {
     fn new(root_path: &Path, password: String) -> Self {
         Self {
             root_path: root_path.to_owned(),
-            data_path: root_path.join("data").to_owned(),
-            snapshot_path: root_path.join("snapshot").to_owned(),
-            tree_path: root_path.join("tree").to_owned(),
+            data_path: root_path.join(DATA_DIR).to_owned(),
+            snapshot_path: root_path.join(SNAPSHOT_DIR).to_owned(),
+            tree_path: root_path.join(TREE_DIR).to_owned(),
 
             secure_storage: SecureStorage::new(password),
             config: Config::default(),
@@ -92,6 +99,11 @@ impl Repository {
         }
 
         let mut repo = Repository::new(repo_path, password);
+
+        if let Err(_) = repo.check_key() {
+            bail!("Incorrect password");
+        }
+
         repo.load_config()?;
 
         Ok(repo)
@@ -186,6 +198,26 @@ impl Repository {
         Ok(tree_node)
     }
 
+    pub fn get_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>> {
+        let mut snapshots = Vec::new();
+
+        let entries =
+            std::fs::read_dir(&self.snapshot_path).with_context(|| "Could not read snapshots")?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    let hash = file_name.to_string(); // Extract hash from filename
+                    let snapshot: Snapshot = self.secure_storage.load_json(&path)?;
+                    snapshots.push((hash, snapshot));
+                }
+            }
+        }
+
+        Ok(snapshots)
+    }
+
     /**
      * Create the repository structure.
      * This includes the data subdirectories, meta, etc.
@@ -202,7 +234,29 @@ impl Repository {
         std::fs::create_dir(&self.snapshot_path)?;
         std::fs::create_dir(&self.tree_path)?;
 
+        self.write_key()?;
+
         Ok(())
+    }
+
+    fn write_key(&self) -> Result<()> {
+        let path = self.root_path.join("key");
+        self.secure_storage
+            .save_to_file(CHECKWORD.as_bytes(), &path, 10)
+            .with_context(|| "Could not create key")?;
+
+        Ok(())
+    }
+
+    fn check_key(&self) -> Result<()> {
+        let path = self.root_path.join("key");
+        let data = self.secure_storage.load_from_file(&path)?;
+        let word = String::from_utf8(data)?;
+
+        match word.as_str() {
+            CHECKWORD => Ok(()),
+            _ => bail!("Incorrect password"),
+        }
     }
 
     /// Load config

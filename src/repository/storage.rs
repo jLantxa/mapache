@@ -21,6 +21,7 @@ use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use anyhow::{Context, Result, bail};
 use argon2::Argon2;
 use rand::{Rng, RngCore};
+use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecret, SecretBox};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -33,14 +34,14 @@ const SALT_LENGTH: usize = 16;
 
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
-    password: SecretBox<String>,
+    password: SecretBox<Vec<u8>>,
 }
 
 impl SecureStorage {
     /// Create a new instance of SecureStorage with a password
     pub fn new(password: String) -> Self {
         SecureStorage {
-            password: SecretBox::new(Box::new(password)),
+            password: SecretBox::new(Box::new(password.as_bytes().to_vec())),
         }
     }
 
@@ -148,7 +149,7 @@ impl SecureStorage {
     fn derive_key(&self, salt: &[u8]) -> [u8; 32] {
         let mut output_key_material = [0u8; 32];
         let _ = Argon2::default().hash_password_into(
-            self.password.expose_secret().as_bytes(),
+            self.password.expose_secret(),
             salt,
             &mut output_key_material,
         );
@@ -161,6 +162,12 @@ impl SecureStorage {
         let mut salt = [0u8; LENGTH];
         rng.fill_bytes(&mut salt);
         salt
+    }
+}
+
+impl Drop for SecureStorage {
+    fn drop(&mut self) {
+        self.password.zeroize();
     }
 }
 

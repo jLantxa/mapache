@@ -16,29 +16,19 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use std::path::Path;
+
 use anyhow::Result;
-use clap::Parser;
-use colored::Colorize;
+use clap::Args;
 
-use backup::cli::Cli;
-use backup::{cli, cmd};
+use crate::cli::{self, GlobalArgs};
 
-fn run(args: &Cli) -> Result<()> {
-    match &args.command {
-        cli::Command::Init(cmd_args) => cmd::init::run(&args.global_args, cmd_args),
-        cli::Command::Log(cmd_args) => cmd::log::run(&args.global_args, cmd_args),
-        cli::Command::Commit(cmd_args) => cmd::commit::run(&args.global_args, cmd_args),
-        cli::Command::Restore(cmd_args) => cmd::restore::run(&args.global_args, cmd_args),
-    }
-}
+#[derive(Args, Debug)]
+pub struct CmdArgs {}
 
-fn main() {
-    let args = Cli::parse();
+pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+    let _password = cli::request_password();
+    let _repo_path = Path::new(&global.repo);
 
-    if let Err(e) = run(&args) {
-        cli::log_error(e.to_string().as_str());
-        std::process::exit(1);
-    }
-
-    println!("{}", "Finished".bold().green());
+    todo!()
 }

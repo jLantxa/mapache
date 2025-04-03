@@ -43,6 +43,15 @@ pub struct Cli {
 pub enum Command {
     #[clap(about = "Initialize a new repository")]
     Init(cmd::init::CmdArgs),
+
+    #[clap(about = "Show all snapshots present in the repository")]
+    Log(cmd::log::CmdArgs),
+
+    #[clap(about = "Create a new snapshot")]
+    Commit(cmd::commit::CmdArgs),
+
+    #[clap(about = "Restores a snapshot")]
+    Restore(cmd::restore::CmdArgs),
 }
 
 #[derive(Parser, Debug)]

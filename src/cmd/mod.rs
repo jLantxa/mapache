@@ -16,4 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+pub mod commit;
 pub mod init;
+pub mod log;
+pub mod restore;

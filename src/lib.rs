@@ -18,6 +18,7 @@
 
 pub mod cli;
 pub mod cmd;
+pub mod filesystem;
 pub mod repository;
 pub mod testing;
 pub mod utils;

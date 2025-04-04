@@ -16,28 +16,42 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use std::time::SystemTime;
+
 use blake3::Hasher;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::utils::hashing::{Hash, Hashable};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Snapshot {
-    /// The snapshot timestamp is the UTC time at which the snapshot was created
-    pub timestamp: DateTime<Utc>,
-
-    pub root: Hash,
-
-    pub description: String,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DirectoryMetadata {
+    pub modified: SystemTime,
+    pub created: Option<SystemTime>,
+    pub permissions: Option<u32>, // For Unix-like modes
+    pub owner_uid: Option<u32>,
+    pub owner_gid: Option<u32>,
 }
 
-impl Hashable for Snapshot {
-    fn hash(&self) -> String {
-        let mut hasher = Hasher::new();
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileMetadata {
+    pub size: u64,
+    pub modified: SystemTime,
+    pub created: Option<SystemTime>,
+    pub permissions: Option<u32>, // For Unix-like modes
+}
 
-        hasher.update(self.timestamp.to_rfc3339().as_bytes());
-        hasher.update(self.description.as_bytes());
+impl Hashable for DirectoryMetadata {
+    fn hash(&self) -> Hash {
+        let hasher = Hasher::new();
+
+        let hash = hasher.finalize();
+        format!("{}", hash)
+    }
+}
+
+impl Hashable for FileMetadata {
+    fn hash(&self) -> Hash {
+        let hasher = Hasher::new();
 
         let hash = hasher.finalize();
         format!("{}", hash)

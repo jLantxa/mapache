@@ -25,13 +25,16 @@ use anyhow::{Context, Result, bail};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::hashing::{Hash, Hashable};
+use crate::{
+    filesystem::DirectoryMetadata,
+    utils::hashing::{Hash, Hashable},
+};
 
 use super::{
     config::Config,
     snapshot::Snapshot,
     storage::SecureStorage,
-    tree::{DirectoryMetadata, DirectoryNode, FileEntry},
+    tree::{DirectoryNode, FileEntry},
 };
 
 const CHECKWORD: &str = "mapachito";
@@ -215,6 +218,12 @@ impl Repository {
             }
         }
 
+        Ok(snapshots)
+    }
+
+    pub fn get_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>> {
+        let mut snapshots = self.get_snapshots()?;
+        snapshots.sort_by_key(|(_, snapshot)| snapshot.timestamp);
         Ok(snapshots)
     }
 

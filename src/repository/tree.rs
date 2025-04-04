@@ -21,7 +21,10 @@ use std::{collections::BTreeMap, path::Path};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::hashing::{Hash, Hashable};
+use crate::{
+    filesystem::{DirectoryMetadata, FileMetadata},
+    utils::hashing::{Hash, Hashable},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -51,6 +54,25 @@ impl FileEntry {
             metadata: None,
             chunks: Vec::new(),
         }
+    }
+}
+
+impl Hashable for FileEntry {
+    fn hash(&self) -> Hash {
+        let mut hasher = Hasher::new();
+
+        hasher.update(self.name.as_bytes());
+
+        if let Some(meta) = &self.metadata {
+            hasher.update(meta.hash().as_bytes());
+        }
+
+        for chunk in &self.chunks {
+            hasher.update(chunk.as_bytes());
+        }
+
+        let hash = hasher.finalize();
+        format!("{}", hash)
     }
 }
 
@@ -115,49 +137,6 @@ impl DirectoryNode {
         }
 
         None
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DirectoryMetadata {}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FileMetadata {}
-
-impl Hashable for FileEntry {
-    fn hash(&self) -> Hash {
-        let mut hasher = Hasher::new();
-
-        hasher.update(self.name.as_bytes());
-
-        if let Some(meta) = &self.metadata {
-            hasher.update(meta.hash().as_bytes());
-        }
-
-        for chunk in &self.chunks {
-            hasher.update(chunk.as_bytes());
-        }
-
-        let hash = hasher.finalize();
-        format!("{}", hash)
-    }
-}
-
-impl Hashable for DirectoryMetadata {
-    fn hash(&self) -> Hash {
-        let hasher = Hasher::new();
-
-        let hash = hasher.finalize();
-        format!("{}", hash)
-    }
-}
-
-impl Hashable for FileMetadata {
-    fn hash(&self) -> Hash {
-        let hasher = Hasher::new();
-
-        let hash = hasher.finalize();
-        format!("{}", hash)
     }
 }
 

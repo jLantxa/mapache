@@ -16,19 +16,32 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Args;
 
-use crate::cli::{self, GlobalArgs};
+use crate::{
+    cli::{self, GlobalArgs},
+    repository::repo::Repository,
+};
 
 #[derive(Args, Debug)]
-pub struct CmdArgs {}
+pub struct CmdArgs {
+    /// List of paths to commit
+    #[clap(value_parser, required = true)]
+    pub paths: Vec<PathBuf>,
+
+    /// Force a complete analysis of all files and directories
+    #[arg(long)]
+    pub naive: bool,
+}
 
 pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    let _password = cli::request_password();
-    let _repo_path = Path::new(&global.repo);
+    let password = cli::request_password();
+    let repo_path = Path::new(&global.repo);
+
+    let mut _repo = Repository::open(repo_path, password)?;
 
     todo!()
 }

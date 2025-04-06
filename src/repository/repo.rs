@@ -21,13 +21,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose};
 use blake3::Hasher;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     filesystem::DirectoryMetadata,
-    utils::hashing::{Hash, Hashable},
+    utils::{
+        hashing::{Hash, Hashable},
+        json,
+    },
 };
 
 use super::{
@@ -37,37 +43,44 @@ use super::{
     tree::{DirectoryNode, FileEntry},
 };
 
-const CHECKWORD: &str = "mapachito";
-
-const DEFAULT_META_COMPRESSION_LEVEL: i32 = 22;
-
 const DATA_DIR: &str = "data";
 const SNAPSHOT_DIR: &str = "snapshot";
 const TREE_DIR: &str = "tree";
+const KEYS_DIR: &str = "keys";
 
 pub struct Repository {
     root_path: PathBuf,
     data_path: PathBuf,
     snapshot_path: PathBuf,
     tree_path: PathBuf,
+    keys_path: PathBuf,
 
     secure_storage: SecureStorage,
     config: Config,
 }
 
-impl Repository {
-    fn new(root_path: &Path, password: String) -> Self {
-        Self {
-            root_path: root_path.to_owned(),
-            data_path: root_path.join(DATA_DIR).to_owned(),
-            snapshot_path: root_path.join(SNAPSHOT_DIR).to_owned(),
-            tree_path: root_path.join(TREE_DIR).to_owned(),
+#[derive(Serialize, Deserialize)]
+struct KeyFile {
+    created: DateTime<Utc>,
 
-            secure_storage: SecureStorage::new(password),
-            config: Config::default(),
-        }
+    encrypted_key: String,
+    salt: String,
+}
+
+impl Hashable for KeyFile {
+    fn hash(&self) -> Hash {
+        let mut hasher = Hasher::new();
+
+        hasher.update(self.created.to_rfc3339().as_bytes());
+        hasher.update(self.encrypted_key.as_bytes());
+        hasher.update(self.salt.as_bytes());
+
+        let hash = hasher.finalize();
+        format!("{}", hash)
     }
+}
 
+impl Repository {
     /// Create and initialize a new repository
     pub fn init(repo_path: &Path, password: String) -> Result<Self> {
         if repo_path.exists() {
@@ -77,12 +90,43 @@ impl Repository {
             ));
         }
 
-        let repo = Self::new(repo_path, password);
+        // Init repository structure
+        let data_path = repo_path.join(DATA_DIR);
+        let snapshot_path = repo_path.join(SNAPSHOT_DIR);
+        let tree_path = repo_path.join(TREE_DIR);
+        let keys_path = repo_path.join(KEYS_DIR);
 
-        repo.init_structure()
-            .with_context(|| "Could not initialize repository structure")?;
+        std::fs::create_dir_all(repo_path).with_context(|| "Could not create root directory")?;
 
-        repo.persist_config()?;
+        std::fs::create_dir(&data_path)?;
+        for n in 0x00..=0xff {
+            std::fs::create_dir(&data_path.join(format!("{:02x}", n)))?;
+        }
+
+        std::fs::create_dir(&snapshot_path)?;
+        std::fs::create_dir(&tree_path)?;
+
+        std::fs::create_dir(&keys_path)?;
+
+        // Secure storage
+        let (key, keyfile) = generate_key(&password).with_context(|| "Could not generate key")?;
+        let storage = SecureStorage::new().with_compression(10).with_key(key);
+
+        let keyfile_hash = keyfile.hash();
+        let keyfile_path = &keys_path.join(keyfile_hash);
+        json::save_json_pretty(&keyfile, keyfile_path)?;
+
+        let repo = Repository {
+            root_path: repo_path.to_owned(),
+            data_path,
+            snapshot_path,
+            tree_path,
+            keys_path,
+            secure_storage: storage,
+            config: Config::default(),
+        };
+
+        repo.persist()?;
 
         Ok(repo)
     }
@@ -101,13 +145,26 @@ impl Repository {
             );
         }
 
-        let mut repo = Repository::new(repo_path, password);
+        let key = retrieve_key(&password, &repo_path.join(KEYS_DIR))
+            .with_context(|| "Incorrect password")?;
+        let storage = SecureStorage::new().with_compression(10).with_key(key);
 
-        if let Err(_) = repo.check_key() {
-            bail!("Incorrect password");
-        }
+        let data_path = repo_path.join(DATA_DIR);
+        let snapshot_path = repo_path.join(SNAPSHOT_DIR);
+        let tree_path = repo_path.join(TREE_DIR);
+        let keys_path = repo_path.join(KEYS_DIR);
 
-        repo.load_config()?;
+        let config = storage.load_json(&repo_path.join("config"))?;
+
+        let repo = Repository {
+            root_path: repo_path.to_owned(),
+            data_path,
+            snapshot_path,
+            tree_path,
+            keys_path,
+            secure_storage: storage,
+            config,
+        };
 
         Ok(repo)
     }
@@ -118,6 +175,13 @@ impl Repository {
 
     pub fn set_config(&mut self, config: &Config) {
         self.config = config.clone();
+    }
+
+    /// Persist all metadata files
+    pub fn persist(&self) -> Result<()> {
+        self.persist_config()?;
+
+        Ok(())
     }
 
     /// Persist a FileSystemNode into the repo metadata
@@ -151,11 +215,7 @@ impl Repository {
          */
         if !serialized_tree_path.exists() {
             self.secure_storage
-                .save_json(
-                    &serializable_directory_node,
-                    &serialized_tree_path,
-                    DEFAULT_META_COMPRESSION_LEVEL,
-                )
+                .save_json(&serializable_directory_node, &serialized_tree_path)
                 .with_context(|| format!("Could not serialize tree \'{}\'", &hash))?;
         }
 
@@ -201,6 +261,7 @@ impl Repository {
         Ok(tree_node)
     }
 
+    /// Get all snapshots in the repository
     pub fn get_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>> {
         let mut snapshots = Vec::new();
 
@@ -221,69 +282,68 @@ impl Repository {
         Ok(snapshots)
     }
 
+    /// Get all snapshots in the repository, sorted by datetime
     pub fn get_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>> {
         let mut snapshots = self.get_snapshots()?;
         snapshots.sort_by_key(|(_, snapshot)| snapshot.timestamp);
         Ok(snapshots)
     }
 
-    /**
-     * Create the repository structure.
-     * This includes the data subdirectories, meta, etc.
-     */
-    fn init_structure(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.root_path)
-            .with_context(|| "Could not create root directory")?;
-
-        std::fs::create_dir(&self.data_path)?;
-        for n in 0x00..=0xff {
-            std::fs::create_dir(&self.data_path.join(format!("{:02x}", n)))?;
-        }
-
-        std::fs::create_dir(&self.snapshot_path)?;
-        std::fs::create_dir(&self.tree_path)?;
-
-        self.write_key()?;
-
-        Ok(())
-    }
-
-    fn write_key(&self) -> Result<()> {
-        let path = self.root_path.join("key");
-        self.secure_storage
-            .save_to_file(CHECKWORD.as_bytes(), &path, 10)
-            .with_context(|| "Could not create key")?;
-
-        Ok(())
-    }
-
-    fn check_key(&self) -> Result<()> {
-        let path = self.root_path.join("key");
-        let data = self.secure_storage.load_from_file(&path)?;
-        let word = String::from_utf8(data)?;
-
-        match word.as_str() {
-            CHECKWORD => Ok(()),
-            _ => bail!("Incorrect password"),
-        }
-    }
-
-    /// Load config
-    fn load_config(&mut self) -> Result<()> {
-        let config_path = self.root_path.join("config");
-        self.config = self.secure_storage.load_json(&config_path)?;
-
-        Ok(())
-    }
-
+    /// Persist the config metadata
     fn persist_config(&self) -> Result<()> {
         self.secure_storage
-            .save_json(
-                &self.config,
-                &self.root_path.join("config"),
-                DEFAULT_META_COMPRESSION_LEVEL,
-            )
+            .save_json(&self.config, &self.root_path.join("config"))
             .with_context(|| "Could not persist config file")
+    }
+}
+
+/// Generate a new master  key
+fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
+    let create_time = Utc::now();
+
+    let mut new_random_key = [0u8; 32];
+    OsRng.fill_bytes(&mut new_random_key);
+
+    const SALT_LENGTH: usize = 32;
+    let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
+    let intermediate_key = SecureStorage::derive_key(password, &salt);
+
+    let encrypted_key = SecureStorage::encrypt(&intermediate_key, &new_random_key)?;
+
+    let key_file = KeyFile {
+        created: create_time,
+        encrypted_key: general_purpose::STANDARD.encode(encrypted_key),
+        salt: general_purpose::STANDARD.encode(salt),
+    };
+
+    Ok((new_random_key.to_vec(), key_file))
+}
+
+/// Retrieve the master key from all available keys in a folder
+fn retrieve_key(password: &str, keys_path: &Path) -> Result<Vec<u8>> {
+    for entry in std::fs::read_dir(keys_path)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            let keyfile: KeyFile = json::load_json(&path)?;
+            let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
+            let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+
+            let intermediate_key = SecureStorage::derive_key(password, &salt);
+            if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
+                return Ok(key);
+            }
+        }
+    }
+
+    bail!("Could not retrieve key")
+}
+
+impl Drop for Repository {
+    fn drop(&mut self) {
+        // Persist all object when the repository is dropped
+        let _ = self.persist();
     }
 }
 
@@ -326,10 +386,10 @@ mod test {
 
     use super::*;
 
-    #[test]
-    #[ignore]
     /// Test saving and loading tree objects
     /// This test creates a repository in a temp folder
+    #[test]
+    #[ignore]
     fn heavy_test_persist_tree() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
@@ -345,6 +405,22 @@ mod test {
             serde_json::to_string_pretty(&root_tree)?,
             serde_json::to_string_pretty(&deserialized_root)?
         );
+
+        Ok(())
+    }
+
+    /// Test generation of master keys
+    #[test]
+    fn test_generate_key() -> Result<()> {
+        let (key, keyfile) = generate_key("mapachito")?;
+
+        let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
+        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+
+        let intermediate_key = SecureStorage::derive_key("mapachito", &salt);
+        let decrypted_key = SecureStorage::decrypt(&intermediate_key, &encrypted_key)?;
+
+        assert_eq!(key, decrypted_key);
 
         Ok(())
     }

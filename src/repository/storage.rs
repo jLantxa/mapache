@@ -17,7 +17,7 @@
 */
 
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, Key as AesKey, KeyInit, Nonce};
 use anyhow::{Context, Result, bail};
 use argon2::Argon2;
 use rand::{Rng, RngCore};
@@ -30,63 +30,84 @@ use std::path::Path;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-const SALT_LENGTH: usize = 16;
-
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
+#[derive(Default)]
 pub struct SecureStorage {
-    password: SecretBox<Vec<u8>>,
+    key: Option<SecretBox<Vec<u8>>>,
+    compression_level: Option<i32>,
 }
 
 impl SecureStorage {
-    /// Create a new instance of SecureStorage with a password
-    pub fn new(password: String) -> Self {
-        SecureStorage {
-            password: SecretBox::new(Box::new(password.as_bytes().to_vec())),
-        }
+    /// A new, default SecureStorage with no encryption and no compression
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builder method to set an encryption key
+    pub fn with_key(mut self, key: Vec<u8>) -> Self {
+        self.key = Some(SecretBox::new(Box::new(key)));
+        self
+    }
+
+    /// Builder method to set a compression level
+    pub fn with_compression(mut self, level: i32) -> Self {
+        self.compression_level = Some(level);
+        self
     }
 
     /// Load a file previously saved with SecureStorage
-    pub fn load_from_file(&self, path: &Path) -> Result<Vec<u8>> {
-        let data = std::fs::read(path)?;
-        let decrypted_data = self.decrypt(&data)?;
-        Self::decompress(&decrypted_data)
+    pub fn load_file(&self, path: &Path) -> Result<Vec<u8>> {
+        let mut data = std::fs::read(path)?;
+
+        if let Some(key) = &self.key {
+            data = Self::decrypt(key.expose_secret(), &data)?;
+        }
+
+        if let Some(_) = &self.compression_level {
+            data = Self::decompress(&data)?;
+        }
+
+        Ok(data)
     }
 
     /// Save data to a file with SecureStorage
-    pub fn save_to_file(&self, data: &[u8], path: &Path, compression_level: i32) -> Result<usize> {
-        let compressed_data = Self::compress(data, compression_level)?;
-        let encrypted_data = self.encrypt(&compressed_data)?;
-        std::fs::write(path, &encrypted_data)?;
-        Ok(encrypted_data.len())
+    pub fn save_file(&self, data: &[u8], path: &Path) -> Result<usize> {
+        let mut out_data = Vec::new();
+
+        if let Some(compression_level) = self.compression_level {
+            out_data = Self::compress(&data, compression_level)?;
+        }
+
+        if let Some(key) = &self.key {
+            out_data = Self::encrypt(key.expose_secret(), &out_data)?;
+        }
+
+        std::fs::write(path, &out_data)?;
+        Ok(out_data.len())
     }
 
     /// Serialize a JSON metadata file.
     pub fn load_json<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
         let data = self
-            .load_from_file(path)
+            .load_file(path)
             .with_context(|| "Could not deserialize metadata")?;
         let text = String::from_utf8(data)?;
         serde_json::from_str(&text).with_context(|| "Could not load metadata")
     }
 
     /// Serialize a JSON metadata file.
-    pub fn save_json<T: Serialize>(
-        &self,
-        metadata: &T,
-        path: &Path,
-        compression_level: i32,
-    ) -> Result<()> {
+    pub fn save_json<T: Serialize>(&self, metadata: &T, path: &Path) -> Result<()> {
         let serialized_txt =
             serde_json::to_string(metadata).with_context(|| "Could not serialize metadata")?;
         let data = serialized_txt.as_bytes().to_vec();
-        self.save_to_file(&data, path, compression_level)
+        self.save_file(&data, path)
             .with_context(|| "Could not save metadata")?;
 
         Ok(())
     }
 
     /// Compress a stream of bytes
-    fn compress(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
+    pub fn compress(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
         let mut compressed = Vec::new();
         let mut encoder = ZstdEncoder::new(&mut compressed, compression_level)?;
         encoder.write_all(data)?;
@@ -95,7 +116,7 @@ impl SecureStorage {
     }
 
     /// Decompress a stream of bytes
-    fn decompress(data: &[u8]) -> Result<Vec<u8>> {
+    pub fn decompress(data: &[u8]) -> Result<Vec<u8>> {
         let mut decompressed = Vec::new();
         let mut decoder = ZstdDecoder::new(data)?;
         decoder.read_to_end(&mut decompressed)?;
@@ -103,11 +124,8 @@ impl SecureStorage {
     }
 
     /// Encrypt data using AES-GCM
-    fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let salt = Self::generate_salt::<SALT_LENGTH>();
-        let key = self.derive_key(&salt);
-
-        let key = Key::<Aes256Gcm>::from_slice(&key);
+    pub fn encrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+        let key = AesKey::<Aes256Gcm>::from_slice(&key);
         let cipher = Aes256Gcm::new(&key);
 
         // Generate a random nonce for each encryption
@@ -119,21 +137,15 @@ impl SecureStorage {
             Ok(encrypted_data) => {
                 // Return salt + nonce + encrypted data as the result
                 // The salt must be stored together with the data.
-                Ok([salt.as_slice(), nonce.as_slice(), &encrypted_data].concat())
+                Ok([nonce, encrypted_data.as_slice()].concat())
             }
             Err(_) => bail!("Encryption failed"),
         }
     }
 
     /// Decrypt data using AES-GCM
-    fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // Recover the salt to derive the key
-        let salt = &data[0..SALT_LENGTH];
-
-        let data = &data[SALT_LENGTH..];
-        let key = self.derive_key(salt);
-
-        let key = Key::<Aes256Gcm>::from_slice(&key);
+    pub fn decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+        let key = AesKey::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
         // Extract the nonce from the first 12 bytes of the data
@@ -146,10 +158,11 @@ impl SecureStorage {
         }
     }
 
-    fn derive_key(&self, salt: &[u8]) -> [u8; 32] {
+    /// Derive a key from a password and a salt
+    pub fn derive_key(password: &str, salt: &[u8]) -> [u8; 32] {
         let mut output_key_material = [0u8; 32];
         let _ = Argon2::default().hash_password_into(
-            self.password.expose_secret(),
+            password.as_bytes(),
             salt,
             &mut output_key_material,
         );
@@ -157,7 +170,8 @@ impl SecureStorage {
         output_key_material
     }
 
-    fn generate_salt<const LENGTH: usize>() -> [u8; LENGTH] {
+    /// Generate a random salt of a given length
+    pub fn generate_salt<const LENGTH: usize>() -> [u8; LENGTH] {
         let mut rng = rand::rng();
         let mut salt = [0u8; LENGTH];
         rng.fill_bytes(&mut salt);
@@ -167,7 +181,8 @@ impl SecureStorage {
 
 impl Drop for SecureStorage {
     fn drop(&mut self) {
-        self.password.zeroize();
+        // Zeroize the key on drop
+        self.key.zeroize();
     }
 }
 

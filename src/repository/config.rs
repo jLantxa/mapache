@@ -30,6 +30,11 @@ pub struct Config {
 pub enum CompressionLevel {
     #[default]
     Auto,
+
+    None,
+    Low,
+    Normal,
+    High,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

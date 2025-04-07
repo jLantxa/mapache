@@ -386,11 +386,24 @@ mod test {
 
     use super::*;
 
+    /// Test init a repo with password and open it
+    #[test]
+    #[ignore]
+    fn heavy_test_init_and_open_with_password() -> Result<()> {
+        let temp_repo_dir = tempdir()?;
+        let temp_repo_path = temp_repo_dir.path().join("repo");
+
+        Repository::init(&temp_repo_path, String::from("mapachito"))?;
+        let _ = Repository::open(&temp_repo_path, String::from("mapachito"))?;
+
+        Ok(())
+    }
+
     /// Test saving and loading tree objects
     /// This test creates a repository in a temp folder
     #[test]
     #[ignore]
-    fn heavy_test_persist_tree() -> Result<()> {
+    fn heavy_test_persist_and_load_tree() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 

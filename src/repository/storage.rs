@@ -70,7 +70,8 @@ impl SecureStorage {
         Ok(data)
     }
 
-    /// Save data to a file with SecureStorage
+    /// Save data to a file with SecureStorage.
+    /// Returns the number of bytes written.
     pub fn save_file(&self, data: &[u8], path: &Path) -> Result<usize> {
         let mut out_data = Vec::new();
 

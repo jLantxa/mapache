@@ -18,6 +18,8 @@
 
 use std::{
     collections::BTreeMap,
+    fs::{File, OpenOptions},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
 };
 
@@ -26,11 +28,13 @@ use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose};
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
+use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     filesystem::DirectoryMetadata,
     utils::{
+        self,
         hashing::{Hash, Hashable},
         json,
     },
@@ -53,7 +57,6 @@ pub struct Repository {
     data_path: PathBuf,
     snapshot_path: PathBuf,
     tree_path: PathBuf,
-    keys_path: PathBuf,
 
     secure_storage: SecureStorage,
     config: Config,
@@ -65,6 +68,13 @@ struct KeyFile {
 
     encrypted_key: String,
     salt: String,
+}
+
+#[derive(Debug)]
+pub struct ChunkResult {
+    pub chunks: Vec<Hash>,
+    pub total_bytes_read: usize,
+    pub total_bytes_written: usize,
 }
 
 impl Hashable for KeyFile {
@@ -121,7 +131,6 @@ impl Repository {
             data_path,
             snapshot_path,
             tree_path,
-            keys_path,
             secure_storage: storage,
             config: Config::default(),
         };
@@ -152,7 +161,6 @@ impl Repository {
         let data_path = repo_path.join(DATA_DIR);
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
         let tree_path = repo_path.join(TREE_DIR);
-        let keys_path = repo_path.join(KEYS_DIR);
 
         let config = storage.load_json(&repo_path.join("config"))?;
 
@@ -161,7 +169,6 @@ impl Repository {
             data_path,
             snapshot_path,
             tree_path,
-            keys_path,
             secure_storage: storage,
             config,
         };
@@ -295,6 +302,108 @@ impl Repository {
             .save_json(&self.config, &self.root_path.join("config"))
             .with_context(|| "Could not persist config file")
     }
+
+    pub fn commit_file(&self, src_path: &Path) -> Result<ChunkResult> {
+        const MIN_CHUNK_SIZE: u32 = 4096;
+        const AVG_CHUNK_SIZE: u32 = 16384;
+        const MAX_CHUNK_SIZE: u32 = 65535;
+
+        let source = File::open(src_path)
+            .with_context(|| format!("Could not open file \'{}\'", src_path.to_string_lossy()))?;
+        let reader = BufReader::new(source);
+
+        let chunker = StreamCDC::with_level(
+            reader,
+            MIN_CHUNK_SIZE,
+            AVG_CHUNK_SIZE,
+            MAX_CHUNK_SIZE,
+            Normalization::Level1,
+        );
+
+        let mut chunk_hashes = Vec::new();
+        let mut total_bytes_read = 0;
+        let mut total_bytes_written = 0;
+
+        for result in chunker {
+            let chunk = result?;
+
+            // Use our hashing function. FastCDC uses a short hash.
+            let content_hash = utils::hashing::calculate_hash(&chunk.data);
+            chunk_hashes.push(content_hash.clone());
+
+            // The first two characters on the hash map to a folder in data
+            // data/01/23456789abcdef...
+            let chunk_path = &self
+                .data_path
+                .join(&content_hash[0..2])
+                .join(&content_hash[2..]);
+
+            total_bytes_read += chunk.length;
+            total_bytes_written += self
+                .secure_storage
+                .save_file(&chunk.data, chunk_path)
+                .with_context(|| {
+                    format!(
+                        "Could not save chunk {} ({}) for file \'{}\'",
+                        chunk_hashes.len(),
+                        content_hash,
+                        src_path.to_string_lossy()
+                    )
+                })?;
+        }
+
+        Ok(ChunkResult {
+            chunks: chunk_hashes,
+            total_bytes_read,
+            total_bytes_written,
+        })
+    }
+
+    pub fn restore_file(&self, file: &FileEntry, dst_path: &Path) -> Result<()> {
+        let mut dst_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(dst_path)
+            .with_context(|| {
+                format!(
+                    "Could not create destination file '{}'",
+                    dst_path.to_string_lossy()
+                )
+            })?;
+
+        for (index, chunk_hash) in file.chunks.iter().enumerate() {
+            // The first two characters on the hash map to a folder in data
+            // data/01/23456789abcdef...
+            let chunk_path = self
+                .data_path
+                .join(&chunk_hash[0..2])
+                .join(&chunk_hash[2..]);
+
+            let chunk_data = self
+                .secure_storage
+                .load_file(&chunk_path)
+                .with_context(|| {
+                    format!(
+                        "Could not load chunk {} ({}) for restoring file '{}'",
+                        index + 1,
+                        chunk_hash,
+                        dst_path.to_string_lossy()
+                    )
+                })?;
+
+            dst_file.write_all(&chunk_data).with_context(|| {
+                format!(
+                    "Could not write chunk {} ({}) to file '{}'",
+                    index + 1,
+                    chunk_hash,
+                    dst_path.to_string_lossy()
+                )
+            })?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Generate a new master  key
@@ -382,7 +491,7 @@ impl Hashable for SerializableDirectoryNode {
 mod test {
     use tempfile::tempdir;
 
-    use crate::utils;
+    use crate::{testing, utils};
 
     use super::*;
 
@@ -418,6 +527,35 @@ mod test {
             serde_json::to_string_pretty(&root_tree)?,
             serde_json::to_string_pretty(&deserialized_root)?
         );
+
+        Ok(())
+    }
+
+    /// Test file chunk and restore
+    #[test]
+    #[ignore]
+    fn heavy_test_chunk_and_restore() -> Result<()> {
+        let temp_repo_dir = tempdir()?;
+        let temp_repo_path = temp_repo_dir.path().join("repo");
+
+        let src_file_path = testing::get_test_path("tree0.json");
+        let dst_file_path = temp_repo_path.join("tree0.json.restored");
+
+        let repo = Repository::init(&temp_repo_path, String::from("mapachito"))?;
+        let chunk_result = repo.commit_file(&src_file_path)?;
+
+        let file_entry = FileEntry {
+            name: "tree0.json".to_owned(),
+            metadata: None,
+            chunks: chunk_result.chunks.clone(),
+        };
+
+        repo.restore_file(&file_entry, &dst_file_path)?;
+        assert_eq!(chunk_result.chunks, file_entry.chunks);
+
+        let src_data = std::fs::read(src_file_path)?;
+        let dst_data = std::fs::read(dst_file_path)?;
+        assert_eq!(src_data, dst_data);
 
         Ok(())
     }

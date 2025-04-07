@@ -31,3 +31,26 @@ pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash {
 pub trait Hashable {
     fn hash(&self) -> Hash;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::calculate_hash;
+
+    /// Test consistency of the hash function
+    #[test]
+    fn test_hash_function() {
+        let data = br#"
+             Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt
+             ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation
+             ullamco laboris nisi ut aliquid ex ea commodi consequat. Quis aute iure reprehenderit in
+             voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint obcaecat
+             cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+             "#;
+        let hash = calculate_hash(data);
+
+        assert_eq!(
+            hash,
+            "28ff314ca7c551552d4d2f4be86fd2348749ace0fbda1a051038bdb493c10a4d"
+        );
+    }
+}

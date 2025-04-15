@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 aes-gcm = "0.10.3"
-anyhow = "1.0.97"
+anyhow = "1.0.98"
 argon2 = "0.5.3"
 base64 = "0.22.1"
 blake3 = "1.8.1"

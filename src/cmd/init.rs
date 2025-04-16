@@ -15,10 +15,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::Path;
+use std::rc::Rc;
 
 use anyhow::Result;
 use clap::Args;
 
+use crate::backend::localfs::LocalFS;
 use crate::cli::{self, GlobalArgs};
 use crate::repository::repo::Repository;
 
@@ -34,7 +36,9 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         repo_path.to_string_lossy()
     );
 
-    Repository::init(&repo_path, password)?;
+    let backend = Rc::new(LocalFS::new());
+
+    Repository::init(backend, &repo_path, password)?;
 
     Ok(())
 }

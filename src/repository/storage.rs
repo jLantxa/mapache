@@ -25,20 +25,27 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::rc::Rc;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
+use crate::backend::backend::StorageBackend;
+
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
-#[derive(Default)]
 pub struct SecureStorage {
     key: Option<SecretBox<Vec<u8>>>,
     compression_level: Option<i32>,
+    backend: Rc<dyn StorageBackend>,
 }
 
 impl SecureStorage {
     /// A new, default SecureStorage with no encryption and no compression
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(backend: Rc<dyn StorageBackend>) -> Self {
+        Self {
+            key: Default::default(),
+            compression_level: Default::default(),
+            backend,
+        }
     }
 
     /// Builder method to set an encryption key
@@ -55,7 +62,7 @@ impl SecureStorage {
 
     /// Load a file previously saved with SecureStorage
     pub fn load_file(&self, path: &Path) -> Result<Vec<u8>> {
-        let mut data = std::fs::read(path)?;
+        let mut data = self.backend.read(path)?;
 
         if let Some(key) = &self.key {
             data = Self::decrypt(key.expose_secret(), &data)?;
@@ -81,7 +88,7 @@ impl SecureStorage {
             out_data = Self::encrypt(key.expose_secret(), &out_data)?;
         }
 
-        std::fs::write(path, &out_data)?;
+        self.backend.write(path, &out_data)?;
         Ok(out_data.len())
     }
 

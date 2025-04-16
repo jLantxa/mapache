@@ -14,12 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::Path;
+use std::{path::Path, rc::Rc};
 
 use anyhow::Result;
 use clap::Args;
 
 use crate::{
+    backend::localfs::LocalFS,
     cli::{self, GlobalArgs},
     repository::repo::Repository,
 };
@@ -31,7 +32,9 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let password = cli::request_password();
     let repo_path = Path::new(&global.repo);
 
-    let repo = Repository::open(repo_path, password)?;
+    let backend = Rc::new(LocalFS::new());
+
+    let repo = Repository::open(backend, repo_path, password)?;
 
     let _snapshots = repo.get_snapshots_sorted()?;
 

@@ -14,7 +14,5 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod config;
-pub mod repo;
-pub mod snapshot;
-pub mod storage;
+pub mod backend;
+pub mod localfs;

@@ -19,6 +19,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufReader, Write},
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use aes_gcm::aead::{OsRng, rand_core::RngCore};
@@ -28,22 +29,18 @@ use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::{Deserialize, Serialize};
+use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
-    filesystem::DirectoryMetadata,
+    backend::backend::StorageBackend,
+    filesystem::{DirectoryMetadata, DirectoryNode, FileEntry},
     utils::{
         self,
         hashing::{Hash, Hashable},
-        json,
     },
 };
 
-use super::{
-    config::Config,
-    snapshot::Snapshot,
-    storage::SecureStorage,
-    tree::{DirectoryNode, FileEntry},
-};
+use super::{config::Config, snapshot::Snapshot, storage::SecureStorage};
 
 const DATA_DIR: &str = "data";
 const SNAPSHOT_DIR: &str = "snapshot";
@@ -51,6 +48,9 @@ const TREE_DIR: &str = "tree";
 const KEYS_DIR: &str = "keys";
 
 pub struct Repository {
+    #[allow(dead_code)]
+    backend: Rc<dyn StorageBackend>,
+
     root_path: PathBuf,
     data_path: PathBuf,
     snapshot_path: PathBuf,
@@ -90,7 +90,11 @@ impl Hashable for KeyFile {
 
 impl Repository {
     /// Create and initialize a new repository
-    pub fn init(repo_path: &Path, password: String) -> Result<Self> {
+    pub fn init(
+        backend: Rc<dyn StorageBackend>,
+        repo_path: &Path,
+        password: String,
+    ) -> Result<Self> {
         if repo_path.exists() {
             bail!(format!(
                 "Could not initialize a repository because a directory already exists in \'{}\'",
@@ -104,27 +108,42 @@ impl Repository {
         let tree_path = repo_path.join(TREE_DIR);
         let keys_path = repo_path.join(KEYS_DIR);
 
-        std::fs::create_dir_all(repo_path).with_context(|| "Could not create root directory")?;
+        backend
+            .create_dir_all(repo_path)
+            .with_context(|| "Could not create root directory")?;
 
-        std::fs::create_dir(&data_path)?;
+        backend.create_dir(&data_path)?;
         for n in 0x00..=0xff {
             std::fs::create_dir(&data_path.join(format!("{:02x}", n)))?;
         }
 
-        std::fs::create_dir(&snapshot_path)?;
-        std::fs::create_dir(&tree_path)?;
+        backend.create_dir(&snapshot_path)?;
+        backend.create_dir(&tree_path)?;
 
-        std::fs::create_dir(&keys_path)?;
+        backend.create_dir(&keys_path)?;
 
         // Secure storage
         let (key, keyfile) = generate_key(&password).with_context(|| "Could not generate key")?;
-        let storage = SecureStorage::new().with_compression(10).with_key(key);
+        let storage = SecureStorage::new(backend.to_owned())
+            .with_compression(10)
+            .with_key(key);
 
         let keyfile_hash = keyfile.hash();
         let keyfile_path = &keys_path.join(keyfile_hash);
-        json::save_json_pretty(&keyfile, keyfile_path)?;
+
+        backend.write(
+            &keyfile_path,
+            &SecureStorage::compress(
+                serde_json::to_string_pretty(&keyfile)
+                    .with_context(|| "")?
+                    .as_bytes(),
+                DEFAULT_COMPRESSION_LEVEL,
+            )?,
+        )?;
 
         let repo = Repository {
+            backend,
+
             root_path: repo_path.to_owned(),
             data_path,
             snapshot_path,
@@ -139,7 +158,11 @@ impl Repository {
     }
 
     /// Open an existing repository from a directory
-    pub fn open(repo_path: &Path, password: String) -> Result<Self> {
+    pub fn open(
+        backend: Rc<dyn StorageBackend>,
+        repo_path: &Path,
+        password: String,
+    ) -> Result<Self> {
         if !repo_path.exists() {
             bail!(
                 "Could not open a repository. \'{}\' doesn't exist",
@@ -152,9 +175,11 @@ impl Repository {
             );
         }
 
-        let key = retrieve_key(&password, &repo_path.join(KEYS_DIR))
+        let key = retrieve_key(&password, backend.to_owned(), &repo_path.join(KEYS_DIR))
             .with_context(|| "Incorrect password")?;
-        let storage = SecureStorage::new().with_compression(10).with_key(key);
+        let storage = SecureStorage::new(backend.to_owned())
+            .with_compression(10)
+            .with_key(key);
 
         let data_path = repo_path.join(DATA_DIR);
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
@@ -163,6 +188,8 @@ impl Repository {
         let config = storage.load_json(&repo_path.join("config"))?;
 
         let repo = Repository {
+            backend,
+
             root_path: repo_path.to_owned(),
             data_path,
             snapshot_path,
@@ -427,20 +454,28 @@ fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
 }
 
 /// Retrieve the master key from all available keys in a folder
-fn retrieve_key(password: &str, keys_path: &Path) -> Result<Vec<u8>> {
-    for entry in std::fs::read_dir(keys_path)? {
-        let entry = entry?;
-        let path = entry.path();
+fn retrieve_key(
+    password: &str,
+    backend: Rc<dyn StorageBackend>,
+    keys_path: &Path,
+) -> Result<Vec<u8>> {
+    for path in backend.read_dir(keys_path)? {
+        // TODO:
+        // I should assert that path is a file and not a folder, but I need to implement
+        // that in the StorageBackend. For now, let's assume that nobody is messing with
+        // the repository.
 
-        if path.is_file() {
-            let keyfile: KeyFile = json::load_json(&path)?;
-            let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
-            let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+        // Load keyfile
+        let keyfile_str = backend.read(&path)?;
+        let keyfile_str = SecureStorage::decompress(&keyfile_str)?;
+        let keyfile: KeyFile = serde_json::from_slice(keyfile_str.as_slice())?;
 
-            let intermediate_key = SecureStorage::derive_key(password, &salt);
-            if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
-                return Ok(key);
-            }
+        let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
+        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+
+        let intermediate_key = SecureStorage::derive_key(password, &salt);
+        if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
+            return Ok(key);
         }
     }
 
@@ -487,9 +522,10 @@ impl Hashable for SerializableDirectoryNode {
 
 #[cfg(test)]
 mod test {
+
     use tempfile::tempdir;
 
-    use crate::{testing, utils};
+    use crate::{backend::localfs::LocalFS, testing, utils};
 
     use super::*;
 
@@ -500,8 +536,14 @@ mod test {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        Repository::init(&temp_repo_path, String::from("mapachito"))?;
-        let _ = Repository::open(&temp_repo_path, String::from("mapachito"))?;
+        let backend = Rc::new(LocalFS::new());
+
+        Repository::init(
+            backend.to_owned(),
+            &temp_repo_path,
+            String::from("mapachito"),
+        )?;
+        let _ = Repository::open(backend, &temp_repo_path, String::from("mapachito"))?;
 
         Ok(())
     }
@@ -514,7 +556,11 @@ mod test {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        let repo = Repository::init(&temp_repo_path, String::from("mapachito"))?;
+        let repo = Repository::init(
+            Rc::new(LocalFS::new()),
+            &temp_repo_path,
+            String::from("mapachito"),
+        )?;
 
         let root_tree = utils::json::load_json(Path::new("testdata/tree0.json"))?;
 
@@ -539,7 +585,11 @@ mod test {
         let src_file_path = testing::get_test_path("tree0.json");
         let dst_file_path = temp_repo_path.join("tree0.json.restored");
 
-        let repo = Repository::init(&temp_repo_path, String::from("mapachito"))?;
+        let repo = Repository::init(
+            Rc::new(LocalFS::new()),
+            &temp_repo_path,
+            String::from("mapachito"),
+        )?;
         let chunk_result = repo.commit_file(&src_file_path)?;
 
         let file_entry = FileEntry {

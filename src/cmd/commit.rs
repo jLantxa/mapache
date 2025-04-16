@@ -14,12 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use anyhow::Result;
 use clap::Args;
 
 use crate::{
+    backend::localfs::LocalFS,
     cli::{self, GlobalArgs},
     repository::repo::Repository,
 };
@@ -39,7 +43,9 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let password = cli::request_password();
     let repo_path = Path::new(&global.repo);
 
-    let mut _repo = Repository::open(repo_path, password)?;
+    let backend = Rc::new(LocalFS::new());
+
+    let mut _repo = Repository::open(backend, repo_path, password)?;
 
     todo!()
 }

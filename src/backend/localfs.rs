@@ -33,7 +33,7 @@ impl StorageBackend for LocalFS {
     fn read(&self, path: &std::path::Path) -> Result<Vec<u8>> {
         let data = std::fs::read(path).with_context(|| {
             format!(
-                "Could not read from \'{}\'local backend",
+                "Could not read \'{}\' from local backend",
                 path.to_string_lossy()
             )
         })?;

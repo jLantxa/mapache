@@ -55,8 +55,10 @@ impl SecureStorage {
     }
 
     /// Builder method to set a compression level
-    pub fn with_compression(mut self, level: i32) -> Self {
-        self.compression_level = Some(level);
+    pub fn with_compression(mut self, level: Option<i32>) -> Self {
+        if let Some(level) = level {
+            self.compression_level = Some(level);
+        }
         self
     }
 

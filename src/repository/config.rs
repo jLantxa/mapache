@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 /// Repository config
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
-    compression_level: CompressionLevel,
-    retention_policy: SnapshotRetentionPolicy,
+    pub compression_level: CompressionLevel,
+    pub retention_policy: SnapshotRetentionPolicy,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -33,6 +33,20 @@ pub enum CompressionLevel {
     Low,
     Normal,
     High,
+}
+
+impl CompressionLevel {
+    pub fn to_i32(&self) -> Option<i32> {
+        match &self {
+            CompressionLevel::None => None,
+
+            CompressionLevel::Low => Some(1),
+            CompressionLevel::Normal => Some(10),
+            CompressionLevel::High => Some(22),
+
+            CompressionLevel::Auto => Self::Normal.to_i32(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

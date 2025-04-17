@@ -29,7 +29,6 @@ use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::{Deserialize, Serialize};
-use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
     backend::backend::StorageBackend,
@@ -47,8 +46,9 @@ const SNAPSHOT_DIR: &str = "snapshot";
 const TREE_DIR: &str = "tree";
 const KEYS_DIR: &str = "keys";
 
+const DATA_FOLD_LENGTH: usize = 2;
+
 pub struct Repository {
-    #[allow(dead_code)]
     backend: Rc<dyn StorageBackend>,
 
     root_path: PathBuf,
@@ -111,50 +111,51 @@ impl Repository {
         backend
             .create_dir_all(repo_path)
             .with_context(|| "Could not create root directory")?;
-
         backend.create_dir(&data_path)?;
-        for n in 0x00..=0xff {
-            std::fs::create_dir(&data_path.join(format!("{:02x}", n)))?;
+
+        let num_folders: usize = 1 << (4 * DATA_FOLD_LENGTH);
+        for n in 0x00..num_folders {
+            std::fs::create_dir(&data_path.join(format!(
+                "{:0>width$x}",
+                n,
+                width = DATA_FOLD_LENGTH
+            )))?;
         }
 
         backend.create_dir(&snapshot_path)?;
         backend.create_dir(&tree_path)?;
-
         backend.create_dir(&keys_path)?;
 
-        // Secure storage
+        // Create new key
         let (key, keyfile) = generate_key(&password).with_context(|| "Could not generate key")?;
-        let storage = SecureStorage::new(backend.to_owned())
-            .with_compression(10)
-            .with_key(key);
-
         let keyfile_hash = keyfile.hash();
         let keyfile_path = &keys_path.join(keyfile_hash);
-
         backend.write(
             &keyfile_path,
             &SecureStorage::compress(
                 serde_json::to_string_pretty(&keyfile)
                     .with_context(|| "")?
                     .as_bytes(),
-                DEFAULT_COMPRESSION_LEVEL,
+                zstd::DEFAULT_COMPRESSION_LEVEL, // Compress the key with whatever compression level
             )?,
         )?;
 
-        let repo = Repository {
-            backend,
+        // Save new config
+        let config = Config::default();
+        let secure_storage = SecureStorage::new(backend.to_owned())
+            .with_key(key)
+            .with_compression(config.compression_level.to_i32());
+        secure_storage.save_json(&config, &repo_path.join("config"))?;
 
+        Ok(Self {
+            backend: backend.to_owned(),
             root_path: repo_path.to_owned(),
             data_path,
             snapshot_path,
             tree_path,
-            secure_storage: storage,
-            config: Config::default(),
-        };
-
-        repo.persist()?;
-
-        Ok(repo)
+            secure_storage,
+            config,
+        })
     }
 
     /// Open an existing repository from a directory
@@ -178,14 +179,16 @@ impl Repository {
         let key = retrieve_key(&password, backend.to_owned(), &repo_path.join(KEYS_DIR))
             .with_context(|| "Incorrect password")?;
         let storage = SecureStorage::new(backend.to_owned())
-            .with_compression(10)
-            .with_key(key);
+            .with_key(key)
+            // We don't know the compression level yet, but the config file has compression
+            .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL));
 
         let data_path = repo_path.join(DATA_DIR);
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
         let tree_path = repo_path.join(TREE_DIR);
 
-        let config = storage.load_json(&repo_path.join("config"))?;
+        let config: Config = storage.load_json(&repo_path.join("config"))?;
+        let storage = storage.with_compression(config.compression_level.to_i32());
 
         let repo = Repository {
             backend,
@@ -199,21 +202,6 @@ impl Repository {
         };
 
         Ok(repo)
-    }
-
-    pub fn get_config(&self) -> &Config {
-        &self.config
-    }
-
-    pub fn set_config(&mut self, config: &Config) {
-        self.config = config.clone();
-    }
-
-    /// Persist all metadata files
-    pub fn persist(&self) -> Result<()> {
-        self.persist_config()?;
-
-        Ok(())
     }
 
     /// Persist a FileSystemNode into the repo metadata
@@ -321,13 +309,6 @@ impl Repository {
         Ok(snapshots)
     }
 
-    /// Persist the config metadata
-    fn persist_config(&self) -> Result<()> {
-        self.secure_storage
-            .save_json(&self.config, &self.root_path.join("config"))
-            .with_context(|| "Could not persist config file")
-    }
-
     pub fn commit_file(&self, src_path: &Path) -> Result<ChunkResult> {
         const MIN_CHUNK_SIZE: u32 = 4096;
         const AVG_CHUNK_SIZE: u32 = 16384;
@@ -356,12 +337,10 @@ impl Repository {
             let content_hash = utils::hashing::calculate_hash(&chunk.data);
             chunk_hashes.push(content_hash.clone());
 
-            // The first two characters on the hash map to a folder in data
-            // data/01/23456789abcdef...
             let chunk_path = &self
                 .data_path
-                .join(&content_hash[0..2])
-                .join(&content_hash[2..]);
+                .join(&content_hash[0..DATA_FOLD_LENGTH])
+                .join(&content_hash[DATA_FOLD_LENGTH..]);
 
             total_bytes_read += chunk.length;
             total_bytes_written += self
@@ -369,7 +348,7 @@ impl Repository {
                 .save_file(&chunk.data, chunk_path)
                 .with_context(|| {
                     format!(
-                        "Could not save chunk {} ({}) for file \'{}\'",
+                        "Could not save chunk #{} ({}) for file \'{}\'",
                         chunk_hashes.len(),
                         content_hash,
                         src_path.to_string_lossy()
@@ -398,19 +377,17 @@ impl Repository {
             })?;
 
         for (index, chunk_hash) in file.chunks.iter().enumerate() {
-            // The first two characters on the hash map to a folder in data
-            // data/01/23456789abcdef...
             let chunk_path = self
                 .data_path
-                .join(&chunk_hash[0..2])
-                .join(&chunk_hash[2..]);
+                .join(&chunk_hash[0..DATA_FOLD_LENGTH])
+                .join(&chunk_hash[DATA_FOLD_LENGTH..]);
 
             let chunk_data = self
                 .secure_storage
                 .load_file(&chunk_path)
                 .with_context(|| {
                     format!(
-                        "Could not load chunk {} ({}) for restoring file '{}'",
+                        "Could not load chunk #{} ({}) for restoring file '{}'",
                         index + 1,
                         chunk_hash,
                         dst_path.to_string_lossy()
@@ -419,7 +396,7 @@ impl Repository {
 
             dst_file.write_all(&chunk_data).with_context(|| {
                 format!(
-                    "Could not write chunk {} ({}) to file '{}'",
+                    "Could not restore chunk #{} ({}) to file '{}'",
                     index + 1,
                     chunk_hash,
                     dst_path.to_string_lossy()
@@ -480,13 +457,6 @@ fn retrieve_key(
     }
 
     bail!("Could not retrieve key")
-}
-
-impl Drop for Repository {
-    fn drop(&mut self) {
-        // Persist all object when the repository is dropped
-        let _ = self.persist();
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

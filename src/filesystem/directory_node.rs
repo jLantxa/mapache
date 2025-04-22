@@ -14,59 +14,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, path::Path, time::SystemTime};
+use std::{collections::BTreeMap, path::Path};
 
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 
 use crate::utils::hashing::{Hash, Hashable};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DirectoryMetadata {
-    pub modified: SystemTime,
-    pub created: Option<SystemTime>,
-    pub permissions: Option<u32>, // For Unix-like modes
-    pub owner_uid: Option<u32>,
-    pub owner_gid: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FileMetadata {
-    pub size: u64,
-    pub modified: SystemTime,
-    pub created: Option<SystemTime>,
-    pub permissions: Option<u32>, // For Unix-like modes
-}
-
-impl Hashable for DirectoryMetadata {
-    fn hash(&self) -> Hash {
-        let hasher = Hasher::new();
-
-        let hash = hasher.finalize();
-        format!("{}", hash)
-    }
-}
-
-impl Hashable for FileMetadata {
-    fn hash(&self) -> Hash {
-        let hasher = Hasher::new();
-
-        let hash = hasher.finalize();
-        format!("{}", hash)
-    }
-}
+use super::metadata::Metadata;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
     pub name: String,
-    pub metadata: Option<FileMetadata>,
+    pub metadata: Option<Metadata>,
     pub chunks: Vec<Hash>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryNode {
     pub name: String,
-    pub metadata: Option<DirectoryMetadata>,
+    pub metadata: Option<Metadata>,
     pub files: BTreeMap<String, FileEntry>,
     pub children: BTreeMap<String, DirectoryNode>,
 }

@@ -32,7 +32,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::backend::StorageBackend,
-    filesystem::{DirectoryMetadata, DirectoryNode, FileEntry},
+    filesystem::{
+        directory_node::{DirectoryNode, FileEntry},
+        metadata::Metadata,
+    },
     utils::{
         self,
         hashing::{Hash, Hashable},
@@ -462,7 +465,7 @@ fn retrieve_key(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableDirectoryNode {
     pub name: String,
-    pub metadata: Option<DirectoryMetadata>,
+    pub metadata: Option<Metadata>,
     pub files: Vec<FileEntry>,
     pub children: Vec<Hash>,
 }

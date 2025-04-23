@@ -18,29 +18,35 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-pub trait StorageBackend {
-    /// Read from file
+/// Abstraction of a storage backend.
+///
+/// A backend is a filesystem that can be present in the local machine, a remote
+/// machine connected via SFTP, a cloud service, etc.
+///
+/// This trait provides an interface for file IO operations with the backend.
+pub trait StorageBackend: Send + Sync {
+    /// Read from file.
     /// Returns a vector of bytes.
     fn read(&self, path: &Path) -> Result<Vec<u8>>;
 
-    /// Write to file, creating the file if necessary
+    /// Write to file, creating the file if necessary.
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()>;
 
-    /// Creates a new, empty directory at the provided path
+    /// Creates a new, empty directory at the provided path.
     fn create_dir(&self, path: &Path) -> Result<()>;
 
-    /// Recursively create a directory and all of its parent components if they are missing
+    /// Recursively create a directory and all of its parent components if they are missing.
     fn create_dir_all(&self, path: &Path) -> Result<()>;
 
-    /// Removes an empty directory
+    /// Removes an empty directory.
     fn remove_dir(&self, path: &Path) -> Result<()>;
 
-    /// Removes a directory after removing its contents
+    /// Removes a directory after removing its contents.
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
 
-    /// Returns true if a path exists
+    /// Returns true if a path exists.
     fn exists(&self, path: &Path) -> Result<bool>;
 
-    // List all paths inside a directory
+    // List all paths inside a directory.
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
 }

@@ -54,31 +54,82 @@ pub enum Command {
 
 #[derive(Parser, Debug)]
 pub struct GlobalArgs {
+    /// Number of threads to use.
+    /// Any positive integer greater than 0 or "max" to use the maximum number
+    /// of logical CPU cores available on the system.
+    #[clap(short, long, value_parser = parse_threads, default_value_t = 2)]
+    pub threads: usize,
+
     /// Repository path
     #[clap(short, long, value_parser)]
     pub repo: String,
 }
 
-pub fn log_success(tag: &str, str: &str) {
+/// Custom parser function for the threads argument
+fn parse_threads(s: &str) -> Result<usize, anyhow::Error> {
+    match s {
+        "max" => std::thread::available_parallelism()
+            .map(|num| num.get())
+            .map_err(|e| anyhow::anyhow!("Failed to determine available parallelism: {}", e)),
+
+        _ => {
+            let threads: usize = s
+                .parse()
+                .map_err(|e| anyhow::anyhow!("'{}' isn't a valid number for threads: {}", s, e))?;
+
+            if threads == 0 {
+                Err(anyhow::anyhow!("Number of threads must be greater than 0"))
+            } else {
+                Ok(threads)
+            }
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! log {
+    ($expr:expr) => {
+        println!("{}", $expr);
+    };
+}
+pub use log;
+
+/// Prints a log with a green tag.
+pub fn log_green(tag: &str, str: &str) {
     println!("{}: {}", tag.bold().green(), str);
 }
 
-pub fn log_info(tag: &str, str: &str) {
+/// Prints a log with a cyan tag.
+pub fn log_cyan(tag: &str, str: &str) {
     println!("{}: {}", tag.bold().cyan(), str);
 }
 
+/// Prints a log with a purple tag.
 pub fn log_purple(tag: &str, str: &str) {
     println!("{}: {}", tag.bold().purple(), str);
 }
 
+/// Prints a log with a yellow tag.
+pub fn log_yellow(tag: &str, str: &str) {
+    println!("{}: {}", tag.bold().yellow(), str);
+}
+
+/// Prints a log with a red tag.
+pub fn log_red(tag: &str, str: &str) {
+    println!("{}: {}", tag.bold().red(), str);
+}
+
+/// Prints a warning log (warning: ...)
 pub fn log_warning(str: &str) {
     eprintln!("{}: {}", "Warning".bold().yellow(), str);
 }
 
+/// Prints an error log (error: ...)
 pub fn log_error(str: &str) {
     eprintln!("{}: {}", "Error".bold().red(), str);
 }
 
+/// Requests a new password with confirmation.
 pub fn request_new_password() -> String {
     Password::new()
         .with_prompt("Enter new password")
@@ -87,6 +138,7 @@ pub fn request_new_password() -> String {
         .unwrap()
 }
 
+/// Requests a pasword with no confirmation.
 pub fn request_password() -> String {
     Password::new()
         .with_prompt("Enter password")

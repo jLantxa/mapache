@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 pub const TEST_DATA_PATH: &str = "testdata";
 
+/// Returns the complete path of file from the test data folders
 pub fn get_test_path(name: &str) -> PathBuf {
     return Path::new(TEST_DATA_PATH).join(name);
 }

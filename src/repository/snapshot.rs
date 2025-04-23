@@ -18,25 +18,25 @@ use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::hashing::{Hash, Hashable};
+use crate::utils::{Hash, Hashable};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The snapshot timestamp is the UTC time at which the snapshot was created
     pub timestamp: DateTime<Utc>,
 
+    /// Hash ID for the tree object root.
     pub root: Hash,
 
-    pub description: String,
+    /// Description of the snapshot.
+    pub description: Option<String>,
 }
 
 impl Hashable for Snapshot {
-    fn hash(&self) -> String {
+    fn hash(&self) -> Hash {
         let mut hasher = Hasher::new();
-
-        hasher.update(self.timestamp.to_rfc3339().as_bytes());
-        hasher.update(self.description.as_bytes());
-
-        hasher.finalize().to_string()
+        hasher.update(serde_json::to_string(self).unwrap().as_bytes());
+        let hash = hasher.finalize();
+        format!("{}", hash)
     }
 }

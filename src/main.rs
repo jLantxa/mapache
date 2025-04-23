@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use anyhow::Result;
+use backup::utils::configure_rayon;
 use clap::Parser;
 use colored::Colorize;
 
@@ -30,8 +31,10 @@ fn run(args: &Cli) -> Result<()> {
     }
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Cli::parse();
+
+    configure_rayon(args.global_args.threads)?;
 
     if let Err(e) = run(&args) {
         cli::log_error(e.to_string().as_str());
@@ -39,4 +42,5 @@ fn main() {
     }
 
     println!("{}", "Finished".bold().green());
+    Ok(())
 }

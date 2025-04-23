@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::hashing::{Hash, Hashable};
+use crate::utils::{Hash, Hashable};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {

@@ -25,7 +25,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
@@ -35,12 +35,12 @@ use crate::backend::backend::StorageBackend;
 pub struct SecureStorage {
     key: Option<SecretBox<Vec<u8>>>,
     compression_level: Option<i32>,
-    backend: Rc<dyn StorageBackend>,
+    backend: Arc<dyn StorageBackend>,
 }
 
 impl SecureStorage {
     /// A new, default SecureStorage with no encryption and no compression
-    pub fn new(backend: Rc<dyn StorageBackend>) -> Self {
+    pub fn new(backend: Arc<dyn StorageBackend>) -> Self {
         Self {
             key: Default::default(),
             compression_level: Default::default(),

@@ -31,29 +31,21 @@ impl LocalFS {
 
 impl StorageBackend for LocalFS {
     fn read(&self, path: &std::path::Path) -> Result<Vec<u8>> {
-        let data = std::fs::read(path).with_context(|| {
-            format!(
-                "Could not read \'{}\' from local backend",
-                path.to_string_lossy()
-            )
-        })?;
+        let data = std::fs::read(path)
+            .with_context(|| format!("Could not read \'{}\' from local backend", path.display()))?;
         Ok(data)
     }
 
     fn write(&self, path: &std::path::Path, contents: &[u8]) -> Result<()> {
-        std::fs::write(path, contents).with_context(|| {
-            format!(
-                "Could not write to \'{}\' in local backend",
-                path.to_string_lossy()
-            )
-        })
+        std::fs::write(path, contents)
+            .with_context(|| format!("Could not write to \'{}\' in local backend", path.display()))
     }
 
     fn create_dir(&self, path: &std::path::Path) -> Result<()> {
         std::fs::create_dir(path).with_context(|| {
             format!(
                 "Could not create directory \'{}\' in local backend",
-                path.to_string_lossy()
+                path.display()
             )
         })
     }
@@ -62,7 +54,7 @@ impl StorageBackend for LocalFS {
         std::fs::create_dir_all(path).with_context(|| {
             format!(
                 "Could not create directory \'{}\' in local backend",
-                path.to_string_lossy()
+                path.display()
             )
         })
     }
@@ -71,7 +63,7 @@ impl StorageBackend for LocalFS {
         std::fs::remove_dir(path).with_context(|| {
             format!(
                 "Could not remove directory \'{}\' in local backend",
-                path.to_string_lossy()
+                path.display()
             )
         })
     }
@@ -80,7 +72,7 @@ impl StorageBackend for LocalFS {
         std::fs::remove_dir_all(path).with_context(|| {
             format!(
                 "Could not remove directory \'{}\' in local backend",
-                path.to_string_lossy()
+                path.display()
             )
         })
     }
@@ -89,7 +81,7 @@ impl StorageBackend for LocalFS {
         std::fs::exists(path).with_context(|| {
             format!(
                 "Could not check if \'{}\' exists in local backend",
-                path.to_string_lossy()
+                path.display()
             )
         })
     }
@@ -99,7 +91,7 @@ impl StorageBackend for LocalFS {
         for entry in std::fs::read_dir(path).with_context(|| {
             format!(
                 "Could not list directory \'{}\' in local backend",
-                path.to_string_lossy()
+                path.display()
             )
         })? {
             let entry = entry?;

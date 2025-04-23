@@ -24,6 +24,7 @@ pub struct Config {
     pub retention_policy: SnapshotRetentionPolicy,
 }
 
+/// Compression level used by the tool.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub enum CompressionLevel {
     #[default]
@@ -36,6 +37,7 @@ pub enum CompressionLevel {
 }
 
 impl CompressionLevel {
+    /// Converts a `CompressionLevel` to an i32 level or None if no compression is applicable.
     pub fn to_i32(&self) -> Option<i32> {
         match &self {
             CompressionLevel::None => None,
@@ -49,6 +51,9 @@ impl CompressionLevel {
     }
 }
 
+/// Retention policy for the snapshots stored in the repository.
+///
+/// The retention policy describes which snapshots get cleaned from the repository, and when.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub enum SnapshotRetentionPolicy {
     #[default]

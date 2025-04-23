@@ -19,7 +19,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufReader, Write},
     path::{Path, PathBuf},
-    rc::Rc,
+    sync::Arc,
 };
 
 use aes_gcm::aead::{OsRng, rand_core::RngCore};
@@ -33,10 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::backend::StorageBackend,
     filesystem::tree::{FileEntry, Node, NodeIndex, SerializableTreeObject, Tree},
-    utils::{
-        self,
-        hashing::{Hash, Hashable},
-    },
+    utils::{self, Hash, Hashable},
 };
 
 use super::{config::Config, snapshot::Snapshot, storage::SecureStorage};
@@ -47,9 +44,10 @@ const TREE_DIR: &str = "tree";
 const KEYS_DIR: &str = "keys";
 
 const DATA_FOLD_LENGTH: usize = 2;
+const TREE_FOLD_LENGTH: usize = 2;
 
 pub struct Repository {
-    backend: Rc<dyn StorageBackend>,
+    backend: Arc<dyn StorageBackend>,
 
     root_path: PathBuf,
     data_path: PathBuf,
@@ -60,6 +58,7 @@ pub struct Repository {
     config: Config,
 }
 
+/// A metadata structure that contains information about a repository key
 #[derive(Serialize, Deserialize)]
 struct KeyFile {
     created: DateTime<Utc>,
@@ -78,11 +77,7 @@ pub struct ChunkResult {
 impl Hashable for KeyFile {
     fn hash(&self) -> Hash {
         let mut hasher = Hasher::new();
-
-        hasher.update(self.created.to_rfc3339().as_bytes());
-        hasher.update(self.encrypted_key.as_bytes());
-        hasher.update(self.salt.as_bytes());
-
+        hasher.update(serde_json::to_string(self).unwrap().as_bytes());
         let hash = hasher.finalize();
         format!("{}", hash)
     }
@@ -91,14 +86,14 @@ impl Hashable for KeyFile {
 impl Repository {
     /// Create and initialize a new repository
     pub fn init(
-        backend: Rc<dyn StorageBackend>,
+        backend: Arc<dyn StorageBackend>,
         repo_path: &Path,
         password: String,
     ) -> Result<Self> {
         if repo_path.exists() {
             bail!(format!(
                 "Could not initialize a repository because a directory already exists in \'{}\'",
-                repo_path.to_string_lossy()
+                repo_path.display()
             ));
         }
 
@@ -111,19 +106,20 @@ impl Repository {
         backend
             .create_dir_all(repo_path)
             .with_context(|| "Could not create root directory")?;
-        backend.create_dir(&data_path)?;
 
+        backend.create_dir(&data_path)?;
         let num_folders: usize = 1 << (4 * DATA_FOLD_LENGTH);
         for n in 0x00..num_folders {
-            std::fs::create_dir(&data_path.join(format!(
-                "{:0>width$x}",
-                n,
-                width = DATA_FOLD_LENGTH
-            )))?;
+            std::fs::create_dir(&data_path.join(format!("{:0>DATA_FOLD_LENGTH$x}", n)))?;
+        }
+
+        backend.create_dir(&tree_path)?;
+        let num_folders: usize = 1 << (4 * TREE_FOLD_LENGTH);
+        for n in 0x00..num_folders {
+            std::fs::create_dir(&tree_path.join(format!("{:0>TREE_FOLD_LENGTH$x}", n)))?;
         }
 
         backend.create_dir(&snapshot_path)?;
-        backend.create_dir(&tree_path)?;
         backend.create_dir(&keys_path)?;
 
         // Create new key
@@ -160,19 +156,19 @@ impl Repository {
 
     /// Open an existing repository from a directory
     pub fn open(
-        backend: Rc<dyn StorageBackend>,
+        backend: Arc<dyn StorageBackend>,
         repo_path: &Path,
         password: String,
     ) -> Result<Self> {
         if !repo_path.exists() {
             bail!(
                 "Could not open a repository. \'{}\' doesn't exist",
-                repo_path.to_string_lossy()
+                repo_path.display()
             );
         } else if !repo_path.is_dir() {
             bail!(
                 "Could not open a repository. \'{}\' is not a directory",
-                repo_path.to_string_lossy()
+                repo_path.display()
             );
         }
 
@@ -204,6 +200,18 @@ impl Repository {
         Ok(repo)
     }
 
+    /// Serializes a Tree into SerializableTreeObject's into the repository storage.
+    ///
+    /// For each directory node in the tree, we create a serializable tree object with the
+    /// contents (files and directories) and metadata of that node. The child directories are
+    /// referenced by their hash values.
+    /// Each serializable tree object has a unique content hash that is used to identify it in the
+    /// repository.
+    ///
+    /// To avoid potential stack overflows with very deep trees, this function uses a DFS pre-order
+    /// iterator.
+    ///
+    /// This function requires that the `Tree` hashes be updated.
     pub fn put_tree(&self, tree: &Tree) -> Result<Hash> {
         for node_index in tree.iter_preorder() {
             let node = tree
@@ -212,7 +220,7 @@ impl Repository {
             match node {
                 crate::filesystem::tree::Node::File { .. } => continue,
                 crate::filesystem::tree::Node::Directory { .. } => {
-                    let serializable_node = tree.serializable_object(node_index)?;
+                    let serializable_node = tree.to_serializable_object(node_index)?;
                     let node_hash = tree
                         .get_hash(node_index)
                         .expect(&format!("Expected hash for index \'{}\'", node_index));
@@ -231,6 +239,13 @@ impl Repository {
         Ok(root_hash)
     }
 
+    /// Restores a Tree from the SerializableTreeObject's in the repository.
+    ///
+    /// This function follows the hash references of each node children to deserialize
+    /// the children directories and produce a Tree Node.
+    ///
+    /// To avoid potential stack overflows with very deep trees, this function uses a DFS pre-order
+    /// iterator.
     pub fn get_tree(&self, root_hash: &Hash) -> Result<Tree> {
         let root_obj: SerializableTreeObject = self
             .secure_storage
@@ -293,20 +308,26 @@ impl Repository {
         Ok(snapshots)
     }
 
-    /// Get all snapshots in the repository, sorted by datetime
+    /// Get all snapshots in the repository, sorted by datetime.
     pub fn get_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>> {
         let mut snapshots = self.get_snapshots()?;
         snapshots.sort_by_key(|(_, snapshot)| snapshot.timestamp);
         Ok(snapshots)
     }
 
+    /// Puts a file into the repository
+    ///
+    /// This function will split the file into chunks for deduplication, which
+    /// will be compressed, encrypted and stored in the repository.
+    /// The content hash of each chunk is used to identify the chunk and determine
+    /// if the chunk already exists in the repository.
     pub fn put_file(&self, src_path: &Path) -> Result<ChunkResult> {
         const MIN_CHUNK_SIZE: u32 = 4096;
         const AVG_CHUNK_SIZE: u32 = 16384;
         const MAX_CHUNK_SIZE: u32 = 65535;
 
         let source = File::open(src_path)
-            .with_context(|| format!("Could not open file \'{}\'", src_path.to_string_lossy()))?;
+            .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
         let reader = BufReader::new(source);
 
         let chunker = StreamCDC::with_level(
@@ -325,7 +346,7 @@ impl Repository {
             let chunk = result?;
 
             // Use our hashing function. FastCDC uses a short hash.
-            let content_hash = utils::hashing::calculate_hash(&chunk.data);
+            let content_hash = utils::calculate_hash(&chunk.data);
             chunk_hashes.push(content_hash.clone());
 
             let chunk_path = &self
@@ -334,17 +355,21 @@ impl Repository {
                 .join(&content_hash[DATA_FOLD_LENGTH..]);
 
             total_bytes_read += chunk.length;
-            total_bytes_written += self
-                .secure_storage
-                .save_file(&chunk.data, chunk_path)
-                .with_context(|| {
-                    format!(
-                        "Could not save chunk #{} ({}) for file \'{}\'",
-                        chunk_hashes.len(),
-                        content_hash,
-                        src_path.to_string_lossy()
-                    )
-                })?;
+
+            // Only save the chunk if it doesn't exist yet
+            if !chunk_path.exists() {
+                total_bytes_written += self
+                    .secure_storage
+                    .save_file(&chunk.data, chunk_path)
+                    .with_context(|| {
+                        format!(
+                            "Could not save chunk #{} ({}) for file \'{}\'",
+                            chunk_hashes.len(),
+                            content_hash,
+                            src_path.display()
+                        )
+                    })?;
+            }
         }
 
         Ok(ChunkResult {
@@ -361,10 +386,7 @@ impl Repository {
             .write(true)
             .open(dst_path)
             .with_context(|| {
-                format!(
-                    "Could not create destination file '{}'",
-                    dst_path.to_string_lossy()
-                )
+                format!("Could not create destination file '{}'", dst_path.display())
             })?;
 
         for (index, chunk_hash) in file.chunks.iter().enumerate() {
@@ -381,7 +403,7 @@ impl Repository {
                         "Could not load chunk #{} ({}) for restoring file '{}'",
                         index + 1,
                         chunk_hash,
-                        dst_path.to_string_lossy()
+                        dst_path.display()
                     )
                 })?;
 
@@ -390,12 +412,19 @@ impl Repository {
                     "Could not restore chunk #{} ({}) to file '{}'",
                     index + 1,
                     chunk_hash,
-                    dst_path.to_string_lossy()
+                    dst_path.display()
                 )
             })?;
         }
 
         Ok(())
+    }
+
+    pub fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash> {
+        let hash = snapshot.hash();
+        let snapshot_path = self.snapshot_path.join(&hash);
+        self.secure_storage.save_json(snapshot, &snapshot_path)?;
+        Ok(hash)
     }
 }
 
@@ -424,7 +453,7 @@ fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
 /// Retrieve the master key from all available keys in a folder
 fn retrieve_key(
     password: &str,
-    backend: Rc<dyn StorageBackend>,
+    backend: Arc<dyn StorageBackend>,
     keys_path: &Path,
 ) -> Result<Vec<u8>> {
     for path in backend.read_dir(keys_path)? {
@@ -471,7 +500,7 @@ mod test {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        let backend = Rc::new(LocalFS::new());
+        let backend = Arc::new(LocalFS::new());
 
         Repository::init(
             backend.to_owned(),
@@ -492,14 +521,13 @@ mod test {
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
         let repo = Repository::init(
-            Rc::new(LocalFS::new()),
+            Arc::new(LocalFS::new()),
             &temp_repo_path,
             String::from("mapachito"),
         )?;
 
-        let mut tree: Tree = utils::json::load_json(Path::new("testdata/tree0.json"))?;
+        let mut tree: Tree = utils::load_json(Path::new("testdata/tree0.json"))?;
         tree.update_hashes()?;
-        dbg!(&tree);
 
         let root_hash = repo.put_tree(&tree)?;
         let deserialized_root = repo.get_tree(&root_hash)?;
@@ -523,7 +551,7 @@ mod test {
         let dst_file_path = temp_repo_path.join("tree0.json.restored");
 
         let repo = Repository::init(
-            Rc::new(LocalFS::new()),
+            Arc::new(LocalFS::new()),
             &temp_repo_path,
             String::from("mapachito"),
         )?;

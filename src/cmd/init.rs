@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Args;
@@ -33,10 +33,10 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
     println!(
         "Initializing a new repository in \'{}\'",
-        repo_path.to_string_lossy()
+        repo_path.display()
     );
 
-    let backend = Rc::new(LocalFS::new());
+    let backend = Arc::new(LocalFS::new());
 
     Repository::init(backend, &repo_path, password)?;
 

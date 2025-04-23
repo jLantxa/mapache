@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::Path, rc::Rc};
+use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 use clap::Args;
@@ -32,7 +32,7 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let password = cli::request_password();
     let repo_path = Path::new(&global.repo);
 
-    let backend = Rc::new(LocalFS::new());
+    let backend = Arc::new(LocalFS::new());
 
     let repo = Repository::open(backend, repo_path, password)?;
 

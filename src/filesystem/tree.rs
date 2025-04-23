@@ -14,13 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+};
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use super::metadata::Metadata;
-use crate::utils::hashing::Hash;
+use crate::utils::Hash;
 
 pub type NodeIndex = usize;
 
@@ -49,6 +52,13 @@ pub struct SerializableTreeObject {
     pub directories: BTreeMap<String, Hash>,
 }
 
+#[derive(Debug, Default)]
+pub struct ScanResult {
+    pub total_bytes: usize,
+    pub num_files: usize,
+    pub num_dirs: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
     nodes: Vec<Node>,
@@ -58,6 +68,7 @@ pub struct Tree {
 }
 
 impl Node {
+    /// Creates a new file node
     pub fn new_file(name: String, metadata: Option<Metadata>) -> Self {
         Node::File(FileEntry {
             name,
@@ -66,6 +77,7 @@ impl Node {
         })
     }
 
+    /// Creates a new directory node
     pub fn new_dir(name: String, metadata: Option<Metadata>) -> Self {
         Node::Directory {
             name,
@@ -74,6 +86,7 @@ impl Node {
         }
     }
 
+    /// Returns true if this node is a file
     pub fn is_file(&self) -> bool {
         if let Node::File { .. } = self {
             return true;
@@ -82,6 +95,7 @@ impl Node {
         false
     }
 
+    /// Returns true if this node is a directory
     pub fn is_directory(&self) -> bool {
         if let Node::Directory { .. } = self {
             return true;
@@ -91,7 +105,17 @@ impl Node {
     }
 }
 
+impl ScanResult {
+    /// Merges this `ScanResult` with another one by accumulating the values
+    pub fn merge(&mut self, other: &ScanResult) {
+        self.total_bytes += other.total_bytes;
+        self.num_dirs += other.num_dirs;
+        self.num_files += other.num_files;
+    }
+}
+
 impl Tree {
+    /// Creates a new `Tree` with a root node
     pub fn new_with_root(name: String, metadata: Option<Metadata>) -> Self {
         let mut arena = Tree {
             nodes: Vec::new(),
@@ -107,20 +131,28 @@ impl Tree {
         arena
     }
 
+    /// Allocates a new node into the arena with no relation to any other nodes
     fn add_node(&mut self, node: Node) -> NodeIndex {
         let new_index = self.nodes.len();
         self.nodes.push(node);
         new_index
     }
 
+    /// Returns an inmutable reference to the node with the given index.
     pub fn get(&self, index: NodeIndex) -> Option<&Node> {
         self.nodes.get(index)
     }
 
+    /// Returns a mutable reference to the node with the given index
     pub fn get_mut(&mut self, index: NodeIndex) -> Option<&mut Node> {
         self.nodes.get_mut(index)
     }
 
+    /// Adds a new child node to the tree, using the node at `parent_index` as the parent
+    ///
+    /// This function returns an error if:
+    /// a. The parent index is invalid
+    /// b. A file node is used as a parent (only directories can have children nodes)
     pub fn add_child(&mut self, child_node: Node, parent_index: NodeIndex) -> Result<NodeIndex> {
         if parent_index >= self.nodes.len() {
             bail!(format!("Invalid parent index \'{}\'", parent_index));
@@ -153,10 +185,26 @@ impl Tree {
         Ok(child_index)
     }
 
+    /// Returns the hash of the node with the given index.
+    ///
+    /// This function returns None if the hash does not exist.
+    /// A hash may not exist due to:
+    /// 1. The node with the given index does not exist
+    /// 2. The hashes have not been calculated (see `update_hashes`)
     pub fn get_hash(&self, index: NodeIndex) -> Option<&Hash> {
         self.hashes.get(&index)
     }
 
+    /// Updates the hashes of every node in the Tree arena
+    ///
+    /// This function must be called before serializing a `Tree` using the
+    /// `SerializableTreeObject` format or before reading any hash value from the
+    /// tree.
+    ///
+    /// The function uses the DFS postorder iterator to calculate the hashes,
+    /// since the hash of a node depends directly on the hashes of its children.
+    /// This is done to avoid a recursive traversal, which can cause stack overflows
+    /// with very deep trees.
     pub fn update_hashes(&mut self) -> Result<()> {
         let postorder_indices: Vec<NodeIndex> = self.iter_postorder().collect();
 
@@ -205,7 +253,14 @@ impl Tree {
         Ok(())
     }
 
-    pub fn serializable_object(&self, index: NodeIndex) -> Result<SerializableTreeObject> {
+    /// Produces a `SerializableTreeObject` for the node with the given index.
+    ///
+    /// The `SerializableTreeObject` is a serializable form of a directory node that references
+    /// children directories by hash. This format is intended for the storage of Tree objects
+    /// using content hashes for identification of directory nodes.
+    ///
+    /// This function requires that the `Tree` hashes be updated.
+    pub fn to_serializable_object(&self, index: NodeIndex) -> Result<SerializableTreeObject> {
         let node = self
             .get(index)
             .ok_or_else(|| anyhow!("Failed to get node at index {}", index))?;
@@ -263,13 +318,17 @@ impl Tree {
 
     /// Creates a post-order iterator for the tree arena.
     /// Yields NodeIndex in post-order (children before parent).
-    pub fn iter_postorder(&self) -> TreeIterator {
+    pub fn iter_postorder(&self) -> TreePostorderIterator {
         let mut stack = Vec::new();
         if !self.nodes.is_empty() {
             // Start with the root node, marked as 'entering'
             stack.push((0, true)); // (NodeIndex, EnteringState)
         }
-        TreeIterator { arena: self, stack }
+        TreePostorderIterator { arena: self, stack }
+    }
+
+    pub fn scan_from_paths(paths: &Vec<PathBuf>) -> Result<(Self, ScanResult)> {
+        todo!()
     }
 }
 
@@ -290,12 +349,12 @@ impl Node {
     }
 }
 
-pub struct TreeIterator<'a> {
+pub struct TreePostorderIterator<'a> {
     arena: &'a Tree,
     stack: Vec<(NodeIndex, bool)>,
 }
 
-impl<'a> Iterator for TreeIterator<'a> {
+impl<'a> Iterator for TreePostorderIterator<'a> {
     type Item = NodeIndex;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -321,6 +380,7 @@ impl<'a> Iterator for TreeIterator<'a> {
     }
 }
 
+/// A DFS preorder iterator for the `Tree`
 pub struct TreePreorderIterator<'a> {
     arena: &'a Tree,
     stack: Vec<NodeIndex>,
@@ -352,7 +412,7 @@ mod test {
     use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
     use std::time::SystemTime;
 
-    use crate::{testing, utils::json};
+    use crate::{testing, utils};
 
     use super::*;
 
@@ -453,7 +513,7 @@ mod test {
     #[test]
     fn serialized_tree_object() -> Result<()> {
         let tree0_path = testing::get_test_path("tree0.json");
-        let mut tree: Tree = json::load_json(&tree0_path)?;
+        let mut tree: Tree = utils::load_json(&tree0_path)?;
 
         tree.update_hashes()?;
         assert_eq!(
@@ -489,7 +549,7 @@ mod test {
                     metadata,
                     children: _,
                 } => {
-                    let serialized_node = tree.serializable_object(node_index)?;
+                    let serialized_node = tree.to_serializable_object(node_index)?;
 
                     assert_eq!(*name, serialized_node.name);
                     assert_eq!(*metadata, serialized_node.metadata);

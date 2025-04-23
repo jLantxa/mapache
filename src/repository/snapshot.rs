@@ -37,7 +37,6 @@ impl Hashable for Snapshot {
         hasher.update(self.timestamp.to_rfc3339().as_bytes());
         hasher.update(self.description.as_bytes());
 
-        let hash = hasher.finalize();
-        format!("{}", hash)
+        hasher.finalize().to_string()
     }
 }

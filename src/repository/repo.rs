@@ -527,7 +527,7 @@ mod test {
         )?;
 
         let mut tree: Tree = utils::load_json(Path::new("testdata/tree0.json"))?;
-        tree.update_hashes()?;
+        tree.refresh_hashes()?;
 
         let root_hash = repo.put_tree(&tree)?;
         let deserialized_root = repo.get_tree(&root_hash)?;

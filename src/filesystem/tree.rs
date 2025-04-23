@@ -16,7 +16,8 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::PathBuf,
+    fs::ReadDir,
+    path::Path,
 };
 
 use anyhow::{Result, anyhow, bail};
@@ -54,7 +55,7 @@ pub struct SerializableTreeObject {
 
 #[derive(Debug, Default)]
 pub struct ScanResult {
-    pub total_bytes: usize,
+    pub total_file_size: usize,
     pub num_files: usize,
     pub num_dirs: usize,
 }
@@ -108,7 +109,7 @@ impl Node {
 impl ScanResult {
     /// Merges this `ScanResult` with another one by accumulating the values
     pub fn merge(&mut self, other: &ScanResult) {
-        self.total_bytes += other.total_bytes;
+        self.total_file_size += other.total_file_size;
         self.num_dirs += other.num_dirs;
         self.num_files += other.num_files;
     }
@@ -116,18 +117,12 @@ impl ScanResult {
 
 impl Tree {
     /// Creates a new `Tree` with a root node
-    pub fn new_with_root(name: String, metadata: Option<Metadata>) -> Self {
+    pub fn new_with_root(node: Node) -> Self {
         let mut arena = Tree {
             nodes: Vec::new(),
             hashes: HashMap::new(),
         };
-        let root = Node::Directory {
-            name: name,
-            metadata,
-            children: BTreeMap::new(),
-        };
-
-        arena.nodes.push(root);
+        arena.nodes.push(node);
         arena
     }
 
@@ -185,6 +180,55 @@ impl Tree {
         Ok(child_index)
     }
 
+    /// Add a tree as a child of a node in this tree.
+    ///
+    /// The subtree is moved into this tree. If you want to preserve a copy of the subtree,
+    /// pass a clone.
+    ///
+    /// As usual, only directories can be used as parent nodes/
+    pub fn add_tree(&mut self, tree: Tree, parent_index: NodeIndex) -> Result<NodeIndex> {
+        if parent_index > self.nodes.len() {
+            bail!(format!("Invalid parent index \'{}\'", parent_index));
+        }
+
+        let sub_tree_index = self.nodes.len();
+        let child_name = tree.get(0).unwrap().name();
+
+        // Append the subtree to the arena
+        match self.get_mut(parent_index).expect("Expected a node") {
+            Node::File(_) => {
+                // Check that the parent is not a file
+                bail!("Cannot add a child node to a file");
+            }
+            Node::Directory {
+                name: _,
+                metadata: _,
+                children,
+            } => {
+                children.insert(child_name.to_owned(), sub_tree_index);
+                self.nodes.extend(tree.nodes);
+            }
+        }
+
+        // Now we need to update the child indices of the new nodes. Since we just appended
+        // the nodes, we only need to offset all indices by the subtree index. We do this for
+        // directory nodes.
+        for node in &mut self.nodes[sub_tree_index..] {
+            if let Node::Directory {
+                name: _,
+                metadata: _,
+                children,
+            } = node
+            {
+                for (_, index) in children {
+                    *index += sub_tree_index;
+                }
+            }
+        }
+
+        Ok(sub_tree_index)
+    }
+
     /// Returns the hash of the node with the given index.
     ///
     /// This function returns None if the hash does not exist.
@@ -206,9 +250,8 @@ impl Tree {
     /// This is done to avoid a recursive traversal, which can cause stack overflows
     /// with very deep trees.
     pub fn refresh_hashes(&mut self) -> Result<()> {
-        let postorder_indices: Vec<NodeIndex> = self.iter_postorder().collect();
-
         self.hashes.clear();
+        let postorder_indices: Vec<NodeIndex> = self.iter_postorder().collect();
 
         for node_index in postorder_indices {
             let node = self
@@ -327,8 +370,81 @@ impl Tree {
         TreePostorderIterator { arena: self, stack }
     }
 
-    pub fn scan_from_paths(paths: &Vec<PathBuf>) -> Result<(Self, ScanResult)> {
-        todo!()
+    fn node_from_path(path: &Path) -> Result<(Node, ScanResult)> {
+        let metadata = match std::fs::metadata(path) {
+            Ok(meta) => Some(Metadata {
+                size: meta.len(),
+                modified: meta.modified().ok(),
+                created: meta.created().ok(),
+
+                // TODO:
+                permissions: None,
+                owner_uid: None,
+                owner_gid: None,
+            }),
+            Err(_) => None,
+        };
+
+        if path.is_file() {
+            let scan_result = ScanResult {
+                total_file_size: metadata.as_ref().map(|meta| meta.size).unwrap_or(0) as usize,
+                num_files: 1,
+                num_dirs: 0,
+            };
+            Ok((
+                Node::new_file(
+                    path.file_name().unwrap().to_str().unwrap().to_owned(),
+                    metadata,
+                ),
+                scan_result,
+            ))
+        } else {
+            let scan_result = ScanResult {
+                total_file_size: 0,
+                num_files: 0,
+                num_dirs: 1,
+            };
+
+            Ok((
+                Node::new_dir(
+                    path.file_name().unwrap().to_str().unwrap().to_owned(),
+                    metadata,
+                ),
+                scan_result,
+            ))
+        }
+    }
+
+    /// Create a tree mimicking the structure of a file tree using a path.
+    /// This function will scan all files and directories in the path recursively.
+    pub fn from_path(path: &Path) -> Result<(Self, ScanResult)> {
+        let mut scan_result = ScanResult::default();
+
+        let (root_node, subscan_result) = Self::node_from_path(path)?;
+        let mut tree = Tree::new_with_root(root_node);
+        scan_result.merge(&subscan_result);
+
+        let mut stack: Vec<(std::io::Result<ReadDir>, NodeIndex)> = Vec::new();
+        stack.push((path.read_dir(), 0));
+
+        while let Some((Ok(read_dir), parent_index)) = stack.pop() {
+            for entry in read_dir {
+                let path = entry?.path();
+
+                if path.is_file() {
+                    let (file_node, subscan_result) = Self::node_from_path(&path)?;
+                    let _ = tree.add_child(file_node, parent_index);
+                    scan_result.merge(&subscan_result);
+                } else {
+                    let (dir_node, subscan_result) = Self::node_from_path(&path)?;
+                    let dir_index = tree.add_child(dir_node, parent_index)?;
+                    scan_result.merge(&subscan_result);
+                    stack.push((path.read_dir(), dir_index));
+                }
+            }
+        }
+
+        Ok((tree, scan_result))
     }
 }
 
@@ -379,7 +495,6 @@ impl<'a> Iterator for TreePostorderIterator<'a> {
         None
     }
 }
-
 /// A DFS preorder iterator for the `Tree`
 pub struct TreePreorderIterator<'a> {
     arena: &'a Tree,
@@ -430,22 +545,22 @@ mod test {
     fn test_allocation() -> Result<()> {
         // This tree is used to construct testdata/tree0.json
 
-        let mut tree = Tree::new_with_root(
+        let mut tree = Tree::new_with_root(Node::new_dir(
             "dir0".to_string(),
             Some(Metadata {
-                size: Some(13),
+                size: 13,
                 modified: Some(system_time(2025, 04, 23, 18, 13, 00)),
                 created: Some(system_time(2025, 04, 23, 17, 13, 00)),
                 permissions: Some(0x777),
                 owner_uid: Some(1234),
                 owner_gid: Some(5678),
             }),
-        );
+        ));
         let _ = tree.add_child(
             Node::File(FileEntry {
                 name: "file0".to_string(),
                 metadata: Some(Metadata {
-                    size: Some(33),
+                    size: 33,
                     modified: Some(system_time(2025, 04, 23, 18, 14, 00)),
                     created: Some(system_time(2025, 04, 23, 17, 14, 00)),
                     permissions: Some(0x777),
@@ -460,7 +575,7 @@ mod test {
             Node::new_dir(
                 "dir1".to_string(),
                 Some(Metadata {
-                    size: Some(33),
+                    size: 33,
                     modified: Some(system_time(2025, 04, 23, 18, 15, 00)),
                     created: Some(system_time(2025, 04, 23, 17, 15, 00)),
                     permissions: Some(0x777),
@@ -474,7 +589,7 @@ mod test {
             Node::File(FileEntry {
                 name: "file1".to_string(),
                 metadata: Some(Metadata {
-                    size: Some(33),
+                    size: 33,
                     modified: Some(system_time(2025, 04, 23, 18, 16, 00)),
                     created: Some(system_time(2025, 04, 23, 17, 16, 00)),
                     permissions: Some(0x777),
@@ -489,7 +604,7 @@ mod test {
             Node::File(FileEntry {
                 name: "file2".to_string(),
                 metadata: Some(Metadata {
-                    size: Some(33),
+                    size: 33,
                     modified: Some(system_time(2025, 04, 23, 18, 17, 00)),
                     created: Some(system_time(2025, 04, 23, 17, 17, 00)),
                     permissions: Some(0x777),
@@ -555,6 +670,52 @@ mod test {
                     assert_eq!(*metadata, serialized_node.metadata);
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_subtree() -> Result<()> {
+        let tree0_path = testing::get_test_path("tree0.json");
+        let mut tree: Tree = utils::load_json(&tree0_path)?;
+
+        assert!(tree.get(5).is_none());
+        if let Node::Directory {
+            name: _,
+            metadata: _,
+            children,
+        } = tree.get(0).expect("Expected root node")
+        {
+            assert_eq!(children.len(), 2);
+            assert!(children.get("subtree").is_none());
+        }
+
+        let subtree = Tree::new_with_root(Node::new_dir("subtree".to_string(), None));
+        tree.add_tree(subtree, 0)?; // Append subtree at the root
+
+        assert_eq!(tree.get(5).expect("Expected a node").name(), "subtree");
+        if let Node::Directory {
+            name: _,
+            metadata: _,
+            children,
+        } = tree.get(0).expect("Expected root node")
+        {
+            assert_eq!(children.len(), 3);
+            assert_eq!(*children.get("subtree").unwrap(), 5);
+        }
+
+        let complex_subtree: Tree = utils::load_json(&tree0_path)?;
+        tree.add_tree(complex_subtree, 0)?;
+
+        if let Node::Directory {
+            name: _,
+            metadata: _,
+            children,
+        } = tree.get(6).expect("Expected a node")
+        {
+            assert_eq!(*children.get("file0").unwrap(), 7);
+            assert_eq!(*children.get("dir1").unwrap(), 8);
         }
 
         Ok(())

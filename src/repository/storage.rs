@@ -199,6 +199,8 @@ impl Drop for SecureStorage {
 
 #[cfg(test)]
 mod tests {
+    use crate::cli;
+
     use super::*;
 
     #[test]
@@ -221,10 +223,10 @@ mod tests {
             assert_eq!(*original_data, *decompressed_data);
 
             let ratio = original_data.len() as f64 / compressed_data.len() as f64;
-            println!(
+            cli::log!(format!(
                 "Compression level {}: Ratio = {:.2}",
                 compression_level, ratio
-            );
+            ));
         }
     }
 

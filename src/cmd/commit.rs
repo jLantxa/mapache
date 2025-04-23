@@ -27,7 +27,7 @@ use colored::Colorize;
 use crate::{
     backend::localfs::LocalFS,
     cli::{self, GlobalArgs},
-    filesystem::tree::Tree,
+    filesystem::tree::{Node, ScanResult, Tree},
     repository::{repo::Repository, snapshot::Snapshot},
     utils::{Hash, format_size},
 };
@@ -79,6 +79,17 @@ impl CommitResult {
         self.bytes_commited += other.bytes_commited;
         self.bytes_written += other.bytes_written;
     }
+
+    pub fn merged(&self, other: CommitResult) -> Self {
+        Self {
+            num_new_files: self.num_new_files + other.num_new_files,
+            num_files_changed: self.num_files_changed + other.num_files_changed,
+            num_new_dirs: self.num_new_dirs + other.num_new_dirs,
+            num_dirs_changed: self.num_dirs_changed + other.num_dirs_changed,
+            bytes_commited: self.bytes_commited + other.bytes_commited,
+            bytes_written: self.bytes_written + other.bytes_written,
+        }
+    }
 }
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -103,7 +114,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     cli::log!("Scanning tree...");
-    let (snapshot_tree, scan_result) = Tree::scan_from_paths(&args.paths)?;
+    let (mut snapshot_tree, scan_result) = tree_from_paths(&args.paths)?;
 
     cli::log_cyan(
         "to commit",
@@ -111,14 +122,15 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             "{} files, {} directories, {}",
             scan_result.num_files,
             scan_result.num_dirs,
-            format_size(scan_result.total_bytes)
+            format_size(scan_result.total_file_size)
         ),
     );
 
     let parent_tree = parent_root_hash.and_then(|root_hash| repo.get_tree(&root_hash).ok());
 
-    let commit_result = commit_tree(&repo, &snapshot_tree, &parent_tree)?;
+    let commit_result = commit_tree(&repo, &mut snapshot_tree, &parent_tree)?;
 
+    snapshot_tree.refresh_hashes()?;
     let root_hash = repo.put_tree(&snapshot_tree)?;
     let snapshot = Snapshot {
         timestamp: Utc::now(),
@@ -137,13 +149,26 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     ));
     cli::log!(format!(
         "Total size: {} -> {} ({})",
-        format_size(scan_result.total_bytes),
+        format_size(scan_result.total_file_size),
         format!("{} commited", format_size(commit_result.bytes_commited)).cyan(),
         format!("{} written", format_size(commit_result.bytes_written)).purple()
     ));
     cli::log_green("Finished", &format!("Created snapshot {}", &snapshot_hash));
 
     Ok(())
+}
+
+fn tree_from_paths(paths: &[PathBuf]) -> Result<(Tree, ScanResult)> {
+    let mut scan_result = ScanResult::default();
+    let mut tree = Tree::new_with_root(Node::new_dir(String::from("."), None));
+
+    for path in paths {
+        let (subtree, subscan_result) = Tree::from_path(path)?;
+        tree.add_tree(subtree, 0)?;
+        scan_result.merge(&subscan_result);
+    }
+
+    Ok((tree, scan_result))
 }
 
 fn find_parent_root_hash(repo: &Repository, scan_mode: &ScanMode) -> Result<Option<Hash>> {
@@ -180,6 +205,12 @@ fn find_parent_root_hash(repo: &Repository, scan_mode: &ScanMode) -> Result<Opti
     }
 }
 
-fn commit_tree(repo: &Repository, tree: &Tree, parent_tree: &Option<Tree>) -> Result<CommitResult> {
-    todo!()
+fn commit_tree(
+    repo: &Repository,
+    tree: &mut Tree,
+    parent_tree: &Option<Tree>,
+) -> Result<CommitResult> {
+    let commit_result = CommitResult::default();
+
+    Ok(commit_result)
 }

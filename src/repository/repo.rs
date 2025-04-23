@@ -252,7 +252,7 @@ impl Repository {
             .load_json(&self.tree_path.join(root_hash))?;
 
         // Tree root with index 0
-        let mut tree = Tree::new_with_root(root_obj.name, root_obj.metadata);
+        let mut tree = Tree::new_with_root(Node::new_dir(root_obj.name, root_obj.metadata));
 
         let mut hash_stack: VecDeque<(Hash, NodeIndex)> = VecDeque::new();
         for file_entry in root_obj.files {

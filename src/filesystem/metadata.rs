@@ -23,7 +23,7 @@ use crate::utils::{Hash, Hashable};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
-    pub size: Option<u64>,
+    pub size: u64,
     pub modified: Option<SystemTime>,
     pub created: Option<SystemTime>,
     pub permissions: Option<u32>, // For Unix-like modes
@@ -35,7 +35,6 @@ impl Hashable for Metadata {
     fn hash(&self) -> Hash {
         let mut hasher = Hasher::new();
         hasher.update(serde_json::to_string(self).unwrap().as_bytes());
-        let hash = hasher.finalize();
-        format!("{}", hash)
+        hasher.finalize().to_string()
     }
 }

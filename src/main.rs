@@ -45,6 +45,6 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    println!("{}", "Finished".bold().green());
+    cli::log!(format!("{}", "Finished".bold().green()));
     Ok(())
 }

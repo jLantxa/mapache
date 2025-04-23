@@ -31,10 +31,10 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let password = cli::request_new_password();
     let repo_path = Path::new(&global.repo);
 
-    println!(
+    cli::log!(format!(
         "Initializing a new repository in \'{}\'",
         repo_path.display()
-    );
+    ));
 
     let backend = Arc::new(LocalFS::new());
 

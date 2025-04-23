@@ -190,7 +190,7 @@ impl Tree {
     /// This function returns None if the hash does not exist.
     /// A hash may not exist due to:
     /// 1. The node with the given index does not exist
-    /// 2. The hashes have not been calculated (see `update_hashes`)
+    /// 2. The hashes have not been calculated (see `refresh_hashes`)
     pub fn get_hash(&self, index: NodeIndex) -> Option<&Hash> {
         self.hashes.get(&index)
     }
@@ -205,7 +205,7 @@ impl Tree {
     /// since the hash of a node depends directly on the hashes of its children.
     /// This is done to avoid a recursive traversal, which can cause stack overflows
     /// with very deep trees.
-    pub fn update_hashes(&mut self) -> Result<()> {
+    pub fn refresh_hashes(&mut self) -> Result<()> {
         let postorder_indices: Vec<NodeIndex> = self.iter_postorder().collect();
 
         self.hashes.clear();
@@ -515,7 +515,7 @@ mod test {
         let tree0_path = testing::get_test_path("tree0.json");
         let mut tree: Tree = utils::load_json(&tree0_path)?;
 
-        tree.update_hashes()?;
+        tree.refresh_hashes()?;
         assert_eq!(
             tree.get_hash(0).expect("Expected a hash"),
             "527bcb87a472a1f00bf04e887fdb7a8ad42c56d4e53ed628badddb7ff5975917"

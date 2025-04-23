@@ -23,7 +23,6 @@ use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::{ArgGroup, Args};
 use colored::Colorize;
-use rayon::iter::ParallelIterator;
 
 use crate::{
     backend::localfs::LocalFS,

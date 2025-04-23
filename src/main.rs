@@ -14,15 +14,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod backend;
+pub mod cli;
+pub mod cmd;
+pub mod filesystem;
+pub mod repository;
+pub mod testing;
+pub mod utils;
+
 use anyhow::Result;
-use backup::utils::configure_rayon;
 use clap::Parser;
 use colored::Colorize;
 
-use backup::cli::{self, Cli};
-use backup::cmd;
-
-fn run(args: &Cli) -> Result<()> {
+fn run(args: &cli::Cli) -> Result<()> {
     match &args.command {
         cli::Command::Init(cmd_args) => cmd::init::run(&args.global_args, cmd_args),
         cli::Command::Log(cmd_args) => cmd::log::run(&args.global_args, cmd_args),
@@ -32,9 +36,9 @@ fn run(args: &Cli) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let args = Cli::parse();
+    let args = cli::Cli::parse();
 
-    configure_rayon(args.global_args.threads)?;
+    utils::configure_rayon(args.global_args.threads)?;
 
     if let Err(e) = run(&args) {
         cli::log_error(e.to_string().as_str());

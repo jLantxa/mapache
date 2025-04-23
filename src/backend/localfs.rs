@@ -117,7 +117,7 @@ mod test {
     use super::*;
 
     #[test]
-    #[ignore]
+
     fn heavy_test_local_fs() -> Result<()> {
         let temp_dir = tempdir()?;
         let temp_dir = temp_dir.path();

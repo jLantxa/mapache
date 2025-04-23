@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeMap,
+    collections::VecDeque,
     fs::{File, OpenOptions},
     io::{BufReader, Write},
     path::{Path, PathBuf},
@@ -32,10 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::backend::StorageBackend,
-    filesystem::{
-        directory_node::{DirectoryNode, FileEntry},
-        metadata::Metadata,
-    },
+    filesystem::tree::{FileEntry, Node, NodeIndex, SerializableTreeObject, Tree},
     utils::{
         self,
         hashing::{Hash, Hashable},
@@ -207,81 +204,72 @@ impl Repository {
         Ok(repo)
     }
 
-    /// Persist a FileSystemNode into the repo metadata
-    pub fn persist_tree(&self, tree: &DirectoryNode) -> Result<Hash> {
-        // TODO: Transform into iterative traversal
-
-        let mut serializable_files: Vec<FileEntry> = Vec::new();
-        let mut serializable_children: Vec<Hash> = Vec::new();
-
-        for (_, child_node) in &tree.children {
-            serializable_children.push(self.persist_tree(child_node)?);
+    pub fn put_tree(&self, tree: &Tree) -> Result<Hash> {
+        for node_index in tree.iter_preorder() {
+            let node = tree
+                .get(node_index)
+                .expect(&format!("Expected node with index \'{}\'", node_index));
+            match node {
+                crate::filesystem::tree::Node::File { .. } => continue,
+                crate::filesystem::tree::Node::Directory { .. } => {
+                    let serializable_node = tree.serializable_object(node_index)?;
+                    let node_hash = tree
+                        .get_hash(node_index)
+                        .expect(&format!("Expected hash for index \'{}\'", node_index));
+                    let serialized_tree_path = self.tree_path.join(&node_hash);
+                    self.secure_storage
+                        .save_json(&serializable_node, &serialized_tree_path)?;
+                }
+            }
         }
 
-        for (_, file_entry) in &tree.files {
-            serializable_files.push(file_entry.clone());
-        }
+        let root_hash = tree
+            .get_hash(0)
+            .expect("Expected hash for index 0 (root)")
+            .to_string();
 
-        let serializable_directory_node = SerializableDirectoryNode {
-            name: tree.name.clone(),
-            metadata: tree.metadata.clone(),
-            children: serializable_children,
-            files: serializable_files,
-        };
-
-        let hash = serializable_directory_node.hash();
-        let serialized_tree_path = self.tree_path.join(&hash);
-
-        /*
-         * Serialize only if the tree does not exist yet in the repo.
-         * I am assuming that if two trees have the same hash, the content is the same.
-         */
-        if !serialized_tree_path.exists() {
-            self.secure_storage
-                .save_json(&serializable_directory_node, &serialized_tree_path)
-                .with_context(|| format!("Could not serialize tree \'{}\'", &hash))?;
-        }
-
-        Ok(hash)
+        Ok(root_hash)
     }
 
-    /// Load a FileSystemNode from the repo metadata
-    pub fn load_tree(&self, hash: &Hash) -> Result<DirectoryNode> {
-        // TODO: Transform into iterative traversal
-
-        let tree_path = self.tree_path.join(hash);
-        if !tree_path.exists() || !tree_path.is_file() {
-            bail!(format!(
-                "Could not load tree \'{}\'. Tree file does not exist.",
-                hash
-            ));
-        }
-
-        let serialized_node: SerializableDirectoryNode = self
+    pub fn get_tree(&self, root_hash: &Hash) -> Result<Tree> {
+        let root_obj: SerializableTreeObject = self
             .secure_storage
-            .load_json(&tree_path)
-            .with_context(|| format!("Could not deserialize metadata tree \'{}\'", hash))?;
+            .load_json(&self.tree_path.join(root_hash))?;
 
-        let mut files: BTreeMap<String, FileEntry> = BTreeMap::new();
-        let mut children = BTreeMap::new();
+        // Tree root with index 0
+        let mut tree = Tree::new_with_root(root_obj.name, root_obj.metadata);
 
-        for file_entry in serialized_node.files {
-            files.insert(file_entry.name.clone(), file_entry);
+        let mut hash_stack: VecDeque<(Hash, NodeIndex)> = VecDeque::new();
+        for file_entry in root_obj.files {
+            tree.add_child(Node::File(file_entry), 0)?;
+        }
+        for (_, hash) in root_obj.directories {
+            hash_stack.push_back((hash, 0));
         }
 
-        for child_hash in serialized_node.children {
-            let serialized_child_node = self.load_tree(&child_hash)?;
-            children.insert(serialized_child_node.name.clone(), serialized_child_node);
+        // Read all tree objects
+        while let Some((hash, parent_index)) = hash_stack.pop_front() {
+            let tree_obj: SerializableTreeObject =
+                self.secure_storage.load_json(&self.tree_path.join(&hash))?;
+
+            let dir_index = tree.add_child(
+                Node::Directory {
+                    name: tree_obj.name,
+                    metadata: tree_obj.metadata,
+                    children: Default::default(),
+                },
+                parent_index,
+            )?;
+
+            for file_entry in tree_obj.files {
+                tree.add_child(Node::File(file_entry), dir_index)?;
+            }
+            for (_, hash) in tree_obj.directories {
+                hash_stack.push_back((hash.clone(), dir_index));
+            }
         }
 
-        let tree_node = DirectoryNode {
-            name: serialized_node.name,
-            metadata: serialized_node.metadata,
-            files: files,
-            children: children,
-        };
-
-        Ok(tree_node)
+        Ok(tree)
     }
 
     /// Get all snapshots in the repository
@@ -312,7 +300,7 @@ impl Repository {
         Ok(snapshots)
     }
 
-    pub fn commit_file(&self, src_path: &Path) -> Result<ChunkResult> {
+    pub fn put_file(&self, src_path: &Path) -> Result<ChunkResult> {
         const MIN_CHUNK_SIZE: u32 = 4096;
         const AVG_CHUNK_SIZE: u32 = 16384;
         const MAX_CHUNK_SIZE: u32 = 65535;
@@ -462,49 +450,23 @@ fn retrieve_key(
     bail!("Could not retrieve key")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableDirectoryNode {
-    pub name: String,
-    pub metadata: Option<Metadata>,
-    pub files: Vec<FileEntry>,
-    pub children: Vec<Hash>,
-}
-
-impl Hashable for SerializableDirectoryNode {
-    fn hash(&self) -> Hash {
-        let mut hasher = Hasher::new();
-
-        hasher.update(self.name.as_bytes());
-
-        if let Some(meta) = &self.metadata {
-            hasher.update(meta.hash().as_bytes());
-        }
-
-        for file in &self.files {
-            hasher.update(file.hash().as_bytes());
-        }
-
-        for child_hash in &self.children {
-            hasher.update(child_hash.as_bytes());
-        }
-
-        let hash = hasher.finalize();
-        format!("{}", hash)
-    }
-}
-
 #[cfg(test)]
 mod test {
 
     use tempfile::tempdir;
 
-    use crate::{backend::localfs::LocalFS, testing, utils};
+    use crate::{
+        backend::localfs::LocalFS,
+        filesystem::tree::FileEntry,
+        testing,
+        utils::{self},
+    };
 
     use super::*;
 
     /// Test init a repo with password and open it
     #[test]
-    #[ignore]
+
     fn heavy_test_init_and_open_with_password() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
@@ -524,8 +486,8 @@ mod test {
     /// Test saving and loading tree objects
     /// This test creates a repository in a temp folder
     #[test]
-    #[ignore]
-    fn heavy_test_persist_and_load_tree() -> Result<()> {
+
+    fn heavy_test_put_and_get_tree() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
@@ -535,13 +497,15 @@ mod test {
             String::from("mapachito"),
         )?;
 
-        let root_tree = utils::json::load_json(Path::new("testdata/tree0.json"))?;
+        let mut tree: Tree = utils::json::load_json(Path::new("testdata/tree0.json"))?;
+        tree.update_hashes()?;
+        dbg!(&tree);
 
-        let root_hash = repo.persist_tree(&root_tree)?;
-        let deserialized_root = repo.load_tree(&root_hash)?;
+        let root_hash = repo.put_tree(&tree)?;
+        let deserialized_root = repo.get_tree(&root_hash)?;
 
         assert_eq!(
-            serde_json::to_string_pretty(&root_tree)?,
+            serde_json::to_string_pretty(&tree)?,
             serde_json::to_string_pretty(&deserialized_root)?
         );
 
@@ -550,7 +514,7 @@ mod test {
 
     /// Test file chunk and restore
     #[test]
-    #[ignore]
+
     fn heavy_test_chunk_and_restore() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
@@ -563,7 +527,7 @@ mod test {
             &temp_repo_path,
             String::from("mapachito"),
         )?;
-        let chunk_result = repo.commit_file(&src_file_path)?;
+        let chunk_result = repo.put_file(&src_file_path)?;
 
         let file_entry = FileEntry {
             name: "tree0.json".to_owned(),

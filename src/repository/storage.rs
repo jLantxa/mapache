@@ -96,9 +96,12 @@ impl SecureStorage {
 
     /// Serialize a JSON metadata file.
     pub fn load_json<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
-        let data = self
-            .load_file(path)
-            .with_context(|| "Could not deserialize metadata")?;
+        let data = self.load_file(path).with_context(|| {
+            format!(
+                "Could not deserialize metadata (file load error) \'{}\'",
+                path.display()
+            )
+        })?;
         let text = String::from_utf8(data)?;
         serde_json::from_str(&text).with_context(|| "Could not load metadata")
     }

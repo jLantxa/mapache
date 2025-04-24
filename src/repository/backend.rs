@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
-use crate::filesystem::tree::{FileEntry, Tree};
+use crate::filesystem::tree::{FileNode, Tree};
 use crate::storage_backend::backend::StorageBackend;
 use crate::utils::Hash;
 
@@ -57,7 +57,7 @@ pub trait RepositoryBackend {
 
     fn put_file(&self, src_path: &Path) -> Result<ChunkResult>;
 
-    fn restore_file(&self, file: &FileEntry, dst_path: &Path) -> Result<()>;
+    fn restore_file(&self, file: &FileNode, dst_path: &Path) -> Result<()>;
 
     /// Serializes a Tree into SerializableTreeObject's into the repository storage.
     fn put_tree(&self, tree: &Tree) -> Result<Hash>;

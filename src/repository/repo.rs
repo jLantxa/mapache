@@ -200,6 +200,20 @@ impl Repository {
         Ok(repo)
     }
 
+    /// Returns the path to a tree object with a given hash in the repository.
+    fn get_tree_object_path(&self, hash: &Hash) -> PathBuf {
+        self.tree_path
+            .join(&hash[..TREE_FOLD_LENGTH])
+            .join(&hash[TREE_FOLD_LENGTH..])
+    }
+
+    /// Returns the path to a data object with a given hash in the repository.
+    fn get_data_object_path(&self, hash: &Hash) -> PathBuf {
+        self.data_path
+            .join(&hash[..DATA_FOLD_LENGTH])
+            .join(&hash[DATA_FOLD_LENGTH..])
+    }
+
     /// Serializes a Tree into SerializableTreeObject's into the repository storage.
     ///
     /// For each directory node in the tree, we create a serializable tree object with the
@@ -224,7 +238,7 @@ impl Repository {
                     let node_hash = tree
                         .get_hash(node_index)
                         .expect(&format!("Expected hash for index \'{}\'", node_index));
-                    let serialized_tree_path = self.tree_path.join(&node_hash);
+                    let serialized_tree_path = self.get_tree_object_path(node_hash);
                     self.secure_storage
                         .save_json(&serializable_node, &serialized_tree_path)?;
                 }
@@ -247,9 +261,8 @@ impl Repository {
     /// To avoid potential stack overflows with very deep trees, this function uses a DFS pre-order
     /// iterator.
     pub fn get_tree(&self, root_hash: &Hash) -> Result<Tree> {
-        let root_obj: SerializableTreeObject = self
-            .secure_storage
-            .load_json(&self.tree_path.join(root_hash))?;
+        let root_obj_path = self.get_tree_object_path(root_hash);
+        let root_obj: SerializableTreeObject = self.secure_storage.load_json(&root_obj_path)?;
 
         // Tree root with index 0
         let mut tree = Tree::new_with_root(Node::new_dir(root_obj.name, root_obj.metadata));
@@ -264,8 +277,8 @@ impl Repository {
 
         // Read all tree objects
         while let Some((hash, parent_index)) = hash_stack.pop_front() {
-            let tree_obj: SerializableTreeObject =
-                self.secure_storage.load_json(&self.tree_path.join(&hash))?;
+            let tree_obj_path = self.get_tree_object_path(&hash);
+            let tree_obj: SerializableTreeObject = self.secure_storage.load_json(&tree_obj_path)?;
 
             let dir_index = tree.add_child(
                 Node::Directory {
@@ -349,10 +362,7 @@ impl Repository {
             let content_hash = utils::calculate_hash(&chunk.data);
             chunk_hashes.push(content_hash.clone());
 
-            let chunk_path = &self
-                .data_path
-                .join(&content_hash[0..DATA_FOLD_LENGTH])
-                .join(&content_hash[DATA_FOLD_LENGTH..]);
+            let chunk_path = self.get_data_object_path(&content_hash);
 
             total_bytes_read += chunk.length;
 
@@ -360,7 +370,7 @@ impl Repository {
             if !chunk_path.exists() {
                 total_bytes_written += self
                     .secure_storage
-                    .save_file(&chunk.data, chunk_path)
+                    .save_file(&chunk.data, &chunk_path)
                     .with_context(|| {
                         format!(
                             "Could not save chunk #{} ({}) for file \'{}\'",
@@ -390,10 +400,7 @@ impl Repository {
             })?;
 
         for (index, chunk_hash) in file.chunks.iter().enumerate() {
-            let chunk_path = self
-                .data_path
-                .join(&chunk_hash[0..DATA_FOLD_LENGTH])
-                .join(&chunk_hash[DATA_FOLD_LENGTH..]);
+            let chunk_path = self.get_data_object_path(&chunk_hash);
 
             let chunk_data = self
                 .secure_storage

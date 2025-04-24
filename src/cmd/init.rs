@@ -20,14 +20,19 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Args;
 
-use crate::backend::localfs::LocalFS;
 use crate::cli::{self, GlobalArgs};
-use crate::repository::repo::Repository;
+use crate::repository;
+use crate::repository::backend::{LATEST_REPOSITORY_VERSION, RepoVersion};
+use crate::storage_backend::localfs::LocalFS;
 
 #[derive(Args, Debug)]
-pub struct CmdArgs {}
+pub struct CmdArgs {
+    /// Repository version
+    #[clap(long, default_value_t = LATEST_REPOSITORY_VERSION)]
+    pub repository_version: RepoVersion,
+}
 
-pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let password = cli::request_new_password();
     let repo_path = Path::new(&global.repo);
 
@@ -38,7 +43,12 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
     let backend = Arc::new(LocalFS::new());
 
-    Repository::init(backend, &repo_path, password)?;
+    repository::backend::init_repository_with_version(
+        args.repository_version,
+        backend,
+        &repo_path,
+        password,
+    )?;
 
     Ok(())
 }

@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod backend;
 pub mod cli;
 pub mod cmd;
 pub mod filesystem;
 pub mod repository;
+pub mod storage_backend;
 pub mod testing;
 pub mod utils;
 

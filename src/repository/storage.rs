@@ -29,7 +29,7 @@ use std::sync::Arc;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-use crate::backend::backend::StorageBackend;
+use crate::storage_backend::backend::StorageBackend;
 
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {

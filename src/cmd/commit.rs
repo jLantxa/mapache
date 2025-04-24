@@ -25,10 +25,10 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
-    backend::localfs::LocalFS,
     cli::{self, GlobalArgs},
     filesystem::tree::{Node, ScanResult, Tree},
-    repository::{repo::Repository, snapshot::Snapshot},
+    repository::{self, backend::RepositoryBackend, snapshot::Snapshot},
+    storage_backend::localfs::LocalFS,
     utils::{Hash, format_size},
 };
 
@@ -97,7 +97,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo_path = Path::new(&global.repo);
 
     let backend = Arc::new(LocalFS::new());
-    let repo = Repository::open(backend, repo_path, password)?;
+    let repo = repository::backend::open(backend, repo_path, password)?;
 
     let scan_mode = if args.naive {
         ScanMode::Full
@@ -171,7 +171,10 @@ fn tree_from_paths(paths: &[PathBuf]) -> Result<(Tree, ScanResult)> {
     Ok((tree, scan_result))
 }
 
-fn find_parent_root_hash(repo: &Repository, scan_mode: &ScanMode) -> Result<Option<Hash>> {
+fn find_parent_root_hash(
+    repo: &Box<dyn RepositoryBackend>,
+    scan_mode: &ScanMode,
+) -> Result<Option<Hash>> {
     match scan_mode {
         ScanMode::Full => {
             // In Full mode, there is no parent to compare against
@@ -206,7 +209,7 @@ fn find_parent_root_hash(repo: &Repository, scan_mode: &ScanMode) -> Result<Opti
 }
 
 fn commit_tree(
-    repo: &Repository,
+    repo: &Box<dyn RepositoryBackend>,
     tree: &mut Tree,
     parent_tree: &Option<Tree>,
 ) -> Result<CommitResult> {

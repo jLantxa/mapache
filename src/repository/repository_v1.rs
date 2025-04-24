@@ -31,12 +31,19 @@ use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    backend::backend::StorageBackend,
     filesystem::tree::{FileEntry, Node, NodeIndex, SerializableTreeObject, Tree},
+    storage_backend::backend::StorageBackend,
     utils::{self, Hash, Hashable},
 };
 
-use super::{config::Config, snapshot::Snapshot, storage::SecureStorage};
+use super::{
+    backend::{ChunkResult, RepoVersion, RepositoryBackend, write_version},
+    config::Config,
+    snapshot::Snapshot,
+    storage::SecureStorage,
+};
+
+const REPO_VERSION: RepoVersion = 1;
 
 const DATA_DIR: &str = "data";
 const SNAPSHOT_DIR: &str = "snapshot";
@@ -67,13 +74,6 @@ struct KeyFile {
     salt: String,
 }
 
-#[derive(Debug)]
-pub struct ChunkResult {
-    pub chunks: Vec<Hash>,
-    pub total_bytes_read: usize,
-    pub total_bytes_written: usize,
-}
-
 impl Hashable for KeyFile {
     fn hash(&self) -> Hash {
         let mut hasher = Hasher::new();
@@ -83,13 +83,9 @@ impl Hashable for KeyFile {
     }
 }
 
-impl Repository {
+impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
-    pub fn init(
-        backend: Arc<dyn StorageBackend>,
-        repo_path: &Path,
-        password: String,
-    ) -> Result<Self> {
+    fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<Self> {
         if repo_path.exists() {
             bail!(format!(
                 "Could not initialize a repository because a directory already exists in \'{}\'",
@@ -107,6 +103,9 @@ impl Repository {
             .create_dir_all(repo_path)
             .with_context(|| "Could not create root directory")?;
 
+        // Version file
+        write_version(repo_path, REPO_VERSION)?;
+
         backend.create_dir(&data_path)?;
         let num_folders: usize = 1 << (4 * DATA_FOLD_LENGTH);
         for n in 0x00..num_folders {
@@ -123,7 +122,8 @@ impl Repository {
         backend.create_dir(&keys_path)?;
 
         // Create new key
-        let (key, keyfile) = generate_key(&password).with_context(|| "Could not generate key")?;
+        let (key, keyfile) =
+            Repository::generate_key(&password).with_context(|| "Could not generate key")?;
         let keyfile_hash = keyfile.hash();
         let keyfile_path = &keys_path.join(keyfile_hash);
         backend.write(
@@ -155,11 +155,7 @@ impl Repository {
     }
 
     /// Open an existing repository from a directory
-    pub fn open(
-        backend: Arc<dyn StorageBackend>,
-        repo_path: &Path,
-        password: String,
-    ) -> Result<Self> {
+    fn open(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<Self> {
         if !repo_path.exists() {
             bail!(
                 "Could not open a repository. \'{}\' doesn't exist",
@@ -172,8 +168,9 @@ impl Repository {
             );
         }
 
-        let key = retrieve_key(&password, backend.to_owned(), &repo_path.join(KEYS_DIR))
-            .with_context(|| "Incorrect password")?;
+        let key =
+            Repository::retrieve_key(&password, backend.to_owned(), &repo_path.join(KEYS_DIR))
+                .with_context(|| "Incorrect password")?;
         let storage = SecureStorage::new(backend.to_owned())
             .with_key(key)
             // We don't know the compression level yet, but the config file has compression
@@ -200,20 +197,6 @@ impl Repository {
         Ok(repo)
     }
 
-    /// Returns the path to a tree object with a given hash in the repository.
-    fn get_tree_object_path(&self, hash: &Hash) -> PathBuf {
-        self.tree_path
-            .join(&hash[..TREE_FOLD_LENGTH])
-            .join(&hash[TREE_FOLD_LENGTH..])
-    }
-
-    /// Returns the path to a data object with a given hash in the repository.
-    fn get_data_object_path(&self, hash: &Hash) -> PathBuf {
-        self.data_path
-            .join(&hash[..DATA_FOLD_LENGTH])
-            .join(&hash[DATA_FOLD_LENGTH..])
-    }
-
     /// Serializes a Tree into SerializableTreeObject's into the repository storage.
     ///
     /// For each directory node in the tree, we create a serializable tree object with the
@@ -226,7 +209,7 @@ impl Repository {
     /// iterator.
     ///
     /// This function requires that the `Tree` hashes be updated.
-    pub fn put_tree(&self, tree: &Tree) -> Result<Hash> {
+    fn put_tree(&self, tree: &Tree) -> Result<Hash> {
         for node_index in tree.iter_preorder() {
             let node = tree
                 .get(node_index)
@@ -260,7 +243,7 @@ impl Repository {
     ///
     /// To avoid potential stack overflows with very deep trees, this function uses a DFS pre-order
     /// iterator.
-    pub fn get_tree(&self, root_hash: &Hash) -> Result<Tree> {
+    fn get_tree(&self, root_hash: &Hash) -> Result<Tree> {
         let root_obj_path = self.get_tree_object_path(root_hash);
         let root_obj: SerializableTreeObject = self.secure_storage.load_json(&root_obj_path)?;
 
@@ -301,7 +284,7 @@ impl Repository {
     }
 
     /// Get all snapshots in the repository
-    pub fn get_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>> {
+    fn get_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>> {
         let mut snapshots = Vec::new();
 
         let entries =
@@ -322,7 +305,7 @@ impl Repository {
     }
 
     /// Get all snapshots in the repository, sorted by datetime.
-    pub fn get_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>> {
+    fn get_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>> {
         let mut snapshots = self.get_snapshots()?;
         snapshots.sort_by_key(|(_, snapshot)| snapshot.timestamp);
         Ok(snapshots)
@@ -334,7 +317,7 @@ impl Repository {
     /// will be compressed, encrypted and stored in the repository.
     /// The content hash of each chunk is used to identify the chunk and determine
     /// if the chunk already exists in the repository.
-    pub fn put_file(&self, src_path: &Path) -> Result<ChunkResult> {
+    fn put_file(&self, src_path: &Path) -> Result<ChunkResult> {
         const MIN_CHUNK_SIZE: u32 = 4096;
         const AVG_CHUNK_SIZE: u32 = 16384;
         const MAX_CHUNK_SIZE: u32 = 65535;
@@ -389,7 +372,7 @@ impl Repository {
         })
     }
 
-    pub fn restore_file(&self, file: &FileEntry, dst_path: &Path) -> Result<()> {
+    fn restore_file(&self, file: &FileEntry, dst_path: &Path) -> Result<()> {
         let mut dst_file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -427,7 +410,7 @@ impl Repository {
         Ok(())
     }
 
-    pub fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash> {
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash> {
         let hash = snapshot.hash();
         let snapshot_path = self.snapshot_path.join(&hash);
         self.secure_storage.save_json(snapshot, &snapshot_path)?;
@@ -435,55 +418,71 @@ impl Repository {
     }
 }
 
-/// Generate a new master  key
-fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
-    let create_time = Utc::now();
-
-    let mut new_random_key = [0u8; 32];
-    OsRng.fill_bytes(&mut new_random_key);
-
-    const SALT_LENGTH: usize = 32;
-    let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
-    let intermediate_key = SecureStorage::derive_key(password, &salt);
-
-    let encrypted_key = SecureStorage::encrypt(&intermediate_key, &new_random_key)?;
-
-    let key_file = KeyFile {
-        created: create_time,
-        encrypted_key: general_purpose::STANDARD.encode(encrypted_key),
-        salt: general_purpose::STANDARD.encode(salt),
-    };
-
-    Ok((new_random_key.to_vec(), key_file))
-}
-
-/// Retrieve the master key from all available keys in a folder
-fn retrieve_key(
-    password: &str,
-    backend: Arc<dyn StorageBackend>,
-    keys_path: &Path,
-) -> Result<Vec<u8>> {
-    for path in backend.read_dir(keys_path)? {
-        // TODO:
-        // I should assert that path is a file and not a folder, but I need to implement
-        // that in the StorageBackend. For now, let's assume that nobody is messing with
-        // the repository.
-
-        // Load keyfile
-        let keyfile_str = backend.read(&path)?;
-        let keyfile_str = SecureStorage::decompress(&keyfile_str)?;
-        let keyfile: KeyFile = serde_json::from_slice(keyfile_str.as_slice())?;
-
-        let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
-        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
-
-        let intermediate_key = SecureStorage::derive_key(password, &salt);
-        if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
-            return Ok(key);
-        }
+impl Repository {
+    /// Returns the path to a tree object with a given hash in the repository.
+    fn get_tree_object_path(&self, hash: &Hash) -> PathBuf {
+        self.tree_path
+            .join(&hash[..TREE_FOLD_LENGTH])
+            .join(&hash[TREE_FOLD_LENGTH..])
     }
 
-    bail!("Could not retrieve key")
+    /// Returns the path to a data object with a given hash in the repository.
+    fn get_data_object_path(&self, hash: &Hash) -> PathBuf {
+        self.data_path
+            .join(&hash[..DATA_FOLD_LENGTH])
+            .join(&hash[DATA_FOLD_LENGTH..])
+    }
+
+    /// Generate a new master  key
+    fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
+        let create_time = Utc::now();
+
+        let mut new_random_key = [0u8; 32];
+        OsRng.fill_bytes(&mut new_random_key);
+
+        const SALT_LENGTH: usize = 32;
+        let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
+        let intermediate_key = SecureStorage::derive_key(password, &salt);
+
+        let encrypted_key = SecureStorage::encrypt(&intermediate_key, &new_random_key)?;
+
+        let key_file = KeyFile {
+            created: create_time,
+            encrypted_key: general_purpose::STANDARD.encode(encrypted_key),
+            salt: general_purpose::STANDARD.encode(salt),
+        };
+
+        Ok((new_random_key.to_vec(), key_file))
+    }
+
+    /// Retrieve the master key from all available keys in a folder
+    fn retrieve_key(
+        password: &str,
+        backend: Arc<dyn StorageBackend>,
+        keys_path: &Path,
+    ) -> Result<Vec<u8>> {
+        for path in backend.read_dir(keys_path)? {
+            // TODO:
+            // I should assert that path is a file and not a folder, but I need to implement
+            // that in the StorageBackend. For now, let's assume that nobody is messing with
+            // the repository.
+
+            // Load keyfile
+            let keyfile_str = backend.read(&path)?;
+            let keyfile_str = SecureStorage::decompress(&keyfile_str)?;
+            let keyfile: KeyFile = serde_json::from_slice(keyfile_str.as_slice())?;
+
+            let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
+            let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+
+            let intermediate_key = SecureStorage::derive_key(password, &salt);
+            if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
+                return Ok(key);
+            }
+        }
+
+        bail!("Could not retrieve key")
+    }
 }
 
 #[cfg(test)]
@@ -492,8 +491,8 @@ mod test {
     use tempfile::tempdir;
 
     use crate::{
-        backend::localfs::LocalFS,
         filesystem::tree::FileEntry,
+        storage_backend::localfs::LocalFS,
         testing,
         utils::{self},
     };
@@ -583,7 +582,7 @@ mod test {
     /// Test generation of master keys
     #[test]
     fn test_generate_key() -> Result<()> {
-        let (key, keyfile) = generate_key("mapachito")?;
+        let (key, keyfile) = Repository::generate_key("mapachito")?;
 
         let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;

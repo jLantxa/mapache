@@ -31,7 +31,7 @@ use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    filesystem::tree::{FileEntry, Node, NodeIndex, SerializableTreeObject, Tree},
+    filesystem::tree::{DirectoryNode, FileNode, Node, NodeIndex, SerializableTreeObject, Tree},
     storage_backend::backend::StorageBackend,
     utils::{self, Hash, Hashable},
 };
@@ -251,8 +251,8 @@ impl RepositoryBackend for Repository {
         let mut tree = Tree::new_with_root(Node::new_dir(root_obj.name, root_obj.metadata));
 
         let mut hash_stack: VecDeque<(Hash, NodeIndex)> = VecDeque::new();
-        for file_entry in root_obj.files {
-            tree.add_child(Node::File(file_entry), 0)?;
+        for file_node in root_obj.files {
+            tree.add_child(Node::File(file_node), 0)?;
         }
         for (_, hash) in root_obj.directories {
             hash_stack.push_back((hash, 0));
@@ -264,16 +264,16 @@ impl RepositoryBackend for Repository {
             let tree_obj: SerializableTreeObject = self.secure_storage.load_json(&tree_obj_path)?;
 
             let dir_index = tree.add_child(
-                Node::Directory {
+                Node::Directory(DirectoryNode {
                     name: tree_obj.name,
                     metadata: tree_obj.metadata,
                     children: Default::default(),
-                },
+                }),
                 parent_index,
             )?;
 
-            for file_entry in tree_obj.files {
-                tree.add_child(Node::File(file_entry), dir_index)?;
+            for file_node in tree_obj.files {
+                tree.add_child(Node::File(file_node), dir_index)?;
             }
             for (_, hash) in tree_obj.directories {
                 hash_stack.push_back((hash.clone(), dir_index));
@@ -372,7 +372,7 @@ impl RepositoryBackend for Repository {
         })
     }
 
-    fn restore_file(&self, file: &FileEntry, dst_path: &Path) -> Result<()> {
+    fn restore_file(&self, file: &FileNode, dst_path: &Path) -> Result<()> {
         let mut dst_file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -491,7 +491,7 @@ mod test {
     use tempfile::tempdir;
 
     use crate::{
-        filesystem::tree::FileEntry,
+        filesystem::tree::FileNode,
         storage_backend::localfs::LocalFS,
         testing,
         utils::{self},
@@ -563,14 +563,14 @@ mod test {
         )?;
         let chunk_result = repo.put_file(&src_file_path)?;
 
-        let file_entry = FileEntry {
+        let file_node = FileNode {
             name: "tree0.json".to_owned(),
             metadata: None,
             chunks: chunk_result.chunks.clone(),
         };
 
-        repo.restore_file(&file_entry, &dst_file_path)?;
-        assert_eq!(chunk_result.chunks, file_entry.chunks);
+        repo.restore_file(&file_node, &dst_file_path)?;
+        assert_eq!(chunk_result.chunks, file_node.chunks);
 
         let src_data = std::fs::read(src_file_path)?;
         let dst_data = std::fs::read(dst_file_path)?;

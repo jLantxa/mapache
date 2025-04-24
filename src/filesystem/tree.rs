@@ -30,17 +30,22 @@ pub type NodeIndex = usize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Node {
-    File(FileEntry),
-    Directory {
-        name: String,
-        metadata: Option<Metadata>,
-        children: BTreeMap<String, NodeIndex>,
-    },
+    File(FileNode),
+    Directory(DirectoryNode),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileEntry {
+pub struct DirectoryNode {
     pub name: String,
+    #[serde(flatten)]
+    pub metadata: Option<Metadata>,
+    pub children: BTreeMap<String, NodeIndex>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileNode {
+    pub name: String,
+    #[serde(flatten)]
     pub metadata: Option<Metadata>,
     pub chunks: Vec<Hash>,
 }
@@ -48,8 +53,9 @@ pub struct FileEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableTreeObject {
     pub name: String,
+    #[serde(flatten)]
     pub metadata: Option<Metadata>,
-    pub files: Vec<FileEntry>,
+    pub files: Vec<FileNode>,
     pub directories: BTreeMap<String, Hash>,
 }
 
@@ -71,7 +77,7 @@ pub struct Tree {
 impl Node {
     /// Creates a new file node
     pub fn new_file(name: String, metadata: Option<Metadata>) -> Self {
-        Node::File(FileEntry {
+        Node::File(FileNode {
             name,
             metadata,
             chunks: Vec::new(),
@@ -80,11 +86,11 @@ impl Node {
 
     /// Creates a new directory node
     pub fn new_dir(name: String, metadata: Option<Metadata>) -> Self {
-        Node::Directory {
+        Node::Directory(DirectoryNode {
             name,
             metadata,
             children: BTreeMap::new(),
-        }
+        })
     }
 
     /// Returns true if this node is a file
@@ -157,24 +163,17 @@ impl Tree {
         }
 
         let child_name = match &child_node {
-            Node::File(file_entry) => file_entry.name.clone(),
-            Node::Directory {
-                name,
-                metadata: _,
-                children: _,
-            } => name.clone(),
+            Node::File(file_node) => file_node.name.clone(),
+            Node::Directory(directory_node) => directory_node.name.clone(),
         };
 
         let child_index = self.add_node(child_node);
 
         // At this point, the parent can only be a directory
-        if let Node::Directory {
-            name: _,
-            metadata: _,
-            children,
-        } = self.get_mut(parent_index).unwrap()
-        {
-            children.insert(child_name.to_string(), child_index);
+        if let Node::Directory(directory_node) = self.get_mut(parent_index).unwrap() {
+            directory_node
+                .children
+                .insert(child_name.to_string(), child_index);
         }
 
         Ok(child_index)
@@ -200,12 +199,10 @@ impl Tree {
                 // Check that the parent is not a file
                 bail!("Cannot add a child node to a file");
             }
-            Node::Directory {
-                name: _,
-                metadata: _,
-                children,
-            } => {
-                children.insert(child_name.to_owned(), sub_tree_index);
+            Node::Directory(directory_node) => {
+                directory_node
+                    .children
+                    .insert(child_name.to_owned(), sub_tree_index);
                 self.nodes.extend(tree.nodes);
             }
         }
@@ -214,13 +211,8 @@ impl Tree {
         // the nodes, we only need to offset all indices by the subtree index. We do this for
         // directory nodes.
         for node in &mut self.nodes[sub_tree_index..] {
-            if let Node::Directory {
-                name: _,
-                metadata: _,
-                children,
-            } = node
-            {
-                for (_, index) in children {
+            if let Node::Directory(directory_node) = node {
+                for (_, index) in &mut directory_node.children {
                     *index += sub_tree_index;
                 }
             }
@@ -269,13 +261,13 @@ impl Tree {
             }
 
             match node {
-                Node::File(file_entry) => {
-                    for chunk_hash in &file_entry.chunks {
+                Node::File(file_node) => {
+                    for chunk_hash in &file_node.chunks {
                         hasher.update(chunk_hash.as_bytes());
                     }
                 }
-                Node::Directory { children, .. } => {
-                    for (child_name, child_index) in children {
+                Node::Directory(directory_node) => {
+                    for (child_name, child_index) in &directory_node.children {
                         let child_hash = self.hashes.get(child_index).ok_or_else(|| {
                             anyhow!(
                                 "Child hash not found for index {} (child of {})",
@@ -310,21 +302,17 @@ impl Tree {
 
         match node {
             Node::File(_) => bail!("Cannot serialize a file node as a tree object"),
-            Node::Directory {
-                name,
-                metadata,
-                children,
-            } => {
+            Node::Directory(directory_node) => {
                 let mut serializable_children: BTreeMap<String, Hash> = BTreeMap::new();
-                let mut serializable_files: Vec<FileEntry> = Vec::new();
+                let mut serializable_files: Vec<FileNode> = Vec::new();
 
-                for (child_name, child_index) in children {
+                for (child_name, child_index) in &directory_node.children {
                     let child_node = self
                         .get(*child_index)
                         .expect(&format!("Expected a node with index \'{}\'", child_index));
 
                     match child_node {
-                        Node::File(file_entry) => serializable_files.push(file_entry.clone()),
+                        Node::File(file_node) => serializable_files.push(file_node.clone()),
                         Node::Directory { .. } => {
                             let child_hash = self.hashes.get(&child_index).ok_or_else(|| {
                                 anyhow!(
@@ -339,8 +327,8 @@ impl Tree {
                     }
                 }
                 Ok(SerializableTreeObject {
-                    name: name.clone(),
-                    metadata: metadata.clone(),
+                    name: directory_node.name.clone(),
+                    metadata: directory_node.metadata.clone(),
                     directories: serializable_children,
                     files: serializable_files,
                 })
@@ -452,15 +440,15 @@ impl Tree {
 impl Node {
     pub fn name(&self) -> &str {
         match self {
-            Node::File(file_entry) => file_entry.name.as_ref(),
-            Node::Directory { name, .. } => name,
+            Node::File(file_node) => file_node.name.as_ref(),
+            Node::Directory(directory_node) => directory_node.name.as_ref(),
         }
     }
 
     pub fn metadata(&self) -> &Option<Metadata> {
         match self {
-            Node::File(file_entry) => &file_entry.metadata,
-            Node::Directory { metadata, .. } => metadata,
+            Node::File(file_node) => &file_node.metadata,
+            Node::Directory(directory_node) => &directory_node.metadata,
         }
     }
 }
@@ -483,8 +471,8 @@ impl<'a> Iterator for TreePostorderIterator<'a> {
 
                 self.stack.push((node_index, false));
 
-                if let Node::Directory { children, .. } = node {
-                    for (_child_name, child_index) in children.iter().rev() {
+                if let Node::Directory(directory_node) = node {
+                    for (_child_name, child_index) in directory_node.children.iter().rev() {
                         self.stack.push((*child_index, true));
                     }
                 }
@@ -512,8 +500,8 @@ impl<'a> Iterator for TreePreorderIterator<'a> {
             .get(node_index)
             .expect("Iterator state error: Invalid node index on stack");
 
-        if let Node::Directory { children, .. } = node {
-            for (_child_name, child_index) in children.iter().rev() {
+        if let Node::Directory(directory_node) = node {
+            for (_child_name, child_index) in directory_node.children.iter().rev() {
                 self.stack.push(*child_index);
             }
         }
@@ -557,7 +545,7 @@ mod test {
             }),
         ));
         let _ = tree.add_child(
-            Node::File(FileEntry {
+            Node::File(FileNode {
                 name: "file0".to_string(),
                 metadata: Some(Metadata {
                     size: 33,
@@ -586,7 +574,7 @@ mod test {
             0,
         )?;
         let _ = tree.add_child(
-            Node::File(FileEntry {
+            Node::File(FileNode {
                 name: "file1".to_string(),
                 metadata: Some(Metadata {
                     size: 33,
@@ -601,7 +589,7 @@ mod test {
             dir1,
         )?;
         let _ = tree.add_child(
-            Node::File(FileEntry {
+            Node::File(FileNode {
                 name: "file2".to_string(),
                 metadata: Some(Metadata {
                     size: 33,
@@ -633,23 +621,23 @@ mod test {
         tree.refresh_hashes()?;
         assert_eq!(
             tree.get_hash(0).expect("Expected a hash"),
-            "527bcb87a472a1f00bf04e887fdb7a8ad42c56d4e53ed628badddb7ff5975917"
+            "cf4e03d18518c555ad8704fe4598b99c9f3122604dcbba6acebcaef2b2b43c79"
         );
         assert_eq!(
             tree.get_hash(1).expect("Expected a hash"),
-            "3c30169cc5d808579ba6d076359e679d23a49cc41499aae68d10762ac6f5060f"
+            "53f07fdb4c883fe2173f1c758819779d61e06f7cefd2f977f102685ec5e7cde2"
         );
         assert_eq!(
             tree.get_hash(2).expect("Expected a hash"),
-            "7bd6b7293354710891a689b54126100a5b84056f9b209f87c2bad43f7e4f148d"
+            "02681a9f30c5ff9b017b6afcae3b8b95a6036dddcf1ca6a2d039442bc327979a"
         );
         assert_eq!(
             tree.get_hash(3).expect("Expected a hash"),
-            "fb381f8b32235bb6a42be848ccf674e09c9028154da7a342077be39afab4b208"
+            "af7a826b391786e1bc79794462257cab39e117db281edac6b3fd4b49f140452d"
         );
         assert_eq!(
             tree.get_hash(4).expect("Expected a hash"),
-            "823a3549351d274dd80d0855f9c5ebdc1c3e20c1f90340479fe71b5e42376844"
+            "53058d88b96fcffa4a0b81531a1add5fe4cd29f780d6fb880f4109e78e86e035"
         );
 
         for node_index in tree.iter_preorder() {
@@ -659,15 +647,11 @@ mod test {
 
             match node {
                 Node::File(_) => continue,
-                Node::Directory {
-                    name,
-                    metadata,
-                    children: _,
-                } => {
+                Node::Directory(directory_node) => {
                     let serialized_node = tree.to_serializable_object(node_index)?;
 
-                    assert_eq!(*name, serialized_node.name);
-                    assert_eq!(*metadata, serialized_node.metadata);
+                    assert_eq!(directory_node.name, serialized_node.name);
+                    assert_eq!(directory_node.metadata, serialized_node.metadata);
                 }
             }
         }
@@ -681,41 +665,26 @@ mod test {
         let mut tree: Tree = utils::load_json(&tree0_path)?;
 
         assert!(tree.get(5).is_none());
-        if let Node::Directory {
-            name: _,
-            metadata: _,
-            children,
-        } = tree.get(0).expect("Expected root node")
-        {
-            assert_eq!(children.len(), 2);
-            assert!(children.get("subtree").is_none());
+        if let Node::Directory(directory_node) = tree.get(0).expect("Expected root node") {
+            assert_eq!(directory_node.children.len(), 2);
+            assert!(directory_node.children.get("subtree").is_none());
         }
 
         let subtree = Tree::new_with_root(Node::new_dir("subtree".to_string(), None));
         tree.add_tree(subtree, 0)?; // Append subtree at the root
 
         assert_eq!(tree.get(5).expect("Expected a node").name(), "subtree");
-        if let Node::Directory {
-            name: _,
-            metadata: _,
-            children,
-        } = tree.get(0).expect("Expected root node")
-        {
-            assert_eq!(children.len(), 3);
-            assert_eq!(*children.get("subtree").unwrap(), 5);
+        if let Node::Directory(directory_node) = tree.get(0).expect("Expected root node") {
+            assert_eq!(directory_node.children.len(), 3);
+            assert_eq!(*directory_node.children.get("subtree").unwrap(), 5);
         }
 
         let complex_subtree: Tree = utils::load_json(&tree0_path)?;
         tree.add_tree(complex_subtree, 0)?;
 
-        if let Node::Directory {
-            name: _,
-            metadata: _,
-            children,
-        } = tree.get(6).expect("Expected a node")
-        {
-            assert_eq!(*children.get("file0").unwrap(), 7);
-            assert_eq!(*children.get("dir1").unwrap(), 8);
+        if let Node::Directory(directory_node) = tree.get(6).expect("Expected a node") {
+            assert_eq!(*directory_node.children.get("file0").unwrap(), 7);
+            assert_eq!(*directory_node.children.get("dir1").unwrap(), 8);
         }
 
         Ok(())

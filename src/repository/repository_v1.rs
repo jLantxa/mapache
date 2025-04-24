@@ -39,7 +39,7 @@ use crate::{
 use super::{
     backend::{ChunkResult, RepoVersion, RepositoryBackend, write_version},
     config::Config,
-    snapshot::Snapshot,
+    snapshot::{Snapshot},
     storage::SecureStorage,
 };
 
@@ -281,6 +281,14 @@ impl RepositoryBackend for Repository {
         }
 
         Ok(tree)
+    }
+
+    fn get_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>> {
+        Ok(self
+            .get_snapshots()?
+            .iter()
+            .find(|(snapshot_hash, _)| snapshot_hash == hash)
+            .map(|(_, snapshot)| snapshot.clone()))
     }
 
     /// Get all snapshots in the repository

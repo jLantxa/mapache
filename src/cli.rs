@@ -88,11 +88,23 @@ fn parse_threads(s: &str) -> Result<usize, anyhow::Error> {
 
 #[macro_export]
 macro_rules! log {
-    ($expr:expr) => {
-        println!("{}", $expr);
+    ($($arg:tt)*) => {
+        println!($($arg)*);
     };
 }
 pub use log;
+
+#[macro_export]
+macro_rules! dbg_log {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        {
+        print!("{} ", "[DEBUG]".bold().purple());
+        println!($($arg)*);
+        }
+    };
+}
+pub use dbg_log;
 
 /// Prints a log with a green tag.
 pub fn log_green(tag: &str, str: &str) {

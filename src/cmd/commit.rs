@@ -110,7 +110,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let parent_root_hash: Option<Hash> = find_parent_root_hash(&repo, &scan_mode)?;
 
     if let Some(hash) = &parent_root_hash {
-        cli::log!(format!("Using snapshot \'{}\' as parent", hash));
+        cli::log!("Using snapshot \'{}\' as parent", hash);
     }
 
     cli::log!("Scanning tree...");
@@ -139,20 +139,22 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
     let snapshot_hash = repo.save_snapshot(&snapshot)?;
 
-    cli::log!(format!(
+    cli::log!(
         "{} new files, {} changed",
-        commit_result.num_new_files, commit_result.num_files_changed
-    ));
-    cli::log!(format!(
+        commit_result.num_new_files,
+        commit_result.num_files_changed
+    );
+    cli::log!(
         "{} new directories, {} changed",
-        commit_result.num_new_dirs, commit_result.num_dirs_changed
-    ));
-    cli::log!(format!(
+        commit_result.num_new_dirs,
+        commit_result.num_dirs_changed
+    );
+    cli::log!(
         "Total size: {} -> {} ({})",
         format_size(scan_result.total_file_size),
         format!("{} commited", format_size(commit_result.bytes_commited)).cyan(),
         format!("{} written", format_size(commit_result.bytes_written)).purple()
-    ));
+    );
     cli::log_green("Finished", &format!("Created snapshot {}", &snapshot_hash));
 
     Ok(())
@@ -192,11 +194,10 @@ fn find_parent_root_hash(
             }
         }
         ScanMode::Parent(parent_id) => {
-            let snapshots = repo.get_snapshots()?;
-            let found_parent = snapshots.iter().find(|(id, _)| id == parent_id);
+            let snapshot = repo.get_snapshot(parent_id)?;
 
-            match found_parent {
-                Some((_, parent_snapshot)) => {
+            match snapshot {
+                Some(parent_snapshot) => {
                     // Found the parent, return its root hash
                     Ok(Some(parent_snapshot.root.clone()))
                 }

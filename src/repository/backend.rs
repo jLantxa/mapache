@@ -65,6 +65,9 @@ pub trait RepositoryBackend {
     /// Restores a Tree from the SerializableTreeObject's in the repository.
     fn get_tree(&self, root_hash: &Hash) -> Result<Tree>;
 
+    /// Get a snapshot by hash
+    fn get_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>>;
+
     /// Get all snapshots in the repository
     fn get_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>>;
 

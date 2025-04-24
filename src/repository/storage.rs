@@ -223,10 +223,11 @@ mod tests {
             assert_eq!(*original_data, *decompressed_data);
 
             let ratio = original_data.len() as f64 / compressed_data.len() as f64;
-            cli::log!(format!(
+            cli::log!(
                 "Compression level {}: Ratio = {:.2}",
-                compression_level, ratio
-            ));
+                compression_level,
+                ratio
+            );
         }
     }
 

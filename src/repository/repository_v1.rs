@@ -31,8 +31,11 @@ use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    filesystem::tree::{DirectoryNode, FileNode, Node, NodeIndex, SerializableTreeObject, Tree},
-    storage_backend::{backend::StorageBackend},
+    filesystem::{
+        size,
+        tree::{DirectoryNode, FileNode, Node, NodeIndex, SerializableTreeObject, Tree},
+    },
+    storage_backend::backend::StorageBackend,
     utils::{self, Hash, Hashable},
 };
 
@@ -52,6 +55,10 @@ const KEYS_DIR: &str = "keys";
 
 const DATA_FOLD_LENGTH: usize = 2;
 const TREE_FOLD_LENGTH: usize = 2;
+
+const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
+const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
+const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
 
 pub struct Repository {
     backend: Arc<dyn StorageBackend>,
@@ -333,10 +340,6 @@ impl RepositoryBackend for Repository {
     /// The content hash of each chunk is used to identify the chunk and determine
     /// if the chunk already exists in the repository.
     fn put_file(&self, src_path: &Path) -> Result<ChunkResult> {
-        const MIN_CHUNK_SIZE: u32 = 4096;
-        const AVG_CHUNK_SIZE: u32 = 16384;
-        const MAX_CHUNK_SIZE: u32 = 65535;
-
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
         let reader = BufReader::new(source);

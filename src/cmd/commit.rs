@@ -155,7 +155,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         format!("{} commited", format_size(commit_result.bytes_commited)).cyan(),
         format!("{} written", format_size(commit_result.bytes_written)).purple()
     );
-    cli::log_green("Finished", &format!("Created snapshot {}", &snapshot_hash));
+    cli::log_green(
+        "Finished",
+        &format!("Created snapshot \'{}\'", &snapshot_hash),
+    );
 
     Ok(())
 }

@@ -16,3 +16,11 @@
 
 pub mod metadata;
 pub mod tree;
+
+#[allow(non_upper_case_globals)]
+pub mod size {
+    pub const KiB: usize = 1024;
+    pub const MiB: usize = KiB * 1024;
+    pub const GiB: usize = MiB * 1024;
+    pub const TiB: usize = GiB * 1024;
+}

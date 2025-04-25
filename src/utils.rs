@@ -21,6 +21,8 @@ use blake3::Hasher;
 use rayon::ThreadPoolBuilder;
 use serde::{Serialize, de::DeserializeOwned};
 
+use crate::filesystem::size;
+
 pub type Hash = String;
 
 /// Calculates the 256-bit hash of a byte array
@@ -59,20 +61,16 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(data)
 }
 
+#[allow(non_upper_case_globals)]
 pub fn format_size(bytes: usize) -> String {
-    const KB: usize = 1000;
-    const MB: usize = KB * 1000;
-    const GB: usize = MB * 1000;
-    const TB: usize = GB * 1000;
-
-    if bytes >= TB {
-        return format!("{:.2} TB", (bytes as f64) / (TB as f64));
-    } else if bytes >= GB {
-        return format!("{:.2} GB", (bytes as f64) / (GB as f64));
-    } else if bytes >= MB {
-        return format!("{:.2} MB", (bytes as f64) / (MB as f64));
-    } else if bytes >= KB {
-        return format!("{:.2} KB", (bytes as f64) / (KB as f64));
+    if bytes >= size::TiB {
+        return format!("{:.2} TiB", (bytes as f64) / (size::TiB as f64));
+    } else if bytes >= size::GiB {
+        return format!("{:.2} GiB", (bytes as f64) / (size::GiB as f64));
+    } else if bytes >= size::MiB {
+        return format!("{:.2} MiB", (bytes as f64) / (size::MiB as f64));
+    } else if bytes >= size::KiB {
+        return format!("{:.2} KiB", (bytes as f64) / (size::KiB as f64));
     } else if bytes != 1 {
         return format!("{} bytes", bytes);
     } else {
@@ -113,11 +111,11 @@ mod tests {
     fn test_format_size() {
         assert_eq!(format_size(1), "1 byte");
         assert_eq!(format_size(324), "324 bytes");
-        assert_eq!(format_size(1_205), "1.21 KB");
-        assert_eq!(format_size(124_112), "124.11 KB");
-        assert_eq!(format_size(1_045_024), "1.05 MB");
-        assert_eq!(format_size(12_995_924), "13.00 MB");
-        assert_eq!(format_size(1_500_000_000), "1.50 GB");
-        assert_eq!(format_size(2_100_000_100_000), "2.10 TB");
+        assert_eq!(format_size(1_205), "1.18 KiB");
+        assert_eq!(format_size(124_112), "121.20 KiB");
+        assert_eq!(format_size(1_045_024), "1020.53 KiB");
+        assert_eq!(format_size(12_995_924), "12.39 MiB");
+        assert_eq!(format_size(1_500_000_000), "1.40 GiB");
+        assert_eq!(format_size(2_100_000_100_000), "1.91 TiB");
     }
 }

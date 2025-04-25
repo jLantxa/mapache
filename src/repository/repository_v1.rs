@@ -32,14 +32,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     filesystem::tree::{DirectoryNode, FileNode, Node, NodeIndex, SerializableTreeObject, Tree},
-    storage_backend::backend::StorageBackend,
+    storage_backend::{backend::StorageBackend},
     utils::{self, Hash, Hashable},
 };
 
 use super::{
     backend::{ChunkResult, RepoVersion, RepositoryBackend, write_version},
     config::Config,
-    snapshot::{Snapshot},
+    snapshot::Snapshot,
     storage::SecureStorage,
 };
 
@@ -221,9 +221,16 @@ impl RepositoryBackend for Repository {
                     let node_hash = tree
                         .get_hash(node_index)
                         .expect(&format!("Expected hash for index \'{}\'", node_index));
+
+                    // We first write to a tmp file. After completion, we rename the file
+                    // If the write got interrupted, the file would exist but it would be
+                    // corrupted.
                     let serialized_tree_path = self.get_tree_object_path(node_hash);
+                    let serialized_tree_tmp_path = serialized_tree_path.with_extension(".tmp");
                     self.secure_storage
-                        .save_json(&serializable_node, &serialized_tree_path)?;
+                        .save_json(&serializable_node, &serialized_tree_tmp_path)?;
+                    self.backend
+                        .rename(&serialized_tree_tmp_path, &serialized_tree_path)?;
                 }
             }
         }
@@ -354,14 +361,18 @@ impl RepositoryBackend for Repository {
             chunk_hashes.push(content_hash.clone());
 
             let chunk_path = self.get_data_object_path(&content_hash);
+            let chunk_temp_path = chunk_path.with_extension(".tmp");
 
             total_bytes_read += chunk.length;
 
             // Only save the chunk if it doesn't exist yet
             if !chunk_path.exists() {
+                // We first write to a tmp file. After completion, we rename the file
+                // If the write got interrupted, the file would exist but it would be
+                // corrupted.
                 total_bytes_written += self
                     .secure_storage
-                    .save_file(&chunk.data, &chunk_path)
+                    .save_file(&chunk.data, &chunk_temp_path)
                     .with_context(|| {
                         format!(
                             "Could not save chunk #{} ({}) for file \'{}\'",
@@ -370,6 +381,7 @@ impl RepositoryBackend for Repository {
                             src_path.display()
                         )
                     })?;
+                self.backend.rename(&chunk_temp_path, &chunk_path)?;
             }
         }
 
@@ -418,10 +430,18 @@ impl RepositoryBackend for Repository {
         Ok(())
     }
 
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash> {
+    fn put_snapshot(&self, snapshot: &Snapshot) -> Result<Hash> {
         let hash = snapshot.hash();
+
+        // We first write to a tmp file. After completion, we rename the file
+        // If the write got interrupted, the file would exist but it would be
+        // corrupted.
         let snapshot_path = self.snapshot_path.join(&hash);
-        self.secure_storage.save_json(snapshot, &snapshot_path)?;
+        let snapshot_tmp_path = snapshot_path.with_extension(".tmp");
+        self.secure_storage
+            .save_json(snapshot, &snapshot_tmp_path)?;
+        self.backend.rename(&snapshot_tmp_path, &snapshot_path)?;
+
         Ok(hash)
     }
 }

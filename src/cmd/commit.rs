@@ -137,7 +137,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         root: root_hash,
         description: args.description.clone(),
     };
-    let snapshot_hash = repo.save_snapshot(&snapshot)?;
+    let snapshot_hash = repo.put_snapshot(&snapshot)?;
 
     cli::log!(
         "{} new files, {} changed",

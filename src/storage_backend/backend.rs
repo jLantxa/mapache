@@ -32,6 +32,9 @@ pub trait StorageBackend: Send + Sync {
     /// Write to file, creating the file if necessary.
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()>;
 
+    /// Rename a file
+    fn rename(&self, from: &Path, to: &Path) -> Result<()>;
+
     /// Creates a new, empty directory at the provided path.
     fn create_dir(&self, path: &Path) -> Result<()>;
 

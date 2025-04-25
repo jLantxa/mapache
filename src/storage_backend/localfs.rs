@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -30,18 +30,28 @@ impl LocalFS {
 }
 
 impl StorageBackend for LocalFS {
-    fn read(&self, path: &std::path::Path) -> Result<Vec<u8>> {
+    fn read(&self, path: &Path) -> Result<Vec<u8>> {
         let data = std::fs::read(path)
             .with_context(|| format!("Could not read \'{}\' from local backend", path.display()))?;
         Ok(data)
     }
 
-    fn write(&self, path: &std::path::Path, contents: &[u8]) -> Result<()> {
+    fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
         std::fs::write(path, contents)
             .with_context(|| format!("Could not write to \'{}\' in local backend", path.display()))
     }
 
-    fn create_dir(&self, path: &std::path::Path) -> Result<()> {
+    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        std::fs::rename(from, to).with_context(|| {
+            format!(
+                "Could not rename \'{}\' to \'{}\' in local backend",
+                from.display(),
+                to.display()
+            )
+        })
+    }
+
+    fn create_dir(&self, path: &Path) -> Result<()> {
         std::fs::create_dir(path).with_context(|| {
             format!(
                 "Could not create directory \'{}\' in local backend",
@@ -50,7 +60,7 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    fn create_dir_all(&self, path: &std::path::Path) -> Result<()> {
+    fn create_dir_all(&self, path: &Path) -> Result<()> {
         std::fs::create_dir_all(path).with_context(|| {
             format!(
                 "Could not create directory \'{}\' in local backend",
@@ -59,7 +69,7 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    fn remove_dir(&self, path: &std::path::Path) -> Result<()> {
+    fn remove_dir(&self, path: &Path) -> Result<()> {
         std::fs::remove_dir(path).with_context(|| {
             format!(
                 "Could not remove directory \'{}\' in local backend",
@@ -68,7 +78,7 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    fn remove_dir_all(&self, path: &std::path::Path) -> Result<()> {
+    fn remove_dir_all(&self, path: &Path) -> Result<()> {
         std::fs::remove_dir_all(path).with_context(|| {
             format!(
                 "Could not remove directory \'{}\' in local backend",
@@ -77,7 +87,7 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    fn exists(&self, path: &std::path::Path) -> Result<bool> {
+    fn exists(&self, path: &Path) -> Result<bool> {
         std::fs::exists(path).with_context(|| {
             format!(
                 "Could not check if \'{}\' exists in local backend",
@@ -86,7 +96,7 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    fn read_dir(&self, path: &std::path::Path) -> Result<Vec<PathBuf>> {
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let mut paths = Vec::new();
         for entry in std::fs::read_dir(path).with_context(|| {
             format!(

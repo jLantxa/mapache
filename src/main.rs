@@ -16,7 +16,6 @@
 
 pub mod cli;
 pub mod cmd;
-pub mod filesystem;
 pub mod repository;
 pub mod storage_backend;
 pub mod testing;

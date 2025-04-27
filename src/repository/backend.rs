@@ -19,12 +19,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
-use crate::filesystem::tree::{FileNode, Tree};
 use crate::storage_backend::backend::StorageBackend;
 use crate::utils::Hash;
 
-use super::repository_v1;
 use super::snapshot::Snapshot;
+use super::tree::Tree;
+use super::{repository_v1, tree};
 
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
@@ -55,27 +55,27 @@ pub trait RepositoryBackend {
     where
         Self: Sized;
 
-    fn put_file(&self, src_path: &Path) -> Result<ChunkResult>;
+    fn save_file(&self, src_path: &Path) -> Result<ChunkResult>;
 
-    fn restore_file(&self, file: &FileNode, dst_path: &Path) -> Result<()>;
+    fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
 
     /// Serializes a Tree into SerializableTreeObject's into the repository storage.
-    fn put_tree(&self, tree: &Tree) -> Result<Hash>;
+    fn save_tree(&self, tree: &Tree) -> Result<Hash>;
 
     /// Restores a Tree from the SerializableTreeObject's in the repository.
-    fn get_tree(&self, root_hash: &Hash) -> Result<Tree>;
+    fn load_tree(&self, root_hash: &Hash) -> Result<Tree>;
 
     /// Saves a snapshot metadata
-    fn put_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;
 
     /// Get a snapshot by hash
-    fn get_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>>;
+    fn load_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>>;
 
     /// Get all snapshots in the repository
-    fn get_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>>;
+    fn load_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>>;
 
     /// Get all snapshots in the repository, sorted by datetime.
-    fn get_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>>;
+    fn load_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>>;
 }
 
 pub fn init_repository_with_version(

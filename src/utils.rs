@@ -21,8 +21,6 @@ use blake3::Hasher;
 use rayon::ThreadPoolBuilder;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::filesystem::size;
-
 pub type Hash = String;
 
 /// Calculates the 256-bit hash of a byte array
@@ -59,6 +57,14 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let file = File::open(path)?;
     let data = serde_json::from_reader(file)?;
     Ok(data)
+}
+
+#[allow(non_upper_case_globals)]
+pub mod size {
+    pub const KiB: usize = 1024;
+    pub const MiB: usize = KiB * 1024;
+    pub const GiB: usize = MiB * 1024;
+    pub const TiB: usize = GiB * 1024;
 }
 
 #[allow(non_upper_case_globals)]

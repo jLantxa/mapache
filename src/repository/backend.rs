@@ -29,6 +29,10 @@ use super::{repository_v1, tree};
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
 
+pub type BlobId = Hash;
+pub type TreeId = Hash;
+pub type SnapshotId = Hash;
+
 #[derive(Debug)]
 pub struct ChunkResult {
     pub chunks: Vec<Hash>,

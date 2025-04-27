@@ -18,7 +18,7 @@ use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::{Hash, Hashable};
+use super::backend::SnapshotId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -26,17 +26,18 @@ pub struct Snapshot {
     pub timestamp: DateTime<Utc>,
 
     /// Hash ID for the tree object root.
-    pub root: Hash,
+    pub root: SnapshotId,
 
     /// Description of the snapshot.
     pub description: Option<String>,
 }
 
-impl Hashable for Snapshot {
-    fn hash(&self) -> Hash {
+impl Snapshot {
+    pub fn hash(&self) -> SnapshotId {
+        let json_str = serde_json::to_string(self).unwrap();
+
         let mut hasher = Hasher::new();
-        hasher.update(serde_json::to_string(self).unwrap().as_bytes());
-        let hash = hasher.finalize();
-        format!("{}", hash)
+        hasher.update(json_str.as_bytes());
+        hasher.finalize().to_string()
     }
 }

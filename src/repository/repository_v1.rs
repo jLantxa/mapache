@@ -89,10 +89,10 @@ impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
     fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<Self> {
         if repo_path.exists() {
-            bail!(format!(
+            bail!(
                 "Could not initialize a repository because a directory already exists in \'{}\'",
                 repo_path.display()
-            ));
+            );
         }
 
         // Init repository structure

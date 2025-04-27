@@ -93,7 +93,7 @@ pub fn init_repository_with_version(
         return Ok(Box::new(repo_v1));
     }
 
-    bail!(format!("Invalid repository version \'{}\'", version));
+    bail!("Invalid repository version \'{}\'", version);
 }
 
 pub fn open(
@@ -116,7 +116,7 @@ fn open_repository_with_version(
         return Ok(Box::new(repo_v1));
     }
 
-    bail!(format!("Invalid repository version \'{}\'", version));
+    bail!("Invalid repository version \'{}\'", version);
 }
 
 const VERSION_FILE_NAME: &str = "version";

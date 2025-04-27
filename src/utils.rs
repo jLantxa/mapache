@@ -31,11 +31,6 @@ pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash {
     format!("{}", hash)
 }
 
-pub trait Hashable {
-    /// Calculates a hash
-    fn hash(&self) -> Hash;
-}
-
 /// Serializes a struct to JSON and save it to a file
 /// The output has no special formatting.
 pub fn save_json<T: Serialize>(data: &T, path: &Path) -> Result<()> {

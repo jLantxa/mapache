@@ -31,11 +31,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     storage_backend::backend::StorageBackend,
-    utils::{self, Hash, Hashable, size},
+    utils::{self, Hash, size},
 };
 
 use super::{
-    backend::{ChunkResult, RepoVersion, RepositoryBackend, write_version},
+    backend::{ChunkResult, RepoVersion, RepositoryBackend, SnapshotId, write_version},
     config::Config,
     snapshot::Snapshot,
     storage::SecureStorage,
@@ -77,12 +77,11 @@ struct KeyFile {
     salt: String,
 }
 
-impl Hashable for KeyFile {
-    fn hash(&self) -> Hash {
+impl KeyFile {
+    pub fn hash(&self) -> Hash {
         let mut hasher = Hasher::new();
         hasher.update(serde_json::to_string(self).unwrap().as_bytes());
-        let hash = hasher.finalize();
-        format!("{}", hash)
+        hasher.finalize().to_string()
     }
 }
 
@@ -357,7 +356,7 @@ impl RepositoryBackend for Repository {
         todo!()
     }
 
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash> {
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {
         let hash = snapshot.hash();
 
         // We first write to a tmp file. After completion, we rename the file
@@ -445,7 +444,7 @@ mod test {
 
     use tempfile::tempdir;
 
-    use crate::{storage_backend::localfs::LocalFS, testing};
+    use crate::storage_backend::localfs::LocalFS;
 
     use super::*;
 

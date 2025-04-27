@@ -16,14 +16,47 @@
 
 use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
+
+use super::backend::{BlobId, TreeId};
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Metadata {
     pub size: u64,
-    pub modified: Option<SystemTime>,
-    pub created: Option<SystemTime>,
-    pub permissions: Option<u32>, // For Unix-like modes
+    pub mode: Option<u32>,
+    pub created_time: Option<SystemTime>,
+    pub modified_time: Option<SystemTime>,
+    pub accessed_time: Option<SystemTime>,
+
+    pub user: Option<String>,
+    pub group: Option<String>,
     pub owner_uid: Option<u32>,
     pub owner_gid: Option<u32>,
 }
-pub struct Node {}
 
-pub struct Tree {}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum NodeType {
+    File,
+    Directory,
+    Simlink,
+}
+
+/// A Node, representing an item in a filesystem.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Node {
+    pub name: String,
+    pub node_type: NodeType,
+
+    #[serde(flatten)]
+    pub metadata: Metadata,
+
+    pub contents: Option<Vec<BlobId>>,
+    pub tree: Option<TreeId>,
+}
+
+/// A tree, represented as a collection of its immediate children nodes.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Tree {
+    pub nodes: Vec<Node>,
+}

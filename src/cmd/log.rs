@@ -36,7 +36,7 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
     let repo = repository::backend::open(backend, &repo_path, password)?;
 
-    let _snapshots = repo.get_snapshots_sorted()?;
+    let _snapshots = repo.load_snapshots_sorted()?;
 
     todo!()
 }

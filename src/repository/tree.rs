@@ -14,13 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod metadata;
-pub mod tree;
+use std::time::SystemTime;
 
-#[allow(non_upper_case_globals)]
-pub mod size {
-    pub const KiB: usize = 1024;
-    pub const MiB: usize = KiB * 1024;
-    pub const GiB: usize = MiB * 1024;
-    pub const TiB: usize = GiB * 1024;
+pub struct Metadata {
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    pub permissions: Option<u32>, // For Unix-like modes
+    pub owner_uid: Option<u32>,
+    pub owner_gid: Option<u32>,
 }
+pub struct Node {}
+
+pub struct Tree {}

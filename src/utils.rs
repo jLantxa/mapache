@@ -14,12 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{fs::File, path::Path};
-
 use anyhow::{Context, Result};
 use blake3::Hasher;
 use rayon::ThreadPoolBuilder;
-use serde::{Serialize, de::DeserializeOwned};
 
 pub type Hash = String;
 
@@ -27,31 +24,7 @@ pub type Hash = String;
 pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash {
     let mut hasher = Hasher::new();
     hasher.update(data.as_ref());
-    let hash = hasher.finalize();
-    format!("{}", hash)
-}
-
-/// Serializes a struct to JSON and save it to a file
-/// The output has no special formatting.
-pub fn save_json<T: Serialize>(data: &T, path: &Path) -> Result<()> {
-    let file = File::create(path)?;
-    serde_json::to_writer(file, data)?;
-    Ok(())
-}
-
-/// Serializes a struct to JSON and save it to a file
-/// The output is formatted to be legible.
-pub fn save_json_pretty<T: Serialize>(data: &T, path: &Path) -> Result<()> {
-    let file = File::create(path)?;
-    serde_json::to_writer_pretty(file, data)?;
-    Ok(())
-}
-
-/// Deserializes a JSON from a file
-pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let file = File::open(path)?;
-    let data = serde_json::from_reader(file)?;
-    Ok(data)
+    hasher.finalize().to_string()
 }
 
 #[allow(non_upper_case_globals)]

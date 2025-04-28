@@ -77,14 +77,6 @@ struct KeyFile {
     salt: String,
 }
 
-impl KeyFile {
-    pub fn hash(&self) -> Hash {
-        let mut hasher = Hasher::new();
-        hasher.update(serde_json::to_string(self).unwrap().as_bytes());
-        hasher.finalize().to_string()
-    }
-}
-
 impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
     fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<Self> {
@@ -126,8 +118,9 @@ impl RepositoryBackend for Repository {
         // Create new key
         let (key, keyfile) =
             Repository::generate_key(&password).with_context(|| "Could not generate key")?;
-        let keyfile_hash = keyfile.hash();
-        let keyfile_path = &keys_path.join(keyfile_hash);
+        let keyfile_json = serde_json::to_string_pretty(&key)?;
+        let keyfile_hash = utils::calculate_hash(&keyfile_json);
+        let keyfile_path = &keys_path.join(&keyfile_hash);
         backend.write(
             &keyfile_path,
             &SecureStorage::compress(
@@ -140,10 +133,14 @@ impl RepositoryBackend for Repository {
 
         // Save new config
         let config = Config::default();
-        let secure_storage = SecureStorage::new(backend.to_owned())
+        let secure_storage: SecureStorage = SecureStorage::new(backend.to_owned())
             .with_key(key)
             .with_compression(config.compression_level.to_i32());
-        secure_storage.save_json(&config, &repo_path.join("config"))?;
+        let config_json = serde_json::to_string_pretty(&config)?;
+        secure_storage.save_file_with_rename(
+            &config_json.as_bytes(),
+            &repo_path.join("config").with_extension(".tmp"),
+        )?;
 
         Ok(Self {
             backend: backend.to_owned(),
@@ -182,7 +179,8 @@ impl RepositoryBackend for Repository {
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
         let tree_path = repo_path.join(TREE_DIR);
 
-        let config: Config = storage.load_json(&repo_path.join("config"))?;
+        let config_json = storage.load_file(&repo_path.join("config"))?;
+        let config: Config = serde_json::from_slice(&config_json)?;
         let storage = storage.with_compression(config.compression_level.to_i32());
 
         let repo = Repository {
@@ -199,20 +197,11 @@ impl RepositoryBackend for Repository {
         Ok(repo)
     }
 
-    /// Serializes a Tree into SerializableTreeObject's into the repository storage.
-    ///
-    /// For each directory node in the tree, we create a serializable tree object with the
-    /// contents (files and directories) and metadata of that node. The child directories are
-    /// referenced by their hash values.
-    /// Each serializable tree object has a unique content hash that is used to identify it in the
-    /// repository.
-    ///
-    /// To avoid potential stack overflows with very deep trees, this function uses a DFS pre-order
-    /// iterator.
-    ///
-    /// This function requires that the `Tree` hashes be updated.
-    fn save_tree(&self, _tree: &tree::Tree) -> Result<Hash> {
-        todo!()
+    fn save_tree(&self, tree: &tree::Tree) -> Result<Hash> {
+        let s = serde_json::to_string_pretty(tree)?;
+        self.secure_storage
+            .save_file_with_rename(s.as_bytes(), Path::new("src"))?;
+        Ok(s)
     }
 
     fn load_tree(&self, _root_hash: &Hash) -> Result<tree::Tree> {
@@ -239,7 +228,8 @@ impl RepositoryBackend for Repository {
             if path.is_file() {
                 if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
                     let hash = file_name.to_string(); // Extract hash from filename
-                    let snapshot: Snapshot = self.secure_storage.load_json(&path)?;
+                    let snapshot_json = self.secure_storage.load_file(&path)?;
+                    let snapshot: Snapshot = serde_json::from_slice(&snapshot_json)?;
                     snapshots.push((hash, snapshot));
                 }
             }
@@ -286,18 +276,14 @@ impl RepositoryBackend for Repository {
             chunk_hashes.push(content_hash.clone());
 
             let chunk_path = self.get_data_object_path(&content_hash);
-            let chunk_temp_path = chunk_path.with_extension(".tmp");
 
             total_bytes_read += chunk.length;
 
             // Only save the chunk if it doesn't exist yet
             if !chunk_path.exists() {
-                // We first write to a tmp file. After completion, we rename the file
-                // If the write got interrupted, the file would exist but it would be
-                // corrupted.
                 total_bytes_written += self
                     .secure_storage
-                    .save_file(&chunk.data, &chunk_temp_path)
+                    .save_file_with_rename(&chunk.data, &chunk_path)
                     .with_context(|| {
                         format!(
                             "Could not save chunk #{} ({}) for file \'{}\'",
@@ -306,7 +292,6 @@ impl RepositoryBackend for Repository {
                             src_path.display()
                         )
                     })?;
-                self.backend.rename(&chunk_temp_path, &chunk_path)?;
             }
         }
 
@@ -357,16 +342,12 @@ impl RepositoryBackend for Repository {
     }
 
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {
-        let hash = snapshot.hash();
+        let snapshot_json = serde_json::to_string_pretty(snapshot)?;
+        let hash = utils::calculate_hash(&snapshot_json);
 
-        // We first write to a tmp file. After completion, we rename the file
-        // If the write got interrupted, the file would exist but it would be
-        // corrupted.
         let snapshot_path = self.snapshot_path.join(&hash);
-        let snapshot_tmp_path = snapshot_path.with_extension(".tmp");
         self.secure_storage
-            .save_json(snapshot, &snapshot_tmp_path)?;
-        self.backend.rename(&snapshot_tmp_path, &snapshot_path)?;
+            .save_file_with_rename(&snapshot_json.as_bytes(), &snapshot_path)?;
 
         Ok(hash)
     }
@@ -374,7 +355,7 @@ impl RepositoryBackend for Repository {
 
 impl Repository {
     /// Returns the path to a tree object with a given hash in the repository.
-    fn load_tree_path(&self, hash: &Hash) -> PathBuf {
+    fn get_tree_path(&self, hash: &Hash) -> PathBuf {
         self.tree_path
             .join(&hash[..TREE_FOLD_LENGTH])
             .join(&hash[TREE_FOLD_LENGTH..])

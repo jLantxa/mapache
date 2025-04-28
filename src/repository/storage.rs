@@ -16,13 +16,11 @@
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key as AesKey, KeyInit, Nonce};
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use argon2::Argon2;
 use rand::{Rng, RngCore};
 use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecret, SecretBox};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -94,27 +92,11 @@ impl SecureStorage {
         Ok(out_data.len())
     }
 
-    /// Serialize a JSON metadata file.
-    pub fn load_json<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
-        let data = self.load_file(path).with_context(|| {
-            format!(
-                "Could not deserialize metadata (file load error) \'{}\'",
-                path.display()
-            )
-        })?;
-        let text = String::from_utf8(data)?;
-        serde_json::from_str(&text).with_context(|| "Could not load metadata")
-    }
-
-    /// Serialize a JSON metadata file.
-    pub fn save_json<T: Serialize>(&self, metadata: &T, path: &Path) -> Result<()> {
-        let serialized_txt =
-            serde_json::to_string(metadata).with_context(|| "Could not serialize metadata")?;
-        let data = serialized_txt.as_bytes().to_vec();
-        self.save_file(&data, path)
-            .with_context(|| "Could not save metadata")?;
-
-        Ok(())
+    pub fn save_file_with_rename(&self, data: &[u8], path: &Path) -> Result<usize> {
+        let tmp_path = path.with_extension(".tmp");
+        let size = self.save_file(data, &tmp_path)?;
+        self.backend.rename(&tmp_path, path)?;
+        Ok(size)
     }
 
     /// Compress a stream of bytes

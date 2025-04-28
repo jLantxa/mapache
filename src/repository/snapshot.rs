@@ -14,7 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -30,14 +29,4 @@ pub struct Snapshot {
 
     /// Description of the snapshot.
     pub description: Option<String>,
-}
-
-impl Snapshot {
-    pub fn hash(&self) -> SnapshotId {
-        let json_str = serde_json::to_string(self).unwrap();
-
-        let mut hasher = Hasher::new();
-        hasher.update(json_str.as_bytes());
-        hasher.finalize().to_string()
-    }
 }

@@ -156,11 +156,23 @@ pub struct Tree {
     pub nodes: Vec<Node>,
 }
 
-pub struct FilesystemNodeStreamer {
+/// A streamer that traverses a filesystem tree starting from a given root path.
+///
+/// It yields nodes (`Result<(PathBuf, Node)>`) in strict lexicographical order by their full path.
+/// This streamer implements a Depth-First Search (DFS) pre-order traversal algorithm
+/// using an explicit stack of paths. It achieves lexicographical order by sorting
+/// directory children paths and pushing them onto the stack in reverse order.
+///
+/// Errors encountered during directory listing or metadata reading are reported
+/// directly in the stream as `Some(Err(_))`.
+pub struct FSNodeStreamer {
+    /// The stack of paths to directories and files that still need to be processed.
+    /// When a directory path is processed, its children's paths are pushed onto the stack
+    /// in reverse alphabetical order to ensure they are popped in alphabetical order later.
     stack: Vec<PathBuf>,
 }
 
-impl FilesystemNodeStreamer {
+impl FSNodeStreamer {
     pub fn new(root_path: &Path) -> Result<Self> {
         if !root_path.exists() {
             bail!(
@@ -169,7 +181,7 @@ impl FilesystemNodeStreamer {
             );
         }
 
-        Ok(FilesystemNodeStreamer {
+        Ok(FSNodeStreamer {
             stack: vec![root_path.to_path_buf()],
         })
     }
@@ -197,7 +209,10 @@ impl FilesystemNodeStreamer {
     }
 }
 
-impl Iterator for FilesystemNodeStreamer {
+/// Implements the Iterator trait for `FSNodeStreamer`, providing the streaming capability.
+///
+/// The iterator yields `Result<(PathBuf, Node)>` items in strict lexicographical order.
+impl Iterator for FSNodeStreamer {
     type Item = Result<(PathBuf, Node)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -312,7 +327,10 @@ where
     type Item = Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match (&self.previous_node, &self.incoming_node) {
+        match (
+            self.previous_node.as_mut().as_ref(),
+            self.incoming_node.as_mut().as_ref(),
+        ) {
             // Both streams are exhausted
             (None, None) => None,
 

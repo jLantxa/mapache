@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::{BufReader, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -24,7 +24,6 @@ use std::{
 use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose};
-use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::{Deserialize, Serialize};
@@ -137,10 +136,7 @@ impl RepositoryBackend for Repository {
             .with_key(key)
             .with_compression(config.compression_level.to_i32());
         let config_json = serde_json::to_string_pretty(&config)?;
-        secure_storage.save_file_with_rename(
-            &config_json.as_bytes(),
-            &repo_path.join("config").with_extension(".tmp"),
-        )?;
+        secure_storage.save_file_with_rename(&config_json.as_bytes(), &repo_path.join("config"))?;
 
         Ok(Self {
             backend: backend.to_owned(),
@@ -302,43 +298,57 @@ impl RepositoryBackend for Repository {
         })
     }
 
-    fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()> {
-        // let mut dst_file = OpenOptions::new()
-        //     .create(true)
-        //     .truncate(true)
-        //     .write(true)
-        //     .open(dst_path)
-        //     .with_context(|| {
-        //         format!("Could not create destination file '{}'", dst_path.display())
-        //     })?;
+    fn restore_node(&self, node: &tree::Node, dst_path: &Path) -> Result<()> {
+        match node.node_type {
+            tree::NodeType::File => {
+                let mut dst_file = OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(dst_path)
+                    .with_context(|| {
+                        format!("Could not create destination file '{}'", dst_path.display())
+                    })?;
 
-        // for (index, chunk_hash) in file.contents.iter().enumerate() {
-        //     let chunk_path = self.get_data_object_path(&chunk_hash);
+                let chunks = node
+                    .contents
+                    .as_ref()
+                    .expect("File Node must have contents (even if empty)");
 
-        //     let chunk_data = self
-        //         .secure_storage
-        //         .load_file(&chunk_path)
-        //         .with_context(|| {
-        //             format!(
-        //                 "Could not load chunk #{} ({}) for restoring file '{}'",
-        //                 index + 1,
-        //                 chunk_hash,
-        //                 dst_path.display()
-        //             )
-        //         })?;
+                for (index, chunk_hash) in chunks.iter().enumerate() {
+                    let chunk_path = self.get_data_object_path(&chunk_hash);
 
-        //     dst_file.write_all(&chunk_data).with_context(|| {
-        //         format!(
-        //             "Could not restore chunk #{} ({}) to file '{}'",
-        //             index + 1,
-        //             chunk_hash,
-        //             dst_path.display()
-        //         )
-        //     })?;
-        // }
+                    let chunk_data =
+                        self.secure_storage
+                            .load_file(&chunk_path)
+                            .with_context(|| {
+                                format!(
+                                    "Could not load chunk #{} ({}) for restoring file '{}'",
+                                    index + 1,
+                                    chunk_hash,
+                                    dst_path.display()
+                                )
+                            })?;
 
-        // Ok(())
-        todo!()
+                    dst_file.write_all(&chunk_data).with_context(|| {
+                        format!(
+                            "Could not restore chunk #{} ({}) to file '{}'",
+                            index + 1,
+                            chunk_hash,
+                            dst_path.display()
+                        )
+                    })?;
+
+                    if let Some(mtime) = node.metadata.modified_time {
+                        dst_file.set_modified(mtime)?;
+                    }
+                }
+            }
+            tree::NodeType::Directory => todo!(),
+            tree::NodeType::Symlink => todo!(),
+        }
+
+        Ok(())
     }
 
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {
@@ -425,7 +435,7 @@ mod test {
 
     use tempfile::tempdir;
 
-    use crate::storage_backend::localfs::LocalFS;
+    use crate::{repository::tree::FSNodeStreamer, storage_backend::localfs::LocalFS, testing};
 
     use super::*;
 
@@ -450,33 +460,33 @@ mod test {
 
     /// Test file chunk and restore
     #[test]
-    #[ignore]
     fn heavy_test_chunk_and_restore() -> Result<()> {
-        // let temp_repo_dir = tempdir()?;
-        // let temp_repo_path = temp_repo_dir.path().join("repo");
+        let temp_repo_dir = tempdir()?;
+        let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        // let src_file_path = testing::get_test_path("tree0.json");
-        // let dst_file_path = temp_repo_path.join("tree0.json.restored");
+        let src_file_path = testing::get_test_path("tree0.json");
+        let dst_file_path = temp_repo_path.join("tree0.json.restored");
 
-        // let repo = Repository::init(
-        //     Arc::new(LocalFS::new()),
-        //     &temp_repo_path,
-        //     String::from("mapachito"),
-        // )?;
-        // let chunk_result = repo.save_file(&src_file_path)?;
+        let repo = Repository::init(
+            Arc::new(LocalFS::new()),
+            &temp_repo_path,
+            String::from("mapachito"),
+        )?;
 
-        // let file_node = tree::Node {
-        //     name: "tree0.json".to_owned(),
-        //     metadata: None,
-        //     contents: chunk_result.chunks.clone(),
-        // };
+        // Scan the FS -> Find the file
+        let mut fs_node_streamer = FSNodeStreamer::new(&src_file_path)?;
+        let (_, mut node) = fs_node_streamer.next().unwrap().unwrap();
 
-        // repo.restore_node(&file_node, &dst_file_path)?;
-        // assert_eq!(chunk_result.chunks, file_node.contents);
+        // Chunk the file, obtain Node with content hashes
+        let chunk_result = repo.save_file(&src_file_path)?;
+        node.contents = Some(chunk_result.chunks.clone());
 
-        // let src_data = std::fs::read(src_file_path)?;
-        // let dst_data = std::fs::read(dst_file_path)?;
-        // assert_eq!(src_data, dst_data);
+        repo.restore_node(&node, &dst_file_path)?;
+        assert_eq!(chunk_result.chunks, node.contents.unwrap());
+
+        let src_data = std::fs::read(src_file_path)?;
+        let dst_data = std::fs::read(dst_file_path)?;
+        assert_eq!(src_data, dst_data);
 
         Ok(())
     }

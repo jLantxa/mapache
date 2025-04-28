@@ -72,6 +72,12 @@ impl Metadata {
     }
 }
 
+pub fn compare_metadata(m1: &Metadata, m2: &Metadata) -> bool {
+    // Check some key metadata field to determine if a file may have changed
+    // TODO: Investigate other key fields to use
+    m1.size == m2.size && m1.modified_time == m2.modified_time
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum NodeType {
@@ -247,6 +253,162 @@ impl Iterator for FilesystemNodeStreamer {
                 };
 
                 Some(Ok((path, node)))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum NodeDiff {
+    New,
+    Deleted,
+    Changed,
+    Unchanged,
+}
+
+pub struct NodeDiffStreamer<Streamer>
+where
+    Streamer: Iterator<Item = Result<(PathBuf, Node)>>,
+{
+    previous_stream: Streamer,
+    incoming_stream: Streamer,
+
+    previous_node: Option<Result<(PathBuf, Node)>>,
+    incoming_node: Option<Result<(PathBuf, Node)>>,
+}
+
+impl<Streamer> NodeDiffStreamer<Streamer>
+where
+    Streamer: Iterator<Item = Result<(PathBuf, Node)>>,
+{
+    pub fn new(previous_stream: Streamer, incoming_stream: Streamer) -> Self {
+        let mut previous_s = previous_stream;
+        let mut incoming_s = incoming_stream;
+        let previous_node = previous_s.next();
+        let incoming_node = incoming_s.next();
+
+        Self {
+            previous_stream: previous_s,
+            incoming_stream: incoming_s,
+
+            previous_node,
+            incoming_node,
+        }
+    }
+
+    fn advance_previous(&mut self) {
+        self.previous_node = self.previous_stream.next();
+    }
+
+    fn advance_incoming(&mut self) {
+        self.incoming_node = self.incoming_stream.next();
+    }
+}
+
+impl<Streamer> Iterator for NodeDiffStreamer<Streamer>
+where
+    Streamer: Iterator<Item = Result<(PathBuf, Node)>>,
+{
+    type Item = Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match (&self.previous_node, &self.incoming_node) {
+            // Both streams are exhausted
+            (None, None) => None,
+
+            (Some(Err(_)), _) => {
+                let error_item = self.previous_node.take().unwrap();
+                let error = error_item.unwrap_err();
+                self.advance_previous();
+                Some(Err(anyhow!("Previous node error: {}", error)))
+            }
+
+            (_, Some(Err(_))) => {
+                let error_item = self.incoming_node.take().unwrap();
+                let error = error_item.unwrap_err();
+                self.advance_incoming();
+                Some(Err(anyhow!("Incoming node error: {}", error)))
+            }
+
+            (Some(Ok(_)), None) => {
+                let item = self.previous_node.take().unwrap().unwrap();
+                let (previous_path, previous_node) = item;
+
+                self.advance_previous();
+
+                Some(Ok((
+                    previous_path,
+                    Some(previous_node),
+                    None,
+                    NodeDiff::Deleted,
+                )))
+            }
+
+            (None, Some(Ok(_))) => {
+                let item = self.incoming_node.take().unwrap().unwrap();
+                let (incoming_path, incoming_node) = item;
+
+                self.advance_incoming();
+
+                Some(Ok((
+                    incoming_path,
+                    None,
+                    Some(incoming_node),
+                    NodeDiff::New,
+                )))
+            }
+
+            (
+                Some(Ok((previous_path, previous_node))),
+                Some(Ok((incoming_path, incoming_node))),
+            ) => {
+                let cmp = previous_path.cmp(&incoming_path);
+                match cmp {
+                    std::cmp::Ordering::Less => {
+                        let result = Some(Ok((
+                            previous_path.to_owned(),
+                            Some(previous_node.clone()),
+                            Some(incoming_node.clone()),
+                            NodeDiff::Deleted,
+                        )));
+
+                        self.advance_previous();
+
+                        result
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let diff_type =
+                            if compare_metadata(&previous_node.metadata, &incoming_node.metadata) {
+                                NodeDiff::Unchanged
+                            } else {
+                                NodeDiff::Changed
+                            };
+
+                        let result = Some(Ok((
+                            previous_path.to_owned(),
+                            Some(previous_node.clone()),
+                            Some(incoming_node.clone()),
+                            diff_type,
+                        )));
+
+                        self.advance_previous();
+                        self.advance_incoming();
+
+                        result
+                    }
+                    std::cmp::Ordering::Greater => {
+                        let result = Some(Ok((
+                            previous_path.to_owned(),
+                            Some(previous_node.clone()),
+                            Some(incoming_node.clone()),
+                            NodeDiff::New,
+                        )));
+
+                        self.advance_incoming();
+
+                        result
+                    }
+                }
             }
         }
     }

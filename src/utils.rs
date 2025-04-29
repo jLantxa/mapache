@@ -29,14 +29,14 @@ pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash {
 
 #[allow(non_upper_case_globals)]
 pub mod size {
-    pub const KiB: usize = 1024;
-    pub const MiB: usize = KiB * 1024;
-    pub const GiB: usize = MiB * 1024;
-    pub const TiB: usize = GiB * 1024;
+    pub const KiB: u64 = 1024;
+    pub const MiB: u64 = KiB * 1024;
+    pub const GiB: u64 = MiB * 1024;
+    pub const TiB: u64 = GiB * 1024;
 }
 
 #[allow(non_upper_case_globals)]
-pub fn format_size(bytes: usize) -> String {
+pub fn format_size(bytes: u64) -> String {
     if bytes >= size::TiB {
         return format!("{:.2} TiB", (bytes as f64) / (size::TiB as f64));
     } else if bytes >= size::GiB {

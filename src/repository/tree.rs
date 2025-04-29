@@ -14,8 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
-use std::{fs::DirEntry, time::SystemTime};
+use std::{
+    cmp::Ordering,
+    fs::{self, Metadata as FsMetadata},
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -25,255 +29,167 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::{BlobId, TreeId};
 
-/// Node metadata. This struct is serialized, so the order of the fields
-/// must remain constant.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Node metadata. This struct is serialized; keep field order stable.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Metadata {
     pub size: u64,
-
     pub created_time: Option<SystemTime>,
     pub modified_time: Option<SystemTime>,
     pub accessed_time: Option<SystemTime>,
     pub mode: Option<u32>,
-
-    pub user: Option<String>,
-    pub group: Option<String>,
     pub owner_uid: Option<u32>,
     pub owner_gid: Option<u32>,
 }
 
 impl Metadata {
-    pub fn from_fs_meta(os_meta: &std::fs::Metadata) -> Self {
+    #[inline]
+    pub fn from_fs(meta: &FsMetadata) -> Self {
         Self {
-            size: os_meta.len(),
-
-            created_time: os_meta.created().ok(),
-            modified_time: os_meta.modified().ok(),
-            accessed_time: os_meta.accessed().ok(),
-
+            size: meta.len(),
+            created_time: meta.created().ok(),
+            modified_time: meta.modified().ok(),
+            accessed_time: meta.accessed().ok(),
             #[cfg(unix)]
-            mode: Some(os_meta.mode()),
+            mode: Some(meta.mode()),
             #[cfg(not(unix))]
             mode: None,
-
             #[cfg(unix)]
-            owner_uid: Some(os_meta.uid()),
+            owner_uid: Some(meta.uid()),
             #[cfg(not(unix))]
             owner_uid: None,
-
-            user: None,  // TODO
-            group: None, // TODO
-
             #[cfg(unix)]
-            owner_gid: Some(os_meta.gid()),
+            owner_gid: Some(meta.gid()),
             #[cfg(not(unix))]
             owner_gid: None,
         }
     }
+
+    /// Returns `true` iff any relevant metadata field differs.
+    #[inline]
+    pub fn has_changed(&self, other: &Self) -> bool {
+        self.size != other.size
+            || self.modified_time != other.modified_time
+            || self.mode != other.mode
+            || self.owner_uid != other.owner_uid
+            || self.owner_gid != other.owner_gid
+    }
 }
 
-pub fn compare_metadata(m1: &Metadata, m2: &Metadata) -> bool {
-    // Check some key metadata field to determine if a file may have changed
-    // TODO: Investigate other key fields to use
-    m1.size == m2.size && m1.modified_time == m2.modified_time
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum NodeType {
     File,
     Directory,
     Symlink,
 }
 
-/// A Node, representing an item in a filesystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
+    #[serde(rename = "type")]
     pub node_type: NodeType,
-
     #[serde(flatten)]
     pub metadata: Metadata,
-
-    pub contents: Option<Vec<BlobId>>,
-    pub tree: Option<TreeId>,
+    pub contents: Option<Vec<BlobId>>, // populated lazily for files
+    pub tree: Option<TreeId>,          // populated lazily for dirs
 }
 
 impl Node {
-    /// Create a new node from a DirEntry
-    pub fn from_dir_entry(entry: &DirEntry) -> Result<Node> {
-        let name = entry.file_name().to_string_lossy().into_owned();
+    /// Build a `Node` from any path on disk.
+    pub fn from_path(path: PathBuf) -> Result<Self> {
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
-        // Read the metadata. This is an IO operation that could be async
-        let os_meta = entry.metadata().with_context(|| {
-            format!(
-                "Could not read metadata for directory \'{}\'",
-                entry.path().display()
-            )
-        })?;
+        // `symlink_metadata` does *not* follow symlinks – that is what we need
+        let meta = fs::symlink_metadata(&path)
+            .with_context(|| format!("Cannot stat {}", path.display()))?;
 
-        let node_type = if os_meta.is_dir() {
+        let node_type = if meta.is_dir() {
             NodeType::Directory
-        } else if os_meta.is_file() {
+        } else if meta.is_file() {
             NodeType::File
-        } else if os_meta.is_symlink() {
+        } else if meta.file_type().is_symlink() {
             NodeType::Symlink
         } else {
-            bail!(
-                "Unsupported dir entry encountered for path \'{}\'",
-                entry.path().display()
-            )
+            bail!("Unsupported file type at {}", path.display());
         };
 
         Ok(Self {
             name,
             node_type,
-            metadata: Metadata::from_fs_meta(&os_meta),
+            metadata: Metadata::from_fs(&meta),
             contents: None,
             tree: None,
         })
     }
 
-    /// Returns true if the node is a directory
+    /// Convenience helpers.
+    #[inline]
     pub fn is_dir(&self) -> bool {
-        self.node_type == NodeType::Directory
+        matches!(self.node_type, NodeType::Directory)
     }
-
-    /// Returns true if the node is a file
+    #[inline]
     pub fn is_file(&self) -> bool {
-        self.node_type == NodeType::File
+        matches!(self.node_type, NodeType::File)
     }
-
-    /// Returns true if the node is a symlink
+    #[inline]
     pub fn is_symlink(&self) -> bool {
-        self.node_type == NodeType::Symlink
+        matches!(self.node_type, NodeType::Symlink)
     }
 }
 
-/// A tree, represented as a collection of its immediate children nodes.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Tree {
-    pub nodes: Vec<Node>,
+    nodes: Vec<Node>,
 }
 
-/// A streamer that traverses a filesystem tree starting from a given root path.
-///
-/// It yields nodes (`Result<(PathBuf, Node)>`) in strict lexicographical order by their full path.
-/// This streamer implements a Depth-First Search (DFS) pre-order traversal algorithm
-/// using an explicit stack of paths. It achieves lexicographical order by sorting
-/// directory children paths and pushing them onto the stack in reverse order.
-///
-/// Errors encountered during directory listing or metadata reading are reported
-/// directly in the stream as `Some(Err(_))`.
+/// A depth‑first *pre‑order* filesystem streamer.
+/// Items are produced in lexicographical order of their *full* paths.
 pub struct FSNodeStreamer {
-    /// The stack of paths to directories and files that still need to be processed.
-    /// When a directory path is processed, its children's paths are pushed onto the stack
-    /// in reverse alphabetical order to ensure they are popped in alphabetical order later.
     stack: Vec<PathBuf>,
 }
 
 impl FSNodeStreamer {
-    pub fn new(root_path: &Path) -> Result<Self> {
-        if !root_path.exists() {
-            bail!(
-                "Failed to create streamer for path \'{}\'. The path doesn't exist.",
-                root_path.display()
-            );
+    pub fn new(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref();
+        if !root.exists() {
+            bail!("Path {} does not exist", root.display());
         }
-
-        Ok(FSNodeStreamer {
-            stack: vec![root_path.to_path_buf()],
+        Ok(Self {
+            stack: vec![root.to_path_buf()],
         })
     }
 
-    fn sort_dir_entries(dir_path: &Path) -> Result<Vec<PathBuf>> {
-        let read_dir_iterator = std::fs::read_dir(dir_path)
-            .with_context(|| format!("Failed to read directory: {}", dir_path.display()))?;
-
-        let mut entries: Vec<PathBuf> = Vec::new();
-
-        for entry_result in read_dir_iterator {
-            let entry = entry_result.with_context(|| {
-                format!(
-                    "Failed to read an entry in directory: {}",
-                    dir_path.display()
-                )
-            })?;
-            entries.push(entry.path());
-        }
-
-        let mut sorted_entries = entries;
-        sorted_entries.sort_by(|first, second| first.file_name().cmp(&second.file_name()));
-
-        Ok(sorted_entries)
+    fn sorted_children(dir: &Path) -> Result<Vec<PathBuf>> {
+        let mut children: Vec<_> = fs::read_dir(dir)?
+            .map(|res| res.map(|e| e.path()))
+            .collect::<Result<_, _>>()?;
+        children.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        Ok(children)
     }
 }
 
-/// Implements the Iterator trait for `FSNodeStreamer`, providing the streaming capability.
-///
-/// The iterator yields `Result<(PathBuf, Node)>` items in strict lexicographical order.
 impl Iterator for FSNodeStreamer {
     type Item = Result<(PathBuf, Node)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.stack.pop() {
-            None => None, // The stack is empty. We are finished.
-            Some(path) => {
-                let name = path
-                    .file_name()
-                    .map(|o| o.to_string_lossy().into_owned())
-                    .unwrap();
-
-                let os_meta = match std::fs::metadata(&path) {
-                    Ok(meta) => meta,
-                    Err(_) => {
-                        return Some(Err(anyhow!(
-                            "Failed to read metadata for path \'{}\'",
-                            path.display()
-                        )));
-                    }
-                };
-
-                let node_type = if os_meta.is_dir() {
-                    // Push children to the stack in reverse alphabetical order
-                    let sorted_children = Self::sort_dir_entries(&path);
-                    match sorted_children {
-                        Ok(list) => self.stack.extend(list.into_iter().rev()),
-                        Err(_) => {
-                            return Some(Err(anyhow!(
-                                "Failed to list directory \'{}\'",
-                                &path.display()
-                            )));
-                        }
-                    }
-
-                    NodeType::Directory
-                } else if os_meta.is_file() {
-                    NodeType::File
-                } else if os_meta.is_symlink() {
-                    NodeType::Symlink
-                } else {
-                    return Some(Err(anyhow!(
-                        "Unsupported dir entry encountered for path \'{}\'",
-                        &path.display()
-                    )));
-                };
-
-                let node = Node {
-                    name,
-                    node_type: node_type,
-                    metadata: Metadata::from_fs_meta(&os_meta),
-                    contents: None,
-                    tree: None,
-                };
-
-                Some(Ok((path, node)))
+        let path = self.stack.pop()?;
+        let res = (|| {
+            let node = Node::from_path(path.clone())?;
+            if node.is_dir() {
+                for child in Self::sorted_children(&path)?.into_iter().rev() {
+                    self.stack.push(child);
+                }
             }
-        }
+            Ok((path, node))
+        })();
+        Some(res)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeDiff {
     New,
     Deleted,
@@ -281,151 +197,104 @@ pub enum NodeDiff {
     Unchanged,
 }
 
-pub struct NodeDiffStreamer<Streamer>
+/// Streaming diff between two ordered node streams.
+pub struct NodeDiffStreamer<P, I>
 where
-    Streamer: Iterator<Item = Result<(PathBuf, Node)>>,
+    P: Iterator<Item = Result<(PathBuf, Node)>>,
+    I: Iterator<Item = Result<(PathBuf, Node)>>,
 {
-    previous_stream: Streamer,
-    incoming_stream: Streamer,
-
-    previous_node: Option<Result<(PathBuf, Node)>>,
-    incoming_node: Option<Result<(PathBuf, Node)>>,
+    prev: P,
+    next: I,
+    head_prev: Option<Result<(PathBuf, Node)>>,
+    head_next: Option<Result<(PathBuf, Node)>>,
 }
 
-impl<Streamer> NodeDiffStreamer<Streamer>
+impl<P, I> NodeDiffStreamer<P, I>
 where
-    Streamer: Iterator<Item = Result<(PathBuf, Node)>>,
+    P: Iterator<Item = Result<(PathBuf, Node)>>,
+    I: Iterator<Item = Result<(PathBuf, Node)>>,
 {
-    pub fn new(previous_stream: Streamer, incoming_stream: Streamer) -> Self {
-        let mut previous_s = previous_stream;
-        let mut incoming_s = incoming_stream;
-        let previous_node = previous_s.next();
-        let incoming_node = incoming_s.next();
-
+    pub fn new(mut prev: P, mut next: I) -> Self {
         Self {
-            previous_stream: previous_s,
-            incoming_stream: incoming_s,
-
-            previous_node,
-            incoming_node,
+            head_prev: prev.next(),
+            head_next: next.next(),
+            prev,
+            next,
         }
     }
-
-    fn advance_previous(&mut self) {
-        self.previous_node = self.previous_stream.next();
-    }
-
-    fn advance_incoming(&mut self) {
-        self.incoming_node = self.incoming_stream.next();
-    }
 }
 
-impl<Streamer> Iterator for NodeDiffStreamer<Streamer>
+impl<P, I> Iterator for NodeDiffStreamer<P, I>
 where
-    Streamer: Iterator<Item = Result<(PathBuf, Node)>>,
+    P: Iterator<Item = Result<(PathBuf, Node)>>,
+    I: Iterator<Item = Result<(PathBuf, Node)>>,
 {
     type Item = Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match (
-            self.previous_node.as_mut().as_ref(),
-            self.incoming_node.as_mut().as_ref(),
-        ) {
-            // Both streams are exhausted
-            (None, None) => None,
-
-            (Some(Err(_)), _) => {
-                let error_item = self.previous_node.take().unwrap();
-                let error = error_item.unwrap_err();
-                self.advance_previous();
-                Some(Err(anyhow!("Previous node error: {}", error)))
-            }
-
-            (_, Some(Err(_))) => {
-                let error_item = self.incoming_node.take().unwrap();
-                let error = error_item.unwrap_err();
-                self.advance_incoming();
-                Some(Err(anyhow!("Incoming node error: {}", error)))
-            }
-
-            (Some(Ok(_)), None) => {
-                let item = self.previous_node.take().unwrap().unwrap();
-                let (previous_path, previous_node) = item;
-
-                self.advance_previous();
-
-                Some(Ok((
-                    previous_path,
-                    Some(previous_node),
-                    None,
-                    NodeDiff::Deleted,
-                )))
-            }
-
-            (None, Some(Ok(_))) => {
-                let item = self.incoming_node.take().unwrap().unwrap();
-                let (incoming_path, incoming_node) = item;
-
-                self.advance_incoming();
-
-                Some(Ok((
-                    incoming_path,
-                    None,
-                    Some(incoming_node),
-                    NodeDiff::New,
-                )))
-            }
-
-            (
-                Some(Ok((previous_path, previous_node))),
-                Some(Ok((incoming_path, incoming_node))),
-            ) => {
-                let cmp = previous_path.cmp(&incoming_path);
-                match cmp {
-                    std::cmp::Ordering::Less => {
-                        let result = Some(Ok((
-                            previous_path.to_owned(),
-                            Some(previous_node.clone()),
-                            Some(incoming_node.clone()),
-                            NodeDiff::Deleted,
-                        )));
-
-                        self.advance_previous();
-
-                        result
-                    }
-                    std::cmp::Ordering::Equal => {
-                        let diff_type =
-                            if compare_metadata(&previous_node.metadata, &incoming_node.metadata) {
-                                NodeDiff::Unchanged
-                            } else {
+        loop {
+            match (&self.head_prev, &self.head_next) {
+                (None, None) => return None,
+                (Some(Err(_)), _) => {
+                    let err = self.head_prev.take().unwrap();
+                    self.head_prev = self.prev.next();
+                    return Some(Err(anyhow!("Previous node error: {}", err.unwrap_err())));
+                }
+                (_, Some(Err(_))) => {
+                    let err = self.head_next.take().unwrap();
+                    self.head_next = self.next.next();
+                    return Some(Err(anyhow!("Next node error: {}", err.unwrap_err())));
+                }
+                (Some(Ok((p_path, p_node))), Some(Ok((n_path, n_node)))) => {
+                    match p_path.cmp(n_path) {
+                        Ordering::Equal => {
+                            let diff = if p_node.metadata.has_changed(&n_node.metadata) {
                                 NodeDiff::Changed
+                            } else {
+                                NodeDiff::Unchanged
                             };
-
-                        let result = Some(Ok((
-                            previous_path.to_owned(),
-                            Some(previous_node.clone()),
-                            Some(incoming_node.clone()),
-                            diff_type,
-                        )));
-
-                        self.advance_previous();
-                        self.advance_incoming();
-
-                        result
+                            let item = Ok((
+                                p_path.clone(),
+                                Some(p_node.clone()),
+                                Some(n_node.clone()),
+                                diff,
+                            ));
+                            self.head_prev = self.prev.next();
+                            self.head_next = self.next.next();
+                            return Some(item);
+                        }
+                        Ordering::Less => {
+                            let item = Ok((
+                                p_path.clone(),
+                                Some(p_node.clone()),
+                                None,
+                                NodeDiff::Deleted,
+                            ));
+                            self.head_prev = self.prev.next();
+                            return Some(item);
+                        }
+                        Ordering::Greater => {
+                            let item =
+                                Ok((n_path.clone(), None, Some(n_node.clone()), NodeDiff::New));
+                            self.head_next = self.next.next();
+                            return Some(item);
+                        }
                     }
-                    std::cmp::Ordering::Greater => {
-                        let result = Some(Ok((
-                            previous_path.to_owned(),
-                            Some(previous_node.clone()),
-                            Some(incoming_node.clone()),
-                            NodeDiff::New,
-                        )));
-
-                        self.advance_incoming();
-
-                        result
-                    }
+                }
+                (Some(Ok((p_path, p_node))), None) => {
+                    let item = Ok((
+                        p_path.clone(),
+                        Some(p_node.clone()),
+                        None,
+                        NodeDiff::Deleted,
+                    ));
+                    self.head_prev = self.prev.next();
+                    return Some(item);
+                }
+                (None, Some(Ok((n_path, n_node)))) => {
+                    let item = Ok((n_path.clone(), None, Some(n_node.clone()), NodeDiff::New));
+                    self.head_next = self.next.next();
+                    return Some(item);
                 }
             }
         }

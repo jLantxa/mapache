@@ -474,7 +474,7 @@ mod test {
         )?;
 
         // Scan the FS -> Find the file
-        let mut fs_node_streamer = FSNodeStreamer::new(&src_file_path)?;
+        let mut fs_node_streamer = FSNodeStreamer::from_root(&src_file_path)?;
         let (_, mut node) = fs_node_streamer.next().unwrap().unwrap();
 
         // Chunk the file, obtain Node with content hashes

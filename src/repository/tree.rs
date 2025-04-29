@@ -27,7 +27,7 @@ use std::os::unix::fs::MetadataExt;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use super::backend::{BlobId, TreeId};
+use super::backend::{BlobId, RepositoryBackend, TreeId};
 
 /// Node metadata. This struct is serialized; keep field order stable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
@@ -147,12 +147,14 @@ pub struct Tree {
 
 /// A depth‑first *pre‑order* filesystem streamer.
 /// Items are produced in lexicographical order of their *full* paths.
+#[derive(Debug)]
 pub struct FSNodeStreamer {
     stack: Vec<PathBuf>,
 }
 
 impl FSNodeStreamer {
-    pub fn new(root: impl AsRef<Path>) -> Result<Self> {
+    /// Creates an FSNodeStreamer from one root path
+    pub fn from_root(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref();
         if !root.exists() {
             bail!("Path {} does not exist", root.display());
@@ -160,6 +162,19 @@ impl FSNodeStreamer {
         Ok(Self {
             stack: vec![root.to_path_buf()],
         })
+    }
+
+    /// Creates an FSNodeStreamer from multiple root paths. The paths are iterated in lexicographical order.
+    pub fn from_paths(paths: &Vec<PathBuf>) -> Result<Self> {
+        for path in paths {
+            if !path.exists() {
+                bail!("Path {} does not exist", path.display());
+            }
+        }
+
+        let mut roots = paths.clone();
+        roots.sort_by(|a, b| a.cmp(b));
+        Ok(Self { stack: roots })
     }
 
     fn sorted_children(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -184,6 +199,48 @@ impl Iterator for FSNodeStreamer {
                 }
             }
             Ok((path, node))
+        })();
+        Some(res)
+    }
+}
+
+pub struct SerializedNodeStreamer<'a> {
+    repo: &'a dyn RepositoryBackend,
+    stack: Vec<(PathBuf, Node)>,
+}
+
+impl<'a> SerializedNodeStreamer<'a> {
+    pub fn new(repo: &'a dyn RepositoryBackend, root_id: TreeId) -> Result<Self> {
+        // Load root tree and push its children to the stack in reverse order
+        let root_tree = repo.load_tree(&root_id)?;
+        let mut stack = Vec::new();
+        for node in root_tree.nodes.iter().rev() {
+            stack.push((PathBuf::new(), node.clone()));
+        }
+
+        Ok(Self { repo, stack })
+    }
+}
+
+impl<'a> Iterator for SerializedNodeStreamer<'a> {
+    type Item = Result<(PathBuf, Node)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (parent_path, node) = self.stack.pop()?;
+        let res = (|| {
+            // Build the full path to this node first
+            let current_path = parent_path.join(&node.name);
+
+            // If it’s a subtree, push its children *under* current_path
+            if let Some(subtree_id) = &node.tree {
+                let subtree = self.repo.load_tree(subtree_id)?;
+                for subnode in subtree.nodes.iter().rev() {
+                    self.stack.push((current_path.clone(), subnode.clone()));
+                }
+            }
+
+            // Now emit the correctly-built path + node
+            Ok((current_path, node))
         })();
         Some(res)
     }

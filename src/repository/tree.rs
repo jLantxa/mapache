@@ -173,7 +173,7 @@ impl FSNodeStreamer {
         }
 
         let mut roots = paths.clone();
-        roots.sort_by(|a, b| a.cmp(b));
+        roots.sort_by(|a, b| b.cmp(a));
         Ok(Self { stack: roots })
     }
 
@@ -355,5 +355,159 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    // Create a filesystem tree for testing. root should be the path to a temporary folder
+    fn create_tree(root: &Path) -> Result<()> {
+        // dir_a
+        // |____ dir0
+        // |____ dir1
+        // |____ dir2
+        // |      |____ file1
+        // |____ file0
+        //
+        // |dir_b
+        // |____ file2
+
+        std::fs::create_dir_all(root.join("dir_a").join("dir0"))?;
+        std::fs::create_dir_all(root.join("dir_a").join("dir1"))?;
+        std::fs::File::create(root.join("dir_a").join("file0"))?;
+        std::fs::create_dir_all(root.join("dir_a").join("dir2"))?;
+        std::fs::File::create(root.join("dir_a").join("dir2").join("file1"))?;
+        std::fs::create_dir(root.join("dir_b"))?;
+        std::fs::File::create(root.join("dir_b").join("file2"))?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_node_streamer_with_root() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let tmp_path = temp_dir.path();
+        create_tree(tmp_path)?;
+
+        let streamer = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
+        let nodes: Vec<Result<(PathBuf, Node)>> = streamer.collect();
+
+        assert_eq!(nodes.len(), 6);
+        assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
+        assert_eq!(
+            nodes[1].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir0")
+        );
+        assert_eq!(
+            nodes[2].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir1")
+        );
+        assert_eq!(
+            nodes[3].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir2")
+        );
+        assert_eq!(
+            nodes[4].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir2").join("file1")
+        );
+        assert_eq!(
+            nodes[5].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("file0")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_node_streamer_with_many_roots() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let tmp_path = temp_dir.path();
+        create_tree(tmp_path)?;
+
+        let streamer =
+            FSNodeStreamer::from_paths(&vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")])?;
+        let nodes: Vec<Result<(PathBuf, Node)>> = streamer.collect();
+
+        assert_eq!(nodes.len(), 8);
+        assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
+        assert_eq!(
+            nodes[1].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir0")
+        );
+        assert_eq!(
+            nodes[2].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir1")
+        );
+        assert_eq!(
+            nodes[3].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir2")
+        );
+        assert_eq!(
+            nodes[4].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir2").join("file1")
+        );
+        assert_eq!(
+            nodes[5].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("file0")
+        );
+        assert_eq!(nodes[6].as_ref().unwrap().0, tmp_path.join("dir_b"));
+        assert_eq!(
+            nodes[7].as_ref().unwrap().0,
+            tmp_path.join("dir_b").join("file2")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_diff_different_trees() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let tmp_path = temp_dir.path();
+        create_tree(tmp_path)?;
+
+        let dir_a = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
+        let dir_b = FSNodeStreamer::from_root(tmp_path.join("dir_b"))?;
+        let diff_streamer = NodeDiffStreamer::new(dir_a, dir_b);
+        let diffs: Vec<Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>> =
+            diff_streamer.collect();
+
+        assert_eq!(diffs.len(), 8);
+        assert_eq!(diffs[0].as_ref().unwrap().3, NodeDiff::Deleted);
+        assert_eq!(diffs[1].as_ref().unwrap().3, NodeDiff::Deleted);
+        assert_eq!(diffs[2].as_ref().unwrap().3, NodeDiff::Deleted);
+        assert_eq!(diffs[3].as_ref().unwrap().3, NodeDiff::Deleted);
+        assert_eq!(diffs[4].as_ref().unwrap().3, NodeDiff::Deleted);
+        assert_eq!(diffs[5].as_ref().unwrap().3, NodeDiff::Deleted);
+        assert_eq!(diffs[6].as_ref().unwrap().3, NodeDiff::New);
+        assert_eq!(diffs[7].as_ref().unwrap().3, NodeDiff::New);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_diff_same_tree() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let tmp_path = temp_dir.path();
+        create_tree(tmp_path)?;
+
+        let dir_a1 = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
+        let dir_a2 = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
+        let diff_streamer = NodeDiffStreamer::new(dir_a1, dir_a2);
+        let diffs: Vec<Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>> =
+            diff_streamer.collect();
+
+        assert_eq!(diffs.len(), 6);
+        assert_eq!(diffs[0].as_ref().unwrap().3, NodeDiff::Unchanged);
+        assert_eq!(diffs[1].as_ref().unwrap().3, NodeDiff::Unchanged);
+        assert_eq!(diffs[2].as_ref().unwrap().3, NodeDiff::Unchanged);
+        assert_eq!(diffs[3].as_ref().unwrap().3, NodeDiff::Unchanged);
+        assert_eq!(diffs[4].as_ref().unwrap().3, NodeDiff::Unchanged);
+        assert_eq!(diffs[5].as_ref().unwrap().3, NodeDiff::Unchanged);
+
+        Ok(())
     }
 }

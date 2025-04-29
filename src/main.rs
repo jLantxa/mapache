@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod cli;
-pub mod cmd;
+pub mod commands;
 pub mod repository;
 pub mod storage_backend;
 pub mod testing;
@@ -27,10 +27,10 @@ use colored::Colorize;
 
 fn run(args: &cli::Cli) -> Result<()> {
     match &args.command {
-        cli::Command::Init(cmd_args) => cmd::init::run(&args.global_args, cmd_args),
-        cli::Command::Log(cmd_args) => cmd::log::run(&args.global_args, cmd_args),
-        cli::Command::Commit(cmd_args) => cmd::commit::run(&args.global_args, cmd_args),
-        cli::Command::Restore(cmd_args) => cmd::restore::run(&args.global_args, cmd_args),
+        cli::Command::Init(cmd_args) => commands::init::run(&args.global_args, cmd_args),
+        cli::Command::Log(cmd_args) => commands::log::run(&args.global_args, cmd_args),
+        cli::Command::Commit(cmd_args) => commands::commit::run(&args.global_args, cmd_args),
+        cli::Command::Restore(cmd_args) => commands::restore::run(&args.global_args, cmd_args),
     }
 }
 

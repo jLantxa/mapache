@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use dialoguer::Password;
 
-use crate::cmd;
+use crate::commands;
 
 // CLI arguments
 #[derive(Parser, Debug)]
@@ -40,16 +40,16 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     #[clap(about = "Initialize a new repository")]
-    Init(cmd::init::CmdArgs),
+    Init(commands::init::CmdArgs),
 
     #[clap(about = "Show all snapshots present in the repository")]
-    Log(cmd::log::CmdArgs),
+    Log(commands::log::CmdArgs),
 
     #[clap(about = "Create a new snapshot")]
-    Commit(cmd::commit::CmdArgs),
+    Commit(commands::commit::CmdArgs),
 
     #[clap(about = "Restores a snapshot")]
-    Restore(cmd::restore::CmdArgs),
+    Restore(commands::restore::CmdArgs),
 }
 
 #[derive(Parser, Debug)]

@@ -38,7 +38,7 @@ use super::{
     config::Config,
     snapshot::Snapshot,
     storage::SecureStorage,
-    tree,
+    tree::{Node, NodeType, Tree},
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -193,15 +193,23 @@ impl RepositoryBackend for Repository {
         Ok(repo)
     }
 
-    fn save_tree(&self, tree: &tree::Tree) -> Result<Hash> {
-        let s = serde_json::to_string_pretty(tree)?;
+    /// Saves a tree in the repository. This function should be called when a tree is complete,
+    /// that is, when all the contents and/or tree hashes have been resolved.
+    fn save_tree(&self, tree: &Tree) -> Result<Hash> {
+        let tree_json = serde_json::to_string_pretty(tree)?;
+        let hash = utils::calculate_hash(&tree_json);
+        let tree_path = &self.get_tree_path(&hash);
+
         self.secure_storage
-            .save_file_with_rename(s.as_bytes(), Path::new("src"))?;
-        Ok(s)
+            .save_file_with_rename(tree_json.as_bytes(), &tree_path)?;
+        Ok(hash)
     }
 
-    fn load_tree(&self, _root_hash: &Hash) -> Result<tree::Tree> {
-        todo!()
+    fn load_tree(&self, root_hash: &Hash) -> Result<Tree> {
+        let tree_path = self.get_tree_path(root_hash);
+        let tree_json = self.secure_storage.load_file(&tree_path)?;
+        let tree: Tree = serde_json::from_slice(&tree_json)?;
+        Ok(tree)
     }
 
     fn load_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>> {
@@ -298,9 +306,9 @@ impl RepositoryBackend for Repository {
         })
     }
 
-    fn restore_node(&self, node: &tree::Node, dst_path: &Path) -> Result<()> {
+    fn restore_node(&self, node: &Node, dst_path: &Path) -> Result<()> {
         match node.node_type {
-            tree::NodeType::File => {
+            NodeType::File => {
                 let mut dst_file = OpenOptions::new()
                     .create(true)
                     .truncate(true)
@@ -344,8 +352,8 @@ impl RepositoryBackend for Repository {
                     }
                 }
             }
-            tree::NodeType::Directory => todo!(),
-            tree::NodeType::Symlink => todo!(),
+            NodeType::Directory => todo!(),
+            NodeType::Symlink => todo!(),
         }
 
         Ok(())

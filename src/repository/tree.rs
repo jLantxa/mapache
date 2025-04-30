@@ -75,6 +75,7 @@ impl Metadata {
     }
 }
 
+/// The type of a node (file, directory, symlink, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeType {
@@ -145,6 +146,27 @@ pub struct Tree {
     nodes: Vec<Node>,
 }
 
+impl Tree {
+    pub fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+
+    /// Add a node to the tree. This function makes sure to order the list of
+    /// nodes alphabetically by name.
+    pub fn add_node(&mut self, node: Node) {
+        self.nodes.push(node);
+        self.nodes.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+}
+
+#[derive(Debug)]
+pub struct StreamNode {
+    pub node: Node,
+    pub num_children: usize,
+}
+
+pub type StreamNodeInfo = (PathBuf, StreamNode);
+
 /// A depth‑first *pre‑order* filesystem streamer.
 /// Items are produced in lexicographical order of their *full* paths.
 #[derive(Debug)]
@@ -187,18 +209,27 @@ impl FSNodeStreamer {
 }
 
 impl Iterator for FSNodeStreamer {
-    type Item = Result<(PathBuf, Node)>;
+    type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let path = self.stack.pop()?;
         let res = (|| {
             let node = Node::from_path(path.clone())?;
-            if node.is_dir() {
-                for child in Self::sorted_children(&path)?.into_iter().rev() {
+
+            let num_children = if node.is_dir() {
+                let children = Self::sorted_children(&path)?;
+                let num_children = children.len();
+                for child in children.into_iter().rev() {
                     self.stack.push(child);
                 }
-            }
-            Ok((path, node))
+
+                num_children
+            } else {
+                0
+            };
+
+            let stream_node = StreamNode { node, num_children };
+            Ok((path, stream_node))
         })();
         Some(res)
     }
@@ -206,7 +237,7 @@ impl Iterator for FSNodeStreamer {
 
 pub struct SerializedNodeStreamer<'a> {
     repo: &'a dyn RepositoryBackend,
-    stack: Vec<(PathBuf, Node)>,
+    stack: Vec<StreamNodeInfo>,
 }
 
 impl<'a> SerializedNodeStreamer<'a> {
@@ -214,8 +245,16 @@ impl<'a> SerializedNodeStreamer<'a> {
         // Load root tree and push its children to the stack in reverse order
         let root_tree = repo.load_tree(&root_id)?;
         let mut stack = Vec::new();
+        let num_children = root_tree.nodes.len();
+
         for node in root_tree.nodes.iter().rev() {
-            stack.push((PathBuf::new(), node.clone()));
+            stack.push((
+                PathBuf::new(),
+                StreamNode {
+                    node: node.clone(),
+                    num_children,
+                },
+            ));
         }
 
         Ok(Self { repo, stack })
@@ -223,24 +262,31 @@ impl<'a> SerializedNodeStreamer<'a> {
 }
 
 impl<'a> Iterator for SerializedNodeStreamer<'a> {
-    type Item = Result<(PathBuf, Node)>;
+    type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (parent_path, node) = self.stack.pop()?;
+        let (parent_path, stream_node) = self.stack.pop()?;
         let res = (|| {
             // Build the full path to this node first
-            let current_path = parent_path.join(&node.name);
+            let current_path = parent_path.join(&stream_node.node.name);
 
             // If it’s a subtree, push its children *under* current_path
-            if let Some(subtree_id) = &node.tree {
+            if let Some(subtree_id) = &stream_node.node.tree {
                 let subtree = self.repo.load_tree(subtree_id)?;
+                let num_children = subtree.nodes.len();
                 for subnode in subtree.nodes.iter().rev() {
-                    self.stack.push((current_path.clone(), subnode.clone()));
+                    self.stack.push((
+                        current_path.clone(),
+                        StreamNode {
+                            node: subnode.clone(),
+                            num_children,
+                        },
+                    ));
                 }
             }
 
             // Now emit the correctly-built path + node
-            Ok((current_path, node))
+            Ok((current_path, stream_node))
         })();
         Some(res)
     }
@@ -257,19 +303,19 @@ pub enum NodeDiff {
 /// Streaming diff between two ordered node streams.
 pub struct NodeDiffStreamer<P, I>
 where
-    P: Iterator<Item = Result<(PathBuf, Node)>>,
-    I: Iterator<Item = Result<(PathBuf, Node)>>,
+    P: Iterator<Item = Result<(PathBuf, StreamNode)>>,
+    I: Iterator<Item = Result<(PathBuf, StreamNode)>>,
 {
     prev: P,
     next: I,
-    head_prev: Option<Result<(PathBuf, Node)>>,
-    head_next: Option<Result<(PathBuf, Node)>>,
+    head_prev: Option<Result<(PathBuf, StreamNode)>>,
+    head_next: Option<Result<(PathBuf, StreamNode)>>,
 }
 
 impl<P, I> NodeDiffStreamer<P, I>
 where
-    P: Iterator<Item = Result<(PathBuf, Node)>>,
-    I: Iterator<Item = Result<(PathBuf, Node)>>,
+    P: Iterator<Item = Result<(PathBuf, StreamNode)>>,
+    I: Iterator<Item = Result<(PathBuf, StreamNode)>>,
 {
     pub fn new(mut prev: P, mut next: I) -> Self {
         Self {
@@ -283,10 +329,10 @@ where
 
 impl<P, I> Iterator for NodeDiffStreamer<P, I>
 where
-    P: Iterator<Item = Result<(PathBuf, Node)>>,
-    I: Iterator<Item = Result<(PathBuf, Node)>>,
+    P: Iterator<Item = Result<(PathBuf, StreamNode)>>,
+    I: Iterator<Item = Result<(PathBuf, StreamNode)>>,
 {
-    type Item = Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>;
+    type Item = Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -343,12 +389,15 @@ where
                             self.head_prev = self.prev.next();
                             self.head_next = self.next.next();
 
-                            let diff_type =
-                                if previous_node.metadata.has_changed(&incoming_node.metadata) {
-                                    NodeDiff::Changed
-                                } else {
-                                    NodeDiff::Unchanged
-                                };
+                            let diff_type = if previous_node
+                                .node
+                                .metadata
+                                .has_changed(&incoming_node.node.metadata)
+                            {
+                                NodeDiff::Changed
+                            } else {
+                                NodeDiff::Unchanged
+                            };
 
                             return Some(Ok((
                                 previous_path,
@@ -424,7 +473,7 @@ mod test {
         create_tree(tmp_path)?;
 
         let streamer = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
-        let nodes: Vec<Result<(PathBuf, Node)>> = streamer.collect();
+        let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
 
         assert_eq!(nodes.len(), 6);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
@@ -460,7 +509,7 @@ mod test {
 
         let streamer =
             FSNodeStreamer::from_paths(&vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")])?;
-        let nodes: Vec<Result<(PathBuf, Node)>> = streamer.collect();
+        let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
 
         assert_eq!(nodes.len(), 8);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
@@ -502,7 +551,7 @@ mod test {
         let dir_a = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
         let dir_b = FSNodeStreamer::from_root(tmp_path.join("dir_b"))?;
         let diff_streamer = NodeDiffStreamer::new(dir_a, dir_b);
-        let diffs: Vec<Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>> =
+        let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
             diff_streamer.collect();
 
         assert_eq!(diffs.len(), 8);
@@ -527,7 +576,7 @@ mod test {
         let dir_a1 = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
         let dir_a2 = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
         let diff_streamer = NodeDiffStreamer::new(dir_a1, dir_a2);
-        let diffs: Vec<Result<(PathBuf, Option<Node>, Option<Node>, NodeDiff)>> =
+        let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
             diff_streamer.collect();
 
         assert_eq!(diffs.len(), 6);

@@ -483,14 +483,14 @@ mod test {
 
         // Scan the FS -> Find the file
         let mut fs_node_streamer = FSNodeStreamer::from_root(&src_file_path)?;
-        let (_, mut node) = fs_node_streamer.next().unwrap().unwrap();
+        let (_, mut stream_node) = fs_node_streamer.next().unwrap().unwrap();
 
         // Chunk the file, obtain Node with content hashes
         let chunk_result = repo.save_file(&src_file_path)?;
-        node.contents = Some(chunk_result.chunks.clone());
+        stream_node.node.contents = Some(chunk_result.chunks.clone());
 
-        repo.restore_node(&node, &dst_file_path)?;
-        assert_eq!(chunk_result.chunks, node.contents.unwrap());
+        repo.restore_node(&stream_node.node, &dst_file_path)?;
+        assert_eq!(chunk_result.chunks, stream_node.node.contents.unwrap());
 
         let src_data = std::fs::read(src_file_path)?;
         let dst_data = std::fs::read(dst_file_path)?;

@@ -302,56 +302,86 @@ where
                     self.head_next = self.next.next();
                     return Some(Err(anyhow!("Next node error: {}", err.unwrap_err())));
                 }
-                (Some(Ok((p_path, p_node))), Some(Ok((n_path, n_node)))) => {
-                    match p_path.cmp(n_path) {
-                        Ordering::Equal => {
-                            let diff = if p_node.metadata.has_changed(&n_node.metadata) {
-                                NodeDiff::Changed
-                            } else {
-                                NodeDiff::Unchanged
-                            };
-                            let item = Ok((
-                                p_path.clone(),
-                                Some(p_node.clone()),
-                                Some(n_node.clone()),
-                                diff,
-                            ));
-                            self.head_prev = self.prev.next();
-                            self.head_next = self.next.next();
-                            return Some(item);
-                        }
+                (Some(Ok(item_a_ref)), Some(Ok(item_b_ref))) => {
+                    let path_a = &item_a_ref.0;
+                    let path_b = &item_b_ref.0;
+
+                    match path_a.cmp(path_b) {
                         Ordering::Less => {
-                            let item = Ok((
-                                p_path.clone(),
-                                Some(p_node.clone()),
+                            let item = self.head_prev.take().unwrap().unwrap();
+                            let (previous_path, previous_node) = item;
+
+                            self.head_prev = self.prev.next();
+
+                            return Some(Ok((
+                                previous_path,
+                                Some(previous_node),
                                 None,
                                 NodeDiff::Deleted,
-                            ));
-                            self.head_prev = self.prev.next();
-                            return Some(item);
+                            )));
                         }
                         Ordering::Greater => {
-                            let item =
-                                Ok((n_path.clone(), None, Some(n_node.clone()), NodeDiff::New));
+                            let item = self.head_next.take().unwrap().unwrap();
+                            let (incoming_path, incoming_node) = item;
+
                             self.head_next = self.next.next();
-                            return Some(item);
+
+                            return Some(Ok((
+                                incoming_path,
+                                None,
+                                Some(incoming_node),
+                                NodeDiff::New,
+                            )));
+                        }
+                        Ordering::Equal => {
+                            let item_a = self.head_prev.take().unwrap().unwrap();
+                            let (previous_path, previous_node) = item_a;
+
+                            let item_b = self.head_next.take().unwrap().unwrap();
+                            let (_, incoming_node) = item_b;
+
+                            self.head_prev = self.prev.next();
+                            self.head_next = self.next.next();
+
+                            let diff_type =
+                                if previous_node.metadata.has_changed(&incoming_node.metadata) {
+                                    NodeDiff::Changed
+                                } else {
+                                    NodeDiff::Unchanged
+                                };
+
+                            return Some(Ok((
+                                previous_path,
+                                Some(previous_node),
+                                Some(incoming_node),
+                                diff_type,
+                            )));
                         }
                     }
                 }
-                (Some(Ok((p_path, p_node))), None) => {
-                    let item = Ok((
-                        p_path.clone(),
-                        Some(p_node.clone()),
+                (Some(Ok(_)), None) => {
+                    let item = self.head_prev.take().unwrap().unwrap();
+                    let (previous_path, previous_node) = item;
+                    self.head_prev = self.prev.next();
+
+                    return Some(Ok((
+                        previous_path,
+                        Some(previous_node),
                         None,
                         NodeDiff::Deleted,
-                    ));
-                    self.head_prev = self.prev.next();
-                    return Some(item);
+                    )));
                 }
-                (None, Some(Ok((n_path, n_node)))) => {
-                    let item = Ok((n_path.clone(), None, Some(n_node.clone()), NodeDiff::New));
+                (None, Some(Ok(_))) => {
+                    let item = self.head_next.take().unwrap().unwrap();
+                    let (incoming_path, incoming_node) = item;
                     self.head_next = self.next.next();
-                    return Some(item);
+
+                    return Some(Ok((
+                        incoming_path,
+                        None,
+                        Some(incoming_node),
+                        NodeDiff::New,
+                    )));
                 }
             }
         }
@@ -373,7 +403,7 @@ mod test {
         // |      |____ file1
         // |____ file0
         //
-        // |dir_b
+        // dir_b
         // |____ file2
 
         std::fs::create_dir_all(root.join("dir_a").join("dir0"))?;

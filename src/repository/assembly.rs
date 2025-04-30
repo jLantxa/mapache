@@ -14,10 +14,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod assembly;
-pub mod backend;
-pub mod config;
-pub mod repository_v1;
-pub mod snapshot;
-pub mod storage;
-pub mod tree;
+use std::{collections::BTreeMap, path::PathBuf};
+
+use super::tree::{StreamNode, Tree};
+
+#[derive(Debug)]
+struct WaitingTree {
+    tree: Tree,
+    num_children: usize,
+}
+
+#[derive(Debug)]
+pub struct TreeSerializer {
+    trees: BTreeMap<PathBuf, WaitingTree>,
+}
+
+impl TreeSerializer {
+    pub fn push_node(&mut self, tree_path: PathBuf, node: StreamNode) {}
+}

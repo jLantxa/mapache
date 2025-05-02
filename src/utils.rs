@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use blake3::Hasher;
 use rayon::ThreadPoolBuilder;
@@ -59,6 +61,36 @@ pub fn configure_rayon(num_threads: usize) -> Result<()> {
         .with_context(|| "Failed to configure rayon: {}")
 }
 
+/// Calculates the longest common prefix for a set of paths
+pub fn calculate_lcp(paths: &[PathBuf]) -> PathBuf {
+    if paths.is_empty() {
+        return PathBuf::new();
+    }
+    if paths.len() == 1 {
+        return paths[0].clone();
+    }
+
+    let first_path = &paths[0];
+    let mut common_prefix = PathBuf::new();
+
+    for (i, first_comp) in first_path.components().enumerate() {
+        let is_common = paths[1..].iter().all(|other_path| {
+            other_path
+                .components()
+                .nth(i)
+                .map_or(false, |other_comp| first_comp.eq(&other_comp))
+        });
+
+        if is_common {
+            common_prefix.push(first_comp);
+        } else {
+            break;
+        }
+    }
+
+    common_prefix
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +123,41 @@ mod tests {
         assert_eq!(format_size(12_995_924), "12.39 MiB");
         assert_eq!(format_size(1_500_000_000), "1.40 GiB");
         assert_eq!(format_size(2_100_000_100_000), "1.91 TiB");
+    }
+
+    #[test]
+    fn test_calculate_lcp() {
+        let paths: Vec<PathBuf> = vec![];
+        assert_eq!(calculate_lcp(&paths), PathBuf::new());
+
+        let paths = vec![PathBuf::from("/home/user/docs")];
+        assert_eq!(calculate_lcp(&paths), PathBuf::from("/home/user/docs"));
+
+        let paths = vec![
+            PathBuf::from("/home/user/a"),
+            PathBuf::from("/home/user/b/file.txt"),
+            PathBuf::from("/home/user/c"),
+        ];
+        assert_eq!(calculate_lcp(&paths), PathBuf::from("/home/user"));
+
+        let paths = vec![
+            PathBuf::from("/home/user/docs"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var/log"),
+        ];
+        assert_eq!(calculate_lcp(&paths), PathBuf::from("/"));
+
+        let paths = vec![
+            PathBuf::from("a/b/c"),
+            PathBuf::from("a/b/d"),
+            PathBuf::from("a/b"),
+        ];
+        assert_eq!(calculate_lcp(&paths), PathBuf::from("a/b"));
+
+        let paths = vec![PathBuf::from("a/b"), PathBuf::from("x/y")];
+        assert_eq!(calculate_lcp(&paths), PathBuf::new()); // LCP of a/b and x/y is ""
+
+        let paths = vec![PathBuf::from("/home/user/a"), PathBuf::from("a")];
+        assert_eq!(calculate_lcp(&paths), PathBuf::new());
     }
 }

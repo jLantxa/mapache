@@ -14,15 +14,91 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
-use anyhow::Result;
-use clap::Args;
+use anyhow::{Error, Result, anyhow};
+use clap::{Args, ValueEnum};
 
-use crate::cli::{self, GlobalArgs};
+use crate::{
+    cli::{self, GlobalArgs},
+    repository::backend::SnapshotId,
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RestoreSnapshot {
+    Latest,
+    Snapshot(SnapshotId),
+}
+
+impl FromStr for RestoreSnapshot {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "latest" => Ok(RestoreSnapshot::Latest),
+            _ if !s.is_empty() => Ok(RestoreSnapshot::Snapshot(s.to_string())),
+            _ => Err(anyhow!(
+                "Invalid snapshot value: must be 'latest' or a snapshot ID"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for RestoreSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreSnapshot::Latest => write!(f, "latest"),
+            RestoreSnapshot::Snapshot(id) => write!(f, "{}", id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, ValueEnum)]
+pub enum Resolution {
+    Skip,
+    Overwrite,
+    Fail,
+}
+
+impl std::fmt::Display for Resolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Resolution::Skip => write!(f, "skip"),
+            Resolution::Overwrite => write!(f, "overwrite"),
+            Resolution::Fail => write!(f, "fail"),
+        }
+    }
+}
 
 #[derive(Args, Debug)]
-pub struct CmdArgs {}
+pub struct CmdArgs {
+    /// A path where the files will be restored.
+    #[clap(long, required = true)]
+    pub target: PathBuf,
+
+    /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
+    #[clap(long, value_parser = clap::value_parser!(RestoreSnapshot), default_value_t=RestoreSnapshot::Latest)]
+    pub snapshot: RestoreSnapshot,
+
+    /// A list of paths to restore.
+    #[clap(long, required = false)]
+    pub include: Vec<PathBuf>,
+
+    /// A list of paths to exclude.
+    #[clap(long, required = false)]
+    pub exclude: Vec<PathBuf>,
+
+    /// Method for conflict resolution in case a file or directory already exists in the target location.
+    ///
+    /// skip: Skips restoring the conflicting item.
+    /// overwrite: Overwrites the item in the target location.
+    /// fail: Terminates the command with an error.
+    #[clap(long, default_value_t=Resolution::Fail)]
+    pub resolution: Resolution,
+}
 
 pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let _password = cli::request_password();

@@ -37,8 +37,6 @@ fn run(args: &cli::Cli) -> Result<()> {
 fn main() -> Result<()> {
     let args = cli::Cli::parse();
 
-    utils::configure_rayon(args.global_args.threads)?;
-
     if let Err(e) = run(&args) {
         cli::log_error(e.to_string().as_str());
         std::process::exit(1);

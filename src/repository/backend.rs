@@ -40,7 +40,7 @@ pub struct ChunkResult {
     pub total_bytes_written: usize,
 }
 
-pub trait RepositoryBackend {
+pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
     fn init(
         storage_backend: Arc<dyn StorageBackend>,
@@ -80,6 +80,19 @@ pub trait RepositoryBackend {
 
     /// Get all snapshots in the repository, sorted by datetime.
     fn load_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>>;
+}
+
+pub fn init(
+    storage_backend: Arc<dyn StorageBackend>,
+    repo_path: &Path,
+    password: String,
+) -> Result<Box<dyn RepositoryBackend>> {
+    init_repository_with_version(
+        LATEST_REPOSITORY_VERSION,
+        storage_backend,
+        repo_path,
+        password,
+    )
 }
 
 pub fn init_repository_with_version(

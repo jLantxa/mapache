@@ -54,57 +54,18 @@ pub enum Command {
 
 #[derive(Parser, Debug)]
 pub struct GlobalArgs {
-    /// Number of threads to use.
-    /// Any positive integer greater than 0 or "max" to use the maximum number
-    /// of logical CPU cores available on the system.
-    #[clap(short, long, value_parser = parse_threads, default_value_t = 2)]
-    pub threads: usize,
-
     /// Repository path
     #[clap(short, long, value_parser)]
     pub repo: String,
 }
 
-/// Custom parser function for the threads argument
-fn parse_threads(s: &str) -> Result<usize, anyhow::Error> {
-    match s {
-        "max" => std::thread::available_parallelism()
-            .map(|num| num.get())
-            .map_err(|e| anyhow::anyhow!("Failed to determine available parallelism: {}", e)),
-
-        _ => {
-            let threads: usize = s
-                .parse()
-                .map_err(|e| anyhow::anyhow!("'{}' isn't a valid number for threads: {}", s, e))?;
-
-            if threads == 0 {
-                Err(anyhow::anyhow!("Number of threads must be greater than 0"))
-            } else {
-                Ok(threads)
-            }
-        }
-    }
-}
-
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
-        println!($($arg)*);
+        println!($($arg)*)
     };
 }
 pub use log;
-
-#[macro_export]
-macro_rules! dbg_log {
-    ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        {
-        print!("{} ", "[DEBUG]".bold().purple());
-        println!($($arg)*);
-        }
-    };
-}
-pub use dbg_log;
 
 /// Prints a log with a green tag.
 pub fn log_green(tag: &str, str: &str) {

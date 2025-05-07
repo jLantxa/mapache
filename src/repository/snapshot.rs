@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::path::PathBuf;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +27,10 @@ pub struct Snapshot {
     pub timestamp: DateTime<Utc>,
 
     /// Hash ID for the tree object root.
-    pub root: SnapshotId,
+    pub tree: SnapshotId,
+
+    /// Absolute paths to the targets
+    pub paths: Vec<PathBuf>,
 
     /// Description of the snapshot.
     pub description: Option<String>,

@@ -16,9 +16,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use blake3::Hasher;
-use rayon::ThreadPoolBuilder;
 
 pub type Hash = String;
 
@@ -52,13 +50,6 @@ pub fn format_size(bytes: u64) -> String {
     } else {
         return format!("1 byte");
     }
-}
-
-pub fn configure_rayon(num_threads: usize) -> Result<()> {
-    ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build_global()
-        .with_context(|| "Failed to configure rayon: {}")
 }
 
 /// Calculates the longest common prefix for a set of paths

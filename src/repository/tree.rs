@@ -18,6 +18,7 @@ use std::{
     cmp::Ordering,
     fs::{self, Metadata as FsMetadata},
     path::{Path, PathBuf},
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -143,7 +144,7 @@ impl Node {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Tree {
-    nodes: Vec<Node>,
+    pub nodes: Vec<Node>,
 }
 
 impl Tree {
@@ -187,14 +188,14 @@ impl FSNodeStreamer {
     }
 
     /// Creates an FSNodeStreamer from multiple root paths. The paths are iterated in lexicographical order.
-    pub fn from_paths(paths: &Vec<PathBuf>) -> Result<Self> {
+    pub fn from_paths(paths: &[PathBuf]) -> Result<Self> {
         for path in paths {
             if !path.exists() {
                 bail!("Path {} does not exist", path.display());
             }
         }
 
-        let mut roots = paths.clone();
+        let mut roots = paths.to_vec();
         roots.sort_by(|a, b| b.cmp(a));
         Ok(Self { stack: roots })
     }
@@ -235,33 +236,40 @@ impl Iterator for FSNodeStreamer {
     }
 }
 
-pub struct SerializedNodeStreamer<'a> {
-    repo: &'a dyn RepositoryBackend,
+pub struct SerializedNodeStreamer {
+    repo: Arc<dyn RepositoryBackend>,
     stack: Vec<StreamNodeInfo>,
 }
 
-impl<'a> SerializedNodeStreamer<'a> {
-    pub fn new(repo: &'a dyn RepositoryBackend, root_id: TreeId) -> Result<Self> {
-        // Load root tree and push its children to the stack in reverse order
-        let root_tree = repo.load_tree(&root_id)?;
+impl SerializedNodeStreamer {
+    pub fn new(repo: Arc<dyn RepositoryBackend>, root_id: Option<TreeId>) -> Self {
         let mut stack = Vec::new();
-        let num_children = root_tree.nodes.len();
 
-        for node in root_tree.nodes.iter().rev() {
-            stack.push((
-                PathBuf::new(),
-                StreamNode {
-                    node: node.clone(),
-                    num_children,
-                },
-            ));
+        match root_id {
+            Some(id) => match repo.load_tree(&id) {
+                Ok(tree) => {
+                    // Load root tree and push its children to the stack in reverse order
+                    let num_children = tree.nodes.len();
+                    for node in tree.nodes.iter().rev() {
+                        stack.push((
+                            PathBuf::new(),
+                            StreamNode {
+                                node: node.clone(),
+                                num_children,
+                            },
+                        ));
+                    }
+                }
+                Err(_) => (),
+            },
+            None => (),
         }
 
-        Ok(Self { repo, stack })
+        Self { repo, stack }
     }
 }
 
-impl<'a> Iterator for SerializedNodeStreamer<'a> {
+impl Iterator for SerializedNodeStreamer {
     type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {

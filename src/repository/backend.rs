@@ -59,18 +59,18 @@ pub trait RepositoryBackend: Sync + Send {
     where
         Self: Sized;
 
-    fn save_file(&self, src_path: &Path) -> Result<ChunkResult>;
+    fn save_file(&self, src_path: &Path, dry_run: bool) -> Result<ChunkResult>;
 
     fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
 
     /// Serializes a Tree into SerializableTreeObject's into the repository storage.
-    fn save_tree(&self, tree: &Tree) -> Result<Hash>;
+    fn save_tree(&self, tree: &Tree, dry_run: bool) -> Result<Hash>;
 
     /// Restores a Tree from the SerializableTreeObject's in the repository.
     fn load_tree(&self, root_hash: &Hash) -> Result<Tree>;
 
     /// Saves a snapshot metadata
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;
+    fn save_snapshot(&self, snapshot: &Snapshot, dry_run: bool) -> Result<Hash>;
 
     /// Get a snapshot by hash
     fn load_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>>;

@@ -77,7 +77,7 @@ impl SecureStorage {
 
     /// Save data to a file with SecureStorage.
     /// Returns the number of bytes written.
-    pub fn save_file(&self, data: &[u8], path: &Path) -> Result<usize> {
+    pub fn save_file(&self, data: &[u8], path: &Path, dry_run: bool) -> Result<usize> {
         let mut out_data = Vec::new();
 
         if let Some(compression_level) = self.compression_level {
@@ -88,14 +88,19 @@ impl SecureStorage {
             out_data = Self::encrypt(key.expose_secret(), &out_data)?;
         }
 
-        self.backend.write(path, &out_data)?;
+        if !dry_run {
+            self.backend.write(path, &out_data)?;
+        }
+
         Ok(out_data.len())
     }
 
-    pub fn save_file_with_rename(&self, data: &[u8], path: &Path) -> Result<usize> {
+    pub fn save_file_with_rename(&self, data: &[u8], path: &Path, dry_run: bool) -> Result<usize> {
         let tmp_path = path.with_extension(".tmp");
-        let size = self.save_file(data, &tmp_path)?;
-        self.backend.rename(&tmp_path, path)?;
+        let size = self.save_file(data, &tmp_path, dry_run)?;
+        if !dry_run {
+            self.backend.rename(&tmp_path, path)?;
+        }
         Ok(size)
     }
 

@@ -136,7 +136,11 @@ impl RepositoryBackend for Repository {
             .with_key(key)
             .with_compression(config.compression_level.to_i32());
         let config_json = serde_json::to_string_pretty(&config)?;
-        secure_storage.save_file_with_rename(&config_json.as_bytes(), &repo_path.join("config"))?;
+        secure_storage.save_file_with_rename(
+            &config_json.as_bytes(),
+            &repo_path.join("config"),
+            false,
+        )?;
 
         Ok(Self {
             backend: backend.to_owned(),
@@ -195,13 +199,13 @@ impl RepositoryBackend for Repository {
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    fn save_tree(&self, tree: &Tree) -> Result<Hash> {
+    fn save_tree(&self, tree: &Tree, dry_run: bool) -> Result<Hash> {
         let tree_json = serde_json::to_string_pretty(tree)?;
         let hash = utils::calculate_hash(&tree_json);
         let tree_path = &self.get_tree_path(&hash);
 
         self.secure_storage
-            .save_file_with_rename(tree_json.as_bytes(), &tree_path)?;
+            .save_file_with_rename(tree_json.as_bytes(), &tree_path, dry_run)?;
         Ok(hash)
     }
 
@@ -255,7 +259,7 @@ impl RepositoryBackend for Repository {
     /// will be compressed, encrypted and stored in the repository.
     /// The content hash of each chunk is used to identify the chunk and determine
     /// if the chunk already exists in the repository.
-    fn save_file(&self, src_path: &Path) -> Result<ChunkResult> {
+    fn save_file(&self, src_path: &Path, dry_run: bool) -> Result<ChunkResult> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
         let reader = BufReader::new(source);
@@ -287,7 +291,7 @@ impl RepositoryBackend for Repository {
             if !chunk_path.exists() {
                 total_bytes_written += self
                     .secure_storage
-                    .save_file_with_rename(&chunk.data, &chunk_path)
+                    .save_file_with_rename(&chunk.data, &chunk_path, dry_run)
                     .with_context(|| {
                         format!(
                             "Could not save chunk #{} ({}) for file \'{}\'",
@@ -359,13 +363,16 @@ impl RepositoryBackend for Repository {
         Ok(())
     }
 
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {
+    fn save_snapshot(&self, snapshot: &Snapshot, dry_run: bool) -> Result<SnapshotId> {
         let snapshot_json = serde_json::to_string_pretty(snapshot)?;
         let hash = utils::calculate_hash(&snapshot_json);
 
         let snapshot_path = self.snapshot_path.join(&hash);
-        self.secure_storage
-            .save_file_with_rename(&snapshot_json.as_bytes(), &snapshot_path)?;
+        self.secure_storage.save_file_with_rename(
+            &snapshot_json.as_bytes(),
+            &snapshot_path,
+            dry_run,
+        )?;
 
         Ok(hash)
     }
@@ -486,7 +493,7 @@ mod test {
         let (_, mut stream_node) = fs_node_streamer.next().unwrap().unwrap();
 
         // Chunk the file, obtain Node with content hashes
-        let chunk_result = repo.save_file(&src_file_path)?;
+        let chunk_result = repo.save_file(&src_file_path, false)?;
         stream_node.node.contents = Some(chunk_result.chunks.clone());
 
         repo.restore_node(&stream_node.node, &dst_file_path)?;

@@ -68,6 +68,7 @@ pub struct Committer {
 
     final_root_tree_id: Option<TreeId>,
 
+    should_do_full_scan: bool,
     dry_run: bool,
 }
 
@@ -79,6 +80,7 @@ impl Committer {
         source_paths: &[PathBuf],
         parent_snapshot_id: Option<SnapshotId>,
         workers: usize,
+        full_scan: bool,
         dry_run: bool,
     ) -> Result<Snapshot> {
         if workers < 1 {
@@ -144,6 +146,7 @@ impl Committer {
             commit_root_path,
             absolute_source_paths,
             final_root_tree_id: None,
+            should_do_full_scan: full_scan,
             dry_run,
         }));
 
@@ -222,18 +225,35 @@ impl Committer {
                     let parent_path = Self::extract_parent(&path).unwrap_or_else(|| PathBuf::new());
                     let parent_pending_tree =
                         self.pending_trees.get_mut(&parent_path).ok_or_else(|| {
-                            anyhow::anyhow!(
-                            "Logic error: Parent path '{}' not found in pending trees for item '{}'.
-                                Maybe streamer order is wrong or a parent was deleted/errored?",
-                            parent_path.display(),
-                            path.display()
-                        )
+                                anyhow::anyhow!(
+                                "Logic error: Parent path '{}' not found in pending trees for item '{}'.
+                                    Maybe streamer order is wrong or a parent was deleted/errored?",
+                                parent_path.display(),
+                                path.display()
+                            )
                         })?;
 
                     let node = prev_stream_node_info.node;
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
-                            parent_pending_tree.children.insert(node.name.clone(), node);
+                            if !self.dry_run && self.should_do_full_scan && node.is_file() {
+                                let (_, updated_node) = self
+                                    .repo
+                                    .save_file(&path, self.dry_run)
+                                    .map(|chunk_result| {
+                                        let mut updated_node = node.clone();
+                                        updated_node.contents = Some(chunk_result.chunks);
+                                        (path, updated_node.clone())
+                                    })
+                                    .with_context(|| "Synchronous save_file failed")?;
+
+                                parent_pending_tree
+                                    .children
+                                    .insert(updated_node.name.clone(), updated_node);
+                            } else {
+                                parent_pending_tree.children.insert(node.name.clone(), node);
+                            }
+
                             self.finalize_if_complete(parent_path)?;
                         }
                         NodeType::Directory => {
@@ -271,17 +291,23 @@ impl Committer {
                             })?;
 
                             if !self.dry_run && node.is_file() {
-                                self.repo
-                                    .save_file(&path)
+                                let (_, updated_node) = self
+                                    .repo
+                                    .save_file(&path, self.dry_run)
                                     .map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
-                                        (path, updated_node)
+                                        (path, updated_node.clone())
                                     })
                                     .with_context(|| "Synchronous save_file failed")?;
+
+                                parent_pending_tree
+                                    .children
+                                    .insert(updated_node.name.clone(), updated_node);
+                            } else {
+                                parent_pending_tree.children.insert(node.name.clone(), node);
                             }
 
-                            parent_pending_tree.children.insert(node.name.clone(), node);
                             self.finalize_if_complete(parent_path)?;
                         }
 
@@ -344,7 +370,7 @@ impl Committer {
         } else {
             let tree_id_result: Result<TreeId> = self
                 .repo
-                .save_tree(&completed_tree)
+                .save_tree(&completed_tree, self.dry_run)
                 .with_context(|| "Synchronous save_tree failed");
 
             tree_id_result?
@@ -468,7 +494,7 @@ mod test {
 
         let paths = vec![PathBuf::from("./src"), PathBuf::from("./testdata")];
 
-        let snapshot_result = Committer::run(repo.clone(), &paths, None, 2, false)?;
+        let snapshot_result = Committer::run(repo.clone(), &paths, None, 2, false, false)?;
 
         println!("{:?}", snapshot_result);
 

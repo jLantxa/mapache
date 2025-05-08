@@ -56,15 +56,15 @@ const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
 const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
 
 pub struct Repository {
-    backend: Arc<dyn StorageBackend>,
+    _backend: Arc<dyn StorageBackend>,
 
-    root_path: PathBuf,
+    _root_path: PathBuf,
     data_path: PathBuf,
     snapshot_path: PathBuf,
     tree_path: PathBuf,
 
     secure_storage: SecureStorage,
-    config: Config,
+    _config: Config,
 }
 
 /// A metadata structure that contains information about a repository key
@@ -143,13 +143,13 @@ impl RepositoryBackend for Repository {
         )?;
 
         Ok(Self {
-            backend: backend.to_owned(),
-            root_path: repo_path.to_owned(),
+            _backend: backend.to_owned(),
+            _root_path: repo_path.to_owned(),
             data_path,
             snapshot_path,
             tree_path,
             secure_storage,
-            config,
+            _config: config,
         })
     }
 
@@ -184,14 +184,14 @@ impl RepositoryBackend for Repository {
         let storage = storage.with_compression(config.compression_level.to_i32());
 
         let repo = Repository {
-            backend,
+            _backend: backend,
 
-            root_path: repo_path.to_owned(),
+            _root_path: repo_path.to_owned(),
             data_path,
             snapshot_path,
             tree_path,
             secure_storage: storage,
-            config,
+            _config: config,
         };
 
         Ok(repo)

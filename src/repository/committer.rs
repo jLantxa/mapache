@@ -17,7 +17,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -43,13 +46,14 @@ use super::{
 struct PendingTree {
     pub node: Option<Node>,
     pub children: BTreeMap<String, Node>,
-    pub num_expected_children: usize,
+    pub num_expected_children: isize,
 }
 
 impl PendingTree {
     ///  Returns true if this directory node is still waiting to receive children
     pub fn is_pending(&self) -> bool {
-        self.children.len() < self.num_expected_children
+        (self.num_expected_children >= 0)
+            && (self.children.len() as isize) < self.num_expected_children
     }
 }
 
@@ -61,12 +65,13 @@ impl PendingTree {
 /// Worker threads consume diff items and update the shared state.
 pub struct Committer {
     repo: Arc<dyn RepositoryBackend>,
-    pending_trees: BTreeMap<PathBuf, PendingTree>,
+
+    pending_trees: Arc<Mutex<BTreeMap<PathBuf, PendingTree>>>,
 
     commit_root_path: PathBuf,
     absolute_source_paths: Vec<PathBuf>,
 
-    final_root_tree_id: Option<TreeId>,
+    final_root_tree_id: Arc<Mutex<Option<TreeId>>>,
 
     should_do_full_scan: bool,
     dry_run: bool,
@@ -138,49 +143,72 @@ impl Committer {
         )));
 
         // Create the initial pending trees with the snapshot root and all intermediate parents
-        let pending_trees = Self::create_pending_trees(&commit_root_path, &absolute_source_paths);
-
-        let committer = Arc::new(Mutex::new(Committer {
+        let committer = Arc::new(Committer {
             repo,
-            pending_trees,
+            pending_trees: Arc::new(Mutex::new(Self::create_pending_trees(
+                &commit_root_path,
+                &absolute_source_paths,
+            ))),
             commit_root_path,
             absolute_source_paths,
-            final_root_tree_id: None,
+            final_root_tree_id: Arc::new(Mutex::new(None)),
             should_do_full_scan: full_scan,
             dry_run,
-        }));
+        });
 
         let thread_pool = ThreadPool::new(workers);
         let error_signal = Arc::new(AtomicBool::new(false));
         for _ in 0..workers {
             let error_signal = error_signal.clone();
-            let commiter_clone = committer.clone();
             let diff_clone = diff_streamer.clone();
 
+            let pending_trees = committer.pending_trees.clone();
+            let final_root_tree_id = committer.final_root_tree_id.clone();
+            let repo = committer.repo.clone();
+            let commit_root_path = committer.commit_root_path.clone();
+            let dry_run = committer.dry_run;
+            let full_scan = committer.should_do_full_scan;
+
             thread_pool.execute(move || {
-                // Consume diffs and process them until the iterator is consumed
                 loop {
-                    if true == error_signal.load(std::sync::atomic::Ordering::SeqCst) {
+                    if error_signal.load(Ordering::SeqCst) {
                         break;
                     }
 
-                    let mut diff_streamer = diff_clone.lock().unwrap();
-                    let mut committer = commiter_clone.lock().unwrap();
+                    let diff_result = {
+                        let mut diff = diff_clone.lock().unwrap();
+                        diff.next()
+                    };
 
-                    match diff_streamer.next() {
-                        Some(diff_result) => match diff_result {
-                            Ok(item) => {
-                                if let Err(_) = committer.process_item(item) {
-                                    error_signal
-                                        .fetch_and(true, std::sync::atomic::Ordering::Relaxed);
-                                    break;
-                                }
-                            }
-                            Err(_) => {
-                                error_signal.fetch_and(true, std::sync::atomic::Ordering::Relaxed);
+                    match diff_result {
+                        Some(Ok(item)) => {
+                            #[cfg(debug_assertions)]
+                            cli::log!("{:#?}", item.0.display());
+
+                            let result = Self::process_item(
+                                repo.clone(),
+                                pending_trees.clone(),
+                                final_root_tree_id.clone(),
+                                &commit_root_path,
+                                item,
+                                dry_run,
+                                full_scan,
+                            );
+                            if result.is_err() {
+                                #[cfg(debug_assertions)]
+                                cli::log!("{:#?}", result.unwrap_err());
+
+                                error_signal.store(true, Ordering::Relaxed);
                                 break;
                             }
-                        },
+                        }
+                        Some(Err(err)) => {
+                            #[cfg(debug_assertions)]
+                            cli::log!("{:#?}", err);
+
+                            error_signal.store(true, Ordering::Relaxed);
+                            break;
+                        }
                         None => break,
                     }
                 }
@@ -190,13 +218,13 @@ impl Committer {
         // Wait for all workers to finish
         thread_pool.join();
 
-        if error_signal.load(std::sync::atomic::Ordering::SeqCst) {
-            bail!("Processing error");
+        if error_signal.load(Ordering::SeqCst) {
+            bail!("Failed to commit");
         }
 
         // Return snapshot
-        let committer = committer.lock().unwrap();
-        match &committer.final_root_tree_id {
+        let final_root_tree_id = committer.final_root_tree_id.lock().unwrap().clone();
+        match final_root_tree_id {
             Some(tree_id) => Ok(Snapshot {
                 timestamp: Utc::now(),
                 tree: tree_id.clone(),
@@ -208,8 +236,13 @@ impl Committer {
     }
 
     fn process_item(
-        &mut self,
+        repo: Arc<dyn RepositoryBackend>,
+        pending_trees: Arc<Mutex<BTreeMap<PathBuf, PendingTree>>>,
+        final_root_tree_id: Arc<Mutex<Option<TreeId>>>,
+        commit_root_path: &Path,
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
+        dry_run: bool,
+        should_do_full_scan: bool,
     ) -> Result<()> {
         let (path, prev_node, next_node, diff_type) = item;
 
@@ -223,50 +256,74 @@ impl Committer {
                 None => bail!("Item unchanged but the node was not provided"),
                 Some(prev_stream_node_info) => {
                     let parent_path = Self::extract_parent(&path).unwrap_or_else(|| PathBuf::new());
-                    let parent_pending_tree =
-                        self.pending_trees.get_mut(&parent_path).ok_or_else(|| {
-                                anyhow::anyhow!(
-                                "Logic error: Parent path '{}' not found in pending trees for item '{}'.
-                                    Maybe streamer order is wrong or a parent was deleted/errored?",
-                                parent_path.display(),
-                                path.display()
-                            )
-                        })?;
 
                     let node = prev_stream_node_info.node;
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
-                            if !self.dry_run && self.should_do_full_scan && node.is_file() {
-                                let (_, updated_node) = self
-                                    .repo
-                                    .save_file(&path, self.dry_run)
+                            if !dry_run && should_do_full_scan && node.is_file() {
+                                let (_, updated_node) = repo
+                                    .save_file(&path, dry_run)
                                     .map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
-                                        (path, updated_node.clone())
+                                        (path.to_path_buf(), updated_node.clone())
                                     })
                                     .with_context(|| "Synchronous save_file failed")?;
 
-                                parent_pending_tree
-                                    .children
-                                    .insert(updated_node.name.clone(), updated_node);
+                                // Mutex-guarded access to pending_trees
+                                let mut pending_trees_guard = pending_trees.lock().unwrap();
+
+                                Self::insert_finalized_node(
+                                    &mut pending_trees_guard,
+                                    &parent_path,
+                                    updated_node,
+                                );
+                                // ==> Mutex dropped here <==
                             } else {
-                                parent_pending_tree.children.insert(node.name.clone(), node);
+                                // Mutex-guarded access to pending_trees
+                                let mut pending_trees_guard = pending_trees.lock().unwrap();
+
+                                Self::insert_finalized_node(
+                                    &mut pending_trees_guard,
+                                    &parent_path,
+                                    node,
+                                );
+                                // ==> Mutex dropped here <==
                             }
 
-                            self.finalize_if_complete(parent_path)?;
+                            Self::finalize_if_complete(
+                                parent_path,
+                                repo,
+                                pending_trees,
+                                final_root_tree_id,
+                                &commit_root_path,
+                                dry_run,
+                            )?;
                         }
                         NodeType::Directory => {
-                            self.pending_trees.insert(
-                                path.clone(),
-                                PendingTree {
-                                    node: Some(node.clone()),
-                                    children: BTreeMap::new(),
-                                    num_expected_children: prev_stream_node_info.num_children,
-                                },
-                            );
+                            {
+                                // Mutex-guarded access to pending_trees
+                                let mut pending_trees_guard = pending_trees.lock().unwrap();
+                                pending_trees_guard.insert(
+                                    path.clone(),
+                                    PendingTree {
+                                        node: Some(node.clone()),
+                                        children: BTreeMap::new(),
+                                        num_expected_children: prev_stream_node_info.num_children
+                                            as isize,
+                                    },
+                                );
+                                // ==> Mutex dropped here <==
+                            }
 
-                            self.finalize_if_complete(path)?;
+                            Self::finalize_if_complete(
+                                path,
+                                repo,
+                                pending_trees,
+                                final_root_tree_id,
+                                commit_root_path,
+                                dry_run,
+                            )?;
                         }
                     }
                 }
@@ -281,55 +338,83 @@ impl Committer {
                         NodeType::File | NodeType::Symlink => {
                             let parent_path =
                                 Self::extract_parent(&path).unwrap_or_else(|| PathBuf::new());
-                            let parent_pending_tree = self.pending_trees.get_mut(&parent_path).ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "Logic error: Parent path '{}' not found in pending trees for item '{}'.
-                                        Maybe streamer order is wrong or a parent was deleted/errored?",
-                                    parent_path.display(),
-                                    path.display()
-                                )
-                            })?;
 
-                            if !self.dry_run && node.is_file() {
-                                let (_, updated_node) = self
-                                    .repo
-                                    .save_file(&path, self.dry_run)
+                            // Non blocking file save
+                            if !dry_run && node.is_file() {
+                                let _ = repo
+                                    .save_file(&path, dry_run)
                                     .map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
-                                        (path, updated_node.clone())
+                                        (path.to_path_buf(), updated_node.clone())
                                     })
                                     .with_context(|| "Synchronous save_file failed")?;
 
-                                parent_pending_tree
-                                    .children
-                                    .insert(updated_node.name.clone(), updated_node);
+                                // Mutex-guarded access to pending_trees
+                                let mut pending_trees_guard = pending_trees.lock().unwrap();
+
+                                Self::insert_finalized_node(
+                                    &mut pending_trees_guard,
+                                    &parent_path,
+                                    node,
+                                );
+                                // ==> Mutex dropped here <==
                             } else {
-                                parent_pending_tree.children.insert(node.name.clone(), node);
+                                // Mutex-guarded access to pending_trees
+                                let mut pending_trees_guard = pending_trees.lock().unwrap();
+
+                                Self::insert_finalized_node(
+                                    &mut pending_trees_guard,
+                                    &parent_path,
+                                    node,
+                                );
+                                // ==> Mutex dropped here <==
                             }
 
-                            self.finalize_if_complete(parent_path)?;
+                            Self::finalize_if_complete(
+                                parent_path,
+                                repo,
+                                pending_trees,
+                                final_root_tree_id,
+                                commit_root_path,
+                                dry_run,
+                            )?;
                         }
 
                         NodeType::Directory => {
-                            // Directories have no content to save, just a node to serialize
-                            if self.pending_trees.contains_key(&path) {
-                                bail!(
-                                    "Logic error: Directory path '{}' already exists in pending_trees map.",
-                                    path.display()
+                            {
+                                // Mutex-guarded access to pending_trees
+                                let mut pending_trees_guard = pending_trees.lock().unwrap();
+
+                                let existing_pending_tree = pending_trees_guard.insert(
+                                    path.clone(),
+                                    PendingTree {
+                                        node: Some(node.clone()),
+                                        children: BTreeMap::new(),
+                                        num_expected_children: next_stream_node_info.num_children
+                                            as isize,
+                                    },
                                 );
+
+                                match existing_pending_tree {
+                                    Some(old_pending_tree) => {
+                                        pending_trees_guard.get_mut(&path).unwrap().children =
+                                            old_pending_tree.children;
+                                    }
+                                    None => (),
+                                }
+
+                                // ==> Mutex dropped here <==
                             }
 
-                            self.pending_trees.insert(
-                                path.clone(),
-                                PendingTree {
-                                    node: Some(node.clone()),
-                                    children: BTreeMap::new(),
-                                    num_expected_children: next_stream_node_info.num_children,
-                                },
-                            );
-
-                            self.finalize_if_complete(path)?;
+                            Self::finalize_if_complete(
+                                path,
+                                repo,
+                                pending_trees,
+                                final_root_tree_id,
+                                commit_root_path,
+                                dry_run,
+                            )?;
                         }
                     }
                 }
@@ -339,15 +424,20 @@ impl Committer {
         Ok(())
     }
 
-    fn finalize_if_complete(&mut self, dir_path: PathBuf) -> Result<()> {
-        let this_pending_tree = match self.pending_trees.get(&dir_path) {
+    fn finalize_if_complete(
+        dir_path: PathBuf,
+        repo: Arc<dyn RepositoryBackend>,
+        pending_trees: Arc<Mutex<BTreeMap<PathBuf, PendingTree>>>,
+        final_root_tree_id: Arc<Mutex<Option<TreeId>>>,
+        commit_root_path: &Path,
+        dry_run: bool,
+    ) -> Result<()> {
+        // Lock the mutex to modify the pending trees
+        let mut pending_trees_guard = pending_trees.lock().unwrap();
+
+        let this_pending_tree = match pending_trees_guard.get(&dir_path) {
             Some(tree) => tree,
             None => {
-                // TODO: What happens if there is no pending tree now?
-                // I could insert the new pending tree and later just update it when
-                // another task tries to add it. This might happens if we process a file
-                // before its parent directory. We would add the file to the new pending tree
-                // and later just merge.
                 return Ok(());
             }
         };
@@ -356,8 +446,7 @@ impl Committer {
             return Ok(());
         }
 
-        let this_pending_tree = self
-            .pending_trees
+        let this_pending_tree = pending_trees_guard
             .remove(&dir_path)
             .context("Logic error: Completed tree not found in map during removal.")?;
 
@@ -365,40 +454,51 @@ impl Committer {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id: TreeId = if self.dry_run {
+        let tree_id: TreeId = if dry_run {
             TreeId::from("")
         } else {
-            let tree_id_result: Result<TreeId> = self
-                .repo
-                .save_tree(&completed_tree, self.dry_run)
+            let tree_id_result: Result<TreeId> = repo
+                .save_tree(&completed_tree, dry_run)
                 .with_context(|| "Synchronous save_tree failed");
 
             tree_id_result?
         };
 
-        if dir_path == self.commit_root_path {
-            self.final_root_tree_id = Some(tree_id);
+        if dir_path == commit_root_path {
+            *final_root_tree_id.lock().unwrap() = Some(tree_id);
+            // ==> Mutex dropped here <==
         } else {
-            let mut completed_dir_node = this_pending_tree
-                .node
-                .with_context(|| "Logic error: Non-root finalized tree should have a node.")?;
-
+            let mut completed_dir_node = this_pending_tree.node.with_context(|| {
+                format!(
+                    "Logic error: Non-root finalized tree should have a node. dir_path: {}",
+                    dir_path.display()
+                )
+            })?;
             completed_dir_node.tree = Some(tree_id);
 
             let parent_path = Self::extract_parent(&dir_path).unwrap_or_else(|| PathBuf::new());
 
-            let parent_pending_tree = self.pending_trees.get_mut(&parent_path)
-                .with_context(|| format!("Logic error: Parent path '{}' not found during finalization propagation for child '{}'.", parent_path.display(), dir_path.display()))?;
-            parent_pending_tree
-                .children
-                .insert(completed_dir_node.name.clone(), completed_dir_node.clone());
+            Self::insert_finalized_node(
+                &mut pending_trees_guard,
+                &parent_path,
+                completed_dir_node.clone(),
+            );
 
+            let parent_pending_tree = pending_trees_guard.get_mut(&parent_path).unwrap();
             let child_node_in_parent_list = parent_pending_tree.children.get_mut(&completed_dir_node.name)
                  .with_context(|| format!("Logic error: Completed child node '{}' not found in parent's children map ('{}') during finalization propagation.", completed_dir_node.name, parent_path.display()))?;
-
             *child_node_in_parent_list = completed_dir_node;
 
-            self.finalize_if_complete(parent_path)?;
+            drop(pending_trees_guard); // <== Mutex dropped here (before recursive call)
+
+            Self::finalize_if_complete(
+                parent_path,
+                repo,
+                pending_trees,
+                final_root_tree_id,
+                commit_root_path,
+                dry_run,
+            )?;
         }
 
         Ok(())
@@ -462,45 +562,33 @@ impl Committer {
 
         pending_trees
     }
-}
 
-#[cfg(test)]
-mod test {
-    use tempfile::tempdir;
-
-    use crate::{
-        repository::{self},
-        storage_backend::localfs::LocalFS,
-    };
-
-    use super::*;
-
-    // This test is only used for debugging the Committer and will be deleted soon.
-    // It must be replaced with a test that verifies that objects are correctly stored and
-    // can be retrieved from the repository.
-    #[test]
-    #[ignore = "For debugging only"]
-    fn test_commit() -> Result<()> {
-        let temp_dir = tempdir()?;
-        let repo_path = temp_dir.path().join("repo");
-
-        let storage_backend = Arc::new(LocalFS::new());
-
-        let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::backend::init(
-            storage_backend,
-            &repo_path,
-            String::from("mapachito"),
-        )?);
-
-        let paths = vec![PathBuf::from("./src"), PathBuf::from("./testdata")];
-
-        let snapshot_result = Committer::run(repo.clone(), &paths, None, 2, false, false)?;
-
-        println!("{:?}", snapshot_result);
-
-        let _tree_streamer =
-            SerializedNodeStreamer::new(Arc::from(repo), Some(snapshot_result.tree));
-
-        Ok(())
+    #[inline]
+    fn insert_finalized_node(
+        pending_trees_guard: &mut MutexGuard<'_, BTreeMap<PathBuf, PendingTree>>,
+        parent_path: &Path,
+        node: Node,
+    ) {
+        match pending_trees_guard.get_mut(parent_path) {
+            Some(parent_pending_tree) => {
+                parent_pending_tree.children.insert(node.name.clone(), node);
+            }
+            None => {
+                println!("Creating non-existent parent {}", parent_path.display());
+                let _ = pending_trees_guard.insert(
+                    parent_path.to_path_buf(),
+                    PendingTree {
+                        node: None,
+                        children: BTreeMap::new(),
+                        num_expected_children: isize::MAX,
+                    },
+                );
+                pending_trees_guard
+                    .get_mut(parent_path)
+                    .unwrap()
+                    .children
+                    .insert(node.name.clone(), node);
+            }
+        }
     }
 }

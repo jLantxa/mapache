@@ -31,14 +31,25 @@ use serde::{Deserialize, Serialize};
 use super::backend::{BlobId, RepositoryBackend, TreeId};
 
 /// Node metadata. This struct is serialized; keep field order stable.
+///
+/// We ignore the accessed time. This field changed everytime we analyze a file for commit,
+/// altering the hash of the node. The accessed time will be updated after restoring the
+///  file anyway. We don't include it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Metadata {
+    /// Size in bytes
     pub size: u64,
+
+    /// Created time
     pub created_time: Option<SystemTime>,
+    /// Modified time
     pub modified_time: Option<SystemTime>,
-    pub accessed_time: Option<SystemTime>,
+
+    /// Unix mode
     pub mode: Option<u32>,
+    // Unix owner user id
     pub owner_uid: Option<u32>,
+    /// Unix owner group id
     pub owner_gid: Option<u32>,
 }
 
@@ -49,15 +60,17 @@ impl Metadata {
             size: meta.len(),
             created_time: meta.created().ok(),
             modified_time: meta.modified().ok(),
-            accessed_time: meta.accessed().ok(),
+
             #[cfg(unix)]
             mode: Some(meta.mode()),
             #[cfg(not(unix))]
             mode: None,
+
             #[cfg(unix)]
             owner_uid: Some(meta.uid()),
             #[cfg(not(unix))]
             owner_uid: None,
+
             #[cfg(unix)]
             owner_gid: Some(meta.gid()),
             #[cfg(not(unix))]

@@ -29,6 +29,7 @@ use crate::repository::storage::SecureStorage;
 use crate::storage_backend::backend::StorageBackend;
 use crate::utils::Hash;
 
+use super::config::Config;
 use super::snapshot::Snapshot;
 use super::tree::Tree;
 use super::{repository_v1, tree};
@@ -120,8 +121,6 @@ pub fn open(
     repo_path: &Path,
     password: String,
 ) -> Result<Box<dyn RepositoryBackend>> {
-    let version = read_version(repo_path)?;
-
     let key = retrieve_key(password, storage_backend.clone(), repo_path)?;
 
     let secure_storage = Arc::new(
@@ -129,6 +128,14 @@ pub fn open(
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );
+
+    let config_path = repo_path.join("config");
+    let config: Config = serde_json::from_slice(
+        &secure_storage
+            .load_file(&config_path)
+            .with_context(|| "Could not load config file")?,
+    )?;
+    let version = config.version;
 
     open_repository_with_version(version, storage_backend, repo_path, secure_storage)
 }
@@ -145,23 +152,6 @@ fn open_repository_with_version(
     }
 
     bail!("Invalid repository version \'{}\'", version);
-}
-
-const VERSION_FILE_NAME: &str = "version";
-
-pub fn write_version(repo_path: &Path, version: RepoVersion) -> Result<()> {
-    let version_file_path = repo_path.join(VERSION_FILE_NAME);
-    std::fs::write(version_file_path, version.to_string())
-        .with_context(|| "Could not create version file")
-}
-
-pub fn read_version(repo_path: &Path) -> Result<RepoVersion> {
-    let version_file_path = repo_path.join(VERSION_FILE_NAME);
-    let version_str = std::fs::read_to_string(version_file_path)
-        .with_context(|| "Could not read the repository version")?;
-    version_str
-        .parse::<RepoVersion>()
-        .with_context(|| format!("Invalid repository version \'{}\'", version_str))
 }
 
 /// A metadata structure that contains information about a repository key

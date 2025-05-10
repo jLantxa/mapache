@@ -17,8 +17,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use aes_gcm::aead::OsRng;
+use aes_gcm::aead::rand_core::RngCore;
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
+use crate::repository::storage::SecureStorage;
 use crate::storage_backend::backend::StorageBackend;
 use crate::utils::Hash;
 
@@ -46,7 +53,7 @@ pub trait RepositoryBackend: Sync + Send {
         storage_backend: Arc<dyn StorageBackend>,
         repo_path: &Path,
         password: String,
-    ) -> Result<Self>
+    ) -> Result<()>
     where
         Self: Sized;
 
@@ -54,7 +61,7 @@ pub trait RepositoryBackend: Sync + Send {
     fn open(
         storage_backend: Arc<dyn StorageBackend>,
         repo_path: &Path,
-        password: String,
+        secure_storage: Arc<SecureStorage>,
     ) -> Result<Self>
     where
         Self: Sized;
@@ -86,7 +93,7 @@ pub fn init(
     storage_backend: Arc<dyn StorageBackend>,
     repo_path: &Path,
     password: String,
-) -> Result<Box<dyn RepositoryBackend>> {
+) -> Result<()> {
     init_repository_with_version(
         LATEST_REPOSITORY_VERSION,
         storage_backend,
@@ -100,10 +107,9 @@ pub fn init_repository_with_version(
     storage_backend: Arc<dyn StorageBackend>,
     repo_path: &Path,
     password: String,
-) -> Result<Box<dyn RepositoryBackend>> {
+) -> Result<()> {
     if version == 1 {
-        let repo_v1 = repository_v1::Repository::init(storage_backend, repo_path, password)?;
-        return Ok(Box::new(repo_v1));
+        repository_v1::Repository::init(storage_backend, repo_path, password)?
     }
 
     bail!("Invalid repository version \'{}\'", version);
@@ -115,17 +121,26 @@ pub fn open(
     password: String,
 ) -> Result<Box<dyn RepositoryBackend>> {
     let version = read_version(repo_path)?;
-    open_repository_with_version(version, storage_backend, repo_path, password)
+
+    let key = retrieve_key(password, storage_backend.clone(), repo_path)?;
+
+    let secure_storage = Arc::new(
+        SecureStorage::new(storage_backend.clone())
+            .with_key(key)
+            .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL)),
+    );
+
+    open_repository_with_version(version, storage_backend, repo_path, secure_storage)
 }
 
 fn open_repository_with_version(
     version: RepoVersion,
     storage_backend: Arc<dyn StorageBackend>,
     repo_path: &Path,
-    password: String,
+    secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
     if version == 1 {
-        let repo_v1 = repository_v1::Repository::open(storage_backend, repo_path, password)?;
+        let repo_v1 = repository_v1::Repository::open(storage_backend, repo_path, secure_storage)?;
         return Ok(Box::new(repo_v1));
     }
 
@@ -147,4 +162,66 @@ pub fn read_version(repo_path: &Path) -> Result<RepoVersion> {
     version_str
         .parse::<RepoVersion>()
         .with_context(|| format!("Invalid repository version \'{}\'", version_str))
+}
+
+/// A metadata structure that contains information about a repository key
+#[derive(Serialize, Deserialize)]
+pub struct KeyFile {
+    pub created: DateTime<Utc>,
+    pub encrypted_key: String,
+    pub salt: String,
+}
+
+pub const KEYS_DIR: &str = "keys";
+
+/// Generate a new master  key
+pub fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
+    let create_time = Utc::now();
+
+    let mut new_random_key = [0u8; 32];
+    OsRng.fill_bytes(&mut new_random_key);
+
+    const SALT_LENGTH: usize = 32;
+    let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
+    let intermediate_key = SecureStorage::derive_key(password, &salt);
+
+    let encrypted_key = SecureStorage::encrypt(&intermediate_key, &new_random_key)?;
+
+    let key_file = KeyFile {
+        created: create_time,
+        encrypted_key: general_purpose::STANDARD.encode(encrypted_key),
+        salt: general_purpose::STANDARD.encode(salt),
+    };
+
+    Ok((new_random_key.to_vec(), key_file))
+}
+
+/// Retrieve the master key from all available keys in a folder
+pub fn retrieve_key(
+    password: String,
+    backend: Arc<dyn StorageBackend>,
+    repo_path: &Path,
+) -> Result<Vec<u8>> {
+    let keys_path = repo_path.join(KEYS_DIR);
+    for path in backend.read_dir(&keys_path)? {
+        // TODO:
+        // I should assert that path is a file and not a folder, but I need to implement
+        // that in the StorageBackend. For now, let's assume that nobody is messing with
+        // the repository.
+
+        // Load keyfile
+        let keyfile_str = backend.read(&path)?;
+        let keyfile_str = SecureStorage::decompress(&keyfile_str)?;
+        let keyfile: KeyFile = serde_json::from_slice(keyfile_str.as_slice())?;
+
+        let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
+        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+
+        let intermediate_key = SecureStorage::derive_key(&password, &salt);
+        if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
+            return Ok(key);
+        }
+    }
+
+    bail!("Could not retrieve key")
 }

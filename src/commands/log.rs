@@ -14,29 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::Path, sync::Arc};
-
 use anyhow::Result;
 use clap::Args;
 
-use crate::{
-    cli::{self, GlobalArgs},
-    repository::{self},
-    storage_backend::localfs::LocalFS,
-};
+use crate::cli::GlobalArgs;
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {}
 
-pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    let password = cli::request_password();
-    let repo_path = Path::new(&global.repo);
-
-    let backend = Arc::new(LocalFS::new());
-
-    let repo = repository::backend::open(backend, &repo_path, password)?;
-
-    let _snapshots = repo.load_snapshots_sorted()?;
-
+pub fn run(_global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     todo!()
 }

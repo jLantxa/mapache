@@ -120,7 +120,7 @@ impl RepositoryBackend for Repository {
         let config = Config::default();
         let secure_storage: SecureStorage = SecureStorage::new(backend.to_owned())
             .with_key(key)
-            .with_compression(config.compression_level.to_i32());
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
         let config_json = serde_json::to_string_pretty(&config)?;
         secure_storage.save_file_with_rename(
             &config_json.as_bytes(),
@@ -397,7 +397,7 @@ mod test {
         let secure_storage = Arc::new(
             SecureStorage::new(backend.clone())
                 .with_key(key)
-                .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL)),
+                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );
 
         let _ = Repository::open(backend, &temp_repo_path, secure_storage.clone())?;
@@ -425,7 +425,7 @@ mod test {
         let secure_storage = Arc::new(
             SecureStorage::new(backend.clone())
                 .with_key(key)
-                .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL)),
+                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );
 
         let repo = Repository::open(backend, &temp_repo_path, secure_storage)?;

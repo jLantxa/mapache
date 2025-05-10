@@ -32,7 +32,7 @@ use crate::storage_backend::backend::StorageBackend;
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
     key: Option<SecretBox<Vec<u8>>>,
-    compression_level: Option<i32>,
+    compression_level: i32,
     backend: Arc<dyn StorageBackend>,
 }
 
@@ -53,10 +53,8 @@ impl SecureStorage {
     }
 
     /// Builder method to set a compression level
-    pub fn with_compression(mut self, level: Option<i32>) -> Self {
-        if let Some(level) = level {
-            self.compression_level = Some(level);
-        }
+    pub fn with_compression(mut self, level: i32) -> Self {
+        self.compression_level = level;
         self
     }
 
@@ -68,9 +66,7 @@ impl SecureStorage {
             data = Self::decrypt(key.expose_secret(), &data)?;
         }
 
-        if let Some(_) = &self.compression_level {
-            data = Self::decompress(&data)?;
-        }
+        data = Self::decompress(&data)?;
 
         Ok(data)
     }
@@ -78,11 +74,7 @@ impl SecureStorage {
     /// Save data to a file with SecureStorage.
     /// Returns the number of bytes written.
     pub fn save_file(&self, data: &[u8], path: &Path, dry_run: bool) -> Result<usize> {
-        let mut out_data = Vec::new();
-
-        if let Some(compression_level) = self.compression_level {
-            out_data = Self::compress(&data, compression_level)?;
-        }
+        let mut out_data = Self::compress(&data, self.compression_level)?;
 
         if let Some(key) = &self.key {
             out_data = Self::encrypt(key.expose_secret(), &out_data)?;

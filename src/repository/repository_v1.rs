@@ -21,12 +21,8 @@ use std::{
     sync::Arc,
 };
 
-use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
-use base64::{Engine as _, engine::general_purpose};
-use chrono::{DateTime, Utc};
 use fastcdc::v2020::{Normalization, StreamCDC};
-use serde::{Deserialize, Serialize};
 
 use crate::{
     storage_backend::backend::StorageBackend,
@@ -34,7 +30,7 @@ use crate::{
 };
 
 use super::{
-    backend::{ChunkResult, RepoVersion, RepositoryBackend, SnapshotId, write_version},
+    backend::{self, ChunkResult, RepoVersion, RepositoryBackend, SnapshotId, write_version},
     config::Config,
     snapshot::Snapshot,
     storage::SecureStorage,
@@ -46,7 +42,6 @@ const REPO_VERSION: RepoVersion = 1;
 const DATA_DIR: &str = "data";
 const SNAPSHOT_DIR: &str = "snapshot";
 const TREE_DIR: &str = "tree";
-const KEYS_DIR: &str = "keys";
 
 const DATA_FOLD_LENGTH: usize = 2;
 const TREE_FOLD_LENGTH: usize = 2;
@@ -63,22 +58,13 @@ pub struct Repository {
     snapshot_path: PathBuf,
     tree_path: PathBuf,
 
-    secure_storage: SecureStorage,
+    secure_storage: Arc<SecureStorage>,
     _config: Config,
-}
-
-/// A metadata structure that contains information about a repository key
-#[derive(Serialize, Deserialize)]
-struct KeyFile {
-    created: DateTime<Utc>,
-
-    encrypted_key: String,
-    salt: String,
 }
 
 impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
-    fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<Self> {
+    fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<()> {
         if repo_path.exists() {
             bail!(
                 "Could not initialize a repository because a directory already exists in \'{}\'",
@@ -90,7 +76,7 @@ impl RepositoryBackend for Repository {
         let data_path = repo_path.join(DATA_DIR);
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
         let tree_path = repo_path.join(TREE_DIR);
-        let keys_path = repo_path.join(KEYS_DIR);
+        let keys_path = repo_path.join(backend::KEYS_DIR);
 
         backend
             .create_dir_all(repo_path)
@@ -116,7 +102,7 @@ impl RepositoryBackend for Repository {
 
         // Create new key
         let (key, keyfile) =
-            Repository::generate_key(&password).with_context(|| "Could not generate key")?;
+            backend::generate_key(&password).with_context(|| "Could not generate key")?;
         let keyfile_json = serde_json::to_string_pretty(&key)?;
         let keyfile_hash = utils::calculate_hash(&keyfile_json);
         let keyfile_path = &keys_path.join(&keyfile_hash);
@@ -142,19 +128,15 @@ impl RepositoryBackend for Repository {
             false,
         )?;
 
-        Ok(Self {
-            _backend: backend.to_owned(),
-            _root_path: repo_path.to_owned(),
-            data_path,
-            snapshot_path,
-            tree_path,
-            secure_storage,
-            _config: config,
-        })
+        Ok(())
     }
 
     /// Open an existing repository from a directory
-    fn open(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<Self> {
+    fn open(
+        backend: Arc<dyn StorageBackend>,
+        repo_path: &Path,
+        secure_storage: Arc<SecureStorage>,
+    ) -> Result<Self> {
         if !repo_path.exists() {
             bail!(
                 "Could not open a repository. \'{}\' doesn't exist",
@@ -167,34 +149,22 @@ impl RepositoryBackend for Repository {
             );
         }
 
-        let key =
-            Repository::retrieve_key(&password, backend.to_owned(), &repo_path.join(KEYS_DIR))
-                .with_context(|| "Incorrect password")?;
-        let storage = SecureStorage::new(backend.to_owned())
-            .with_key(key)
-            // We don't know the compression level yet, but the config file has compression
-            .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL));
-
         let data_path = repo_path.join(DATA_DIR);
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
         let tree_path = repo_path.join(TREE_DIR);
 
-        let config_json = storage.load_file(&repo_path.join("config"))?;
+        let config_json = secure_storage.load_file(&repo_path.join("config"))?;
         let config: Config = serde_json::from_slice(&config_json)?;
-        let storage = storage.with_compression(config.compression_level.to_i32());
 
-        let repo = Repository {
+        Ok(Repository {
             _backend: backend,
-
             _root_path: repo_path.to_owned(),
             data_path,
             snapshot_path,
             tree_path,
-            secure_storage: storage,
+            secure_storage,
             _config: config,
-        };
-
-        Ok(repo)
+        })
     }
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
@@ -392,65 +362,19 @@ impl Repository {
             .join(&hash[..DATA_FOLD_LENGTH])
             .join(&hash[DATA_FOLD_LENGTH..])
     }
-
-    /// Generate a new master  key
-    fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
-        let create_time = Utc::now();
-
-        let mut new_random_key = [0u8; 32];
-        OsRng.fill_bytes(&mut new_random_key);
-
-        const SALT_LENGTH: usize = 32;
-        let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
-        let intermediate_key = SecureStorage::derive_key(password, &salt);
-
-        let encrypted_key = SecureStorage::encrypt(&intermediate_key, &new_random_key)?;
-
-        let key_file = KeyFile {
-            created: create_time,
-            encrypted_key: general_purpose::STANDARD.encode(encrypted_key),
-            salt: general_purpose::STANDARD.encode(salt),
-        };
-
-        Ok((new_random_key.to_vec(), key_file))
-    }
-
-    /// Retrieve the master key from all available keys in a folder
-    fn retrieve_key(
-        password: &str,
-        backend: Arc<dyn StorageBackend>,
-        keys_path: &Path,
-    ) -> Result<Vec<u8>> {
-        for path in backend.read_dir(keys_path)? {
-            // TODO:
-            // I should assert that path is a file and not a folder, but I need to implement
-            // that in the StorageBackend. For now, let's assume that nobody is messing with
-            // the repository.
-
-            // Load keyfile
-            let keyfile_str = backend.read(&path)?;
-            let keyfile_str = SecureStorage::decompress(&keyfile_str)?;
-            let keyfile: KeyFile = serde_json::from_slice(keyfile_str.as_slice())?;
-
-            let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
-            let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
-
-            let intermediate_key = SecureStorage::derive_key(password, &salt);
-            if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
-                return Ok(key);
-            }
-        }
-
-        bail!("Could not retrieve key")
-    }
 }
 
 #[cfg(test)]
 mod test {
 
+    use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
-    use crate::{repository::tree::FSNodeStreamer, storage_backend::localfs::LocalFS, testing};
+    use crate::{
+        repository::{backend::retrieve_key, tree::FSNodeStreamer},
+        storage_backend::localfs::LocalFS,
+        testing,
+    };
 
     use super::*;
 
@@ -468,7 +392,15 @@ mod test {
             &temp_repo_path,
             String::from("mapachito"),
         )?;
-        let _ = Repository::open(backend, &temp_repo_path, String::from("mapachito"))?;
+
+        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
+        let secure_storage = Arc::new(
+            SecureStorage::new(backend.clone())
+                .with_key(key)
+                .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL)),
+        );
+
+        let _ = Repository::open(backend, &temp_repo_path, secure_storage.clone())?;
 
         Ok(())
     }
@@ -482,11 +414,21 @@ mod test {
         let src_file_path = testing::get_test_path("tree0.json");
         let dst_file_path = temp_repo_path.join("tree0.json.restored");
 
-        let repo = Repository::init(
+        Repository::init(
             Arc::new(LocalFS::new()),
             &temp_repo_path,
             String::from("mapachito"),
         )?;
+
+        let backend = Arc::new(LocalFS::new());
+        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
+        let secure_storage = Arc::new(
+            SecureStorage::new(backend.clone())
+                .with_key(key)
+                .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL)),
+        );
+
+        let repo = Repository::open(backend, &temp_repo_path, secure_storage)?;
 
         // Scan the FS -> Find the file
         let mut fs_node_streamer = FSNodeStreamer::from_root(&src_file_path)?;
@@ -509,7 +451,7 @@ mod test {
     /// Test generation of master keys
     #[test]
     fn test_generate_key() -> Result<()> {
-        let (key, keyfile) = Repository::generate_key("mapachito")?;
+        let (key, keyfile) = backend::generate_key("mapachito")?;
 
         let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;

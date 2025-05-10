@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
 };
 
@@ -23,7 +23,7 @@ use anyhow::{Error, Result, anyhow};
 use clap::{Args, ValueEnum};
 
 use crate::{
-    cli::{self, GlobalArgs},
+    cli::{GlobalArgs},
     repository::backend::SnapshotId,
 };
 
@@ -100,9 +100,6 @@ pub struct CmdArgs {
     pub resolution: Resolution,
 }
 
-pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    let _password = cli::request_password();
-    let _repo_path = Path::new(&global.repo);
-
+pub fn run(_global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     todo!()
 }

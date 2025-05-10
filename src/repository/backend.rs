@@ -109,25 +109,36 @@ pub fn init_repository_with_version(
     repo_path: &Path,
     password: String,
 ) -> Result<()> {
-    if version == 1 {
-        repository_v1::Repository::init(storage_backend, repo_path, password)?
+    if repo_path.exists() {
+        bail!(
+            "Could not initialize a repository because a directory already exists in \'{}\'",
+            repo_path.display()
+        );
     }
 
-    bail!("Invalid repository version \'{}\'", version);
+    if version == 1 {
+        repository_v1::Repository::init(storage_backend, repo_path, password)
+    } else {
+        bail!("Invalid repository version \'{}\'", version);
+    }
 }
 
 pub fn open(
     storage_backend: Arc<dyn StorageBackend>,
     repo_path: &Path,
-    password: String,
+    secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
-    let key = retrieve_key(password, storage_backend.clone(), repo_path)?;
-
-    let secure_storage = Arc::new(
-        SecureStorage::new(storage_backend.clone())
-            .with_key(key)
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
-    );
+    if !repo_path.exists() {
+        bail!(
+            "Could not open a repository. \'{}\' doesn't exist",
+            repo_path.display()
+        );
+    } else if !repo_path.is_dir() {
+        bail!(
+            "Could not open a repository. \'{}\' is not a directory",
+            repo_path.display()
+        );
+    }
 
     let config_path = repo_path.join("config");
     let config: Config = serde_json::from_slice(
@@ -214,4 +225,39 @@ pub fn retrieve_key(
     }
 
     bail!("Could not retrieve key")
+}
+
+#[cfg(test)]
+mod test {
+    use tempfile::tempdir;
+
+    use crate::storage_backend::localfs::LocalFS;
+
+    use super::*;
+
+    /// Test init a repo with password and open it
+    #[test]
+    fn test_init_and_open_with_password() -> Result<()> {
+        let temp_repo_dir = tempdir()?;
+        let temp_repo_path = temp_repo_dir.path().join("repo");
+
+        let backend = Arc::new(LocalFS::new());
+
+        init(
+            backend.to_owned(),
+            &temp_repo_path,
+            String::from("mapachito"),
+        )?;
+
+        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
+        let secure_storage = Arc::new(
+            SecureStorage::new(backend.clone())
+                .with_key(key)
+                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
+        );
+
+        let _ = open(backend, &temp_repo_path, secure_storage.clone())?;
+
+        Ok(())
+    }
 }

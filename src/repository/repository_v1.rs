@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
@@ -62,13 +62,6 @@ pub struct Repository {
 impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
     fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<()> {
-        if repo_path.exists() {
-            bail!(
-                "Could not initialize a repository because a directory already exists in \'{}\'",
-                repo_path.display()
-            );
-        }
-
         // Init repository structure
         let data_path = repo_path.join(DATA_DIR);
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
@@ -134,18 +127,6 @@ impl RepositoryBackend for Repository {
         repo_path: &Path,
         secure_storage: Arc<SecureStorage>,
     ) -> Result<Self> {
-        if !repo_path.exists() {
-            bail!(
-                "Could not open a repository. \'{}\' doesn't exist",
-                repo_path.display()
-            );
-        } else if !repo_path.is_dir() {
-            bail!(
-                "Could not open a repository. \'{}\' is not a directory",
-                repo_path.display()
-            );
-        }
-
         let data_path = repo_path.join(DATA_DIR);
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
         let tree_path = repo_path.join(TREE_DIR);
@@ -371,10 +352,9 @@ mod test {
 
     use super::*;
 
-    /// Test init a repo with password and open it
+    /// Test init a repository_v1 with password and open it
     #[test]
-
-    fn heavy_test_init_and_open_with_password() -> Result<()> {
+    fn test_init_and_open_with_password() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
@@ -400,7 +380,7 @@ mod test {
 
     /// Test file chunk and restore
     #[test]
-    fn heavy_test_chunk_and_restore() -> Result<()> {
+    fn test_chunk_and_restore() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 

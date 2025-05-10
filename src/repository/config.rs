@@ -20,35 +20,7 @@ use serde::{Deserialize, Serialize};
 /// Repository config
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub compression_level: CompressionLevel,
     pub retention_policy: SnapshotRetentionPolicy,
-}
-
-/// Compression level used by the tool.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub enum CompressionLevel {
-    #[default]
-    Auto,
-
-    None,
-    Low,
-    Normal,
-    High,
-}
-
-impl CompressionLevel {
-    /// Converts a `CompressionLevel` to an i32 level or None if no compression is applicable.
-    pub fn to_i32(&self) -> Option<i32> {
-        match &self {
-            CompressionLevel::None => None,
-
-            CompressionLevel::Low => Some(1),
-            CompressionLevel::Normal => Some(10),
-            CompressionLevel::High => Some(22),
-
-            CompressionLevel::Auto => Self::Normal.to_i32(),
-        }
-    }
 }
 
 /// Retention policy for the snapshots stored in the repository.

@@ -127,7 +127,7 @@ pub fn open(
     let secure_storage = Arc::new(
         SecureStorage::new(storage_backend.clone())
             .with_key(key)
-            .with_compression(Some(zstd::DEFAULT_COMPRESSION_LEVEL)),
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );
 
     open_repository_with_version(version, storage_backend, repo_path, secure_storage)

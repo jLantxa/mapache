@@ -14,27 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use chrono::Duration;
 use serde::{Deserialize, Serialize};
 
 /// Repository config
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub retention_policy: SnapshotRetentionPolicy,
-}
-
-/// Retention policy for the snapshots stored in the repository.
-///
-/// The retention policy describes which snapshots get cleaned from the repository, and when.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub enum SnapshotRetentionPolicy {
-    #[default]
-    /// Keep all snapshots
-    KeepAll,
-
-    /// Keep the last N snapshots
-    KeepLastN(usize),
-
-    /// Keep snapshots for the specified duration
-    KeepForTime(Duration),
+    pub version: u32,
 }

@@ -30,7 +30,7 @@ use crate::{
 };
 
 use super::{
-    backend::{self, ChunkResult, RepoVersion, RepositoryBackend, SnapshotId, write_version},
+    backend::{self, ChunkResult, RepoVersion, RepositoryBackend, SnapshotId},
     config::Config,
     snapshot::Snapshot,
     storage::SecureStorage,
@@ -52,14 +52,11 @@ const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
 
 pub struct Repository {
     _backend: Arc<dyn StorageBackend>,
-
     _root_path: PathBuf,
     data_path: PathBuf,
     snapshot_path: PathBuf,
     tree_path: PathBuf,
-
     secure_storage: Arc<SecureStorage>,
-    _config: Config,
 }
 
 impl RepositoryBackend for Repository {
@@ -81,9 +78,6 @@ impl RepositoryBackend for Repository {
         backend
             .create_dir_all(repo_path)
             .with_context(|| "Could not create root directory")?;
-
-        // Version file
-        write_version(repo_path, REPO_VERSION)?;
 
         backend.create_dir(&data_path)?;
         let num_folders: usize = 1 << (4 * DATA_FOLD_LENGTH);
@@ -117,7 +111,10 @@ impl RepositoryBackend for Repository {
         )?;
 
         // Save new config
-        let config = Config::default();
+        let config = Config {
+            version: REPO_VERSION,
+        };
+
         let secure_storage: SecureStorage = SecureStorage::new(backend.to_owned())
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
@@ -153,9 +150,6 @@ impl RepositoryBackend for Repository {
         let snapshot_path = repo_path.join(SNAPSHOT_DIR);
         let tree_path = repo_path.join(TREE_DIR);
 
-        let config_json = secure_storage.load_file(&repo_path.join("config"))?;
-        let config: Config = serde_json::from_slice(&config_json)?;
-
         Ok(Repository {
             _backend: backend,
             _root_path: repo_path.to_owned(),
@@ -163,7 +157,6 @@ impl RepositoryBackend for Repository {
             snapshot_path,
             tree_path,
             secure_storage,
-            _config: config,
         })
     }
 

@@ -108,7 +108,7 @@ impl Committer {
             Some(snapshot_id) => match repo.load_snapshot(&snapshot_id) {
                 Ok(snap_option) => match snap_option {
                     None => None,
-                    Some(s) => Some(s.tree),
+                    Some((_snapshot_id, snapshot)) => Some(snapshot.tree),
                 },
                 Err(_) => bail!("Failed to load snapshot with id \'{}\'", snapshot_id),
             },

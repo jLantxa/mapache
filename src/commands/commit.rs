@@ -14,12 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use clap::{ArgGroup, Args};
+use colored::Colorize;
 
-use crate::cli::GlobalArgs;
+use crate::{
+    cli::{self, GlobalArgs},
+    repository::{
+        self,
+        backend::{RepositoryBackend, SnapshotId},
+        committer::Committer,
+        storage::SecureStorage,
+        tree::FSNodeStreamer,
+    },
+    storage_backend::localfs::LocalFS,
+    utils,
+};
 
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
@@ -34,13 +49,89 @@ pub struct CmdArgs {
 
     /// Force a complete analysis of all files and directories
     #[arg(long, group = "scan_mode")]
-    pub naive: bool,
+    pub full_scan: bool,
 
     /// Use a snapshot as parent. This snapshot will be the base when analyzing differences.
     #[arg(long, value_parser, group = "scan_mode")]
-    pub parent: Option<String>,
+    pub parent: Option<SnapshotId>,
+
+    /// Number of cuncurrent workers to process backup items
+    #[arg(long, value_parser, default_value_t = 2)]
+    pub workers: usize,
+
+    /// Dry run
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
-pub fn run(_global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    todo!()
+pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let password = cli::request_password();
+    let repo_path = Path::new(&global.repo);
+
+    let storage_backend = Arc::new(LocalFS::new());
+
+    let key = repository::backend::retrieve_key(password, storage_backend.clone(), &repo_path)?;
+    let secure_storage = Arc::new(
+        SecureStorage::new(storage_backend.clone())
+            .with_key(key)
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
+    );
+
+    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::backend::open(
+        storage_backend,
+        repo_path,
+        secure_storage,
+    )?);
+
+    let source_paths = &args.paths;
+    let parent_snapshot_id = args.parent.as_ref();
+
+    // Scan the filesystem to collect stats about the targets
+    let mut num_files = 0;
+    let mut num_dirs = 0;
+    let mut total_bytes = 0;
+    let scan_streamer = FSNodeStreamer::from_paths(source_paths)?;
+    for stream_node_result in scan_streamer {
+        let (_, stream_node) = stream_node_result?;
+        let node = stream_node.node;
+
+        if node.is_dir() {
+            num_dirs += 1;
+        } else if node.is_file() {
+            num_files += 1;
+            total_bytes += node.metadata.size;
+        }
+    }
+
+    cli::log!(
+        "{} {} files, {} directories, {}",
+        "To commit:".bold().cyan(),
+        num_files,
+        num_dirs,
+        utils::format_size(total_bytes)
+    );
+
+    let mut new_snapshot = Committer::run(
+        repo.clone(),
+        source_paths,
+        parent_snapshot_id.cloned(),
+        args.workers,
+        args.full_scan,
+        args.dry_run,
+    )?;
+
+    if let Some(description) = args.description.as_ref() {
+        new_snapshot.description = Some(description.clone());
+    }
+
+    let snapshot_id: SnapshotId = repo.save_snapshot(&new_snapshot, args.dry_run)?;
+    cli::log!();
+    cli::log!("New snapshot \'{}\'", format!("{}", snapshot_id).bold());
+
+    if args.dry_run {
+        cli::log!();
+        cli::log!("{} Nothing was saved", "[DRY RUN]".bold().cyan());
+    }
+
+    Ok(())
 }

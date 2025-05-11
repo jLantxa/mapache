@@ -15,16 +15,23 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
 };
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{Context, Error, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 
 use crate::{
-    cli::{GlobalArgs},
-    repository::backend::SnapshotId,
+    cli::{self, GlobalArgs},
+    repository::{
+        self,
+        backend::{RepositoryBackend, SnapshotId},
+        storage::SecureStorage,
+        tree::SerializedNodeStreamer,
+    },
+    storage_backend::localfs::LocalFS,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +107,48 @@ pub struct CmdArgs {
     pub resolution: Resolution,
 }
 
-pub fn run(_global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    todo!()
+pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let password = cli::request_password();
+    let repo_path = Path::new(&global.repo);
+
+    let storage_backend = Arc::new(LocalFS::new());
+
+    let key = repository::backend::retrieve_key(password, storage_backend.clone(), &repo_path)?;
+    let secure_storage = Arc::new(
+        SecureStorage::new(storage_backend.clone())
+            .with_key(key)
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
+    );
+
+    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::backend::open(
+        storage_backend,
+        repo_path,
+        secure_storage,
+    )?);
+
+    let (_snapshot_id, snapshot) = match &args.snapshot {
+        RestoreSnapshot::Latest => {
+            let snapshots_sorted = repo.load_snapshots_sorted()?;
+            let s = snapshots_sorted.last();
+            s.cloned()
+        }
+        RestoreSnapshot::Snapshot(sn) => repo.load_snapshot(&sn)?,
+    }
+    .with_context(|| "No snapshot was found")?;
+
+    let node_streamer = SerializedNodeStreamer::new(repo.clone(), Some(snapshot.tree));
+
+    for node_res in node_streamer {
+        match node_res {
+            Ok((path, stream_node)) => {
+                let restore_path = args.target.join(path);
+                repo.restore_node(&stream_node.node, &restore_path)?;
+            }
+            Err(_) => {
+                bail!("Failed to read snapshot tree node");
+            }
+        }
+    }
+
+    Ok(())
 }

@@ -72,22 +72,22 @@ pub trait RepositoryBackend: Sync + Send {
     fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
 
     /// Serializes a Tree into SerializableTreeObject's into the repository storage.
-    fn save_tree(&self, tree: &Tree, dry_run: bool) -> Result<Hash>;
+    fn save_tree(&self, tree: &Tree, dry_run: bool) -> Result<TreeId>;
 
     /// Restores a Tree from the SerializableTreeObject's in the repository.
-    fn load_tree(&self, root_hash: &Hash) -> Result<Tree>;
+    fn load_tree(&self, root_hash: &TreeId) -> Result<Tree>;
 
     /// Saves a snapshot metadata
     fn save_snapshot(&self, snapshot: &Snapshot, dry_run: bool) -> Result<Hash>;
 
     /// Get a snapshot by hash
-    fn load_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>>;
+    fn load_snapshot(&self, hash: &SnapshotId) -> Result<Option<(SnapshotId, Snapshot)>>;
 
     /// Get all snapshots in the repository
-    fn load_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>>;
+    fn load_snapshots(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
 
     /// Get all snapshots in the repository, sorted by datetime.
-    fn load_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>>;
+    fn load_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
 }
 
 pub fn init(

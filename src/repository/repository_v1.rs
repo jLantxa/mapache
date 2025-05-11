@@ -160,12 +160,12 @@ impl RepositoryBackend for Repository {
         Ok(tree)
     }
 
-    fn load_snapshot(&self, hash: &Hash) -> Result<Option<Snapshot>> {
+    fn load_snapshot(&self, hash: &Hash) -> Result<Option<(SnapshotId, Snapshot)>> {
         Ok(self
             .load_snapshots()?
             .iter()
             .find(|(snapshot_hash, _)| snapshot_hash == hash)
-            .map(|(_, snapshot)| snapshot.clone()))
+            .cloned())
     }
 
     /// Get all snapshots in the repository
@@ -208,6 +208,8 @@ impl RepositoryBackend for Repository {
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
         let reader = BufReader::new(source);
 
+        // The chunker parameters must remain stable across versions, otherwise
+        // same contents will no longer produce same chunks and IDs.
         let chunker = StreamCDC::with_level(
             reader,
             MIN_CHUNK_SIZE,
@@ -257,6 +259,7 @@ impl RepositoryBackend for Repository {
     fn restore_node(&self, node: &Node, dst_path: &Path) -> Result<()> {
         match node.node_type {
             NodeType::File => {
+                // TODO: Restore metadata
                 let mut dst_file = OpenOptions::new()
                     .create(true)
                     .truncate(true)
@@ -300,7 +303,10 @@ impl RepositoryBackend for Repository {
                     }
                 }
             }
-            NodeType::Directory => todo!(),
+            NodeType::Directory => {
+                // TODO: Restore metadata
+                std::fs::create_dir_all(dst_path)?
+            }
             NodeType::Symlink => todo!(),
         }
 

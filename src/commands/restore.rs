@@ -20,15 +20,15 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Error, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use clap::{Args, ValueEnum};
 
 use crate::{
+    archiver::storage::SecureStorage,
     cli::{self, GlobalArgs},
     repository::{
         self,
         backend::{RepositoryBackend, SnapshotId},
-        storage::SecureStorage,
         tree::SerializedNodeStreamer,
     },
     storage_backend::localfs::LocalFS,

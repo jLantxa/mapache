@@ -25,15 +25,15 @@ use anyhow::{Context, Result};
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
+    archiver::storage::SecureStorage,
     storage_backend::backend::StorageBackend,
-    utils::{self, Hash, size},
+    utils::{self, size, Hash},
 };
 
 use super::{
     backend::{self, ChunkResult, RepoVersion, RepositoryBackend, SnapshotId},
     config::Config,
     snapshot::Snapshot,
-    storage::SecureStorage,
     tree::{Node, NodeType, Tree},
 };
 
@@ -43,8 +43,8 @@ const DATA_DIR: &str = "data";
 const SNAPSHOT_DIR: &str = "snapshot";
 const TREE_DIR: &str = "tree";
 
-const DATA_FOLD_LENGTH: usize = 2;
-const TREE_FOLD_LENGTH: usize = 2;
+const DATA_DIR_FANOUT: usize = 2;
+const TREE_DIR_FANOUT: usize = 2;
 
 const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
 const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
@@ -73,15 +73,15 @@ impl RepositoryBackend for Repository {
             .with_context(|| "Could not create root directory")?;
 
         backend.create_dir(&data_path)?;
-        let num_folders: usize = 1 << (4 * DATA_FOLD_LENGTH);
+        let num_folders: usize = 1 << (4 * DATA_DIR_FANOUT);
         for n in 0x00..num_folders {
-            std::fs::create_dir(&data_path.join(format!("{:0>DATA_FOLD_LENGTH$x}", n)))?;
+            std::fs::create_dir(&data_path.join(format!("{:0>DATA_DIR_FANOUT$x}", n)))?;
         }
 
         backend.create_dir(&tree_path)?;
-        let num_folders: usize = 1 << (4 * TREE_FOLD_LENGTH);
+        let num_folders: usize = 1 << (4 * TREE_DIR_FANOUT);
         for n in 0x00..num_folders {
-            std::fs::create_dir(&tree_path.join(format!("{:0>TREE_FOLD_LENGTH$x}", n)))?;
+            std::fs::create_dir(&tree_path.join(format!("{:0>TREE_DIR_FANOUT$x}", n)))?;
         }
 
         backend.create_dir(&snapshot_path)?;
@@ -332,22 +332,22 @@ impl Repository {
     /// Returns the path to a tree object with a given hash in the repository.
     fn get_tree_path(&self, hash: &Hash) -> PathBuf {
         self.tree_path
-            .join(&hash[..TREE_FOLD_LENGTH])
-            .join(&hash[TREE_FOLD_LENGTH..])
+            .join(&hash[..TREE_DIR_FANOUT])
+            .join(&hash[TREE_DIR_FANOUT..])
     }
 
     /// Returns the path to a data object with a given hash in the repository.
     fn get_data_object_path(&self, hash: &Hash) -> PathBuf {
         self.data_path
-            .join(&hash[..DATA_FOLD_LENGTH])
-            .join(&hash[DATA_FOLD_LENGTH..])
+            .join(&hash[..DATA_DIR_FANOUT])
+            .join(&hash[DATA_DIR_FANOUT..])
     }
 }
 
 #[cfg(test)]
 mod test {
 
-    use base64::{Engine, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine};
     use tempfile::tempdir;
 
     use crate::{

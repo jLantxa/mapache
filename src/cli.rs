@@ -111,7 +111,7 @@ pub fn request_new_password() -> String {
         .unwrap()
 }
 
-/// Requests a pasword with no confirmation.
+/// Requests a password with no confirmation.
 pub fn request_password() -> String {
     Password::new()
         .with_prompt("Enter password")

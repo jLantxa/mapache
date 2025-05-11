@@ -19,7 +19,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
@@ -84,7 +84,17 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )?);
 
     let source_paths = &args.paths;
-    let parent_snapshot_id = args.parent.as_ref();
+
+    let parent_snapshot = match &args.parent {
+        None => None,
+        Some(id) => {
+            let found_parent_snapshot = repo.load_snapshot(&id)?;
+            match found_parent_snapshot {
+                Some((_snapshot_id, snapshot)) => Some(snapshot),
+                None => bail!("No snapshot found with id \'{}\'", id),
+            }
+        }
+    };
 
     // Scan the filesystem to collect stats about the targets
     let mut num_files = 0;
@@ -114,7 +124,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut new_snapshot = Committer::run(
         repo.clone(),
         source_paths,
-        parent_snapshot_id.cloned(),
+        parent_snapshot,
         args.workers,
         args.full_scan,
         args.dry_run,

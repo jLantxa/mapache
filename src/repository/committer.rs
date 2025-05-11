@@ -26,14 +26,15 @@ use threadpool::ThreadPool;
 
 use crate::{
     cli,
-    repository::tree::{NodeType, Tree},
+    repository::{
+        backend::{RepositoryBackend, TreeId},
+        snapshot::Snapshot,
+        tree::{
+            FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, NodeType, SerializedNodeStreamer,
+            StreamNode, Tree,
+        },
+    },
     utils,
-};
-
-use super::{
-    backend::{RepositoryBackend, SnapshotId, TreeId},
-    snapshot::Snapshot,
-    tree::{FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
 };
 
 /// Represents a directory node that is being built bottom-up during the commit process.
@@ -66,7 +67,7 @@ impl Committer {
     pub fn run(
         repo: Arc<dyn RepositoryBackend>,
         source_paths: &[PathBuf],
-        parent_snapshot_id: Option<SnapshotId>,
+        parent_snapshot: Option<Snapshot>,
         workers: usize,
         full_scan: bool,
         dry_run: bool,
@@ -103,15 +104,9 @@ impl Committer {
         };
 
         // Extract parent snapshot tree id
-        let parent_tree_id: Option<TreeId> = match parent_snapshot_id {
+        let parent_tree_id: Option<TreeId> = match parent_snapshot {
             None => None,
-            Some(snapshot_id) => match repo.load_snapshot(&snapshot_id) {
-                Ok(snap_option) => match snap_option {
-                    None => None,
-                    Some((_snapshot_id, snapshot)) => Some(snapshot.tree),
-                },
-                Err(_) => bail!("Failed to load snapshot with id \'{}\'", snapshot_id),
-            },
+            Some(snapshot) => Some(snapshot.tree),
         };
 
         // Create streamers

@@ -17,17 +17,17 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use aes_gcm::aead::OsRng;
 use aes_gcm::aead::rand_core::RngCore;
-use anyhow::{Context, Result, bail};
-use base64::Engine;
+use aes_gcm::aead::OsRng;
+use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::repository::storage::SecureStorage;
-use crate::storage_backend::backend::StorageBackend;
-use crate::utils::Hash;
+use crate::{
+    archiver::storage::SecureStorage, storage_backend::backend::StorageBackend, utils::Hash,
+};
 
 use super::config::Config;
 use super::snapshot::Snapshot;

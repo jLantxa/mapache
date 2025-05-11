@@ -19,17 +19,16 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
+    archiver::{committer::Committer, storage::SecureStorage},
     cli::{self, GlobalArgs},
     repository::{
         self,
         backend::{RepositoryBackend, SnapshotId},
-        committer::Committer,
-        storage::SecureStorage,
         tree::FSNodeStreamer,
     },
     storage_backend::localfs::LocalFS,

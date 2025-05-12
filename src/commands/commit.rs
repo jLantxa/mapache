@@ -19,7 +19,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
@@ -31,7 +31,7 @@ use crate::{
         backend::{RepositoryBackend, SnapshotId},
         tree::FSNodeStreamer,
     },
-    storage_backend::localfs::LocalFS,
+    storage_backend::{backend::make_dry_backend, localfs::LocalFS},
     utils,
 };
 
@@ -68,6 +68,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo_path = Path::new(&global.repo);
 
     let storage_backend = Arc::new(LocalFS::new());
+    let storage_backend = make_dry_backend(storage_backend, args.dry_run);
 
     let key = repository::backend::retrieve_key(password, storage_backend.clone(), &repo_path)?;
     let secure_storage = Arc::new(
@@ -126,14 +127,13 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         parent_snapshot,
         args.workers,
         args.full_scan,
-        args.dry_run,
     )?;
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
     }
 
-    let snapshot_id: SnapshotId = repo.save_snapshot(&new_snapshot, args.dry_run)?;
+    let snapshot_id: SnapshotId = repo.save_snapshot(&new_snapshot)?;
     cli::log!();
     cli::log!("New snapshot \'{}\'", format!("{}", snapshot_id).bold());
 

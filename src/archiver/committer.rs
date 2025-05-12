@@ -70,7 +70,6 @@ impl Committer {
         parent_snapshot: Option<Snapshot>,
         workers: usize,
         full_scan: bool,
-        dry_run: bool,
     ) -> Result<Snapshot> {
         if workers < 1 {
             bail!("The number of committer workers must be at least 1");
@@ -159,22 +158,18 @@ impl Committer {
             worker_thread_pool.execute(move || {
                 loop {
                     match diff_rx_clone.recv() {
-                        Ok(item) => {
-                            match Self::process_item(item, repo_clone.clone(), dry_run, full_scan) {
-                                Ok(processed_item_result) => match processed_item_result {
-                                    Some(processed_item) => {
-                                        if let Err(_) = process_item_tx_clone.send(processed_item) {
-                                            cli::log_error(
-                                                "Committer error sending processed item",
-                                            );
-                                            break;
-                                        }
+                        Ok(item) => match Self::process_item(item, repo_clone.clone(), full_scan) {
+                            Ok(processed_item_result) => match processed_item_result {
+                                Some(processed_item) => {
+                                    if let Err(_) = process_item_tx_clone.send(processed_item) {
+                                        cli::log_error("Committer error sending processed item");
+                                        break;
                                     }
-                                    None => continue,
-                                },
-                                Err(_) => break,
-                            }
-                        }
+                                }
+                                None => continue,
+                            },
+                            Err(_) => break,
+                        },
                         Err(_) => break,
                     }
                 }
@@ -201,7 +196,6 @@ impl Committer {
                             &mut pending_trees,
                             &mut final_root_tree_id,
                             &commit_root_path,
-                            dry_run,
                         ) {
                             cli::log_error("Committer error handling processed item");
                             break;
@@ -233,7 +227,6 @@ impl Committer {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: Arc<dyn RepositoryBackend>,
-        dry_run: bool,
         should_do_full_scan: bool,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
@@ -250,9 +243,9 @@ impl Committer {
                     let mut node = prev_stream_node_info.node.clone();
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
-                            if !dry_run && should_do_full_scan && node.is_file() {
+                            if should_do_full_scan && node.is_file() {
                                 let (_, updated_node) = repo
-                                    .save_file(&path, dry_run)
+                                    .save_file(&path)
                                     .map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
@@ -285,9 +278,9 @@ impl Committer {
                     let mut node = next_stream_node_info.node.clone();
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
-                            if !dry_run && node.is_file() {
+                            if node.is_file() {
                                 let (_, updated_node) = repo
-                                    .save_file(&path, dry_run)
+                                    .save_file(&path)
                                     .map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
@@ -322,7 +315,6 @@ impl Committer {
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
-        dry_run: bool,
     ) -> Result<()> {
         let (path, stream_node) = processed_item;
 
@@ -359,7 +351,6 @@ impl Committer {
             pending_trees,
             final_root_tree_id,
             commit_root_path,
-            dry_run,
         )
     }
 
@@ -369,7 +360,6 @@ impl Committer {
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
-        dry_run: bool,
     ) -> Result<()> {
         let this_pending_tree = match pending_trees.get(&dir_path) {
             Some(tree) => tree,
@@ -390,15 +380,11 @@ impl Committer {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id: ObjectId = if dry_run {
-            ObjectId::from("")
-        } else {
-            let tree_id_result: Result<ObjectId> = repo
-                .save_tree(&completed_tree, dry_run)
-                .with_context(|| "Synchronous save_tree failed");
+        let tree_id_result: Result<ObjectId> = repo
+            .save_tree(&completed_tree)
+            .with_context(|| "Synchronous save_tree failed");
 
-            tree_id_result?
-        };
+        let tree_id = tree_id_result?;
 
         if dir_path == commit_root_path {
             *final_root_tree_id = Some(tree_id);
@@ -426,7 +412,6 @@ impl Committer {
                 pending_trees,
                 final_root_tree_id,
                 commit_root_path,
-                dry_run,
             )?;
         }
 

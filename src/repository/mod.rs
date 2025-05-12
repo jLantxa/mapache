@@ -16,7 +16,7 @@
 
 pub mod backend;
 pub mod config;
-
 pub mod repository_v1;
 pub mod snapshot;
+pub mod storage;
 pub mod tree;

@@ -24,8 +24,8 @@ use anyhow::{Context, Error, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 
 use crate::{
-    archiver::storage::SecureStorage,
     cli::{self, GlobalArgs},
+    repository::storage::SecureStorage,
     repository::{
         self,
         backend::{RepositoryBackend, SnapshotId},
@@ -128,7 +128,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
         RestoreSnapshot::Latest => {
-            let snapshots_sorted = repo.load_snapshots_sorted()?;
+            let snapshots_sorted = repo.load_all_snapshots_sorted()?;
             let s = snapshots_sorted.last();
             s.cloned()
         }

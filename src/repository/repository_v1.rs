@@ -15,26 +15,25 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    fs::{File, OpenOptions},
-    io::{BufReader, Write},
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use anyhow::{Context, Result};
-use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
-    archiver::storage::SecureStorage,
+    repository::storage::SecureStorage,
     storage_backend::backend::StorageBackend,
-    utils::{self, Hash, size},
+    utils::{self, Hash},
 };
 
 use super::{
-    backend::{self, ChunkResult, RepoVersion, RepositoryBackend, SnapshotId},
+    backend::{self, ObjectId, RepoVersion, RepositoryBackend, SnapshotId},
     config::Config,
     snapshot::Snapshot,
-    tree::{Node, NodeType, Tree},
+    tree::{Node, NodeType},
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -43,10 +42,6 @@ const OBJECTS_DIR: &str = "objects";
 const SNAPSHOTS_DIR: &str = "snapshots";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
-
-const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
-const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
-const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
 
 pub struct Repository {
     _backend: Arc<dyn StorageBackend>,
@@ -125,35 +120,34 @@ impl RepositoryBackend for Repository {
         })
     }
 
-    /// Saves a tree in the repository. This function should be called when a tree is complete,
-    /// that is, when all the contents and/or tree hashes have been resolved.
-    fn save_tree(&self, tree: &Tree) -> Result<Hash> {
-        let tree_json = serde_json::to_string_pretty(tree)?;
-        let hash = utils::calculate_hash(&tree_json);
-        let objects_path = &self.get_object_path(&hash);
+    fn save_object(&self, data: &[u8]) -> Result<(usize, ObjectId)> {
+        let hash = utils::calculate_hash(&data);
+        let object_path = self.get_object_path(&hash);
 
-        self.secure_storage
-            .save_file_with_rename(tree_json.as_bytes(), &objects_path)?;
-        Ok(hash)
+        let written_size = if !object_path.exists() {
+            self.secure_storage
+                .save_file_with_rename(&data, &self.get_object_path(&hash))?
+        } else {
+            0
+        };
+
+        Ok((written_size, hash))
     }
 
-    fn load_tree(&self, root_hash: &Hash) -> Result<Tree> {
-        let objects_path = self.get_object_path(root_hash);
-        let tree_json = self.secure_storage.load_file(&objects_path)?;
-        let tree: Tree = serde_json::from_slice(&tree_json)?;
-        Ok(tree)
+    fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {
+        self.secure_storage.load_file(&self.get_object_path(id))
     }
 
     fn load_snapshot(&self, hash: &Hash) -> Result<Option<(SnapshotId, Snapshot)>> {
         Ok(self
-            .load_snapshots()?
+            .load_all_snapshots()?
             .iter()
             .find(|(snapshot_hash, _)| snapshot_hash == hash)
             .cloned())
     }
 
     /// Get all snapshots in the repository
-    fn load_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>> {
+    fn load_all_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>> {
         let mut snapshots = Vec::new();
 
         let entries =
@@ -175,69 +169,10 @@ impl RepositoryBackend for Repository {
     }
 
     /// Get all snapshots in the repository, sorted by datetime.
-    fn load_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>> {
-        let mut snapshots = self.load_snapshots()?;
+    fn load_all_snapshots_sorted(&self) -> Result<Vec<(Hash, Snapshot)>> {
+        let mut snapshots = self.load_all_snapshots()?;
         snapshots.sort_by_key(|(_, snapshot)| snapshot.timestamp);
         Ok(snapshots)
-    }
-
-    /// Puts a file into the repository
-    ///
-    /// This function will split the file into chunks for deduplication, which
-    /// will be compressed, encrypted and stored in the repository.
-    /// The content hash of each chunk is used to identify the chunk and determine
-    /// if the chunk already exists in the repository.
-    fn save_file(&self, src_path: &Path) -> Result<ChunkResult> {
-        let source = File::open(src_path)
-            .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
-        let reader = BufReader::new(source);
-
-        // The chunker parameters must remain stable across versions, otherwise
-        // same contents will no longer produce same chunks and IDs.
-        let chunker = StreamCDC::with_level(
-            reader,
-            MIN_CHUNK_SIZE,
-            AVG_CHUNK_SIZE,
-            MAX_CHUNK_SIZE,
-            Normalization::Level1,
-        );
-
-        let mut chunk_hashes = Vec::new();
-        let mut total_bytes_read = 0;
-        let mut total_bytes_written = 0;
-
-        for result in chunker {
-            let chunk = result?;
-
-            // Use our hashing function. FastCDC uses a short hash.
-            let content_hash = utils::calculate_hash(&chunk.data);
-            chunk_hashes.push(content_hash.clone());
-
-            let chunk_path = self.get_object_path(&content_hash);
-
-            total_bytes_read += chunk.length;
-
-            // Only save the chunk if it doesn't exist yet
-            if !chunk_path.exists() {
-                total_bytes_written += self
-                    .secure_storage
-                    .save_file_with_rename(&chunk.data, &chunk_path)
-                    .with_context(|| {
-                        format!(
-                            "Could not save chunk #{} ({}) for file \'{}\'",
-                            chunk_hashes.len(),
-                            content_hash,
-                            src_path.display()
-                        )
-                    })?;
-            }
-        }
-
-        Ok(ChunkResult {
-            chunks: chunk_hashes,
-            total_bytes_read,
-            total_bytes_written,
-        })
     }
 
     fn restore_node(&self, node: &Node, dst_path: &Path) -> Result<()> {
@@ -324,11 +259,7 @@ mod test {
     use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
-    use crate::{
-        repository::{backend::retrieve_key, tree::FSNodeStreamer},
-        storage_backend::localfs::LocalFS,
-        testing,
-    };
+    use crate::{repository::backend::retrieve_key, storage_backend::localfs::LocalFS};
 
     use super::*;
 
@@ -354,49 +285,6 @@ mod test {
         );
 
         let _ = Repository::open(backend, &temp_repo_path, secure_storage.clone())?;
-
-        Ok(())
-    }
-
-    /// Test file chunk and restore
-    #[test]
-    fn test_chunk_and_restore() -> Result<()> {
-        let temp_repo_dir = tempdir()?;
-        let temp_repo_path = temp_repo_dir.path().join("repo");
-
-        let src_file_path = testing::get_test_path("tree0.json");
-        let dst_file_path = temp_repo_path.join("tree0.json.restored");
-
-        Repository::init(
-            Arc::new(LocalFS::new()),
-            &temp_repo_path,
-            String::from("mapachito"),
-        )?;
-
-        let backend = Arc::new(LocalFS::new());
-        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
-        let secure_storage = Arc::new(
-            SecureStorage::new(backend.clone())
-                .with_key(key)
-                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
-        );
-
-        let repo = Repository::open(backend, &temp_repo_path, secure_storage)?;
-
-        // Scan the FS -> Find the file
-        let mut fs_node_streamer = FSNodeStreamer::from_root(&src_file_path)?;
-        let (_, mut stream_node) = fs_node_streamer.next().unwrap().unwrap();
-
-        // Chunk the file, obtain Node with content hashes
-        let chunk_result = repo.save_file(&src_file_path)?;
-        stream_node.node.contents = Some(chunk_result.chunks.clone());
-
-        repo.restore_node(&stream_node.node, &dst_file_path)?;
-        assert_eq!(chunk_result.chunks, stream_node.node.contents.unwrap());
-
-        let src_data = std::fs::read(src_file_path)?;
-        let dst_data = std::fs::read(dst_file_path)?;
-        assert_eq!(src_data, dst_data);
 
         Ok(())
     }

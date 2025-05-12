@@ -24,11 +24,12 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
-    archiver::{committer::Committer, storage::SecureStorage},
+    archiver::archiver::Archiver,
     cli::{self, GlobalArgs},
     repository::{
         self,
         backend::{RepositoryBackend, SnapshotId},
+        storage::SecureStorage,
         tree::FSNodeStreamer,
     },
     storage_backend::{backend::make_dry_backend, localfs::LocalFS},
@@ -121,7 +122,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::format_size(total_bytes)
     );
 
-    let mut new_snapshot = Committer::run(
+    let mut new_snapshot = Archiver::snapshot(
         repo.clone(),
         source_paths,
         parent_snapshot,

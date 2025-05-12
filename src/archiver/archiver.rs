@@ -16,12 +16,15 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::File,
+    io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
+use fastcdc::v2020::{Normalization, StreamCDC};
 use threadpool::ThreadPool;
 
 use crate::{
@@ -34,8 +37,96 @@ use crate::{
             StreamNode, Tree,
         },
     },
-    utils,
+    utils::{self, Hash, size},
 };
+
+const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
+const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
+const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
+
+#[derive(Debug)]
+pub struct ChunkResult {
+    pub chunks: Vec<Hash>,
+    pub total_bytes_read: usize,
+    pub total_bytes_written: usize,
+}
+
+pub struct Archiver {}
+
+impl Archiver {
+    /// Puts a file into the repository
+    ///
+    /// This function will split the file into chunks for deduplication, which
+    /// will be compressed, encrypted and stored in the repository.
+    /// The content hash of each chunk is used to identify the chunk and determine
+    /// if the chunk already exists in the repository.
+    pub fn save_file(repo: &dyn RepositoryBackend, src_path: &Path) -> Result<ChunkResult> {
+        let source = File::open(src_path)
+            .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
+        let reader = BufReader::new(source);
+
+        // The chunker parameters must remain stable across versions, otherwise
+        // same contents will no longer produce same chunks and IDs.
+        let chunker = StreamCDC::with_level(
+            reader,
+            MIN_CHUNK_SIZE,
+            AVG_CHUNK_SIZE,
+            MAX_CHUNK_SIZE,
+            Normalization::Level1,
+        );
+
+        let mut chunk_hashes = Vec::new();
+        let mut total_bytes_read = 0;
+        let mut total_bytes_written = 0;
+
+        for result in chunker {
+            let chunk = result?;
+
+            let (bytes_writen, content_hash) = repo.save_object(&chunk.data)?;
+
+            chunk_hashes.push(content_hash);
+            total_bytes_read += chunk.length;
+            total_bytes_written += bytes_writen;
+        }
+
+        Ok(ChunkResult {
+            chunks: chunk_hashes,
+            total_bytes_read,
+            total_bytes_written,
+        })
+    }
+
+    pub fn snapshot(
+        repo: Arc<dyn RepositoryBackend>,
+        source_paths: &[PathBuf],
+        parent_snapshot: Option<Snapshot>,
+        workers: usize,
+        full_scan: bool,
+    ) -> Result<Snapshot> {
+        Committer::run(
+            repo.clone(),
+            source_paths,
+            parent_snapshot,
+            workers,
+            full_scan,
+        )
+    }
+
+    /// Saves a tree in the repository. This function should be called when a tree is complete,
+    /// that is, when all the contents and/or tree hashes have been resolved.
+    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
+        let tree_json = serde_json::to_string_pretty(tree)?;
+        let (_, hash) = repo.save_object(tree_json.as_bytes())?;
+        Ok(hash)
+    }
+
+    /// Load a tree from the repository.
+    pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ObjectId) -> Result<Tree> {
+        let tree_object = repo.load_object(root_id)?;
+        let tree: Tree = serde_json::from_slice(&tree_object)?;
+        Ok(tree)
+    }
+}
 
 /// Represents a directory node that is being built bottom-up during the commit process.
 /// It holds the directory's own node information (if available), the collected child nodes,
@@ -61,7 +152,7 @@ impl PendingTree {
 /// the workflow.Dedicated threads handle generating the difference stream, processing
 /// individual file and directory changes, and serializing the resulting tree structure
 /// bottom-up to create the final snapshot.
-pub struct Committer {}
+struct Committer {}
 
 impl Committer {
     pub fn run(
@@ -158,18 +249,22 @@ impl Committer {
             worker_thread_pool.execute(move || {
                 loop {
                     match diff_rx_clone.recv() {
-                        Ok(item) => match Self::process_item(item, repo_clone.clone(), full_scan) {
-                            Ok(processed_item_result) => match processed_item_result {
-                                Some(processed_item) => {
-                                    if let Err(_) = process_item_tx_clone.send(processed_item) {
-                                        cli::log_error("Committer error sending processed item");
-                                        break;
+                        Ok(item) => {
+                            match Self::process_item(item, repo_clone.as_ref(), full_scan) {
+                                Ok(processed_item_result) => match processed_item_result {
+                                    Some(processed_item) => {
+                                        if let Err(_) = process_item_tx_clone.send(processed_item) {
+                                            cli::log_error(
+                                                "Committer error sending processed item",
+                                            );
+                                            break;
+                                        }
                                     }
-                                }
-                                None => continue,
-                            },
-                            Err(_) => break,
-                        },
+                                    None => continue,
+                                },
+                                Err(_) => break,
+                            }
+                        }
                         Err(_) => break,
                     }
                 }
@@ -186,13 +281,14 @@ impl Committer {
             let mut final_root_tree_id: Option<ObjectId> = None;
             let mut pending_trees =
                 Self::create_pending_trees(&commit_root_path, &absolute_source_paths);
+            let repo_clone = repo.clone();
 
             loop {
                 match process_item_rx.recv() {
                     Ok(processed_item) => {
                         if let Err(_) = Self::handle_processed_item(
                             processed_item,
-                            repo.clone(),
+                            repo_clone.as_ref(),
                             &mut pending_trees,
                             &mut final_root_tree_id,
                             &commit_root_path,
@@ -226,7 +322,7 @@ impl Committer {
 
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
-        repo: Arc<dyn RepositoryBackend>,
+        repo: &dyn RepositoryBackend,
         should_do_full_scan: bool,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
@@ -244,8 +340,7 @@ impl Committer {
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
                             if should_do_full_scan && node.is_file() {
-                                let (_, updated_node) = repo
-                                    .save_file(&path)
+                                let (_, updated_node) = Archiver::save_file(repo, &path)
                                     .map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
@@ -279,8 +374,7 @@ impl Committer {
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
                             if node.is_file() {
-                                let (_, updated_node) = repo
-                                    .save_file(&path)
+                                let (_, updated_node) = Archiver::save_file(repo, &path)
                                     .map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
@@ -311,7 +405,7 @@ impl Committer {
 
     fn handle_processed_item(
         processed_item: (PathBuf, StreamNode),
-        repo: Arc<dyn RepositoryBackend>,
+        repo: &dyn RepositoryBackend,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
@@ -356,7 +450,7 @@ impl Committer {
 
     fn finalize_if_complete(
         dir_path: PathBuf,
-        repo: Arc<dyn RepositoryBackend>,
+        repo: &dyn RepositoryBackend,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
@@ -380,8 +474,7 @@ impl Committer {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id_result: Result<ObjectId> = repo
-            .save_tree(&completed_tree)
+        let tree_id_result: Result<ObjectId> = Archiver::save_tree(repo, &completed_tree)
             .with_context(|| "Synchronous save_tree failed");
 
         let tree_id = tree_id_result?;
@@ -503,5 +596,63 @@ impl Committer {
         }
 
         pending_trees
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    use crate::{
+        repository::storage::SecureStorage,
+        repository::{backend::retrieve_key, repository_v1::Repository, tree::FSNodeStreamer},
+        storage_backend::localfs::LocalFS,
+        testing,
+    };
+
+    use super::*;
+    /// Test file chunk and restore
+    #[test]
+    fn test_chunk_and_restore() -> Result<()> {
+        let temp_repo_dir = tempdir()?;
+        let temp_repo_path = temp_repo_dir.path().join("repo");
+
+        let src_file_path = testing::get_test_path("tree0.json");
+        let dst_file_path = temp_repo_path.join("tree0.json.restored");
+
+        Repository::init(
+            Arc::new(LocalFS::new()),
+            &temp_repo_path,
+            String::from("mapachito"),
+        )?;
+
+        let backend = Arc::new(LocalFS::new());
+        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
+        let secure_storage = Arc::new(
+            SecureStorage::new(backend.clone())
+                .with_key(key)
+                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
+        );
+
+        let repo = Repository::open(backend, &temp_repo_path, secure_storage)?;
+
+        // Scan the FS -> Find the file
+        let mut fs_node_streamer = FSNodeStreamer::from_root(&src_file_path)?;
+        let (_, mut stream_node) = fs_node_streamer.next().unwrap().unwrap();
+
+        // Chunk the file, obtain Node with content hashes
+        let chunk_result = Archiver::save_file(&repo, &src_file_path)?;
+        stream_node.node.contents = Some(chunk_result.chunks.clone());
+
+        repo.restore_node(&stream_node.node, &dst_file_path)?;
+        assert_eq!(chunk_result.chunks, stream_node.node.contents.unwrap());
+
+        let src_data = std::fs::read(src_file_path)?;
+        let dst_data = std::fs::read(dst_file_path)?;
+        assert_eq!(src_data, dst_data);
+
+        Ok(())
     }
 }

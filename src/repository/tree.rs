@@ -28,7 +28,7 @@ use std::os::unix::fs::MetadataExt;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use super::backend::{BlobId, RepositoryBackend, TreeId};
+use super::backend::{ObjectId, RepositoryBackend};
 
 /// Node metadata. This struct is serialized; keep field order stable.
 ///
@@ -105,8 +105,8 @@ pub struct Node {
     pub node_type: NodeType,
     #[serde(flatten)]
     pub metadata: Metadata,
-    pub contents: Option<Vec<BlobId>>, // populated lazily for files
-    pub tree: Option<TreeId>,          // populated lazily for dirs
+    pub contents: Option<Vec<ObjectId>>, // populated lazily for files
+    pub tree: Option<ObjectId>,          // populated lazily for dirs
 }
 
 impl Node {
@@ -255,7 +255,7 @@ pub struct SerializedNodeStreamer {
 }
 
 impl SerializedNodeStreamer {
-    pub fn new(repo: Arc<dyn RepositoryBackend>, root_id: Option<TreeId>) -> Self {
+    pub fn new(repo: Arc<dyn RepositoryBackend>, root_id: Option<ObjectId>) -> Self {
         let mut stack = Vec::new();
 
         match root_id {

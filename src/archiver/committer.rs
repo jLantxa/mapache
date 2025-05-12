@@ -27,7 +27,7 @@ use threadpool::ThreadPool;
 use crate::{
     cli,
     repository::{
-        backend::{RepositoryBackend, TreeId},
+        backend::{ObjectId, RepositoryBackend},
         snapshot::Snapshot,
         tree::{
             FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, NodeType, SerializedNodeStreamer,
@@ -104,7 +104,7 @@ impl Committer {
         };
 
         // Extract parent snapshot tree id
-        let parent_tree_id: Option<TreeId> = match parent_snapshot {
+        let parent_tree_id: Option<ObjectId> = match parent_snapshot {
             None => None,
             Some(snapshot) => Some(snapshot.tree),
         };
@@ -188,7 +188,7 @@ impl Committer {
         // Serializer thread. This thread receives processed items and serializes tree nodes as they
         // become finalized, bottom-up.
         let tree_serilizer_thread = std::thread::spawn(move || {
-            let mut final_root_tree_id: Option<TreeId> = None;
+            let mut final_root_tree_id: Option<ObjectId> = None;
             let mut pending_trees =
                 Self::create_pending_trees(&commit_root_path, &absolute_source_paths);
 
@@ -320,7 +320,7 @@ impl Committer {
         processed_item: (PathBuf, StreamNode),
         repo: Arc<dyn RepositoryBackend>,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
-        final_root_tree_id: &mut Option<TreeId>,
+        final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
         dry_run: bool,
     ) -> Result<()> {
@@ -367,7 +367,7 @@ impl Committer {
         dir_path: PathBuf,
         repo: Arc<dyn RepositoryBackend>,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
-        final_root_tree_id: &mut Option<TreeId>,
+        final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
         dry_run: bool,
     ) -> Result<()> {
@@ -390,10 +390,10 @@ impl Committer {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id: TreeId = if dry_run {
-            TreeId::from("")
+        let tree_id: ObjectId = if dry_run {
+            ObjectId::from("")
         } else {
-            let tree_id_result: Result<TreeId> = repo
+            let tree_id_result: Result<ObjectId> = repo
                 .save_tree(&completed_tree, dry_run)
                 .with_context(|| "Synchronous save_tree failed");
 

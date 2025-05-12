@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 
 use super::backend::StorageBackend;
 
+/// A local file system
 #[derive(Default)]
 pub struct LocalFS {}
 

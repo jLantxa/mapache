@@ -14,9 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::Result;
+
+use super::dry::DryBackend;
 
 /// Abstraction of a storage backend.
 ///
@@ -26,7 +31,6 @@ use anyhow::Result;
 /// This trait provides an interface for file IO operations with the backend.
 pub trait StorageBackend: Send + Sync {
     /// Read from file.
-    /// Returns a vector of bytes.
     fn read(&self, path: &Path) -> Result<Vec<u8>>;
 
     /// Write to file, creating the file if necessary.
@@ -52,4 +56,13 @@ pub trait StorageBackend: Send + Sync {
 
     // List all paths inside a directory.
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
+}
+
+/// Encapsulates a StorageBackend inside a DryBackend.
+#[inline]
+pub fn make_dry_backend(backend: Arc<dyn StorageBackend>, dry: bool) -> Arc<dyn StorageBackend> {
+    match dry {
+        true => Arc::new(DryBackend::new(backend.clone())),
+        false => backend,
+    }
 }

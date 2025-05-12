@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, bail, Context, Error, Result};
+use anyhow::{Context, Error, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 
 use crate::{

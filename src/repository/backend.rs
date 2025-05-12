@@ -17,11 +17,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::aead::OsRng;
-use anyhow::{bail, Context, Result};
-use base64::engine::general_purpose;
+use aes_gcm::aead::rand_core::RngCore;
+use anyhow::{Context, Result, bail};
 use base64::Engine;
+use base64::engine::general_purpose;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -37,8 +37,7 @@ use super::{repository_v1, tree};
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
 
-pub type BlobId = Hash;
-pub type TreeId = Hash;
+pub type ObjectId = Hash;
 pub type SnapshotId = Hash;
 
 #[derive(Debug)]
@@ -72,10 +71,10 @@ pub trait RepositoryBackend: Sync + Send {
     fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
 
     /// Serializes a Tree into SerializableTreeObject's into the repository storage.
-    fn save_tree(&self, tree: &Tree, dry_run: bool) -> Result<TreeId>;
+    fn save_tree(&self, tree: &Tree, dry_run: bool) -> Result<ObjectId>;
 
     /// Restores a Tree from the SerializableTreeObject's in the repository.
-    fn load_tree(&self, root_hash: &TreeId) -> Result<Tree>;
+    fn load_tree(&self, root_hash: &ObjectId) -> Result<Tree>;
 
     /// Saves a snapshot metadata
     fn save_snapshot(&self, snapshot: &Snapshot, dry_run: bool) -> Result<Hash>;

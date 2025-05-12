@@ -27,7 +27,7 @@ use fastcdc::v2020::{Normalization, StreamCDC};
 use crate::{
     archiver::storage::SecureStorage,
     storage_backend::backend::StorageBackend,
-    utils::{self, size, Hash},
+    utils::{self, Hash, size},
 };
 
 use super::{
@@ -39,12 +39,10 @@ use super::{
 
 const REPO_VERSION: RepoVersion = 1;
 
-const DATA_DIR: &str = "data";
-const SNAPSHOT_DIR: &str = "snapshot";
-const TREE_DIR: &str = "tree";
+const OBJECTS_DIR: &str = "objects";
+const SNAPSHOTS_DIR: &str = "snapshots";
 
-const DATA_DIR_FANOUT: usize = 2;
-const TREE_DIR_FANOUT: usize = 2;
+const OBJECTS_DIR_FANOUT: usize = 2;
 
 const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
 const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
@@ -53,9 +51,8 @@ const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
 pub struct Repository {
     _backend: Arc<dyn StorageBackend>,
     _root_path: PathBuf,
-    data_path: PathBuf,
+    objects_path: PathBuf,
     snapshot_path: PathBuf,
-    tree_path: PathBuf,
     secure_storage: Arc<SecureStorage>,
 }
 
@@ -63,25 +60,18 @@ impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
     fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<()> {
         // Init repository structure
-        let data_path = repo_path.join(DATA_DIR);
-        let snapshot_path = repo_path.join(SNAPSHOT_DIR);
-        let tree_path = repo_path.join(TREE_DIR);
+        let objects_path = repo_path.join(OBJECTS_DIR);
+        let snapshot_path = repo_path.join(SNAPSHOTS_DIR);
         let keys_path = repo_path.join(backend::KEYS_DIR);
 
         backend
             .create_dir_all(repo_path)
             .with_context(|| "Could not create root directory")?;
 
-        backend.create_dir(&data_path)?;
-        let num_folders: usize = 1 << (4 * DATA_DIR_FANOUT);
+        backend.create_dir(&objects_path)?;
+        let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
         for n in 0x00..num_folders {
-            std::fs::create_dir(&data_path.join(format!("{:0>DATA_DIR_FANOUT$x}", n)))?;
-        }
-
-        backend.create_dir(&tree_path)?;
-        let num_folders: usize = 1 << (4 * TREE_DIR_FANOUT);
-        for n in 0x00..num_folders {
-            std::fs::create_dir(&tree_path.join(format!("{:0>TREE_DIR_FANOUT$x}", n)))?;
+            std::fs::create_dir(&objects_path.join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n)))?;
         }
 
         backend.create_dir(&snapshot_path)?;
@@ -127,16 +117,14 @@ impl RepositoryBackend for Repository {
         repo_path: &Path,
         secure_storage: Arc<SecureStorage>,
     ) -> Result<Self> {
-        let data_path = repo_path.join(DATA_DIR);
-        let snapshot_path = repo_path.join(SNAPSHOT_DIR);
-        let tree_path = repo_path.join(TREE_DIR);
+        let objects_path = repo_path.join(OBJECTS_DIR);
+        let snapshot_path = repo_path.join(SNAPSHOTS_DIR);
 
         Ok(Repository {
             _backend: backend,
             _root_path: repo_path.to_owned(),
-            data_path,
+            objects_path,
             snapshot_path,
-            tree_path,
             secure_storage,
         })
     }
@@ -146,16 +134,16 @@ impl RepositoryBackend for Repository {
     fn save_tree(&self, tree: &Tree, dry_run: bool) -> Result<Hash> {
         let tree_json = serde_json::to_string_pretty(tree)?;
         let hash = utils::calculate_hash(&tree_json);
-        let tree_path = &self.get_tree_path(&hash);
+        let objects_path = &self.get_object_path(&hash);
 
         self.secure_storage
-            .save_file_with_rename(tree_json.as_bytes(), &tree_path, dry_run)?;
+            .save_file_with_rename(tree_json.as_bytes(), &objects_path, dry_run)?;
         Ok(hash)
     }
 
     fn load_tree(&self, root_hash: &Hash) -> Result<Tree> {
-        let tree_path = self.get_tree_path(root_hash);
-        let tree_json = self.secure_storage.load_file(&tree_path)?;
+        let objects_path = self.get_object_path(root_hash);
+        let tree_json = self.secure_storage.load_file(&objects_path)?;
         let tree: Tree = serde_json::from_slice(&tree_json)?;
         Ok(tree)
     }
@@ -229,7 +217,7 @@ impl RepositoryBackend for Repository {
             let content_hash = utils::calculate_hash(&chunk.data);
             chunk_hashes.push(content_hash.clone());
 
-            let chunk_path = self.get_data_object_path(&content_hash);
+            let chunk_path = self.get_object_path(&content_hash);
 
             total_bytes_read += chunk.length;
 
@@ -275,7 +263,7 @@ impl RepositoryBackend for Repository {
                     .expect("File Node must have contents (even if empty)");
 
                 for (index, chunk_hash) in chunks.iter().enumerate() {
-                    let chunk_path = self.get_data_object_path(&chunk_hash);
+                    let chunk_path = self.get_object_path(&chunk_hash);
 
                     let chunk_data =
                         self.secure_storage
@@ -329,25 +317,18 @@ impl RepositoryBackend for Repository {
 }
 
 impl Repository {
-    /// Returns the path to a tree object with a given hash in the repository.
-    fn get_tree_path(&self, hash: &Hash) -> PathBuf {
-        self.tree_path
-            .join(&hash[..TREE_DIR_FANOUT])
-            .join(&hash[TREE_DIR_FANOUT..])
-    }
-
-    /// Returns the path to a data object with a given hash in the repository.
-    fn get_data_object_path(&self, hash: &Hash) -> PathBuf {
-        self.data_path
-            .join(&hash[..DATA_DIR_FANOUT])
-            .join(&hash[DATA_DIR_FANOUT..])
+    /// Returns the path to an object with a given hash in the repository.
+    fn get_object_path(&self, hash: &Hash) -> PathBuf {
+        self.objects_path
+            .join(&hash[..OBJECTS_DIR_FANOUT])
+            .join(&hash[OBJECTS_DIR_FANOUT..])
     }
 }
 
 #[cfg(test)]
 mod test {
 
-    use base64::{engine::general_purpose, Engine};
+    use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
     use crate::{

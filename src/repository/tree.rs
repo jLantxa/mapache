@@ -28,6 +28,8 @@ use std::os::unix::fs::MetadataExt;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::archiver::archiver::Archiver;
+
 use super::backend::{ObjectId, RepositoryBackend};
 
 /// Node metadata. This struct is serialized; keep field order stable.
@@ -259,7 +261,7 @@ impl SerializedNodeStreamer {
         let mut stack = Vec::new();
 
         match root_id {
-            Some(id) => match repo.load_tree(&id) {
+            Some(id) => match Archiver::load_tree(repo.as_ref(), &id) {
                 Ok(tree) => {
                     // Load root tree and push its children to the stack in reverse order
                     let num_children = tree.nodes.len();
@@ -293,7 +295,7 @@ impl Iterator for SerializedNodeStreamer {
 
             // If it’s a subtree, push its children *under* current_path
             if let Some(subtree_id) = &stream_node.node.tree {
-                let subtree = self.repo.load_tree(subtree_id)?;
+                let subtree = Archiver::load_tree(self.repo.as_ref(), subtree_id)?;
                 let num_children = subtree.nodes.len();
                 for subnode in subtree.nodes.iter().rev() {
                     self.stack.push((

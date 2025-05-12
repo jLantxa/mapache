@@ -26,12 +26,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    archiver::storage::SecureStorage, storage_backend::backend::StorageBackend, utils::Hash,
+    repository::storage::SecureStorage, storage_backend::backend::StorageBackend, utils::Hash,
 };
 
 use super::config::Config;
 use super::snapshot::Snapshot;
-use super::tree::Tree;
 use super::{repository_v1, tree};
 
 pub type RepoVersion = u32;
@@ -39,13 +38,6 @@ pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
 
 pub type ObjectId = Hash;
 pub type SnapshotId = Hash;
-
-#[derive(Debug)]
-pub struct ChunkResult {
-    pub chunks: Vec<Hash>,
-    pub total_bytes_read: usize,
-    pub total_bytes_written: usize,
-}
 
 pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
@@ -66,15 +58,11 @@ pub trait RepositoryBackend: Sync + Send {
     where
         Self: Sized;
 
-    fn save_file(&self, src_path: &Path) -> Result<ChunkResult>;
-
     fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
 
-    /// Serializes a Tree into SerializableTreeObject's into the repository storage.
-    fn save_tree(&self, tree: &Tree) -> Result<ObjectId>;
+    fn save_object(&self, data: &[u8]) -> Result<(usize, ObjectId)>;
 
-    /// Restores a Tree from the SerializableTreeObject's in the repository.
-    fn load_tree(&self, root_hash: &ObjectId) -> Result<Tree>;
+    fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>>;
 
     /// Saves a snapshot metadata
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;
@@ -83,10 +71,26 @@ pub trait RepositoryBackend: Sync + Send {
     fn load_snapshot(&self, hash: &SnapshotId) -> Result<Option<(SnapshotId, Snapshot)>>;
 
     /// Get all snapshots in the repository
-    fn load_snapshots(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
+    fn load_all_snapshots(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
 
     /// Get all snapshots in the repository, sorted by datetime.
-    fn load_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
+    fn load_all_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
+}
+
+fn check_repo_path(repo_path: &Path) -> Result<()> {
+    if !repo_path.exists() {
+        bail!(
+            "Could not open a repository. \'{}\' doesn't exist",
+            repo_path.display()
+        );
+    } else if !repo_path.is_dir() {
+        bail!(
+            "Could not open a repository. \'{}\' is not a directory",
+            repo_path.display()
+        );
+    }
+
+    Ok(())
 }
 
 pub fn init(
@@ -127,17 +131,7 @@ pub fn open(
     repo_path: &Path,
     secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
-    if !repo_path.exists() {
-        bail!(
-            "Could not open a repository. \'{}\' doesn't exist",
-            repo_path.display()
-        );
-    } else if !repo_path.is_dir() {
-        bail!(
-            "Could not open a repository. \'{}\' is not a directory",
-            repo_path.display()
-        );
-    }
+    check_repo_path(repo_path)?;
 
     let config_path = repo_path.join("config");
     let config: Config = serde_json::from_slice(
@@ -202,6 +196,8 @@ pub fn retrieve_key(
     backend: Arc<dyn StorageBackend>,
     repo_path: &Path,
 ) -> Result<Vec<u8>> {
+    check_repo_path(repo_path)?;
+
     let keys_path = repo_path.join(KEYS_DIR);
     for path in backend.read_dir(&keys_path)? {
         // TODO:

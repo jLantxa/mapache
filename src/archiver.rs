@@ -19,13 +19,15 @@ use std::{
     fs::File,
     io::BufReader,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use fastcdc::v2020::{Normalization, StreamCDC};
-use threadpool::ThreadPool;
 
 use crate::{
     cli,
@@ -100,16 +102,10 @@ impl Archiver {
         repo: Arc<dyn RepositoryBackend>,
         source_paths: &[PathBuf],
         parent_snapshot: Option<Snapshot>,
-        workers: usize,
+
         full_scan: bool,
     ) -> Result<Snapshot> {
-        Committer::run(
-            repo.clone(),
-            source_paths,
-            parent_snapshot,
-            workers,
-            full_scan,
-        )
+        Committer::run(repo.clone(), source_paths, parent_snapshot, full_scan)
     }
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
@@ -159,13 +155,8 @@ impl Committer {
         repo: Arc<dyn RepositoryBackend>,
         source_paths: &[PathBuf],
         parent_snapshot: Option<Snapshot>,
-        workers: usize,
         full_scan: bool,
     ) -> Result<Snapshot> {
-        if workers < 1 {
-            bail!("The number of committer workers must be at least 1");
-        }
-
         // First convert the paths to absolute paths. canonicalize failes if the path does not exist.
         let mut absolute_source_paths = Vec::new();
         for path in source_paths {
@@ -206,33 +197,43 @@ impl Committer {
         };
         let previous_tree_streamer = SerializedNodeStreamer::new(repo.clone(), parent_tree_id);
 
+        let num_threads = std::cmp::max(1, num_cpus::get() / 2);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()?;
+
         // Channels
         let (diff_tx, diff_rx) = crossbeam_channel::bounded::<(
             PathBuf,
             Option<StreamNode>,
             Option<StreamNode>,
             NodeDiff,
-        )>(workers);
+        )>(2 * num_threads);
         let (process_item_tx, process_item_rx) =
-            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(workers);
+            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(2 * num_threads);
+
+        let error_flag = Arc::new(AtomicBool::new(false));
 
         // Diff thread. This thread iterates the NodeDiffStreamer and passes the
         // items to the item processor thread.
+        let error_flag_clone = error_flag.clone();
         let diff_thread = std::thread::spawn(move || {
             let diff_streamer = NodeDiffStreamer::new(previous_tree_streamer, fs_streamer);
 
             for diff_result in diff_streamer {
-                match diff_result {
-                    Ok(diff) => {
-                        if let Err(_) = diff_tx.send(diff) {
-                            cli::log_error("Committer error sending diff msg");
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                        cli::log_error("Committer error getting next diff");
+                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+
+                if let Ok(_) = diff_result {
+                    if let Err(_) = diff_tx.send(diff_result.unwrap()) {
+                        error_flag_clone.fetch_and(true, std::sync::atomic::Ordering::AcqRel);
+                        cli::log_error("Committer thread errored sending diff");
                         break;
                     }
+                } else {
+                    cli::log_error("Committer thread errored getting next diff");
+                    break;
                 }
             }
         });
@@ -240,36 +241,46 @@ impl Committer {
         // Item processor thread pool. These threads receive diffs and process them, chunking and
         // saving files in the process. The resulting processed nodes are passed to the serializer
         // thread.
-        let worker_thread_pool = ThreadPool::new(workers);
-        for _ in 0..workers {
-            let diff_rx_clone = diff_rx.clone();
-            let process_item_tx_clone = process_item_tx.clone();
-            let repo_clone = repo.clone();
 
-            worker_thread_pool.execute(move || {
-                loop {
-                    match diff_rx_clone.recv() {
-                        Ok(item) => {
-                            match Self::process_item(item, repo_clone.as_ref(), full_scan) {
-                                Ok(processed_item_result) => match processed_item_result {
-                                    Some(processed_item) => {
-                                        if let Err(_) = process_item_tx_clone.send(processed_item) {
-                                            cli::log_error(
-                                                "Committer error sending processed item",
-                                            );
-                                            break;
-                                        }
-                                    }
-                                    None => continue,
-                                },
-                                Err(_) => break,
+        let diff_rx_clone = diff_rx.clone();
+        let process_item_tx_clone = process_item_tx.clone();
+        let repo_clone = repo.clone();
+        let error_flag_clone = error_flag.clone();
+        let processor_thread = std::thread::spawn(move || {
+            while let Ok(diff) = diff_rx_clone.recv() {
+                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+
+                let inner_process_item_tx_clone = process_item_tx_clone.clone();
+                let inner_repo_clone = repo_clone.clone();
+                let inner_error_flag_clone = error_flag_clone.clone();
+                pool.spawn(move || {
+                    let processed_item_result =
+                        Self::process_item(diff, inner_repo_clone.as_ref(), full_scan);
+
+                    match processed_item_result {
+                        Ok(processed_item_opt) => {
+                            if let Some(processed_item) = processed_item_opt {
+                                if let Err(_) = inner_process_item_tx_clone.send(processed_item) {
+                                    inner_error_flag_clone.store(true, Ordering::Release);
+                                    cli::log_error(
+                                        "Committer thread errored sending processing item",
+                                    );
+                                    return;
+                                }
                             }
                         }
-                        Err(_) => break,
+                        Err(_) => {
+                            inner_error_flag_clone.store(true, Ordering::Release);
+                            cli::log_error("Committer thread errored processing item");
+                            return;
+                        }
                     }
-                }
-            });
-        }
+                });
+            }
+        });
+
         // No one uses this copy of the tx (each worker thread just got a clone).
         // We must drop it or else the serializer thread will be blocked waiting for all copies
         // to be dropped.
@@ -277,27 +288,28 @@ impl Committer {
 
         // Serializer thread. This thread receives processed items and serializes tree nodes as they
         // become finalized, bottom-up.
-        let tree_serilizer_thread = std::thread::spawn(move || {
+        let error_flag_clone = error_flag.clone();
+        let tree_serializer_thread = std::thread::spawn(move || {
             let mut final_root_tree_id: Option<ObjectId> = None;
             let mut pending_trees =
                 Self::create_pending_trees(&commit_root_path, &absolute_source_paths);
             let repo_clone = repo.clone();
 
-            loop {
-                match process_item_rx.recv() {
-                    Ok(processed_item) => {
-                        if let Err(_) = Self::handle_processed_item(
-                            processed_item,
-                            repo_clone.as_ref(),
-                            &mut pending_trees,
-                            &mut final_root_tree_id,
-                            &commit_root_path,
-                        ) {
-                            cli::log_error("Committer error handling processed item");
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(item) = process_item_rx.recv() {
+                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+
+                if let Err(_) = Self::handle_processed_item(
+                    item,
+                    repo_clone.as_ref(),
+                    &mut pending_trees,
+                    &mut final_root_tree_id,
+                    &commit_root_path,
+                ) {
+                    error_flag_clone.store(true, Ordering::Release);
+                    cli::log_error("Committer thread errored handling processed item");
+                    break;
                 }
             }
 
@@ -315,9 +327,9 @@ impl Committer {
         });
 
         // Join threads
-        diff_thread.join().unwrap();
-        worker_thread_pool.join();
-        tree_serilizer_thread.join().unwrap()
+        let _ = diff_thread.join();
+        let _ = processor_thread.join();
+        tree_serializer_thread.join().unwrap()
     }
 
     fn process_item(
@@ -340,13 +352,12 @@ impl Committer {
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
                             if should_do_full_scan && node.is_file() {
-                                let (_, updated_node) = Archiver::save_file(repo, &path)
-                                    .map(|chunk_result| {
+                                let (_, updated_node) =
+                                    Archiver::save_file(repo, &path).map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
                                         (path.to_path_buf(), updated_node.clone())
-                                    })
-                                    .with_context(|| "Synchronous save_file failed")?;
+                                    })?;
 
                                 node = updated_node;
                             }
@@ -374,13 +385,12 @@ impl Committer {
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
                             if node.is_file() {
-                                let (_, updated_node) = Archiver::save_file(repo, &path)
-                                    .map(|chunk_result| {
+                                let (_, updated_node) =
+                                    Archiver::save_file(repo, &path).map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
                                         (path.to_path_buf(), updated_node.clone())
-                                    })
-                                    .with_context(|| "Synchronous save_file failed")?;
+                                    })?;
 
                                 node = updated_node;
                             }
@@ -468,14 +478,13 @@ impl Committer {
 
         let this_pending_tree = pending_trees
             .remove(&dir_path)
-            .context("Logic error: Completed tree not found in map during removal.")?;
+            .with_context(|| "Completed tree not found in map during removal.")?;
 
         let completed_tree = Tree {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id_result: Result<ObjectId> = Archiver::save_tree(repo, &completed_tree)
-            .with_context(|| "Synchronous save_tree failed");
+        let tree_id_result: Result<ObjectId> = Archiver::save_tree(repo, &completed_tree);
 
         let tree_id = tree_id_result?;
 
@@ -484,7 +493,7 @@ impl Committer {
         } else {
             let mut completed_dir_node = this_pending_tree.node.with_context(|| {
                 format!(
-                    "Logic error: Non-root finalized tree should have a node. dir_path: {}",
+                    "Non-root finalized tree should have a node. dir_path: {}",
                     dir_path.display()
                 )
             })?;
@@ -496,7 +505,7 @@ impl Committer {
 
             let parent_pending_tree = pending_trees.get_mut(&parent_path).unwrap();
             let child_node_in_parent_list = parent_pending_tree.children.get_mut(&completed_dir_node.name)
-                 .with_context(|| format!("Logic error: Completed child node '{}' not found in parent's children map ('{}') during finalization propagation.", completed_dir_node.name, parent_path.display()))?;
+                 .with_context(|| format!("Completed child node '{}' not found in parent's children map ('{}') during finalization propagation.", completed_dir_node.name, parent_path.display()))?;
             *child_node_in_parent_list = completed_dir_node;
 
             Self::finalize_if_complete(

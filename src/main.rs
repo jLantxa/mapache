@@ -38,8 +38,10 @@ fn run(args: &cli::Cli) -> Result<()> {
 fn main() -> Result<()> {
     let args = cli::Cli::parse();
 
+    // Run the command
     if let Err(e) = run(&args) {
-        cli::log_error(e.to_string().as_str());
+        cli::log_error(&e.to_string());
+        cli::log!("Finished with {}", "Error".bold().red());
         std::process::exit(1);
     }
 

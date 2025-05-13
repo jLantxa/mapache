@@ -55,10 +55,6 @@ pub struct CmdArgs {
     #[arg(long, value_parser, group = "scan_mode")]
     pub parent: Option<SnapshotId>,
 
-    /// Number of cuncurrent workers to process backup items
-    #[arg(long, value_parser, default_value_t = 2)]
-    pub workers: usize,
-
     /// Dry run
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
@@ -122,13 +118,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::format_size(total_bytes)
     );
 
-    let mut new_snapshot = Archiver::snapshot(
-        repo.clone(),
-        source_paths,
-        parent_snapshot,
-        args.workers,
-        args.full_scan,
-    )?;
+    let mut new_snapshot =
+        Archiver::snapshot(repo.clone(), source_paths, parent_snapshot, args.full_scan)?;
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());

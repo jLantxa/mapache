@@ -24,7 +24,7 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
-    archiver::archiver::Archiver,
+    archiver::Archiver,
     cli::{self, GlobalArgs},
     repository::{
         self,

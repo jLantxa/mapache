@@ -28,7 +28,7 @@ use std::os::unix::fs::MetadataExt;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::archiver::archiver::Archiver;
+use crate::archiver::Archiver;
 
 use super::backend::{ObjectId, RepositoryBackend};
 

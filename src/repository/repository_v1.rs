@@ -159,11 +159,11 @@ impl RepositoryBackend for Repository {
 
     fn load_snapshot(&self, id: &SnapshotId) -> Result<Snapshot> {
         let snapshot_path = self.snapshot_path.join(id);
-        if !self._backend.exists(&snapshot_path)? {
+        if !self.backend.exists(&snapshot_path)? {
             bail!(format!("No snapshot with ID \'{}\' exists", id));
         }
 
-        let snapshot = self._backend.read(&snapshot_path)?;
+        let snapshot = self.backend.read(&snapshot_path)?;
         let snapshot = self.secure_storage.decode(&snapshot)?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
         Ok(snapshot)

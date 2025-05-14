@@ -14,7 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use anyhow::Result;
 
 use super::backend::StorageBackend;
 
@@ -31,48 +36,56 @@ impl DryBackend {
 }
 
 impl StorageBackend for DryBackend {
-    fn read(&self, path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
+    fn read(&self, path: &Path) -> Result<Vec<u8>> {
         self.backend.read(path)
     }
 
-    fn write(&self, path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+    fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
+        self.backend.read_seek(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
         let _ = contents;
         let _ = path;
         Ok(())
     }
 
-    fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> anyhow::Result<()> {
+    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let _ = to;
         let _ = from;
         Ok(())
     }
 
-    fn create_dir(&self, path: &std::path::Path) -> anyhow::Result<()> {
+    fn remove_file(&self, file_path: &Path) -> Result<()> {
+        let _ = file_path;
+        Ok(())
+    }
+
+    fn create_dir(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
-    fn create_dir_all(&self, path: &std::path::Path) -> anyhow::Result<()> {
+    fn create_dir_all(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
-    fn remove_dir(&self, path: &std::path::Path) -> anyhow::Result<()> {
+    fn remove_dir(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
-    fn remove_dir_all(&self, path: &std::path::Path) -> anyhow::Result<()> {
+    fn remove_dir_all(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
-    fn exists(&self, path: &std::path::Path) -> anyhow::Result<bool> {
-        let _ = path;
-        todo!()
+    fn exists(&self, path: &Path) -> Result<bool> {
+        self.backend.exists(path)
     }
 
-    fn read_dir(&self, path: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         self.backend.read_dir(path)
     }
 }

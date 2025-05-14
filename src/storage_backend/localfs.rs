@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 
@@ -37,6 +40,30 @@ impl StorageBackend for LocalFS {
         Ok(data)
     }
 
+    fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
+        let mut file = std::fs::File::open(path).context(format!(
+            "Could not open file {} for range reading from local filesystem",
+            path.display()
+        ))?;
+
+        // Seek to the specified offset
+        file.seek(SeekFrom::Start(offset)).context(format!(
+            "Could not seek to offset {} in local file {:?}",
+            offset, path
+        ))?;
+
+        // Read the specified number of bytes
+        let mut buffer = vec![0; length as usize];
+        file.read_exact(&mut buffer).context(format!(
+            "Could not read {} bytes from offset {} in local file {}",
+            length,
+            offset,
+            path.display()
+        ))?;
+
+        Ok(buffer)
+    }
+
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
         std::fs::write(path, contents)
             .with_context(|| format!("Could not write to \'{}\' in local backend", path.display()))
@@ -48,6 +75,15 @@ impl StorageBackend for LocalFS {
                 "Could not rename \'{}\' to \'{}\' in local backend",
                 from.display(),
                 to.display()
+            )
+        })
+    }
+
+    fn remove_file(&self, file_path: &Path) -> Result<()> {
+        std::fs::remove_file(file_path).with_context(|| {
+            format!(
+                "Could not remove file \'{}\' from local backend",
+                file_path.display()
             )
         })
     }
@@ -152,6 +188,15 @@ mod test {
         let invalid_path = temp_dir.join("fake_path");
         assert!(false == local_fs.exists(&invalid_path)?);
         assert!(local_fs.read(&invalid_path).is_err());
+
+        // Read range
+        let seek_path = temp_dir.join("seek.txt.");
+        local_fs.write(
+            &seek_path,
+            b"I am just looking for a word in this sentence.",
+        )?;
+        let range_str = local_fs.read_seek(&seek_path, 10, 7)?;
+        assert_eq!(range_str, b"looking");
 
         Ok(())
     }

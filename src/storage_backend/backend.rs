@@ -30,20 +30,29 @@ use super::dry::DryBackend;
 ///
 /// This trait provides an interface for file IO operations with the backend.
 pub trait StorageBackend: Send + Sync {
-    /// Read from file.
+    /// Reads from file.
     fn read(&self, path: &Path) -> Result<Vec<u8>>;
 
-    /// Write to file, creating the file if necessary.
+    /// Reads a specific range of bytes from a file, starting at `offset` and reading `length`` bytes.
+    fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>>;
+
+    /// Writes to file, creating the file if necessary.
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()>;
 
-    /// Rename a file
+    /// Renames a file.
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;
+
+    /// Removes a file.
+    fn remove_file(&self, file_path: &Path) -> Result<()>;
 
     /// Creates a new, empty directory at the provided path.
     fn create_dir(&self, path: &Path) -> Result<()>;
 
     /// Recursively create a directory and all of its parent components if they are missing.
     fn create_dir_all(&self, path: &Path) -> Result<()>;
+
+    // List all paths inside a directory.
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
 
     /// Removes an empty directory.
     fn remove_dir(&self, path: &Path) -> Result<()>;
@@ -53,9 +62,6 @@ pub trait StorageBackend: Send + Sync {
 
     /// Returns true if a path exists.
     fn exists(&self, path: &Path) -> Result<bool>;
-
-    // List all paths inside a directory.
-    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
 }
 
 /// Encapsulates a StorageBackend inside a DryBackend.

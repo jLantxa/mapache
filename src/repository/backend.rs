@@ -58,10 +58,13 @@ pub trait RepositoryBackend: Sync + Send {
     where
         Self: Sized;
 
+    /// Restores a node in the local filesystem
     fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
 
+    /// Saves a binary object in the repository.
     fn save_object(&self, data: &[u8]) -> Result<(usize, ObjectId)>;
 
+    /// Loads a bynary object from the repository
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>>;
 
     /// Saves a snapshot metadata

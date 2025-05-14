@@ -78,13 +78,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let parent_snapshot = match &args.parent {
         None => None,
-        Some(id) => {
-            let found_parent_snapshot = repo.load_snapshot(&id)?;
-            match found_parent_snapshot {
-                Some((_snapshot_id, snapshot)) => Some(snapshot),
-                None => bail!("No snapshot found with id \'{}\'", id),
-            }
-        }
+        Some(id) => match repo.load_snapshot(&id) {
+            Ok(snapshot) => Some(snapshot),
+            Err(_) => bail!("No snapshot found with id \'{}\'", id),
+        },
     };
 
     // Scan the filesystem to collect stats about the targets

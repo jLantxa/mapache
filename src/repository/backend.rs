@@ -74,7 +74,7 @@ pub trait RepositoryBackend: Sync + Send {
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;
 
     /// Get a snapshot by hash
-    fn load_snapshot(&self, hash: &SnapshotId) -> Result<Option<(SnapshotId, Snapshot)>>;
+    fn load_snapshot(&self, hash: &SnapshotId) -> Result<Snapshot>;
 
     /// Get all snapshots in the repository
     fn load_all_snapshots(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;

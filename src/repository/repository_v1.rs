@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::{
     repository::storage::SecureStorage,
@@ -157,14 +157,16 @@ impl RepositoryBackend for Repository {
         Ok(hash)
     }
 
-    fn load_snapshot(&self, hash: &Hash) -> Result<Option<(SnapshotId, Snapshot)>> {
-        // TODO: This is quite stupid and inefficient.
-        // Just get the snapshot file directly or return error
-        Ok(self
-            .load_all_snapshots()?
-            .iter()
-            .find(|(snapshot_hash, _)| snapshot_hash == hash)
-            .cloned())
+    fn load_snapshot(&self, id: &SnapshotId) -> Result<Snapshot> {
+        let snapshot_path = self.snapshot_path.join(id);
+        if !self._backend.exists(&snapshot_path)? {
+            bail!(format!("No snapshot with ID \'{}\' exists", id));
+        }
+
+        let snapshot = self._backend.read(&snapshot_path)?;
+        let snapshot = self.secure_storage.decode(&snapshot)?;
+        let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
+        Ok(snapshot)
     }
 
     /// Get all snapshots in the repository

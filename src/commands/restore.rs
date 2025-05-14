@@ -125,7 +125,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let s = snapshots_sorted.last();
             s.cloned()
         }
-        RestoreSnapshot::Snapshot(sn) => repo.load_snapshot(&sn)?,
+        RestoreSnapshot::Snapshot(id) => match repo.load_snapshot(id) {
+            Ok(s) => Some((id.clone(), s)),
+            Err(_) => None,
+        },
     }
     .with_context(|| "No snapshot was found")?;
 

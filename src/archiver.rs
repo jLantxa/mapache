@@ -639,7 +639,7 @@ mod test {
         // Open
         let key = retrieve_key(String::from("mapachito"), backend.clone())?;
         let secure_storage = Arc::new(
-            SecureStorage::new(backend.clone())
+            SecureStorage::build()
                 .with_key(key)
                 .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );

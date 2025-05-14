@@ -111,7 +111,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let key = repository::backend::retrieve_key(password, storage_backend.clone())?;
     let secure_storage = Arc::new(
-        SecureStorage::new(storage_backend.clone())
+        SecureStorage::build()
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );

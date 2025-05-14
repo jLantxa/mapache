@@ -57,11 +57,18 @@ pub trait RepositoryBackend: Sync + Send {
     /// Restores a node in the local filesystem
     fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
 
-    /// Saves a binary object in the repository.
+    /// Saves a binary object in the repository and encodes (compress + encrypt) the content.
+    /// The hash is calculated on the raw data before encoding.
     fn save_object(&self, data: &[u8]) -> Result<(usize, ObjectId)>;
 
-    /// Loads a bynary object from the repository
+    /// Saves a binary object in the repository without using the SecureStorage.
+    fn save_object_raw(&self, data: &[u8]) -> Result<(usize, ObjectId)>;
+
+    /// Loads a binary object from the repository
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>>;
+
+    /// Loads a binary object from the repository without using the SecureStorage.
+    fn load_object_raw(&self, id: &ObjectId) -> Result<Vec<u8>>;
 
     /// Saves a snapshot metadata
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;
@@ -104,11 +111,15 @@ pub fn open(
     }
 
     let config_path = Path::new("config");
-    let config: Config = serde_json::from_slice(
-        &secure_storage
-            .load_file(&config_path)
-            .with_context(|| "Could not load config file")?,
-    )?;
+
+    let config = storage_backend
+        .read(&config_path)
+        .with_context(|| "Could not load config file")?;
+    let config = secure_storage
+        .decode(&config)
+        .with_context(|| "Could not decode the config file")?;
+    let config: Config = serde_json::from_slice(&config)?;
+
     let version = config.version;
 
     open_repository_with_version(version, storage_backend, secure_storage)
@@ -149,7 +160,7 @@ pub fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
     let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
     let intermediate_key = SecureStorage::derive_key(password, &salt);
 
-    let encrypted_key = SecureStorage::encrypt(&intermediate_key, &new_random_key)?;
+    let encrypted_key = SecureStorage::encrypt_with_key(&intermediate_key, &new_random_key)?;
 
     let key_file = KeyFile {
         created: create_time,
@@ -183,7 +194,7 @@ pub fn retrieve_key(password: String, backend: Arc<dyn StorageBackend>) -> Resul
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
 
         let intermediate_key = SecureStorage::derive_key(&password, &salt);
-        if let Ok(key) = SecureStorage::decrypt(&intermediate_key, &encrypted_key) {
+        if let Ok(key) = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key) {
             return Ok(key);
         }
     }
@@ -211,7 +222,7 @@ mod test {
 
         let key = retrieve_key(String::from("mapachito"), backend.clone())?;
         let secure_storage = Arc::new(
-            SecureStorage::new(backend.clone())
+            SecureStorage::build()
                 .with_key(key)
                 .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );

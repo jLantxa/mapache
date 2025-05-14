@@ -21,27 +21,21 @@ use argon2::Argon2;
 use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecret, SecretBox};
 use std::io::{Read, Write};
-use std::path::Path;
-use std::sync::Arc;
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
-
-use crate::storage_backend::backend::StorageBackend;
 
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
     key: Option<SecretBox<Vec<u8>>>,
     compression_level: i32,
-    backend: Arc<dyn StorageBackend>,
 }
 
 impl SecureStorage {
     /// A new, default SecureStorage with no encryption and no compression
-    pub fn new(backend: Arc<dyn StorageBackend>) -> Self {
+    pub fn build() -> Self {
         Self {
             key: Default::default(),
             compression_level: Default::default(),
-            backend,
         }
     }
 
@@ -57,39 +51,16 @@ impl SecureStorage {
         self
     }
 
-    /// Load a file previously saved with SecureStorage
-    pub fn load_file(&self, path: &Path) -> Result<Vec<u8>> {
-        let mut data = self.backend.read(path)?;
-
-        if let Some(key) = &self.key {
-            data = Self::decrypt(key.expose_secret(), &data)?;
-        }
-
-        data = Self::decompress(&data)?;
-
-        Ok(data)
+    pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut processed_data = Self::compress(data, self.compression_level)?;
+        processed_data = self.encrypt(&processed_data)?;
+        Ok(processed_data)
     }
 
-    /// Save data to a file with SecureStorage.
-    /// Returns the number of bytes written.
-    pub fn save_file(&self, data: &[u8], path: &Path) -> Result<usize> {
-        let mut out_data = Self::compress(&data, self.compression_level)?;
-
-        if let Some(key) = &self.key {
-            out_data = Self::encrypt(key.expose_secret(), &out_data)?;
-        }
-
-        self.backend.write(path, &out_data)?;
-
-        Ok(out_data.len())
-    }
-
-    pub fn save_file_with_rename(&self, data: &[u8], path: &Path) -> Result<usize> {
-        let tmp_path = path.with_extension(".tmp");
-        let size = self.save_file(data, &tmp_path)?;
-        self.backend.rename(&tmp_path, path)?;
-
-        Ok(size)
+    pub fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut processed_data = self.decrypt(data)?;
+        processed_data = Self::decompress(&processed_data)?;
+        Ok(processed_data)
     }
 
     /// Compress a stream of bytes
@@ -110,7 +81,7 @@ impl SecureStorage {
     }
 
     /// Encrypt data using AES-GCM
-    pub fn encrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    pub fn encrypt_with_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
         let key = AesKey::<Aes256Gcm>::from_slice(&key);
         let cipher = Aes256Gcm::new(&key);
 
@@ -129,8 +100,15 @@ impl SecureStorage {
         }
     }
 
+    pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        match &self.key {
+            Some(key_secret) => Self::encrypt_with_key(key_secret.expose_secret(), data),
+            None => Ok(data.to_vec()),
+        }
+    }
+
     /// Decrypt data using AES-GCM
-    pub fn decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    pub fn decrypt_with_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
         let key = AesKey::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
@@ -141,6 +119,13 @@ impl SecureStorage {
         match cipher.decrypt(nonce, ciphertext) {
             Ok(decrypted_data) => Ok(decrypted_data),
             Err(_) => bail!("Decryption failed"),
+        }
+    }
+
+    pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        match &self.key {
+            Some(key_secret) => Self::decrypt_with_key(key_secret.expose_secret(), data),
+            None => Ok(data.to_vec()),
         }
     }
 

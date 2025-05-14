@@ -93,11 +93,14 @@ impl RepositoryBackend for Repository {
             version: REPO_VERSION,
         };
 
-        let secure_storage: SecureStorage = SecureStorage::new(backend.to_owned())
+        let secure_storage: SecureStorage = SecureStorage::build()
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
-        let config_json = serde_json::to_string_pretty(&config)?;
-        secure_storage.save_file_with_rename(&config_json.as_bytes(), Path::new("config"))?;
+
+        let config_path = Path::new("config");
+        let config = serde_json::to_string_pretty(&config)?;
+        let config = secure_storage.encode(config.as_bytes())?;
+        backend.write(config_path, &config)?;
 
         Ok(())
     }
@@ -116,12 +119,16 @@ impl RepositoryBackend for Repository {
     }
 
     fn save_object(&self, data: &[u8]) -> Result<(usize, ObjectId)> {
+        let encoded_data = self.secure_storage.encode(data)?;
+        self.save_object_raw(&encoded_data)
+    }
+
+    fn save_object_raw(&self, data: &[u8]) -> Result<(usize, ObjectId)> {
         let hash = utils::calculate_hash(&data);
         let object_path = self.get_object_path(&hash);
 
         let written_size = if !object_path.exists() {
-            self.secure_storage
-                .save_file_with_rename(&data, &self.get_object_path(&hash))?
+            self.save_with_rename(&data, &self.get_object_path(&hash))?
         } else {
             0
         };
@@ -130,10 +137,29 @@ impl RepositoryBackend for Repository {
     }
 
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {
-        self.secure_storage.load_file(&self.get_object_path(id))
+        let data = self.backend.read(&self.get_object_path(id))?;
+        self.secure_storage.decode(&data)
+    }
+
+    fn load_object_raw(&self, id: &ObjectId) -> Result<Vec<u8>> {
+        self.backend.read(&self.get_object_path(id))
+    }
+
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {
+        let snapshot_json = serde_json::to_string_pretty(snapshot)?;
+        let hash = utils::calculate_hash(&snapshot_json);
+
+        let snapshot_path = self.snapshot_path.join(&hash);
+
+        let snapshot_json = self.secure_storage.encode(snapshot_json.as_bytes())?;
+        self.save_with_rename(&snapshot_json, &snapshot_path)?;
+
+        Ok(hash)
     }
 
     fn load_snapshot(&self, hash: &Hash) -> Result<Option<(SnapshotId, Snapshot)>> {
+        // TODO: This is quite stupid and inefficient.
+        // Just get the snapshot file directly or return error
         Ok(self
             .load_all_snapshots()?
             .iter()
@@ -154,8 +180,9 @@ impl RepositoryBackend for Repository {
             if path.is_file() {
                 if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
                     let hash = file_name.to_string(); // Extract hash from filename
-                    let snapshot_json = self.secure_storage.load_file(&path)?;
-                    let snapshot: Snapshot = serde_json::from_slice(&snapshot_json)?;
+                    let snapshot = self.backend.read(&path)?;
+                    let snapshot = self.secure_storage.decode(&snapshot)?;
+                    let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
                     snapshots.push((hash, snapshot));
                 }
             }
@@ -190,19 +217,14 @@ impl RepositoryBackend for Repository {
                     .expect("File Node must have contents (even if empty)");
 
                 for (index, chunk_hash) in chunks.iter().enumerate() {
-                    let chunk_path = self.get_object_path(&chunk_hash);
-
-                    let chunk_data =
-                        self.secure_storage
-                            .load_file(&chunk_path)
-                            .with_context(|| {
-                                format!(
-                                    "Could not load chunk #{} ({}) for restoring file '{}'",
-                                    index + 1,
-                                    chunk_hash,
-                                    dst_path.display()
-                                )
-                            })?;
+                    let chunk_data = self.load_object(&chunk_hash).with_context(|| {
+                        format!(
+                            "Could not load chunk #{} ({}) for restoring file '{}'",
+                            index + 1,
+                            chunk_hash,
+                            dst_path.display()
+                        )
+                    })?;
 
                     dst_file.write_all(&chunk_data).with_context(|| {
                         format!(
@@ -227,17 +249,6 @@ impl RepositoryBackend for Repository {
 
         Ok(())
     }
-
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {
-        let snapshot_json = serde_json::to_string_pretty(snapshot)?;
-        let hash = utils::calculate_hash(&snapshot_json);
-
-        let snapshot_path = self.snapshot_path.join(&hash);
-        self.secure_storage
-            .save_file_with_rename(&snapshot_json.as_bytes(), &snapshot_path)?;
-
-        Ok(hash)
-    }
 }
 
 impl Repository {
@@ -246,6 +257,13 @@ impl Repository {
         self.objects_path
             .join(&hash[..OBJECTS_DIR_FANOUT])
             .join(&hash[OBJECTS_DIR_FANOUT..])
+    }
+
+    fn save_with_rename(&self, data: &[u8], path: &Path) -> Result<usize> {
+        let tmp_path = path.with_extension("tmp");
+        self.backend.write(&tmp_path, data)?;
+        self.backend.rename(&tmp_path, path)?;
+        Ok(data.len())
     }
 }
 
@@ -271,7 +289,7 @@ mod test {
 
         let key = retrieve_key(String::from("mapachito"), backend.clone())?;
         let secure_storage = Arc::new(
-            SecureStorage::new(backend.clone())
+            SecureStorage::build()
                 .with_key(key)
                 .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );
@@ -290,7 +308,7 @@ mod test {
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
 
         let intermediate_key = SecureStorage::derive_key("mapachito", &salt);
-        let decrypted_key = SecureStorage::decrypt(&intermediate_key, &encrypted_key)?;
+        let decrypted_key = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)?;
 
         assert_eq!(key, decrypted_key);
 

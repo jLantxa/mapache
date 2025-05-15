@@ -101,7 +101,7 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    fn exists(&self, path: &Path) -> Result<bool> {
+    fn exists(&self, path: &Path) -> bool {
         self.backend.exists(path)
     }
 

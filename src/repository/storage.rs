@@ -14,11 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use aes_gcm::aead::Aead;
+use aes_gcm::aead::{Aead, OsRng, rand_core::RngCore};
 use aes_gcm::{Aes256Gcm, Key as AesKey, KeyInit, Nonce};
 use anyhow::{Result, bail};
 use argon2::Argon2;
-use rand::{Rng, RngCore};
 use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecret, SecretBox};
 use std::io::{Read, Write};
@@ -117,7 +116,7 @@ impl SecureStorage {
 
         // Generate a random nonce for each encryption
         let mut nonce = [0u8; 12];
-        rand::rng().fill(&mut nonce);
+        OsRng.fill_bytes(&mut nonce);
         let nonce = Nonce::from_slice(&nonce);
 
         match cipher.encrypt(nonce, data) {
@@ -159,9 +158,8 @@ impl SecureStorage {
 
     /// Generate a random salt of a given length
     pub fn generate_salt<const LENGTH: usize>() -> [u8; LENGTH] {
-        let mut rng = rand::rng();
         let mut salt = [0u8; LENGTH];
-        rng.fill_bytes(&mut salt);
+        OsRng.fill_bytes(&mut salt);
         salt
     }
 }

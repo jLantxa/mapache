@@ -16,7 +16,6 @@ crossbeam-channel = "0.5.15"
 dialoguer = "0.11.0"
 fastcdc = "3.2.1"
 num_cpus = "1.16.0"
-rand = "0.9.1"
 rayon = "1.10.0"
 secrecy = "0.10.3"
 serde = { version = "1.0.219", features = ["derive"] }

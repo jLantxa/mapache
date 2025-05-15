@@ -62,6 +62,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo_path = PathBuf::from(&global.repo);
 
     let storage_backend = Arc::new(LocalFS::new(repo_path));
+
     let storage_backend = make_dry_backend(storage_backend, args.dry_run);
 
     let key = repository::backend::retrieve_key(password, storage_backend.clone())?;

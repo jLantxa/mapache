@@ -53,6 +53,10 @@ pub struct Repository {
 impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
     fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {
+        if backend.root_exists() {
+            bail!("Could not initialize a repository because a directory already exists");
+        }
+
         // Init repository structure
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
@@ -159,7 +163,7 @@ impl RepositoryBackend for Repository {
 
     fn load_snapshot(&self, id: &SnapshotId) -> Result<Snapshot> {
         let snapshot_path = self.snapshot_path.join(id);
-        if !self.backend.exists(&snapshot_path)? {
+        if !self.backend.exists(&snapshot_path) {
             bail!(format!("No snapshot with ID \'{}\' exists", id));
         }
 
@@ -275,7 +279,10 @@ mod test {
     use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
-    use crate::{repository::backend::retrieve_key, storage_backend::localfs::LocalFS};
+    use crate::{
+        repository::backend::retrieve_key,
+        storage_backend::localfs::LocalFS,
+    };
 
     use super::*;
 

@@ -197,7 +197,7 @@ impl Committer {
         };
         let previous_tree_streamer = SerializedNodeStreamer::new(repo.clone(), parent_tree_id);
 
-        let num_threads = std::cmp::max(1, num_cpus::get() / 2);
+        let num_threads = 1; //std::cmp::max(1, num_cpus::get() / 2);
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()?;

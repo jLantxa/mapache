@@ -30,6 +30,11 @@ use super::dry::DryBackend;
 ///
 /// This trait provides an interface for file IO operations with the backend.
 pub trait StorageBackend: Send + Sync {
+    /// Creates the necessary structure (typically just the repo root directory) for the backend
+    fn create(&self) -> Result<()>;
+
+    fn root_exists(&self) -> bool;
+
     /// Reads from file.
     fn read(&self, path: &Path) -> Result<Vec<u8>>;
 

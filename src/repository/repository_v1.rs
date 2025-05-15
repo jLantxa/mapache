@@ -44,8 +44,7 @@ const SNAPSHOTS_DIR: &str = "snapshots";
 const OBJECTS_DIR_FANOUT: usize = 2;
 
 pub struct Repository {
-    _backend: Arc<dyn StorageBackend>,
-    _root_path: PathBuf,
+    backend: Arc<dyn StorageBackend>,
     objects_path: PathBuf,
     snapshot_path: PathBuf,
     secure_storage: Arc<SecureStorage>,
@@ -53,20 +52,21 @@ pub struct Repository {
 
 impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
-    fn init(backend: Arc<dyn StorageBackend>, repo_path: &Path, password: String) -> Result<()> {
+    fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {
         // Init repository structure
-        let objects_path = repo_path.join(OBJECTS_DIR);
-        let snapshot_path = repo_path.join(SNAPSHOTS_DIR);
-        let keys_path = repo_path.join(backend::KEYS_DIR);
+        let objects_path = PathBuf::from(OBJECTS_DIR);
+        let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
+        let keys_path = PathBuf::from(backend::KEYS_DIR);
 
+        // Create the repository root
         backend
-            .create_dir_all(repo_path)
+            .create()
             .with_context(|| "Could not create root directory")?;
 
         backend.create_dir(&objects_path)?;
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
         for n in 0x00..num_folders {
-            std::fs::create_dir(&objects_path.join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n)))?;
+            backend.create_dir(&objects_path.join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n)))?;
         }
 
         backend.create_dir(&snapshot_path)?;
@@ -97,23 +97,18 @@ impl RepositoryBackend for Repository {
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
         let config_json = serde_json::to_string_pretty(&config)?;
-        secure_storage.save_file_with_rename(&config_json.as_bytes(), &repo_path.join("config"))?;
+        secure_storage.save_file_with_rename(&config_json.as_bytes(), Path::new("config"))?;
 
         Ok(())
     }
 
     /// Open an existing repository from a directory
-    fn open(
-        backend: Arc<dyn StorageBackend>,
-        repo_path: &Path,
-        secure_storage: Arc<SecureStorage>,
-    ) -> Result<Self> {
-        let objects_path = repo_path.join(OBJECTS_DIR);
-        let snapshot_path = repo_path.join(SNAPSHOTS_DIR);
+    fn open(backend: Arc<dyn StorageBackend>, secure_storage: Arc<SecureStorage>) -> Result<Self> {
+        let objects_path = PathBuf::from(OBJECTS_DIR);
+        let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
 
         Ok(Repository {
-            _backend: backend,
-            _root_path: repo_path.to_owned(),
+            backend,
             objects_path,
             snapshot_path,
             secure_storage,
@@ -150,11 +145,12 @@ impl RepositoryBackend for Repository {
     fn load_all_snapshots(&self) -> Result<Vec<(Hash, Snapshot)>> {
         let mut snapshots = Vec::new();
 
-        let entries =
-            std::fs::read_dir(&self.snapshot_path).with_context(|| "Could not read snapshots")?;
+        let paths = self
+            .backend
+            .read_dir(&self.snapshot_path)
+            .with_context(|| "Could not read snapshots")?;
 
-        for entry in entries.flatten() {
-            let path = entry.path();
+        for path in paths {
             if path.is_file() {
                 if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
                     let hash = file_name.to_string(); // Extract hash from filename
@@ -269,22 +265,18 @@ mod test {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        let backend = Arc::new(LocalFS::new());
+        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        Repository::init(
-            backend.to_owned(),
-            &temp_repo_path,
-            String::from("mapachito"),
-        )?;
+        Repository::init(backend.to_owned(), String::from("mapachito"))?;
 
-        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
+        let key = retrieve_key(String::from("mapachito"), backend.clone())?;
         let secure_storage = Arc::new(
             SecureStorage::new(backend.clone())
                 .with_key(key)
                 .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );
 
-        let _ = Repository::open(backend, &temp_repo_path, secure_storage.clone())?;
+        let _ = Repository::open(backend, secure_storage.clone())?;
 
         Ok(())
     }

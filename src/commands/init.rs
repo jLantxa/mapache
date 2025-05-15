@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -34,21 +34,16 @@ pub struct CmdArgs {
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let password = cli::request_new_password();
-    let repo_path = Path::new(&global.repo);
+    let repo_path = PathBuf::from(&global.repo);
 
     cli::log!(
         "Initializing a new repository in \'{}\'",
         repo_path.display()
     );
 
-    let backend = Arc::new(LocalFS::new());
+    let backend = Arc::new(LocalFS::new(repo_path));
 
-    repository::backend::init_repository_with_version(
-        args.repository_version,
-        backend,
-        &repo_path,
-        password,
-    )?;
+    repository::backend::init_repository_with_version(args.repository_version, backend, password)?;
 
     Ok(())
 }

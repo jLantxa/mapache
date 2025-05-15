@@ -14,11 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Error, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
@@ -109,22 +105,19 @@ pub struct CmdArgs {
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let password = cli::request_password();
-    let repo_path = Path::new(&global.repo);
+    let repo_path = PathBuf::from(&global.repo);
 
-    let storage_backend = Arc::new(LocalFS::new());
+    let storage_backend = Arc::new(LocalFS::new(repo_path));
 
-    let key = repository::backend::retrieve_key(password, storage_backend.clone(), &repo_path)?;
+    let key = repository::backend::retrieve_key(password, storage_backend.clone())?;
     let secure_storage = Arc::new(
         SecureStorage::new(storage_backend.clone())
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );
 
-    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::backend::open(
-        storage_backend,
-        repo_path,
-        secure_storage,
-    )?);
+    let repo: Arc<dyn RepositoryBackend> =
+        Arc::from(repository::backend::open(storage_backend, secure_storage)?);
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
         RestoreSnapshot::Latest => {

@@ -42,18 +42,13 @@ pub type SnapshotId = Hash;
 
 pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
-    fn init(
-        storage_backend: Arc<dyn StorageBackend>,
-        repo_path: &Path,
-        password: String,
-    ) -> Result<()>
+    fn init(storage_backend: Arc<dyn StorageBackend>, password: String) -> Result<()>
     where
         Self: Sized;
 
     /// Open an existing repository from a directory
     fn open(
         storage_backend: Arc<dyn StorageBackend>,
-        repo_path: &Path,
         secure_storage: Arc<SecureStorage>,
     ) -> Result<Self>
     where
@@ -81,63 +76,34 @@ pub trait RepositoryBackend: Sync + Send {
     fn load_all_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
 }
 
-fn check_repo_path(repo_path: &Path) -> Result<()> {
-    if !repo_path.exists() {
-        bail!(
-            "Could not open a repository. \'{}\' doesn't exist",
-            repo_path.display()
-        );
-    } else if !repo_path.is_dir() {
-        bail!(
-            "Could not open a repository. \'{}\' is not a directory",
-            repo_path.display()
-        );
-    }
-
-    Ok(())
-}
-
-pub fn init(
-    storage_backend: Arc<dyn StorageBackend>,
-    repo_path: &Path,
-    password: String,
-) -> Result<()> {
-    init_repository_with_version(
-        LATEST_REPOSITORY_VERSION,
-        storage_backend,
-        repo_path,
-        password,
-    )
+pub fn init(storage_backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {
+    init_repository_with_version(LATEST_REPOSITORY_VERSION, storage_backend, password)
 }
 
 pub fn init_repository_with_version(
     version: RepoVersion,
     storage_backend: Arc<dyn StorageBackend>,
-    repo_path: &Path,
     password: String,
 ) -> Result<()> {
-    if repo_path.exists() {
-        bail!(
-            "Could not initialize a repository because a directory already exists in \'{}\'",
-            repo_path.display()
-        );
+    if storage_backend.root_exists() {
+        bail!("Could not initialize a repository because a directory already exists");
     }
 
     if version == 1 {
-        repository_v1::Repository::init(storage_backend, repo_path, password)
+        repository_v1::Repository::init(storage_backend, password)
     } else {
         bail!("Invalid repository version \'{}\'", version);
     }
 }
-
 pub fn open(
     storage_backend: Arc<dyn StorageBackend>,
-    repo_path: &Path,
     secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
-    check_repo_path(repo_path)?;
+    if !storage_backend.root_exists() {
+        bail!("Could not open a repository. The path does not exist.");
+    }
 
-    let config_path = repo_path.join("config");
+    let config_path = Path::new("config");
     let config: Config = serde_json::from_slice(
         &secure_storage
             .load_file(&config_path)
@@ -145,17 +111,17 @@ pub fn open(
     )?;
     let version = config.version;
 
-    open_repository_with_version(version, storage_backend, repo_path, secure_storage)
+    open_repository_with_version(version, storage_backend, secure_storage)
 }
 
 fn open_repository_with_version(
     version: RepoVersion,
     storage_backend: Arc<dyn StorageBackend>,
-    repo_path: &Path,
+
     secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
     if version == 1 {
-        let repo_v1 = repository_v1::Repository::open(storage_backend, repo_path, secure_storage)?;
+        let repo_v1 = repository_v1::Repository::open(storage_backend, secure_storage)?;
         return Ok(Box::new(repo_v1));
     }
 
@@ -195,14 +161,8 @@ pub fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
 }
 
 /// Retrieve the master key from all available keys in a folder
-pub fn retrieve_key(
-    password: String,
-    backend: Arc<dyn StorageBackend>,
-    repo_path: &Path,
-) -> Result<Vec<u8>> {
-    check_repo_path(repo_path)?;
-
-    let keys_path = repo_path.join(KEYS_DIR);
+pub fn retrieve_key(password: String, backend: Arc<dyn StorageBackend>) -> Result<Vec<u8>> {
+    let keys_path = Path::new(KEYS_DIR);
     for path in backend.read_dir(&keys_path)? {
         // The keys directory should only contain files. We can ignore anything
         // that is not a file, but show a warning anyway.
@@ -245,22 +205,18 @@ mod test {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        let backend = Arc::new(LocalFS::new());
+        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        init(
-            backend.to_owned(),
-            &temp_repo_path,
-            String::from("mapachito"),
-        )?;
+        init(backend.to_owned(), String::from("mapachito"))?;
 
-        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
+        let key = retrieve_key(String::from("mapachito"), backend.clone())?;
         let secure_storage = Arc::new(
             SecureStorage::new(backend.clone())
                 .with_key(key)
                 .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );
 
-        let _ = open(backend, &temp_repo_path, secure_storage.clone())?;
+        let _ = open(backend, secure_storage.clone())?;
 
         Ok(())
     }

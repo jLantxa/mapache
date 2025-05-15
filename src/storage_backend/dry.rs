@@ -37,6 +37,16 @@ impl DryBackend {
 
 impl StorageBackend for DryBackend {
     #[inline]
+    fn create(&self) -> Result<()> {
+        self.backend.create()
+    }
+
+    #[inline]
+    fn root_exists(&self) -> bool {
+        self.backend.root_exists()
+    }
+
+    #[inline]
     fn read(&self, path: &Path) -> Result<Vec<u8>> {
         self.backend.read(path)
     }

@@ -631,21 +631,20 @@ mod test {
         let src_file_path = testing::get_test_path("tree0.json");
         let dst_file_path = temp_repo_path.join("tree0.json.restored");
 
-        Repository::init(
-            Arc::new(LocalFS::new()),
-            &temp_repo_path,
-            String::from("mapachito"),
-        )?;
+        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        let backend = Arc::new(LocalFS::new());
-        let key = retrieve_key(String::from("mapachito"), backend.clone(), &temp_repo_path)?;
+        // Init
+        Repository::init(backend.clone(), String::from("mapachito"))?;
+
+        // Open
+        let key = retrieve_key(String::from("mapachito"), backend.clone())?;
         let secure_storage = Arc::new(
             SecureStorage::new(backend.clone())
                 .with_key(key)
                 .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
         );
 
-        let repo = Repository::open(backend, &temp_repo_path, secure_storage)?;
+        let repo = Repository::open(backend, secure_storage)?;
 
         // Scan the FS -> Find the file
         let mut fs_node_streamer = FSNodeStreamer::from_root(&src_file_path)?;

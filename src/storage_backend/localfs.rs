@@ -33,20 +33,22 @@ impl LocalFS {
     pub fn new(repo_path: PathBuf) -> Self {
         Self { repo_path }
     }
+
+    fn full_path(&self, path: &Path) -> PathBuf {
+        self.repo_path.join(path)
+    }
 }
 
 impl StorageBackend for LocalFS {
     fn create(&self) -> Result<()> {
         // Create the repo root folder
-        self.create_dir_all(&self.repo_path)
+        std::fs::create_dir_all(&self.repo_path)
+            .with_context(|| "Could not create repository backend root")
     }
 
     #[inline]
     fn root_exists(&self) -> bool {
-        match self.exists(&self.repo_path) {
-            Ok(exists) => exists,
-            Err(_) => false,
-        }
+        self.exists(&self.repo_path)
     }
 
     fn read(&self, path: &Path) -> Result<Vec<u8>> {
@@ -149,14 +151,12 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    fn exists(&self, path: &Path) -> Result<bool> {
+    fn exists(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
-        std::fs::exists(full_path).with_context(|| {
-            format!(
-                "Could not check if \'{}\' exists in local backend",
-                path.display()
-            )
-        })
+        match std::fs::exists(full_path) {
+            Ok(exists) => exists,
+            Err(_) => false,
+        }
     }
 
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
@@ -169,7 +169,13 @@ impl StorageBackend for LocalFS {
             )
         })? {
             let entry = entry?;
-            paths.push(entry.path());
+            paths.push(
+                entry
+                    .path()
+                    .strip_prefix(&self.repo_path)
+                    .unwrap()
+                    .to_path_buf(),
+            );
         }
 
         Ok(paths)
@@ -183,12 +189,6 @@ impl StorageBackend for LocalFS {
     fn is_dir(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
         full_path.is_dir()
-    }
-}
-
-impl LocalFS {
-    fn full_path(&self, path: &Path) -> PathBuf {
-        self.repo_path.join(path)
     }
 }
 
@@ -209,7 +209,7 @@ mod test {
         local_fs.write(&write_path, b"Mapachito")?;
         let read_content = local_fs.read(&write_path)?;
 
-        assert!(local_fs.exists(&write_path)?);
+        assert!(local_fs.exists(&write_path));
         assert_eq!(read_content, b"Mapachito");
 
         let dir0 = Path::new("dir0");
@@ -217,19 +217,19 @@ mod test {
         let dir1 = intermediate.join("dir1");
         local_fs.create_dir(&dir0)?;
         local_fs.create_dir_all(&dir1)?;
-        assert!(local_fs.exists(&dir0)?);
-        assert!(local_fs.exists(&intermediate)?);
-        assert!(local_fs.exists(&dir1)?);
+        assert!(local_fs.exists(&dir0));
+        assert!(local_fs.exists(&intermediate));
+        assert!(local_fs.exists(&dir1));
 
         local_fs.remove_dir(&dir1)?;
-        assert!(false == local_fs.exists(&dir1)?);
+        assert!(false == local_fs.exists(&dir1));
         local_fs.remove_dir_all(&dir0)?;
-        assert!(false == local_fs.exists(&dir0)?);
-        assert!(false == local_fs.exists(&intermediate)?);
-        assert!(false == local_fs.exists(&dir1)?);
+        assert!(false == local_fs.exists(&dir0));
+        assert!(false == local_fs.exists(&intermediate));
+        assert!(false == local_fs.exists(&dir1));
 
         let invalid_path = Path::new("fake_path");
-        assert!(false == local_fs.exists(&invalid_path)?);
+        assert!(false == local_fs.exists(&invalid_path));
         assert!(local_fs.read(&invalid_path).is_err());
 
         // Read range

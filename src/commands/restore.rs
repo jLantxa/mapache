@@ -21,10 +21,10 @@ use clap::{Args, ValueEnum};
 
 use crate::{
     cli::{self, GlobalArgs},
-    repository::storage::SecureStorage,
     repository::{
         self,
         backend::{RepositoryBackend, SnapshotId},
+        storage::SecureStorage,
         tree::SerializedNodeStreamer,
     },
     storage_backend::localfs::LocalFS,

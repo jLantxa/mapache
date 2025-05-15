@@ -92,10 +92,6 @@ pub fn init_repository_with_version(
     storage_backend: Arc<dyn StorageBackend>,
     password: String,
 ) -> Result<()> {
-    if storage_backend.root_exists() {
-        bail!("Could not initialize a repository because a directory already exists");
-    }
-
     if version == 1 {
         repository_v1::Repository::init(storage_backend, password)
     } else {

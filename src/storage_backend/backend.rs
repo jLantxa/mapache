@@ -66,7 +66,7 @@ pub trait StorageBackend: Send + Sync {
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
 
     /// Returns true if a path exists.
-    fn exists(&self, path: &Path) -> Result<bool>;
+    fn exists(&self, path: &Path) -> bool;
 
     // Returns true if the path is a file or an error if the path does not exist.
     fn is_file(&self, path: &Path) -> bool;

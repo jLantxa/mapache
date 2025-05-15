@@ -147,6 +147,14 @@ impl StorageBackend for LocalFS {
 
         Ok(paths)
     }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
 }
 
 #[cfg(test)]

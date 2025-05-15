@@ -25,6 +25,7 @@ use base64::engine::general_purpose;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::cli;
 use crate::{
     repository::storage::SecureStorage, storage_backend::backend::StorageBackend, utils::Hash,
 };
@@ -203,10 +204,15 @@ pub fn retrieve_key(
 
     let keys_path = repo_path.join(KEYS_DIR);
     for path in backend.read_dir(&keys_path)? {
-        // TODO:
-        // I should assert that path is a file and not a folder, but I need to implement
-        // that in the StorageBackend. For now, let's assume that nobody is messing with
-        // the repository.
+        // The keys directory should only contain files. We can ignore anything
+        // that is not a file, but show a warning anyway.
+        if !backend.is_file(&path) {
+            cli::log_warning(&format!(
+                "Extraneous item \'{}\' in keys directory is not a file",
+                path.display()
+            ));
+            continue;
+        }
 
         // Load keyfile
         let keyfile_str = backend.read(&path)?;

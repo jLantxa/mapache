@@ -62,6 +62,12 @@ pub trait StorageBackend: Send + Sync {
 
     /// Returns true if a path exists.
     fn exists(&self, path: &Path) -> Result<bool>;
+
+    // Returns true if the path is a file or an error if the path does not exist.
+    fn is_file(&self, path: &Path) -> bool;
+
+    // Returns true if the path is a directory or an error if the path does not exist.
+    fn is_dir(&self, path: &Path) -> bool;
 }
 
 /// Encapsulates a StorageBackend inside a DryBackend.

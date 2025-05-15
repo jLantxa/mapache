@@ -36,56 +36,77 @@ impl DryBackend {
 }
 
 impl StorageBackend for DryBackend {
+    #[inline]
     fn read(&self, path: &Path) -> Result<Vec<u8>> {
         self.backend.read(path)
     }
 
+    #[inline]
     fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
         self.backend.read_seek(path, offset, length)
     }
 
+    #[inline]
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
         let _ = contents;
         let _ = path;
         Ok(())
     }
 
+    #[inline]
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let _ = to;
         let _ = from;
         Ok(())
     }
 
+    #[inline]
     fn remove_file(&self, file_path: &Path) -> Result<()> {
         let _ = file_path;
         Ok(())
     }
 
+    #[inline]
     fn create_dir(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
+    #[inline]
     fn create_dir_all(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
+    #[inline]
     fn remove_dir(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
+    #[inline]
     fn remove_dir_all(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
+    #[inline]
     fn exists(&self, path: &Path) -> Result<bool> {
         self.backend.exists(path)
     }
 
+    #[inline]
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         self.backend.read_dir(path)
+    }
+
+    #[inline]
+    fn is_file(&self, path: &Path) -> bool {
+        self.backend.is_file(path)
+    }
+
+    #[inline]
+    fn is_dir(&self, path: &Path) -> bool {
+        self.backend.is_dir(path)
     }
 }

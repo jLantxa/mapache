@@ -141,16 +141,19 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
                 if restore_path.exists() {
                     match args.resolution {
-                        Resolution::Skip => continue,
-                        Resolution::Overwrite => {
-                            repo.restore_node(&stream_node.node, &restore_path)?
+                        Resolution::Skip => continue, // Skip restore
+                        Resolution::Overwrite => (),  // Continue with restore
+                        Resolution::Fail => {
+                            cli::log_error(&format!(
+                                "Target \'{}\' already exists",
+                                restore_path.display()
+                            ));
+                            return Err(anyhow!("Failed to restore snapshot"));
                         }
-                        Resolution::Fail => cli::log_error(&format!(
-                            "Target \'{}\' already exists",
-                            restore_path.display()
-                        )),
                     }
                 }
+
+                repo.restore_node(&stream_node.node, &restore_path)?
             }
             Err(_) => {
                 bail!("Failed to read snapshot tree node");

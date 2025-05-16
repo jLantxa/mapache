@@ -1,19 +1,3 @@
-// [backup] is an incremental backup tool
-// Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -21,7 +5,9 @@ use std::{
 
 use anyhow::Result;
 
-use super::dry::DryBackend;
+use crate::cli;
+
+use super::{dry::DryBackend, localfs::LocalFS, sftp::SftpBackend, url::BackendUrl};
 
 /// Abstraction of a storage backend.
 ///
@@ -81,5 +67,19 @@ pub fn make_dry_backend(backend: Arc<dyn StorageBackend>, dry: bool) -> Arc<dyn 
     match dry {
         true => Arc::new(DryBackend::new(backend.clone())),
         false => backend,
+    }
+}
+
+pub fn new_backend_with_prompt(url: &str) -> Result<Arc<dyn StorageBackend>> {
+    let backend_url = BackendUrl::from(url)?;
+
+    match backend_url {
+        BackendUrl::Local(repo_path) => Ok(Arc::new(LocalFS::new(repo_path))),
+        BackendUrl::Sftp(username, host, port, repo_path) => {
+            let password = cli::request_password("Enter password for sftp");
+            Ok(Arc::new(SftpBackend::new(
+                repo_path, username, host, port, password,
+            )?))
+        }
     }
 }

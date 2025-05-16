@@ -37,6 +37,13 @@ impl LocalFS {
     fn full_path(&self, path: &Path) -> PathBuf {
         self.repo_path.join(path)
     }
+
+    fn exists_exact(&self, path: &Path) -> bool {
+        match std::fs::exists(path) {
+            Ok(exists) => exists,
+            Err(_) => false,
+        }
+    }
 }
 
 impl StorageBackend for LocalFS {
@@ -48,7 +55,7 @@ impl StorageBackend for LocalFS {
 
     #[inline]
     fn root_exists(&self) -> bool {
-        self.exists(&self.repo_path)
+        self.exists_exact(&self.repo_path)
     }
 
     fn read(&self, path: &Path) -> Result<Vec<u8>> {
@@ -153,10 +160,7 @@ impl StorageBackend for LocalFS {
 
     fn exists(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
-        match std::fs::exists(full_path) {
-            Ok(exists) => exists,
-            Err(_) => false,
-        }
+        self.exists_exact(&full_path)
     }
 
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {

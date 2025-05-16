@@ -183,7 +183,7 @@ impl RepositoryBackend for Repository {
             .with_context(|| "Could not read snapshots")?;
 
         for path in paths {
-            if path.is_file() {
+            if self.backend.is_file(&path) {
                 if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
                     let hash = file_name.to_string(); // Extract hash from filename
                     let snapshot = self.backend.read(&path)?;
@@ -279,10 +279,7 @@ mod test {
     use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
-    use crate::{
-        repository::backend::retrieve_key,
-        storage_backend::localfs::LocalFS,
-    };
+    use crate::{repository::backend::retrieve_key, storage_backend::localfs::LocalFS};
 
     use super::*;
 

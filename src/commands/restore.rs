@@ -27,7 +27,7 @@ use crate::{
         storage::SecureStorage,
         tree::SerializedNodeStreamer,
     },
-    storage_backend::localfs::LocalFS,
+    storage_backend::backend::new_backend_with_prompt,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,12 +104,10 @@ pub struct CmdArgs {
 }
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let password = cli::request_password();
-    let repo_path = PathBuf::from(&global.repo);
+    let storage_backend = new_backend_with_prompt(&global.repo)?;
+    let repo_password = cli::request_repo_password();
 
-    let storage_backend = Arc::new(LocalFS::new(repo_path));
-
-    let key = repository::backend::retrieve_key(password, storage_backend.clone())?;
+    let key = repository::backend::retrieve_key(repo_password, storage_backend.clone())?;
     let secure_storage = Arc::new(
         SecureStorage::build()
             .with_key(key)

@@ -49,6 +49,7 @@ impl SftpBackend {
         Ok(Self { repo_path, sftp })
     }
 
+    #[inline]
     fn full_path(&self, path: &Path) -> PathBuf {
         self.repo_path.join(path)
     }
@@ -61,22 +62,21 @@ impl SftpBackend {
     }
 
     fn create_dir_exact(&self, path: &Path) -> Result<()> {
-        if let Ok(stats) = self.sftp.lstat(path) {
+        let stats = self.sftp.lstat(path);
+        if let Ok(stats) = stats {
             if !stats.is_dir() {
                 bail!(format!(
                     "Failed to create directory {:?}\' in sftp backend. Path exists, but it is not a directory.",
                     path
-                ));
+                ))
+            } else {
+                Ok(())
             }
+        } else {
+            self.sftp
+                .mkdir(path, 0o755)
+                .with_context(|| format!("Failed to create directory {:?}\' in sftp backend", path))
         }
-
-        if !self.exists(path) {
-            self.sftp.mkdir(path, 0o755).with_context(|| {
-                format!("Failed to create directory {:?}\' in sftp backend", path)
-            })?;
-        }
-
-        Ok(())
     }
 
     fn create_dir_all_exact(&self, path: &Path) -> Result<()> {
@@ -101,7 +101,9 @@ impl SftpBackend {
             }
         }
 
-        self.create_dir_exact(path)
+        self.sftp
+            .mkdir(path, 0o755)
+            .with_context(|| format!("Failed to create directory {:?}\' in sftp backend", path))
     }
 }
 
@@ -178,11 +180,13 @@ impl StorageBackend for SftpBackend {
             .with_context(|| format!("Failed to remove file {:?}\' in sftp backend", file_path))
     }
 
+    #[inline]
     fn create_dir(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
         self.create_dir_exact(&full_path)
     }
 
+    #[inline]
     fn create_dir_all(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
         self.create_dir_all_exact(&full_path)

@@ -14,14 +14,39 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Args;
 
-use crate::cli::GlobalArgs;
+use crate::{
+    cli::{self, GlobalArgs},
+    repository::{self, backend::RepositoryBackend, storage::SecureStorage},
+    storage_backend::backend::new_backend_with_prompt,
+};
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {}
 
-pub fn run(_global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    todo!()
+pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+    let storage_backend = new_backend_with_prompt(&global.repo)?;
+    let repo_password = cli::request_repo_password();
+
+    let key = repository::backend::retrieve_key(repo_password, storage_backend.clone())?;
+    let secure_storage = Arc::new(
+        SecureStorage::build()
+            .with_key(key)
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
+    );
+
+    let repo: Arc<dyn RepositoryBackend> =
+        Arc::from(repository::backend::open(storage_backend, secure_storage)?);
+
+    let snapshots = repo.load_all_snapshots_sorted()?;
+
+    for (id, snapshot) in snapshots {
+        cli::log!("{id}: {snapshot:#?}");
+    }
+
+    Ok(())
 }

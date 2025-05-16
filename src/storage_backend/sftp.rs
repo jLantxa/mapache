@@ -27,11 +27,22 @@ use super::backend::StorageBackend;
 
 pub struct SftpBackend {
     repo_path: PathBuf,
+    username: String,
+    host: String,
+    port: u16,
+
     sftp: Sftp,
 }
 
 impl SftpBackend {
-    pub fn new(repo_path: PathBuf, username: &str, addr: &str, password: &str) -> Result<Self> {
+    pub fn new(
+        repo_path: PathBuf,
+        username: String,
+        host: String,
+        port: u16,
+        password: String,
+    ) -> Result<Self> {
+        let addr = format!("{}:{}", host, port);
         let tcp = TcpStream::connect(addr).with_context(|| "Failed to connect to SFTP server")?;
         let mut session = Session::new().with_context(|| "Failed to create SSH session")?;
         session.set_tcp_stream(tcp);
@@ -39,14 +50,20 @@ impl SftpBackend {
             .handshake()
             .with_context(|| "Failed to perform SSH handshake")?;
         session
-            .userauth_password(username, password)
+            .userauth_password(&username, &password)
             .with_context(|| "Failed to authenticate with password")?;
 
         let sftp = session
             .sftp()
             .with_context(|| "Failed to create SFTP session")?;
 
-        Ok(Self { repo_path, sftp })
+        Ok(Self {
+            repo_path,
+            username,
+            host,
+            port,
+            sftp,
+        })
     }
 
     #[inline]
@@ -240,6 +257,3 @@ impl StorageBackend for SftpBackend {
         }
     }
 }
-
-#[cfg(test)]
-mod test {}

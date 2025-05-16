@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use dialoguer::Password;
@@ -111,10 +112,13 @@ pub fn request_new_password() -> String {
         .unwrap()
 }
 
-/// Requests a password with no confirmation.
-pub fn request_password() -> String {
-    Password::new()
-        .with_prompt("Enter password")
-        .interact()
-        .unwrap()
+/// Requests a repository password without confirmation.
+#[inline]
+pub fn request_repo_password() -> String {
+    request_password("Enter password for repository")
+}
+
+/// Requests a password with a prompt without confirmation.
+pub fn request_password(promt: &str) -> String {
+    Password::new().with_prompt(promt).interact().unwrap()
 }

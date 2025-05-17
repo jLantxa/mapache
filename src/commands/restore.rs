@@ -20,14 +20,14 @@ use anyhow::{Context, Error, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 
 use crate::{
+    backend::new_backend_with_prompt,
     cli::{self, GlobalArgs},
     repository::{
         self,
-        backend::{RepositoryBackend, SnapshotId},
+        repository::{RepositoryBackend, SnapshotId},
         storage::SecureStorage,
         tree::SerializedNodeStreamer,
     },
-    storage_backend::backend::new_backend_with_prompt,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,10 +104,10 @@ pub struct CmdArgs {
 }
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let storage_backend = new_backend_with_prompt(&global.repo)?;
+    let backend = new_backend_with_prompt(&global.repo)?;
     let repo_password = cli::request_repo_password();
 
-    let key = repository::backend::retrieve_key(repo_password, storage_backend.clone())?;
+    let key = repository::repository::retrieve_key(repo_password, backend.clone())?;
     let secure_storage = Arc::new(
         SecureStorage::build()
             .with_key(key)
@@ -115,7 +115,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
 
     let repo: Arc<dyn RepositoryBackend> =
-        Arc::from(repository::backend::open(storage_backend, secure_storage)?);
+        Arc::from(repository::repository::open(backend, secure_storage)?);
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
         RestoreSnapshot::Latest => {

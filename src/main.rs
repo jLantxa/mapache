@@ -15,10 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod archiver;
+pub mod backend;
 pub mod cli;
 pub mod commands;
 pub mod repository;
-pub mod storage_backend;
 pub mod testing;
 pub mod utils;
 

@@ -24,14 +24,14 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
+    backend::StorageBackend,
     repository::storage::SecureStorage,
-    storage_backend::backend::StorageBackend,
     utils::{self, Hash},
 };
 
 use super::{
-    backend::{self, ObjectId, RepoVersion, RepositoryBackend, SnapshotId},
     config::Config,
+    repository::{self, ObjectId, RepoVersion, RepositoryBackend, SnapshotId},
     snapshot::Snapshot,
     tree::{Node, NodeType},
 };
@@ -60,7 +60,7 @@ impl RepositoryBackend for Repository {
         // Init repository structure
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
-        let keys_path = PathBuf::from(backend::KEYS_DIR);
+        let keys_path = PathBuf::from(repository::KEYS_DIR);
 
         // Create the repository root
         backend
@@ -78,7 +78,7 @@ impl RepositoryBackend for Repository {
 
         // Create new key
         let (key, keyfile) =
-            backend::generate_key(&password).with_context(|| "Could not generate key")?;
+            repository::generate_key(&password).with_context(|| "Could not generate key")?;
         let keyfile_json = serde_json::to_string_pretty(&key)?;
         let keyfile_hash = utils::calculate_hash(&keyfile_json);
         let keyfile_path = &keys_path.join(&keyfile_hash);
@@ -279,7 +279,7 @@ mod test {
     use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
-    use crate::{repository::backend::retrieve_key, storage_backend::localfs::LocalFS};
+    use crate::{backend::localfs::LocalFS, repository::repository::retrieve_key};
 
     use super::*;
 
@@ -308,7 +308,7 @@ mod test {
     /// Test generation of master keys
     #[test]
     fn test_generate_key() -> Result<()> {
-        let (key, keyfile) = backend::generate_key("mapachito")?;
+        let (key, keyfile) = repository::generate_key("mapachito")?;
 
         let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;

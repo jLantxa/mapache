@@ -23,7 +23,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use ssh2::{RenameFlags, Session, Sftp};
 
-use super::backend::StorageBackend;
+use super::StorageBackend;
 
 pub struct SftpBackend {
     repo_path: PathBuf,

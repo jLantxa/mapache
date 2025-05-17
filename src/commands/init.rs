@@ -14,14 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-
 use anyhow::Result;
 use clap::Args;
 
+use crate::backend::new_backend_with_prompt;
 use crate::cli::{self, GlobalArgs};
 use crate::repository;
-use crate::repository::backend::{LATEST_REPOSITORY_VERSION, RepoVersion};
-use crate::storage_backend::backend::new_backend_with_prompt;
+use crate::repository::repository::{LATEST_REPOSITORY_VERSION, RepoVersion};
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {
@@ -36,7 +35,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     cli::log!("Initializing a new repository in \'{}\'", &global.repo);
 
-    repository::backend::init_repository_with_version(
+    repository::repository::init_repository_with_version(
         args.repository_version,
         backend,
         repo_password,

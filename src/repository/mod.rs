@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod backend;
+pub mod repository;
 pub mod config;
 pub mod repository_v1;
 pub mod snapshot;

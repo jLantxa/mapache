@@ -21,7 +21,7 @@ use std::{
 
 use anyhow::Result;
 
-use super::backend::StorageBackend;
+use super::StorageBackend;
 
 /// A dummy storage backend that sets itself before another backend, redirecting
 /// reads but ignoring writes.

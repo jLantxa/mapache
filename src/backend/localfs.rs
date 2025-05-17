@@ -21,7 +21,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use super::backend::StorageBackend;
+use super::StorageBackend;
 
 /// A local file system
 #[derive(Default)]

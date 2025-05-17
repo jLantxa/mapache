@@ -26,9 +26,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::cli;
-use crate::{
-    repository::storage::SecureStorage, storage_backend::backend::StorageBackend, utils::Hash,
-};
+use crate::{backend::StorageBackend, repository::storage::SecureStorage, utils::Hash};
 
 use super::config::Config;
 use super::snapshot::Snapshot;
@@ -42,15 +40,12 @@ pub type SnapshotId = Hash;
 
 pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
-    fn init(storage_backend: Arc<dyn StorageBackend>, password: String) -> Result<()>
+    fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()>
     where
         Self: Sized;
 
     /// Open an existing repository from a directory
-    fn open(
-        storage_backend: Arc<dyn StorageBackend>,
-        secure_storage: Arc<SecureStorage>,
-    ) -> Result<Self>
+    fn open(backend: Arc<dyn StorageBackend>, secure_storage: Arc<SecureStorage>) -> Result<Self>
     where
         Self: Sized;
 
@@ -83,32 +78,32 @@ pub trait RepositoryBackend: Sync + Send {
     fn load_all_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
 }
 
-pub fn init(storage_backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {
-    init_repository_with_version(LATEST_REPOSITORY_VERSION, storage_backend, password)
+pub fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {
+    init_repository_with_version(LATEST_REPOSITORY_VERSION, backend, password)
 }
 
 pub fn init_repository_with_version(
     version: RepoVersion,
-    storage_backend: Arc<dyn StorageBackend>,
+    backend: Arc<dyn StorageBackend>,
     password: String,
 ) -> Result<()> {
     if version == 1 {
-        repository_v1::Repository::init(storage_backend, password)
+        repository_v1::Repository::init(backend, password)
     } else {
         bail!("Invalid repository version \'{}\'", version);
     }
 }
 pub fn open(
-    storage_backend: Arc<dyn StorageBackend>,
+    backend: Arc<dyn StorageBackend>,
     secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
-    if !storage_backend.root_exists() {
+    if !backend.root_exists() {
         bail!("Could not open a repository. The path does not exist.");
     }
 
     let config_path = Path::new("config");
 
-    let config = storage_backend
+    let config = backend
         .read(&config_path)
         .with_context(|| "Could not load config file")?;
     let config = secure_storage
@@ -118,17 +113,17 @@ pub fn open(
 
     let version = config.version;
 
-    open_repository_with_version(version, storage_backend, secure_storage)
+    open_repository_with_version(version, backend, secure_storage)
 }
 
 fn open_repository_with_version(
     version: RepoVersion,
-    storage_backend: Arc<dyn StorageBackend>,
+    backend: Arc<dyn StorageBackend>,
 
     secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
     if version == 1 {
-        let repo_v1 = repository_v1::Repository::open(storage_backend, secure_storage)?;
+        let repo_v1 = repository_v1::Repository::open(backend, secure_storage)?;
         return Ok(Box::new(repo_v1));
     }
 
@@ -202,7 +197,7 @@ pub fn retrieve_key(password: String, backend: Arc<dyn StorageBackend>) -> Resul
 mod test {
     use tempfile::tempdir;
 
-    use crate::storage_backend::localfs::LocalFS;
+    use crate::backend::localfs::LocalFS;
 
     use super::*;
 

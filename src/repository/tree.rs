@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::archiver::Archiver;
 
-use super::backend::{ObjectId, RepositoryBackend};
+use super::repository::{ObjectId, RepositoryBackend};
 
 /// Node metadata. This struct is serialized; keep field order stable.
 ///

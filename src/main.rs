@@ -19,8 +19,10 @@ pub mod backend;
 pub mod cli;
 pub mod commands;
 pub mod repository;
-pub mod testing;
 pub mod utils;
+
+#[cfg(test)]
+pub mod testing;
 
 use anyhow::Result;
 use clap::Parser;

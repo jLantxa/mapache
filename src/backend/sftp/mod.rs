@@ -14,24 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod sftp_pool;
+
 use std::{
     io::{Read, Seek, SeekFrom, Write},
-    net::TcpStream,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
-use ssh2::{RenameFlags, Session, Sftp};
+use sftp_pool::{SftpConnectionPool, SftpSessionClient};
+use ssh2::RenameFlags;
 
 use super::StorageBackend;
 
 pub struct SftpBackend {
     repo_path: PathBuf,
-    _username: String,
-    _host: String,
-    _port: u16,
-
-    sftp: Sftp,
+    pool: SftpConnectionPool,
 }
 
 impl SftpBackend {
@@ -43,27 +42,21 @@ impl SftpBackend {
         password: String,
     ) -> Result<Self> {
         let addr = format!("{}:{}", host, port);
-        let tcp = TcpStream::connect(addr).with_context(|| "Failed to connect to SFTP server")?;
-        let mut session = Session::new().with_context(|| "Failed to create SSH session")?;
-        session.set_tcp_stream(tcp);
-        session
-            .handshake()
-            .with_context(|| "Failed to perform SSH handshake")?;
-        session
-            .userauth_password(&username, &password)
-            .with_context(|| "Failed to authenticate with password")?;
 
-        let sftp = session
-            .sftp()
-            .with_context(|| "Failed to create SFTP session")?;
+        const MAX_SFTP_CONNECTIONS: usize = 5;
+        const CONNECTION_TIMEOUT_SECONDS: u64 = 5;
+        const CONNECTION_IDLE_SECONDS: u64 = 10;
 
-        Ok(Self {
-            repo_path,
-            _username: username,
-            _host: host,
-            _port: port,
-            sftp,
-        })
+        let pool = SftpConnectionPool::new(
+            addr,
+            username,
+            password,
+            MAX_SFTP_CONNECTIONS,
+            CONNECTION_TIMEOUT_SECONDS,
+            CONNECTION_IDLE_SECONDS,
+        );
+
+        Ok(Self { repo_path, pool })
     }
 
     #[inline]
@@ -71,15 +64,17 @@ impl SftpBackend {
         self.repo_path.join(path)
     }
 
-    fn exists_exact(&self, path: &Path) -> bool {
-        match self.sftp.lstat(&path) {
+    fn exists_exact(&self, path: &Path, sftp_client: &Arc<SftpSessionClient>) -> bool {
+        match sftp_client.sftp().lstat(&path) {
             Ok(_) => true,
             Err(_) => false,
         }
     }
 
-    fn create_dir_exact(&self, path: &Path) -> Result<()> {
-        let stats = self.sftp.lstat(path);
+    fn create_dir_exact(&self, path: &Path, sftp_client: &Arc<SftpSessionClient>) -> Result<()> {
+        let sftp = sftp_client.sftp();
+
+        let stats = sftp.lstat(path);
         if let Ok(stats) = stats {
             if !stats.is_dir() {
                 bail!(format!(
@@ -90,16 +85,17 @@ impl SftpBackend {
                 Ok(())
             }
         } else {
-            self.sftp
-                .mkdir(path, 0o755)
+            sftp.mkdir(path, 0o755)
                 .with_context(|| format!("Failed to create directory {:?}\' in sftp backend", path))
         }
     }
 
     fn create_dir_all_exact(&self, path: &Path) -> Result<()> {
-        if self.exists_exact(path) {
-            let metadata = self
-                .sftp
+        let sftp_client = Arc::new(self.pool.get()?);
+        let sftp = sftp_client.sftp();
+
+        if self.exists_exact(path, &sftp_client) {
+            let metadata = sftp
                 .stat(path)
                 .with_context(|| format!("Failed to get metadata for path: {:?}", path))?;
             if metadata.is_dir() {
@@ -118,8 +114,7 @@ impl SftpBackend {
             }
         }
 
-        self.sftp
-            .mkdir(path, 0o755)
+        sftp.mkdir(path, 0o755)
             .with_context(|| format!("Failed to create directory {:?}\' in sftp backend", path))
     }
 }
@@ -130,12 +125,18 @@ impl StorageBackend for SftpBackend {
     }
 
     fn root_exists(&self) -> bool {
-        self.exists_exact(&self.repo_path)
+        match self.pool.get() {
+            Ok(sftp_client) => self.exists_exact(&self.repo_path, &Arc::new(sftp_client)),
+            Err(_) => false,
+        }
     }
 
     fn read(&self, path: &Path) -> Result<Vec<u8>> {
+        let sftp_client = self.pool.get()?;
+        let sftp = sftp_client.sftp();
+
         let full_path = self.full_path(path);
-        let mut file = self.sftp.open(full_path).with_context(|| {
+        let mut file = sftp.open(full_path).with_context(|| {
             format!(
                 "Failed to open file {:?}\' in sftp backend for reading",
                 path
@@ -148,8 +149,11 @@ impl StorageBackend for SftpBackend {
     }
 
     fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
+        let sftp_client = self.pool.get()?;
+        let sftp = sftp_client.sftp();
+
         let full_path = self.full_path(path);
-        let mut file = self.sftp.open(full_path).with_context(|| {
+        let mut file = sftp.open(full_path).with_context(|| {
             format!(
                 "Failed to open file {:?}\' in sftp backend for ranged reading",
                 path
@@ -163,9 +167,11 @@ impl StorageBackend for SftpBackend {
     }
 
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
+        let sftp_client = self.pool.get()?;
+        let sftp = sftp_client.sftp();
+
         let full_path = self.full_path(path);
-        let mut file = self
-            .sftp
+        let mut file = sftp
             .create(&full_path)
             .context(format!("Failed to create file for writing: {:?}", path))?;
         file.write_all(contents)
@@ -174,33 +180,39 @@ impl StorageBackend for SftpBackend {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        let sftp_client = self.pool.get()?;
+        let sftp = sftp_client.sftp();
+
         let full_path_from = self.full_path(from);
         let full_path_from_to = self.full_path(to);
-        self.sftp
-            .rename(
-                &full_path_from,
-                &full_path_from_to,
-                Some(RenameFlags::all()),
+        sftp.rename(
+            &full_path_from,
+            &full_path_from_to,
+            Some(RenameFlags::all()),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to rename {:?}\' to {:?}\' in sftp backend",
+                from, to
             )
-            .with_context(|| {
-                format!(
-                    "Failed to rename {:?}\' to {:?}\' in sftp backend",
-                    from, to
-                )
-            })
+        })
     }
 
     fn remove_file(&self, file_path: &Path) -> Result<()> {
+        let sftp_client = self.pool.get()?;
+        let sftp = sftp_client.sftp();
+
         let full_path = self.full_path(file_path);
-        self.sftp
-            .unlink(&full_path)
+        sftp.unlink(&full_path)
             .with_context(|| format!("Failed to remove file {:?}\' in sftp backend", file_path))
     }
 
     #[inline]
     fn create_dir(&self, path: &Path) -> Result<()> {
+        let sftp_client = Arc::new(self.pool.get()?);
+
         let full_path = self.full_path(path);
-        self.create_dir_exact(&full_path)
+        self.create_dir_exact(&full_path, &sftp_client)
     }
 
     #[inline]
@@ -210,10 +222,12 @@ impl StorageBackend for SftpBackend {
     }
 
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        let sftp_client = self.pool.get()?;
+        let sftp = sftp_client.sftp();
+
         let full_path = self.full_path(path);
 
-        let entries = self
-            .sftp
+        let entries = sftp
             .readdir(full_path)
             .with_context(|| format!("Could not list directory {:?}\' in sftp backend", path))?;
 
@@ -224,9 +238,11 @@ impl StorageBackend for SftpBackend {
     }
 
     fn remove_dir(&self, path: &Path) -> Result<()> {
+        let sftp_client = self.pool.get()?;
+        let sftp = sftp_client.sftp();
+
         let full_path = self.full_path(path);
-        self.sftp
-            .rmdir(&full_path)
+        sftp.rmdir(&full_path)
             .with_context(|| format!("Failed to remove dir {:?}\' in sftp backend", path))
     }
 
@@ -235,24 +251,43 @@ impl StorageBackend for SftpBackend {
     }
 
     fn exists(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
-        self.exists_exact(&full_path)
+        match self.pool.get() {
+            Ok(sftp_client) => {
+                let full_path = self.full_path(path);
+                self.exists_exact(&full_path, &Arc::new(sftp_client))
+            }
+            Err(_) => false,
+        }
     }
 
     fn is_file(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
-        let stat_res = self.sftp.lstat(&full_path);
+        match self.pool.get() {
+            Ok(sftp_client) => {
+                let full_path = self.full_path(path);
+                let sftp = sftp_client.sftp();
+                let stat_res = sftp.lstat(&full_path);
 
-        match stat_res {
-            Ok(stat) => stat.is_file(),
+                match stat_res {
+                    Ok(stat) => stat.is_file(),
+                    Err(_) => false,
+                }
+            }
             Err(_) => false,
         }
     }
 
     fn is_dir(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
-        match self.sftp.lstat(&full_path) {
-            Ok(stat) => stat.is_dir(),
+        match self.pool.get() {
+            Ok(sftp_client) => {
+                let full_path = self.full_path(path);
+                let sftp = sftp_client.sftp();
+                let stat_res = sftp.lstat(&full_path);
+
+                match stat_res {
+                    Ok(stat) => stat.is_dir(),
+                    Err(_) => false,
+                }
+            }
             Err(_) => false,
         }
     }

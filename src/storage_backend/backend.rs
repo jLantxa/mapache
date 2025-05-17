@@ -1,13 +1,14 @@
 use std::{
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 
-use crate::cli;
+use crate::{cli, utils::url::Url};
 
-use super::{dry::DryBackend, localfs::LocalFS, sftp::SftpBackend, url::BackendUrl};
+use super::{dry::DryBackend, localfs::LocalFS, sftp::SftpBackend};
 
 /// Abstraction of a storage backend.
 ///
@@ -81,5 +82,134 @@ pub fn new_backend_with_prompt(url: &str) -> Result<Arc<dyn StorageBackend>> {
                 repo_path, username, host, port, password,
             )?))
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendUrl {
+    Local(PathBuf),
+    Sftp(String, String, u16, PathBuf), // (user, host, port, path)
+}
+
+impl BackendUrl {
+    /// Parses a URL string into a `BackendUrl` variant.
+    pub fn from(url_str: &str) -> Result<Self> {
+        if !url_str.contains("://") {
+            return Ok(BackendUrl::Local(PathBuf::from(url_str)));
+        }
+
+        let parsed_url = Url::from_str(url_str)?;
+
+        match parsed_url.scheme.as_str() {
+            "sftp" => {
+                let user = parsed_url.username.to_string();
+
+                let host = parsed_url
+                    .host
+                    .ok_or_else(|| anyhow!("SFTP URL '{}' requires a host", url_str))?
+                    .to_string();
+
+                let port = parsed_url.port.unwrap_or(22);
+
+                let path_str: &str = &parsed_url.path.join("/");
+                let path_buf = PathBuf::from(path_str);
+
+                Ok(BackendUrl::Sftp(user, host, port, path_buf))
+            }
+            _ => {
+                bail!(
+                    "Unsupported URL scheme: '{}' for URL '{}'",
+                    parsed_url.scheme,
+                    url_str
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_local_path() {
+        assert_eq!(
+            BackendUrl::from("/home/target").unwrap(),
+            BackendUrl::Local(PathBuf::from("/home/target"))
+        );
+        assert_eq!(
+            BackendUrl::from("base/dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("base/dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("dir/").unwrap(),
+            BackendUrl::Local(PathBuf::from("dir/"))
+        );
+        assert_eq!(
+            BackendUrl::from("./dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("./dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("./dir/").unwrap(),
+            BackendUrl::Local(PathBuf::from("./dir/"))
+        );
+        assert_eq!(
+            BackendUrl::from(".").unwrap(),
+            BackendUrl::Local(PathBuf::from("."))
+        );
+    }
+
+    #[test]
+    fn test_sftp_path() -> Result<()> {
+        let user = String::from("user");
+        let host = String::from("host");
+
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22//home/target")?,
+            BackendUrl::Sftp(
+                user.clone(),
+                host.clone(),
+                22,
+                PathBuf::from("/home/target")
+            )
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/base/dir")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("base/dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/dir")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/dir/")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir/"))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/./dir")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/./dir/")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from(""))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from(""))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22//")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("/"))
+        );
+
+        Ok(())
     }
 }

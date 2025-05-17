@@ -18,4 +18,3 @@ pub mod backend;
 pub mod dry;
 pub mod localfs;
 pub mod sftp;
-pub mod url;

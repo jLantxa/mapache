@@ -27,9 +27,9 @@ use super::backend::StorageBackend;
 
 pub struct SftpBackend {
     repo_path: PathBuf,
-    username: String,
-    host: String,
-    port: u16,
+    _username: String,
+    _host: String,
+    _port: u16,
 
     sftp: Sftp,
 }
@@ -59,9 +59,9 @@ impl SftpBackend {
 
         Ok(Self {
             repo_path,
-            username,
-            host,
-            port,
+            _username: username,
+            _host: host,
+            _port: port,
             sftp,
         })
     }

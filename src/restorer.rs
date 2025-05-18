@@ -19,7 +19,7 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 use anyhow::{Context, Result};
 
 use crate::repository::{
-    repository::RepositoryBackend,
+    RepositoryBackend,
     storage::SecureStorage,
     tree::{Node, NodeType},
 };

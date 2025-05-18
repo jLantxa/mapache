@@ -23,14 +23,14 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     backend::StorageBackend,
-    repository::storage::SecureStorage,
+    repository::{self, storage::SecureStorage},
     utils::{self, Hash},
 };
 
 use super::{
     config::Config,
-    repository::{self, ObjectId, RepoVersion, RepositoryBackend, SnapshotId},
     snapshot::Snapshot,
+    {ObjectId, RepoVersion, RepositoryBackend, SnapshotId},
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -220,7 +220,10 @@ mod test {
     use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
-    use crate::{backend::localfs::LocalFS, repository::repository::retrieve_key};
+    use crate::{
+        backend::localfs::LocalFS,
+        repository::{self, retrieve_key},
+    };
 
     use super::*;
 

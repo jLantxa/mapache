@@ -18,9 +18,11 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::backend::new_backend_with_prompt;
-use crate::cli::{self, GlobalArgs};
+use crate::cli::{self};
 use crate::repository;
-use crate::repository::repository::{LATEST_REPOSITORY_VERSION, RepoVersion};
+use crate::repository::{LATEST_REPOSITORY_VERSION, RepoVersion};
+
+use super::GlobalArgs;
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {
@@ -35,11 +37,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     cli::log!("Initializing a new repository in \'{}\'", &global.repo);
 
-    repository::repository::init_repository_with_version(
-        args.repository_version,
-        backend,
-        repo_password,
-    )?;
+    repository::init_repository_with_version(args.repository_version, backend, repo_password)?;
 
     Ok(())
 }

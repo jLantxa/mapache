@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::repository::SnapshotId;
+use super::SnapshotId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {

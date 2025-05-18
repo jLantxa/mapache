@@ -37,9 +37,9 @@ use super::{
 
 /// Node metadata. This struct is serialized; keep field order stable.
 ///
-/// We ignore the accessed time. This field changed everytime we analyze a file for commit,
+/// We ignore the accessed time. This field changes everytime we analyze a file for commit,
 /// altering the hash of the node. The accessed time will be updated after restoring the
-///  file anyway. We don't include it.
+/// file anyway. We don't include it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Metadata {
     /// Size in bytes

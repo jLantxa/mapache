@@ -68,12 +68,12 @@ Incremental backup tool
 Usage: backup --repo <REPO> <COMMAND>
 
 Commands:
-  init     Initialize a new repository
-  log      Show all snapshots present in the repository
-  commit   Create a new snapshot
-  restore  Restores a snapshot
-  cat      Prints repository objects
-  help     Print this message or the help of the given subcommand(s)
+  init      Initialize a new repository
+  log       Show all snapshots present in the repository
+  snapshot  Create a new snapshot
+  restore   Restores a snapshot
+  cat       Prints repository objects
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
   -r, --repo <REPO>  Repository path
@@ -81,10 +81,10 @@ Options:
   -V, --version      Print version
 ```
 
-Each command is independent. For example, if you want to know what options are available for the `commit` command, you can do:
+Each command is independent. For example, if you want to know what options are available for the `snapshot` command, you can do:
 
 ```
-backup commit -h
+backup snapshot -h
 ```
 
 and you will be shown the help for that command:
@@ -92,7 +92,7 @@ and you will be shown the help for that command:
 ```
 Create a new snapshot
 
-Usage: backup --repo <REPO> commit [OPTIONS] <PATHS>...
+Usage: backup --repo <REPO> snapshot [OPTIONS] <PATHS>...
 
 Arguments:
   <PATHS>...  List of paths to commit

@@ -17,10 +17,10 @@
 use clap::{Parser, Subcommand};
 
 pub mod cat;
-pub mod commit;
 pub mod init;
 pub mod log;
 pub mod restore;
+pub mod snapshot;
 
 // CLI arguments
 #[derive(Parser, Debug)]
@@ -48,7 +48,7 @@ pub enum Command {
     Log(log::CmdArgs),
 
     #[clap(about = "Create a new snapshot")]
-    Commit(commit::CmdArgs),
+    Snapshot(snapshot::CmdArgs),
 
     #[clap(about = "Restores a snapshot")]
     Restore(restore::CmdArgs),

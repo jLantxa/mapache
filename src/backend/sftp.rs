@@ -28,7 +28,7 @@ use super::StorageBackend;
 
 pub struct SftpBackend {
     repo_path: PathBuf,
-    session: Session,
+    _session: Session,
     read_sftp: Arc<Mutex<Sftp>>,
     write_sftp: Arc<Mutex<Sftp>>,
 }
@@ -69,7 +69,7 @@ impl SftpBackend {
 
         Ok(Self {
             repo_path,
-            session,
+            _session: session,
             read_sftp,
             write_sftp,
         })

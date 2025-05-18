@@ -26,7 +26,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::Utc;
+use chrono::Local;
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
@@ -348,7 +348,7 @@ impl Committer {
             // snapshot with the root tree id.
             match final_root_tree_id {
                 Some(tree_id) => Ok(Snapshot {
-                    timestamp: Utc::now(),
+                    timestamp: Local::now(),
                     tree: tree_id.clone(),
                     paths: absolute_source_paths,
                     description: None,

@@ -18,19 +18,24 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Args;
+use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
     cli,
-    repository::{self, RepositoryBackend, storage::SecureStorage},
+    repository::{self, RepositoryBackend, SnapshotId, snapshot::Snapshot, storage::SecureStorage},
 };
 
 use super::GlobalArgs;
 
 #[derive(Args, Debug)]
-pub struct CmdArgs {}
+pub struct CmdArgs {
+    /// Show a compact list of snapshots
+    #[arg(short, long)]
+    pub compact: bool,
+}
 
-pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
     let repo_password = cli::request_repo_password();
 
@@ -45,9 +50,64 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
     let snapshots = repo.load_all_snapshots_sorted()?;
 
-    for (id, snapshot) in snapshots {
-        cli::log!("{id}: {snapshot:#?}");
+    println!();
+    if args.compact {
+        log_compact(&snapshots);
+    } else {
+        log(&snapshots);
     }
+    println!();
+    println!("{} snapshots", snapshots.len());
 
     Ok(())
+}
+
+fn log(snapshots: &Vec<(SnapshotId, Snapshot)>) {
+    let mut peekable_snapshots = snapshots.iter().peekable();
+
+    while let Some((id, snapshot)) = peekable_snapshots.next() {
+        println!("{}", id.bold().yellow());
+        println!(
+            "{} {}",
+            "Date:".bold(),
+            snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z")
+        );
+
+        println!();
+        println!("{}", "Paths:".bold());
+        for path in &snapshot.paths {
+            println!("{}", path.display());
+        }
+
+        if let Some(description) = &snapshot.description {
+            println!();
+            println!("{}", "Description:".bold().cyan());
+            println!("{}", description);
+        }
+
+        if peekable_snapshots.peek().is_some() {
+            println!();
+        }
+    }
+}
+
+fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {
+    const ABBR_ID_LEN: usize = 12;
+
+    let mut peekable_snapshots = snapshots.iter().peekable();
+
+    println!("{0: <ABBR_ID_LEN$}  {1: <26}", "ID".bold(), "Date".bold());
+    print_separator('-', ABBR_ID_LEN + 2 + 26);
+    while let Some((id, snapshot)) = peekable_snapshots.next() {
+        println!(
+            "{0: <ABBR_ID_LEN$}  {1: <26}",
+            &id[0..ABBR_ID_LEN].bold().yellow(),
+            snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z")
+        );
+    }
+}
+
+fn print_separator(character: char, count: usize) {
+    let repeated_string: String = std::iter::repeat(character).take(count).collect();
+    println!("{}", repeated_string);
 }

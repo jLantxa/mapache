@@ -21,9 +21,11 @@ use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
-    cli::{self, GlobalArgs},
-    repository::{self, repository::RepositoryBackend, storage::SecureStorage},
+    cli,
+    repository::{self, RepositoryBackend, storage::SecureStorage},
 };
+
+use super::GlobalArgs;
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {}
@@ -32,15 +34,14 @@ pub fn run(global: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
     let repo_password = cli::request_repo_password();
 
-    let key = repository::repository::retrieve_key(repo_password, backend.clone())?;
+    let key = repository::retrieve_key(repo_password, backend.clone())?;
     let secure_storage = Arc::new(
         SecureStorage::build()
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );
 
-    let repo: Arc<dyn RepositoryBackend> =
-        Arc::from(repository::repository::open(backend, secure_storage)?);
+    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::open(backend, secure_storage)?);
 
     let snapshots = repo.load_all_snapshots_sorted()?;
 

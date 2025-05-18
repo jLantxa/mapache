@@ -14,51 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-
-use clap::{Parser, Subcommand};
 use colored::Colorize;
 use dialoguer::Password;
-
-use crate::commands;
-
-// CLI arguments
-#[derive(Parser, Debug)]
-#[clap(
-    version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
-    about = "Incremental backup tool"
-)]
-pub struct Cli {
-    // Subcommand
-    #[command(subcommand)]
-    pub command: Command,
-
-    // Global arguments
-    #[clap(flatten)]
-    pub global_args: GlobalArgs,
-}
-
-// List of commands
-#[derive(Subcommand, Debug)]
-pub enum Command {
-    #[clap(about = "Initialize a new repository")]
-    Init(commands::init::CmdArgs),
-
-    #[clap(about = "Show all snapshots present in the repository")]
-    Log(commands::log::CmdArgs),
-
-    #[clap(about = "Create a new snapshot")]
-    Commit(commands::commit::CmdArgs),
-
-    #[clap(about = "Restores a snapshot")]
-    Restore(commands::restore::CmdArgs),
-}
-
-#[derive(Parser, Debug)]
-pub struct GlobalArgs {
-    /// Repository path
-    #[clap(short, long, value_parser)]
-    pub repo: String,
-}
 
 #[macro_export]
 macro_rules! log {

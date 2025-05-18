@@ -23,15 +23,17 @@ use colored::Colorize;
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
-    cli::{self, GlobalArgs},
+    cli::{self},
     repository::{
         self,
-        repository::{RepositoryBackend, SnapshotId},
         storage::SecureStorage,
         tree::FSNodeStreamer,
+        {RepositoryBackend, SnapshotId},
     },
     utils,
 };
+
+use super::GlobalArgs;
 
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
@@ -64,17 +66,15 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let key = repository::repository::retrieve_key(repo_password, backend.clone())?;
+    let key = repository::retrieve_key(repo_password, backend.clone())?;
     let secure_storage = Arc::new(
         SecureStorage::build()
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );
 
-    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::repository::open(
-        backend,
-        secure_storage.clone(),
-    )?);
+    let repo: Arc<dyn RepositoryBackend> =
+        Arc::from(repository::open(backend, secure_storage.clone())?);
 
     let source_paths = &args.paths;
 

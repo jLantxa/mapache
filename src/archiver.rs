@@ -32,13 +32,13 @@ use fastcdc::v2020::{Normalization, StreamCDC};
 use crate::{
     cli,
     repository::{
-        repository::{ObjectId, RepositoryBackend},
         snapshot::Snapshot,
         storage::SecureStorage,
         tree::{
             FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, NodeType, SerializedNodeStreamer,
             StreamNode, Tree,
         },
+        {ObjectId, RepositoryBackend},
     },
     utils::{self, Hash, size},
 };
@@ -658,8 +658,7 @@ mod test {
     use crate::{
         backend::localfs::LocalFS,
         repository::{
-            repository::retrieve_key, repository_v1::Repository, storage::SecureStorage,
-            tree::FSNodeStreamer,
+            repository_v1::Repository, retrieve_key, storage::SecureStorage, tree::FSNodeStreamer,
         },
         restorer, testing,
     };

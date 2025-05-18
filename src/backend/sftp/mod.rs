@@ -19,7 +19,6 @@ pub mod sftp_pool;
 use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
@@ -64,21 +63,23 @@ impl SftpBackend {
         self.repo_path.join(path)
     }
 
-    fn exists_exact(&self, path: &Path, sftp_client: &Arc<SftpSessionClient>) -> bool {
-        match sftp_client.sftp().lstat(&path) {
+    // Change from &Arc<SftpSessionClient> to &SftpSessionClient
+    fn exists_exact(&self, path: &Path, sftp_client: &SftpSessionClient) -> bool {
+        match sftp_client.sftp().lstat(path) {
             Ok(_) => true,
             Err(_) => false,
         }
     }
 
-    fn create_dir_exact(&self, path: &Path, sftp_client: &Arc<SftpSessionClient>) -> Result<()> {
+    // Change from &Arc<SftpSessionClient> to &SftpSessionClient
+    fn create_dir_exact(&self, path: &Path, sftp_client: &SftpSessionClient) -> Result<()> {
         let sftp = sftp_client.sftp();
 
         let stats = sftp.lstat(path);
         if let Ok(stats) = stats {
             if !stats.is_dir() {
                 bail!(format!(
-                    "Failed to create directory {:?}\' in sftp backend. Path exists, but it is not a directory.",
+                    "Failed to create directory {:?}' in sftp backend. Path exists, but it is not a directory.",
                     path
                 ))
             } else {
@@ -86,15 +87,17 @@ impl SftpBackend {
             }
         } else {
             sftp.mkdir(path, 0o755)
-                .with_context(|| format!("Failed to create directory {:?}\' in sftp backend", path))
+                .with_context(|| format!("Failed to create directory {:?}' in sftp backend", path))
         }
     }
 
-    fn create_dir_all_exact(&self, path: &Path) -> Result<()> {
-        let sftp_client = Arc::new(self.pool.get()?);
+    // Recursive helper for create_dir_all
+    fn create_dir_all_internal(&self, path: &Path, sftp_client: &SftpSessionClient) -> Result<()> {
         let sftp = sftp_client.sftp();
 
-        if self.exists_exact(path, &sftp_client) {
+        // Check if path exists using the passed client
+        if self.exists_exact(path, sftp_client) {
+            // Now takes &SftpSessionClient
             let metadata = sftp
                 .stat(path)
                 .with_context(|| format!("Failed to get metadata for path: {:?}", path))?;
@@ -108,25 +111,29 @@ impl SftpBackend {
             }
         }
 
+        // Recursively create parent directories using the same client
         if let Some(parent) = path.parent() {
             if parent != Path::new("") {
-                self.create_dir_all_exact(parent)?;
+                self.create_dir_all_internal(parent, sftp_client)?; // Recursive call with same client
             }
         }
 
+        // Create the current directory
         sftp.mkdir(path, 0o755)
-            .with_context(|| format!("Failed to create directory {:?}\' in sftp backend", path))
+            .with_context(|| format!("Failed to create directory {:?}' in sftp backend", path))
     }
 }
 
 impl StorageBackend for SftpBackend {
     fn create(&self) -> Result<()> {
-        self.create_dir_all_exact(&self.repo_path)
+        // Acquire connection once for the entire root creation
+        let sftp_client = self.pool.get()?;
+        self.create_dir_all_internal(&self.repo_path, &sftp_client)
     }
 
     fn root_exists(&self) -> bool {
         match self.pool.get() {
-            Ok(sftp_client) => self.exists_exact(&self.repo_path, &Arc::new(sftp_client)),
+            Ok(sftp_client) => self.exists_exact(&self.repo_path, &sftp_client),
             Err(_) => false,
         }
     }
@@ -207,18 +214,18 @@ impl StorageBackend for SftpBackend {
             .with_context(|| format!("Failed to remove file {:?}\' in sftp backend", file_path))
     }
 
-    #[inline]
     fn create_dir(&self, path: &Path) -> Result<()> {
-        let sftp_client = Arc::new(self.pool.get()?);
-
+        let sftp_client = self.pool.get()?; // Acquire once
         let full_path = self.full_path(path);
-        self.create_dir_exact(&full_path, &sftp_client)
+
+        self.create_dir_exact(&full_path, &sftp_client) // Pass the client
     }
 
     #[inline]
     fn create_dir_all(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
-        self.create_dir_all_exact(&full_path)
+        let sftp_client = self.pool.get()?; // Acquire connection once for the entire operation
+        self.create_dir_all_internal(&full_path, &sftp_client) // Pass the client
     }
 
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
@@ -254,7 +261,7 @@ impl StorageBackend for SftpBackend {
         match self.pool.get() {
             Ok(sftp_client) => {
                 let full_path = self.full_path(path);
-                self.exists_exact(&full_path, &Arc::new(sftp_client))
+                self.exists_exact(&full_path, &sftp_client)
             }
             Err(_) => false,
         }

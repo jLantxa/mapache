@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use ssh2::{Session, Sftp};
 use std::collections::VecDeque;
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -102,22 +103,23 @@ impl SftpConnectionPool {
                 // If the connection has been idle for too long, close it
                 if pooled_conn.last_used.elapsed() > self.idle_timeout {
                     state_guard.num_established -= 1;
-                    continue; // Try the next connection in the queue
+                    continue;
                 }
 
                 // Perform a lightweight check (ping) to see if the connection is still alive.
                 // This adds latency but helps avoid using dead connections.
                 // An alternative is to skip this and rely on the actual operation failing.
-                if let Err(e) = pooled_conn.sftp.stat(std::path::Path::new(".")) {
-                    cli::log_warning(&format!(
-                        "Pooled connection health check failed: {}. Closing and trying next.",
-                        e
-                    ));
-                    state_guard.num_established -= 1;
-                    continue; // Try the next connection in the queue
+                if pooled_conn.last_used.elapsed() > Duration::from_secs(5) {
+                    if let Err(e) = pooled_conn.sftp.stat(Path::new(".")) {
+                        cli::log_warning(&format!(
+                            "Pooled connection health check failed: {}. Closing and trying next.",
+                            e
+                        ));
+                        state_guard.num_established -= 1;
+                        continue;
+                    }
                 }
 
-                // Connection is valid and not idle, update its last used time and return it
                 pooled_conn.last_used = Instant::now();
                 return Ok(SftpSessionClient {
                     session: pooled_conn.session,
@@ -127,24 +129,20 @@ impl SftpConnectionPool {
             }
 
             if state_guard.num_established < self.max_connections {
-                drop(state_guard); // Release the Mutex to avoid blocking connection creation
+                drop(state_guard);
 
-                // Create the connection outside the mutex
                 let (session, sftp) =
                     match create_new_sftp_connection(&self.addr, &self.username, &self.password) {
                         Ok(conn) => conn,
                         Err(e) => {
-                            // If creation fails, just return the error.
-                            // num_established was NOT incremented, so no need to decrement.
                             return Err(e)
                                 .with_context(|| "Failed to create new SFTP connection for pool");
                         }
                     };
 
-                // Connection successfully created. Acquire mutex again to update state.
-                let (lock, _) = &*self.state_and_cvar; // Re-acquire lock
+                let (lock, _) = &*self.state_and_cvar;
                 let mut state_guard = lock.lock().unwrap();
-                state_guard.num_established += 1; // INCREMENT count *after* successful creation
+                state_guard.num_established += 1;
 
                 return Ok(SftpSessionClient {
                     session,
@@ -153,18 +151,16 @@ impl SftpConnectionPool {
                 });
             }
 
-            // 3. If the pool is full and no valid connections were found, wait for one to be returned
             let (new_guard, wait_timeout_result) = cvar
                 .wait_timeout(state_guard, self.connection_timeout)
-                .unwrap(); // wait_timeout returns a tuple of the unlocked MutexGuard and a TimeoutResult
-            state_guard = new_guard; // Re-acquire the MutexGuard
+                .unwrap();
+            state_guard = new_guard;
 
             if wait_timeout_result.timed_out() {
                 return Err(anyhow::anyhow!(
                     "Timeout waiting for SFTP connection from pool"
                 ));
             }
-            // If not timed out, the loop continues to try getting/creating a connection again.
         }
     }
 

@@ -71,8 +71,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );
 
-    let repo: Arc<dyn RepositoryBackend> =
-        Arc::from(repository::repository::open(backend, secure_storage)?);
+    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::repository::open(
+        backend,
+        secure_storage.clone(),
+    )?);
 
     let source_paths = &args.paths;
 
@@ -109,8 +111,13 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::format_size(total_bytes)
     );
 
-    let mut new_snapshot =
-        Archiver::snapshot(repo.clone(), source_paths, parent_snapshot, args.full_scan)?;
+    let mut new_snapshot = Archiver::snapshot(
+        repo.clone(),
+        secure_storage.clone(),
+        source_paths,
+        parent_snapshot,
+        args.full_scan,
+    )?;
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());

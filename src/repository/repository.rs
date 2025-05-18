@@ -29,8 +29,8 @@ use crate::cli;
 use crate::{backend::StorageBackend, repository::storage::SecureStorage, utils::Hash};
 
 use super::config::Config;
+use super::repository_v1;
 use super::snapshot::Snapshot;
-use super::{repository_v1, tree};
 
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
@@ -49,21 +49,14 @@ pub trait RepositoryBackend: Sync + Send {
     where
         Self: Sized;
 
-    /// Restores a node in the local filesystem
-    fn restore_node(&self, file: &tree::Node, dst_path: &Path) -> Result<()>;
-
-    /// Saves a binary object in the repository and encodes (compress + encrypt) the content.
-    /// The hash is calculated on the raw data before encoding.
-    fn save_object(&self, data: &[u8]) -> Result<(usize, ObjectId)>;
-
-    /// Saves a binary object in the repository without using the SecureStorage.
-    fn save_object_raw(&self, data: &[u8]) -> Result<(usize, ObjectId)>;
+    /// Saves a binary object in the repository.
+    fn save_object(&self, data: Vec<u8>) -> Result<(usize, ObjectId)>;
 
     /// Loads a binary object from the repository
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>>;
 
-    /// Loads a binary object from the repository without using the SecureStorage.
-    fn load_object_raw(&self, id: &ObjectId) -> Result<Vec<u8>>;
+    /// Loads a segment of a binary object from the repository using offset and length
+    fn load_from_object(&self, id: &ObjectId, offset: u64, length: u64) -> Result<Vec<u8>>;
 
     /// Saves a snapshot metadata
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;

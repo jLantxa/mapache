@@ -30,7 +30,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::archiver::Archiver;
 
-use super::repository::{ObjectId, RepositoryBackend};
+use super::{
+    repository::{ObjectId, RepositoryBackend},
+    storage::SecureStorage,
+};
 
 /// Node metadata. This struct is serialized; keep field order stable.
 ///
@@ -253,15 +256,20 @@ impl Iterator for FSNodeStreamer {
 
 pub struct SerializedNodeStreamer {
     repo: Arc<dyn RepositoryBackend>,
+    secure_storage: Arc<SecureStorage>,
     stack: Vec<StreamNodeInfo>,
 }
 
 impl SerializedNodeStreamer {
-    pub fn new(repo: Arc<dyn RepositoryBackend>, root_id: Option<ObjectId>) -> Self {
+    pub fn new(
+        repo: Arc<dyn RepositoryBackend>,
+        secure_storage: Arc<SecureStorage>,
+        root_id: Option<ObjectId>,
+    ) -> Self {
         let mut stack = Vec::new();
 
         match root_id {
-            Some(id) => match Archiver::load_tree(repo.as_ref(), &id) {
+            Some(id) => match Archiver::load_tree(repo.as_ref(), secure_storage.as_ref(), &id) {
                 Ok(tree) => {
                     // Load root tree and push its children to the stack in reverse order
                     let num_children = tree.nodes.len();
@@ -280,7 +288,11 @@ impl SerializedNodeStreamer {
             None => (),
         }
 
-        Self { repo, stack }
+        Self {
+            repo,
+            secure_storage,
+            stack,
+        }
     }
 }
 
@@ -295,7 +307,11 @@ impl Iterator for SerializedNodeStreamer {
 
             // If it’s a subtree, push its children *under* current_path
             if let Some(subtree_id) = &stream_node.node.tree {
-                let subtree = Archiver::load_tree(self.repo.as_ref(), subtree_id)?;
+                let subtree = Archiver::load_tree(
+                    self.repo.as_ref(),
+                    self.secure_storage.as_ref(),
+                    subtree_id,
+                )?;
                 let num_children = subtree.nodes.len();
                 for subnode in subtree.nodes.iter().rev() {
                     self.stack.push((

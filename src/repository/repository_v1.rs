@@ -15,8 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    fs::OpenOptions,
-    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -33,7 +31,6 @@ use super::{
     config::Config,
     repository::{self, ObjectId, RepoVersion, RepositoryBackend, SnapshotId},
     snapshot::Snapshot,
-    tree::{Node, NodeType},
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -122,12 +119,7 @@ impl RepositoryBackend for Repository {
         })
     }
 
-    fn save_object(&self, data: &[u8]) -> Result<(usize, ObjectId)> {
-        let encoded_data = self.secure_storage.encode(data)?;
-        self.save_object_raw(&encoded_data)
-    }
-
-    fn save_object_raw(&self, data: &[u8]) -> Result<(usize, ObjectId)> {
+    fn save_object(&self, data: Vec<u8>) -> Result<(usize, ObjectId)> {
         let hash = utils::calculate_hash(&data);
         let object_path = self.get_object_path(&hash);
 
@@ -141,12 +133,13 @@ impl RepositoryBackend for Repository {
     }
 
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {
-        let data = self.backend.read(&self.get_object_path(id))?;
-        self.secure_storage.decode(&data)
+        let object_path = self.get_object_path(id);
+        self.backend.read(&object_path)
     }
 
-    fn load_object_raw(&self, id: &ObjectId) -> Result<Vec<u8>> {
-        self.backend.read(&self.get_object_path(id))
+    fn load_from_object(&self, id: &ObjectId, offset: u64, length: u64) -> Result<Vec<u8>> {
+        let object_path = self.get_object_path(id);
+        self.backend.read_seek(&object_path, offset, length)
     }
 
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {
@@ -202,58 +195,6 @@ impl RepositoryBackend for Repository {
         let mut snapshots = self.load_all_snapshots()?;
         snapshots.sort_by_key(|(_, snapshot)| snapshot.timestamp);
         Ok(snapshots)
-    }
-
-    fn restore_node(&self, node: &Node, dst_path: &Path) -> Result<()> {
-        match node.node_type {
-            NodeType::File => {
-                // TODO: Restore metadata
-                let mut dst_file = OpenOptions::new()
-                    .create(true)
-                    .truncate(true)
-                    .write(true)
-                    .open(dst_path)
-                    .with_context(|| {
-                        format!("Could not create destination file '{}'", dst_path.display())
-                    })?;
-
-                let chunks = node
-                    .contents
-                    .as_ref()
-                    .expect("File Node must have contents (even if empty)");
-
-                for (index, chunk_hash) in chunks.iter().enumerate() {
-                    let chunk_data = self.load_object(&chunk_hash).with_context(|| {
-                        format!(
-                            "Could not load chunk #{} ({}) for restoring file '{}'",
-                            index + 1,
-                            chunk_hash,
-                            dst_path.display()
-                        )
-                    })?;
-
-                    dst_file.write_all(&chunk_data).with_context(|| {
-                        format!(
-                            "Could not restore chunk #{} ({}) to file '{}'",
-                            index + 1,
-                            chunk_hash,
-                            dst_path.display()
-                        )
-                    })?;
-
-                    if let Some(mtime) = node.metadata.modified_time {
-                        dst_file.set_modified(mtime)?;
-                    }
-                }
-            }
-            NodeType::Directory => {
-                // TODO: Restore metadata
-                std::fs::create_dir_all(dst_path)?
-            }
-            NodeType::Symlink => todo!(),
-        }
-
-        Ok(())
     }
 }
 

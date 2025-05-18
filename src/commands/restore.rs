@@ -28,6 +28,7 @@ use crate::{
         storage::SecureStorage,
         tree::SerializedNodeStreamer,
     },
+    restorer,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,8 +115,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
     );
 
-    let repo: Arc<dyn RepositoryBackend> =
-        Arc::from(repository::repository::open(backend, secure_storage)?);
+    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::repository::open(
+        backend,
+        secure_storage.clone(),
+    )?);
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
         RestoreSnapshot::Latest => {
@@ -130,7 +133,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
     .with_context(|| "No snapshot was found")?;
 
-    let node_streamer = SerializedNodeStreamer::new(repo.clone(), Some(snapshot.tree));
+    let node_streamer =
+        SerializedNodeStreamer::new(repo.clone(), secure_storage.clone(), Some(snapshot.tree));
 
     for node_res in node_streamer {
         match node_res {
@@ -151,7 +155,12 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                 }
 
-                repo.restore_node(&stream_node.node, &restore_path)?
+                restorer::restore_node(
+                    repo.as_ref(),
+                    secure_storage.as_ref(),
+                    &stream_node.node,
+                    &restore_path,
+                )?
             }
             Err(_) => {
                 bail!("Failed to read snapshot tree node");

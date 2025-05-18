@@ -27,7 +27,6 @@ use aes_gcm::aead::OsRng;
 use aes_gcm::aead::rand_core::RngCore;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
-use base64::engine::general_purpose;
 use chrono::{DateTime, Utc};
 use config::Config;
 use serde::{Deserialize, Serialize};
@@ -39,8 +38,8 @@ use crate::{backend::StorageBackend, repository::storage::SecureStorage, utils::
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
 
-pub type ObjectId = Hash;
-pub type SnapshotId = Hash;
+pub type ObjectId = String;
+pub type SnapshotId = String;
 
 pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
@@ -152,8 +151,8 @@ pub fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
 
     let key_file = KeyFile {
         created: create_time,
-        encrypted_key: general_purpose::STANDARD.encode(encrypted_key),
-        salt: general_purpose::STANDARD.encode(salt),
+        encrypted_key: base64::engine::general_purpose::STANDARD.encode(encrypted_key),
+        salt: base64::engine::general_purpose::STANDARD.encode(salt),
     };
 
     Ok((new_random_key.to_vec(), key_file))
@@ -179,8 +178,9 @@ pub fn retrieve_key(password: String, backend: Arc<dyn StorageBackend>) -> Resul
         let keyfile: KeyFile = serde_json::from_slice(keyfile_str.as_slice())?;
 
         // Encode salt and key in base64
-        let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
-        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+        let salt = base64::engine::general_purpose::STANDARD.decode(keyfile.salt)?;
+        let encrypted_key =
+            base64::engine::general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
 
         let intermediate_key = SecureStorage::derive_key(&password, &salt);
         if let Ok(key) = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key) {

@@ -35,6 +35,11 @@ pub mod size {
     pub const MiB: u64 = KiB * 1024;
     pub const GiB: u64 = MiB * 1024;
     pub const TiB: u64 = GiB * 1024;
+
+    pub const KB: u64 = 1000;
+    pub const MB: u64 = KB * 1000;
+    pub const GB: u64 = MB * 1000;
+    pub const TB: u64 = GB * 1000;
 }
 
 #[allow(non_upper_case_globals)]
@@ -82,6 +87,15 @@ pub fn calculate_lcp(paths: &[PathBuf]) -> PathBuf {
     }
 
     common_prefix
+}
+
+/// Returns a hex string from a slice of bytes
+pub fn bytes_to_hex_string(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .rev()
+        .collect()
 }
 
 #[cfg(test)]
@@ -152,5 +166,19 @@ mod tests {
 
         let paths = vec![PathBuf::from("/home/user/a"), PathBuf::from("a")];
         assert_eq!(calculate_lcp(&paths), PathBuf::new());
+    }
+
+    #[test]
+    fn test_bytes_to_hex() {
+        let bytes: [u8; 32] = [
+            0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x7a, 0x8b, 0x9c, 0x0d, 0x1e, 0x2f, 0x3a, 0x4b,
+            0x5c, 0x6d, 0x7e, 0x8f, 0x9a, 0x0b, 0x1c, 0x2d, 0x3e, 0x4f, 0x5a, 0x6b, 0x7c, 0x8d,
+            0x9e, 0x0f, 0x10, 0x21,
+        ];
+        let hex_str = bytes_to_hex_string(&bytes);
+        assert_eq!(
+            hex_str,
+            "21100f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a"
+        );
     }
 }

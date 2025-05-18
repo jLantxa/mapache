@@ -19,10 +19,13 @@ use std::{
     sync::Arc,
 };
 
+use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
+use chrono::Utc;
 
 use crate::{
     backend::StorageBackend,
+    cli,
     repository::{self, storage::SecureStorage},
     utils::{self, Hash},
 };
@@ -53,6 +56,8 @@ impl RepositoryBackend for Repository {
         if backend.root_exists() {
             bail!("Could not initialize a repository because a directory already exists");
         }
+
+        let timestamp = Utc::now();
 
         // Init repository structure
         let objects_path = PathBuf::from(OBJECTS_DIR);
@@ -89,9 +94,15 @@ impl RepositoryBackend for Repository {
             )?,
         )?;
 
+        let mut repo_id_bytes: [u8; 32] = [0; 32];
+        OsRng.fill_bytes(&mut repo_id_bytes);
+        let repo_id = utils::bytes_to_hex_string(&repo_id_bytes);
+
         // Save new config
         let config = Config {
             version: REPO_VERSION,
+            id: repo_id.clone(),
+            created_time: timestamp,
         };
 
         let secure_storage: SecureStorage = SecureStorage::build()
@@ -102,6 +113,8 @@ impl RepositoryBackend for Repository {
         let config = serde_json::to_string_pretty(&config)?;
         let config = secure_storage.encode(config.as_bytes())?;
         backend.write(config_path, &config)?;
+
+        cli::log!("Created repo with id {:?}", repo_id);
 
         Ok(())
     }

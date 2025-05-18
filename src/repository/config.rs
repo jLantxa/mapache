@@ -14,10 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Repository config
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
+    pub id: String,
+    pub created_time: DateTime<Utc>,
 }

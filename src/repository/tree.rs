@@ -106,12 +106,17 @@ pub enum NodeType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
+
     #[serde(rename = "type")]
     pub node_type: NodeType,
+
     #[serde(flatten)]
     pub metadata: Metadata,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub contents: Option<Vec<ObjectId>>, // populated lazily for files
-    pub tree: Option<ObjectId>,          // populated lazily for dirs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<ObjectId>, // populated lazily for dirs
 }
 
 impl Node {

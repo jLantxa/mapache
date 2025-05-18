@@ -49,6 +49,5 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    cli::log!("{}", "Finished".bold().green());
     Ok(())
 }

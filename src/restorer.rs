@@ -20,16 +20,10 @@ use anyhow::{Context, Result};
 
 use crate::repository::{
     RepositoryBackend,
-    storage::SecureStorage,
     tree::{Node, NodeType},
 };
 
-pub fn restore_node(
-    repo: &dyn RepositoryBackend,
-    secure_storage: &SecureStorage,
-    node: &Node,
-    dst_path: &Path,
-) -> Result<()> {
+pub fn restore_node(repo: &dyn RepositoryBackend, node: &Node, dst_path: &Path) -> Result<()> {
     match node.node_type {
         NodeType::File => {
             // TODO: Restore metadata
@@ -56,8 +50,6 @@ pub fn restore_node(
                         dst_path.display()
                     )
                 })?;
-
-                let chunk_data = secure_storage.decode(&chunk_data)?;
 
                 dst_file.write_all(&chunk_data).with_context(|| {
                     format!(

@@ -136,6 +136,8 @@ impl RepositoryBackend for Repository {
         let hash = utils::calculate_hash(&data);
         let object_path = self.get_object_path(&hash);
 
+        let data = self.secure_storage.encode(&data)?;
+
         let written_size = if !object_path.exists() {
             self.save_with_rename(&data, &self.get_object_path(&hash))?
         } else {
@@ -147,12 +149,14 @@ impl RepositoryBackend for Repository {
 
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {
         let object_path = self.get_object_path(id);
-        self.backend.read(&object_path)
+        let data = self.backend.read(&object_path)?;
+        self.secure_storage.decode(&data)
     }
 
     fn load_from_object(&self, id: &ObjectId, offset: u64, length: u64) -> Result<Vec<u8>> {
         let object_path = self.get_object_path(id);
-        self.backend.read_seek(&object_path, offset, length)
+        let data = self.backend.read_seek(&object_path, offset, length)?;
+        self.secure_storage.decode(&data)
     }
 
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<SnapshotId> {

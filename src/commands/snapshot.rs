@@ -111,13 +111,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::format_size(total_bytes)
     );
 
-    let mut new_snapshot = Archiver::snapshot(
-        repo.clone(),
-        secure_storage.clone(),
-        source_paths,
-        parent_snapshot,
-        args.full_scan,
-    )?;
+    let mut new_snapshot =
+        Archiver::snapshot(repo.clone(), source_paths, parent_snapshot, args.full_scan)?;
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());

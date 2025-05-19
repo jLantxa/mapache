@@ -33,7 +33,6 @@ use crate::{
     cli,
     repository::{
         snapshot::Snapshot,
-        storage::SecureStorage,
         tree::{
             FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, NodeType, SerializedNodeStreamer,
             StreamNode, Tree,
@@ -63,11 +62,7 @@ impl Archiver {
     /// will be compressed, encrypted and stored in the repository.
     /// The content hash of each chunk is used to identify the chunk and determine
     /// if the chunk already exists in the repository.
-    pub fn save_file(
-        repo: &dyn RepositoryBackend,
-        secure_storage: &SecureStorage,
-        src_path: &Path,
-    ) -> Result<ChunkResult> {
+    pub fn save_file(repo: &dyn RepositoryBackend, src_path: &Path) -> Result<ChunkResult> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
         let reader = BufReader::new(source);
@@ -89,8 +84,7 @@ impl Archiver {
         for result in chunker {
             let chunk = result?;
 
-            let encoded_data = secure_storage.encode(&chunk.data)?;
-            let (bytes_writen, content_hash) = repo.save_object(encoded_data)?;
+            let (bytes_writen, content_hash) = repo.save_object(chunk.data)?;
 
             chunk_hashes.push(content_hash);
             total_bytes_read += chunk.length;
@@ -106,41 +100,24 @@ impl Archiver {
 
     pub fn snapshot(
         repo: Arc<dyn RepositoryBackend>,
-        secure_storage: Arc<SecureStorage>,
         source_paths: &[PathBuf],
         parent_snapshot: Option<Snapshot>,
         full_scan: bool,
     ) -> Result<Snapshot> {
-        Committer::run(
-            repo.clone(),
-            secure_storage.clone(),
-            source_paths,
-            parent_snapshot,
-            full_scan,
-        )
+        Committer::run(repo.clone(), source_paths, parent_snapshot, full_scan)
     }
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_tree(
-        repo: &dyn RepositoryBackend,
-        secure_storage: &SecureStorage,
-        tree: &Tree,
-    ) -> Result<Hash> {
-        let tree_json = serde_json::to_string_pretty(tree)?;
-        let tree_json = secure_storage.encode(tree_json.as_bytes())?;
+    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
+        let tree_json = serde_json::to_string_pretty(tree)?.as_bytes().to_vec();
         let (_, hash) = repo.save_object(tree_json)?;
         Ok(hash)
     }
 
     /// Load a tree from the repository.
-    pub fn load_tree(
-        repo: &dyn RepositoryBackend,
-        secure_storage: &SecureStorage,
-        root_id: &ObjectId,
-    ) -> Result<Tree> {
+    pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ObjectId) -> Result<Tree> {
         let tree_object = repo.load_object(root_id)?;
-        let tree_object = secure_storage.decode(&tree_object)?;
         let tree: Tree = serde_json::from_slice(&tree_object)?;
         Ok(tree)
     }
@@ -175,7 +152,6 @@ struct Committer {}
 impl Committer {
     pub fn run(
         repo: Arc<dyn RepositoryBackend>,
-        secure_storage: Arc<SecureStorage>,
         source_paths: &[PathBuf],
         parent_snapshot: Option<Snapshot>,
         full_scan: bool,
@@ -218,8 +194,7 @@ impl Committer {
             Ok(stream) => stream,
             Err(_) => bail!("Failed to create FSNodeStreamer"),
         };
-        let previous_tree_streamer =
-            SerializedNodeStreamer::new(repo.clone(), secure_storage.clone(), parent_tree_id);
+        let previous_tree_streamer = SerializedNodeStreamer::new(repo.clone(), parent_tree_id);
 
         let num_threads = std::cmp::max(1, num_cpus::get() / 2);
         let pool = rayon::ThreadPoolBuilder::new()
@@ -269,7 +244,6 @@ impl Committer {
         let diff_rx_clone = diff_rx.clone();
         let process_item_tx_clone = process_item_tx.clone();
         let repo_clone = repo.clone();
-        let secure_storage_clone = secure_storage.clone();
         let error_flag_clone = error_flag.clone();
         let processor_thread = std::thread::spawn(move || {
             while let Ok(diff) = diff_rx_clone.recv() {
@@ -279,15 +253,10 @@ impl Committer {
 
                 let inner_process_item_tx_clone = process_item_tx_clone.clone();
                 let inner_repo_clone = repo_clone.clone();
-                let inner_secure_storage_clone = secure_storage_clone.clone();
                 let inner_error_flag_clone = error_flag_clone.clone();
                 pool.spawn(move || {
-                    let processed_item_result = Self::process_item(
-                        diff,
-                        inner_repo_clone.as_ref(),
-                        inner_secure_storage_clone.as_ref(),
-                        full_scan,
-                    );
+                    let processed_item_result =
+                        Self::process_item(diff, inner_repo_clone.as_ref(), full_scan);
 
                     match processed_item_result {
                         Ok(processed_item_opt) => {
@@ -333,7 +302,6 @@ impl Committer {
                 if let Err(_) = Self::handle_processed_item(
                     item,
                     repo_clone.as_ref(),
-                    secure_storage.as_ref(),
                     &mut pending_trees,
                     &mut final_root_tree_id,
                     &commit_root_path,
@@ -366,7 +334,6 @@ impl Committer {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: &dyn RepositoryBackend,
-        secure_storage: &SecureStorage,
         should_do_full_scan: bool,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
@@ -385,13 +352,11 @@ impl Committer {
                         NodeType::File | NodeType::Symlink => {
                             if should_do_full_scan && node.is_file() {
                                 let (_, updated_node) =
-                                    Archiver::save_file(repo, secure_storage, &path).map(
-                                        |chunk_result| {
-                                            let mut updated_node = node.clone();
-                                            updated_node.contents = Some(chunk_result.chunks);
-                                            (path.to_path_buf(), updated_node.clone())
-                                        },
-                                    )?;
+                                    Archiver::save_file(repo, &path).map(|chunk_result| {
+                                        let mut updated_node = node.clone();
+                                        updated_node.contents = Some(chunk_result.chunks);
+                                        (path.to_path_buf(), updated_node.clone())
+                                    })?;
 
                                 node = updated_node;
                             }
@@ -420,13 +385,11 @@ impl Committer {
                         NodeType::File | NodeType::Symlink => {
                             if node.is_file() {
                                 let (_, updated_node) =
-                                    Archiver::save_file(repo, secure_storage, &path).map(
-                                        |chunk_result| {
-                                            let mut updated_node = node.clone();
-                                            updated_node.contents = Some(chunk_result.chunks);
-                                            (path.to_path_buf(), updated_node.clone())
-                                        },
-                                    )?;
+                                    Archiver::save_file(repo, &path).map(|chunk_result| {
+                                        let mut updated_node = node.clone();
+                                        updated_node.contents = Some(chunk_result.chunks);
+                                        (path.to_path_buf(), updated_node.clone())
+                                    })?;
 
                                 node = updated_node;
                             }
@@ -452,7 +415,6 @@ impl Committer {
     fn handle_processed_item(
         processed_item: (PathBuf, StreamNode),
         repo: &dyn RepositoryBackend,
-        secure_storage: &SecureStorage,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
@@ -489,7 +451,6 @@ impl Committer {
         Self::finalize_if_complete(
             dir_path,
             repo,
-            secure_storage,
             pending_trees,
             final_root_tree_id,
             commit_root_path,
@@ -499,7 +460,6 @@ impl Committer {
     fn finalize_if_complete(
         dir_path: PathBuf,
         repo: &dyn RepositoryBackend,
-        secure_storage: &SecureStorage,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
         commit_root_path: &Path,
@@ -523,8 +483,7 @@ impl Committer {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id_result: Result<ObjectId> =
-            Archiver::save_tree(repo, secure_storage, &completed_tree);
+        let tree_id_result: Result<ObjectId> = Archiver::save_tree(repo, &completed_tree);
 
         let tree_id = tree_id_result?;
 
@@ -551,7 +510,6 @@ impl Committer {
             Self::finalize_if_complete(
                 parent_path,
                 repo,
-                secure_storage,
                 pending_trees,
                 final_root_tree_id,
                 commit_root_path,
@@ -693,16 +651,10 @@ mod test {
         let (_, mut stream_node) = fs_node_streamer.next().unwrap().unwrap();
 
         // Chunk the file, obtain Node with content hashes
-        let chunk_result =
-            Archiver::save_file(repo.as_ref(), secure_storage.as_ref(), &src_file_path)?;
+        let chunk_result = Archiver::save_file(repo.as_ref(), &src_file_path)?;
         stream_node.node.contents = Some(chunk_result.chunks.clone());
 
-        restorer::restore_node(
-            repo.as_ref(),
-            secure_storage.as_ref(),
-            &stream_node.node,
-            &dst_file_path,
-        )?;
+        restorer::restore_node(repo.as_ref(), &stream_node.node, &dst_file_path)?;
         assert_eq!(chunk_result.chunks, stream_node.node.contents.unwrap());
 
         let src_data = std::fs::read(src_file_path)?;

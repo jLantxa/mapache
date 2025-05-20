@@ -36,14 +36,14 @@ The first milestone consists of implementing the core architecture and a minimal
 - Restoring `snapshots`.
 - Listing `snapshots`.
 
-For the time being, only local and SFTP backends are included. That will be **`v0.1.0`**.
+For the time being, only local and SFTP backends are included.
 
 The second milestone consists of adding features related to repository maintenance and garbage collection. This includes:
 
 - Removing `snapshots`, possibly with a retention policy.
 - Garbage collection (removing unused and obsolete objects).
 
-That should be **`v0.2.0`**.
+That will be **`v0.1.0`**.
 
 After that, the plan is to expand the functionality with new options, features and ergonomics.
 

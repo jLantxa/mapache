@@ -173,10 +173,20 @@ impl Tree {
     }
 
     /// Add a node to the tree. This function makes sure to order the list of
-    /// nodes alphabetically by name.
+    /// nodes alphabetically by name. If a node with the same name already exists,
+    /// it is replaced.
     pub fn add_node(&mut self, node: Node) {
-        self.nodes.push(node);
-        self.nodes.sort_by(|a, b| a.name.cmp(&b.name));
+        match self
+            .nodes
+            .binary_search_by(|probe| probe.name.cmp(&node.name))
+        {
+            Ok(idx) => {
+                self.nodes[idx] = node;
+            }
+            Err(idx) => {
+                self.nodes.insert(idx, node);
+            }
+        }
     }
 }
 
@@ -262,30 +272,27 @@ pub struct SerializedNodeStreamer {
 }
 
 impl SerializedNodeStreamer {
-    pub fn new(repo: Arc<dyn RepositoryBackend>, root_id: Option<ObjectId>) -> Self {
+    pub fn new(repo: Arc<dyn RepositoryBackend>, root_id: Option<ObjectId>) -> Result<Self> {
         let mut stack = Vec::new();
 
-        match root_id {
-            Some(id) => match Archiver::load_tree(repo.as_ref(), &id) {
-                Ok(tree) => {
-                    // Load root tree and push its children to the stack in reverse order
-                    let num_children = tree.nodes.len();
-                    for node in tree.nodes.iter().rev() {
-                        stack.push((
-                            PathBuf::new(),
-                            StreamNode {
-                                node: node.clone(),
-                                num_children,
-                            },
-                        ));
-                    }
-                }
-                Err(_) => (),
-            },
-            None => (),
-        }
+        if let Some(id) = root_id {
+            let tree = Archiver::load_tree(repo.as_ref(), &id)
+                .context(format!("Failed to load root tree with ID {}", id))?;
 
-        Self { repo, stack }
+            for node in tree.nodes.into_iter().rev() {
+                stack.push((
+                    PathBuf::new(),
+                    StreamNode {
+                        node,
+
+                        // Actual child count will be determined when this node is processed by `next`.
+                        // Initialize to 0 for consistency with how FSNodeStreamer initializes non-directories.
+                        num_children: 0,
+                    },
+                ));
+            }
+        }
+        Ok(Self { repo, stack })
     }
 }
 
@@ -293,27 +300,39 @@ impl Iterator for SerializedNodeStreamer {
     type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (parent_path, stream_node) = self.stack.pop()?;
+        let (parent_path, mut stream_node) = self.stack.pop()?;
+
         let res = (|| {
-            // Build the full path to this node first
             let current_path = parent_path.join(&stream_node.node.name);
 
-            // If it’s a subtree, push its children *under* current_path
+            // If it’s a subtree (i.e., a directory), load its children and push them.
+            // Also, update the current `stream_node`'s `num_children` with its actual count.
             if let Some(subtree_id) = &stream_node.node.tree {
                 let subtree = Archiver::load_tree(self.repo.as_ref(), subtree_id)?;
-                let num_children = subtree.nodes.len();
-                for subnode in subtree.nodes.iter().rev() {
+                let num_children_of_this_dir = subtree.nodes.len();
+
+                // Push children for the next iteration. Their `num_children` starts at 0.
+                for subnode in subtree.nodes.into_iter().rev() {
+                    // Use into_iter() for efficiency
                     self.stack.push((
                         current_path.clone(),
                         StreamNode {
-                            node: subnode.clone(),
-                            num_children,
+                            node: subnode,
+
+                            // Children nodes initially have 0, their own children
+                            // count is set when *they* are processed
+                            num_children: 0,
                         },
                     ));
                 }
+
+                // Update the current stream_node's num_children before emitting it
+                stream_node.num_children = num_children_of_this_dir;
+            } else {
+                // For files or symlinks, ensure num_children is 0.
+                stream_node.num_children = 0;
             }
 
-            // Now emit the correctly-built path + node
             Ok((current_path, stream_node))
         })();
         Some(res)

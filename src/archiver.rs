@@ -190,7 +190,7 @@ impl Committer {
             Ok(stream) => stream,
             Err(_) => bail!("Failed to create FSNodeStreamer"),
         };
-        let previous_tree_streamer = SerializedNodeStreamer::new(repo.clone(), parent_tree_id);
+        let previous_tree_streamer = SerializedNodeStreamer::new(repo.clone(), parent_tree_id)?;
 
         let num_threads = std::cmp::max(1, num_cpus::get() / 2);
         let pool = rayon::ThreadPoolBuilder::new()

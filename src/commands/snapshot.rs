@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
@@ -72,6 +75,31 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Arc::from(repository::open(backend, secure_storage.clone())?);
 
     let source_paths = &args.paths;
+    let mut absolute_source_paths = Vec::new();
+    for path in source_paths {
+        match std::fs::canonicalize(&path) {
+            Ok(absolute_path) => absolute_source_paths.push(absolute_path),
+            Err(e) => bail!(e),
+        }
+    }
+
+    // Extract the commit root path
+    let commit_root_path = if absolute_source_paths.is_empty() {
+        cli::log_warning("No source paths provided. Creating empty commit.");
+        PathBuf::new()
+    } else if absolute_source_paths.len() == 1 {
+        let single_source = absolute_source_paths.first().unwrap();
+        if single_source == Path::new("/") {
+            PathBuf::new()
+        } else {
+            single_source
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::new())
+        }
+    } else {
+        utils::calculate_lcp(&absolute_source_paths)
+    };
 
     let parent_snapshot = match args.full_scan {
         true => {
@@ -128,7 +156,12 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::format_size(total_bytes)
     );
 
-    let mut new_snapshot = Archiver::snapshot(repo.clone(), source_paths, parent_snapshot)?;
+    let mut new_snapshot = Archiver::snapshot(
+        repo.clone(),
+        absolute_source_paths,
+        commit_root_path,
+        parent_snapshot,
+    )?;
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());

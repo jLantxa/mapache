@@ -98,7 +98,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
     .with_context(|| "No snapshot was found")?;
 
-    let node_streamer = SerializedNodeStreamer::new(repo.clone(), Some(snapshot.tree))?;
+    let node_streamer =
+        SerializedNodeStreamer::new(repo.clone(), Some(snapshot.tree), PathBuf::new())?;
 
     for node_res in node_streamer {
         match node_res {

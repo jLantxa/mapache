@@ -40,7 +40,7 @@ use crate::{
             StreamNode, Tree,
         },
     },
-    utils::{self, Hash},
+    utils::Hash,
 };
 
 #[derive(Debug)]
@@ -98,10 +98,16 @@ impl Archiver {
 
     pub fn snapshot(
         repo: Arc<dyn RepositoryBackend>,
-        source_paths: &[PathBuf],
+        absolute_source_paths: Vec<PathBuf>,
+        commit_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
     ) -> Result<Snapshot> {
-        Committer::run(repo.clone(), source_paths, parent_snapshot)
+        Committer::run(
+            repo.clone(),
+            absolute_source_paths,
+            commit_root_path,
+            parent_snapshot,
+        )
     }
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
@@ -149,36 +155,10 @@ struct Committer {}
 impl Committer {
     pub fn run(
         repo: Arc<dyn RepositoryBackend>,
-        source_paths: &[PathBuf],
+        absolute_source_paths: Vec<PathBuf>,
+        commit_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
     ) -> Result<Snapshot> {
-        // First convert the paths to absolute paths. canonicalize failes if the path does not exist.
-        let mut absolute_source_paths = Vec::new();
-        for path in source_paths {
-            match std::fs::canonicalize(&path) {
-                Ok(absolute_path) => absolute_source_paths.push(absolute_path),
-                Err(e) => bail!(e),
-            }
-        }
-
-        // Extract the commit root path
-        let commit_root_path = if absolute_source_paths.is_empty() {
-            cli::log_warning("No source paths provided. Creating empty commit.");
-            PathBuf::new()
-        } else if absolute_source_paths.len() == 1 {
-            let single_source = absolute_source_paths.first().unwrap();
-            if single_source == Path::new("/") {
-                PathBuf::new()
-            } else {
-                single_source
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| PathBuf::new())
-            }
-        } else {
-            utils::calculate_lcp(&absolute_source_paths)
-        };
-
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ObjectId> = match &parent_snapshot {
             None => None,
@@ -190,7 +170,8 @@ impl Committer {
             Ok(stream) => stream,
             Err(_) => bail!("Failed to create FSNodeStreamer"),
         };
-        let previous_tree_streamer = SerializedNodeStreamer::new(repo.clone(), parent_tree_id)?;
+        let previous_tree_streamer =
+            SerializedNodeStreamer::new(repo.clone(), parent_tree_id, commit_root_path.clone())?;
 
         let num_threads = std::cmp::max(1, num_cpus::get() / 2);
         let pool = rayon::ThreadPoolBuilder::new()

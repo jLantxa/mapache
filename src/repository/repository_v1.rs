@@ -142,8 +142,20 @@ impl RepositoryBackend for Repository {
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
         let index_path = PathBuf::from(INDEX_DIR);
 
-        let data_packer = Arc::new(Mutex::new(Packer::new()));
-        let tree_packer = Arc::new(Mutex::new(Packer::new()));
+        // Packer defaults
+        let max_packer_size = backup::defaults::MAX_PACK_SIZE;
+        let pack_data_capacity = max_packer_size as usize;
+        let pack_blob_capacity =
+            (pack_data_capacity as u64).div_ceil(backup::defaults::AVG_CHUNK_SIZE as u64) as usize;
+
+        let data_packer = Arc::new(Mutex::new(Packer::with_capacity(
+            pack_data_capacity,
+            pack_blob_capacity,
+        )));
+        let tree_packer = Arc::new(Mutex::new(Packer::with_capacity(
+            pack_data_capacity,
+            pack_blob_capacity,
+        )));
 
         let index = Arc::new(Mutex::new(MasterIndex::new()));
 
@@ -154,7 +166,7 @@ impl RepositoryBackend for Repository {
             index_path,
             secure_storage,
 
-            max_packer_size: backup::defaults::MAX_PACK_SIZE,
+            max_packer_size,
             data_packer,
             tree_packer,
 

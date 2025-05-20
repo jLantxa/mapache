@@ -24,20 +24,32 @@ use crate::{
     utils::indexset::IndexSet,
 };
 
-use super::{RepositoryBackend, packer::PackedBlobDescriptor};
+use super::{RepositoryBackend, packer::PackedBlobDescriptor}; // Corrected import for clarity
 
+/// Represents the location and size of a blob within a pack file.
+#[derive(Debug, Clone, Copy)] // Assuming these are cheap for a simple struct/tuple
+struct BlobLocation {
+    /// The index into the `pack_ids` `IndexSet` for the pack containing this blob. See Index.
+    pub pack_array_index: usize,
+    /// The offset of the blob within its pack file.
+    pub offset: u64,
+    /// The length of the blob within its pack file.
+    pub length: u64,
+}
+
+/// Manages the mapping of blob IDs to their locations within pack files.
+/// An `Index` can be in a 'pending' state, indicating it's still being built.
 #[derive(Debug)]
 pub struct Index {
-    /// An object_id -> (pack_array_index, offset, length) map
-    ids: HashMap<ObjectId, (usize, u64, u64)>,
+    /// An object_id -> BlobLocation map. This is the core lookup table.
+    ids: HashMap<ObjectId, BlobLocation>,
 
-    /// The Pack ids reference in the index.
-    /// With the IndexSet we use a 8 byte reference to the ID instead of
-    /// storing the 32 byte ID in all entries, cutting the memory usage to
-    /// about 50 %.
+    /// The Pack IDs referenced in this index. Using an `IndexSet` allows us
+    /// to store a small `usize` index in `BlobLocation` instead of the full `ObjectId`,
+    /// significantly reducing memory usage.
     pack_ids: IndexSet<ObjectId>,
 
-    /// If an index is pending, it is still receiving entries from packs
+    /// If an index is pending, it is still receiving entries from packs and is not yet finalized.
     is_pending: bool,
 }
 
@@ -50,107 +62,148 @@ impl Index {
         }
     }
 
+    /// Marks the index as finalized. A finalized index no longer accepts new entries
+    /// and is typically ready for persistence or read-only operations.
     pub fn finalize(&mut self) {
         self.is_pending = false;
     }
 
+    /// Returns `true` if the index is currently pending (still receiving entries).
     pub fn is_pending(&self) -> bool {
         self.is_pending
     }
 
+    /// Creates an `Index` from a serialized `IndexFile`.
+    /// The created index is *not* pending, as it represents a complete, loaded file.
     pub fn from_index_file(index_file: IndexFile) -> Self {
         let mut index = Self::new();
+        // An index loaded from a file is considered complete and not pending.
+        index.is_pending = false;
+
         for pack in index_file.packs {
+            let pack_index = index.pack_ids.insert(pack.id.clone());
             for blob in pack.blobs {
-                index.insert(&blob.id, &pack.id, blob.offset, blob.length);
+                index.ids.insert(
+                    blob.id,
+                    BlobLocation {
+                        pack_array_index: pack_index,
+                        offset: blob.offset,
+                        length: blob.length,
+                    },
+                );
             }
         }
-
         index
     }
 
+    /// Checks if the index contains the given object ID.
     pub fn contains(&self, id: &ObjectId) -> bool {
         self.ids.contains_key(id)
     }
 
+    /// Retrieves the pack ID, offset, and length for a given blob ID, if it exists.
+    /// Returns `None` if the blob ID is not found.
     pub fn get(&self, id: &ObjectId) -> Option<(ObjectId, u64, u64)> {
-        match self.ids.get(id) {
-            Some((pack_index, offset, length)) => {
-                let pack_id = self.pack_ids.get_value(*pack_index).unwrap();
-                Some((pack_id.clone(), *offset, *length))
-            }
-            None => None,
-        }
+        self.ids.get(id).map(|location| {
+            // Retrieve the full pack ID from the `IndexSet` using the stored `pack_array_index`.
+            let pack_id = self
+                .pack_ids
+                .get_value(location.pack_array_index)
+                .expect("pack_index should always be valid for an existing blob");
+            (pack_id.clone(), location.offset, location.length)
+        })
     }
 
-    pub fn insert(&mut self, blob_id: &ObjectId, pack_id: &ObjectId, offset: u64, length: u64) {
-        let pack_index = self.pack_ids.insert(pack_id.clone());
-        self.ids
-            .insert(blob_id.clone(), (pack_index, offset, length));
-    }
-
+    /// Adds all blob descriptors from a specific pack to the index.
+    /// This method is optimized for adding multiple blobs from the same pack,
+    /// as it only needs to look up the pack ID once.
     pub fn add_pack(
         &mut self,
         pack_id: &ObjectId,
-        packed_blob_descriptors: &Vec<PackedBlobDescriptor>,
+        packed_blob_descriptors: &[PackedBlobDescriptor], // Use slice for better ergonomics
     ) {
+        let pack_index = self.pack_ids.insert(pack_id.clone()); // Get pack_index once for all blobs in this pack
         for blob in packed_blob_descriptors {
-            self.insert(&blob.id, pack_id, blob.offset, blob.length);
+            self.ids.insert(
+                blob.id.clone(),
+                BlobLocation {
+                    pack_array_index: pack_index,
+                    offset: blob.offset,
+                    length: blob.length,
+                },
+            );
         }
     }
 
+    /// Saves the index to the repository. This operation might generate multiple
+    /// index files if the total number of blobs exceeds a configurable limit.
+    ///
+    /// Returns the total uncompressed and compressed sizes of the saved index files.
     pub fn save(&self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
-        let mut blob_count: u32 = 0;
-        let mut index_file = IndexFile::new();
+        let mut total_uncompressed_size = 0;
+        let mut total_compressed_size = 0;
 
-        let mut uncompressed_size = 0;
-        let mut compressed_size = 0;
+        let mut packs_with_blobs: HashMap<usize, Vec<IndexFileBlob>> = HashMap::new();
+        for (blob_id, location) in &self.ids {
+            let entry = packs_with_blobs
+                .entry(location.pack_array_index)
+                .or_default();
+            entry.push(IndexFileBlob {
+                id: blob_id.clone(),
+                offset: location.offset,
+                length: location.length,
+            });
+        }
 
-        for (i, pack_id) in self.pack_ids.iter().enumerate() {
-            let mut index_pack_file = IndexFilePack {
-                id: pack_id.clone(),
-                blobs: Vec::new(),
-            };
-            for (blob_id, (blob_pack_idx, offset, length)) in &self.ids {
-                if *blob_pack_idx == i {
-                    index_pack_file.blobs.push(IndexFileBlob {
-                        id: blob_id.to_string(),
-                        offset: *offset,
-                        length: *length,
-                    });
-                    blob_count += 1;
+        let mut current_index_file = IndexFile::new();
+        let mut current_blob_count: u32 = 0;
+
+        // Iterate through packs in the order they were inserted into `pack_ids`.
+        // This ensures a consistent ordering of packs in the generated index files.
+        for (pack_index, pack_id) in self.pack_ids.iter().enumerate() {
+            if let Some(blobs) = packs_with_blobs.remove(&pack_index) {
+                let index_pack_file = IndexFilePack {
+                    id: pack_id.clone(),
+                    blobs,
+                };
+                current_blob_count += index_pack_file.blobs.len() as u32;
+                current_index_file.packs.push(index_pack_file);
+
+                // If the current `IndexFile` accumulates too many blobs, save it
+                // and start a new one.
+                if current_blob_count >= backup::defaults::BLOBS_PER_INDEX_FILE {
+                    let (u, c) = repo.save_index(std::mem::take(&mut current_index_file))?;
+                    total_uncompressed_size += u;
+                    total_compressed_size += c;
+                    current_blob_count = 0; // Reset count for the next index file
                 }
             }
-
-            index_file.packs.push(index_pack_file);
-
-            if blob_count >= backup::defaults::BLOBS_PER_INDEX_FILE {
-                let (u, c) = repo.save_index(std::mem::take(&mut index_file))?;
-                uncompressed_size += u;
-                compressed_size += c;
-                blob_count = 0;
-            }
         }
 
-        if blob_count > 0 {
-            let (u, c) = repo.save_index(index_file)?;
-            uncompressed_size += u;
-            compressed_size += c;
+        // Save any remaining blobs in the last index file.
+        if current_blob_count > 0 {
+            let (u, c) = repo.save_index(current_index_file)?;
+            total_uncompressed_size += u;
+            total_compressed_size += c;
         }
 
-        Ok((uncompressed_size, compressed_size))
+        Ok((total_uncompressed_size, total_compressed_size))
     }
 }
 
+/// Manages a collection of `Index` instances, providing a unified view
+/// over all known blobs in the repository.
 #[derive(Debug)]
 pub struct MasterIndex {
+    /// A list of individual indexes, some of which might be pending.
     indexes: Vec<Index>,
 
-    // Stores the ids from blobs waiting to be serialized in a packer.
+    /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
     pending_blobs: HashSet<ObjectId>,
 }
 
 impl MasterIndex {
+    /// Creates a new, empty `MasterIndex`.
     pub fn new() -> Self {
         Self {
             indexes: Vec::new(),
@@ -158,55 +211,52 @@ impl MasterIndex {
         }
     }
 
-    /// Returns true if the object id is known in some of the indexes.
+    /// Returns `true` if the object ID is known either in a finalized index
+    /// or is currently a pending blob.
     pub fn contains(&self, id: &ObjectId) -> bool {
-        for idx in &self.indexes {
-            if !idx.is_pending {
-                if idx.contains(id) {
-                    return true;
-                }
-            }
-        }
-
-        self.pending_blobs.contains(id)
+        // Check finalized indexes first
+        self.indexes
+            .iter()
+            .any(|idx| !idx.is_pending && idx.contains(id))
+            || self.pending_blobs.contains(id) // Then check pending blobs
     }
 
-    /// Get an entry by looking in the indexes.
+    /// Retrieves an entry for a given blob ID by searching through finalized indexes.
+    /// Pending blobs (those not yet packed) cannot be retrieved via this method.
     pub fn get(&self, id: &ObjectId) -> Option<(ObjectId, u64, u64)> {
-        for idx in &self.indexes {
-            if let Some(entry) = idx.get(id) {
-                // Found entry in one of the indexes
-                return Some(entry);
-            }
-        }
-
-        // Pending blobs are still not serialized in a Pack.
-        // There is no usecase where we need to get the content of a blob
-        // that is still pending. We can ignore them.
-
-        None
+        self.indexes
+            .iter()
+            .find_map(|idx| if !idx.is_pending { idx.get(id) } else { None })
     }
 
-    /// Insert an index
+    /// Adds a fully constructed `Index` to the master index.
+    /// This is typically used for adding loaded, finalized indexes.
     pub fn add_index(&mut self, index: Index) {
         self.indexes.push(index);
     }
 
-    /// Adds a blob id to the pending blob set.
-    /// Returns true if the id did not exist in the set and was inserted. False otherwise.
+    /// Adds a blob ID to the set of blobs that are waiting to be packed.
+    /// Returns `true` if the ID did not exist in the set and was inserted; `false` otherwise.
     pub fn add_pending_blob(&mut self, id: &ObjectId) -> bool {
         self.pending_blobs.insert(id.clone())
     }
 
+    /// Processes a newly created pack of blobs. It removes these blobs from the
+    /// `pending_blobs` set and adds them to all currently pending `Index` instances.
+    ///
+    /// It's assumed that there is at least one pending index that should receive these blobs,
+    /// or that a new one will be created as part of the overall backup process if needed.
     pub fn add_pack(
         &mut self,
         pack_id: &ObjectId,
-        packed_blob_descriptors: Vec<PackedBlobDescriptor>,
+        packed_blob_descriptors: Vec<PackedBlobDescriptor>, // Take ownership as it's consumed
     ) {
+        // Remove processed blobs from the pending set
         for blob in &packed_blob_descriptors {
             self.pending_blobs.remove(&blob.id);
         }
 
+        // Add the pack's blobs to all currently pending indexes.
         for idx in &mut self.indexes {
             if idx.is_pending() {
                 idx.add_pack(pack_id, &packed_blob_descriptors);
@@ -214,9 +264,14 @@ impl MasterIndex {
         }
     }
 
+    /// Saves all pending indexes managed by the `MasterIndex` to the repository.
+    /// Finalized indexes are not saved again.
+    ///
+    /// Returns the total uncompressed and compressed sizes of the saved index files.
     pub fn save(&self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
         let mut uncompressed_size: u64 = 0;
         let mut compressed_size: u64 = 0;
+
         for idx in &self.indexes {
             if idx.is_pending() {
                 let (uncompressed, compressed) = idx.save(repo)?;
@@ -229,9 +284,11 @@ impl MasterIndex {
     }
 }
 
+/// Represents the on-disk format for an index file.
+/// This structure is used for serialization and deserialization of index data.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct IndexFile {
-    packs: Vec<IndexFilePack>,
+    pub packs: Vec<IndexFilePack>,
 }
 
 impl IndexFile {
@@ -240,15 +297,17 @@ impl IndexFile {
     }
 }
 
+/// Represents a pack's entry within an `IndexFile`.
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct IndexFilePack {
-    id: ObjectId,
-    blobs: Vec<IndexFileBlob>,
+pub struct IndexFilePack {
+    pub id: ObjectId,
+    pub blobs: Vec<IndexFileBlob>,
 }
 
+/// Represents a blob's entry within an `IndexFilePack`.
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct IndexFileBlob {
-    id: ObjectId,
-    offset: u64,
-    length: u64,
+pub struct IndexFileBlob {
+    pub id: ObjectId,
+    pub offset: u64,
+    pub length: u64,
 }

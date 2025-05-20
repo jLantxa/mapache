@@ -98,7 +98,8 @@ pub fn new_backend_with_prompt(url: &str) -> Result<Arc<dyn StorageBackend>> {
     match backend_url {
         BackendUrl::Local(repo_path) => Ok(Arc::new(LocalFS::new(repo_path))),
         BackendUrl::Sftp(username, host, port, repo_path) => {
-            let password = cli::request_password("Enter password for sftp");
+            let password_prompt = format!("{}@{}'s password", username, host);
+            let password = cli::request_password(&password_prompt);
             Ok(Arc::new(SftpBackend::new(
                 repo_path, username, host, port, password,
             )?))

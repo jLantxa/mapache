@@ -50,6 +50,24 @@ pub struct ChunkResult {
     pub total_encoded_size: usize,
 }
 
+/// Represents a directory node that is being built bottom-up during the commit process.
+/// It holds the directory's own node information (if available), the collected child nodes,
+/// and the number of children expected from the stream.
+#[derive(Debug)]
+struct PendingTree {
+    pub node: Option<Node>,
+    pub children: BTreeMap<String, Node>,
+    pub num_expected_children: isize,
+}
+
+impl PendingTree {
+    ///  Returns true if this directory node is still waiting to receive children
+    pub fn is_pending(&self) -> bool {
+        (self.num_expected_children >= 0)
+            && (self.children.len() as isize) < self.num_expected_children
+    }
+}
+
 pub struct Archiver {}
 
 impl Archiver {
@@ -96,20 +114,6 @@ impl Archiver {
         })
     }
 
-    pub fn snapshot(
-        repo: Arc<dyn RepositoryBackend>,
-        absolute_source_paths: Vec<PathBuf>,
-        commit_root_path: PathBuf,
-        parent_snapshot: Option<Snapshot>,
-    ) -> Result<Snapshot> {
-        Committer::run(
-            repo.clone(),
-            absolute_source_paths,
-            commit_root_path,
-            parent_snapshot,
-        )
-    }
-
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
@@ -124,36 +128,14 @@ impl Archiver {
         let tree: Tree = serde_json::from_slice(&tree_object)?;
         Ok(tree)
     }
-}
 
-/// Represents a directory node that is being built bottom-up during the commit process.
-/// It holds the directory's own node information (if available), the collected child nodes,
-/// and the number of children expected from the stream.
-#[derive(Debug)]
-struct PendingTree {
-    pub node: Option<Node>,
-    pub children: BTreeMap<String, Node>,
-    pub num_expected_children: isize,
-}
-
-impl PendingTree {
-    ///  Returns true if this directory node is still waiting to receive children
-    pub fn is_pending(&self) -> bool {
-        (self.num_expected_children >= 0)
-            && (self.children.len() as isize) < self.num_expected_children
-    }
-}
-
-/// Orchestrates the backup commit process, building a new snapshot of the source paths.
-///
-/// This implementation utilizes a multi-threaded, channel-based architecture to manage
-/// the workflow.Dedicated threads handle generating the difference stream, processing
-/// individual file and directory changes, and serializing the resulting tree structure
-/// bottom-up to create the final snapshot.
-struct Committer {}
-
-impl Committer {
-    pub fn run(
+    /// Orchestrates the backup commit process, building a new snapshot of the source paths.
+    ///
+    /// This implementation utilizes a multi-threaded, channel-based architecture to manage
+    /// the workflow.Dedicated threads handle generating the difference stream, processing
+    /// individual file and directory changes, and serializing the resulting tree structure
+    /// bottom-up to create the final snapshot.
+    pub fn snapshot(
         repo: Arc<dyn RepositoryBackend>,
         absolute_source_paths: Vec<PathBuf>,
         commit_root_path: PathBuf,

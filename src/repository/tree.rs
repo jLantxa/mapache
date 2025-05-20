@@ -272,7 +272,11 @@ pub struct SerializedNodeStreamer {
 }
 
 impl SerializedNodeStreamer {
-    pub fn new(repo: Arc<dyn RepositoryBackend>, root_id: Option<ObjectId>) -> Result<Self> {
+    pub fn new(
+        repo: Arc<dyn RepositoryBackend>,
+        root_id: Option<ObjectId>,
+        base_path: PathBuf,
+    ) -> Result<Self> {
         let mut stack = Vec::new();
 
         if let Some(id) = root_id {
@@ -281,7 +285,7 @@ impl SerializedNodeStreamer {
 
             for node in tree.nodes.into_iter().rev() {
                 stack.push((
-                    PathBuf::new(),
+                    base_path.clone(),
                     StreamNode {
                         node,
 

@@ -14,7 +14,7 @@ A <u>**work-in-progress**</u> deduplicating incremental **backup** tool written 
 
 The language of choice is `Rust`. I didn't choose `Rust` for any particular reason other than: it is a language I'm learning now and it seemed sufficiently safe, performant and ergonomic to use it.
 
-`{{backup}}` is inspired in its design by other similar tools like `git` and `restic`. Is implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to deduplicate the contents of files.
+`{{backup}}` is inspired in its design by other similar tools like `git` and `restic`. Is implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to deduplicate the contents of files. It uses the FastCDC algorithm for chunking.
 
 Each 'backup' is called a `Snapshot`. `Snapshots` are independent from each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
 
@@ -107,7 +107,7 @@ Options:
 
 ### Specifying a repo path and initializing a `repository`
 
-{{backup}} stores all the data in a `Repository`. This `repository` can be store on the same machine that you used to run the tool, an external harddrive, or a machine accessible via SFTP.
+`{{backup}}` stores all the data in a `Repository`. This `repository` can be store on the same machine that you used to run the tool, an external harddrive, or a machine accessible via SFTP.
 
 If you want to initialize a repository in the local file system (your machine or a device physically connected to it), you do it like this:
 

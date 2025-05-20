@@ -15,6 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod config;
+pub mod index;
+pub mod packer;
 pub mod repository_v1;
 pub mod snapshot;
 pub mod storage;
@@ -29,17 +31,20 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use config::Config;
+use index::IndexFile;
 use serde::{Deserialize, Serialize};
 use snapshot::Snapshot;
 
 use crate::cli;
-use crate::{backend::StorageBackend, repository::storage::SecureStorage, utils::Hash};
+use crate::{
+    backend::StorageBackend,
+    backup::ObjectType,
+    backup::{ObjectId, SnapshotId},
+    repository::storage::SecureStorage,
+};
 
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
-
-pub type ObjectId = String;
-pub type SnapshotId = String;
 
 pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
@@ -53,16 +58,18 @@ pub trait RepositoryBackend: Sync + Send {
         Self: Sized;
 
     /// Saves a binary object in the repository.
-    fn save_object(&self, data: Vec<u8>) -> Result<(usize, ObjectId)>;
+    /// Returns a tuple (uncompressed size, encoded_size, object id)
+    fn save_object(
+        &self,
+        object_type: ObjectType,
+        data: Vec<u8>,
+    ) -> Result<(usize, usize, ObjectId)>;
 
     /// Loads a binary object from the repository
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>>;
 
-    /// Loads a segment of a binary object from the repository using offset and length
-    fn load_from_object(&self, id: &ObjectId, offset: u64, length: u64) -> Result<Vec<u8>>;
-
     /// Saves a snapshot metadata
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<Hash>;
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(SnapshotId, u64, u64)>;
 
     /// Get a snapshot by hash
     fn load_snapshot(&self, hash: &SnapshotId) -> Result<Snapshot>;
@@ -72,6 +79,10 @@ pub trait RepositoryBackend: Sync + Send {
 
     /// Get all snapshots in the repository, sorted by datetime.
     fn load_all_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
+
+    fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;
+
+    fn flush(&self) -> Result<(u64, u64)>;
 }
 
 pub fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {

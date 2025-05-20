@@ -16,19 +16,15 @@
 
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 
-use anyhow::{Context, Error, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use clap::{Args, ValueEnum};
 
 use crate::{
     backend::new_backend_with_prompt,
+    backup::SnapshotId,
     cli::{self},
     commands::GlobalArgs,
-    repository::{
-        self,
-        storage::SecureStorage,
-        tree::SerializedNodeStreamer,
-        {RepositoryBackend, SnapshotId},
-    },
+    repository::{self, storage::SecureStorage, tree::SerializedNodeStreamer, RepositoryBackend},
     restorer,
 };
 

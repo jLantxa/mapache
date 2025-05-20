@@ -14,48 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, str::FromStr, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{anyhow, bail, Context, Error, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, ValueEnum};
 
 use crate::{
     backend::new_backend_with_prompt,
-    backup::SnapshotId,
     cli::{self},
-    commands::GlobalArgs,
-    repository::{self, storage::SecureStorage, tree::SerializedNodeStreamer, RepositoryBackend},
+    commands::{GlobalArgs, UseSnapshot},
+    repository::{self, RepositoryBackend, storage::SecureStorage, tree::SerializedNodeStreamer},
     restorer,
 };
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum RestoreSnapshot {
-    Latest,
-    Snapshot(SnapshotId),
-}
-
-impl FromStr for RestoreSnapshot {
-    type Err = Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "latest" => Ok(RestoreSnapshot::Latest),
-            _ if !s.is_empty() => Ok(RestoreSnapshot::Snapshot(s.to_string())),
-            _ => Err(anyhow!(
-                "Invalid snapshot value: must be 'latest' or a snapshot ID"
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for RestoreSnapshot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RestoreSnapshot::Latest => write!(f, "latest"),
-            RestoreSnapshot::Snapshot(id) => write!(f, "{}", id),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
 pub enum Resolution {
@@ -81,8 +51,8 @@ pub struct CmdArgs {
     pub target: PathBuf,
 
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
-    #[clap(long, value_parser = clap::value_parser!(RestoreSnapshot), default_value_t=RestoreSnapshot::Latest)]
-    pub snapshot: RestoreSnapshot,
+    #[clap(long, value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
+    pub snapshot: UseSnapshot,
 
     /// A list of paths to restore.
     #[clap(long, required = false)]
@@ -116,12 +86,12 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Arc::from(repository::open(backend, secure_storage.clone())?);
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
-        RestoreSnapshot::Latest => {
+        UseSnapshot::Latest => {
             let snapshots_sorted = repo.load_all_snapshots_sorted()?;
             let s = snapshots_sorted.last();
             s.cloned()
         }
-        RestoreSnapshot::Snapshot(id) => match repo.load_snapshot(id) {
+        UseSnapshot::Snapshot(id) => match repo.load_snapshot(id) {
             Ok(s) => Some((id.clone(), s)),
             Err(_) => None,
         },

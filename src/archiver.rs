@@ -182,9 +182,9 @@ impl Committer {
         };
 
         // Extract parent snapshot tree id
-        let parent_tree_id: Option<ObjectId> = match parent_snapshot {
+        let parent_tree_id: Option<ObjectId> = match &parent_snapshot {
             None => None,
-            Some(snapshot) => Some(snapshot.tree),
+            Some(snapshot) => Some(snapshot.tree.clone()),
         };
 
         // Create streamers
@@ -222,8 +222,8 @@ impl Committer {
                     break;
                 }
 
-                if let Ok(_) = diff_result {
-                    if let Err(_) = diff_tx.send(diff_result.unwrap()) {
+                if let Ok(diff) = diff_result {
+                    if let Err(_) = diff_tx.send(diff) {
                         error_flag_clone.fetch_and(true, std::sync::atomic::Ordering::AcqRel);
                         cli::log_error("Committer thread errored sending diff");
                         break;

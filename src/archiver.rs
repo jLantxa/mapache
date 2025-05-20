@@ -100,9 +100,8 @@ impl Archiver {
         repo: Arc<dyn RepositoryBackend>,
         source_paths: &[PathBuf],
         parent_snapshot: Option<Snapshot>,
-        full_scan: bool,
     ) -> Result<Snapshot> {
-        Committer::run(repo.clone(), source_paths, parent_snapshot, full_scan)
+        Committer::run(repo.clone(), source_paths, parent_snapshot)
     }
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
@@ -152,7 +151,6 @@ impl Committer {
         repo: Arc<dyn RepositoryBackend>,
         source_paths: &[PathBuf],
         parent_snapshot: Option<Snapshot>,
-        full_scan: bool,
     ) -> Result<Snapshot> {
         // First convert the paths to absolute paths. canonicalize failes if the path does not exist.
         let mut absolute_source_paths = Vec::new();
@@ -253,8 +251,7 @@ impl Committer {
                 let inner_repo_clone = repo_clone.clone();
                 let inner_error_flag_clone = error_flag_clone.clone();
                 pool.spawn(move || {
-                    let processed_item_result =
-                        Self::process_item(diff, inner_repo_clone.as_ref(), full_scan);
+                    let processed_item_result = Self::process_item(diff, inner_repo_clone.as_ref());
 
                     match processed_item_result {
                         Ok(processed_item_opt) => {
@@ -334,7 +331,6 @@ impl Committer {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: &dyn RepositoryBackend,
-        should_do_full_scan: bool,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
 
@@ -347,20 +343,9 @@ impl Committer {
             NodeDiff::Unchanged => match prev_node {
                 None => bail!("Item unchanged but the node was not provided"),
                 Some(prev_stream_node_info) => {
-                    let mut node = prev_stream_node_info.node.clone();
+                    let node = prev_stream_node_info.node.clone();
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
-                            if should_do_full_scan && node.is_file() {
-                                let (_, updated_node) =
-                                    Archiver::save_file(repo, &path).map(|chunk_result| {
-                                        let mut updated_node = node.clone();
-                                        updated_node.contents = Some(chunk_result.chunks);
-                                        (path.to_path_buf(), updated_node.clone())
-                                    })?;
-
-                                node = updated_node;
-                            }
-
                             return Ok(Some((
                                 path,
                                 StreamNode {

@@ -23,13 +23,12 @@ use colored::Colorize;
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
-    backup::SnapshotId,
-    cli::{self},
+    cli,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
     utils,
 };
 
-use super::GlobalArgs;
+use super::{GlobalArgs, UseSnapshot};
 
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
@@ -47,8 +46,8 @@ pub struct CmdArgs {
     pub full_scan: bool,
 
     /// Use a snapshot as parent. This snapshot will be the base when analyzing differences.
-    #[arg(long, value_parser, group = "scan_mode")]
-    pub parent: Option<SnapshotId>,
+    #[arg(long, group = "scan_mode",value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest )]
+    pub parent: UseSnapshot,
 
     /// Dry run
     #[arg(long, default_value_t = false)]
@@ -74,11 +73,33 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let source_paths = &args.paths;
 
-    let parent_snapshot = match &args.parent {
-        None => None,
-        Some(id) => match repo.load_snapshot(&id) {
-            Ok(snapshot) => Some(snapshot),
-            Err(_) => bail!("No snapshot found with id \'{}\'", id),
+    let parent_snapshot = match args.full_scan {
+        true => {
+            cli::log!("Full scan");
+            None
+        }
+        false => match &args.parent {
+            UseSnapshot::Latest => {
+                let snapshots_sorted = repo.load_all_snapshots_sorted()?;
+                let s = snapshots_sorted.last().cloned();
+                match &s {
+                    Some((id, snap)) => {
+                        cli::log!("Using last snapshot ({}) as parent", id);
+                        Some(snap.clone())
+                    }
+                    None => {
+                        cli::log_warning("No previous snapshots found. Doing full scan.");
+                        None
+                    }
+                }
+            }
+            UseSnapshot::Snapshot(id) => match &repo.load_snapshot(id) {
+                Ok(snap) => {
+                    cli::log!("Using snapshot {:?} as parent", id);
+                    Some(snap.clone())
+                }
+                Err(_) => bail!("Snapshot {:?} not found", id),
+            },
         },
     };
 
@@ -107,8 +128,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::format_size(total_bytes)
     );
 
-    let mut new_snapshot =
-        Archiver::snapshot(repo.clone(), source_paths, parent_snapshot, args.full_scan)?;
+    let mut new_snapshot = Archiver::snapshot(repo.clone(), source_paths, parent_snapshot)?;
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());

@@ -14,7 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::str::FromStr;
+
+use anyhow::{Error, anyhow};
 use clap::{Parser, Subcommand};
+
+use crate::backup::SnapshotId;
 
 pub mod cat;
 pub mod init;
@@ -62,4 +67,33 @@ pub struct GlobalArgs {
     /// Repository path
     #[clap(short, long, value_parser)]
     pub repo: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UseSnapshot {
+    Latest,
+    Snapshot(SnapshotId),
+}
+
+impl FromStr for UseSnapshot {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "latest" => Ok(UseSnapshot::Latest),
+            _ if !s.is_empty() => Ok(UseSnapshot::Snapshot(s.to_string())),
+            _ => Err(anyhow!(
+                "Invalid snapshot value: must be 'latest' or a snapshot ID"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for UseSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UseSnapshot::Latest => write!(f, "latest"),
+            UseSnapshot::Snapshot(id) => write!(f, "{}", id),
+        }
+    }
 }

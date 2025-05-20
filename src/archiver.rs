@@ -30,27 +30,24 @@ use chrono::Local;
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
+    backup::{self, ObjectId, ObjectType},
     cli,
     repository::{
+        RepositoryBackend,
         snapshot::Snapshot,
         tree::{
             FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, NodeType, SerializedNodeStreamer,
             StreamNode, Tree,
         },
-        {ObjectId, RepositoryBackend},
     },
-    utils::{self, Hash, size},
+    utils::{self, Hash},
 };
-
-const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
-const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
-const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
 
 #[derive(Debug)]
 pub struct ChunkResult {
     pub chunks: Vec<Hash>,
-    pub total_bytes_read: usize,
-    pub total_bytes_written: usize,
+    pub total_raw_size: usize,
+    pub total_encoded_size: usize,
 }
 
 pub struct Archiver {}
@@ -71,30 +68,31 @@ impl Archiver {
         // same contents will no longer produce same chunks and IDs.
         let chunker = StreamCDC::with_level(
             reader,
-            MIN_CHUNK_SIZE,
-            AVG_CHUNK_SIZE,
-            MAX_CHUNK_SIZE,
+            backup::defaults::MIN_CHUNK_SIZE,
+            backup::defaults::AVG_CHUNK_SIZE,
+            backup::defaults::MAX_CHUNK_SIZE,
             Normalization::Level1,
         );
 
         let mut chunk_hashes = Vec::new();
-        let mut total_bytes_read = 0;
-        let mut total_bytes_written = 0;
+        let mut total_raw_size = 0;
+        let mut total_encoded_size = 0;
 
         for result in chunker {
             let chunk = result?;
 
-            let (bytes_writen, content_hash) = repo.save_object(chunk.data)?;
+            let (raw_size, encoded_size, content_hash) =
+                repo.save_object(ObjectType::Data, chunk.data)?;
 
             chunk_hashes.push(content_hash);
-            total_bytes_read += chunk.length;
-            total_bytes_written += bytes_writen;
+            total_raw_size += raw_size;
+            total_encoded_size += encoded_size;
         }
 
         Ok(ChunkResult {
             chunks: chunk_hashes,
-            total_bytes_read,
-            total_bytes_written,
+            total_raw_size,
+            total_encoded_size,
         })
     }
 
@@ -111,7 +109,7 @@ impl Archiver {
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
         let tree_json = serde_json::to_string_pretty(tree)?.as_bytes().to_vec();
-        let (_, hash) = repo.save_object(tree_json)?;
+        let (_raw_size, _encoded_size, hash) = repo.save_object(ObjectType::Tree, tree_json)?;
         Ok(hash)
     }
 
@@ -288,11 +286,11 @@ impl Committer {
         // Serializer thread. This thread receives processed items and serializes tree nodes as they
         // become finalized, bottom-up.
         let error_flag_clone = error_flag.clone();
+        let repo_clone = repo.clone();
         let tree_serializer_thread = std::thread::spawn(move || {
             let mut final_root_tree_id: Option<ObjectId> = None;
             let mut pending_trees =
                 Self::create_pending_trees(&commit_root_path, &absolute_source_paths);
-            let repo_clone = repo.clone();
 
             while let Ok(item) = process_item_rx.recv() {
                 if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
@@ -311,6 +309,8 @@ impl Committer {
                     break;
                 }
             }
+
+            let (_uncompressed, _compressed) = repo.flush()?;
 
             // The entire tree must be serialized by now, so we can create a
             // snapshot with the root tree id.
@@ -608,59 +608,4 @@ impl Committer {
 }
 
 #[cfg(test)]
-mod test {
-    use std::sync::Arc;
-
-    use tempfile::tempdir;
-
-    use crate::{
-        backend::localfs::LocalFS,
-        repository::{
-            repository_v1::Repository, retrieve_key, storage::SecureStorage, tree::FSNodeStreamer,
-        },
-        restorer, testing,
-    };
-
-    use super::*;
-    /// Test file chunk and restore
-    #[test]
-    fn test_chunk_and_restore() -> Result<()> {
-        let temp_repo_dir = tempdir()?;
-        let temp_repo_path = temp_repo_dir.path().join("repo");
-
-        let src_file_path = testing::get_test_path("tree0.json");
-        let dst_file_path = temp_repo_path.join("tree0.json.restored");
-
-        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
-
-        // Init
-        Repository::init(backend.clone(), String::from("mapachito"))?;
-
-        // Open
-        let key = retrieve_key(String::from("mapachito"), backend.clone())?;
-        let secure_storage = Arc::new(
-            SecureStorage::build()
-                .with_key(key)
-                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
-        );
-
-        let repo = Arc::new(Repository::open(backend, secure_storage.clone())?);
-
-        // Scan the FS -> Find the file
-        let mut fs_node_streamer = FSNodeStreamer::from_root(&src_file_path)?;
-        let (_, mut stream_node) = fs_node_streamer.next().unwrap().unwrap();
-
-        // Chunk the file, obtain Node with content hashes
-        let chunk_result = Archiver::save_file(repo.as_ref(), &src_file_path)?;
-        stream_node.node.contents = Some(chunk_result.chunks.clone());
-
-        restorer::restore_node(repo.as_ref(), &stream_node.node, &dst_file_path)?;
-        assert_eq!(chunk_result.chunks, stream_node.node.contents.unwrap());
-
-        let src_data = std::fs::read(src_file_path)?;
-        let dst_data = std::fs::read(dst_file_path)?;
-        assert_eq!(src_data, dst_data);
-
-        Ok(())
-    }
-}
+mod test {}

@@ -16,6 +16,7 @@
 
 pub mod archiver;
 pub mod backend;
+pub mod backup;
 pub mod cli;
 pub mod commands;
 pub mod repository;

@@ -23,13 +23,9 @@ use colored::Colorize;
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
+    backup::SnapshotId,
     cli::{self},
-    repository::{
-        self,
-        storage::SecureStorage,
-        tree::FSNodeStreamer,
-        {RepositoryBackend, SnapshotId},
-    },
+    repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
     utils,
 };
 
@@ -118,7 +114,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         new_snapshot.description = Some(description.clone());
     }
 
-    let snapshot_id: SnapshotId = repo.save_snapshot(&new_snapshot)?;
+    let (snapshot_id, _uncompressed_snapshot_size, _compressed_snapshot_size) =
+        repo.save_snapshot(&new_snapshot)?;
     cli::log!();
     cli::log!("New snapshot \'{}\'", format!("{}", snapshot_id).bold());
 

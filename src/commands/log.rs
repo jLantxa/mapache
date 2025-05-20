@@ -22,8 +22,9 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
+    backup::SnapshotId,
     cli,
-    repository::{self, RepositoryBackend, SnapshotId, snapshot::Snapshot, storage::SecureStorage},
+    repository::{self, snapshot::Snapshot, storage::SecureStorage, RepositoryBackend},
 };
 
 use super::GlobalArgs;

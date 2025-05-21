@@ -15,17 +15,21 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::{
     archiver::{Archiver, CommitProgressReporter},
     backend::{make_dry_backend, new_backend_with_prompt},
+    backup::ObjectId,
     cli,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
     utils,
@@ -137,7 +141,18 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
     };
 
-    let progress_reporter = Arc::new(Mutex::new(ProgressReporter::new()));
+    let start = Instant::now();
+
+    // Scan filesystem
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    );
+    spinner.set_message("Scanning filesystem...");
+    spinner.enable_steady_tick(Duration::from_millis(100));
 
     // Scan the filesystem to collect stats about the targets
     let mut num_files = 0;
@@ -156,13 +171,24 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     }
 
+    spinner.finish_and_clear();
     cli::log!(
         "{} {} files, {} directories, {}",
         "To commit:".bold().cyan(),
         num_files,
         num_dirs,
-        utils::format_size(total_bytes)
+        utils::format_size(total_bytes),
     );
+    cli::log!();
+
+    // Run commiter
+    let expected_items = num_files + num_dirs;
+    const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
+    let progress_reporter = Arc::new(Mutex::new(ProgressReporter::new(
+        expected_items,
+        total_bytes,
+        NUM_SHOWN_PROCESSING_ITEMS,
+    )));
 
     let mut new_snapshot = Archiver::snapshot(
         repo.clone(),
@@ -180,8 +206,24 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo.save_snapshot(&new_snapshot)?;
 
     // Final report
+    show_final_report(&snapshot_id, &progress_reporter, args);
+
+    cli::log!(
+        "Finished in {}",
+        utils::pretty_print_duration(start.elapsed())
+    );
+
+    Ok(())
+}
+
+fn show_final_report(
+    snapshot_id: &ObjectId,
+    progress_reporter: &Arc<Mutex<ProgressReporter>>,
+    args: &CmdArgs,
+) {
     let pr = progress_reporter.lock().unwrap();
-    cli::log!();
+    pr.finalize();
+
     cli::log!("{}", "Changes since parent snapshot".bold());
     cli::log!();
 
@@ -193,7 +235,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let file_summary_line = format!(
         "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
-        "Files:".bold(),
+        "Files".bold(),
         pr.new_files,
         pr.changed_files,
         pr.deleted_files,
@@ -201,7 +243,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
     let dir_summary_line = format!(
         "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
-        "Dirs:".bold(),
+        "Dirs".bold(),
         pr.new_dirs,
         pr.changed_dirs,
         pr.deleted_dirs,
@@ -248,11 +290,13 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     cli::log!();
-
-    Ok(())
 }
 
 pub struct ProgressReporter {
+    pub expected_items: u64,
+    pub expected_size: u64,
+    pub processing_items: VecDeque<PathBuf>,
+
     pub processed_bytes: u64,
     pub encoded_bytes: u64,
     pub raw_bytes: u64,
@@ -265,11 +309,42 @@ pub struct ProgressReporter {
     pub changed_dirs: u32,
     pub unchanged_dirs: u32,
     pub deleted_dirs: u32,
+
+    #[allow(dead_code)]
+    mp: MultiProgress,
+    progress_bar: ProgressBar,
+    file_spinners: Vec<ProgressBar>,
 }
 
 impl ProgressReporter {
-    pub fn new() -> Self {
+    pub fn new(expected_items: u64, expected_size: u64, num_processed_items: usize) -> Self {
+        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(5));
+
+        let mut file_spinners = Vec::with_capacity(num_processed_items);
+        for _ in 0..num_processed_items {
+            let file_spinner = mp.add(ProgressBar::new_spinner());
+            file_spinner.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+            );
+            file_spinner.enable_steady_tick(Duration::from_millis(200));
+            file_spinners.push(file_spinner);
+        }
+
+        let progress_bar = mp.add(ProgressBar::new(expected_size));
+        progress_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed}] [{bar:40.cyan/white}] {msg} [ETA: {eta}]")
+                .unwrap()
+                .progress_chars("=> "),
+        );
+
         Self {
+            expected_items,
+            expected_size,
+            processing_items: VecDeque::new(),
             processed_bytes: 0,
             encoded_bytes: 0,
             raw_bytes: 0,
@@ -281,17 +356,50 @@ impl ProgressReporter {
             changed_dirs: 0,
             unchanged_dirs: 0,
             deleted_dirs: 0,
+            mp,
+            progress_bar,
+            file_spinners,
         }
+    }
+
+    fn update_processing_items(&mut self) {
+        for (i, spinner) in self.file_spinners.iter().enumerate() {
+            let _ = spinner.set_message(format!(
+                "{:?}",
+                self.processing_items.get(i).unwrap_or(&PathBuf::new())
+            ));
+        }
+    }
+
+    pub fn finalize(&self) {
+        let _ = self.mp.clear();
     }
 }
 
 impl CommitProgressReporter for ProgressReporter {
-    fn processing_file(&mut self, _path: PathBuf) {
-        // Do nothing yet
+    fn processing_file(&mut self, path: PathBuf) {
+        self.processing_items.push_back(path);
+        self.update_processing_items();
+    }
+
+    fn processed_file(&mut self, path: PathBuf) {
+        if let Some(idx) = self.processing_items.iter().position(|p| *p == path) {
+            self.processing_items.remove(idx);
+            self.progress_bar.inc(1);
+            self.update_processing_items();
+        }
     }
 
     fn processed_bytes(&mut self, bytes: u64) {
         self.processed_bytes += bytes;
+        self.progress_bar.inc(bytes);
+
+        let progress_msg = format!(
+            "{} / {}",
+            utils::format_size(self.processed_bytes),
+            utils::format_size(self.expected_size)
+        );
+        self.progress_bar.set_message(progress_msg);
     }
 
     fn raw_bytes(&mut self, bytes: u64) {

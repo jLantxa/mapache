@@ -53,6 +53,7 @@ struct ChunkResult {
 
 pub trait CommitProgressReporter: Send + Sync {
     fn processing_file(&mut self, path: PathBuf);
+    fn processed_file(&mut self, path: PathBuf);
     fn processed_bytes(&mut self, bytes: u64);
     fn raw_bytes(&mut self, bytes: u64);
     fn encoded_bytes(&mut self, bytes: u64);
@@ -165,24 +166,29 @@ impl Archiver {
         let process_item_tx_clone = process_item_tx.clone();
         let repo_clone = repo.clone();
         let error_flag_clone = error_flag.clone();
-        let progress_reporter_clone = progress_reporter.clone();
+        let processor_progress_reporter_clone = progress_reporter.clone();
+        let commit_root_path_clone = commit_root_path.clone();
+        let processor_thread =
+            std::thread::spawn(move || {
+                while let Ok(diff) = diff_rx_clone.recv() {
+                    if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
+                        break;
+                    }
 
-        let processor_thread = std::thread::spawn(move || {
-            while let Ok(diff) = diff_rx_clone.recv() {
-                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-
-                let inner_process_item_tx_clone = process_item_tx_clone.clone();
-                let inner_repo_clone = repo_clone.clone();
-                let inner_error_flag_clone = error_flag_clone.clone();
-                let inner_progress_reporter_clone = progress_reporter_clone.clone();
-                pool.spawn(move || {
+                    let inner_process_item_tx_clone = process_item_tx_clone.clone();
+                    let inner_repo_clone = repo_clone.clone();
+                    let inner_error_flag_clone = error_flag_clone.clone();
+                    let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
+                    let inner_commit_root_path_clone = commit_root_path_clone.clone();
+                    pool.spawn(move || {
                     // Notify reporter
                     if let Some(pr) = &inner_progress_reporter_clone {
                         let (item_path, _, _, _) = &diff;
                         let mut pr_guard = pr.lock().unwrap();
-                        pr_guard.processing_file(item_path.clone());
+                        pr_guard.processing_file(item_path
+                            .strip_prefix(inner_commit_root_path_clone.clone())
+                            .unwrap()
+                            .to_path_buf());
                     }
 
                     let processed_item_result = Self::process_item(
@@ -214,8 +220,8 @@ impl Archiver {
                         }
                     }
                 });
-            }
-        });
+                }
+            });
 
         // No one uses this copy of the tx (each worker thread just got a clone).
         // We must drop it or else the serializer thread will be blocked waiting for all copies
@@ -226,6 +232,7 @@ impl Archiver {
         // become finalized, bottom-up.
         let error_flag_clone = error_flag.clone();
         let repo_clone = repo.clone();
+        let serializer_progress_reporter_clone = progress_reporter.clone();
         let tree_serializer_thread = std::thread::spawn(move || {
             let mut final_root_tree_id: Option<ObjectId> = None;
             let mut pending_trees =
@@ -234,6 +241,19 @@ impl Archiver {
             while let Ok(item) = process_item_rx.recv() {
                 if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
                     break;
+                }
+
+                // Notify reporter
+                if let Some(pr) = &serializer_progress_reporter_clone {
+                    let (item_path, _) = &item;
+                    let mut pr_guard = pr.lock().unwrap();
+                    pr_guard.processed_file(
+                        item_path
+                            .clone()
+                            .strip_prefix(commit_root_path.clone())
+                            .unwrap()
+                            .to_path_buf(),
+                    );
                 }
 
                 if let Err(e) = Self::handle_processed_item(

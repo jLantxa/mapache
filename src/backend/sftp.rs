@@ -174,8 +174,10 @@ impl StorageBackend for SftpBackend {
                 path
             )
         })?;
+
+        // Read into preallocated vector
+        let mut contents = vec![0; length as usize];
         let _ = file.seek(SeekFrom::Start(offset));
-        let mut contents = Vec::with_capacity(length as usize);
         file.read_exact(&mut contents)
             .with_context(|| format!("Failed to range read file {:?}\' in sftp backend", path))?;
         Ok(contents)

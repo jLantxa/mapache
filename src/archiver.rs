@@ -109,7 +109,7 @@ impl Archiver {
         // Create streamers
         let fs_streamer = match FSNodeStreamer::from_paths(&absolute_source_paths) {
             Ok(stream) => stream,
-            Err(_) => bail!("Failed to create FSNodeStreamer"),
+            Err(e) => bail!("Failed to create FSNodeStreamer: {:?}", e.to_string()),
         };
         let previous_tree_streamer =
             SerializedNodeStreamer::new(repo.clone(), parent_tree_id, commit_root_path.clone())?;
@@ -143,9 +143,12 @@ impl Archiver {
                 }
 
                 if let Ok(diff) = diff_result {
-                    if let Err(_) = diff_tx.send(diff) {
+                    if let Err(e) = diff_tx.send(diff) {
                         error_flag_clone.fetch_and(true, std::sync::atomic::Ordering::AcqRel);
-                        cli::log_error("Committer thread errored sending diff");
+                        cli::log_error(&format!(
+                            "Committer thread errored sending diff: {:?}",
+                            e.to_string()
+                        ));
                         break;
                     }
                 } else {
@@ -191,18 +194,22 @@ impl Archiver {
                     match processed_item_result {
                         Ok(processed_item_opt) => {
                             if let Some(processed_item) = processed_item_opt {
-                                if let Err(_) = inner_process_item_tx_clone.send(processed_item) {
+                                if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
                                     inner_error_flag_clone.store(true, Ordering::Release);
-                                    cli::log_error(
-                                        "Committer thread errored sending processing item",
-                                    );
+                                    cli::log_error(&format!(
+                                        "Committer thread errored sending processing item: {:?}",
+                                        e.to_string()
+                                    ));
                                     return;
                                 }
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
                             inner_error_flag_clone.store(true, Ordering::Release);
-                            cli::log_error("Committer thread errored processing item");
+                            cli::log_error(&format!(
+                                "Committer thread errored processing item: {:?}",
+                                e.to_string()
+                            ));
                             return;
                         }
                     }
@@ -229,7 +236,7 @@ impl Archiver {
                     break;
                 }
 
-                if let Err(_) = Self::handle_processed_item(
+                if let Err(e) = Self::handle_processed_item(
                     item,
                     repo_clone.as_ref(),
                     &mut pending_trees,
@@ -237,7 +244,10 @@ impl Archiver {
                     &commit_root_path,
                 ) {
                     error_flag_clone.store(true, Ordering::Release);
-                    cli::log_error("Committer thread errored handling processed item");
+                    cli::log_error(&format!(
+                        "Committer thread errored handling processed item: {:?}",
+                        e.to_string()
+                    ));
                     break;
                 }
             }
@@ -253,7 +263,7 @@ impl Archiver {
                     paths: absolute_source_paths,
                     description: None,
                 }),
-                None => Err(anyhow!("Failed to finalize snapshot tree")),
+                None => Err(anyhow!("Failed to finalize snapshot")),
             }
         });
 

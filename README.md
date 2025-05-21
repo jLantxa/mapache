@@ -1,6 +1,6 @@
 # backup
 
-A <u>**work-in-progress**</u> deduplicating incremental **backup** tool written in Rust.
+A <u>**work-in-progress**</u> de-duplicating incremental **backup** tool written in Rust.
 
 ## Table of Contents
 
@@ -8,13 +8,13 @@ A <u>**work-in-progress**</u> deduplicating incremental **backup** tool written 
 - [Roadmap](#roadmap)
 
 ## About
-`{{backup}}` *-placeholder name for the tool (I don't have a name yet)-* is a deduplicating incremental backup tool written in Rust. It is a CLI tool to backup your data to a local file system or a remote machine.
+`{{backup}}` *-placeholder name for the tool (I don't have a name yet)-* is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to backup your data to a local file system or a remote machine.
 
 `{{backup}}` is still in an early development stage. As such, it is still not functional (only for testing and development), it is missing all sorts of features, it is unstable, etc. But more importantly, it is a learning project and a tool I'm making to cover my own backup needs.
 
 The language of choice is `Rust`. I didn't choose `Rust` for any particular reason other than: it is a language I'm learning now and it seemed sufficiently safe, performant and ergonomic to use it.
 
-`{{backup}}` is inspired in its design by other similar tools like `git` and `restic`. Is implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to deduplicate the contents of files. It uses the FastCDC algorithm for chunking.
+`{{backup}}` is inspired in its design by other similar tools like `git` and `restic`. It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking.
 
 Each 'backup' is called a `Snapshot`. `Snapshots` are independent from each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
 
@@ -23,7 +23,7 @@ The basic design principles of {{backup}} are:
 - **Generality**: The tool must be able to work in a variety of contexts, i.e. small to medium to big repositories, machines of all different specs, etc.
 - **Efficiency**: The tool must use the resources available in the host as efficiently as possible. This means completing the backup process as fast as the resources allow, without exhausting those resources and with the minimum storage footprint.
 - **Robustness**: The tool must be able to resume operation if interrupted without the repository being corrupted and guaranteeing the integrity of the data.
-- **Security**: The tool must provide confidentiality and authentification of the stored data with encryption.
+- **Security**: The tool must provide confidentiality and authentication of the stored data with encryption.
 
 In addition to that, I am aiming to make the tool self contained, with all its dependencies linked statically. Even if this means making the executable bigger, I find it extremely useful that I am able to run it from an USB stick in a fresh install with no network connection.
 

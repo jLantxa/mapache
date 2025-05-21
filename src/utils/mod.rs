@@ -17,7 +17,7 @@
 pub mod indexset;
 pub mod url;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use blake3::Hasher;
 
@@ -97,6 +97,43 @@ pub fn bytes_to_hex_string(bytes: &[u8]) -> String {
         .map(|byte| format!("{:02x}", byte))
         .rev()
         .collect()
+}
+
+pub fn pretty_print_duration(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let milliseconds = duration.subsec_millis();
+
+    let days = total_seconds / (24 * 3600);
+    let hours = (total_seconds % (24 * 3600)) / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    const MAX_NUM_PARTS: usize = 2;
+    let mut parts = Vec::new();
+
+    if days > 0 {
+        parts.push(format!("{}d", days));
+    }
+    if hours > 0 || (days > 0 && (minutes > 0 || seconds > 0 || milliseconds > 0)) {
+        parts.push(format!("{}h", hours));
+    }
+    if parts.len() < MAX_NUM_PARTS && minutes > 0
+        || (hours > 0 && (seconds > 0 || milliseconds > 0))
+    {
+        parts.push(format!("{}m", minutes));
+    }
+    if parts.len() < MAX_NUM_PARTS && seconds > 0 || (minutes > 0 && milliseconds > 0) {
+        parts.push(format!("{}s", seconds));
+    }
+    if parts.is_empty() && (milliseconds > 0) {
+        parts.push(format!("{}ms", milliseconds));
+    }
+
+    if parts.is_empty() {
+        "0s".to_string()
+    } else {
+        parts.join(" ")
+    }
 }
 
 #[cfg(test)]

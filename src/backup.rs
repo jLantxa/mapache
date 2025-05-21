@@ -17,6 +17,8 @@
 pub mod defaults {
     use crate::utils::size;
 
+    pub const SHORT_ID_LENGTH: usize = 10;
+
     // Index
     /// This is a approximate number. Whole packs are stored in the same index
     /// file, so this is a minimum.

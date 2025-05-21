@@ -233,10 +233,13 @@ impl Archiver {
         let error_flag_clone = error_flag.clone();
         let repo_clone = repo.clone();
         let serializer_progress_reporter_clone = progress_reporter.clone();
+        let serializer_commit_root_path_clone = commit_root_path.clone();
         let tree_serializer_thread = std::thread::spawn(move || {
             let mut final_root_tree_id: Option<ObjectId> = None;
-            let mut pending_trees =
-                Self::create_pending_trees(&commit_root_path, &absolute_source_paths);
+            let mut pending_trees = Self::create_pending_trees(
+                &serializer_commit_root_path_clone,
+                &absolute_source_paths,
+            );
 
             while let Ok(item) = process_item_rx.recv() {
                 if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
@@ -250,7 +253,7 @@ impl Archiver {
                     pr_guard.processed_file(
                         item_path
                             .clone()
-                            .strip_prefix(commit_root_path.clone())
+                            .strip_prefix(serializer_commit_root_path_clone.clone())
                             .unwrap()
                             .to_path_buf(),
                     );
@@ -261,7 +264,7 @@ impl Archiver {
                     repo_clone.as_ref(),
                     &mut pending_trees,
                     &mut final_root_tree_id,
-                    &commit_root_path,
+                    &serializer_commit_root_path_clone,
                 ) {
                     error_flag_clone.store(true, Ordering::Release);
                     cli::log_error(&format!(
@@ -280,7 +283,9 @@ impl Archiver {
                 Some(tree_id) => Ok(Snapshot {
                     timestamp: Local::now(),
                     tree: tree_id.clone(),
-                    paths: absolute_source_paths,
+                    size: 0,
+                    root: commit_root_path.clone(),
+                    paths: absolute_source_paths.clone(),
                     description: None,
                 }),
                 None => Err(anyhow!("Failed to finalize snapshot")),

@@ -29,15 +29,13 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use crate::{
     archiver::{Archiver, CommitProgressReporter},
     backend::{make_dry_backend, new_backend_with_prompt},
-    backup::ObjectId,
+    backup::{self, ObjectId},
     cli,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
     utils,
 };
 
 use super::{GlobalArgs, UseSnapshot};
-
-const SHORT_ID_LEN: usize = 8;
 
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
@@ -121,7 +119,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     Some((id, snap)) => {
                         cli::log!(
                             "Using last snapshot {} as parent",
-                            &id[0..SHORT_ID_LEN].bold().yellow()
+                            &id[0..backup::defaults::SHORT_ID_LENGTH].bold().yellow()
                         );
                         Some(snap.clone())
                     }
@@ -198,6 +196,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Some(progress_reporter.clone()),
     )?;
 
+    let pr = progress_reporter.lock().unwrap();
+    new_snapshot.size = pr.processed_bytes;
+    drop(pr);
+
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
     }
@@ -266,7 +268,9 @@ fn show_final_report(
     if !args.dry_run {
         cli::log!(
             "New snapshot created {}",
-            format!("{}", &snapshot_id[0..SHORT_ID_LEN]).bold().green()
+            format!("{}", &snapshot_id[0..backup::defaults::SHORT_ID_LENGTH])
+                .bold()
+                .green()
         );
         cli::log!(
             "This snapshot added {} {}",

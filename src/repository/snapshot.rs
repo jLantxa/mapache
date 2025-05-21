@@ -29,6 +29,12 @@ pub struct Snapshot {
     /// Hash ID for the tree object root.
     pub tree: SnapshotId,
 
+    /// Snapshot size in bytes
+    pub size: u64,
+
+    /// Snapshot root path
+    pub root: PathBuf,
+
     /// Absolute paths to the targets
     pub paths: Vec<PathBuf>,
 

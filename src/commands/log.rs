@@ -22,9 +22,10 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    backup::SnapshotId,
+    backup::{self, SnapshotId},
     cli,
     repository::{self, RepositoryBackend, snapshot::Snapshot, storage::SecureStorage},
+    utils,
 };
 
 use super::GlobalArgs;
@@ -73,6 +74,8 @@ fn log(snapshots: &Vec<(SnapshotId, Snapshot)>) {
             "Date:".bold(),
             snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z")
         );
+        println!("{} {}", "Size:".bold(), utils::format_size(snapshot.size));
+        println!("{} {:?}", "Root:".bold(), &snapshot.root);
 
         println!();
         println!("{}", "Paths:".bold());
@@ -93,17 +96,22 @@ fn log(snapshots: &Vec<(SnapshotId, Snapshot)>) {
 }
 
 fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {
-    const ABBR_ID_LEN: usize = 12;
-
     let mut peekable_snapshots = snapshots.iter().peekable();
 
-    println!("{0: <ABBR_ID_LEN$}  {1: <26}", "ID".bold(), "Date".bold());
-    cli::print_separator('-', ABBR_ID_LEN + 2 + 26);
+    let id_len = backup::defaults::SHORT_ID_LENGTH;
+    println!(
+        "{0: <id_len$}  {1: <26}  {2:>12}",
+        "ID".bold(),
+        "Date".bold(),
+        "Size".bold()
+    );
+    cli::print_separator('-', id_len + 2 + 26 + 2 + 12);
     while let Some((id, snapshot)) = peekable_snapshots.next() {
         println!(
-            "{0: <ABBR_ID_LEN$}  {1: <26}",
-            &id[0..ABBR_ID_LEN].bold().yellow(),
-            snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z")
+            "{0: <id_len$}  {1: <26}  {2:>12}",
+            &id[0..id_len].bold().yellow(),
+            snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z"),
+            utils::format_size(snapshot.size)
         );
     }
 }

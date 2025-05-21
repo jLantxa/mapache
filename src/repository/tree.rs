@@ -206,17 +206,6 @@ pub struct FSNodeStreamer {
 }
 
 impl FSNodeStreamer {
-    /// Creates an FSNodeStreamer from one root path
-    pub fn from_root(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root.as_ref();
-        if !root.exists() {
-            bail!("Path {} does not exist", root.display());
-        }
-        Ok(Self {
-            stack: vec![root.to_path_buf()],
-        })
-    }
-
     /// Creates an FSNodeStreamer from multiple root paths. The paths are iterated in lexicographical order.
     pub fn from_paths(paths: &[PathBuf]) -> Result<Self> {
         for path in paths {
@@ -523,7 +512,7 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
+        let streamer = FSNodeStreamer::from_paths(&vec![tmp_path.join("dir_a")])?;
         let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
 
         assert_eq!(nodes.len(), 6);
@@ -599,8 +588,8 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let dir_a = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
-        let dir_b = FSNodeStreamer::from_root(tmp_path.join("dir_b"))?;
+        let dir_a = FSNodeStreamer::from_paths(&vec![tmp_path.join("dir_a")])?;
+        let dir_b = FSNodeStreamer::from_paths(&vec![tmp_path.join("dir_b")])?;
         let diff_streamer = NodeDiffStreamer::new(dir_a, dir_b);
         let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
             diff_streamer.collect();
@@ -624,8 +613,8 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let dir_a1 = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
-        let dir_a2 = FSNodeStreamer::from_root(tmp_path.join("dir_a"))?;
+        let dir_a1 = FSNodeStreamer::from_paths(&vec![tmp_path.join("dir_a")])?;
+        let dir_a2 = FSNodeStreamer::from_paths(&vec![tmp_path.join("dir_a")])?;
         let diff_streamer = NodeDiffStreamer::new(dir_a1, dir_a2);
         let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
             diff_streamer.collect();

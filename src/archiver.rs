@@ -43,14 +43,6 @@ use crate::{
     utils::Hash,
 };
 
-#[derive(Debug)]
-struct ChunkResult {
-    pub chunks: Vec<Hash>,
-    pub total_processed_size: u64,
-    pub total_raw_size: u64,
-    pub total_encoded_size: u64,
-}
-
 pub trait CommitProgressReporter: Send + Sync {
     fn processing_file(&mut self, path: PathBuf);
     fn processed_file(&mut self, path: PathBuf);
@@ -374,29 +366,24 @@ impl Archiver {
                         NodeType::File | NodeType::Symlink => {
                             if node.is_file() {
                                 let (_, updated_node) =
-                                    Archiver::save_file(repo, &path).map(|chunk_result| {
-                                        let mut updated_node = node.clone();
-                                        updated_node.contents = Some(chunk_result.chunks);
+                                    Archiver::save_file(repo, &path, progress_reporter.clone())
+                                        .map(|chunk_result| {
+                                            let mut updated_node = node.clone();
+                                            updated_node.contents = Some(chunk_result);
 
-                                        // Notify reporter
-                                        if let Some(pr) = progress_reporter {
-                                            let mut pr_guard = pr.lock().unwrap();
-                                            pr_guard.processed_bytes(
-                                                chunk_result.total_processed_size as u64,
-                                            );
-                                            pr_guard.encoded_bytes(
-                                                chunk_result.total_encoded_size as u64,
-                                            );
-                                            pr_guard.raw_bytes(chunk_result.total_raw_size as u64);
-                                            if diff_type == NodeDiff::New {
-                                                pr_guard.new_file();
-                                            } else if diff_type == NodeDiff::Changed {
-                                                pr_guard.changed_file();
+                                            // Notify reporter
+                                            if let Some(pr) = progress_reporter {
+                                                let mut pr_guard = pr.lock().unwrap();
+
+                                                if diff_type == NodeDiff::New {
+                                                    pr_guard.new_file();
+                                                } else if diff_type == NodeDiff::Changed {
+                                                    pr_guard.changed_file();
+                                                }
                                             }
-                                        }
 
-                                        (path.to_path_buf(), updated_node.clone())
-                                    })?;
+                                            (path.to_path_buf(), updated_node.clone())
+                                        })?;
 
                                 node = updated_node;
                             }
@@ -542,7 +529,11 @@ impl Archiver {
     /// will be compressed, encrypted and stored in the repository.
     /// The content hash of each chunk is used to identify the chunk and determine
     /// if the chunk already exists in the repository.
-    fn save_file(repo: &dyn RepositoryBackend, src_path: &Path) -> Result<ChunkResult> {
+    fn save_file(
+        repo: &dyn RepositoryBackend,
+        src_path: &Path,
+        progress_reporter: Option<Arc<Mutex<dyn CommitProgressReporter>>>,
+    ) -> Result<Vec<ObjectId>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
         let reader = BufReader::new(source);
@@ -558,28 +549,26 @@ impl Archiver {
         );
 
         let mut chunk_hashes = Vec::new();
-        let mut total_processed_size: u64 = 0;
-        let mut total_raw_size: u64 = 0;
-        let mut total_encoded_size: u64 = 0;
 
         for result in chunker {
             let chunk = result?;
-            total_processed_size += chunk.data.len() as u64;
+            let processed_size = chunk.data.len() as u64;
 
             let (raw_size, encoded_size, content_hash) =
                 repo.save_object(ObjectType::Data, chunk.data)?;
 
             chunk_hashes.push(content_hash);
-            total_raw_size += raw_size as u64;
-            total_encoded_size += encoded_size as u64;
+
+            if let Some(ref pr) = progress_reporter {
+                let mut pr_guard = pr.lock().unwrap();
+                pr_guard.encoded_bytes(encoded_size);
+                pr_guard.raw_bytes(raw_size);
+                pr_guard.processed_bytes(processed_size);
+                drop(pr_guard)
+            }
         }
 
-        Ok(ChunkResult {
-            chunks: chunk_hashes,
-            total_processed_size,
-            total_raw_size,
-            total_encoded_size,
-        })
+        Ok(chunk_hashes)
     }
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,

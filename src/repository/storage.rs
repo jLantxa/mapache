@@ -112,6 +112,10 @@ impl SecureStorage {
         let key = AesKey::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
+        if data.len() < 12 {
+            bail!("Decryption failed: invalid data");
+        }
+
         // Extract the nonce from the first 12 bytes of the data
         let (nonce, ciphertext) = data.split_at(12);
         let nonce = Nonce::from_slice(nonce);

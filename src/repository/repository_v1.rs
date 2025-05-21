@@ -178,11 +178,7 @@ impl RepositoryBackend for Repository {
         Ok(repo)
     }
 
-    fn save_object(
-        &self,
-        object_type: ObjectType,
-        data: Vec<u8>,
-    ) -> Result<(usize, usize, ObjectId)> {
+    fn save_object(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ObjectId)> {
         let raw_size = data.len();
         let id = utils::calculate_hash(&data);
 
@@ -210,7 +206,7 @@ impl RepositoryBackend for Repository {
             self.flush_packer(packer_guard)?;
         }
 
-        Ok((raw_size, encoded_size, id))
+        Ok((raw_size as u64, encoded_size as u64, id))
     }
 
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {

@@ -59,11 +59,7 @@ pub trait RepositoryBackend: Sync + Send {
 
     /// Saves a binary object in the repository.
     /// Returns a tuple (uncompressed size, encoded_size, object id)
-    fn save_object(
-        &self,
-        object_type: ObjectType,
-        data: Vec<u8>,
-    ) -> Result<(usize, usize, ObjectId)>;
+    fn save_object(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ObjectId)>;
 
     /// Loads a binary object from the repository
     fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>>;

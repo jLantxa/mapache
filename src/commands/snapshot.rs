@@ -16,7 +16,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Result, bail};
@@ -24,7 +24,7 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
-    archiver::Archiver,
+    archiver::{Archiver, CommitProgressReporter},
     backend::{make_dry_backend, new_backend_with_prompt},
     cli,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
@@ -32,6 +32,8 @@ use crate::{
 };
 
 use super::{GlobalArgs, UseSnapshot};
+
+const SHORT_ID_LEN: usize = 8;
 
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
@@ -101,6 +103,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::calculate_lcp(&absolute_source_paths)
     };
 
+    cli::log!();
     let parent_snapshot = match args.full_scan {
         true => {
             cli::log!("Full scan");
@@ -112,7 +115,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 let s = snapshots_sorted.last().cloned();
                 match &s {
                     Some((id, snap)) => {
-                        cli::log!("Using last snapshot ({}) as parent", id);
+                        cli::log!(
+                            "Using last snapshot {} as parent",
+                            &id[0..SHORT_ID_LEN].bold().yellow()
+                        );
                         Some(snap.clone())
                     }
                     None => {
@@ -130,6 +136,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             },
         },
     };
+
+    let progress_reporter = Arc::new(Mutex::new(ProgressReporter::new()));
 
     // Scan the filesystem to collect stats about the targets
     let mut num_files = 0;
@@ -161,21 +169,168 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         absolute_source_paths,
         commit_root_path,
         parent_snapshot,
+        Some(progress_reporter.clone()),
     )?;
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
     }
 
-    let (snapshot_id, _uncompressed_snapshot_size, _compressed_snapshot_size) =
+    let (snapshot_id, _snapshot_uncompressed_snapshot_size, _snapshot_compressed_snapshot_size) =
         repo.save_snapshot(&new_snapshot)?;
-    cli::log!();
-    cli::log!("New snapshot \'{}\'", format!("{}", snapshot_id).bold());
 
-    if args.dry_run {
-        cli::log!();
-        cli::log!("{} Nothing was saved", "[DRY RUN]".bold().cyan());
+    // Final report
+    let pr = progress_reporter.lock().unwrap();
+    cli::log!();
+    cli::log!("{}", "Changes since parent snapshot".bold());
+    cli::log!();
+
+    let type_len = std::cmp::max("Files:".len(), "Dirs:".len());
+    let new_len = std::cmp::max(8, "new".len());
+    let changed_len = std::cmp::max(8, "changed".len());
+    let del_len = std::cmp::max(8, "deleted".len());
+    let unmod_len = std::cmp::max(8, "unmodiffied".len());
+
+    let file_summary_line = format!(
+        "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
+        "Files:".bold(),
+        pr.new_files,
+        pr.changed_files,
+        pr.deleted_files,
+        pr.unchanged_files,
+    );
+    let dir_summary_line = format!(
+        "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
+        "Dirs:".bold(),
+        pr.new_dirs,
+        pr.changed_dirs,
+        pr.deleted_dirs,
+        pr.unchanged_dirs,
+    );
+
+    cli::log!(
+        "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
+        "",
+        "new".bold().green(),
+        "changed".bold().yellow(),
+        "deleted".bold().red(),
+        "unmodiffied".bold(),
+    );
+    cli::print_separator('-', file_summary_line.chars().count());
+    cli::log!("{}", file_summary_line);
+    cli::log!("{}", dir_summary_line);
+
+    cli::log!();
+    if !args.dry_run {
+        cli::log!(
+            "New snapshot created {}",
+            format!("{}", &snapshot_id[0..SHORT_ID_LEN]).bold().green()
+        );
+        cli::log!(
+            "This snapshot added {} {}",
+            utils::format_size(pr.raw_bytes).yellow(),
+            format!("({} compressed)", utils::format_size(pr.encoded_bytes))
+                .bold()
+                .green()
+        );
+    } else {
+        cli::log!(
+            "This snapshot would add {} {}",
+            utils::format_size(pr.raw_bytes).yellow(),
+            format!("({} compressed)", utils::format_size(pr.encoded_bytes))
+                .bold()
+                .green()
+        );
+        cli::log!(
+            "{} This was a dry run. Nothing was written.",
+            "[!]".bold().yellow()
+        );
     }
 
+    cli::log!();
+
     Ok(())
+}
+
+pub struct ProgressReporter {
+    pub processed_bytes: u64,
+    pub encoded_bytes: u64,
+    pub raw_bytes: u64,
+
+    pub new_files: u32,
+    pub changed_files: u32,
+    pub unchanged_files: u32,
+    pub deleted_files: u32,
+    pub new_dirs: u32,
+    pub changed_dirs: u32,
+    pub unchanged_dirs: u32,
+    pub deleted_dirs: u32,
+}
+
+impl ProgressReporter {
+    pub fn new() -> Self {
+        Self {
+            processed_bytes: 0,
+            encoded_bytes: 0,
+            raw_bytes: 0,
+            new_files: 0,
+            changed_files: 0,
+            unchanged_files: 0,
+            deleted_files: 0,
+            new_dirs: 0,
+            changed_dirs: 0,
+            unchanged_dirs: 0,
+            deleted_dirs: 0,
+        }
+    }
+}
+
+impl CommitProgressReporter for ProgressReporter {
+    fn processing_file(&mut self, _path: PathBuf) {
+        // Do nothing yet
+    }
+
+    fn processed_bytes(&mut self, bytes: u64) {
+        self.processed_bytes += bytes;
+    }
+
+    fn raw_bytes(&mut self, bytes: u64) {
+        self.raw_bytes += bytes;
+    }
+
+    fn encoded_bytes(&mut self, bytes: u64) {
+        self.encoded_bytes += bytes;
+    }
+
+    fn new_file(&mut self) {
+        self.new_files += 1
+    }
+
+    fn changed_file(&mut self) {
+        self.changed_files += 1
+    }
+
+    fn unchanged_file(&mut self) {
+        self.unchanged_files += 1;
+    }
+
+    fn deleted_file(&mut self) {
+        self.deleted_files += 1;
+    }
+
+    fn new_dir(&mut self) {
+        self.new_dirs += 1;
+    }
+
+    fn changed_dir(&mut self) {
+        self.changed_dirs += 1;
+    }
+
+    fn deleted_dir(&mut self) {
+        self.deleted_dirs += 1;
+    }
+
+    fn unchanged_dir(&mut self) {
+        self.unchanged_dirs += 1;
+    }
 }

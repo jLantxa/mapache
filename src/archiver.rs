@@ -20,7 +20,7 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -44,10 +44,26 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct ChunkResult {
+struct ChunkResult {
     pub chunks: Vec<Hash>,
-    pub total_raw_size: usize,
-    pub total_encoded_size: usize,
+    pub total_processed_size: u64,
+    pub total_raw_size: u64,
+    pub total_encoded_size: u64,
+}
+
+pub trait CommitProgressReporter: Send + Sync {
+    fn processing_file(&mut self, path: PathBuf);
+    fn processed_bytes(&mut self, bytes: u64);
+    fn raw_bytes(&mut self, bytes: u64);
+    fn encoded_bytes(&mut self, bytes: u64);
+    fn new_file(&mut self);
+    fn changed_file(&mut self);
+    fn unchanged_file(&mut self);
+    fn deleted_file(&mut self);
+    fn new_dir(&mut self);
+    fn changed_dir(&mut self);
+    fn unchanged_dir(&mut self);
+    fn deleted_dir(&mut self);
 }
 
 /// Represents a directory node that is being built bottom-up during the commit process.
@@ -71,64 +87,6 @@ impl PendingTree {
 pub struct Archiver {}
 
 impl Archiver {
-    /// Puts a file into the repository
-    ///
-    /// This function will split the file into chunks for deduplication, which
-    /// will be compressed, encrypted and stored in the repository.
-    /// The content hash of each chunk is used to identify the chunk and determine
-    /// if the chunk already exists in the repository.
-    pub fn save_file(repo: &dyn RepositoryBackend, src_path: &Path) -> Result<ChunkResult> {
-        let source = File::open(src_path)
-            .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
-        let reader = BufReader::new(source);
-
-        // The chunker parameters must remain stable across versions, otherwise
-        // same contents will no longer produce same chunks and IDs.
-        let chunker = StreamCDC::with_level(
-            reader,
-            backup::defaults::MIN_CHUNK_SIZE,
-            backup::defaults::AVG_CHUNK_SIZE,
-            backup::defaults::MAX_CHUNK_SIZE,
-            Normalization::Level1,
-        );
-
-        let mut chunk_hashes = Vec::new();
-        let mut total_raw_size = 0;
-        let mut total_encoded_size = 0;
-
-        for result in chunker {
-            let chunk = result?;
-
-            let (raw_size, encoded_size, content_hash) =
-                repo.save_object(ObjectType::Data, chunk.data)?;
-
-            chunk_hashes.push(content_hash);
-            total_raw_size += raw_size;
-            total_encoded_size += encoded_size;
-        }
-
-        Ok(ChunkResult {
-            chunks: chunk_hashes,
-            total_raw_size,
-            total_encoded_size,
-        })
-    }
-
-    /// Saves a tree in the repository. This function should be called when a tree is complete,
-    /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
-        let tree_json = serde_json::to_string_pretty(tree)?.as_bytes().to_vec();
-        let (_raw_size, _encoded_size, hash) = repo.save_object(ObjectType::Tree, tree_json)?;
-        Ok(hash)
-    }
-
-    /// Load a tree from the repository.
-    pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ObjectId) -> Result<Tree> {
-        let tree_object = repo.load_object(root_id)?;
-        let tree: Tree = serde_json::from_slice(&tree_object)?;
-        Ok(tree)
-    }
-
     /// Orchestrates the backup commit process, building a new snapshot of the source paths.
     ///
     /// This implementation utilizes a multi-threaded, channel-based architecture to manage
@@ -140,6 +98,7 @@ impl Archiver {
         absolute_source_paths: Vec<PathBuf>,
         commit_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
+        progress_reporter: Option<Arc<Mutex<dyn CommitProgressReporter>>>,
     ) -> Result<Snapshot> {
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ObjectId> = match &parent_snapshot {
@@ -199,11 +158,12 @@ impl Archiver {
         // Item processor thread pool. These threads receive diffs and process them, chunking and
         // saving files in the process. The resulting processed nodes are passed to the serializer
         // thread.
-
         let diff_rx_clone = diff_rx.clone();
         let process_item_tx_clone = process_item_tx.clone();
         let repo_clone = repo.clone();
         let error_flag_clone = error_flag.clone();
+        let progress_reporter_clone = progress_reporter.clone();
+
         let processor_thread = std::thread::spawn(move || {
             while let Ok(diff) = diff_rx_clone.recv() {
                 if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
@@ -213,8 +173,20 @@ impl Archiver {
                 let inner_process_item_tx_clone = process_item_tx_clone.clone();
                 let inner_repo_clone = repo_clone.clone();
                 let inner_error_flag_clone = error_flag_clone.clone();
+                let inner_progress_reporter_clone = progress_reporter_clone.clone();
                 pool.spawn(move || {
-                    let processed_item_result = Self::process_item(diff, inner_repo_clone.as_ref());
+                    // Notify reporter
+                    if let Some(pr) = &inner_progress_reporter_clone {
+                        let (item_path, _, _, _) = &diff;
+                        let mut pr_guard = pr.lock().unwrap();
+                        pr_guard.processing_file(item_path.clone());
+                    }
+
+                    let processed_item_result = Self::process_item(
+                        diff,
+                        inner_repo_clone.as_ref(),
+                        inner_progress_reporter_clone,
+                    );
 
                     match processed_item_result {
                         Ok(processed_item_opt) => {
@@ -294,13 +266,33 @@ impl Archiver {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: &dyn RepositoryBackend,
+        progress_reporter: Option<Arc<Mutex<dyn CommitProgressReporter>>>,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
 
         match diff_type {
             // Deleted item: We don't need to save anything and this node will not be present in the
-            // serialized tree. We just ignore it.
-            NodeDiff::Deleted => return Ok(None),
+            // serialized tree. We just ignore it. Maybe notify a progress reporter.
+            NodeDiff::Deleted => {
+                // Notify the reporter
+                if let Some(pr) = progress_reporter {
+                    match prev_node {
+                        Some(node_info) => match node_info.node.node_type {
+                            NodeType::File | NodeType::Symlink => {
+                                let mut pr_guard = pr.lock().unwrap();
+                                pr_guard.deleted_file();
+                            }
+                            NodeType::Directory => {
+                                let mut pr_guard = pr.lock().unwrap();
+                                pr_guard.deleted_dir();
+                            }
+                        },
+                        None => bail!("Item deleted but the node was not provided"),
+                    }
+                }
+
+                Ok(None)
+            }
 
             // Unchanged item: No need to save the content, but we still need to serialize the node.
             NodeDiff::Unchanged => match prev_node {
@@ -309,6 +301,14 @@ impl Archiver {
                     let node = prev_stream_node_info.node.clone();
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
+                            // Notify reporter
+                            if let Some(pr) = progress_reporter {
+                                let bytes_processed = node.metadata.size;
+                                let mut pr_guard = pr.lock().unwrap();
+                                pr_guard.processed_bytes(bytes_processed);
+                                pr_guard.unchanged_file();
+                            }
+
                             return Ok(Some((
                                 path,
                                 StreamNode {
@@ -318,6 +318,12 @@ impl Archiver {
                             )));
                         }
                         NodeType::Directory => {
+                            // Notify reporter
+                            if let Some(pr) = progress_reporter {
+                                let mut pr_guard = pr.lock().unwrap();
+                                pr_guard.unchanged_dir();
+                            }
+
                             return Ok(Some((path, prev_stream_node_info)));
                         }
                     }
@@ -336,6 +342,24 @@ impl Archiver {
                                     Archiver::save_file(repo, &path).map(|chunk_result| {
                                         let mut updated_node = node.clone();
                                         updated_node.contents = Some(chunk_result.chunks);
+
+                                        // Notify reporter
+                                        if let Some(pr) = progress_reporter {
+                                            let mut pr_guard = pr.lock().unwrap();
+                                            pr_guard.processed_bytes(
+                                                chunk_result.total_processed_size as u64,
+                                            );
+                                            pr_guard.encoded_bytes(
+                                                chunk_result.total_encoded_size as u64,
+                                            );
+                                            pr_guard.raw_bytes(chunk_result.total_raw_size as u64);
+                                            if diff_type == NodeDiff::New {
+                                                pr_guard.new_file();
+                                            } else if diff_type == NodeDiff::Changed {
+                                                pr_guard.changed_file();
+                                            }
+                                        }
+
                                         (path.to_path_buf(), updated_node.clone())
                                     })?;
 
@@ -352,6 +376,16 @@ impl Archiver {
                         }
 
                         NodeType::Directory => {
+                            // Notify reporter
+                            if let Some(pr) = progress_reporter {
+                                let mut pr_guard = pr.lock().unwrap();
+                                if diff_type == NodeDiff::New {
+                                    pr_guard.new_dir();
+                                } else if diff_type == NodeDiff::Changed {
+                                    pr_guard.changed_dir();
+                                }
+                            }
+
                             return Ok(Some((path, next_stream_node_info)));
                         }
                     }
@@ -465,6 +499,67 @@ impl Archiver {
         }
 
         Ok(())
+    }
+
+    /// Puts a file into the repository
+    ///
+    /// This function will split the file into chunks for deduplication, which
+    /// will be compressed, encrypted and stored in the repository.
+    /// The content hash of each chunk is used to identify the chunk and determine
+    /// if the chunk already exists in the repository.
+    fn save_file(repo: &dyn RepositoryBackend, src_path: &Path) -> Result<ChunkResult> {
+        let source = File::open(src_path)
+            .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
+        let reader = BufReader::new(source);
+
+        // The chunker parameters must remain stable across versions, otherwise
+        // same contents will no longer produce same chunks and IDs.
+        let chunker = StreamCDC::with_level(
+            reader,
+            backup::defaults::MIN_CHUNK_SIZE,
+            backup::defaults::AVG_CHUNK_SIZE,
+            backup::defaults::MAX_CHUNK_SIZE,
+            Normalization::Level1,
+        );
+
+        let mut chunk_hashes = Vec::new();
+        let mut total_processed_size: u64 = 0;
+        let mut total_raw_size: u64 = 0;
+        let mut total_encoded_size: u64 = 0;
+
+        for result in chunker {
+            let chunk = result?;
+            total_processed_size += chunk.data.len() as u64;
+
+            let (raw_size, encoded_size, content_hash) =
+                repo.save_object(ObjectType::Data, chunk.data)?;
+
+            chunk_hashes.push(content_hash);
+            total_raw_size += raw_size as u64;
+            total_encoded_size += encoded_size as u64;
+        }
+
+        Ok(ChunkResult {
+            chunks: chunk_hashes,
+            total_processed_size,
+            total_raw_size,
+            total_encoded_size,
+        })
+    }
+
+    /// Saves a tree in the repository. This function should be called when a tree is complete,
+    /// that is, when all the contents and/or tree hashes have been resolved.
+    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
+        let tree_json = serde_json::to_string_pretty(tree)?.as_bytes().to_vec();
+        let (_raw_size, _encoded_size, hash) = repo.save_object(ObjectType::Tree, tree_json)?;
+        Ok(hash)
+    }
+
+    /// Load a tree from the repository.
+    pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ObjectId) -> Result<Tree> {
+        let tree_object = repo.load_object(root_id)?;
+        let tree: Tree = serde_json::from_slice(&tree_object)?;
+        Ok(tree)
     }
 
     #[inline]

@@ -24,7 +24,7 @@ use crate::{
     backend::new_backend_with_prompt,
     backup::SnapshotId,
     cli,
-    repository::{self, snapshot::Snapshot, storage::SecureStorage, RepositoryBackend},
+    repository::{self, RepositoryBackend, snapshot::Snapshot, storage::SecureStorage},
 };
 
 use super::GlobalArgs;
@@ -98,7 +98,7 @@ fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {
     let mut peekable_snapshots = snapshots.iter().peekable();
 
     println!("{0: <ABBR_ID_LEN$}  {1: <26}", "ID".bold(), "Date".bold());
-    print_separator('-', ABBR_ID_LEN + 2 + 26);
+    cli::print_separator('-', ABBR_ID_LEN + 2 + 26);
     while let Some((id, snapshot)) = peekable_snapshots.next() {
         println!(
             "{0: <ABBR_ID_LEN$}  {1: <26}",
@@ -106,9 +106,4 @@ fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {
             snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z")
         );
     }
-}
-
-fn print_separator(character: char, count: usize) {
-    let repeated_string: String = std::iter::repeat(character).take(count).collect();
-    println!("{}", repeated_string);
 }

@@ -60,6 +60,11 @@ pub fn log_error(str: &str) {
     eprintln!("{}: {}", "Error".bold().red(), str);
 }
 
+pub fn print_separator(character: char, count: usize) {
+    let repeated_string: String = std::iter::repeat(character).take(count).collect();
+    println!("{}", repeated_string);
+}
+
 /// Requests a new password with confirmation.
 pub fn request_new_password() -> String {
     Password::new()

@@ -52,8 +52,8 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
-        self.backend.read_seek(path, offset, length)
+    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
+        self.backend.seek_read(path, offset, length)
     }
 
     #[inline]

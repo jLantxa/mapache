@@ -164,7 +164,7 @@ impl StorageBackend for SftpBackend {
         Ok(contents)
     }
 
-    fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
+    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
         let full_path = self.full_path(path);
 
         let sftp_guard = self.read_sftp.lock().unwrap();

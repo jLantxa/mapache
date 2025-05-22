@@ -47,7 +47,7 @@ pub trait StorageBackend: Send + Sync {
     fn read(&self, path: &Path) -> Result<Vec<u8>>;
 
     /// Reads a specific range of bytes from a file, starting at `offset` and reading `length`` bytes.
-    fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>>;
+    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>>;
 
     /// Writes to file, creating the file if necessary.
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()>;

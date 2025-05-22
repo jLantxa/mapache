@@ -356,7 +356,7 @@ impl Repository {
 
     fn load_from_pack(&self, id: &ObjectId, offset: u64, length: u64) -> Result<Vec<u8>> {
         let object_path = self.get_object_path(id);
-        let data = self.backend.read_seek(&object_path, offset, length)?;
+        let data = self.backend.seek_read(&object_path, offset, length)?;
         self.secure_storage.decode(&data)
     }
 

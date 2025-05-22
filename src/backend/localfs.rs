@@ -65,7 +65,7 @@ impl StorageBackend for LocalFS {
         Ok(data)
     }
 
-    fn read_seek(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
+    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
         let full_path = self.full_path(path);
         let mut file = std::fs::File::open(full_path).context(format!(
             "Could not open file {} for range reading from local filesystem",
@@ -242,7 +242,7 @@ mod test {
             &seek_path,
             b"I am just looking for a word in this sentence.",
         )?;
-        let range_str = local_fs.read_seek(&seek_path, 10, 7)?;
+        let range_str = local_fs.seek_read(&seek_path, 10, 7)?;
         assert_eq!(range_str, b"looking");
 
         Ok(())

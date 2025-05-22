@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::File,
     io::BufReader,
     path::{Path, PathBuf},
@@ -40,7 +40,7 @@ use crate::{
             StreamNode, Tree,
         },
     },
-    utils::Hash,
+    utils::{self, Hash},
 };
 
 pub trait CommitProgressReporter: Send + Sync {
@@ -72,8 +72,8 @@ struct PendingTree {
 impl PendingTree {
     ///  Returns true if this directory node is still waiting to receive children
     pub fn is_pending(&self) -> bool {
-        (self.num_expected_children >= 0)
-            && (self.children.len() as isize) < self.num_expected_children
+        self.num_expected_children < 0
+            || (self.children.len() as isize) < self.num_expected_children
     }
 }
 
@@ -100,7 +100,7 @@ impl Archiver {
         };
 
         // Create streamers
-        let fs_streamer = match FSNodeStreamer::from_paths(&absolute_source_paths) {
+        let fs_streamer = match FSNodeStreamer::from_paths(absolute_source_paths.clone()) {
             Ok(stream) => stream,
             Err(e) => bail!("Failed to create FSNodeStreamer: {:?}", e.to_string()),
         };
@@ -425,7 +425,7 @@ impl Archiver {
     ) -> Result<()> {
         let (path, stream_node) = processed_item;
 
-        let mut dir_path = Self::extract_parent(&path).unwrap();
+        let mut dir_path = utils::extract_parent(&path).unwrap();
 
         match stream_node.node.node_type {
             NodeType::File | NodeType::Symlink => {
@@ -502,7 +502,7 @@ impl Archiver {
             })?;
             completed_dir_node.tree = Some(tree_id);
 
-            let parent_path = Self::extract_parent(&dir_path).unwrap_or_else(|| PathBuf::new());
+            let parent_path = utils::extract_parent(&dir_path).unwrap_or_else(|| PathBuf::new());
 
             Self::insert_finalized_node(pending_trees, &parent_path, completed_dir_node.clone());
 
@@ -602,7 +602,7 @@ impl Archiver {
                     PendingTree {
                         node: None,
                         children: BTreeMap::new(),
-                        num_expected_children: isize::MAX,
+                        num_expected_children: -1,
                     },
                 );
                 pending_trees
@@ -614,15 +614,15 @@ impl Archiver {
         }
     }
 
-    fn extract_parent(path: &Path) -> Option<PathBuf> {
-        path.parent().map(|p| p.to_path_buf())
-    }
-
     fn create_pending_trees(
         commit_root_path: &Path,
-        absolute_source_paths: &[PathBuf],
+        paths: &[PathBuf],
     ) -> BTreeMap<PathBuf, PendingTree> {
         let mut pending_trees = BTreeMap::new();
+
+        // We need to know ahead how many children the root is expecting, because the FSNodeStreamer
+        // does not emit it.
+        let (root_children_count, _) = utils::intermediate_paths(commit_root_path, paths);
 
         // The tree root, has no node
         pending_trees.insert(
@@ -630,45 +630,9 @@ impl Archiver {
             PendingTree {
                 node: None,
                 children: BTreeMap::new(),
-                num_expected_children: 0,
+                num_expected_children: root_children_count as isize,
             },
         );
-
-        let mut intermediate_paths = BTreeSet::<PathBuf>::new();
-
-        for path in absolute_source_paths {
-            let mut root_path = Self::extract_parent(&path).unwrap_or_else(|| PathBuf::new());
-
-            while root_path.cmp(&commit_root_path.to_path_buf()) == std::cmp::Ordering::Greater {
-                intermediate_paths.insert(root_path.clone());
-                root_path = Self::extract_parent(&root_path).unwrap_or_else(|| PathBuf::new());
-            }
-        }
-
-        for path in intermediate_paths {
-            pending_trees.insert(
-                path.clone(),
-                PendingTree {
-                    node: Some(Node::from_path(path.clone()).unwrap()),
-                    children: BTreeMap::new(),
-                    num_expected_children: 0,
-                },
-            );
-
-            let parent = Self::extract_parent(&path).unwrap_or_else(|| PathBuf::new());
-            pending_trees
-                .get_mut(&parent)
-                .unwrap()
-                .num_expected_children += 1;
-        }
-
-        for path in absolute_source_paths {
-            let parent_path = Self::extract_parent(&path).unwrap_or_else(|| PathBuf::new());
-            pending_trees
-                .get_mut(&parent_path)
-                .unwrap()
-                .num_expected_children += 1;
-        }
 
         pending_trees
     }

@@ -16,7 +16,7 @@
 
 use std::{
     collections::VecDeque,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -93,14 +93,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         PathBuf::new()
     } else if absolute_source_paths.len() == 1 {
         let single_source = absolute_source_paths.first().unwrap();
-        if single_source == Path::new("/") {
-            PathBuf::new()
-        } else {
-            single_source
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::new())
-        }
+        utils::extract_parent(single_source).unwrap_or(PathBuf::new())
     } else {
         utils::calculate_lcp(&absolute_source_paths)
     };
@@ -156,7 +149,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_files = 0;
     let mut num_dirs = 0;
     let mut total_bytes = 0;
-    let scan_streamer = FSNodeStreamer::from_paths(source_paths)?;
+    let scan_streamer = FSNodeStreamer::from_paths(source_paths.clone())?;
     for stream_node_result in scan_streamer {
         let (_, stream_node) = stream_node_result?;
         let node = stream_node.node;

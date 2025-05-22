@@ -17,7 +17,11 @@
 pub mod indexset;
 pub mod url;
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use blake3::Hasher;
 
@@ -136,6 +140,54 @@ pub fn pretty_print_duration(duration: Duration) -> String {
     }
 }
 
+// Extracts the parent of a path
+pub fn extract_parent(path: &Path) -> Option<PathBuf> {
+    path.parent().map(|p| p.to_path_buf())
+}
+
+/// For each directory between `root` and any of the `paths`,
+/// return how many *distinct* children each directory has
+/// and how many *distinct* children the root has.
+pub fn intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMap<PathBuf, usize>) {
+    let mut children_map: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
+    let mut unique_root_children: BTreeSet<PathBuf> = BTreeSet::new();
+
+    for full_path in paths {
+        let mut current = full_path.clone();
+
+        let mut potential_direct_root_child = None;
+
+        while let Some(parent) = extract_parent(&current) {
+            if parent <= *root {
+                if parent == *root {
+                    potential_direct_root_child = Some(current.clone());
+                }
+                break;
+            }
+
+            children_map
+                .entry(parent.clone())
+                .or_insert_with(BTreeSet::new)
+                .insert(current.clone());
+
+            current = parent;
+        }
+
+        if let Some(direct_child) = potential_direct_root_child {
+            unique_root_children.insert(direct_child);
+        }
+    }
+
+    let root_children_count = unique_root_children.len();
+
+    let intermediate_paths = children_map
+        .into_iter()
+        .map(|(path, set_of_children)| (path, set_of_children.len()))
+        .collect();
+
+    (root_children_count, intermediate_paths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +270,24 @@ mod tests {
             hex_str,
             "21100f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a"
         );
+    }
+
+    #[test]
+    fn test_intermediate_paths() {
+        let root = PathBuf::from("/");
+        let paths = vec![
+            PathBuf::from("/a/b/c"),
+            PathBuf::from("/a/b/d"),
+            PathBuf::from("/a/e"),
+        ];
+
+        let (root_children_count, intermediate_paths) = intermediate_paths(&root, &paths);
+
+        let mut expected = BTreeMap::new();
+        expected.insert(PathBuf::from("/a"), 2);
+        expected.insert(PathBuf::from("/a/b"), 2);
+
+        assert_eq!(root_children_count, 1);
+        assert_eq!(intermediate_paths, expected);
     }
 }

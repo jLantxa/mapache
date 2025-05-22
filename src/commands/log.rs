@@ -75,7 +75,7 @@ fn log(snapshots: &Vec<(SnapshotId, Snapshot)>) {
             snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z")
         );
         println!("{} {}", "Size:".bold(), utils::format_size(snapshot.size));
-        println!("{} {:?}", "Root:".bold(), &snapshot.root);
+        println!("{} {}", "Root:".bold(), &snapshot.root.display());
 
         println!();
         println!("{}", "Paths:".bold());

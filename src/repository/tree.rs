@@ -124,7 +124,7 @@ impl Node {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
 
-        // `symlink_metadata` does *not* follow symlinks – that is what we need
+        // symlink_metadata does not follow symlinks
         let meta = fs::symlink_metadata(&path)
             .with_context(|| format!("Cannot stat {}", path.display()))?;
 
@@ -246,12 +246,12 @@ impl Iterator for FSNodeStreamer {
     type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // helper to peek the next path in each list
+        // Helper to peek the next path in each list
         fn peek_path(entry: &(PathBuf, usize)) -> &PathBuf {
             &entry.0
         }
 
-        // decide which source has the lexicographically smaller “next” element
+        // Decide which source has the lexicographically smaller “next” element
         let take_intermediate = match (self.intermediate_paths.last(), self.stack.last()) {
             (Some(iv @ _), Some(sv @ _)) => peek_path(iv).cmp(sv) == std::cmp::Ordering::Less,
             (Some(_), None) => true,
@@ -271,7 +271,7 @@ impl Iterator for FSNodeStreamer {
             )));
         }
 
-        // otherwise pop from the DFS stack as before
+        // Otherwise pop from the DFS stack as before
         let path = self.stack.pop()?;
         let result = (|| {
             let node = Node::from_path(path.clone())?;

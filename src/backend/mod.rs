@@ -138,6 +138,11 @@ impl BackendUrl {
 
                 Ok(BackendUrl::Sftp(user, host, port, path_buf))
             }
+            "file" => {
+                let path_str: &str = &parsed_url.path.join("/");
+                let path_buf = PathBuf::from(path_str);
+                Ok(BackendUrl::Local(path_buf))
+            }
             _ => {
                 bail!(
                     "Unsupported URL scheme: '{}' for URL '{}'",
@@ -181,6 +186,38 @@ mod test {
         );
         assert_eq!(
             BackendUrl::from(".").unwrap(),
+            BackendUrl::Local(PathBuf::from("."))
+        );
+    }
+
+    #[test]
+    fn test_local_path_with_file_scheme() {
+        assert_eq!(
+            BackendUrl::from("file:///home/target").unwrap(),
+            BackendUrl::Local(PathBuf::from("/home/target"))
+        );
+        assert_eq!(
+            BackendUrl::from("file://base/dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("base/dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("file://dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("file://dir/").unwrap(),
+            BackendUrl::Local(PathBuf::from("dir/"))
+        );
+        assert_eq!(
+            BackendUrl::from("file://./dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("./dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("file://./dir/").unwrap(),
+            BackendUrl::Local(PathBuf::from("./dir/"))
+        );
+        assert_eq!(
+            BackendUrl::from("file://.").unwrap(),
             BackendUrl::Local(PathBuf::from("."))
         );
     }

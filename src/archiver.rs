@@ -17,7 +17,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::BufReader,
+    io::Cursor,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -28,6 +28,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 use fastcdc::v2020::{Normalization, StreamCDC};
+use memmap2::Mmap;
 
 use crate::{
     backup::{self, ObjectId, ObjectType},
@@ -160,31 +161,32 @@ impl Archiver {
         let error_flag_clone = error_flag.clone();
         let processor_progress_reporter_clone = progress_reporter.clone();
         let commit_root_path_clone = commit_root_path.clone();
-        let processor_thread =
-            std::thread::spawn(move || {
-                while let Ok(diff) = diff_rx_clone.recv() {
-                    if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
-                        break;
-                    }
+        let processor_thread = std::thread::spawn(move || {
+            while let Ok(diff_tuple) = diff_rx_clone.recv() {
+                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
 
-                    let inner_process_item_tx_clone = process_item_tx_clone.clone();
-                    let inner_repo_clone = repo_clone.clone();
-                    let inner_error_flag_clone = error_flag_clone.clone();
-                    let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
-                    let inner_commit_root_path_clone = commit_root_path_clone.clone();
-                    pool.spawn(move || {
+                let inner_process_item_tx_clone = process_item_tx_clone.clone();
+                let inner_repo_clone = repo_clone.clone();
+                let inner_error_flag_clone = error_flag_clone.clone();
+                let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
+                let inner_commit_root_path_clone = commit_root_path_clone.clone();
+                pool.spawn(move || {
                     // Notify reporter
                     if let Some(pr) = &inner_progress_reporter_clone {
-                        let (item_path, _, _, _) = &diff;
+                        let (item_path, _, _, _) = &diff_tuple;
                         let mut pr_guard = pr.lock().unwrap();
-                        pr_guard.processing_file(item_path
-                            .strip_prefix(inner_commit_root_path_clone.clone())
-                            .unwrap()
-                            .to_path_buf());
+                        pr_guard.processing_file(
+                            item_path
+                                .strip_prefix(inner_commit_root_path_clone.clone())
+                                .unwrap()
+                                .to_path_buf(),
+                        );
                     }
 
                     let processed_item_result = Self::process_item(
-                        diff,
+                        diff_tuple,
                         inner_repo_clone.as_ref(),
                         inner_progress_reporter_clone,
                     );
@@ -212,8 +214,8 @@ impl Archiver {
                         }
                     }
                 });
-                }
-            });
+            }
+        });
 
         // No one uses this copy of the tx (each worker thread just got a clone).
         // We must drop it or else the serializer thread will be blocked waiting for all copies
@@ -536,7 +538,21 @@ impl Archiver {
     ) -> Result<Vec<ObjectId>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
-        let reader = BufReader::new(source);
+
+        let mmap = unsafe {
+            // Safety: The file is opened for reading, and we are creating a read-only
+            // memory map. The primary unsafety concern is if the underlying file
+            // is modified or deleted by another process while the map is active.
+            // For a backup tool, it's generally assumed the source files are stable
+            // during the backup process. If the file is truncated, subsequent accesses
+            // to out-of-bounds memory via the mmap would be UB.
+            Mmap::map(&source)?
+        };
+
+        // Instead of BufReader, we now use the mmap'd slice.
+        // `&mmap[..]` gives us a `&[u8]` slice that represents the entire file.
+        // We then wrap it in a `Cursor` to make it implement `Read` for `fastcdc`.
+        let reader = Cursor::new(&mmap[..]);
 
         // The chunker parameters must remain stable across versions, otherwise
         // same contents will no longer produce same chunks and IDs.
@@ -548,7 +564,10 @@ impl Archiver {
             Normalization::Level1,
         );
 
-        let mut chunk_hashes = Vec::new();
+        let mut chunk_hashes = Vec::with_capacity(
+            1 + (backup::defaults::MAX_PACK_SIZE / backup::defaults::AVG_CHUNK_SIZE as u64)
+                as usize,
+        );
 
         for result in chunker {
             let chunk = result?;
@@ -574,7 +593,7 @@ impl Archiver {
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
-        let tree_json = serde_json::to_string_pretty(tree)?.as_bytes().to_vec();
+        let tree_json = serde_json::to_string(tree)?.as_bytes().to_vec();
         let (_raw_size, _encoded_size, hash) = repo.save_object(ObjectType::Tree, tree_json)?;
         Ok(hash)
     }
@@ -592,26 +611,14 @@ impl Archiver {
         parent_path: &Path,
         node: Node,
     ) {
-        match pending_trees.get_mut(parent_path) {
-            Some(parent_pending_tree) => {
-                parent_pending_tree.children.insert(node.name.clone(), node);
-            }
-            None => {
-                let _ = pending_trees.insert(
-                    parent_path.to_path_buf(),
-                    PendingTree {
-                        node: None,
-                        children: BTreeMap::new(),
-                        num_expected_children: -1,
-                    },
-                );
-                pending_trees
-                    .get_mut(parent_path)
-                    .unwrap()
-                    .children
-                    .insert(node.name.clone(), node);
-            }
-        }
+        let parent_pending_tree = pending_trees
+            .entry(parent_path.to_path_buf())
+            .or_insert_with(|| PendingTree {
+                node: None,
+                children: BTreeMap::new(),
+                num_expected_children: -1,
+            });
+        parent_pending_tree.children.insert(node.name.clone(), node);
     }
 
     fn create_pending_trees(

@@ -210,15 +210,19 @@ mod test {
         );
         assert_eq!(
             BackendUrl::from("file://./dir").unwrap(),
-            BackendUrl::Local(PathBuf::from("./dir"))
+            BackendUrl::Local(PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("file://./dir/a/..").unwrap(),
+            BackendUrl::Local(PathBuf::from("dir"))
         );
         assert_eq!(
             BackendUrl::from("file://./dir/").unwrap(),
-            BackendUrl::Local(PathBuf::from("./dir/"))
+            BackendUrl::Local(PathBuf::from("dir"))
         );
         assert_eq!(
             BackendUrl::from("file://.").unwrap(),
-            BackendUrl::Local(PathBuf::from("."))
+            BackendUrl::Local(PathBuf::from(""))
         );
     }
 

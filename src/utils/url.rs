@@ -95,7 +95,7 @@ impl FromStr for Url {
         let scheme;
         let mut username = String::new();
         let mut password = None;
-        let mut host;
+        let host: Option<String>; // Initialize host as None
         let mut port = None;
         let path: Vec<String>;
         let mut query = None;
@@ -152,79 +152,90 @@ impl FromStr for Url {
 
         let mut current_parsing_slice = input_slice;
 
-        // Find the boundary between authority and path/query/fragment
-        let mut authority_end_idx = current_parsing_slice.len();
-        if let Some(i) = current_parsing_slice.find(&['/', '?', '#'][..]) {
-            authority_end_idx = i;
-        }
-        let authority_part = &current_parsing_slice[..authority_end_idx];
-        current_parsing_slice = &current_parsing_slice[authority_end_idx..]; // Remainder is now path + query + fragment
-
-        let mut current_authority = authority_part;
-
-        // Userinfo (username:password@)
-        if let Some(at_idx) = current_authority.find('@') {
-            let userinfo = &current_authority[..at_idx];
-            current_authority = &current_authority[at_idx + 1..];
-
-            if let Some(colon_idx) = userinfo.find(':') {
-                username = percent_decode(&userinfo[..colon_idx])?;
-                password = Some(percent_decode(&userinfo[colon_idx + 1..])?);
+        // Handle `file://` scheme specific parsing:
+        // If it's a file scheme and the current_parsing_slice *doesn't* start with '/',
+        // then what would normally be treated as host is actually the first path segment.
+        if scheme == "file" {
+            if current_parsing_slice.starts_with('/') {
+                // `file:///path` or `file:////path` (leading multiple slashes become single root)
+                // The host for `file:///` is implicitly null.
+                host = None;
             } else {
-                username = percent_decode(userinfo)?;
-            }
-        }
-
-        // Host and Port parsing from `current_authority`
-        let mut host_str_candidate = current_authority;
-        let mut potential_port_str = None;
-
-        // Handle IPv6 host: `[::1]:8080`
-        if host_str_candidate.starts_with('[') {
-            if let Some(closing_bracket) = host_str_candidate.find(']') {
-                let ipv6_host = &host_str_candidate[1..closing_bracket];
-                if ipv6_host.is_empty() {
-                    return Err(UrlError::InvalidHost); // Empty IPv6 literal (e.g., `[]`)
-                }
-                host = Some(ipv6_host.to_string());
-                if host_str_candidate.len() > closing_bracket + 1 {
-                    if &host_str_candidate[closing_bracket + 1..closing_bracket + 2] == ":" {
-                        potential_port_str = Some(&host_str_candidate[closing_bracket + 2..]);
-                    } else {
-                        return Err(UrlError::InvalidHost); // Malformed IPv6 host with extra characters
-                    }
-                }
-            } else {
-                return Err(UrlError::InvalidHost); // Missing closing ']' for IPv6 literal
+                // `file://dir/file` or `file://relative/path`
+                // Here, "dir" or "relative" is *not* a host. It's the first path segment.
+                host = None; // Explicitly set host to None for these cases.
             }
         } else {
-            // Regular host (domain name or IPv4)
-            // Find the last colon, assuming it's for the port
-            if let Some(colon_idx) = host_str_candidate.rfind(':') {
-                let potential_port_slice = &host_str_candidate[colon_idx + 1..];
-                // Check if it's actually a port by ensuring it consists only of digits
-                if potential_port_slice.chars().all(|c| c.is_ascii_digit()) {
-                    potential_port_str = Some(potential_port_slice);
-                    host_str_candidate = &host_str_candidate[..colon_idx]; // Host is before the last colon
-                }
-                // If not all digits, the colon is considered part of the host (e.g., `hostname:abc`)
-                // or indicates an invalid format. For this parser, we include it in the host.
+            // For other schemes, parse authority as usual.
+            // Find the boundary between authority and path/query/fragment
+            let mut authority_end_idx = current_parsing_slice.len();
+            if let Some(i) = current_parsing_slice.find(&['/', '?', '#'][..]) {
+                authority_end_idx = i;
             }
-            host = Some(host_str_candidate.to_ascii_lowercase()); // Hostnames should be lowercased
-        }
+            let authority_part = &current_parsing_slice[..authority_end_idx];
+            current_parsing_slice = &current_parsing_slice[authority_end_idx..]; // Remainder is now path + query + fragment
 
-        // Port parsing
-        if let Some(p_str) = potential_port_str {
-            port = Some(p_str.parse().map_err(|_| UrlError::InvalidPort)?);
-        }
+            let mut current_authority = authority_part;
 
-        // Special handling for `file://` scheme where the host is conceptually null
-        if scheme == "file" && host.as_deref() == Some("") {
-            host = None;
+            // Userinfo (username:password@)
+            if let Some(at_idx) = current_authority.find('@') {
+                let userinfo = &current_authority[..at_idx];
+                current_authority = &current_authority[at_idx + 1..];
+
+                if let Some(colon_idx) = userinfo.find(':') {
+                    username = percent_decode(&userinfo[..colon_idx])?;
+                    password = Some(percent_decode(&userinfo[colon_idx + 1..])?);
+                } else {
+                    username = percent_decode(userinfo)?;
+                }
+            }
+
+            // Host and Port parsing from `current_authority`
+            let mut host_str_candidate = current_authority;
+            let mut potential_port_str = None;
+
+            // Handle IPv6 host: `[::1]:8080`
+            if host_str_candidate.starts_with('[') {
+                if let Some(closing_bracket) = host_str_candidate.find(']') {
+                    let ipv6_host = &host_str_candidate[1..closing_bracket];
+                    if ipv6_host.is_empty() {
+                        return Err(UrlError::InvalidHost); // Empty IPv6 literal (e.g., `[]`)
+                    }
+                    host = Some(ipv6_host.to_string());
+                    if host_str_candidate.len() > closing_bracket + 1 {
+                        if &host_str_candidate[closing_bracket + 1..closing_bracket + 2] == ":" {
+                            potential_port_str = Some(&host_str_candidate[closing_bracket + 2..]);
+                        } else {
+                            return Err(UrlError::InvalidHost); // Malformed IPv6 host with extra characters
+                        }
+                    }
+                } else {
+                    return Err(UrlError::InvalidHost); // Missing closing ']' for IPv6 literal
+                }
+            } else {
+                // Regular host (domain name or IPv4)
+                // Find the last colon, assuming it's for the port
+                if let Some(colon_idx) = host_str_candidate.rfind(':') {
+                    let potential_port_slice = &host_str_candidate[colon_idx + 1..];
+                    // Check if it's actually a port by ensuring it consists only of digits
+                    if potential_port_slice.chars().all(|c| c.is_ascii_digit()) {
+                        potential_port_str = Some(potential_port_slice);
+                        host_str_candidate = &host_str_candidate[..colon_idx]; // Host is before the last colon
+                    }
+                    // If not all digits, the colon is considered part of the host (e.g., `hostname:abc`)
+                    // or indicates an invalid format. For this parser, we include it in the host.
+                }
+                host = Some(host_str_candidate.to_ascii_lowercase()); // Hostnames should be lowercased
+            }
+
+            // Port parsing
+            if let Some(p_str) = potential_port_str {
+                port = Some(p_str.parse().map_err(|_| UrlError::InvalidPort)?);
+            }
         }
 
         // --- Path, Query, Fragment parsing ---
-        // `current_parsing_slice` now contains path + query + fragment
+        // `current_parsing_slice` now contains path + query + fragment (after authority for non-file schemes)
 
         // Fragment parsing: everything after '#'
         if let Some(hash_idx) = current_parsing_slice.find('#') {
@@ -239,42 +250,34 @@ impl FromStr for Url {
         }
 
         // Path parsing: everything before '?' (and before '#')
-        if !current_parsing_slice.is_empty() {
-            let mut segments_to_process: Vec<String> = Vec::new();
-
-            // For network-path URLs (those with a host or null host after `://`),
+        let mut segments_to_process: Vec<String> = Vec::new();
+        let path_str_for_split = if scheme == "file" {
+            // For file URLs like `file://dir/file`, the "dir" part is part of the path.
+            // current_parsing_slice holds the *entire* remaining part that should be path.
+            // No leading slash to remove here if it wasn't there initially.
+            current_parsing_slice
+        } else if current_parsing_slice.starts_with('/') {
+            // For network-path URLs (http, https, or file:///),
             // a leading slash indicates the root but is not stored as an empty segment
             // in the path list, unless it's a `//` sequence (empty segment).
-            // Example: `http://example.com/a/b` -> path: `["a", "b"]`
-            // Example: `http://example.com//a`  -> path: `["", "a"]`
-            // Example: `file:///C:/foo` -> path: `["C:", "foo"]` (host is None, path starts with `C:/`)
-            let path_str_for_split =
-                if current_parsing_slice.starts_with('/') && (host.is_some() || scheme == "file") {
-                    // If there's a host (or it's a file scheme URL) and a leading slash,
-                    // we remove the initial slash for splitting. This makes `/a/b` split into `a/b`.
-                    // A `//a` would become `/a`, which `split('/')` then correctly turns into `["", "a"]`.
-                    &current_parsing_slice[1..]
-                } else {
-                    current_parsing_slice
-                };
+            &current_parsing_slice[1..]
+        } else {
+            current_parsing_slice
+        };
 
-            // Process path segments: split by '/', percent-decode, and resolve `.` and `..`
-            if !path_str_for_split.is_empty() {
-                for raw_segment in path_str_for_split.split('/') {
-                    if raw_segment == "." {
-                        // Ignore current directory segment
-                    } else if raw_segment == ".." {
-                        // Pop the last segment (if any) to go up one directory
-                        segments_to_process.pop();
-                    } else {
-                        segments_to_process.push(percent_decode(raw_segment)?);
-                    }
+        if !path_str_for_split.is_empty() {
+            for raw_segment in path_str_for_split.split('/') {
+                if raw_segment == "." {
+                    // Ignore current directory segment
+                } else if raw_segment == ".." {
+                    // Pop the last segment (if any) to go up one directory
+                    segments_to_process.pop();
+                } else {
+                    segments_to_process.push(percent_decode(raw_segment)?);
                 }
             }
-            path = segments_to_process;
-        } else {
-            path = Vec::new(); // Empty path if no path component was present
         }
+        path = segments_to_process;
 
         Ok(Url {
             scheme,

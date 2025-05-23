@@ -16,7 +16,7 @@
 
 use std::str::FromStr;
 
-use anyhow::{Error, anyhow};
+use anyhow::{Error, Result, anyhow};
 use clap::{Parser, Subcommand};
 
 use crate::backup::SnapshotId;
@@ -99,5 +99,16 @@ impl std::fmt::Display for UseSnapshot {
             UseSnapshot::Latest => write!(f, "latest"),
             UseSnapshot::Snapshot(id) => write!(f, "{}", id),
         }
+    }
+}
+
+pub fn run(args: &Cli) -> Result<()> {
+    match &args.command {
+        Command::Init(cmd_args) => cmd_init::run(&args.global_args, &cmd_args),
+        Command::Log(cmd_args) => cmd_log::run(&args.global_args, &cmd_args),
+        Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, &cmd_args),
+        Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, &cmd_args),
+        Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, &cmd_args),
+        Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, &cmd_args),
     }
 }

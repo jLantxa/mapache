@@ -22,6 +22,7 @@ use clap::{Parser, Subcommand};
 use crate::backup::SnapshotId;
 
 pub mod cmd_cat;
+pub mod cmd_forget;
 pub mod cmd_init;
 pub mod cmd_log;
 pub mod cmd_restore;
@@ -60,6 +61,9 @@ pub enum Command {
 
     #[clap(about = "Prints repository objects")]
     Cat(cmd_cat::CmdArgs),
+
+    #[clap(about = "Removes snapshots from the repository")]
+    Forget(cmd_forget::CmdArgs),
 }
 
 #[derive(Parser, Debug)]

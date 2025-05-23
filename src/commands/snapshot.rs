@@ -16,7 +16,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -30,7 +30,9 @@ use crate::{
     backend::{make_dry_backend, new_backend_with_prompt},
     backup::{self, ObjectId},
     cli,
-    repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
+    repository::{
+        self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer,
+    },
     ui::{
         commit::CommitProgressReporter,
         table::{Alignment, Table},
@@ -178,11 +180,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Run commiter
     let expected_items = num_files + num_dirs;
     const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
-    let progress_reporter = Arc::new(Mutex::new(CommitProgressReporter::new(
+    let progress_reporter = Arc::new(CommitProgressReporter::new(
         expected_items,
         total_bytes,
         NUM_SHOWN_PROCESSING_ITEMS,
-    )));
+    ));
 
     let mut new_snapshot = Archiver::snapshot(
         repo.clone(),
@@ -192,9 +194,9 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Some(progress_reporter.clone()),
     )?;
 
-    let pr = progress_reporter.lock().unwrap();
-    new_snapshot.size = pr.processed_bytes;
-    drop(pr);
+    {
+        new_snapshot.size = *progress_reporter.processed_bytes.lock().unwrap();
+    }
 
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
@@ -216,11 +218,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
 fn show_final_report(
     snapshot_id: &ObjectId,
-    progress_reporter: &Arc<Mutex<CommitProgressReporter>>,
+    // The type changes here!
+    progress_reporter: &CommitProgressReporter,
     args: &CmdArgs,
 ) {
-    let pr = progress_reporter.lock().unwrap();
-    pr.finalize();
+    progress_reporter.finalize();
 
     cli::log!("{}", "Changes since parent snapshot".bold());
     cli::log!();
@@ -239,24 +241,39 @@ fn show_final_report(
         "deleted".bold().red().to_string(),
         "unmodiffied".bold().to_string(),
     ]);
+
+    // Lock individual mutexes for each counter (still needed)
+    let new_files = progress_reporter.new_files.lock().unwrap();
+    let changed_files = progress_reporter.changed_files.lock().unwrap();
+    let deleted_files = progress_reporter.deleted_files.lock().unwrap();
+    let unchanged_files = progress_reporter.unchanged_files.lock().unwrap();
+
+    let new_dirs = progress_reporter.new_dirs.lock().unwrap();
+    let changed_dirs = progress_reporter.changed_dirs.lock().unwrap();
+    let deleted_dirs = progress_reporter.deleted_dirs.lock().unwrap();
+    let unchanged_dirs = progress_reporter.unchanged_dirs.lock().unwrap();
+
     table.add_row(vec![
         "Files".bold().to_string(),
-        pr.new_files.to_string(),
-        pr.changed_files.to_string(),
-        pr.deleted_files.to_string(),
-        pr.unchanged_files.to_string(),
+        new_files.to_string(),
+        changed_files.to_string(),
+        deleted_files.to_string(),
+        unchanged_files.to_string(),
     ]);
     table.add_row(vec![
         "Dirs".bold().to_string(),
-        pr.new_dirs.to_string(),
-        pr.changed_dirs.to_string(),
-        pr.deleted_dirs.to_string(),
-        pr.unchanged_dirs.to_string(),
+        new_dirs.to_string(),
+        changed_dirs.to_string(),
+        deleted_dirs.to_string(),
+        unchanged_dirs.to_string(),
     ]);
     table.print();
 
     cli::log!();
     if !args.dry_run {
+        let raw_bytes = progress_reporter.raw_bytes.lock().unwrap();
+        let encoded_bytes = progress_reporter.encoded_bytes.lock().unwrap();
+
         cli::log!(
             "New snapshot created {}",
             format!("{}", &snapshot_id[0..backup::defaults::SHORT_ID_LENGTH])
@@ -265,16 +282,19 @@ fn show_final_report(
         );
         cli::log!(
             "This snapshot added {} {}",
-            utils::format_size(pr.raw_bytes).yellow(),
-            format!("({} compressed)", utils::format_size(pr.encoded_bytes))
+            utils::format_size(*raw_bytes).yellow(),
+            format!("({} compressed)", utils::format_size(*encoded_bytes))
                 .bold()
                 .green()
         );
     } else {
+        let raw_bytes = progress_reporter.raw_bytes.lock().unwrap();
+        let encoded_bytes = progress_reporter.encoded_bytes.lock().unwrap();
+
         cli::log!(
             "This snapshot would add {} {}",
-            utils::format_size(pr.raw_bytes).yellow(),
-            format!("({} compressed)", utils::format_size(pr.encoded_bytes))
+            utils::format_size(*raw_bytes).yellow(),
+            format!("({} compressed)", utils::format_size(*encoded_bytes))
                 .bold()
                 .green()
         );

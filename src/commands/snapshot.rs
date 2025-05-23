@@ -31,7 +31,10 @@ use crate::{
     backup::{self, ObjectId},
     cli,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
-    ui::commit::CommitProgressReporter,
+    ui::{
+        commit::CommitProgressReporter,
+        table::{Alignment, Table},
+    },
     utils,
 };
 
@@ -222,40 +225,35 @@ fn show_final_report(
     cli::log!("{}", "Changes since parent snapshot".bold());
     cli::log!();
 
-    let type_len = std::cmp::max("Files:".len(), "Dirs:".len());
-    let new_len = std::cmp::max(8, "new".len());
-    let changed_len = std::cmp::max(8, "changed".len());
-    let del_len = std::cmp::max(8, "deleted".len());
-    let unmod_len = std::cmp::max(8, "unmodiffied".len());
-
-    let file_summary_line = format!(
-        "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
-        "Files".bold(),
-        pr.new_files,
-        pr.changed_files,
-        pr.deleted_files,
-        pr.unchanged_files,
-    );
-    let dir_summary_line = format!(
-        "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
-        "Dirs".bold(),
-        pr.new_dirs,
-        pr.changed_dirs,
-        pr.deleted_dirs,
-        pr.unchanged_dirs,
-    );
-
-    cli::log!(
-        "{0: <type_len$} {1: >new_len$}  {2: >changed_len$}  {3: >del_len$}  {4: >unmod_len$}",
-        "",
-        "new".bold().green(),
-        "changed".bold().yellow(),
-        "deleted".bold().red(),
-        "unmodiffied".bold(),
-    );
-    cli::print_separator('-', file_summary_line.chars().count());
-    cli::log!("{}", file_summary_line);
-    cli::log!("{}", dir_summary_line);
+    let mut table = Table::new_with_alignments(vec![
+        Alignment::Left,
+        Alignment::Right,
+        Alignment::Right,
+        Alignment::Right,
+        Alignment::Right,
+    ]);
+    table.set_headers(vec![
+        "".to_string(),
+        "new".bold().green().to_string(),
+        "changed".bold().yellow().to_string(),
+        "deleted".bold().red().to_string(),
+        "unmodiffied".bold().to_string(),
+    ]);
+    table.add_row(vec![
+        "Files".bold().to_string(),
+        pr.new_files.to_string(),
+        pr.changed_files.to_string(),
+        pr.deleted_files.to_string(),
+        pr.unchanged_files.to_string(),
+    ]);
+    table.add_row(vec![
+        "Dirs".bold().to_string(),
+        pr.new_dirs.to_string(),
+        pr.changed_dirs.to_string(),
+        pr.deleted_dirs.to_string(),
+        pr.unchanged_dirs.to_string(),
+    ]);
+    table.print();
 
     cli::log!();
     if !args.dry_run {

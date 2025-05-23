@@ -25,6 +25,7 @@ use crate::{
     backup::{self, SnapshotId},
     cli,
     repository::{self, RepositoryBackend, snapshot::Snapshot, storage::SecureStorage},
+    ui::table::{Alignment, Table},
     utils,
 };
 
@@ -99,19 +100,26 @@ fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {
     let mut peekable_snapshots = snapshots.iter().peekable();
 
     let id_len = backup::defaults::SHORT_ID_LENGTH;
-    println!(
-        "{0: <id_len$}  {1: <26}  {2:>12}",
-        "ID".bold(),
-        "Date".bold(),
-        "Size".bold()
-    );
-    cli::print_separator('-', id_len + 2 + 26 + 2 + 12);
+
+    let mut table =
+        Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
+
+    table.set_headers(vec![
+        "ID".bold().to_string(),
+        "Date".bold().to_string(),
+        "Size".bold().to_string(),
+    ]);
+
     while let Some((id, snapshot)) = peekable_snapshots.next() {
-        println!(
-            "{0: <id_len$}  {1: <26}  {2:>12}",
-            &id[0..id_len].bold().yellow(),
-            snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z"),
-            utils::format_size(snapshot.size)
-        );
+        table.add_row(vec![
+            id[0..id_len].bold().yellow().to_string(),
+            snapshot
+                .timestamp
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string(),
+            utils::format_size(snapshot.size),
+        ]);
     }
+
+    table.print();
 }

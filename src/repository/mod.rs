@@ -64,8 +64,11 @@ pub trait RepositoryBackend: Sync + Send {
     /// Loads a blob from the repository
     fn load_blob(&self, id: &ObjectId) -> Result<Vec<u8>>;
 
-    /// Saves a snapshot metadata
+    /// Saves a snapshot metadata.
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(SnapshotId, u64, u64)>;
+
+    /// Removes a snapshot from the repository, if it exists.
+    fn remove_snapshot(&self, id: &SnapshotId) -> Result<()>;
 
     /// Get a snapshot by hash
     fn load_snapshot(&self, id: &SnapshotId) -> Result<Snapshot>;

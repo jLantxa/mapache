@@ -59,7 +59,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     } else {
         log(&snapshots);
     }
-    println!();
+
     println!("{} snapshots", snapshots.len());
 
     Ok(())
@@ -94,6 +94,8 @@ fn log(snapshots: &Vec<(SnapshotId, Snapshot)>) {
             println!();
         }
     }
+
+    println!();
 }
 
 fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {

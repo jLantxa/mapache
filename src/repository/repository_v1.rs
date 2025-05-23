@@ -242,6 +242,18 @@ impl RepositoryBackend for Repository {
         Ok((hash, uncompressed_size, compressed_size))
     }
 
+    fn remove_snapshot(&self, id: &SnapshotId) -> Result<()> {
+        let snapshot_path = self.snapshot_path.join(id);
+
+        if !self.backend.exists(&snapshot_path) {
+            bail!("Snapshot {} doesn't exist", id)
+        }
+
+        self.backend
+            .remove_file(&snapshot_path)
+            .with_context(|| format!("Could not remove snapshot {}", id))
+    }
+
     fn load_snapshot(&self, id: &SnapshotId) -> Result<Snapshot> {
         let snapshot_path = self.snapshot_path.join(id);
         if !self.backend.exists(&snapshot_path) {

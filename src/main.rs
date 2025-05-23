@@ -42,6 +42,9 @@ fn run(args: &commands::Cli) -> Result<()> {
             commands::cmd_restore::run(&args.global_args, cmd_args)
         }
         commands::Command::Cat(cmd_args) => commands::cmd_cat::run(&args.global_args, cmd_args),
+        commands::Command::Forget(cmd_args) => {
+            commands::cmd_forget::run(&args.global_args, cmd_args)
+        }
     }
 }
 

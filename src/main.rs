@@ -31,30 +31,15 @@ use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 
-fn run(args: &commands::Cli) -> Result<()> {
-    match &args.command {
-        commands::Command::Init(cmd_args) => commands::cmd_init::run(&args.global_args, cmd_args),
-        commands::Command::Log(cmd_args) => commands::cmd_log::run(&args.global_args, cmd_args),
-        commands::Command::Snapshot(cmd_args) => {
-            commands::cmd_snapshot::run(&args.global_args, cmd_args)
-        }
-        commands::Command::Restore(cmd_args) => {
-            commands::cmd_restore::run(&args.global_args, cmd_args)
-        }
-        commands::Command::Cat(cmd_args) => commands::cmd_cat::run(&args.global_args, cmd_args),
-        commands::Command::Forget(cmd_args) => {
-            commands::cmd_forget::run(&args.global_args, cmd_args)
-        }
-    }
-}
-
 fn main() -> Result<()> {
     let args = commands::Cli::parse();
 
     // Run the command
-    if let Err(e) = run(&args) {
+    if let Err(e) = commands::run(&args) {
         cli::log_error(&e.to_string());
+        cli::log!();
         cli::log!("Finished with {}", "Error".bold().red());
+
         std::process::exit(1);
     }
 

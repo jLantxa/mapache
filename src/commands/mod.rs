@@ -21,11 +21,11 @@ use clap::{Parser, Subcommand};
 
 use crate::backup::SnapshotId;
 
-pub mod cat;
-pub mod init;
-pub mod log;
-pub mod restore;
-pub mod snapshot;
+pub mod cmd_cat;
+pub mod cmd_init;
+pub mod cmd_log;
+pub mod cmd_restore;
+pub mod cmd_snapshot;
 
 // CLI arguments
 #[derive(Parser, Debug)]
@@ -47,19 +47,19 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     #[clap(about = "Initialize a new repository")]
-    Init(init::CmdArgs),
+    Init(cmd_init::CmdArgs),
 
     #[clap(about = "Show all snapshots present in the repository")]
-    Log(log::CmdArgs),
+    Log(cmd_log::CmdArgs),
 
     #[clap(about = "Create a new snapshot")]
-    Snapshot(snapshot::CmdArgs),
+    Snapshot(cmd_snapshot::CmdArgs),
 
     #[clap(about = "Restores a snapshot")]
-    Restore(restore::CmdArgs),
+    Restore(cmd_restore::CmdArgs),
 
     #[clap(about = "Prints repository objects")]
-    Cat(cat::CmdArgs),
+    Cat(cmd_cat::CmdArgs),
 }
 
 #[derive(Parser, Debug)]

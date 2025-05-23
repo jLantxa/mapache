@@ -30,11 +30,9 @@ use crate::{
     backend::{make_dry_backend, new_backend_with_prompt},
     backup::{self, ObjectId},
     cli,
-    repository::{
-        self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer,
-    },
+    repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
     ui::{
-        commit::CommitProgressReporter,
+        snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },
     utils,
@@ -45,7 +43,7 @@ use super::{GlobalArgs, UseSnapshot};
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
 pub struct CmdArgs {
-    /// List of paths to commit
+    /// List of paths to backup
     #[clap(value_parser, required = true)]
     pub paths: Vec<PathBuf>,
 
@@ -92,9 +90,9 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     }
 
-    // Extract the commit root path
-    let commit_root_path = if absolute_source_paths.is_empty() {
-        cli::log_warning("No source paths provided. Creating empty commit.");
+    // Extract the snapshot root path
+    let snapshot_root_path = if absolute_source_paths.is_empty() {
+        cli::log_warning("No source paths provided. Creating empty snapshot.");
         PathBuf::new()
     } else if absolute_source_paths.len() == 1 {
         let single_source = absolute_source_paths.first().unwrap();
@@ -177,10 +175,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
     cli::log!();
 
-    // Run commiter
+    // Run Archiver
     let expected_items = num_files + num_dirs;
     const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
-    let progress_reporter = Arc::new(CommitProgressReporter::new(
+    let progress_reporter = Arc::new(SnapshotProgressReporter::new(
         expected_items,
         total_bytes,
         NUM_SHOWN_PROCESSING_ITEMS,
@@ -189,7 +187,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut new_snapshot = Archiver::snapshot(
         repo.clone(),
         absolute_source_paths,
-        commit_root_path,
+        snapshot_root_path,
         parent_snapshot,
         Some(progress_reporter.clone()),
     )?;
@@ -219,7 +217,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 fn show_final_report(
     snapshot_id: &ObjectId,
     // The type changes here!
-    progress_reporter: &CommitProgressReporter,
+    progress_reporter: &SnapshotProgressReporter,
     args: &CmdArgs,
 ) {
     progress_reporter.finalize();

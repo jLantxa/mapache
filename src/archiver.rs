@@ -20,7 +20,7 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -76,7 +76,7 @@ impl Archiver {
         absolute_source_paths: Vec<PathBuf>,
         commit_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
-        progress_reporter: Option<Arc<Mutex<CommitProgressReporter>>>,
+        progress_reporter: Option<Arc<CommitProgressReporter>>,
     ) -> Result<Snapshot> {
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ObjectId> = match &parent_snapshot {
@@ -158,10 +158,9 @@ impl Archiver {
                 let inner_commit_root_path_clone = commit_root_path_clone.clone();
                 pool.spawn(move || {
                     // Notify reporter
-                    if let Some(pr) = &inner_progress_reporter_clone {
+                    if let Some(ref pr) = inner_progress_reporter_clone {
                         let (item_path, _, _, _) = &diff_tuple;
-                        let mut pr_guard = pr.lock().unwrap();
-                        pr_guard.processing_file(
+                        pr.processing_file(
                             item_path
                                 .strip_prefix(inner_commit_root_path_clone.clone())
                                 .unwrap()
@@ -225,10 +224,9 @@ impl Archiver {
                 }
 
                 // Notify reporter
-                if let Some(pr) = &serializer_progress_reporter_clone {
+                if let Some(ref pr) = serializer_progress_reporter_clone {
                     let (item_path, _) = &item;
-                    let mut pr_guard = pr.lock().unwrap();
-                    pr_guard.processed_file(
+                    pr.processed_file(
                         item_path
                             .clone()
                             .strip_prefix(serializer_commit_root_path_clone.clone())
@@ -279,7 +277,7 @@ impl Archiver {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: &dyn RepositoryBackend,
-        progress_reporter: Option<Arc<Mutex<CommitProgressReporter>>>,
+        progress_reporter: Option<Arc<CommitProgressReporter>>,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
 
@@ -292,12 +290,10 @@ impl Archiver {
                     match prev_node {
                         Some(node_info) => match node_info.node.node_type {
                             NodeType::File | NodeType::Symlink => {
-                                let mut pr_guard = pr.lock().unwrap();
-                                pr_guard.deleted_file();
+                                pr.deleted_file();
                             }
                             NodeType::Directory => {
-                                let mut pr_guard = pr.lock().unwrap();
-                                pr_guard.deleted_dir();
+                                pr.deleted_dir();
                             }
                         },
                         None => bail!("Item deleted but the node was not provided"),
@@ -317,9 +313,8 @@ impl Archiver {
                             // Notify reporter
                             if let Some(pr) = progress_reporter {
                                 let bytes_processed = node.metadata.size;
-                                let mut pr_guard = pr.lock().unwrap();
-                                pr_guard.processed_bytes(bytes_processed);
-                                pr_guard.unchanged_file();
+                                pr.processed_bytes(bytes_processed);
+                                pr.unchanged_file();
                             }
 
                             return Ok(Some((
@@ -333,8 +328,7 @@ impl Archiver {
                         NodeType::Directory => {
                             // Notify reporter
                             if let Some(pr) = progress_reporter {
-                                let mut pr_guard = pr.lock().unwrap();
-                                pr_guard.unchanged_dir();
+                                pr.unchanged_dir();
                             }
 
                             return Ok(Some((path, prev_stream_node_info)));
@@ -359,12 +353,10 @@ impl Archiver {
 
                                             // Notify reporter
                                             if let Some(pr) = progress_reporter {
-                                                let mut pr_guard = pr.lock().unwrap();
-
                                                 if diff_type == NodeDiff::New {
-                                                    pr_guard.new_file();
+                                                    pr.new_file();
                                                 } else if diff_type == NodeDiff::Changed {
-                                                    pr_guard.changed_file();
+                                                    pr.changed_file();
                                                 }
                                             }
 
@@ -386,11 +378,10 @@ impl Archiver {
                         NodeType::Directory => {
                             // Notify reporter
                             if let Some(pr) = progress_reporter {
-                                let mut pr_guard = pr.lock().unwrap();
                                 if diff_type == NodeDiff::New {
-                                    pr_guard.new_dir();
+                                    pr.new_dir();
                                 } else if diff_type == NodeDiff::Changed {
-                                    pr_guard.changed_dir();
+                                    pr.changed_dir();
                                 }
                             }
 
@@ -518,7 +509,7 @@ impl Archiver {
     fn save_file(
         repo: &dyn RepositoryBackend,
         src_path: &Path,
-        progress_reporter: Option<Arc<Mutex<CommitProgressReporter>>>,
+        progress_reporter: Option<Arc<CommitProgressReporter>>,
     ) -> Result<Vec<ObjectId>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
@@ -549,11 +540,9 @@ impl Archiver {
             chunk_hashes.push(content_hash);
 
             if let Some(ref pr) = progress_reporter {
-                let mut pr_guard = pr.lock().unwrap();
-                pr_guard.encoded_bytes(encoded_size);
-                pr_guard.raw_bytes(raw_size);
-                pr_guard.processed_bytes(processed_size);
-                drop(pr_guard)
+                pr.encoded_bytes(encoded_size);
+                pr.raw_bytes(raw_size);
+                pr.processed_bytes(processed_size);
             }
         }
 

@@ -559,7 +559,7 @@ impl Archiver {
             let processed_size = chunk.data.len() as u64;
 
             let (raw_size, encoded_size, content_hash) =
-                repo.save_object(ObjectType::Data, chunk.data)?;
+                repo.save_blob(ObjectType::Data, chunk.data)?;
 
             chunk_hashes.push(content_hash);
 
@@ -579,13 +579,13 @@ impl Archiver {
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
         let tree_json = serde_json::to_string(tree)?.as_bytes().to_vec();
-        let (_raw_size, _encoded_size, hash) = repo.save_object(ObjectType::Tree, tree_json)?;
+        let (_raw_size, _encoded_size, hash) = repo.save_blob(ObjectType::Tree, tree_json)?;
         Ok(hash)
     }
 
     /// Load a tree from the repository.
     pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ObjectId) -> Result<Tree> {
-        let tree_object = repo.load_object(root_id)?;
+        let tree_object = repo.load_blob(root_id)?;
         let tree: Tree = serde_json::from_slice(&tree_object)?;
         Ok(tree)
     }

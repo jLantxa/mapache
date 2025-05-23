@@ -32,7 +32,7 @@ use crate::{
 };
 
 use super::{
-    ObjectId, RepoVersion, RepositoryBackend, SnapshotId,
+    KEYS_DIR, ObjectId, RepoVersion, RepositoryBackend, SnapshotId,
     config::Config,
     index::{Index, IndexFile, MasterIndex},
     snapshot::Snapshot,
@@ -52,6 +52,7 @@ pub struct Repository {
     objects_path: PathBuf,
     snapshot_path: PathBuf,
     index_path: PathBuf,
+    keys_path: PathBuf,
 
     secure_storage: Arc<SecureStorage>,
 
@@ -141,6 +142,7 @@ impl RepositoryBackend for Repository {
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
         let index_path = PathBuf::from(INDEX_DIR);
+        let keys_path = PathBuf::from(KEYS_DIR);
 
         // Packer defaults
         let max_packer_size = backup::defaults::MAX_PACK_SIZE;
@@ -161,9 +163,12 @@ impl RepositoryBackend for Repository {
 
         let mut repo = Repository {
             backend,
+
             objects_path,
             snapshot_path,
             index_path,
+            keys_path,
+
             secure_storage,
 
             max_packer_size,
@@ -178,7 +183,7 @@ impl RepositoryBackend for Repository {
         Ok(repo)
     }
 
-    fn save_object(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ObjectId)> {
+    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ObjectId)> {
         let raw_size = data.len();
         let id = utils::calculate_hash(&data);
 
@@ -209,7 +214,7 @@ impl RepositoryBackend for Repository {
         Ok((raw_size as u64, encoded_size as u64, id))
     }
 
-    fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {
+    fn load_blob(&self, id: &ObjectId) -> Result<Vec<u8>> {
         let index_guard = self.index.lock().unwrap();
         let blob_entry = index_guard.get(id);
         match blob_entry {
@@ -300,6 +305,35 @@ impl RepositoryBackend for Repository {
         self.flush_packer(self.tree_packer.lock().unwrap())?;
 
         self.index.lock().unwrap().save(self)
+    }
+
+    fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {
+        let object_path = self.get_object_path(id);
+        let data = self.backend.read(&object_path)?;
+        self.secure_storage.decode(&data)
+    }
+
+    fn load_index(&self, id: &ObjectId) -> Result<IndexFile> {
+        let index_path = self.index_path.join(&id);
+        let index = self.backend.read(&index_path)?;
+        let index: Vec<u8> = self.secure_storage.decode(&index)?;
+        let index = serde_json::from_slice(&index)?;
+        Ok(index)
+    }
+
+    fn load_config(&self) -> Result<Config> {
+        let config = self.backend.read(&Path::new("config"))?;
+        let config = self.secure_storage.decode(&config)?;
+        let config = serde_json::from_slice(&config)?;
+        Ok(config)
+    }
+
+    fn load_key(&self, id: &ObjectId) -> Result<repository::KeyFile> {
+        let key_path = self.keys_path.join(&id);
+        let key = self.backend.read(&key_path)?;
+        let key = SecureStorage::decompress(&key)?;
+        let key = serde_json::from_slice(&key)?;
+        Ok(key)
     }
 }
 

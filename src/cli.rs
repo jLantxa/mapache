@@ -52,12 +52,12 @@ pub fn log_red(tag: &str, str: &str) {
 
 /// Prints a warning log (warning: ...)
 pub fn log_warning(str: &str) {
-    println!("{}: {}", "Warning".bold().yellow(), str);
+    eprintln!("{}: {}", "Warning".bold().yellow(), str);
 }
 
 /// Prints an error log (error: ...)
 pub fn log_error(str: &str) {
-    println!("{}: {}", "Error".bold().red(), str);
+    eprintln!("{}: {}", "Error".bold().red(), str);
 }
 
 pub fn print_separator(character: char, count: usize) {

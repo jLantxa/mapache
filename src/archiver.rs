@@ -17,7 +17,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::Cursor,
+    io::BufReader,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -28,7 +28,6 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 use fastcdc::v2020::{Normalization, StreamCDC};
-use memmap2::Mmap;
 
 use crate::{
     backup::{self, ObjectId, ObjectType},
@@ -538,21 +537,7 @@ impl Archiver {
     ) -> Result<Vec<ObjectId>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
-
-        let mmap = unsafe {
-            // Safety: The file is opened for reading, and we are creating a read-only
-            // memory map. The primary unsafety concern is if the underlying file
-            // is modified or deleted by another process while the map is active.
-            // For a backup tool, it's generally assumed the source files are stable
-            // during the backup process. If the file is truncated, subsequent accesses
-            // to out-of-bounds memory via the mmap would be UB.
-            Mmap::map(&source)?
-        };
-
-        // Instead of BufReader, we now use the mmap'd slice.
-        // `&mmap[..]` gives us a `&[u8]` slice that represents the entire file.
-        // We then wrap it in a `Cursor` to make it implement `Read` for `fastcdc`.
-        let reader = Cursor::new(&mmap[..]);
+        let reader = BufReader::new(source);
 
         // The chunker parameters must remain stable across versions, otherwise
         // same contents will no longer produce same chunks and IDs.

@@ -14,32 +14,37 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{ArgGroup, Args};
+use clap::Args;
 
 use crate::backend::new_backend_with_prompt;
+use crate::backup::{ObjectId, SnapshotId};
 use crate::cli::{self};
 use crate::repository::storage::SecureStorage;
+use crate::repository::tree::Tree;
 use crate::repository::{self};
 
 use super::GlobalArgs;
 
 #[derive(Args, Debug)]
-#[clap(group = ArgGroup::new("decode_mode").multiple(false))]
 pub struct CmdArgs {
-    /// Path to the repository file
-    #[clap(value_parser)]
-    path: String,
+    /// Object to print
+    #[arg(value_parser)]
+    pub object: Object,
+}
 
-    /// Decode the object (decrypt + decompress) before printing
-    #[arg(long, default_value_t = false, group = "decode_mode")]
-    pub decode: bool,
-
-    /// Use this flag if the object is a key file
-    #[arg(long, default_value_t = false, group = "decode_mode")]
-    pub decompress: bool,
+#[derive(Debug, Clone)]
+pub enum Object {
+    Config,
+    Pack(ObjectId),
+    Blob(ObjectId),
+    Tree(ObjectId),
+    Index(ObjectId),
+    Key(ObjectId),
+    Snapshot(SnapshotId),
 }
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -47,25 +52,112 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo_password = cli::request_repo_password();
 
     let key = repository::retrieve_key(repo_password, backend.clone())?;
-    let secure_storage = SecureStorage::build()
-        .with_key(key)
-        .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+    let secure_storage = Arc::new(
+        SecureStorage::build()
+            .with_key(key)
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
+    );
 
-    let object_path = PathBuf::from(args.path.clone());
-    let mut object = backend.read(&object_path)?;
+    let repo = repository::open(backend, secure_storage.clone())?;
 
-    // Decompress or decode
-    if args.decompress {
-        object = SecureStorage::decompress(&object).with_context(
-            || "Could not decompress the object. Make sure the object is not encrypted.",
-        )?;
-    } else if args.decode {
-        object = secure_storage.decode(&object).with_context(
-            || "Could not decode the object. Make sure the object is really encoded.",
-        )?;
+    match &args.object {
+        Object::Config => {
+            let config = repo
+                .load_config()
+                .with_context(|| "Failed to load config")?;
+            println!("{}", serde_json::to_string_pretty(&config)?);
+            Ok(())
+        }
+        Object::Pack(id) => {
+            let object = repo
+                .load_object(id)
+                .with_context(|| "Failed to load object")?;
+            println!("{}", serde_json::to_string_pretty(&object)?);
+            Ok(())
+        }
+        Object::Tree(id) => {
+            let tree = repo.load_blob(id).with_context(|| "Failed to load blob")?;
+            let tree: Tree = serde_json::from_slice(&tree)?;
+            println!("{}", serde_json::to_string_pretty(&tree)?);
+            Ok(())
+        }
+        Object::Blob(id) => {
+            let blob = repo.load_blob(id).with_context(|| "Failed to load blob")?;
+            println!("{}", String::from_utf8(blob)?);
+            Ok(())
+        }
+        Object::Index(id) => {
+            let index = repo
+                .load_index(id)
+                .with_context(|| "Failed to load index")?;
+            println!("{}", serde_json::to_string_pretty(&index)?);
+            Ok(())
+        }
+        Object::Key(id) => {
+            let key = repo.load_key(id).with_context(|| "Failed to load key")?;
+            println!("{}", serde_json::to_string_pretty(&key)?);
+            Ok(())
+        }
+        Object::Snapshot(id) => {
+            let snapshot = repo
+                .load_snapshot(id)
+                .with_context(|| "Failed to load snapshot")?;
+            println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            Ok(())
+        }
     }
+}
 
-    println!("{}", String::from_utf8_lossy(&object));
+impl FromStr for Object {
+    type Err = String; // Or a more specific error type
 
-    Ok(())
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(':').collect();
+        match parts[0] {
+            "config" => Ok(Object::Config),
+            "pack" => {
+                if parts.len() == 2 {
+                    Ok(Object::Pack(parts[1].to_string()))
+                } else {
+                    Err("Pack object requires an ID, e.g., 'pack:some_id'".to_string())
+                }
+            }
+            "tree" => {
+                if parts.len() == 2 {
+                    Ok(Object::Tree(parts[1].to_string()))
+                } else {
+                    Err("Tree object requires an ID, e.g., 'tree:some_id'".to_string())
+                }
+            }
+            "blob" => {
+                if parts.len() == 2 {
+                    Ok(Object::Blob(parts[1].to_string()))
+                } else {
+                    Err("Blob object requires an ID, e.g., 'blob:some_id'".to_string())
+                }
+            }
+            "index" => {
+                if parts.len() == 2 {
+                    Ok(Object::Index(parts[1].to_string()))
+                } else {
+                    Err("Index object requires an ID, e.g., 'index:some_id'".to_string())
+                }
+            }
+            "key" => {
+                if parts.len() == 2 {
+                    Ok(Object::Key(parts[1].to_string()))
+                } else {
+                    Err("Key object requires an ID, e.g., 'key:some_id'".to_string())
+                }
+            }
+            "snapshot" => {
+                if parts.len() == 2 {
+                    Ok(Object::Snapshot(parts[1].to_string()))
+                } else {
+                    Err("Snapshot object requires an ID, e.g., 'snapshot:some_id'".to_string())
+                }
+            }
+            _ => Err(format!("Unknown object type: {}", parts[0])),
+        }
+    }
 }

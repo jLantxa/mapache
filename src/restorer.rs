@@ -42,7 +42,7 @@ pub fn restore_node(repo: &dyn RepositoryBackend, node: &Node, dst_path: &Path) 
                 .expect("File Node must have contents (even if empty)");
 
             for (index, chunk_hash) in chunks.iter().enumerate() {
-                let chunk_data = repo.load_object(&chunk_hash).with_context(|| {
+                let chunk_data = repo.load_blob(&chunk_hash).with_context(|| {
                     format!(
                         "Could not load chunk #{} ({}) for restoring file '{}'",
                         index + 1,

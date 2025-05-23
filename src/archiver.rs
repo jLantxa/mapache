@@ -40,11 +40,11 @@ use crate::{
             StreamNode, Tree,
         },
     },
-    ui::commit::CommitProgressReporter,
+    ui::snapshot_progress::SnapshotProgressReporter,
     utils::{self, Hash},
 };
 
-/// Represents a directory node that is being built bottom-up during the commit process.
+/// Represents a directory node that is being built bottom-up during the snapshot process.
 /// It holds the directory's own node information (if available), the collected child nodes,
 /// and the number of children expected from the stream.
 #[derive(Debug)]
@@ -65,7 +65,7 @@ impl PendingTree {
 pub struct Archiver {}
 
 impl Archiver {
-    /// Orchestrates the backup commit process, building a new snapshot of the source paths.
+    /// Orchestrates the backup snapshot process, building a new snapshot of the source paths.
     ///
     /// This implementation utilizes a multi-threaded, channel-based architecture to manage
     /// the workflow.Dedicated threads handle generating the difference stream, processing
@@ -74,9 +74,9 @@ impl Archiver {
     pub fn snapshot(
         repo: Arc<dyn RepositoryBackend>,
         absolute_source_paths: Vec<PathBuf>,
-        commit_root_path: PathBuf,
+        snapshot_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
-        progress_reporter: Option<Arc<CommitProgressReporter>>,
+        progress_reporter: Option<Arc<SnapshotProgressReporter>>,
     ) -> Result<Snapshot> {
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ObjectId> = match &parent_snapshot {
@@ -90,7 +90,7 @@ impl Archiver {
             Err(e) => bail!("Failed to create FSNodeStreamer: {:?}", e.to_string()),
         };
         let previous_tree_streamer =
-            SerializedNodeStreamer::new(repo.clone(), parent_tree_id, commit_root_path.clone())?;
+            SerializedNodeStreamer::new(repo.clone(), parent_tree_id, snapshot_root_path.clone())?;
 
         let num_threads = std::cmp::max(1, num_cpus::get() / 2);
         let pool = rayon::ThreadPoolBuilder::new()
@@ -124,13 +124,13 @@ impl Archiver {
                     if let Err(e) = diff_tx.send(diff) {
                         error_flag_clone.fetch_and(true, std::sync::atomic::Ordering::AcqRel);
                         cli::log_error(&format!(
-                            "Committer thread errored sending diff: {:?}",
+                            "Archiver thread errored sending diff: {:?}",
                             e.to_string()
                         ));
                         break;
                     }
                 } else {
-                    cli::log_error("Committer thread errored getting next diff");
+                    cli::log_error("Archiver thread errored getting next diff");
                     break;
                 }
             }
@@ -144,7 +144,7 @@ impl Archiver {
         let repo_clone = repo.clone();
         let error_flag_clone = error_flag.clone();
         let processor_progress_reporter_clone = progress_reporter.clone();
-        let commit_root_path_clone = commit_root_path.clone();
+        let snapshot_root_path_clone = snapshot_root_path.clone();
         let processor_thread = std::thread::spawn(move || {
             while let Ok(diff_tuple) = diff_rx_clone.recv() {
                 if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
@@ -155,14 +155,14 @@ impl Archiver {
                 let inner_repo_clone = repo_clone.clone();
                 let inner_error_flag_clone = error_flag_clone.clone();
                 let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
-                let inner_commit_root_path_clone = commit_root_path_clone.clone();
+                let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
                 pool.spawn(move || {
                     // Notify reporter
                     if let Some(ref pr) = inner_progress_reporter_clone {
                         let (item_path, _, _, _) = &diff_tuple;
                         pr.processing_file(
                             item_path
-                                .strip_prefix(inner_commit_root_path_clone.clone())
+                                .strip_prefix(inner_snapshot_root_path_clone.clone())
                                 .unwrap()
                                 .to_path_buf(),
                         );
@@ -180,7 +180,7 @@ impl Archiver {
                                 if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
                                     inner_error_flag_clone.store(true, Ordering::Release);
                                     cli::log_error(&format!(
-                                        "Committer thread errored sending processing item: {:?}",
+                                        "Archiver thread errored sending processing item: {:?}",
                                         e.to_string()
                                     ));
                                     return;
@@ -190,7 +190,7 @@ impl Archiver {
                         Err(e) => {
                             inner_error_flag_clone.store(true, Ordering::Release);
                             cli::log_error(&format!(
-                                "Committer thread errored processing item: {:?}",
+                                "Archiver thread errored processing item: {:?}",
                                 e.to_string()
                             ));
                             return;
@@ -210,11 +210,11 @@ impl Archiver {
         let error_flag_clone = error_flag.clone();
         let repo_clone = repo.clone();
         let serializer_progress_reporter_clone = progress_reporter.clone();
-        let serializer_commit_root_path_clone = commit_root_path.clone();
+        let serializer_snapshot_root_path_clone = snapshot_root_path.clone();
         let tree_serializer_thread = std::thread::spawn(move || {
             let mut final_root_tree_id: Option<ObjectId> = None;
             let mut pending_trees = Self::create_pending_trees(
-                &serializer_commit_root_path_clone,
+                &serializer_snapshot_root_path_clone,
                 &absolute_source_paths,
             );
 
@@ -229,7 +229,7 @@ impl Archiver {
                     pr.processed_file(
                         item_path
                             .clone()
-                            .strip_prefix(serializer_commit_root_path_clone.clone())
+                            .strip_prefix(serializer_snapshot_root_path_clone.clone())
                             .unwrap()
                             .to_path_buf(),
                     );
@@ -240,11 +240,11 @@ impl Archiver {
                     repo_clone.as_ref(),
                     &mut pending_trees,
                     &mut final_root_tree_id,
-                    &serializer_commit_root_path_clone,
+                    &serializer_snapshot_root_path_clone,
                 ) {
                     error_flag_clone.store(true, Ordering::Release);
                     cli::log_error(&format!(
-                        "Committer thread errored handling processed item: {:?}",
+                        "Archiver thread errored handling processed item: {:?}",
                         e.to_string()
                     ));
                     break;
@@ -260,7 +260,7 @@ impl Archiver {
                     timestamp: Local::now(),
                     tree: tree_id.clone(),
                     size: 0,
-                    root: commit_root_path.clone(),
+                    root: snapshot_root_path.clone(),
                     paths: absolute_source_paths.clone(),
                     description: None,
                 }),
@@ -277,7 +277,7 @@ impl Archiver {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: &dyn RepositoryBackend,
-        progress_reporter: Option<Arc<CommitProgressReporter>>,
+        progress_reporter: Option<Arc<SnapshotProgressReporter>>,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
 
@@ -398,7 +398,7 @@ impl Archiver {
         repo: &dyn RepositoryBackend,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
-        commit_root_path: &Path,
+        snapshot_root_path: &Path,
     ) -> Result<()> {
         let (path, stream_node) = processed_item;
 
@@ -434,7 +434,7 @@ impl Archiver {
             repo,
             pending_trees,
             final_root_tree_id,
-            commit_root_path,
+            snapshot_root_path,
         )
     }
 
@@ -443,7 +443,7 @@ impl Archiver {
         repo: &dyn RepositoryBackend,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ObjectId>,
-        commit_root_path: &Path,
+        snapshot_root_path: &Path,
     ) -> Result<()> {
         let this_pending_tree = match pending_trees.get(&dir_path) {
             Some(tree) => tree,
@@ -468,7 +468,7 @@ impl Archiver {
 
         let tree_id = tree_id_result?;
 
-        if dir_path == commit_root_path {
+        if dir_path == snapshot_root_path {
             *final_root_tree_id = Some(tree_id);
         } else {
             let mut completed_dir_node = this_pending_tree.node.with_context(|| {
@@ -493,7 +493,7 @@ impl Archiver {
                 repo,
                 pending_trees,
                 final_root_tree_id,
-                commit_root_path,
+                snapshot_root_path,
             )?;
         }
 
@@ -509,7 +509,7 @@ impl Archiver {
     fn save_file(
         repo: &dyn RepositoryBackend,
         src_path: &Path,
-        progress_reporter: Option<Arc<CommitProgressReporter>>,
+        progress_reporter: Option<Arc<SnapshotProgressReporter>>,
     ) -> Result<Vec<ObjectId>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
@@ -581,18 +581,18 @@ impl Archiver {
     }
 
     fn create_pending_trees(
-        commit_root_path: &Path,
+        snapshot_root_path: &Path,
         paths: &[PathBuf],
     ) -> BTreeMap<PathBuf, PendingTree> {
         let mut pending_trees = BTreeMap::new();
 
         // We need to know ahead how many children the root is expecting, because the FSNodeStreamer
         // does not emit it.
-        let (root_children_count, _) = utils::intermediate_paths(commit_root_path, paths);
+        let (root_children_count, _) = utils::intermediate_paths(snapshot_root_path, paths);
 
         // The tree root, has no node
         pending_trees.insert(
-            commit_root_path.to_path_buf(),
+            snapshot_root_path.to_path_buf(),
             PendingTree {
                 node: None,
                 children: BTreeMap::new(),

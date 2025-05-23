@@ -24,7 +24,7 @@ use std::{
 
 use crate::utils;
 
-pub struct CommitProgressReporter {
+pub struct SnapshotProgressReporter {
     pub expected_items: u64,
     pub expected_size: u64,
     pub processed_items_count: Arc<Mutex<u64>>,
@@ -49,7 +49,7 @@ pub struct CommitProgressReporter {
     file_spinners: Vec<ProgressBar>,
 }
 
-impl CommitProgressReporter {
+impl SnapshotProgressReporter {
     pub fn new(expected_items: u64, expected_size: u64, num_processed_items: usize) -> Self {
         let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(2));
         let progress_bar = mp.add(ProgressBar::new(expected_size));

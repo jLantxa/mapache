@@ -33,13 +33,15 @@ use colored::Colorize;
 
 fn run(args: &commands::Cli) -> Result<()> {
     match &args.command {
-        commands::Command::Init(cmd_args) => commands::init::run(&args.global_args, cmd_args),
-        commands::Command::Log(cmd_args) => commands::log::run(&args.global_args, cmd_args),
+        commands::Command::Init(cmd_args) => commands::cmd_init::run(&args.global_args, cmd_args),
+        commands::Command::Log(cmd_args) => commands::cmd_log::run(&args.global_args, cmd_args),
         commands::Command::Snapshot(cmd_args) => {
-            commands::snapshot::run(&args.global_args, cmd_args)
+            commands::cmd_snapshot::run(&args.global_args, cmd_args)
         }
-        commands::Command::Restore(cmd_args) => commands::restore::run(&args.global_args, cmd_args),
-        commands::Command::Cat(cmd_args) => commands::cat::run(&args.global_args, cmd_args),
+        commands::Command::Restore(cmd_args) => {
+            commands::cmd_restore::run(&args.global_args, cmd_args)
+        }
+        commands::Command::Cat(cmd_args) => commands::cmd_cat::run(&args.global_args, cmd_args),
     }
 }
 

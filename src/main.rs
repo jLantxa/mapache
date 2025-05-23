@@ -21,6 +21,7 @@ pub mod cli;
 pub mod commands;
 pub mod repository;
 pub mod restorer;
+pub mod ui;
 
 #[cfg(test)]
 pub mod testing;

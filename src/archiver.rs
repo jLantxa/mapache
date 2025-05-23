@@ -40,24 +40,9 @@ use crate::{
             StreamNode, Tree,
         },
     },
+    ui::commit::CommitProgressReporter,
     utils::{self, Hash},
 };
-
-pub trait CommitProgressReporter: Send + Sync {
-    fn processing_file(&mut self, path: PathBuf);
-    fn processed_file(&mut self, path: PathBuf);
-    fn processed_bytes(&mut self, bytes: u64);
-    fn raw_bytes(&mut self, bytes: u64);
-    fn encoded_bytes(&mut self, bytes: u64);
-    fn new_file(&mut self);
-    fn changed_file(&mut self);
-    fn unchanged_file(&mut self);
-    fn deleted_file(&mut self);
-    fn new_dir(&mut self);
-    fn changed_dir(&mut self);
-    fn unchanged_dir(&mut self);
-    fn deleted_dir(&mut self);
-}
 
 /// Represents a directory node that is being built bottom-up during the commit process.
 /// It holds the directory's own node information (if available), the collected child nodes,
@@ -91,7 +76,7 @@ impl Archiver {
         absolute_source_paths: Vec<PathBuf>,
         commit_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
-        progress_reporter: Option<Arc<Mutex<dyn CommitProgressReporter>>>,
+        progress_reporter: Option<Arc<Mutex<CommitProgressReporter>>>,
     ) -> Result<Snapshot> {
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ObjectId> = match &parent_snapshot {
@@ -294,7 +279,7 @@ impl Archiver {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: &dyn RepositoryBackend,
-        progress_reporter: Option<Arc<Mutex<dyn CommitProgressReporter>>>,
+        progress_reporter: Option<Arc<Mutex<CommitProgressReporter>>>,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
 
@@ -533,7 +518,7 @@ impl Archiver {
     fn save_file(
         repo: &dyn RepositoryBackend,
         src_path: &Path,
-        progress_reporter: Option<Arc<Mutex<dyn CommitProgressReporter>>>,
+        progress_reporter: Option<Arc<Mutex<CommitProgressReporter>>>,
     ) -> Result<Vec<ObjectId>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;

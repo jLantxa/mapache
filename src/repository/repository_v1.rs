@@ -30,8 +30,8 @@ use crate::{
 };
 
 use super::{
-    config::Config,
     index::{Index, IndexFile, MasterIndex},
+    manifest::Manifest,
     snapshot::Snapshot,
     RepoVersion, RepositoryBackend, ID, KEYS_DIR,
 };
@@ -112,8 +112,8 @@ impl RepositoryBackend for Repository {
 
         let repo_id = ID::new_random();
 
-        // Save new config
-        let config = Config {
+        // Save new manifest
+        let manifest = Manifest {
             version: REPO_VERSION,
             id: repo_id.clone(),
             created_time: timestamp,
@@ -123,10 +123,10 @@ impl RepositoryBackend for Repository {
             .with_key(key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-        let config_path = Path::new("config");
-        let config = serde_json::to_string_pretty(&config)?;
-        let config = secure_storage.encode(config.as_bytes())?;
-        backend.write(config_path, &config)?;
+        let manifest_path = Path::new("manifest");
+        let manifest = serde_json::to_string_pretty(&manifest)?;
+        let manifest = secure_storage.encode(manifest.as_bytes())?;
+        backend.write(manifest_path, &manifest)?;
 
         cli::log!("Created repo with id {}", repo_id.to_short_hex());
 
@@ -340,11 +340,11 @@ impl RepositoryBackend for Repository {
         Ok(index)
     }
 
-    fn load_config(&self) -> Result<Config> {
-        let config = self.backend.read(&Path::new("config"))?;
-        let config = self.secure_storage.decode(&config)?;
-        let config = serde_json::from_slice(&config)?;
-        Ok(config)
+    fn load_manifest(&self) -> Result<Manifest> {
+        let manifest = self.backend.read(&Path::new("manifest"))?;
+        let manifest = self.secure_storage.decode(&manifest)?;
+        let manifest = serde_json::from_slice(&manifest)?;
+        Ok(manifest)
     }
 
     fn load_key(&self, id: &ID) -> Result<repository::KeyFile> {

@@ -125,6 +125,15 @@ pub enum ObjectType {
     Tree,
 }
 
+/// Type of objects that can be stored in a Repository
+pub enum FileType {
+    Object,
+    Snapshot,
+    Index,
+    Key,
+    Manifest,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

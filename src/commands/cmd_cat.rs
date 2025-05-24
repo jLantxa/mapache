@@ -38,7 +38,7 @@ pub struct CmdArgs {
 
 #[derive(Debug, Clone)]
 pub enum Object {
-    Config,
+    Manifest,
     Pack(String),
     Blob(String),
     Tree(String),
@@ -61,11 +61,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo = repository::open(backend, secure_storage.clone())?;
 
     match &args.object {
-        Object::Config => {
-            let config = repo
-                .load_config()
-                .with_context(|| "Failed to load config")?;
-            println!("{}", serde_json::to_string_pretty(&config)?);
+        Object::Manifest => {
+            let manifest = repo
+                .load_manifest()
+                .with_context(|| "Failed to load manifest")?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
             Ok(())
         }
         Object::Pack(hex) => {
@@ -120,7 +120,7 @@ impl FromStr for Object {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split(':').collect();
         match parts[0] {
-            "config" => Ok(Object::Config),
+            "manifest" => Ok(Object::Manifest),
             "pack" => {
                 if parts.len() == 2 {
                     Ok(Object::Pack(parts[1].to_string()))

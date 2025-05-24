@@ -136,7 +136,7 @@ impl Index {
     }
 
     /// Saves the index to the repository. This operation might generate multiple
-    /// index files if the total number of blobs exceeds a configurable limit.
+    /// index files if the total number of blobs exceeds a manifesturable limit.
     ///
     /// Returns the total uncompressed and compressed sizes of the saved index files.
     pub fn save(&self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {

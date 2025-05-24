@@ -21,8 +21,8 @@ use anyhow::{Context, Result};
 use clap::Args;
 
 use crate::backend::new_backend_with_prompt;
-use crate::backup::{ObjectId, SnapshotId};
 use crate::cli::{self};
+use crate::global::ID;
 use crate::repository::storage::SecureStorage;
 use crate::repository::tree::Tree;
 use crate::repository::{self};
@@ -39,12 +39,12 @@ pub struct CmdArgs {
 #[derive(Debug, Clone)]
 pub enum Object {
     Config,
-    Pack(ObjectId),
-    Blob(ObjectId),
-    Tree(ObjectId),
-    Index(ObjectId),
-    Key(ObjectId),
-    Snapshot(SnapshotId),
+    Pack(String),
+    Blob(String),
+    Tree(String),
+    Index(String),
+    Key(String),
+    Snapshot(String),
 }
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -68,39 +68,45 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&config)?);
             Ok(())
         }
-        Object::Pack(id) => {
+        Object::Pack(hex) => {
+            let id = &ID::from_hex(hex)?;
             let object = repo
-                .load_object(id)
+                .load_object(&id)
                 .with_context(|| "Failed to load object")?;
             println!("{}", serde_json::to_string_pretty(&object)?);
             Ok(())
         }
-        Object::Tree(id) => {
-            let tree = repo.load_blob(id).with_context(|| "Failed to load blob")?;
+        Object::Tree(hex) => {
+            let id = &ID::from_hex(hex)?;
+            let tree = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
             let tree: Tree = serde_json::from_slice(&tree)?;
             println!("{}", serde_json::to_string_pretty(&tree)?);
             Ok(())
         }
-        Object::Blob(id) => {
-            let blob = repo.load_blob(id).with_context(|| "Failed to load blob")?;
+        Object::Blob(hex) => {
+            let id = &ID::from_hex(hex)?;
+            let blob = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
             println!("{}", String::from_utf8(blob)?);
             Ok(())
         }
-        Object::Index(id) => {
+        Object::Index(hex) => {
+            let id = &ID::from_hex(hex)?;
             let index = repo
-                .load_index(id)
+                .load_index(&id)
                 .with_context(|| "Failed to load index")?;
             println!("{}", serde_json::to_string_pretty(&index)?);
             Ok(())
         }
-        Object::Key(id) => {
-            let key = repo.load_key(id).with_context(|| "Failed to load key")?;
+        Object::Key(hex) => {
+            let id = &ID::from_hex(hex)?;
+            let key = repo.load_key(&id).with_context(|| "Failed to load key")?;
             println!("{}", serde_json::to_string_pretty(&key)?);
             Ok(())
         }
-        Object::Snapshot(id) => {
+        Object::Snapshot(hex) => {
+            let id = &ID::from_hex(hex)?;
             let snapshot = repo
-                .load_snapshot(id)
+                .load_snapshot(&id)
                 .with_context(|| "Failed to load snapshot")?;
             println!("{}", serde_json::to_string_pretty(&snapshot)?);
             Ok(())

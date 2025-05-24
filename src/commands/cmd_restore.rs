@@ -23,6 +23,7 @@ use crate::{
     backend::new_backend_with_prompt,
     cli::{self},
     commands::{GlobalArgs, UseSnapshot},
+    global::ID,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::SerializedNodeStreamer},
     restorer,
 };
@@ -91,10 +92,13 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let s = snapshots_sorted.last();
             s.cloned()
         }
-        UseSnapshot::Snapshot(id) => match repo.load_snapshot(id) {
-            Ok(s) => Some((id.clone(), s)),
-            Err(_) => None,
-        },
+        UseSnapshot::SnapshotId(id_hex) => {
+            let id = ID::from_hex(&id_hex)?;
+            match repo.load_snapshot(&id) {
+                Ok(s) => Some((id.clone(), s)),
+                Err(_) => None,
+            }
+        }
     }
     .with_context(|| "No snapshot was found")?;
 

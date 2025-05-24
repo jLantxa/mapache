@@ -25,13 +25,13 @@ use std::{
 
 use blake3::Hasher;
 
-pub type Hash = String;
+use crate::global::Hash256;
 
 /// Calculates the 256-bit hash of a byte array
-pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash {
+pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash256 {
     let mut hasher = Hasher::new();
     hasher.update(data.as_ref());
-    hasher.finalize().to_string()
+    hasher.finalize().into()
 }
 
 #[allow(non_upper_case_globals)]
@@ -92,15 +92,6 @@ pub fn calculate_lcp(paths: &[PathBuf]) -> PathBuf {
     }
 
     common_prefix
-}
-
-/// Returns a hex string from a slice of bytes
-pub fn bytes_to_hex_string(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| format!("{:02x}", byte))
-        .rev()
-        .collect()
 }
 
 pub fn pretty_print_duration(duration: Duration) -> String {
@@ -188,6 +179,10 @@ pub fn intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMap<Pa
     (root_children_count, intermediate_paths)
 }
 
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +200,7 @@ mod tests {
         let hash = calculate_hash(data);
 
         assert_eq!(
-            hash,
+            bytes_to_hex(&hash),
             "28ff314ca7c551552d4d2f4be86fd2348749ace0fbda1a051038bdb493c10a4d"
         );
     }
@@ -265,10 +260,10 @@ mod tests {
             0x5c, 0x6d, 0x7e, 0x8f, 0x9a, 0x0b, 0x1c, 0x2d, 0x3e, 0x4f, 0x5a, 0x6b, 0x7c, 0x8d,
             0x9e, 0x0f, 0x10, 0x21,
         ];
-        let hex_str = bytes_to_hex_string(&bytes);
+        let hex_str = bytes_to_hex(&bytes);
         assert_eq!(
             hex_str,
-            "21100f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a"
+            "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1021"
         );
     }
 

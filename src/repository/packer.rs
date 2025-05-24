@@ -14,13 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::backup::ObjectId;
+use crate::global::ID;
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a larger pack.
 #[derive(Debug, Clone)]
 pub struct PackedBlobDescriptor {
-    pub id: ObjectId,
+    pub id: ID,
     pub offset: u64,
     pub length: u64,
 }
@@ -95,9 +95,9 @@ impl Packer {
     /// will be empty.
     ///
     /// # Arguments
-    /// * `id`: The unique `ObjectId` of the blob. This will be cloned for the descriptor.
+    /// * `id`: The unique `ID` of the blob. This will be cloned for the descriptor.
     /// * `blob_data`: The raw byte data of the blob. This `Vec` will be consumed (emptied).
-    pub fn add_blob(&mut self, id: &ObjectId, mut blob_data: Vec<u8>) {
+    pub fn add_blob(&mut self, id: &ID, mut blob_data: Vec<u8>) {
         let offset = self.data.len() as u64; // The new blob starts at the current end of the data buffer
         let length = blob_data.len() as u64; // The length of the incoming blob data
 
@@ -106,7 +106,7 @@ impl Packer {
 
         // Record the descriptor for the newly added blob
         self.blob_descriptors.push(PackedBlobDescriptor {
-            id: id.clone(), // Clone the ObjectId for the descriptor
+            id: id.clone(), // Clone the ID for the descriptor
             offset,
             length,
         });

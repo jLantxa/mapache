@@ -20,7 +20,7 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::backend::new_backend_with_prompt;
-use crate::backup::SnapshotId;
+use crate::global::ID;
 use crate::repository::storage::SecureStorage;
 use crate::{cli, repository};
 
@@ -30,7 +30,7 @@ use super::GlobalArgs;
 pub struct CmdArgs {
     /// The ID of the snapshot to restore
     #[clap(value_parser)]
-    pub snapshot: SnapshotId,
+    pub snapshot: String,
 }
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -46,7 +46,9 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let repo = repository::open(backend, secure_storage)?;
 
-    repo.remove_snapshot(&args.snapshot)?;
+    let snapshot_id = &ID::from_hex(&args.snapshot)?;
+
+    repo.remove_snapshot(&snapshot_id)?;
 
     Ok(())
 }

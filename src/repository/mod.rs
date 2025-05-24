@@ -37,10 +37,7 @@ use snapshot::Snapshot;
 
 use crate::cli;
 use crate::{
-    backend::StorageBackend,
-    backup::ObjectType,
-    backup::{ObjectId, SnapshotId},
-    repository::storage::SecureStorage,
+    backend::StorageBackend, global::ID, global::ObjectType, repository::storage::SecureStorage,
 };
 
 pub type RepoVersion = u32;
@@ -59,35 +56,35 @@ pub trait RepositoryBackend: Sync + Send {
 
     /// Saves a blob in the repository.
     /// Returns a tuple (uncompressed size, encoded_size, object id)
-    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ObjectId)>;
+    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ID)>;
 
     /// Loads a blob from the repository
-    fn load_blob(&self, id: &ObjectId) -> Result<Vec<u8>>;
+    fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;
 
     /// Saves a snapshot metadata.
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(SnapshotId, u64, u64)>;
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(ID, u64, u64)>;
 
     /// Removes a snapshot from the repository, if it exists.
-    fn remove_snapshot(&self, id: &SnapshotId) -> Result<()>;
+    fn remove_snapshot(&self, id: &ID) -> Result<()>;
 
     /// Get a snapshot by hash
-    fn load_snapshot(&self, id: &SnapshotId) -> Result<Snapshot>;
+    fn load_snapshot(&self, id: &ID) -> Result<Snapshot>;
 
     /// Get all snapshots in the repository
-    fn load_all_snapshots(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
+    fn load_all_snapshots(&self) -> Result<Vec<(ID, Snapshot)>>;
 
     /// Get all snapshots in the repository, sorted by datetime.
-    fn load_all_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>>;
+    fn load_all_snapshots_sorted(&self) -> Result<Vec<(ID, Snapshot)>>;
 
     fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;
 
-    fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>>;
+    fn load_object(&self, id: &ID) -> Result<Vec<u8>>;
 
-    fn load_index(&self, id: &ObjectId) -> Result<IndexFile>;
+    fn load_index(&self, id: &ID) -> Result<IndexFile>;
 
     fn load_config(&self) -> Result<Config>;
 
-    fn load_key(&self, id: &ObjectId) -> Result<KeyFile>;
+    fn load_key(&self, id: &ID) -> Result<KeyFile>;
 
     fn flush(&self) -> Result<(u64, u64)>;
 }

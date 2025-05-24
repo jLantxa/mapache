@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 
 use crate::{
@@ -30,10 +30,10 @@ use crate::{
 };
 
 use super::{
-    ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     config::Config,
     index::{Index, IndexFile, MasterIndex},
     snapshot::Snapshot,
+    RepoVersion, RepositoryBackend, ID, KEYS_DIR,
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -179,7 +179,7 @@ impl RepositoryBackend for Repository {
         Ok(repo)
     }
 
-    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ID)> {
+    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(ID, u64, u64)> {
         let raw_size = data.len();
         let id = ID::from_content(&data);
 
@@ -192,7 +192,7 @@ impl RepositoryBackend for Repository {
 
         // If the blob was already pending, return early, as we are finished here.
         if blob_exists {
-            return Ok((0, 0, id));
+            return Ok((id, 0, 0));
         }
 
         let mut packer_guard = match object_type {
@@ -207,7 +207,7 @@ impl RepositoryBackend for Repository {
             self.flush_packer(packer_guard)?;
         }
 
-        Ok((raw_size as u64, encoded_size as u64, id))
+        Ok((id, raw_size as u64, encoded_size as u64))
     }
 
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
@@ -314,6 +314,18 @@ impl RepositoryBackend for Repository {
         self.index.lock().unwrap().save(self)
     }
 
+    fn save_object(&self, data: Vec<u8>) -> Result<(ID, u64, u64)> {
+        let id = ID::from_content(&data);
+        let object_path = self.get_object_path(&id);
+        let uncompressed_size = data.len() as u64;
+
+        let data = self.secure_storage.encode(&data)?;
+        let compressed_size = data.len() as u64;
+        self.backend.write(&object_path, &data)?;
+
+        Ok((id, uncompressed_size, compressed_size))
+    }
+
     fn load_object(&self, id: &ID) -> Result<Vec<u8>> {
         let object_path = self.get_object_path(id);
         let data = self.backend.read(&object_path)?;
@@ -410,7 +422,7 @@ impl Repository {
 #[cfg(test)]
 mod test {
 
-    use base64::{Engine, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine};
     use tempfile::tempdir;
 
     use crate::{

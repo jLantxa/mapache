@@ -29,7 +29,7 @@ use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
     cli,
-    global::ID,
+    global::{self, ID},
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
     ui::{
         snapshot_progress::SnapshotProgressReporter,
@@ -115,7 +115,9 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     Some((id, snap)) => {
                         cli::log!(
                             "Using last snapshot {} as parent",
-                            &id.to_short_hex().bold().yellow()
+                            &id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
+                                .bold()
+                                .yellow()
                         );
                         Some(snap.clone())
                     }
@@ -277,7 +279,12 @@ fn show_final_report(
 
         cli::log!(
             "New snapshot created {}",
-            format!("{}", &snapshot_id.to_short_hex()).bold().green()
+            format!(
+                "{}",
+                &snapshot_id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
+            )
+            .bold()
+            .green()
         );
         cli::log!(
             "This snapshot added {} {}",

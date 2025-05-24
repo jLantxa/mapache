@@ -25,7 +25,7 @@ use chrono::Utc;
 use crate::{
     backend::StorageBackend,
     cli,
-    global::{self, ObjectType},
+    global::{self, FileType, ObjectType},
     repository::{self, packer::Packer, storage::SecureStorage},
 };
 
@@ -128,7 +128,7 @@ impl RepositoryBackend for Repository {
         let manifest = secure_storage.encode(manifest.as_bytes())?;
         backend.write(manifest_path, &manifest)?;
 
-        cli::log!("Created repo with id {}", repo_id.to_short_hex());
+        cli::log!("Created repo with id {}", repo_id.to_short_hex(5));
 
         Ok(())
     }
@@ -354,6 +354,50 @@ impl RepositoryBackend for Repository {
         let key = serde_json::from_slice(&key)?;
         Ok(key)
     }
+
+    fn find(&self, file_type: FileType, prefix: &String) -> Result<(ID, PathBuf)> {
+        if prefix.len() > 2 * global::ID_LENGTH {
+            // A hex string has 2 characters per byte.
+            bail!(
+                "Invalid prefix length. The prefix must not be longer than the ID ({} chars)",
+                2 * global::ID_LENGTH
+            );
+        } else if prefix.is_empty() {
+            // Although it is technically posible to use an empty prefix, which would find a match
+            // if only one file of the type exists. let's consider this invalid as it can be
+            // potentially ambiguous or lead to errors.
+            bail!("Prefix cannot be empty");
+        }
+
+        let type_files = self.list_files(file_type)?;
+        let mut matches = Vec::new();
+
+        for file_path in type_files {
+            let filename = match file_path.file_name() {
+                Some(os_str) => os_str.to_string_lossy().into_owned(),
+                None => bail!("Failed to list file for type {}", file_type),
+            };
+
+            if matches.is_empty() && filename.starts_with(prefix) {
+                matches.push((filename, file_path));
+            } else {
+                bail!("Prefix {} is ambiguous", prefix);
+            }
+        }
+
+        if matches.is_empty() {
+            bail!(
+                "File type {} with prefix {} doesn't exist",
+                file_type,
+                prefix
+            );
+        }
+
+        let (filename, filepath) = matches.pop().unwrap(); // Safe unwrap after size check
+        let id = ID::from_hex(&filename)?;
+
+        Ok((id, filepath))
+    }
 }
 
 impl Repository {
@@ -362,7 +406,33 @@ impl Repository {
         let id_hex = id.to_hex();
         self.objects_path
             .join(&id_hex[..OBJECTS_DIR_FANOUT])
-            .join(&id_hex[OBJECTS_DIR_FANOUT..])
+            .join(&id_hex)
+    }
+
+    /// Lists all paths belonging to a file type (objects, snapshots, indexes, etc.).
+    fn list_files(&self, file_type: FileType) -> Result<Vec<PathBuf>> {
+        match file_type {
+            FileType::Snapshot => self.backend.read_dir(&self.snapshot_path),
+            FileType::Key => self.backend.read_dir(&self.keys_path),
+            FileType::Index => self.backend.read_dir(&self.index_path),
+            FileType::Manifest => Ok(vec![PathBuf::from("manifest")]),
+            FileType::Object => {
+                let mut files = Vec::new();
+                for n in 0x00..(1 << (4 * OBJECTS_DIR_FANOUT)) {
+                    let dir_name = self
+                        .objects_path
+                        .join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n));
+
+                    let sub_files = self.backend.read_dir(&dir_name)?;
+                    for f in sub_files.into_iter() {
+                        let object_file_path = self.objects_path.join(&dir_name).join(f);
+                        files.push(object_file_path);
+                    }
+                }
+
+                Ok(files)
+            }
+        }
     }
 
     fn save_with_rename(&self, data: &[u8], path: &Path) -> Result<usize> {

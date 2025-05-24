@@ -14,20 +14,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use aes_gcm::aead::{rand_core::RngCore, OsRng};
-use anyhow::{bail, Context, Result};
-use defaults::SHORT_ID_LENGTH;
-use serde::{Deserialize, Serialize};
+use aes_gcm::aead::{OsRng, rand_core::RngCore};
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::utils;
 
 pub mod defaults;
 
-const ID_LENGTH: usize = 32;
+pub const ID_LENGTH: usize = 32;
 pub type Hash256 = [u8; ID_LENGTH];
 
 /// This is an ID that identifies object by its content.
-#[derive(Hash, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Hash, Clone, Eq, PartialEq)]
 pub struct ID(Hash256);
 
 impl ID {
@@ -52,8 +51,9 @@ impl ID {
         utils::bytes_to_hex(&self.0)
     }
 
-    pub fn to_short_hex(&self) -> String {
-        utils::bytes_to_hex(&self.0[0..SHORT_ID_LENGTH]).to_string()
+    /// Convert to hex String with `len` bytes
+    pub fn to_short_hex(&self, len: usize) -> String {
+        utils::bytes_to_hex(&self.0[0..(len)]).to_string()
     }
 
     /// Helper function to convert a hex char into a byte.
@@ -119,6 +119,27 @@ impl std::fmt::Debug for ID {
     }
 }
 
+/// Implement serde `Serialize` for ID.
+impl Serialize for ID {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+/// Implement serde `Deserialize` for `ID` to deserialize it from a hex String.
+impl<'de> Deserialize<'de> for ID {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        ID::from_hex(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug)]
 pub enum ObjectType {
     Data,
@@ -126,12 +147,26 @@ pub enum ObjectType {
 }
 
 /// Type of objects that can be stored in a Repository
+#[derive(Debug, Copy, Clone)]
 pub enum FileType {
     Object,
     Snapshot,
     Index,
     Key,
     Manifest,
+}
+
+// Implement the Display trait for FileType
+impl std::fmt::Display for FileType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileType::Object => write!(f, "object"),
+            FileType::Snapshot => write!(f, "snapshot"),
+            FileType::Index => write!(f, "index"),
+            FileType::Key => write!(f, "key"),
+            FileType::Manifest => write!(f, "manifest"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +198,21 @@ mod tests {
         let id = ID::from_bytes(bytes);
         let expected_hex = "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210";
         assert_eq!(id.to_hex(), expected_hex);
+    }
+
+    #[test]
+    fn test_id_to_short_hex() {
+        let bytes = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98,
+            0x76, 0x54, 0x32, 0x10,
+        ];
+        let id = ID::from_bytes(bytes);
+        let expected_hex = "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210";
+        assert_eq!(id.to_short_hex(4), expected_hex[0..2 * 4]);
+        assert_eq!(id.to_short_hex(5), expected_hex[0..2 * 5]);
+        assert_eq!(id.to_short_hex(9), expected_hex[0..2 * 9]);
+        assert_eq!(id.to_short_hex(12), expected_hex[0..2 * 12]);
     }
 
     #[test]

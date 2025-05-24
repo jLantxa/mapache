@@ -23,7 +23,7 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     cli,
-    global::ID,
+    global::{self, ID},
     repository::{self, RepositoryBackend, snapshot::Snapshot, storage::SecureStorage},
     ui::table::{Alignment, Table},
     utils,
@@ -112,7 +112,10 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
 
     while let Some((id, snapshot)) = peekable_snapshots.next() {
         table.add_row(vec![
-            id.to_short_hex().bold().yellow().to_string(),
+            id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
+                .bold()
+                .yellow()
+                .to_string(),
             snapshot
                 .timestamp
                 .format("%Y-%m-%d %H:%M:%S %Z")

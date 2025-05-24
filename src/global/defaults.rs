@@ -16,8 +16,6 @@
 
 use crate::utils::size;
 
-pub const SHORT_ID_LENGTH: usize = 4;
-
 // Index
 /// This is a approximate number. Whole packs are stored in the same index
 /// file, so this is a minimum.
@@ -34,3 +32,7 @@ pub const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
 pub const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
 /// Maximum chunk size
 pub const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;
+
+// Display
+pub const SHORT_REPO_ID_LEN: usize = 5;
+pub const SHORT_SNAPSHOT_ID_LEN: usize = 4;

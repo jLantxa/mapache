@@ -14,30 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use crate::utils::size;
 
-use chrono::{DateTime, Local};
-use serde::{Deserialize, Serialize};
+pub const SHORT_ID_LENGTH: usize = 4;
 
-use super::ID;
+// Index
+/// This is a approximate number. Whole packs are stored in the same index
+/// file, so this is a minimum.
+pub const BLOBS_PER_INDEX_FILE: u32 = 65536;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Snapshot {
-    /// The snapshot timestamp is the UTC time at which the snapshot was created
-    pub timestamp: DateTime<Local>,
+// Packing
+/// Minimum pack size before flushing to the backend.
+pub const MAX_PACK_SIZE: u64 = 16 * size::MiB;
 
-    /// Hash ID for the tree object root.
-    pub tree: ID,
-
-    /// Snapshot size in bytes
-    pub size: u64,
-
-    /// Snapshot root path
-    pub root: PathBuf,
-
-    /// Absolute paths to the targets
-    pub paths: Vec<PathBuf>,
-
-    /// Description of the snapshot.
-    pub description: Option<String>,
-}
+// Chunking
+/// Minimum chunk size
+pub const MIN_CHUNK_SIZE: u32 = 512 * size::KiB as u32;
+/// Average chunk size
+pub const AVG_CHUNK_SIZE: u32 = 1 * size::MiB as u32;
+/// Maximum chunk size
+pub const MAX_CHUNK_SIZE: u32 = 8 * size::MiB as u32;

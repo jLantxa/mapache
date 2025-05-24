@@ -17,10 +17,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::global::ID;
+
 /// Repository config
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
-    pub id: String,
+    pub id: ID,
     pub created_time: DateTime<Utc>,
 }

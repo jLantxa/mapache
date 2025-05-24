@@ -19,8 +19,6 @@ use std::str::FromStr;
 use anyhow::{Error, Result, anyhow};
 use clap::{Parser, Subcommand};
 
-use crate::backup::SnapshotId;
-
 pub mod cmd_cat;
 pub mod cmd_forget;
 pub mod cmd_init;
@@ -76,7 +74,7 @@ pub struct GlobalArgs {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UseSnapshot {
     Latest,
-    Snapshot(SnapshotId),
+    SnapshotId(String),
 }
 
 impl FromStr for UseSnapshot {
@@ -85,7 +83,7 @@ impl FromStr for UseSnapshot {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "latest" => Ok(UseSnapshot::Latest),
-            _ if !s.is_empty() => Ok(UseSnapshot::Snapshot(s.to_string())),
+            _ if !s.is_empty() => Ok(UseSnapshot::SnapshotId(s.to_string())),
             _ => Err(anyhow!(
                 "Invalid snapshot value: must be 'latest' or a snapshot ID"
             )),
@@ -97,7 +95,7 @@ impl std::fmt::Display for UseSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UseSnapshot::Latest => write!(f, "latest"),
-            UseSnapshot::Snapshot(id) => write!(f, "{}", id),
+            UseSnapshot::SnapshotId(id) => write!(f, "{}", id),
         }
     }
 }

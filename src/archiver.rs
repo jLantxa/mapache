@@ -30,8 +30,8 @@ use chrono::Local;
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
-    backup::{self, ObjectId, ObjectType},
     cli,
+    global::{self, ID, ObjectType},
     repository::{
         RepositoryBackend,
         snapshot::Snapshot,
@@ -41,7 +41,7 @@ use crate::{
         },
     },
     ui::snapshot_progress::SnapshotProgressReporter,
-    utils::{self, Hash},
+    utils::{self},
 };
 
 /// Represents a directory node that is being built bottom-up during the snapshot process.
@@ -79,7 +79,7 @@ impl Archiver {
         progress_reporter: Option<Arc<SnapshotProgressReporter>>,
     ) -> Result<Snapshot> {
         // Extract parent snapshot tree id
-        let parent_tree_id: Option<ObjectId> = match &parent_snapshot {
+        let parent_tree_id: Option<ID> = match &parent_snapshot {
             None => None,
             Some(snapshot) => Some(snapshot.tree.clone()),
         };
@@ -212,7 +212,7 @@ impl Archiver {
         let serializer_progress_reporter_clone = progress_reporter.clone();
         let serializer_snapshot_root_path_clone = snapshot_root_path.clone();
         let tree_serializer_thread = std::thread::spawn(move || {
-            let mut final_root_tree_id: Option<ObjectId> = None;
+            let mut final_root_tree_id: Option<ID> = None;
             let mut pending_trees = Self::create_pending_trees(
                 &serializer_snapshot_root_path_clone,
                 &absolute_source_paths,
@@ -397,7 +397,7 @@ impl Archiver {
         processed_item: (PathBuf, StreamNode),
         repo: &dyn RepositoryBackend,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
-        final_root_tree_id: &mut Option<ObjectId>,
+        final_root_tree_id: &mut Option<ID>,
         snapshot_root_path: &Path,
     ) -> Result<()> {
         let (path, stream_node) = processed_item;
@@ -442,7 +442,7 @@ impl Archiver {
         dir_path: PathBuf,
         repo: &dyn RepositoryBackend,
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
-        final_root_tree_id: &mut Option<ObjectId>,
+        final_root_tree_id: &mut Option<ID>,
         snapshot_root_path: &Path,
     ) -> Result<()> {
         let this_pending_tree = match pending_trees.get(&dir_path) {
@@ -464,7 +464,7 @@ impl Archiver {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id_result: Result<ObjectId> = Archiver::save_tree(repo, &completed_tree);
+        let tree_id_result: Result<ID> = Archiver::save_tree(repo, &completed_tree);
 
         let tree_id = tree_id_result?;
 
@@ -510,7 +510,7 @@ impl Archiver {
         repo: &dyn RepositoryBackend,
         src_path: &Path,
         progress_reporter: Option<Arc<SnapshotProgressReporter>>,
-    ) -> Result<Vec<ObjectId>> {
+    ) -> Result<Vec<ID>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
         let reader = BufReader::new(source);
@@ -519,14 +519,14 @@ impl Archiver {
         // same contents will no longer produce same chunks and IDs.
         let chunker = StreamCDC::with_level(
             reader,
-            backup::defaults::MIN_CHUNK_SIZE,
-            backup::defaults::AVG_CHUNK_SIZE,
-            backup::defaults::MAX_CHUNK_SIZE,
+            global::defaults::MIN_CHUNK_SIZE,
+            global::defaults::AVG_CHUNK_SIZE,
+            global::defaults::MAX_CHUNK_SIZE,
             Normalization::Level1,
         );
 
         let mut chunk_hashes = Vec::with_capacity(
-            1 + (backup::defaults::MAX_PACK_SIZE / backup::defaults::AVG_CHUNK_SIZE as u64)
+            1 + (global::defaults::MAX_PACK_SIZE / global::defaults::AVG_CHUNK_SIZE as u64)
                 as usize,
         );
 
@@ -551,14 +551,14 @@ impl Archiver {
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<Hash> {
+    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<ID> {
         let tree_json = serde_json::to_string(tree)?.as_bytes().to_vec();
         let (_raw_size, _encoded_size, hash) = repo.save_blob(ObjectType::Tree, tree_json)?;
         Ok(hash)
     }
 
     /// Load a tree from the repository.
-    pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ObjectId) -> Result<Tree> {
+    pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ID) -> Result<Tree> {
         let tree_object = repo.load_blob(root_id)?;
         let tree: Tree = serde_json::from_slice(&tree_object)?;
         Ok(tree)

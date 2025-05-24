@@ -28,8 +28,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
-    backup::{self, ObjectId},
     cli,
+    global::ID,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
     ui::{
         snapshot_progress::SnapshotProgressReporter,
@@ -115,7 +115,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     Some((id, snap)) => {
                         cli::log!(
                             "Using last snapshot {} as parent",
-                            &id[0..backup::defaults::SHORT_ID_LENGTH].bold().yellow()
+                            &id.to_short_hex().bold().yellow()
                         );
                         Some(snap.clone())
                     }
@@ -125,13 +125,16 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                 }
             }
-            UseSnapshot::Snapshot(id) => match &repo.load_snapshot(id) {
-                Ok(snap) => {
-                    cli::log!("Using snapshot {:?} as parent", id);
-                    Some(snap.clone())
+            UseSnapshot::SnapshotId(id_hex) => {
+                let id = ID::from_hex(&id_hex)?;
+                match &repo.load_snapshot(&id) {
+                    Ok(snap) => {
+                        cli::log!("Using snapshot {:?} as parent", id);
+                        Some(snap.clone())
+                    }
+                    Err(_) => bail!("Snapshot {:?} not found", id),
                 }
-                Err(_) => bail!("Snapshot {:?} not found", id),
-            },
+            }
         },
     };
 
@@ -215,7 +218,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 fn show_final_report(
-    snapshot_id: &ObjectId,
+    snapshot_id: &ID,
     // The type changes here!
     progress_reporter: &SnapshotProgressReporter,
     args: &CmdArgs,
@@ -274,9 +277,7 @@ fn show_final_report(
 
         cli::log!(
             "New snapshot created {}",
-            format!("{}", &snapshot_id[0..backup::defaults::SHORT_ID_LENGTH])
-                .bold()
-                .green()
+            format!("{}", &snapshot_id.to_short_hex()).bold().green()
         );
         cli::log!(
             "This snapshot added {} {}",

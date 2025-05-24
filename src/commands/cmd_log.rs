@@ -22,8 +22,8 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    backup::{self, SnapshotId},
     cli,
+    global::ID,
     repository::{self, RepositoryBackend, snapshot::Snapshot, storage::SecureStorage},
     ui::table::{Alignment, Table},
     utils,
@@ -65,11 +65,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-fn log(snapshots: &Vec<(SnapshotId, Snapshot)>) {
+fn log(snapshots: &Vec<(ID, Snapshot)>) {
     let mut peekable_snapshots = snapshots.iter().peekable();
 
     while let Some((id, snapshot)) = peekable_snapshots.next() {
-        println!("{}", id.bold().yellow());
+        println!("{}", id.to_hex().bold().yellow());
         println!(
             "{} {}",
             "Date:".bold(),
@@ -98,10 +98,8 @@ fn log(snapshots: &Vec<(SnapshotId, Snapshot)>) {
     println!();
 }
 
-fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {
+fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
     let mut peekable_snapshots = snapshots.iter().peekable();
-
-    let id_len = backup::defaults::SHORT_ID_LENGTH;
 
     let mut table =
         Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
@@ -114,7 +112,7 @@ fn log_compact(snapshots: &Vec<(SnapshotId, Snapshot)>) {
 
     while let Some((id, snapshot)) = peekable_snapshots.next() {
         table.add_row(vec![
-            id[0..id_len].bold().yellow().to_string(),
+            id.to_short_hex().bold().yellow().to_string(),
             snapshot
                 .timestamp
                 .format("%Y-%m-%d %H:%M:%S %Z")

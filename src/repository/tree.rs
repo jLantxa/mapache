@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{archiver::Archiver, utils};
 
-use super::{ObjectId, RepositoryBackend};
+use super::{ID, RepositoryBackend};
 
 /// Node metadata. This struct is serialized; keep field order stable.
 ///
@@ -111,9 +111,9 @@ pub struct Node {
     pub metadata: Metadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub contents: Option<Vec<ObjectId>>, // populated lazily for files
+    pub contents: Option<Vec<ID>>, // populated lazily for files
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tree: Option<ObjectId>, // populated lazily for dirs
+    pub tree: Option<ID>, // populated lazily for dirs
 }
 
 impl Node {
@@ -303,7 +303,7 @@ pub struct SerializedNodeStreamer {
 impl SerializedNodeStreamer {
     pub fn new(
         repo: Arc<dyn RepositoryBackend>,
-        root_id: Option<ObjectId>,
+        root_id: Option<ID>,
         base_path: PathBuf,
     ) -> Result<Self> {
         let mut stack = Vec::new();

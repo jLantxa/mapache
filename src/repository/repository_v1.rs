@@ -19,20 +19,18 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::{
     backend::StorageBackend,
-    backup::{self, ObjectType},
     cli,
+    global::{self, ObjectType},
     repository::{self, packer::Packer, storage::SecureStorage},
-    utils::{self, Hash},
 };
 
 use super::{
-    KEYS_DIR, ObjectId, RepoVersion, RepositoryBackend, SnapshotId,
+    ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     config::Config,
     index::{Index, IndexFile, MasterIndex},
     snapshot::Snapshot,
@@ -100,8 +98,8 @@ impl RepositoryBackend for Repository {
         let (key, keyfile) =
             repository::generate_key(&password).with_context(|| "Could not generate key")?;
         let keyfile_json = serde_json::to_string_pretty(&key)?;
-        let keyfile_hash = utils::calculate_hash(&keyfile_json);
-        let keyfile_path = &keys_path.join(&keyfile_hash);
+        let keyfile_id = ID::from_content(&keyfile_json);
+        let keyfile_path = &keys_path.join(&keyfile_id.to_hex());
         backend.write(
             &keyfile_path,
             &SecureStorage::compress(
@@ -112,9 +110,7 @@ impl RepositoryBackend for Repository {
             )?,
         )?;
 
-        let mut repo_id_bytes: [u8; 32] = [0; 32];
-        OsRng.fill_bytes(&mut repo_id_bytes);
-        let repo_id = utils::bytes_to_hex_string(&repo_id_bytes);
+        let repo_id = ID::new_random();
 
         // Save new config
         let config = Config {
@@ -132,7 +128,7 @@ impl RepositoryBackend for Repository {
         let config = secure_storage.encode(config.as_bytes())?;
         backend.write(config_path, &config)?;
 
-        cli::log!("Created repo with id {:?}", repo_id);
+        cli::log!("Created repo with id {}", repo_id.to_short_hex());
 
         Ok(())
     }
@@ -145,10 +141,10 @@ impl RepositoryBackend for Repository {
         let keys_path = PathBuf::from(KEYS_DIR);
 
         // Packer defaults
-        let max_packer_size = backup::defaults::MAX_PACK_SIZE;
+        let max_packer_size = global::defaults::MAX_PACK_SIZE;
         let pack_data_capacity = max_packer_size as usize;
         let pack_blob_capacity =
-            (pack_data_capacity as u64).div_ceil(backup::defaults::AVG_CHUNK_SIZE as u64) as usize;
+            (pack_data_capacity as u64).div_ceil(global::defaults::AVG_CHUNK_SIZE as u64) as usize;
 
         let data_packer = Arc::new(Mutex::new(Packer::with_capacity(
             pack_data_capacity,
@@ -183,9 +179,9 @@ impl RepositoryBackend for Repository {
         Ok(repo)
     }
 
-    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ObjectId)> {
+    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ID)> {
         let raw_size = data.len();
-        let id = utils::calculate_hash(&data);
+        let id = ID::from_content(&data);
 
         let data = self.secure_storage.encode(&data)?;
         let encoded_size = data.len();
@@ -214,7 +210,7 @@ impl RepositoryBackend for Repository {
         Ok((raw_size as u64, encoded_size as u64, id))
     }
 
-    fn load_blob(&self, id: &ObjectId) -> Result<Vec<u8>> {
+    fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
         let index_guard = self.index.lock().unwrap();
         let blob_entry = index_guard.get(id);
         match blob_entry {
@@ -226,24 +222,24 @@ impl RepositoryBackend for Repository {
         }
     }
 
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(SnapshotId, u64, u64)> {
+    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(ID, u64, u64)> {
         let snapshot_json = serde_json::to_string_pretty(snapshot)?;
         let snapshot_json = snapshot_json.as_bytes();
         let uncompressed_size = snapshot_json.len() as u64;
-        let hash = utils::calculate_hash(&snapshot_json);
+        let snapshot_id = ID::from_content(&snapshot_json);
 
-        let snapshot_path = self.snapshot_path.join(&hash);
+        let snapshot_path = self.snapshot_path.join(&snapshot_id.to_hex());
 
         let snapshot_json = self.secure_storage.encode(snapshot_json)?;
         let compressed_size = snapshot_json.len() as u64;
 
         self.save_with_rename(&snapshot_json, &snapshot_path)?;
 
-        Ok((hash, uncompressed_size, compressed_size))
+        Ok((snapshot_id, uncompressed_size, compressed_size))
     }
 
-    fn remove_snapshot(&self, id: &SnapshotId) -> Result<()> {
-        let snapshot_path = self.snapshot_path.join(id);
+    fn remove_snapshot(&self, id: &ID) -> Result<()> {
+        let snapshot_path = self.snapshot_path.join(id.to_hex());
 
         if !self.backend.exists(&snapshot_path) {
             bail!("Snapshot {} doesn't exist", id)
@@ -254,8 +250,8 @@ impl RepositoryBackend for Repository {
             .with_context(|| format!("Could not remove snapshot {}", id))
     }
 
-    fn load_snapshot(&self, id: &SnapshotId) -> Result<Snapshot> {
-        let snapshot_path = self.snapshot_path.join(id);
+    fn load_snapshot(&self, id: &ID) -> Result<Snapshot> {
+        let snapshot_path = self.snapshot_path.join(id.to_hex());
         if !self.backend.exists(&snapshot_path) {
             bail!(format!("No snapshot with ID \'{}\' exists", id));
         }
@@ -267,7 +263,7 @@ impl RepositoryBackend for Repository {
     }
 
     /// Get all snapshots in the repository
-    fn load_all_snapshots(&self) -> Result<Vec<(SnapshotId, Snapshot)>> {
+    fn load_all_snapshots(&self) -> Result<Vec<(ID, Snapshot)>> {
         let mut snapshots = Vec::new();
 
         let paths = self
@@ -278,11 +274,10 @@ impl RepositoryBackend for Repository {
         for path in paths {
             if self.backend.is_file(&path) {
                 if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
-                    let hash = file_name.to_string(); // Extract hash from filename
                     let snapshot = self.backend.read(&path)?;
                     let snapshot = self.secure_storage.decode(&snapshot)?;
                     let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
-                    snapshots.push((hash, snapshot));
+                    snapshots.push((ID::from_hex(file_name)?, snapshot));
                 }
             }
         }
@@ -291,7 +286,7 @@ impl RepositoryBackend for Repository {
     }
 
     /// Get all snapshots in the repository, sorted by datetime.
-    fn load_all_snapshots_sorted(&self) -> Result<Vec<(SnapshotId, Snapshot)>> {
+    fn load_all_snapshots_sorted(&self) -> Result<Vec<(ID, Snapshot)>> {
         let mut snapshots = self.load_all_snapshots()?;
         snapshots.sort_by_key(|(_snapshot_id, snapshot)| snapshot.timestamp);
         Ok(snapshots)
@@ -305,8 +300,8 @@ impl RepositoryBackend for Repository {
         let index_file_json = self.secure_storage.encode(index_file_json)?;
         let compressed_size = index_file_json.len() as u64;
 
-        let hash = utils::calculate_hash(&index_file_json);
-        let index_path = self.index_path.join(&hash);
+        let id = ID::from_content(&index_file_json);
+        let index_path = self.index_path.join(&id.to_hex());
         self.backend.write(&index_path, &index_file_json)?;
 
         Ok((uncompressed_size, compressed_size))
@@ -319,14 +314,14 @@ impl RepositoryBackend for Repository {
         self.index.lock().unwrap().save(self)
     }
 
-    fn load_object(&self, id: &ObjectId) -> Result<Vec<u8>> {
+    fn load_object(&self, id: &ID) -> Result<Vec<u8>> {
         let object_path = self.get_object_path(id);
         let data = self.backend.read(&object_path)?;
         self.secure_storage.decode(&data)
     }
 
-    fn load_index(&self, id: &ObjectId) -> Result<IndexFile> {
-        let index_path = self.index_path.join(&id);
+    fn load_index(&self, id: &ID) -> Result<IndexFile> {
+        let index_path = self.index_path.join(&id.to_hex());
         let index = self.backend.read(&index_path)?;
         let index: Vec<u8> = self.secure_storage.decode(&index)?;
         let index = serde_json::from_slice(&index)?;
@@ -340,8 +335,8 @@ impl RepositoryBackend for Repository {
         Ok(config)
     }
 
-    fn load_key(&self, id: &ObjectId) -> Result<repository::KeyFile> {
-        let key_path = self.keys_path.join(&id);
+    fn load_key(&self, id: &ID) -> Result<repository::KeyFile> {
+        let key_path = self.keys_path.join(&id.to_hex());
         let key = self.backend.read(&key_path)?;
         let key = SecureStorage::decompress(&key)?;
         let key = serde_json::from_slice(&key)?;
@@ -351,10 +346,11 @@ impl RepositoryBackend for Repository {
 
 impl Repository {
     /// Returns the path to an object with a given hash in the repository.
-    fn get_object_path(&self, hash: &Hash) -> PathBuf {
+    fn get_object_path(&self, id: &ID) -> PathBuf {
+        let id_hex = id.to_hex();
         self.objects_path
-            .join(&hash[..OBJECTS_DIR_FANOUT])
-            .join(&hash[OBJECTS_DIR_FANOUT..])
+            .join(&id_hex[..OBJECTS_DIR_FANOUT])
+            .join(&id_hex[OBJECTS_DIR_FANOUT..])
     }
 
     fn save_with_rename(&self, data: &[u8], path: &Path) -> Result<usize> {
@@ -368,7 +364,7 @@ impl Repository {
         let (pack_data, packed_blob_descriptors) = packer_guard.flush();
         drop(packer_guard); // Drop the mutex so other workers can append to the packer
 
-        let pack_id = utils::calculate_hash(&pack_data);
+        let pack_id = ID::from_content(&pack_data);
         let pack_path = &self.get_object_path(&pack_id);
         self.backend.write(pack_path, &pack_data)?;
 
@@ -400,7 +396,7 @@ impl Repository {
         Ok(())
     }
 
-    fn load_from_pack(&self, id: &ObjectId, offset: u64, length: u64) -> Result<Vec<u8>> {
+    fn load_from_pack(&self, id: &ID, offset: u64, length: u64) -> Result<Vec<u8>> {
         let object_path = self.get_object_path(id);
         let data = self.backend.seek_read(&object_path, offset, length)?;
         self.secure_storage.decode(&data)

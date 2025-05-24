@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::global::ID;
 
-/// Repository config
+/// Repository manifest. This struct contains metadata about the repository itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
+pub struct Manifest {
     pub version: u32,
     pub id: ID,
     pub created_time: DateTime<Utc>,

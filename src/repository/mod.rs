@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod config;
 pub mod index;
+pub mod manifest;
 pub mod packer;
 pub mod repository_v1;
 pub mod snapshot;
@@ -30,8 +30,8 @@ use aes_gcm::aead::OsRng;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use config::Config;
 use index::IndexFile;
+use manifest::Manifest;
 use serde::{Deserialize, Serialize};
 use snapshot::Snapshot;
 
@@ -86,7 +86,7 @@ pub trait RepositoryBackend: Sync + Send {
 
     fn load_index(&self, id: &ID) -> Result<IndexFile>;
 
-    fn load_config(&self) -> Result<Config>;
+    fn load_manifest(&self) -> Result<Manifest>;
 
     fn load_key(&self, id: &ID) -> Result<KeyFile>;
 
@@ -116,17 +116,17 @@ pub fn open(
         bail!("Could not open a repository. The path does not exist.");
     }
 
-    let config_path = Path::new("config");
+    let manifest_path = Path::new("manifest");
 
-    let config = backend
-        .read(&config_path)
-        .with_context(|| "Could not load config file")?;
-    let config = secure_storage
-        .decode(&config)
-        .with_context(|| "Could not decode the config file")?;
-    let config: Config = serde_json::from_slice(&config)?;
+    let manifest = backend
+        .read(&manifest_path)
+        .with_context(|| "Could not load manifest file")?;
+    let manifest = secure_storage
+        .decode(&manifest)
+        .with_context(|| "Could not decode the manifest file")?;
+    let manifest: Manifest = serde_json::from_slice(&manifest)?;
 
-    let version = config.version;
+    let version = manifest.version;
 
     open_repository_with_version(version, backend, secure_storage)
 }

@@ -22,7 +22,7 @@ pub mod snapshot;
 pub mod storage;
 pub mod tree;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aes_gcm::aead::rand_core::RngCore;
@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use snapshot::Snapshot;
 
 use crate::cli;
+use crate::global::FileType;
 use crate::{
     backend::StorageBackend, global::ObjectType, global::ID, repository::storage::SecureStorage,
 };
@@ -82,15 +83,21 @@ pub trait RepositoryBackend: Sync + Send {
     /// Get all snapshots in the repository, sorted by datetime.
     fn load_all_snapshots_sorted(&self) -> Result<Vec<(ID, Snapshot)>>;
 
+    /// Saves an IndexFile into the repository
     fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;
 
     fn load_index(&self, id: &ID) -> Result<IndexFile>;
 
     fn load_manifest(&self) -> Result<Manifest>;
 
+    /// Loads a KeyFile.
     fn load_key(&self, id: &ID) -> Result<KeyFile>;
 
+    /// Flushes all pending data and saves it.
     fn flush(&self) -> Result<(u64, u64)>;
+
+    /// Finds a file in the repository using an ID prefix
+    fn find(&self, file_type: FileType, prefix: &String) -> Result<(ID, PathBuf)>;
 }
 
 pub fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {

@@ -17,12 +17,12 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 
 use crate::backend::new_backend_with_prompt;
 use crate::cli::{self};
-use crate::global::ID;
+use crate::global::{ID, ID_LENGTH};
 use crate::repository::storage::SecureStorage;
 use crate::repository::tree::Tree;
 use crate::repository::{self};
@@ -68,43 +68,50 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&manifest)?);
             Ok(())
         }
-        Object::Pack(hex) => {
-            let id = &ID::from_hex(hex)?;
+        Object::Pack(prefix) => {
+            let (id, _) = repo.find(crate::global::FileType::Object, prefix)?;
             let object = repo
                 .load_object(&id)
                 .with_context(|| "Failed to load object")?;
             println!("{}", serde_json::to_string_pretty(&object)?);
             Ok(())
         }
-        Object::Tree(hex) => {
-            let id = &ID::from_hex(hex)?;
+        Object::Tree(prefix) => {
+            if prefix.len() != 2 * ID_LENGTH {
+                bail!("Tree search not supported with prefix. Use the whole ID string.");
+            }
+            let id = ID::from_hex(&prefix)?;
             let tree = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
             let tree: Tree = serde_json::from_slice(&tree)?;
             println!("{}", serde_json::to_string_pretty(&tree)?);
             Ok(())
         }
-        Object::Blob(hex) => {
-            let id = &ID::from_hex(hex)?;
+        Object::Blob(prefix) => {
+            if prefix.len() != 2 * ID_LENGTH {
+                bail!("Blob search not supported with prefix. Use the whole ID string.");
+            }
+
+            let id = ID::from_hex(&prefix)?;
             let blob = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
             println!("{}", String::from_utf8(blob)?);
             Ok(())
         }
-        Object::Index(hex) => {
-            let id = &ID::from_hex(hex)?;
+        Object::Index(prefix) => {
+            let (id, _) = repo.find(crate::global::FileType::Index, prefix)?;
             let index = repo
                 .load_index(&id)
                 .with_context(|| "Failed to load index")?;
             println!("{}", serde_json::to_string_pretty(&index)?);
             Ok(())
         }
-        Object::Key(hex) => {
-            let id = &ID::from_hex(hex)?;
+        Object::Key(prefix) => {
+            let (id, _) = repo.find(crate::global::FileType::Key, prefix)?;
             let key = repo.load_key(&id).with_context(|| "Failed to load key")?;
             println!("{}", serde_json::to_string_pretty(&key)?);
             Ok(())
         }
-        Object::Snapshot(hex) => {
-            let id = &ID::from_hex(hex)?;
+        Object::Snapshot(prefix) => {
+            let (id, _) = repo.find(crate::global::FileType::Snapshot, prefix)?;
             let snapshot = repo
                 .load_snapshot(&id)
                 .with_context(|| "Failed to load snapshot")?;

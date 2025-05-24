@@ -25,9 +25,9 @@ pub mod tree;
 use std::path::Path;
 use std::sync::Arc;
 
-use aes_gcm::aead::OsRng;
 use aes_gcm::aead::rand_core::RngCore;
-use anyhow::{Context, Result, bail};
+use aes_gcm::aead::OsRng;
+use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use config::Config;
@@ -37,7 +37,7 @@ use snapshot::Snapshot;
 
 use crate::cli;
 use crate::{
-    backend::StorageBackend, global::ID, global::ObjectType, repository::storage::SecureStorage,
+    backend::StorageBackend, global::ObjectType, global::ID, repository::storage::SecureStorage,
 };
 
 pub type RepoVersion = u32;
@@ -54,11 +54,17 @@ pub trait RepositoryBackend: Sync + Send {
     where
         Self: Sized;
 
-    /// Saves a blob in the repository.
-    /// Returns a tuple (uncompressed size, encoded_size, object id)
-    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ID)>;
+    /// Saves an object type to the repository
+    fn save_object(&self, data: Vec<u8>) -> Result<(ID, u64, u64)>;
 
-    /// Loads a blob from the repository
+    /// Loads an object file from the repository.
+    fn load_object(&self, id: &ID) -> Result<Vec<u8>>;
+
+    /// Saves a blob in the repository. This blob can be packed with other blobs in an object file.
+    /// Returns a tuple (uncompressed size, encoded_size, object idfn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ID)>;
+    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(ID, u64, u64)>;
+
+    /// Loads a blob from the repository.
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;
 
     /// Saves a snapshot metadata.
@@ -77,8 +83,6 @@ pub trait RepositoryBackend: Sync + Send {
     fn load_all_snapshots_sorted(&self) -> Result<Vec<(ID, Snapshot)>>;
 
     fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;
-
-    fn load_object(&self, id: &ID) -> Result<Vec<u8>>;
 
     fn load_index(&self, id: &ID) -> Result<IndexFile>;
 

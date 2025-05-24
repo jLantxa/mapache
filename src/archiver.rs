@@ -20,25 +20,25 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Local;
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
     cli,
-    global::{self, ID, ObjectType},
+    global::{self, ObjectType, ID},
     repository::{
-        RepositoryBackend,
         snapshot::Snapshot,
         tree::{
             FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, NodeType, SerializedNodeStreamer,
             StreamNode, Tree,
         },
+        RepositoryBackend,
     },
     ui::snapshot_progress::SnapshotProgressReporter,
     utils::{self},
@@ -534,10 +534,10 @@ impl Archiver {
             let chunk = result?;
             let processed_size = chunk.data.len() as u64;
 
-            let (raw_size, encoded_size, content_hash) =
+            let (chunk_id, raw_size, encoded_size) =
                 repo.save_blob(ObjectType::Data, chunk.data)?;
 
-            chunk_hashes.push(content_hash);
+            chunk_hashes.push(chunk_id);
 
             if let Some(ref pr) = progress_reporter {
                 pr.encoded_bytes(encoded_size);
@@ -553,8 +553,8 @@ impl Archiver {
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<ID> {
         let tree_json = serde_json::to_string(tree)?.as_bytes().to_vec();
-        let (_raw_size, _encoded_size, hash) = repo.save_blob(ObjectType::Tree, tree_json)?;
-        Ok(hash)
+        let (id, _raw_size, _encoded_size) = repo.save_blob(ObjectType::Tree, tree_json)?;
+        Ok(id)
     }
 
     /// Load a tree from the repository.

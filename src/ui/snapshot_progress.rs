@@ -25,12 +25,19 @@ use std::{
 use crate::utils;
 
 pub struct SnapshotProgressReporter {
-    pub expected_items: u64,
-    pub expected_size: u64,
-    pub processed_items_count: Arc<Mutex<u64>>,
-    pub processed_bytes: Arc<Mutex<u64>>,
-    pub encoded_bytes: Arc<Mutex<u64>>,
-    pub raw_bytes: Arc<Mutex<u64>>,
+    // Expected
+    pub expected_items: u64, // Number of elements expected to be processed (files and directories)
+    pub expected_size: u64,  // Bytes expected to be processed (only data)
+
+    // Processed items
+    pub processed_items_count: Arc<Mutex<u64>>, // Number of files processed (written or not)
+    pub processed_bytes: Arc<Mutex<u64>>,       // Bytes processed (only data)
+    pub raw_bytes: Arc<Mutex<u64>>,             // Bytes 'written' before encoding
+    pub encoded_bytes: Arc<Mutex<u64>>,         // Bytes written after encoding
+
+    // Metadata
+    pub meta_raw_bytes: Arc<Mutex<u64>>, // Metadata bytes 'written' before encoding
+    pub meta_encoded_bytes: Arc<Mutex<u64>>, //Metadata bytes written after encoding
 
     pub new_files: Arc<Mutex<u32>>,
     pub changed_files: Arc<Mutex<u32>>,
@@ -41,7 +48,7 @@ pub struct SnapshotProgressReporter {
     pub unchanged_dirs: Arc<Mutex<u32>>,
     pub deleted_dirs: Arc<Mutex<u32>>,
 
-    pub processing_items: Arc<Mutex<VecDeque<PathBuf>>>,
+    pub processing_items: Arc<Mutex<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
     #[allow(dead_code)]
     mp: MultiProgress,
@@ -56,8 +63,11 @@ impl SnapshotProgressReporter {
 
         let processed_items_count_arc = Arc::new(Mutex::new(0));
         let processed_bytes_arc = Arc::new(Mutex::new(0));
-        let encoded_bytes_arc = Arc::new(Mutex::new(0));
         let raw_bytes_arc = Arc::new(Mutex::new(0));
+        let encoded_bytes_arc = Arc::new(Mutex::new(0));
+
+        let meta_raw_bytes_arc = Arc::new(Mutex::new(0));
+        let meta_encoded_bytes_arc = Arc::new(Mutex::new(0));
 
         let new_files_arc = Arc::new(Mutex::new(0));
         let changed_files_arc = Arc::new(Mutex::new(0));
@@ -123,8 +133,10 @@ impl SnapshotProgressReporter {
             expected_size,
             processed_items_count: processed_items_count_arc,
             processed_bytes: processed_bytes_arc,
-            encoded_bytes: encoded_bytes_arc,
             raw_bytes: raw_bytes_arc,
+            encoded_bytes: encoded_bytes_arc,
+            meta_raw_bytes: meta_raw_bytes_arc,
+            meta_encoded_bytes: meta_encoded_bytes_arc,
             new_files: new_files_arc,
             changed_files: changed_files_arc,
             unchanged_files: unchanged_files_arc,
@@ -175,13 +187,15 @@ impl SnapshotProgressReporter {
     }
 
     #[inline]
-    pub fn raw_bytes(&self, bytes: u64) {
-        *self.raw_bytes.lock().unwrap() += bytes;
+    pub fn written_data_bytes(&self, raw: u64, encoded: u64) {
+        *self.raw_bytes.lock().unwrap() += raw;
+        *self.encoded_bytes.lock().unwrap() += encoded;
     }
 
     #[inline]
-    pub fn encoded_bytes(&self, bytes: u64) {
-        *self.encoded_bytes.lock().unwrap() += bytes;
+    pub fn written_meta_bytes(&self, raw: u64, encoded: u64) {
+        *self.meta_raw_bytes.lock().unwrap() += raw;
+        *self.meta_encoded_bytes.lock().unwrap() += encoded;
     }
 
     #[inline]

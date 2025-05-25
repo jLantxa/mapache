@@ -189,24 +189,21 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         NUM_SHOWN_PROCESSING_ITEMS,
     ));
 
+    // Process and save new snapshot
     let mut new_snapshot = Archiver::snapshot(
         repo.clone(),
         absolute_source_paths,
         snapshot_root_path,
         parent_snapshot,
-        Some(progress_reporter.clone()),
+        progress_reporter.clone(),
     )?;
-
-    {
-        new_snapshot.size = *progress_reporter.processed_bytes.lock().unwrap();
-    }
-
+    new_snapshot.size = *progress_reporter.processed_bytes.lock().unwrap();
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
     }
-
-    let (snapshot_id, _snapshot_uncompressed_snapshot_size, _snapshot_compressed_snapshot_size) =
+    let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) =
         repo.save_snapshot(&new_snapshot)?;
+    progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);
 
     // Final report
     show_final_report(&snapshot_id, &progress_reporter, args);
@@ -256,6 +253,13 @@ fn show_final_report(
     let deleted_dirs = progress_reporter.deleted_dirs.lock().unwrap();
     let unchanged_dirs = progress_reporter.unchanged_dirs.lock().unwrap();
 
+    let raw_bytes = progress_reporter.raw_bytes.lock().unwrap();
+    let encoded_bytes = progress_reporter.encoded_bytes.lock().unwrap();
+    let meta_raw_bytes = progress_reporter.meta_raw_bytes.lock().unwrap();
+    let meta_encoded_bytes = progress_reporter.meta_encoded_bytes.lock().unwrap();
+    let total_raw_bytes = *raw_bytes + *meta_raw_bytes;
+    let total_encoded_bytes = *encoded_bytes + *meta_encoded_bytes;
+
     table.add_row(vec![
         "Files".bold().to_string(),
         new_files.to_string(),
@@ -274,9 +278,6 @@ fn show_final_report(
 
     cli::log!();
     if !args.dry_run {
-        let raw_bytes = progress_reporter.raw_bytes.lock().unwrap();
-        let encoded_bytes = progress_reporter.encoded_bytes.lock().unwrap();
-
         cli::log!(
             "New snapshot created {}",
             format!(
@@ -286,29 +287,34 @@ fn show_final_report(
             .bold()
             .green()
         );
-        cli::log!(
-            "This snapshot added {} {}",
-            utils::format_size(*raw_bytes).yellow(),
-            format!("({} compressed)", utils::format_size(*encoded_bytes))
-                .bold()
-                .green()
-        );
+        cli::log!("This snapshot added:\n");
     } else {
-        let raw_bytes = progress_reporter.raw_bytes.lock().unwrap();
-        let encoded_bytes = progress_reporter.encoded_bytes.lock().unwrap();
-
-        cli::log!(
-            "This snapshot would add {} {}",
-            utils::format_size(*raw_bytes).yellow(),
-            format!("({} compressed)", utils::format_size(*encoded_bytes))
-                .bold()
-                .green()
-        );
-        cli::log!(
-            "{} This was a dry run. Nothing was written.",
-            "[!]".bold().yellow()
-        );
+        cli::log!("This snapshot would add:\n");
     }
+
+    let mut data_table =
+        Table::new_with_alignments(vec![Alignment::Left, Alignment::Right, Alignment::Right]);
+    data_table.set_headers(vec![
+        "".to_string(),
+        "Raw".bold().yellow().to_string(),
+        "Compressed".bold().green().to_string(),
+    ]);
+    data_table.add_row(vec![
+        "Data".bold().to_string(),
+        utils::format_size(*raw_bytes).yellow().to_string(),
+        utils::format_size(*encoded_bytes).green().to_string(),
+    ]);
+    data_table.add_row(vec![
+        "Metadata".bold().to_string(),
+        utils::format_size(*meta_raw_bytes).yellow().to_string(),
+        utils::format_size(*meta_encoded_bytes).green().to_string(),
+    ]);
+    data_table.add_row(vec![
+        "Total".bold().cyan().to_string(),
+        utils::format_size(total_raw_bytes).yellow().to_string(),
+        utils::format_size(total_encoded_bytes).green().to_string(),
+    ]);
+    data_table.print();
 
     cli::log!();
 }

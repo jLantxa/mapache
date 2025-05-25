@@ -76,7 +76,7 @@ impl Archiver {
         absolute_source_paths: Vec<PathBuf>,
         snapshot_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
-        progress_reporter: Option<Arc<SnapshotProgressReporter>>,
+        progress_reporter: Arc<SnapshotProgressReporter>,
     ) -> Result<Snapshot> {
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ID> = match &parent_snapshot {
@@ -158,20 +158,18 @@ impl Archiver {
                 let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
                 pool.spawn(move || {
                     // Notify reporter
-                    if let Some(ref pr) = inner_progress_reporter_clone {
-                        let (item_path, _, _, _) = &diff_tuple;
-                        pr.processing_file(
-                            item_path
-                                .strip_prefix(inner_snapshot_root_path_clone.clone())
-                                .unwrap()
-                                .to_path_buf(),
-                        );
-                    }
+                    let (item_path, _, _, _) = &diff_tuple;
+                    inner_progress_reporter_clone.processing_file(
+                        item_path
+                            .strip_prefix(inner_snapshot_root_path_clone.clone())
+                            .unwrap()
+                            .to_path_buf(),
+                    );
 
                     let processed_item_result = Self::process_item(
                         diff_tuple,
                         inner_repo_clone.as_ref(),
-                        inner_progress_reporter_clone,
+                        &inner_progress_reporter_clone,
                     );
 
                     match processed_item_result {
@@ -224,16 +222,14 @@ impl Archiver {
                 }
 
                 // Notify reporter
-                if let Some(ref pr) = serializer_progress_reporter_clone {
-                    let (item_path, _) = &item;
-                    pr.processed_file(
-                        item_path
-                            .clone()
-                            .strip_prefix(serializer_snapshot_root_path_clone.clone())
-                            .unwrap()
-                            .to_path_buf(),
-                    );
-                }
+                let (item_path, _) = &item;
+                serializer_progress_reporter_clone.processed_file(
+                    item_path
+                        .clone()
+                        .strip_prefix(serializer_snapshot_root_path_clone.clone())
+                        .unwrap()
+                        .to_path_buf(),
+                );
 
                 if let Err(e) = Self::handle_processed_item(
                     item,
@@ -241,6 +237,7 @@ impl Archiver {
                     &mut pending_trees,
                     &mut final_root_tree_id,
                     &serializer_snapshot_root_path_clone,
+                    &serializer_progress_reporter_clone,
                 ) {
                     error_flag_clone.store(true, Ordering::Release);
                     cli::log_error(&format!(
@@ -251,7 +248,8 @@ impl Archiver {
                 }
             }
 
-            let (_uncompressed, _compressed) = repo.flush()?;
+            let (index_raw_data, index_encoded_data) = repo.flush()?;
+            progress_reporter.written_meta_bytes(index_raw_data, index_encoded_data);
 
             // The entire tree must be serialized by now, so we can create a
             // snapshot with the root tree id.
@@ -277,7 +275,7 @@ impl Archiver {
     fn process_item(
         item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
         repo: &dyn RepositoryBackend,
-        progress_reporter: Option<Arc<SnapshotProgressReporter>>,
+        progress_reporter: &Arc<SnapshotProgressReporter>,
     ) -> Result<Option<(PathBuf, StreamNode)>> {
         let (path, prev_node, next_node, diff_type) = item;
 
@@ -286,18 +284,16 @@ impl Archiver {
             // serialized tree. We just ignore it. Maybe notify a progress reporter.
             NodeDiff::Deleted => {
                 // Notify the reporter
-                if let Some(pr) = progress_reporter {
-                    match prev_node {
-                        Some(node_info) => match node_info.node.node_type {
-                            NodeType::File | NodeType::Symlink => {
-                                pr.deleted_file();
-                            }
-                            NodeType::Directory => {
-                                pr.deleted_dir();
-                            }
-                        },
-                        None => bail!("Item deleted but the node was not provided"),
-                    }
+                match prev_node {
+                    Some(node_info) => match node_info.node.node_type {
+                        NodeType::File | NodeType::Symlink => {
+                            progress_reporter.deleted_file();
+                        }
+                        NodeType::Directory => {
+                            progress_reporter.deleted_dir();
+                        }
+                    },
+                    None => bail!("Item deleted but the node was not provided"),
                 }
 
                 Ok(None)
@@ -311,11 +307,9 @@ impl Archiver {
                     match node.node_type {
                         NodeType::File | NodeType::Symlink => {
                             // Notify reporter
-                            if let Some(pr) = progress_reporter {
-                                let bytes_processed = node.metadata.size;
-                                pr.processed_bytes(bytes_processed);
-                                pr.unchanged_file();
-                            }
+                            let bytes_processed = node.metadata.size;
+                            progress_reporter.processed_bytes(bytes_processed);
+                            progress_reporter.unchanged_file();
 
                             return Ok(Some((
                                 path,
@@ -327,9 +321,7 @@ impl Archiver {
                         }
                         NodeType::Directory => {
                             // Notify reporter
-                            if let Some(pr) = progress_reporter {
-                                pr.unchanged_dir();
-                            }
+                            progress_reporter.unchanged_dir();
 
                             return Ok(Some((path, prev_stream_node_info)));
                         }
@@ -346,22 +338,21 @@ impl Archiver {
                         NodeType::File | NodeType::Symlink => {
                             if node.is_file() {
                                 let (_, updated_node) =
-                                    Archiver::save_file(repo, &path, progress_reporter.clone())
-                                        .map(|chunk_result| {
+                                    Archiver::save_file(repo, &path, progress_reporter).map(
+                                        |chunk_result| {
                                             let mut updated_node = node.clone();
                                             updated_node.contents = Some(chunk_result);
 
                                             // Notify reporter
-                                            if let Some(pr) = progress_reporter {
-                                                if diff_type == NodeDiff::New {
-                                                    pr.new_file();
-                                                } else if diff_type == NodeDiff::Changed {
-                                                    pr.changed_file();
-                                                }
+                                            if diff_type == NodeDiff::New {
+                                                progress_reporter.new_file();
+                                            } else if diff_type == NodeDiff::Changed {
+                                                progress_reporter.changed_file();
                                             }
 
                                             (path.to_path_buf(), updated_node.clone())
-                                        })?;
+                                        },
+                                    )?;
 
                                 node = updated_node;
                             }
@@ -377,12 +368,10 @@ impl Archiver {
 
                         NodeType::Directory => {
                             // Notify reporter
-                            if let Some(pr) = progress_reporter {
-                                if diff_type == NodeDiff::New {
-                                    pr.new_dir();
-                                } else if diff_type == NodeDiff::Changed {
-                                    pr.changed_dir();
-                                }
+                            if diff_type == NodeDiff::New {
+                                progress_reporter.new_dir();
+                            } else if diff_type == NodeDiff::Changed {
+                                progress_reporter.changed_dir();
                             }
 
                             return Ok(Some((path, next_stream_node_info)));
@@ -399,6 +388,7 @@ impl Archiver {
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ID>,
         snapshot_root_path: &Path,
+        progress_reporter: &Arc<SnapshotProgressReporter>,
     ) -> Result<()> {
         let (path, stream_node) = processed_item;
 
@@ -435,6 +425,7 @@ impl Archiver {
             pending_trees,
             final_root_tree_id,
             snapshot_root_path,
+            progress_reporter,
         )
     }
 
@@ -444,6 +435,7 @@ impl Archiver {
         pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
         final_root_tree_id: &mut Option<ID>,
         snapshot_root_path: &Path,
+        progress_reporter: &Arc<SnapshotProgressReporter>,
     ) -> Result<()> {
         let this_pending_tree = match pending_trees.get(&dir_path) {
             Some(tree) => tree,
@@ -464,9 +456,11 @@ impl Archiver {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let tree_id_result: Result<ID> = Archiver::save_tree(repo, &completed_tree);
+        let (tree_id, raw_tree_size, encoded_tree_size) =
+            Archiver::save_tree(repo, &completed_tree)?;
 
-        let tree_id = tree_id_result?;
+        // Notify reporter
+        progress_reporter.written_meta_bytes(raw_tree_size, encoded_tree_size);
 
         if dir_path == snapshot_root_path {
             *final_root_tree_id = Some(tree_id);
@@ -494,6 +488,7 @@ impl Archiver {
                 pending_trees,
                 final_root_tree_id,
                 snapshot_root_path,
+                progress_reporter,
             )?;
         }
 
@@ -509,7 +504,7 @@ impl Archiver {
     fn save_file(
         repo: &dyn RepositoryBackend,
         src_path: &Path,
-        progress_reporter: Option<Arc<SnapshotProgressReporter>>,
+        progress_reporter: &Arc<SnapshotProgressReporter>,
     ) -> Result<Vec<ID>> {
         let source = File::open(src_path)
             .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
@@ -539,11 +534,9 @@ impl Archiver {
 
             chunk_hashes.push(chunk_id);
 
-            if let Some(ref pr) = progress_reporter {
-                pr.encoded_bytes(encoded_size);
-                pr.raw_bytes(raw_size);
-                pr.processed_bytes(processed_size);
-            }
+            // Notify reporter
+            progress_reporter.written_data_bytes(raw_size, encoded_size);
+            progress_reporter.processed_bytes(processed_size);
         }
 
         Ok(chunk_hashes)
@@ -551,10 +544,10 @@ impl Archiver {
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<ID> {
+    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<(ID, u64, u64)> {
         let tree_json = serde_json::to_string(tree)?.as_bytes().to_vec();
-        let (id, _raw_size, _encoded_size) = repo.save_blob(ObjectType::Tree, tree_json)?;
-        Ok(id)
+        let (id, raw_size, encoded_size) = repo.save_blob(ObjectType::Tree, tree_json)?;
+        Ok((id, raw_size, encoded_size))
     }
 
     /// Load a tree from the repository.

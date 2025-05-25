@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -30,7 +30,7 @@ use crate::{
     backend::{make_dry_backend, new_backend_with_prompt},
     cli,
     global::{self, ID},
-    repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
+    repository::{self, storage::SecureStorage, tree::FSNodeStreamer, RepositoryBackend},
     ui::{
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
@@ -52,15 +52,15 @@ pub struct CmdArgs {
     pub description: Option<String>,
 
     /// Force a complete analysis of all files and directories
-    #[arg(long, group = "scan_mode")]
+    #[clap(long, group = "scan_mode")]
     pub full_scan: bool,
 
     /// Use a snapshot as parent. This snapshot will be the base when analyzing differences.
-    #[arg(long, group = "scan_mode",value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest )]
+    #[clap(long, group = "scan_mode",value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest )]
     pub parent: UseSnapshot,
 
     /// Dry run
-    #[arg(long, default_value_t = false)]
+    #[clap(long, default_value_t = false)]
     pub dry_run: bool,
 }
 

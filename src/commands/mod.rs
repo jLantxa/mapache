@@ -16,7 +16,7 @@
 
 use std::str::FromStr;
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use clap::{Parser, Subcommand};
 
 pub mod cmd_cat;
@@ -29,8 +29,8 @@ pub mod cmd_snapshot;
 // CLI arguments
 #[derive(Parser, Debug)]
 #[clap(
-    version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
-    about = "Incremental backup tool"
+    version = concat!("v", env!("CARGO_PKG_VERSION")), // Version from crate metadata
+    about = "[backup] is a de-duplicating, incremental backup tool"
 )]
 pub struct Cli {
     // Subcommand
@@ -45,23 +45,23 @@ pub struct Cli {
 // List of commands
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    #[clap(about = "Initialize a new repository")]
+    #[clap(about = "Initializes a new repository")]
     Init(cmd_init::CmdArgs),
 
-    #[clap(about = "Show all snapshots present in the repository")]
-    Log(cmd_log::CmdArgs),
-
-    #[clap(about = "Create a new snapshot")]
+    #[clap(about = "Creates a new snapshot")]
     Snapshot(cmd_snapshot::CmdArgs),
 
     #[clap(about = "Restores a snapshot")]
     Restore(cmd_restore::CmdArgs),
 
-    #[clap(about = "Prints repository objects")]
-    Cat(cmd_cat::CmdArgs),
+    #[clap(about = "Shows all snapshots present in the repository")]
+    Log(cmd_log::CmdArgs),
 
     #[clap(about = "Removes snapshots from the repository")]
     Forget(cmd_forget::CmdArgs),
+
+    #[clap(about = "Prints repository objects")]
+    Cat(cmd_cat::CmdArgs),
 }
 
 #[derive(Parser, Debug)]

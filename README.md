@@ -8,27 +8,32 @@ A <u>**work-in-progress**</u> de-duplicating incremental **backup** tool written
 - [Roadmap](#roadmap)
 
 ## About
-`{{backup}}` *-placeholder name for the tool (I don't have a name yet)-* is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to backup your data to a local file system or a remote machine.
+`[[backup]]` *-placeholder name for the tool (I don't have a name yet)-* is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to backup your data to a local file system or a remote machine.
 
-`{{backup}}` is still in an early development stage. As such, it is still not functional (only for testing and development), it is missing all sorts of features, it is unstable, etc. But more importantly, it is a learning project and a tool I'm making to cover my own backup needs.
+`[[backup]]` is still in an early development stage. As such, it is still not functional (only for testing and development), it is missing all sorts of features, it is unstable, etc. But more importantly, it is a learning project and a tool I'm making to cover my own backup needs.
 
 The language of choice is `Rust`. I didn't choose `Rust` for any particular reason other than: it is a language I'm learning now and it seemed sufficiently safe, performant and ergonomic to use it.
 
-`{{backup}}` is inspired in its design by other similar tools like `git` and `restic`. It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking.
+`[[backup]]` is inspired in its design by other similar tools like `git` and `restic`. It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking.
 
 Each 'backup' is called a `Snapshot`. `Snapshots` are independent from each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
 
-The basic design principles of {{backup}} are:
+### Guiding Principles
 
-- **Generality**: The tool must be able to work in a variety of contexts, i.e. small to medium to big repositories, machines of all different specs, etc.
-- **Efficiency**: The tool must use the resources available in the host as efficiently as possible. This means completing the backup process as fast as the resources allow, without exhausting those resources and with the minimum storage footprint.
-- **Robustness**: The tool must be able to resume operation if interrupted without the repository being corrupted and guaranteeing the integrity of the data.
-- **Security**: The tool must provide confidentiality and authentication of the stored data with encryption.
+The development of backup is guided by these core principles:
 
-In addition to that, I am aiming to make the tool self contained, with all its dependencies linked statically. Even if this means making the executable bigger, I find it extremely useful that I am able to run it from an USB stick in a fresh install with no network connection.
+- **Generality**: The tool should function effectively across various contexts, from small to large repositories and diverse machine specifications.
+
+- **Efficiency**: It must use host resources optimally, completing backups quickly without exhaustion and minimizing storage footprint.
+
+- **Robustness**: The tool needs to resume operations seamlessly after interruptions, ensuring repository integrity and data reliability.
+
+- **Security**: Confidentiality and authentication of stored data will be provided through encryption.
+
+- **Self-Contained Design**: I'm aiming for `[[backup]]` to be entirely self-contained, with all dependencies statically linked. Even if this means a larger executable, it offers the significant benefit of being runnable from a USB stick on a fresh installation without an internet connection.
 
 ## Roadmap
-{{backup}} is still in early development.
+`[[backup]]` is still in early development.
 
 The first milestone consists of implementing the core architecture and a minimal set of functional features. This includes:
 
@@ -52,7 +57,7 @@ After that, the plan is to expand the functionality with new options, features a
 ## Getting started
 
 ### Building with `cargo`
-To compile {{backup}} from source you just need to install `Rust` on your machine and build it with cargo:
+To compile `[[backup]]` from source you just need to install `Rust` on your machine and build it with cargo:
 
 ```
 cargo build
@@ -65,15 +70,16 @@ cargo build --release
 If you run the executable, you will be greeted by something like this:
 
 ```
-Incremental backup tool
+[backup] is a de-duplicating, incremental backup tool
 
 Usage: backup --repo <REPO> <COMMAND>
 
 Commands:
-  init      Initialize a new repository
-  log       Show all snapshots present in the repository
-  snapshot  Create a new snapshot
+  init      Initializes a new repository
+  snapshot  Creates a new snapshot
   restore   Restores a snapshot
+  log       Shows all snapshots present in the repository
+  forget    Removes snapshots from the repository
   cat       Prints repository objects
   help      Print this message or the help of the given subcommand(s)
 
@@ -81,6 +87,7 @@ Options:
   -r, --repo <REPO>  Repository path
   -h, --help         Print help
   -V, --version      Print version
+
 ```
 
 Each command is independent. For example, if you want to know what options are available for the `snapshot` command, you can do:
@@ -92,29 +99,31 @@ backup snapshot -h
 and you will be shown the help for that command:
 
 ```
-Create a new snapshot
+Creates a new snapshot
 
 Usage: backup --repo <REPO> snapshot [OPTIONS] <PATHS>...
 
 Arguments:
-  <PATHS>...  List of paths to commit
+  <PATHS>...  List of paths to backup
 
 Options:
       --description <DESCRIPTION>  Snapshot description
       --full-scan                  Force a complete analysis of all files and directories
-      --parent <PARENT>            Use a snapshot as parent. This snapshot will be the base when analyzing differences
+      --parent <PARENT>            Use a snapshot as parent. This snapshot will be the base when analyzing differences [default: latest]
       --dry-run                    Dry run
   -h, --help                       Print help
 ```
 
 ### Specifying a repo path and initializing a `repository`
 
-`{{backup}}` stores all the data in a `Repository`. This `repository` can be store on the same machine that you used to run the tool, an external harddrive, or a machine accessible via SFTP.
+`[[backup]]` stores all the data in a `Repository`. This `repository` can be store on the same machine that you used to run the tool, an external harddrive, or a machine accessible via SFTP.
 
 If you want to initialize a repository in the local file system (your machine or a device physically connected to it), you do it like this:
 
 ```
 backup --repo path/to/repo init
+# or
+backup --repo file://path/to/repo init
 ```
 
 If you want to initialize a repository in a remote machine accessible via SSH which supports the SFTP protocol, you use a standardized url string like this:

@@ -20,25 +20,25 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
-use anyhow::{anyhow, bail, Context, Result};
-use chrono::Local;
+use anyhow::{Context, Result, anyhow, bail};
+use chrono::Utc;
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
     cli,
-    global::{self, ObjectType, ID},
+    global::{self, ID, ObjectType},
     repository::{
+        RepositoryBackend,
         snapshot::Snapshot,
         tree::{
             FSNodeStreamer, Node, NodeDiff, NodeDiffStreamer, NodeType, SerializedNodeStreamer,
             StreamNode, Tree,
         },
-        RepositoryBackend,
     },
     ui::snapshot_progress::SnapshotProgressReporter,
     utils::{self},
@@ -255,7 +255,7 @@ impl Archiver {
             // snapshot with the root tree id.
             match final_root_tree_id {
                 Some(tree_id) => Ok(Snapshot {
-                    timestamp: Local::now(),
+                    timestamp: Utc::now(),
                     tree: tree_id.clone(),
                     size: 0,
                     root: snapshot_root_path.clone(),

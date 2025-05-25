@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::ID;
@@ -24,7 +24,7 @@ use super::ID;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The snapshot timestamp is the UTC time at which the snapshot was created
-    pub timestamp: DateTime<Local>,
+    pub timestamp: DateTime<Utc>,
 
     /// Hash ID for the tree object root.
     pub tree: ID,

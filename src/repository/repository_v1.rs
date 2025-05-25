@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::{
@@ -30,10 +30,10 @@ use crate::{
 };
 
 use super::{
+    ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     index::{Index, IndexFile, MasterIndex},
     manifest::Manifest,
     snapshot::Snapshot,
-    RepoVersion, RepositoryBackend, ID, KEYS_DIR,
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -378,7 +378,11 @@ impl RepositoryBackend for Repository {
                 None => bail!("Failed to list file for type {}", file_type),
             };
 
-            if matches.is_empty() && filename.starts_with(prefix) {
+            if !filename.starts_with(prefix) {
+                continue;
+            }
+
+            if matches.is_empty() {
                 matches.push((filename, file_path));
             } else {
                 bail!("Prefix {} is ambiguous", prefix);
@@ -492,7 +496,7 @@ impl Repository {
 #[cfg(test)]
 mod test {
 
-    use base64::{engine::general_purpose, Engine};
+    use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
     use crate::{

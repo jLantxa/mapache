@@ -17,6 +17,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use chrono::Local;
 use clap::Args;
 use colored::Colorize;
 
@@ -53,6 +54,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let snapshots = repo.load_all_snapshots_sorted()?;
 
+    if snapshots.is_empty() {
+        cli::log!("No snapshots found");
+        return Ok(());
+    }
+
     println!();
     if args.compact {
         log_compact(&snapshots);
@@ -73,7 +79,10 @@ fn log(snapshots: &Vec<(ID, Snapshot)>) {
         println!(
             "{} {}",
             "Date:".bold(),
-            snapshot.timestamp.format("%Y-%m-%d %H:%M:%S %Z")
+            snapshot
+                .timestamp
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S %Z")
         );
         println!("{} {}", "Size:".bold(), utils::format_size(snapshot.size));
         println!("{} {}", "Root:".bold(), &snapshot.root.display());
@@ -118,6 +127,7 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
                 .to_string(),
             snapshot
                 .timestamp
+                .with_timezone(&Local)
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string(),
             utils::format_size(snapshot.size),

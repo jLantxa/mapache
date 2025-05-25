@@ -20,9 +20,9 @@ pub mod url;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    time::Duration,
 };
 
+use anyhow::{Result, anyhow};
 use blake3::Hasher;
 
 use crate::global::Hash256;
@@ -94,7 +94,7 @@ pub fn calculate_lcp(paths: &[PathBuf]) -> PathBuf {
     common_prefix
 }
 
-pub fn pretty_print_duration(duration: Duration) -> String {
+pub fn pretty_print_duration(duration: std::time::Duration) -> String {
     let total_seconds = duration.as_secs();
     let milliseconds = duration.subsec_millis();
 
@@ -128,6 +128,56 @@ pub fn pretty_print_duration(duration: Duration) -> String {
         "0s".to_string()
     } else {
         parts.join(" ")
+    }
+}
+
+/// Parses a duration string (e.g., "1d", "2w", "3m", "4y", "5h", "6s") into a chrono::Duration.
+/// Supports combinations like "1d12h".
+pub fn parse_duration_string(s: &str) -> Result<chrono::Duration> {
+    let mut total_duration = chrono::Duration::seconds(0);
+    let mut current_num_str = String::new();
+
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            current_num_str.push(c);
+        } else {
+            if let Ok(num) = current_num_str.parse::<i64>() {
+                match c {
+                    's' => total_duration = total_duration + chrono::Duration::seconds(num),
+                    'm' => total_duration = total_duration + chrono::Duration::minutes(num),
+                    'h' => total_duration = total_duration + chrono::Duration::hours(num),
+                    'd' => total_duration = total_duration + chrono::Duration::days(num),
+                    'w' => total_duration = total_duration + chrono::Duration::weeks(num),
+                    'y' => total_duration = total_duration + chrono::Duration::days(num * 365), // Approximation for years
+                    _ => return Err(anyhow!("Invalid duration unit: {}", c).into()),
+                }
+                current_num_str.clear();
+            } else {
+                return Err(anyhow!("Invalid duration format: {}", s).into());
+            }
+        }
+    }
+
+    // Handle any remaining number at the end (e.g., "123" without a unit, or if the last unit is parsed)
+    if !current_num_str.is_empty() {
+        return Err(anyhow!(
+            "Invalid duration format: trailing number without unit in {}",
+            s
+        )
+        .into());
+    }
+
+    Ok(total_duration)
+}
+
+pub fn format_count<T>(count: T, singular: &str, plural: &str) -> String
+where
+    T: std::fmt::Display + PartialEq + From<usize>,
+{
+    if count == T::from(1) {
+        return format!("{} {}", count, singular);
+    } else {
+        return format!("{} {}", count, plural);
     }
 }
 

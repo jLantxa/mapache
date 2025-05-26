@@ -70,6 +70,10 @@ pub fn restore_node(repo: &dyn RepositoryBackend, node: &Node, dst_path: &Path) 
             std::fs::create_dir_all(dst_path)?
         }
         NodeType::Symlink => todo!(),
+        NodeType::BlockDevice => todo!(),
+        NodeType::CharDevice => todo!(),
+        NodeType::Fifo => todo!(),
+        NodeType::Socket => todo!(),
     }
 
     Ok(())

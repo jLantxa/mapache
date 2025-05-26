@@ -23,6 +23,9 @@ use std::{
 };
 
 #[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -53,6 +56,15 @@ pub struct Metadata {
     pub owner_uid: Option<u32>,
     /// Unix owner group id
     pub owner_gid: Option<u32>,
+
+    // The unique file serial number on a given device
+    pub inode: Option<u64>,
+
+    // The number of hard links pointing to this inode
+    pub nlink: Option<u64>,
+
+    // Raw device ID for block/char devices
+    pub rdev: Option<u64>,
 }
 
 impl Metadata {
@@ -77,17 +89,33 @@ impl Metadata {
             owner_gid: Some(meta.gid()),
             #[cfg(not(unix))]
             owner_gid: None,
+
+            #[cfg(unix)]
+            inode: Some(meta.ino()),
+            #[cfg(not(unix))]
+            inode: None,
+
+            #[cfg(unix)]
+            nlink: Some(meta.nlink()),
+            #[cfg(not(unix))]
+            nlink: None,
+
+            #[cfg(unix)]
+            rdev: Some(meta.rdev()),
+            #[cfg(not(unix))]
+            rdev: None,
         }
     }
 
     /// Returns `true` iff any relevant metadata field differs.
     #[inline]
     pub fn has_changed(&self, other: &Self) -> bool {
-        self.size != other.size
-            || self.modified_time != other.modified_time
+        self.modified_time != other.modified_time
+            || self.size != other.size
             || self.mode != other.mode
             || self.owner_uid != other.owner_uid
             || self.owner_gid != other.owner_gid
+            || self.inode != other.inode
     }
 }
 
@@ -98,6 +126,10 @@ pub enum NodeType {
     File,
     Directory,
     Symlink,
+    BlockDevice,
+    CharDevice,
+    Fifo,
+    Socket,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,9 +143,11 @@ pub struct Node {
     pub metadata: Metadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub contents: Option<Vec<ID>>, // populated lazily for files
+    pub contents: Option<Vec<ID>>, // For files
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tree: Option<ID>, // populated lazily for dirs
+    pub tree: Option<ID>, // For directories
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symlink_target: Option<PathBuf>, // For symlinks
 }
 
 impl Node {
@@ -128,23 +162,53 @@ impl Node {
         let meta = fs::symlink_metadata(&path)
             .with_context(|| format!("Cannot stat {}", path.display()))?;
 
-        let node_type = if meta.is_dir() {
+        let file_type = meta.file_type(); // Get the FileType once
+
+        let node_type = if file_type.is_dir() {
             NodeType::Directory
-        } else if meta.is_file() {
+        } else if file_type.is_file() {
             NodeType::File
-        } else if meta.file_type().is_symlink() {
+        } else if file_type.is_symlink() {
             NodeType::Symlink
         } else {
-            bail!("Unsupported file type at {}", path.display());
+            #[cfg(unix)]
+            {
+                // Special unix file types
+                if file_type.is_block_device() {
+                    NodeType::BlockDevice
+                } else if file_type.is_char_device() {
+                    NodeType::CharDevice
+                } else if file_type.is_fifo() {
+                    NodeType::Fifo
+                } else if file_type.is_socket() {
+                    NodeType::Socket
+                } else {
+                    bail!("Unsupported file type {:?}", file_type)
+                }
+            }
+            #[cfg(not(unix))]
+            bail!("Unsupported file type {:?}", file_type)
         };
 
-        Ok(Self {
+        let mut node = Self {
+            // Initialize the Node struct
             name,
-            node_type,
+            node_type, // Now uses the determined node_type
             metadata: Metadata::from_fs(&meta),
             contents: None,
             tree: None,
-        })
+            symlink_target: None,
+        };
+
+        // If it's a symlink, read its target
+        if node.is_symlink() {
+            node.symlink_target =
+                Some(fs::read_link(&path).with_context(|| {
+                    format!("Cannot read symlink target for {}", path.display())
+                })?);
+        }
+
+        Ok(node)
     }
 
     /// Convenience helpers.
@@ -159,6 +223,23 @@ impl Node {
     #[inline]
     pub fn is_symlink(&self) -> bool {
         matches!(self.node_type, NodeType::Symlink)
+    }
+    // You can add convenience helpers for the new types too
+    #[inline]
+    pub fn is_block_device(&self) -> bool {
+        matches!(self.node_type, NodeType::BlockDevice)
+    }
+    #[inline]
+    pub fn is_char_device(&self) -> bool {
+        matches!(self.node_type, NodeType::CharDevice)
+    }
+    #[inline]
+    pub fn is_fifo(&self) -> bool {
+        matches!(self.node_type, NodeType::Fifo)
+    }
+    #[inline]
+    pub fn is_socket(&self) -> bool {
+        matches!(self.node_type, NodeType::Socket)
     }
 }
 

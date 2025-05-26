@@ -285,14 +285,13 @@ impl Archiver {
             NodeDiff::Deleted => {
                 // Notify the reporter
                 match prev_node {
-                    Some(node_info) => match node_info.node.node_type {
-                        NodeType::File | NodeType::Symlink => {
+                    Some(node_info) => {
+                        if node_info.node.is_dir() {
+                            progress_reporter.deleted_dir();
+                        } else {
                             progress_reporter.deleted_file();
                         }
-                        NodeType::Directory => {
-                            progress_reporter.deleted_dir();
-                        }
-                    },
+                    }
                     None => bail!("Item deleted but the node was not provided"),
                 }
 
@@ -300,72 +299,50 @@ impl Archiver {
             }
 
             // Unchanged item: No need to save the content, but we still need to serialize the node.
+            // Use the prev_node, since it comes from the serialized tree and contains the list of blobs.
             NodeDiff::Unchanged => match prev_node {
                 None => bail!("Item unchanged but the node was not provided"),
-                Some(prev_stream_node_info) => {
-                    let node = prev_stream_node_info.node.clone();
-                    match node.node_type {
-                        NodeType::File | NodeType::Symlink => {
-                            // Notify reporter
-                            let bytes_processed = node.metadata.size;
-                            progress_reporter.processed_bytes(bytes_processed);
-                            progress_reporter.unchanged_file();
-
-                            return Ok(Some((
-                                path,
-                                StreamNode {
-                                    node,
-                                    num_children: 0,
-                                },
-                            )));
-                        }
-                        NodeType::Directory => {
-                            // Notify reporter
-                            progress_reporter.unchanged_dir();
-
-                            return Ok(Some((path, prev_stream_node_info)));
-                        }
+                Some(stream_node_info) => {
+                    // Notify reporter
+                    if stream_node_info.node.is_file() {
+                        let bytes_processed = stream_node_info.node.metadata.size;
+                        progress_reporter.processed_bytes(bytes_processed);
+                        progress_reporter.unchanged_file();
+                    } else if stream_node_info.node.is_dir() {
+                        progress_reporter.unchanged_dir();
+                    } else {
+                        // Simlinks, block devices, etc.
+                        progress_reporter.unchanged_file();
                     }
+
+                    return Ok(Some((path, stream_node_info)));
                 }
             },
 
             // New or changed item: We need to save the contents and serialize the node.
             NodeDiff::New | NodeDiff::Changed => match next_node {
                 None => bail!("Item new or changed but the node was not provided"),
-                Some(next_stream_node_info) => {
-                    let mut node = next_stream_node_info.node.clone();
-                    match node.node_type {
-                        NodeType::File | NodeType::Symlink => {
-                            if node.is_file() {
-                                let (_, updated_node) =
-                                    Archiver::save_file(repo, &path, progress_reporter).map(
-                                        |chunk_result| {
-                                            let mut updated_node = node.clone();
-                                            updated_node.contents = Some(chunk_result);
+                Some(mut stream_node_info) => {
+                    // If node is a file, save the contents
+                    if stream_node_info.node.is_file() {
+                        let blobs_ids = Archiver::save_file(repo, &path, progress_reporter)?;
+                        stream_node_info.node.contents = Some(blobs_ids);
+                    }
 
-                                            // Notify reporter
-                                            if diff_type == NodeDiff::New {
-                                                progress_reporter.new_file();
-                                            } else if diff_type == NodeDiff::Changed {
-                                                progress_reporter.changed_file();
-                                            }
-
-                                            (path.to_path_buf(), updated_node.clone())
-                                        },
-                                    )?;
-
-                                node = updated_node;
+                    match stream_node_info.node.node_type {
+                        NodeType::File
+                        | NodeType::Symlink
+                        | NodeType::BlockDevice
+                        | NodeType::CharDevice
+                        | NodeType::Fifo
+                        | NodeType::Socket => {
+                            // Notify reporter
+                            if diff_type == NodeDiff::New {
+                                progress_reporter.new_file();
+                            } else if diff_type == NodeDiff::Changed {
+                                progress_reporter.changed_file();
                             }
-
-                            return Ok(Some((
-                                path,
-                                StreamNode {
-                                    node,
-                                    num_children: 0,
-                                },
-                            )));
                         }
-
                         NodeType::Directory => {
                             // Notify reporter
                             if diff_type == NodeDiff::New {
@@ -373,10 +350,10 @@ impl Archiver {
                             } else if diff_type == NodeDiff::Changed {
                                 progress_reporter.changed_dir();
                             }
-
-                            return Ok(Some((path, next_stream_node_info)));
                         }
                     }
+
+                    return Ok(Some((path, stream_node_info)));
                 }
             },
         }
@@ -395,7 +372,12 @@ impl Archiver {
         let mut dir_path = utils::extract_parent(&path).unwrap();
 
         match stream_node.node.node_type {
-            NodeType::File | NodeType::Symlink => {
+            NodeType::File
+            | NodeType::Symlink
+            | NodeType::BlockDevice
+            | NodeType::CharDevice
+            | NodeType::Fifo
+            | NodeType::Socket => {
                 Self::insert_finalized_node(pending_trees, &dir_path, stream_node.node);
             }
             NodeType::Directory => {

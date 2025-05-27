@@ -406,7 +406,7 @@ impl SerializedNodeStreamer {
 
         if let Some(id) = root_id {
             let tree = Tree::load_from_repo(repo.as_ref(), &id)
-                .context(format!("Failed to load root tree with ID {}", id))?;
+                .with_context(||format!("Failed to load root tree with ID {}", id))?;
 
             for node in tree.nodes.into_iter().rev() {
                 stack.push((

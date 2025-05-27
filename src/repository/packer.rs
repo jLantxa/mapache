@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use blake3::{Hash, Hasher};
+
 use crate::global::ID;
 
 /// Describes a single blob's location and size within a packed file.
@@ -36,6 +38,7 @@ pub struct PackedBlobDescriptor {
 pub struct Packer {
     data: Vec<u8>,
     blob_descriptors: Vec<PackedBlobDescriptor>,
+    hasher: Hasher,
 
     data_capacity: usize,
     blob_descriptor_capacity: usize,
@@ -47,6 +50,7 @@ impl Packer {
         Self {
             data: Vec::new(),
             blob_descriptors: Vec::new(),
+            hasher: Hasher::new(),
             data_capacity: 0,
             blob_descriptor_capacity: 0,
         }
@@ -66,6 +70,7 @@ impl Packer {
         Self {
             data: Vec::with_capacity(data_capacity),
             blob_descriptors: Vec::with_capacity(blobs_capacity),
+            hasher: Hasher::new(),
             data_capacity,
             blob_descriptor_capacity: blobs_capacity,
         }
@@ -100,6 +105,7 @@ impl Packer {
     pub fn add_blob(&mut self, id: &ID, mut blob_data: Vec<u8>) {
         let offset = self.data.len() as u64; // The new blob starts at the current end of the data buffer
         let length = blob_data.len() as u64; // The length of the incoming blob data
+        self.hasher.update(&blob_data);
 
         // Efficiently move `blob_data` into `self.data`
         self.data.append(&mut blob_data);
@@ -118,14 +124,16 @@ impl Packer {
     /// After calling `flush`, the `Packer` instance will be reset to an empty state,
     /// ready to accumulate new blobs. Ownership of the `Vec<u8>` and `Vec<PackedBlobDescriptor>`
     /// is transferred to the caller, making this an efficient way to extract the packed content.
-    pub fn flush(&mut self) -> (Vec<u8>, Vec<PackedBlobDescriptor>) {
+    pub fn flush(&mut self) -> (Vec<u8>, Vec<PackedBlobDescriptor>, Hash) {
         // Efficiently take ownership of the vectors, leaving new, empty vectors behind.
         let data = std::mem::replace(&mut self.data, Vec::with_capacity(self.data_capacity));
         let descriptors = std::mem::replace(
             &mut self.blob_descriptors,
             Vec::with_capacity(self.blob_descriptor_capacity),
         );
+        let hash = self.hasher.finalize();
+        self.hasher.reset();
 
-        (data, descriptors)
+        (data, descriptors, hash)
     }
 }

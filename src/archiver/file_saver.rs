@@ -21,17 +21,35 @@ use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
     global::{self, ID, ObjectType},
-    repository::RepositoryBackend,
+    repository::{RepositoryBackend, tree::Node},
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 
 /// Puts a file into the repository
 ///
-/// This function will split the file into chunks for deduplication, which
-/// will be compressed, encrypted and stored in the repository.
-/// The content hash of each chunk is used to identify the chunk and determine
-/// if the chunk already exists in the repository.
+/// This function will split the file into chunks for deduplication, which will be compressed,
+/// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
+/// directly as blobs.
 pub(crate) fn save_file(
+    repo: &dyn RepositoryBackend,
+    src_path: &Path,
+    node: &Node,
+    progress_reporter: &Arc<SnapshotProgressReporter>,
+) -> Result<Vec<ID>> {
+    // Do not chunk if the file is smaller than the minimum chunk size
+    if node.metadata.size < global::defaults::MIN_CHUNK_SIZE.into() {
+        let data = std::fs::read(src_path)?;
+        let (id, raw_size, encoded_size) = repo.save_blob(ObjectType::Data, data)?;
+        progress_reporter.written_data_bytes(raw_size, encoded_size);
+        progress_reporter.processed_bytes(node.metadata.size);
+
+        Ok(vec![id])
+    } else {
+        chunk_and_save_file(repo, src_path, progress_reporter)
+    }
+}
+
+fn chunk_and_save_file(
     repo: &dyn RepositoryBackend,
     src_path: &Path,
     progress_reporter: &Arc<SnapshotProgressReporter>,

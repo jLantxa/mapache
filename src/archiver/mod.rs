@@ -30,13 +30,13 @@ use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
 
 use crate::{
-    cli,
     global::ID,
     repository::{
         RepositoryBackend,
         snapshot::Snapshot,
         tree::{FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
     },
+    ui,
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 
@@ -101,14 +101,14 @@ impl Archiver {
                 if let Ok(diff) = diff_result {
                     if let Err(e) = diff_tx.send(diff) {
                         error_flag_clone.fetch_and(true, std::sync::atomic::Ordering::AcqRel);
-                        cli::log_error(&format!(
+                        ui::cli::log_error(&format!(
                             "Archiver thread errored sending diff: {:?}",
                             e.to_string()
                         ));
                         break;
                     }
                 } else {
-                    cli::log_error("Archiver thread errored getting next diff");
+                    ui::cli::log_error("Archiver thread errored getting next diff");
                     break;
                 }
             }
@@ -155,7 +155,7 @@ impl Archiver {
                             if let Some(processed_item) = processed_item_opt {
                                 if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
                                     inner_error_flag_clone.store(true, Ordering::Release);
-                                    cli::log_error(&format!(
+                                    ui::cli::log_error(&format!(
                                         "Archiver thread errored sending processing item: {:?}",
                                         e.to_string()
                                     ));
@@ -165,7 +165,7 @@ impl Archiver {
                         }
                         Err(e) => {
                             inner_error_flag_clone.store(true, Ordering::Release);
-                            cli::log_error(&format!(
+                            ui::cli::log_error(&format!(
                                 "Archiver thread errored processing item: {:?}",
                                 e.to_string()
                             ));
@@ -218,7 +218,7 @@ impl Archiver {
                     &serializer_progress_reporter_clone,
                 ) {
                     error_flag_clone.store(true, Ordering::Release);
-                    cli::log_error(&format!(
+                    ui::cli::log_error(&format!(
                         "Archiver thread errored handling processed item: {:?}",
                         e.to_string()
                     ));

@@ -21,11 +21,10 @@ use clap::{Args, ValueEnum};
 
 use crate::{
     backend::new_backend_with_prompt,
-    cli::{self},
     commands::{GlobalArgs, UseSnapshot},
     global::ID,
     repository::{self, RepositoryBackend, storage::SecureStorage, tree::SerializedNodeStreamer},
-    restorer,
+    restorer, ui,
 };
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
@@ -74,7 +73,7 @@ pub struct CmdArgs {
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
-    let repo_password = cli::request_repo_password();
+    let repo_password = ui::cli::request_repo_password();
 
     let key = repository::retrieve_key(repo_password, backend.clone())?;
     let secure_storage = Arc::new(
@@ -115,7 +114,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         Resolution::Skip => continue, // Skip restore
                         Resolution::Overwrite => (),  // Continue with restore
                         Resolution::Fail => {
-                            cli::log_error(&format!(
+                            ui::cli::log_error(&format!(
                                 "Target \'{}\' already exists",
                                 restore_path.display()
                             ));

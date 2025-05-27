@@ -29,7 +29,7 @@ use anyhow::{Result, anyhow, bail};
 use dry::DryBackend;
 use localfs::LocalFS;
 
-use crate::{cli, utils::url::Url};
+use crate::{ui, utils::url::Url};
 
 /// Abstraction of a storage backend.
 ///
@@ -99,7 +99,7 @@ pub fn new_backend_with_prompt(url: &str) -> Result<Arc<dyn StorageBackend>> {
         BackendUrl::Local(repo_path) => Ok(Arc::new(LocalFS::new(repo_path))),
         BackendUrl::Sftp(username, host, port, repo_path) => {
             let password_prompt = format!("{}@{}'s password", username, host);
-            let password = cli::request_password(&password_prompt);
+            let password = ui::cli::request_password(&password_prompt);
             Ok(Arc::new(SftpBackend::new(
                 repo_path, username, host, port, password,
             )?))

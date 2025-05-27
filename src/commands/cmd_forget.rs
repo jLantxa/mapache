@@ -26,7 +26,7 @@ use crate::global::{FileType, ID};
 use crate::repository::RepositoryBackend;
 use crate::repository::snapshot::Snapshot;
 use crate::repository::storage::SecureStorage;
-use crate::{cli, repository, utils};
+use crate::{repository, ui, utils};
 
 use super::GlobalArgs;
 
@@ -86,7 +86,7 @@ pub enum RetentionRule {
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
-    let repo_password = cli::request_repo_password();
+    let repo_password = ui::cli::request_repo_password();
 
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
@@ -149,12 +149,12 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     if !args.dry_run {
-        cli::log!(
+        ui::cli::log!(
             "Removed {}",
             utils::format_count(removed_count, "snapshot", "snapshots")
         );
     } else {
-        cli::log!(
+        ui::cli::log!(
             "This would remove {}",
             utils::format_count(removed_count, "snapshot", "snapshots")
         );

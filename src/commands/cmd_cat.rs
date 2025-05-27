@@ -17,15 +17,15 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 
 use crate::backend::new_backend_with_prompt;
-use crate::cli::{self};
 use crate::global::{ID, ID_LENGTH};
 use crate::repository::storage::SecureStorage;
 use crate::repository::tree::Tree;
 use crate::repository::{self};
+use crate::ui;
 
 use super::GlobalArgs;
 
@@ -49,7 +49,7 @@ pub enum Object {
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
-    let repo_password = cli::request_repo_password();
+    let repo_password = ui::cli::request_repo_password();
 
     let key = repository::retrieve_key(repo_password, backend.clone())?;
     let secure_storage = Arc::new(

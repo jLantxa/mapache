@@ -24,9 +24,9 @@ use chrono::Utc;
 
 use crate::{
     backend::StorageBackend,
-    cli,
     global::{self, FileType, ObjectType},
     repository::{self, packer::Packer, storage::SecureStorage},
+    ui,
 };
 
 use super::{
@@ -128,7 +128,7 @@ impl RepositoryBackend for Repository {
         let manifest = secure_storage.encode(manifest.as_bytes())?;
         backend.write(manifest_path, &manifest)?;
 
-        cli::log!("Created repo with id {}", repo_id.to_short_hex(5));
+        ui::cli::log!("Created repo with id {}", repo_id.to_short_hex(5));
 
         Ok(())
     }

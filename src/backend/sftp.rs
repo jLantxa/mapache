@@ -25,7 +25,7 @@ use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ssh2::{RenameFlags, Session, Sftp};
 
-use crate::cli;
+use crate::ui;
 
 use super::StorageBackend;
 
@@ -100,10 +100,10 @@ impl SftpConnectionPool {
                     // on the server side or it was a punctual error. We can try again.
 
                     if connection_retry_count < MAX_CONNECTION_RETRIES {
-                        cli::log_warning("Failed to establish SFTP connection. Retrying...");
+                        ui::cli::log_warning("Failed to establish SFTP connection. Retrying...");
                         connection_retry_count += 1;
                     } else {
-                        cli::log_warning("Max connection retries exceeded.");
+                        ui::cli::log_warning("Max connection retries exceeded.");
                         break;
                     }
                 }

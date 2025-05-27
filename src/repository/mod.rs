@@ -25,9 +25,9 @@ pub mod tree;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::aead::OsRng;
-use anyhow::{bail, Context, Result};
+use aes_gcm::aead::rand_core::RngCore;
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use index::IndexFile;
@@ -35,10 +35,10 @@ use manifest::Manifest;
 use serde::{Deserialize, Serialize};
 use snapshot::Snapshot;
 
-use crate::cli;
 use crate::global::FileType;
+use crate::ui;
 use crate::{
-    backend::StorageBackend, global::ObjectType, global::ID, repository::storage::SecureStorage,
+    backend::StorageBackend, global::ID, global::ObjectType, repository::storage::SecureStorage,
 };
 
 pub type RepoVersion = u32;
@@ -191,7 +191,7 @@ pub fn retrieve_key(password: String, backend: Arc<dyn StorageBackend>) -> Resul
         // The keys directory should only contain files. We can ignore anything
         // that is not a file, but show a warning anyway.
         if !backend.is_file(&path) {
-            cli::log_warning(&format!(
+            ui::cli::log_warning(&format!(
                 "Extraneous item \'{}\' in keys directory is not a file",
                 path.display()
             ));

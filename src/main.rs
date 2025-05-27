@@ -16,7 +16,6 @@
 
 pub mod archiver;
 pub mod backend;
-pub mod cli;
 pub mod commands;
 pub mod global;
 pub mod repository;
@@ -36,9 +35,9 @@ fn main() -> Result<()> {
 
     // Run the command
     if let Err(e) = commands::run(&args) {
-        cli::log_error(&e.to_string());
-        cli::log!();
-        cli::log!("Finished with {}", "Error".bold().red());
+        ui::cli::log_error(&e.to_string());
+        ui::cli::log!();
+        ui::cli::log!("Finished with {}", "Error".bold().red());
 
         std::process::exit(1);
     }

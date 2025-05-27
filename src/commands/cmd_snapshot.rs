@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -28,9 +28,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
-    cli,
     global::{self, ID},
-    repository::{self, storage::SecureStorage, tree::FSNodeStreamer, RepositoryBackend},
+    repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
+    ui,
     ui::{
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
@@ -66,7 +66,7 @@ pub struct CmdArgs {
 
 pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
-    let repo_password = cli::request_repo_password();
+    let repo_password = ui::cli::request_repo_password();
 
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
@@ -92,7 +92,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     // Extract the snapshot root path
     let snapshot_root_path = if absolute_source_paths.is_empty() {
-        cli::log_warning("No source paths provided. Creating empty snapshot.");
+        ui::cli::log_warning("No source paths provided. Creating empty snapshot.");
         PathBuf::new()
     } else if absolute_source_paths.len() == 1 {
         let single_source = absolute_source_paths.first().unwrap();
@@ -101,10 +101,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::calculate_lcp(&absolute_source_paths)
     };
 
-    cli::log!();
+    ui::cli::log!();
     let parent_snapshot = match args.full_scan {
         true => {
-            cli::log!("Full scan");
+            ui::cli::log!("Full scan");
             None
         }
         false => match &args.parent {
@@ -113,7 +113,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 let s = snapshots_sorted.last().cloned();
                 match &s {
                     Some((id, snap)) => {
-                        cli::log!(
+                        ui::cli::log!(
                             "Using last snapshot {} as parent",
                             &id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
                                 .bold()
@@ -122,7 +122,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         Some(snap.clone())
                     }
                     None => {
-                        cli::log_warning("No previous snapshots found. Doing full scan.");
+                        ui::cli::log_warning("No previous snapshots found. Doing full scan.");
                         None
                     }
                 }
@@ -131,7 +131,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 let id = ID::from_hex(&id_hex)?;
                 match &repo.load_snapshot(&id) {
                     Ok(snap) => {
-                        cli::log!("Using snapshot {:?} as parent", id);
+                        ui::cli::log!("Using snapshot {:?} as parent", id);
                         Some(snap.clone())
                     }
                     Err(_) => bail!("Snapshot {:?} not found", id),
@@ -171,14 +171,14 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     spinner.finish_and_clear();
-    cli::log!(
+    ui::cli::log!(
         "{} {} files, {} directories, {}",
         "To commit:".bold().cyan(),
         num_files,
         num_dirs,
         utils::format_size(total_bytes),
     );
-    cli::log!();
+    ui::cli::log!();
 
     // Run Archiver
     let expected_items = num_files + num_dirs;
@@ -208,7 +208,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Final report
     show_final_report(&snapshot_id, &progress_reporter, args);
 
-    cli::log!(
+    ui::cli::log!(
         "Finished in {}",
         utils::pretty_print_duration(start.elapsed())
     );
@@ -224,8 +224,8 @@ fn show_final_report(
 ) {
     progress_reporter.finalize();
 
-    cli::log!("{}", "Changes since parent snapshot".bold());
-    cli::log!();
+    ui::cli::log!("{}", "Changes since parent snapshot".bold());
+    ui::cli::log!();
 
     let mut table = Table::new_with_alignments(vec![
         Alignment::Left,
@@ -276,9 +276,9 @@ fn show_final_report(
     ]);
     table.print();
 
-    cli::log!();
+    ui::cli::log!();
     if !args.dry_run {
-        cli::log!(
+        ui::cli::log!(
             "New snapshot created {}",
             format!(
                 "{}",
@@ -287,9 +287,9 @@ fn show_final_report(
             .bold()
             .green()
         );
-        cli::log!("This snapshot added:\n");
+        ui::cli::log!("This snapshot added:\n");
     } else {
-        cli::log!("This snapshot would add:\n");
+        ui::cli::log!("This snapshot would add:\n");
     }
 
     let mut data_table =
@@ -316,5 +316,5 @@ fn show_final_report(
     ]);
     data_table.print();
 
-    cli::log!();
+    ui::cli::log!();
 }

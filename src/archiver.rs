@@ -438,8 +438,7 @@ impl Archiver {
             nodes: this_pending_tree.children.into_values().collect(),
         };
 
-        let (tree_id, raw_tree_size, encoded_tree_size) =
-            Archiver::save_tree(repo, &completed_tree)?;
+        let (tree_id, raw_tree_size, encoded_tree_size) = completed_tree.save_to_repo(repo)?;
 
         // Notify reporter
         progress_reporter.written_meta_bytes(raw_tree_size, encoded_tree_size);
@@ -522,21 +521,6 @@ impl Archiver {
         }
 
         Ok(chunk_hashes)
-    }
-
-    /// Saves a tree in the repository. This function should be called when a tree is complete,
-    /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_tree(repo: &dyn RepositoryBackend, tree: &Tree) -> Result<(ID, u64, u64)> {
-        let tree_json = serde_json::to_string(tree)?.as_bytes().to_vec();
-        let (id, raw_size, encoded_size) = repo.save_blob(ObjectType::Tree, tree_json)?;
-        Ok((id, raw_size, encoded_size))
-    }
-
-    /// Load a tree from the repository.
-    pub fn load_tree(repo: &dyn RepositoryBackend, root_id: &ID) -> Result<Tree> {
-        let tree_object = repo.load_blob(root_id)?;
-        let tree: Tree = serde_json::from_slice(&tree_object)?;
-        Ok(tree)
     }
 
     #[inline]

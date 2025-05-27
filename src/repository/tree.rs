@@ -31,7 +31,7 @@ use std::os::unix::fs::MetadataExt;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::{archiver::Archiver, utils};
+use crate::{global::ObjectType, utils};
 
 use super::{ID, RepositoryBackend};
 
@@ -269,6 +269,21 @@ impl Tree {
             }
         }
     }
+
+    /// Saves a tree in the repository. This function should be called when a tree is complete,
+    /// that is, when all the contents and/or tree hashes have been resolved.
+    pub fn save_to_repo(&self, repo: &dyn RepositoryBackend) -> Result<(ID, u64, u64)> {
+        let tree_json = serde_json::to_string(self)?.as_bytes().to_vec();
+        let (id, raw_size, encoded_size) = repo.save_blob(ObjectType::Tree, tree_json)?;
+        Ok((id, raw_size, encoded_size))
+    }
+
+    /// Load a tree from the repository.
+    pub fn load_from_repo(repo: &dyn RepositoryBackend, root_id: &ID) -> Result<Tree> {
+        let tree_object = repo.load_blob(root_id)?;
+        let tree: Tree = serde_json::from_slice(&tree_object)?;
+        Ok(tree)
+    }
 }
 
 #[derive(Debug)]
@@ -390,7 +405,7 @@ impl SerializedNodeStreamer {
         let mut stack = Vec::new();
 
         if let Some(id) = root_id {
-            let tree = Archiver::load_tree(repo.as_ref(), &id)
+            let tree = Tree::load_from_repo(repo.as_ref(), &id)
                 .context(format!("Failed to load root tree with ID {}", id))?;
 
             for node in tree.nodes.into_iter().rev() {
@@ -423,7 +438,7 @@ impl Iterator for SerializedNodeStreamer {
             // If it’s a subtree (i.e., a directory), load its children and push them.
             // Also, update the current `stream_node`'s `num_children` with its actual count.
             if let Some(subtree_id) = &stream_node.node.tree {
-                let subtree = Archiver::load_tree(self.repo.as_ref(), subtree_id)?;
+                let subtree = Tree::load_from_repo(self.repo.as_ref(), subtree_id)?;
                 let num_children_of_this_dir = subtree.nodes.len();
 
                 // Push children for the next iteration. Their `num_children` starts at 0.

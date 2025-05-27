@@ -404,6 +404,12 @@ impl RepositoryBackend for Repository {
     }
 }
 
+impl Drop for Repository {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
 impl Repository {
     /// Returns the path to an object with a given hash in the repository.
     fn get_object_path(&self, id: &ID) -> PathBuf {

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod file_saver;
+mod chunker;
 mod processor;
 mod tree_serializer;
 
@@ -70,7 +70,7 @@ impl Archiver {
         let previous_tree_streamer =
             SerializedNodeStreamer::new(repo.clone(), parent_tree_id, snapshot_root_path.clone())?;
 
-        let num_threads = std::cmp::max(1, num_cpus::get() / 2);
+        let num_threads = std::cmp::max(1, num_cpus::get());
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()?;
@@ -146,8 +146,8 @@ impl Archiver {
 
                     let processed_item_result = processor::process_item(
                         diff_tuple,
-                        inner_repo_clone.as_ref(),
-                        &inner_progress_reporter_clone,
+                        inner_repo_clone,
+                        inner_progress_reporter_clone,
                     );
 
                     match processed_item_result {

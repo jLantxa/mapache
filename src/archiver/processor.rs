@@ -26,12 +26,12 @@ use crate::{
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 
-use super::file_saver;
+use super::chunker;
 
 pub(crate) fn process_item(
     item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
-    repo: &dyn RepositoryBackend,
-    progress_reporter: &Arc<SnapshotProgressReporter>,
+    repo: Arc<dyn RepositoryBackend>,
+    progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Option<(PathBuf, StreamNode)>> {
     let (path, prev_node, next_node, diff_type) = item;
 
@@ -81,11 +81,11 @@ pub(crate) fn process_item(
             Some(mut stream_node_info) => {
                 // If node is a file, save the contents
                 if stream_node_info.node.is_file() {
-                    let blobs_ids = file_saver::save_file(
-                        repo,
+                    let blobs_ids = chunker::save_file(
+                        repo.clone(),
                         &path,
                         &stream_node_info.node,
-                        progress_reporter,
+                        progress_reporter.clone(),
                     )?;
                     stream_node_info.node.contents = Some(blobs_ids);
                 }

@@ -81,7 +81,12 @@ pub(crate) fn process_item(
             Some(mut stream_node_info) => {
                 // If node is a file, save the contents
                 if stream_node_info.node.is_file() {
-                    let blobs_ids = file_saver::save_file(repo, &path, progress_reporter)?;
+                    let blobs_ids = file_saver::save_file(
+                        repo,
+                        &path,
+                        &stream_node_info.node,
+                        progress_reporter,
+                    )?;
                     stream_node_info.node.contents = Some(blobs_ids);
                 }
 

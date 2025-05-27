@@ -447,10 +447,10 @@ impl Repository {
     }
 
     fn flush_packer(&self, mut packer_guard: MutexGuard<Packer>) -> Result<()> {
-        let (pack_data, packed_blob_descriptors) = packer_guard.flush();
+        let (pack_data, packed_blob_descriptors, hash) = packer_guard.flush();
         drop(packer_guard); // Drop the mutex so other workers can append to the packer
 
-        let pack_id = ID::from_content(&pack_data);
+        let pack_id = ID::from_bytes(hash.into());
         let pack_path = &self.get_object_path(&pack_id);
         self.backend.write(pack_path, &pack_data)?;
 

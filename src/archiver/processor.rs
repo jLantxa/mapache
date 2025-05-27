@@ -16,7 +16,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail}; // Added Context for more detailed errors
 
 use crate::{
     repository::{
@@ -29,93 +29,91 @@ use crate::{
 use super::chunker;
 
 pub(crate) fn process_item(
-    item: (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff),
+    (path, prev_node, next_node, diff_type): (
+        PathBuf,
+        Option<StreamNode>,
+        Option<StreamNode>,
+        NodeDiff,
+    ),
     repo: Arc<dyn RepositoryBackend>,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Option<(PathBuf, StreamNode)>> {
-    let (path, prev_node, next_node, diff_type) = item;
-
     match diff_type {
-        // Deleted item: We don't need to save anything and this node will not be present in the
-        // serialized tree. We just ignore it. Maybe notify a progress reporter.
         NodeDiff::Deleted => {
-            // Notify the reporter
-            match prev_node {
-                Some(node_info) => {
-                    if node_info.node.is_dir() {
-                        progress_reporter.deleted_dir();
-                    } else {
-                        progress_reporter.deleted_file();
-                    }
-                }
-                None => bail!("Item deleted but the node was not provided"),
+            // Notify the reporter about the deleted item.
+            let prev_node =
+                prev_node.with_context(|| "Deleted item but the previous node was not provided")?;
+            if prev_node.node.is_dir() {
+                progress_reporter.deleted_dir();
+            } else {
+                progress_reporter.deleted_file();
             }
-
             Ok(None)
         }
 
-        // Unchanged item: No need to save the content, but we still need to serialize the node.
-        // Use the prev_node, since it comes from the serialized tree and contains the list of blobs.
-        NodeDiff::Unchanged => match prev_node {
-            None => bail!("Item unchanged but the node was not provided"),
-            Some(stream_node_info) => {
-                // Notify reporter
-                if stream_node_info.node.is_file() {
-                    let bytes_processed = stream_node_info.node.metadata.size;
-                    progress_reporter.processed_bytes(bytes_processed);
-                    progress_reporter.unchanged_file();
-                } else if stream_node_info.node.is_dir() {
-                    progress_reporter.unchanged_dir();
-                } else {
-                    // Simlinks, block devices, etc.
-                    progress_reporter.unchanged_file();
-                }
+        NodeDiff::Unchanged => {
+            // Unchanged item: No need to save content, but we still need to serialize the node.
+            // Use `prev_node` as it contains the list of blobs from the previous snapshot.
+            let stream_node_info = prev_node
+                .with_context(|| "Unchanged item but the previous node was not provided")?;
 
-                return Ok(Some((path, stream_node_info)));
+            // Notify reporter based on node type.
+            if stream_node_info.node.is_file() {
+                let bytes_processed = stream_node_info.node.metadata.size;
+                progress_reporter.processed_bytes(bytes_processed);
+                progress_reporter.unchanged_file();
+            } else if stream_node_info.node.is_dir() {
+                progress_reporter.unchanged_dir();
+            } else {
+                // Catches symlinks, block devices, char devices, fifos, sockets.
+                progress_reporter.unchanged_file(); // Treat non-dir as file for progress reporting.
             }
-        },
 
-        // New or changed item: We need to save the contents and serialize the node.
-        NodeDiff::New | NodeDiff::Changed => match next_node {
-            None => bail!("Item new or changed but the node was not provided"),
-            Some(mut stream_node_info) => {
-                // If node is a file, save the contents
-                if stream_node_info.node.is_file() {
-                    let blobs_ids = chunker::save_file(
-                        repo.clone(),
-                        &path,
-                        &stream_node_info.node,
-                        progress_reporter.clone(),
-                    )?;
-                    stream_node_info.node.contents = Some(blobs_ids);
-                }
+            Ok(Some((path, stream_node_info)))
+        }
 
-                match stream_node_info.node.node_type {
-                    NodeType::File
-                    | NodeType::Symlink
-                    | NodeType::BlockDevice
-                    | NodeType::CharDevice
-                    | NodeType::Fifo
-                    | NodeType::Socket => {
-                        // Notify reporter
-                        if diff_type == NodeDiff::New {
-                            progress_reporter.new_file();
-                        } else if diff_type == NodeDiff::Changed {
-                            progress_reporter.changed_file();
-                        }
-                    }
-                    NodeType::Directory => {
-                        // Notify reporter
-                        if diff_type == NodeDiff::New {
-                            progress_reporter.new_dir();
-                        } else if diff_type == NodeDiff::Changed {
-                            progress_reporter.changed_dir();
-                        }
+        NodeDiff::New | NodeDiff::Changed => {
+            // New or changed item: We need to save the contents (if a file) and serialize the node.
+            let mut stream_node_info = next_node
+                .with_context(|| "New or changed item but the next node was not provided")?;
+
+            // If the node is a file, save its contents to the repository.
+            if stream_node_info.node.is_file() {
+                let blobs_ids = chunker::save_file(
+                    repo, // `repo` is an Arc, so it can be moved here.
+                    &path,
+                    &stream_node_info.node,
+                    progress_reporter.clone(),
+                )?;
+                stream_node_info.node.contents = Some(blobs_ids);
+            }
+
+            // Notify reporter based on diff type and node type.
+            match stream_node_info.node.node_type {
+                NodeType::File
+                | NodeType::Symlink
+                | NodeType::BlockDevice
+                | NodeType::CharDevice
+                | NodeType::Fifo
+                | NodeType::Socket => {
+                    if diff_type == NodeDiff::New {
+                        progress_reporter.new_file();
+                    } else {
+                        // NodeDiff::Changed
+                        progress_reporter.changed_file();
                     }
                 }
-
-                return Ok(Some((path, stream_node_info)));
+                NodeType::Directory => {
+                    if diff_type == NodeDiff::New {
+                        progress_reporter.new_dir();
+                    } else {
+                        // NodeDiff::Changed
+                        progress_reporter.changed_dir();
+                    }
+                }
             }
-        },
+
+            Ok(Some((path, stream_node_info)))
+        }
     }
 }

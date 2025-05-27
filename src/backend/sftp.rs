@@ -130,7 +130,7 @@ impl SftpConnectionPool {
         let conn = self
             .receiver
             .recv()
-            .context("Failed to get connection from pool")?;
+            .with_context(|| "Failed to get connection from pool")?;
         Ok(PooledSftpConnection {
             connection: Some(conn),
             pool_sender: self.sender.clone(),
@@ -310,9 +310,9 @@ impl StorageBackend for SftpBackend {
         let mut file = conn
             .sftp()
             .create(&full_path)
-            .context(format!("Failed to create file for writing: {:?}", path))?;
+            .with_context(|| format!("Failed to create file for writing: {:?}", path))?;
         file.write_all(contents)
-            .context(format!("Failed to write to file: {:?}", path))?;
+            .with_context(|| format!("Failed to write to file: {:?}", path))?;
         Ok(())
     }
 

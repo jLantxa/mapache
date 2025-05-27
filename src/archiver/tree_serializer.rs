@@ -32,21 +32,42 @@ use crate::{
     utils,
 };
 
+/// Represents the expected number of children for a directory node.
+#[derive(Debug, PartialEq, Eq)]
+enum ExpectedChildren {
+    /// The number of children is known.
+    Known(usize),
+    /// The number of children is not yet known (e.g., for the root before stream processing).
+    Unknown,
+}
+
+impl From<isize> for ExpectedChildren {
+    fn from(value: isize) -> Self {
+        if value < 0 {
+            ExpectedChildren::Unknown
+        } else {
+            ExpectedChildren::Known(value as usize)
+        }
+    }
+}
+
 /// Represents a directory node that is being built bottom-up during the snapshot process.
 /// It holds the directory's own node information (if available), the collected child nodes,
 /// and the number of children expected from the stream.
 #[derive(Debug)]
 pub(crate) struct PendingTree {
-    pub node: Option<Node>,
-    pub children: BTreeMap<String, Node>,
-    pub num_expected_children: isize,
+    node: Option<Node>,
+    children: BTreeMap<String, Node>,
+    num_expected_children: ExpectedChildren,
 }
 
 impl PendingTree {
-    ///  Returns true if this directory node is still waiting to receive children
-    pub(crate) fn is_pending(&self) -> bool {
-        self.num_expected_children < 0
-            || (self.children.len() as isize) < self.num_expected_children
+    /// Returns true if this directory node is still waiting to receive children.
+    fn is_pending(&self) -> bool {
+        match self.num_expected_children {
+            ExpectedChildren::Unknown => true,
+            ExpectedChildren::Known(expected_count) => self.children.len() < expected_count,
+        }
     }
 }
 
@@ -57,7 +78,7 @@ pub(crate) fn init_pending_trees(
     let mut pending_trees = BTreeMap::new();
 
     // We need to know ahead how many children the root is expecting, because the FSNodeStreamer
-    // does not emit it.
+    // does not emit it (the root node).
     let (root_children_count, _) = utils::intermediate_paths(snapshot_root_path, paths);
 
     // The tree root, has no node
@@ -66,7 +87,7 @@ pub(crate) fn init_pending_trees(
         PendingTree {
             node: None,
             children: BTreeMap::new(),
-            num_expected_children: root_children_count as isize,
+            num_expected_children: ExpectedChildren::Known(root_children_count),
         },
     );
 
@@ -74,16 +95,15 @@ pub(crate) fn init_pending_trees(
 }
 
 pub(crate) fn handle_processed_item(
-    processed_item: (PathBuf, StreamNode),
+    (path, stream_node): (PathBuf, StreamNode),
     repo: &dyn RepositoryBackend,
     pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
     final_root_tree_id: &mut Option<ID>,
     snapshot_root_path: &Path,
     progress_reporter: &Arc<SnapshotProgressReporter>,
 ) -> Result<()> {
-    let (path, stream_node) = processed_item;
-
-    let mut dir_path = utils::extract_parent(&path).unwrap();
+    let mut dir_path = utils::extract_parent(&path)
+        .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
 
     match stream_node.node.node_type {
         NodeType::File
@@ -95,21 +115,17 @@ pub(crate) fn handle_processed_item(
             insert_finalized_node(pending_trees, &dir_path, stream_node.node);
         }
         NodeType::Directory => {
-            let existing_pending_tree = pending_trees.insert(
-                path.clone(),
-                PendingTree {
-                    node: Some(stream_node.node),
+            let pending_tree = pending_trees
+                .entry(path.clone())
+                .or_insert_with(|| PendingTree {
+                    node: Some(stream_node.node.clone()), // Clone for the initial insert
                     children: BTreeMap::new(),
-                    num_expected_children: stream_node.num_children as isize,
-                },
-            );
+                    num_expected_children: ExpectedChildren::Unknown, // Will be updated below
+                });
 
-            match existing_pending_tree {
-                Some(old_pending_tree) => {
-                    pending_trees.get_mut(&path).unwrap().children = old_pending_tree.children;
-                }
-                None => (),
-            }
+            // Update node and expected children count, preserving existing children if present
+            pending_tree.node = Some(stream_node.node);
+            pending_tree.num_expected_children = ExpectedChildren::Known(stream_node.num_children);
 
             dir_path = path;
         }
@@ -133,20 +149,22 @@ fn finalize_if_complete(
     snapshot_root_path: &Path,
     progress_reporter: &Arc<SnapshotProgressReporter>,
 ) -> Result<()> {
-    let this_pending_tree = match pending_trees.get(&dir_path) {
-        Some(tree) => tree,
-        None => {
-            return Ok(());
-        }
+    // Check if the tree exists and is not pending without consuming it
+    let Some(this_pending_tree_peek) = pending_trees.get(&dir_path) else {
+        return Ok(());
     };
 
-    if this_pending_tree.is_pending() {
+    if this_pending_tree_peek.is_pending() {
         return Ok(());
     }
 
-    let this_pending_tree = pending_trees
-        .remove(&dir_path)
-        .with_context(|| "Completed tree not found in map during removal.")?;
+    // Now that we know it's complete, remove it
+    let this_pending_tree = pending_trees.remove(&dir_path).with_context(|| {
+        format!(
+            "Completed tree for path '{}' not found in map during removal.",
+            dir_path.display()
+        )
+    })?;
 
     let completed_tree = Tree {
         nodes: this_pending_tree.children.into_values().collect(),
@@ -157,6 +175,9 @@ fn finalize_if_complete(
     // Notify reporter
     progress_reporter.written_meta_bytes(raw_tree_size, encoded_tree_size);
 
+    // If the current directory is the snapshot root, store its tree ID as the
+    // final root ID. Otherwise, it's an intermediate directory, so update its
+    // parent's children with this completed directory node.
     if dir_path == snapshot_root_path {
         *final_root_tree_id = Some(tree_id);
     } else {
@@ -168,15 +189,17 @@ fn finalize_if_complete(
         })?;
         completed_dir_node.tree = Some(tree_id);
 
-        let parent_path = utils::extract_parent(&dir_path).unwrap_or_else(|| PathBuf::new());
+        let parent_path = utils::extract_parent(&dir_path).with_context(|| {
+            format!(
+                "Could not extract parent path for finalized directory '{}'",
+                dir_path.display()
+            )
+        })?;
 
-        insert_finalized_node(pending_trees, &parent_path, completed_dir_node.clone());
+        // Insert the completed directory node into its parent's children
+        insert_finalized_node(pending_trees, &parent_path, completed_dir_node);
 
-        let parent_pending_tree = pending_trees.get_mut(&parent_path).unwrap();
-        let child_node_in_parent_list = parent_pending_tree.children.get_mut(&completed_dir_node.name)
-                 .with_context(|| format!("Completed child node '{}' not found in parent's children map ('{}') during finalization propagation.", completed_dir_node.name, parent_path.display()))?;
-        *child_node_in_parent_list = completed_dir_node;
-
+        // Recursively try to finalize the parent
         finalize_if_complete(
             parent_path,
             repo,
@@ -201,7 +224,9 @@ fn insert_finalized_node(
         .or_insert_with(|| PendingTree {
             node: None,
             children: BTreeMap::new(),
-            num_expected_children: -1,
+            // When a directory is inserted as a child, its parent's num_expected_children is still unknown.
+            // This will be properly set when the parent directory itself is processed as a StreamNode.
+            num_expected_children: ExpectedChildren::Unknown,
         });
     parent_pending_tree.children.insert(node.name.clone(), node);
 }

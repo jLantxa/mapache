@@ -29,7 +29,7 @@ use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
     global::{self, ID},
-    repository::{self, RepositoryBackend, storage::SecureStorage, tree::FSNodeStreamer},
+    repository::{self, RepositoryBackend, tree::FSNodeStreamer},
     ui,
     ui::{
         snapshot_progress::SnapshotProgressReporter,
@@ -71,15 +71,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let key = repository::retrieve_key(repo_password, backend.clone())?;
-    let secure_storage = Arc::new(
-        SecureStorage::build()
-            .with_key(key)
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
-    );
-
-    let repo: Arc<dyn RepositoryBackend> =
-        Arc::from(repository::open(backend, secure_storage.clone())?);
+    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::try_open(
+        repo_password,
+        global.key.as_ref(),
+        backend,
+    )?);
 
     let source_paths = &args.paths;
     let mut absolute_source_paths = Vec::new();

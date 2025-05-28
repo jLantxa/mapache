@@ -34,6 +34,7 @@ use index::IndexFile;
 use manifest::Manifest;
 use serde::{Deserialize, Serialize};
 use snapshot::Snapshot;
+use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::global::FileType;
 use crate::ui;
@@ -115,13 +116,21 @@ pub fn init_repository_with_version(
         bail!("Invalid repository version \'{}\'", version);
     }
 }
-pub fn open(
+pub fn try_open(
+    password: String,
+    key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
-    secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
     if !backend.root_exists() {
         bail!("Could not open a repository. The path does not exist.");
     }
+
+    let master_key = retrieve_master_key(password, key_file_path, backend.clone())?;
+    let secure_storage = Arc::new(
+        SecureStorage::build()
+            .with_compression(DEFAULT_COMPRESSION_LEVEL)
+            .with_key(master_key),
+    );
 
     let manifest_path = Path::new("manifest");
 
@@ -141,7 +150,6 @@ pub fn open(
 fn open_repository_with_version(
     version: RepoVersion,
     backend: Arc<dyn StorageBackend>,
-
     secure_storage: Arc<SecureStorage>,
 ) -> Result<Box<dyn RepositoryBackend>> {
     if version == 1 {
@@ -162,18 +170,21 @@ pub struct KeyFile {
 
 pub const KEYS_DIR: &str = "keys";
 
-/// Generate a new master  key
-pub fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
-    let create_time = Utc::now();
-
-    let mut new_random_key = [0u8; 32];
+pub fn generate_new_master_key() -> Vec<u8> {
+    let mut new_random_key = vec![0u8; 32];
     OsRng.fill_bytes(&mut new_random_key);
+    new_random_key
+}
+
+/// Generates a new KeyFile for the master key with a new password
+pub fn generate_key_file(password: &str, master_key: Vec<u8>) -> Result<KeyFile> {
+    let create_time = Utc::now();
 
     const SALT_LENGTH: usize = 32;
     let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
     let intermediate_key = SecureStorage::derive_key(password, &salt);
 
-    let encrypted_key = SecureStorage::encrypt_with_key(&intermediate_key, &new_random_key)?;
+    let encrypted_key = SecureStorage::encrypt_with_key(&intermediate_key, &master_key)?;
 
     let key_file = KeyFile {
         created: create_time,
@@ -181,40 +192,74 @@ pub fn generate_key(password: &str) -> Result<(Vec<u8>, KeyFile)> {
         salt: base64::engine::general_purpose::STANDARD.encode(salt),
     };
 
-    Ok((new_random_key.to_vec(), key_file))
+    Ok(key_file)
 }
 
 /// Retrieve the master key from all available keys in a folder
-pub fn retrieve_key(password: String, backend: Arc<dyn StorageBackend>) -> Result<Vec<u8>> {
-    let keys_path = Path::new(KEYS_DIR);
-    for path in backend.read_dir(&keys_path)? {
-        // The keys directory should only contain files. We can ignore anything
-        // that is not a file, but show a warning anyway.
-        if !backend.is_file(&path) {
-            ui::cli::log_warning(&format!(
-                "Extraneous item \'{}\' in keys directory is not a file",
-                path.display()
-            ));
-            continue;
+pub fn retrieve_master_key(
+    password: String,
+    keyfile_path: Option<&PathBuf>,
+    backend: Arc<dyn StorageBackend>,
+) -> Result<Vec<u8>> {
+    match keyfile_path {
+        Some(path) => {
+            let file = std::fs::File::open(&path)
+                .with_context(|| format!("Could not open KeyFile at {:?}", path))?;
+            let keyfile: KeyFile = serde_json::from_reader(file)
+                .with_context(|| format!("KeyFile at {:?} is invalid", path))?;
+
+            decode_master_key(password, keyfile)
         }
+        None => {
+            let keys_path = Path::new(KEYS_DIR);
+            let entries = backend.read_dir(&keys_path)?;
 
-        // Load keyfile
-        let keyfile_str = backend.read(&path)?;
-        let keyfile_str = SecureStorage::decompress(&keyfile_str)?;
-        let keyfile: KeyFile = serde_json::from_slice(keyfile_str.as_slice())?;
+            for path in entries {
+                // The keys directory should only contain files. We can ignore anything
+                // that is not a file, but show a warning anyway.
+                if !backend.is_file(&path) {
+                    ui::cli::log_warning(&format!(
+                        "Extraneous item \'{}\' in keys directory is not a file",
+                        path.display()
+                    ));
+                    continue;
+                }
 
-        // Encode salt and key in base64
-        let salt = base64::engine::general_purpose::STANDARD.decode(keyfile.salt)?;
-        let encrypted_key =
-            base64::engine::general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+                // Load keyfile
+                let keyfile_str = backend.read(&path)?;
+                let keyfile: KeyFile = match serde_json::from_slice(keyfile_str.as_slice()) {
+                    Ok(kf) => kf,
+                    Err(e) => {
+                        ui::cli::log_warning(&format!(
+                            "Failed to parse keyfile at {}: {}",
+                            path.display(),
+                            e
+                        ));
+                        continue;
+                    }
+                };
 
-        let intermediate_key = SecureStorage::derive_key(&password, &salt);
-        if let Ok(key) = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key) {
-            return Ok(key);
+                if let Ok(master_key) = decode_master_key(password.clone(), keyfile) {
+                    return Ok(master_key);
+                }
+            }
+
+            Err(anyhow::anyhow!(
+                "No valid KeyFile found for the provided password in the keys directory."
+            )
+            .into())
         }
     }
+}
 
-    bail!("Could not retrieve key")
+fn decode_master_key(password: String, keyfile: KeyFile) -> Result<Vec<u8>> {
+    // Decode salt and key from base64
+    let salt = base64::engine::general_purpose::STANDARD.decode(keyfile.salt)?;
+    let encrypted_key = base64::engine::general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
+
+    let intermediate_key = SecureStorage::derive_key(&password, &salt);
+    SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)
+        .with_context(|| "Could not retrieve master key from this keyfile")
 }
 
 #[cfg(test)]
@@ -235,14 +280,7 @@ mod test {
 
         init(backend.to_owned(), String::from("mapachito"))?;
 
-        let key = retrieve_key(String::from("mapachito"), backend.clone())?;
-        let secure_storage = Arc::new(
-            SecureStorage::build()
-                .with_key(key)
-                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
-        );
-
-        let _ = open(backend, secure_storage.clone())?;
+        let _ = try_open(String::from("mapachito"), None, backend)?;
 
         Ok(())
     }

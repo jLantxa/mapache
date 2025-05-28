@@ -23,9 +23,7 @@ use clap::{ArgGroup, Parser};
 
 use crate::backend::{make_dry_backend, new_backend_with_prompt};
 use crate::global::{FileType, ID};
-use crate::repository::RepositoryBackend;
 use crate::repository::snapshot::Snapshot;
-use crate::repository::storage::SecureStorage;
 use crate::{repository, ui, utils};
 
 use super::GlobalArgs;
@@ -91,14 +89,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let key = repository::retrieve_key(repo_password, backend.clone())?;
-    let secure_storage = Arc::new(
-        SecureStorage::build()
-            .with_key(key)
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
-    );
-
-    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::open(backend, secure_storage)?);
+    let repo = Arc::new(repository::try_open(
+        repo_password,
+        global.key.as_ref(),
+        backend,
+    )?);
     let snapshots_sorted = repo.load_all_snapshots_sorted()?;
 
     let mut ids_to_keep: HashSet<ID> = HashSet::new();

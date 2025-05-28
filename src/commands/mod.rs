@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use clap::{Parser, Subcommand};
 
 pub mod cmd_cat;
@@ -69,6 +69,10 @@ pub struct GlobalArgs {
     /// Repository path
     #[clap(short, long, value_parser)]
     pub repo: String,
+
+    /// Path to a KeyFile
+    #[clap(long, value_parser)]
+    pub key: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -25,7 +25,7 @@ use chrono::Utc;
 use crate::{
     backend::StorageBackend,
     global::{self, FileType, ObjectType},
-    repository::{self, packer::Packer, storage::SecureStorage},
+    repository::{self, generate_new_master_key, packer::Packer, storage::SecureStorage},
     ui,
 };
 
@@ -95,20 +95,13 @@ impl RepositoryBackend for Repository {
         backend.create_dir(&index_path)?;
 
         // Create new key
-        let (key, keyfile) =
-            repository::generate_key(&password).with_context(|| "Could not generate key")?;
-        let keyfile_json = serde_json::to_string_pretty(&key)?;
+        let master_key = generate_new_master_key();
+        let keyfile = repository::generate_key_file(&password, master_key.clone())
+            .with_context(|| "Could not generate key")?;
+        let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
         let keyfile_id = ID::from_content(&keyfile_json);
         let keyfile_path = &keys_path.join(&keyfile_id.to_hex());
-        backend.write(
-            &keyfile_path,
-            &SecureStorage::compress(
-                serde_json::to_string_pretty(&keyfile)
-                    .with_context(|| "")?
-                    .as_bytes(),
-                zstd::DEFAULT_COMPRESSION_LEVEL, // Compress the key with whatever compression level
-            )?,
-        )?;
+        backend.write(&keyfile_path, keyfile_json.as_bytes())?;
 
         let repo_id = ID::new_random();
 
@@ -120,7 +113,7 @@ impl RepositoryBackend for Repository {
         };
 
         let secure_storage: SecureStorage = SecureStorage::build()
-            .with_key(key)
+            .with_key(master_key)
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
         let manifest_path = Path::new("manifest");
@@ -507,7 +500,7 @@ mod test {
 
     use crate::{
         backend::localfs::LocalFS,
-        repository::{self, retrieve_key},
+        repository::{self, retrieve_master_key},
     };
 
     use super::*;
@@ -522,7 +515,7 @@ mod test {
 
         Repository::init(backend.to_owned(), String::from("mapachito"))?;
 
-        let key = retrieve_key(String::from("mapachito"), backend.clone())?;
+        let key = retrieve_master_key(String::from("mapachito"), None, backend.clone())?;
         let secure_storage = Arc::new(
             SecureStorage::build()
                 .with_key(key)
@@ -536,8 +529,9 @@ mod test {
 
     /// Test generation of master keys
     #[test]
-    fn test_generate_key() -> Result<()> {
-        let (key, keyfile) = repository::generate_key("mapachito")?;
+    fn test_generate_key_file() -> Result<()> {
+        let master_key = generate_new_master_key();
+        let keyfile = repository::generate_key_file("mapachito", master_key.clone())?;
 
         let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
@@ -545,7 +539,7 @@ mod test {
         let intermediate_key = SecureStorage::derive_key("mapachito", &salt);
         let decrypted_key = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)?;
 
-        assert_eq!(key, decrypted_key);
+        assert_eq!(master_key, decrypted_key.as_slice());
 
         Ok(())
     }

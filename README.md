@@ -14,7 +14,7 @@ A <u>**work-in-progress**</u> de-duplicating incremental **backup** tool written
 
 The language of choice is `Rust`. I didn't choose `Rust` for any particular reason other than: it is a language I'm learning now and it seemed sufficiently safe, performant and ergonomic to use it.
 
-`[[backup]]` is inspired in its design by other similar tools like `git` `BorgBackup`, and `restic`. It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking. Each 'backup' is saved as a `Snapshot`. `Snapshots` are independent from each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
+`[[backup]]` is inspired in its design by other similar tools like `git`, `BorgBackup` and `restic`. It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking. Each 'backup' is saved as a `Snapshot`. `Snapshots` are independent from each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
 
 To provide data protection, all data stored in the repository is encrypted and authenticated using 256-bit AES-GCM, with Argon2 for key derivation.
 

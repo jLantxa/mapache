@@ -29,9 +29,9 @@ use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
     global::{self, ID},
-    repository::{self, RepositoryBackend, streamers::FSNodeStreamer},
-    ui,
+    repository::{self, RepositoryBackend, snapshot::Snapshot, streamers::FSNodeStreamer},
     ui::{
+        self,
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },
@@ -193,16 +193,18 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         parent_snapshot,
         progress_reporter.clone(),
     )?;
-    new_snapshot.size = *progress_reporter.processed_bytes.lock().unwrap();
+
+    // Finalize reporter. This removes the progress bars.
+    progress_reporter.finalize();
+
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
     }
-    let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) =
+    let (snapshot_id, _snapshot_raw_size, _snapshot_encoded_size) =
         repo.save_snapshot(&new_snapshot)?;
-    progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);
 
     // Final report
-    show_final_report(&snapshot_id, &progress_reporter, args);
+    show_final_report(&snapshot_id, &new_snapshot, args);
 
     ui::cli::log!(
         "Finished in {}",
@@ -215,11 +217,9 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 fn show_final_report(
     snapshot_id: &ID,
     // The type changes here!
-    progress_reporter: &SnapshotProgressReporter,
+    snapshot: &Snapshot,
     args: &CmdArgs,
 ) {
-    progress_reporter.finalize();
-
     ui::cli::log!("{}", "Changes since parent snapshot".bold());
     ui::cli::log!();
 
@@ -238,37 +238,21 @@ fn show_final_report(
         "unmodiffied".bold().to_string(),
     ]);
 
-    // Lock individual mutexes for each counter (still needed)
-    let new_files = progress_reporter.new_files.lock().unwrap();
-    let changed_files = progress_reporter.changed_files.lock().unwrap();
-    let deleted_files = progress_reporter.deleted_files.lock().unwrap();
-    let unchanged_files = progress_reporter.unchanged_files.lock().unwrap();
-
-    let new_dirs = progress_reporter.new_dirs.lock().unwrap();
-    let changed_dirs = progress_reporter.changed_dirs.lock().unwrap();
-    let deleted_dirs = progress_reporter.deleted_dirs.lock().unwrap();
-    let unchanged_dirs = progress_reporter.unchanged_dirs.lock().unwrap();
-
-    let raw_bytes = progress_reporter.raw_bytes.lock().unwrap();
-    let encoded_bytes = progress_reporter.encoded_bytes.lock().unwrap();
-    let meta_raw_bytes = progress_reporter.meta_raw_bytes.lock().unwrap();
-    let meta_encoded_bytes = progress_reporter.meta_encoded_bytes.lock().unwrap();
-    let total_raw_bytes = *raw_bytes + *meta_raw_bytes;
-    let total_encoded_bytes = *encoded_bytes + *meta_encoded_bytes;
+    let summary = &snapshot.summary;
 
     table.add_row(vec![
         "Files".bold().to_string(),
-        new_files.to_string(),
-        changed_files.to_string(),
-        deleted_files.to_string(),
-        unchanged_files.to_string(),
+        summary.new_files.to_string(),
+        summary.changed_files.to_string(),
+        summary.deleted_files.to_string(),
+        summary.unchanged_files.to_string(),
     ]);
     table.add_row(vec![
         "Dirs".bold().to_string(),
-        new_dirs.to_string(),
-        changed_dirs.to_string(),
-        deleted_dirs.to_string(),
-        unchanged_dirs.to_string(),
+        summary.new_dirs.to_string(),
+        summary.changed_dirs.to_string(),
+        summary.deleted_dirs.to_string(),
+        summary.unchanged_dirs.to_string(),
     ]);
     table.print();
 
@@ -297,18 +281,28 @@ fn show_final_report(
     ]);
     data_table.add_row(vec![
         "Data".bold().to_string(),
-        utils::format_size(*raw_bytes).yellow().to_string(),
-        utils::format_size(*encoded_bytes).green().to_string(),
+        utils::format_size(summary.raw_bytes).yellow().to_string(),
+        utils::format_size(summary.encoded_bytes)
+            .green()
+            .to_string(),
     ]);
     data_table.add_row(vec![
         "Metadata".bold().to_string(),
-        utils::format_size(*meta_raw_bytes).yellow().to_string(),
-        utils::format_size(*meta_encoded_bytes).green().to_string(),
+        utils::format_size(summary.meta_raw_bytes)
+            .yellow()
+            .to_string(),
+        utils::format_size(summary.meta_encoded_bytes)
+            .green()
+            .to_string(),
     ]);
     data_table.add_row(vec![
         "Total".bold().cyan().to_string(),
-        utils::format_size(total_raw_bytes).yellow().to_string(),
-        utils::format_size(total_encoded_bytes).green().to_string(),
+        utils::format_size(summary.total_raw_bytes)
+            .yellow()
+            .to_string(),
+        utils::format_size(summary.total_encoded_bytes)
+            .green()
+            .to_string(),
     ]);
     data_table.print();
 

@@ -65,7 +65,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use chrono::Utc;
+use chrono::Local;
 
 use crate::{
     global::ID,
@@ -273,12 +273,12 @@ impl Archiver {
             // snapshot with the root tree id.
             match final_root_tree_id {
                 Some(tree_id) => Ok(Snapshot {
-                    timestamp: Utc::now(),
+                    timestamp: Local::now(),
                     tree: tree_id.clone(),
-                    size: 0,
                     root: snapshot_root_path.clone(),
                     paths: absolute_source_paths.clone(),
                     description: None,
+                    summary: progress_reporter.get_summary(),
                 }),
                 None => Err(anyhow!("Failed to finalize snapshot")),
             }

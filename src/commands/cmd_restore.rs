@@ -119,7 +119,11 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                 }
 
-                restorer::restore_node_to_path(repo.as_ref(), &stream_node.node, &restore_path)?
+                restorer::node_restorer::restore_node_to_path(
+                    repo.as_ref(),
+                    &stream_node.node,
+                    &restore_path,
+                )?
             }
             Err(_) => {
                 bail!("Failed to read snapshot tree node");

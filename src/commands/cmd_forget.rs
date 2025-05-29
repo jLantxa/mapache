@@ -276,7 +276,7 @@ pub fn apply_retention_rules(
 mod test {
     use std::path::PathBuf;
 
-    use chrono::{NaiveDate, TimeZone, Utc};
+    use chrono::{NaiveDate, TimeZone};
 
     use super::*;
 
@@ -297,100 +297,115 @@ mod test {
             ID::from_hex("0000000000000000000000000000000000000000000000000000000000000000")
                 .unwrap(),
             Snapshot {
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(21),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(21),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000000",
                 )
                 .unwrap(),
-                size: 100,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
             ID::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap(),
             Snapshot {
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(1),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(1),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000001",
                 )
                 .unwrap(),
-                size: 110,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
             ID::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
                 .unwrap(),
             Snapshot {
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(2),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(2),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000002",
                 )
                 .unwrap(),
-                size: 120,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
             ID::from_hex("0000000000000000000000000000000000000000000000000000000000000003")
                 .unwrap(),
             Snapshot {
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(3),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(3),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000003",
                 )
                 .unwrap(),
-                size: 130,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
             ID::from_hex("0000000000000000000000000000000000000000000000000000000000000004")
                 .unwrap(),
             Snapshot {
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(4),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(4),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000004",
                 )
                 .unwrap(),
-                size: 140,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
 
@@ -400,20 +415,23 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // End of Week 1
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(7),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(7),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000005",
                 )
                 .unwrap(),
-                size: 150,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
@@ -421,20 +439,23 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // End of Week 2
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(14),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(14),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000006",
                 )
                 .unwrap(),
-                size: 160,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
@@ -442,20 +463,23 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // End of Week 3
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
-                ) + Duration::days(21),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    + Duration::days(21),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000007",
                 )
                 .unwrap(),
-                size: 170,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
 
@@ -465,20 +489,22 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // End of Jan
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 1, 28)
-                        .unwrap()
-                        .and_hms_opt(23, 59, 59)
-                        .unwrap(),
-                ),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 1, 28)
+                            .unwrap()
+                            .and_hms_opt(23, 59, 59)
+                            .unwrap(),
+                    )
+                    .unwrap(),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000008",
                 )
                 .unwrap(),
-                size: 180,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
@@ -486,20 +512,22 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // End of Feb
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 2, 28)
-                        .unwrap()
-                        .and_hms_opt(23, 59, 0)
-                        .unwrap(),
-                ),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 2, 28)
+                            .unwrap()
+                            .and_hms_opt(23, 59, 0)
+                            .unwrap(),
+                    )
+                    .unwrap(),
                 tree: ID::from_hex(
                     "0000000000000000000000000000000000000000000000000000000000000009",
                 )
                 .unwrap(),
-                size: 190,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
 
@@ -509,20 +537,22 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // End of 2023
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2023, 12, 31)
-                        .unwrap()
-                        .and_hms_opt(23, 59, 0)
-                        .unwrap(),
-                ),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2023, 12, 31)
+                            .unwrap()
+                            .and_hms_opt(23, 59, 0)
+                            .unwrap(),
+                    )
+                    .unwrap(),
                 tree: ID::from_hex(
                     "000000000000000000000000000000000000000000000000000000000000000A",
                 )
                 .unwrap(),
-                size: 200,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
@@ -530,20 +560,22 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // End of 2024
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2024, 12, 31)
-                        .unwrap()
-                        .and_hms_opt(23, 59, 0)
-                        .unwrap(),
-                ),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2024, 12, 31)
+                            .unwrap()
+                            .and_hms_opt(23, 59, 0)
+                            .unwrap(),
+                    )
+                    .unwrap(),
                 tree: ID::from_hex(
                     "000000000000000000000000000000000000000000000000000000000000000B",
                 )
                 .unwrap(),
-                size: 210,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
         snapshots.push((
@@ -551,20 +583,22 @@ mod test {
                 .unwrap(),
             Snapshot {
                 // Current time (for testing KeepWithin)
-                timestamp: Utc.from_utc_datetime(
-                    &NaiveDate::from_ymd_opt(2025, 5, 25)
-                        .unwrap()
-                        .and_hms_opt(20, 29, 46)
-                        .unwrap(),
-                ),
+                timestamp: Local
+                    .from_local_datetime(
+                        &NaiveDate::from_ymd_opt(2025, 5, 25)
+                            .unwrap()
+                            .and_hms_opt(20, 29, 46)
+                            .unwrap(),
+                    )
+                    .unwrap(),
                 tree: ID::from_hex(
                     "000000000000000000000000000000000000000000000000000000000000000C",
                 )
                 .unwrap(),
-                size: 220,
                 root: PathBuf::from("/"),
                 paths: vec![],
                 description: None,
+                summary: Default::default(),
             },
         ));
 

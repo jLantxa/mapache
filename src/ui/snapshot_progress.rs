@@ -22,33 +22,29 @@ use std::{
     time::Duration,
 };
 
-use crate::utils;
+use crate::{repository::snapshot::SnapshotSummary, utils};
 
 pub struct SnapshotProgressReporter {
-    // Expected
-    pub expected_items: u64, // Number of elements expected to be processed (files and directories)
-    pub expected_size: u64,  // Bytes expected to be processed (only data)
-
     // Processed items
-    pub processed_items_count: Arc<Mutex<u64>>, // Number of files processed (written or not)
-    pub processed_bytes: Arc<Mutex<u64>>,       // Bytes processed (only data)
-    pub raw_bytes: Arc<Mutex<u64>>,             // Bytes 'written' before encoding
-    pub encoded_bytes: Arc<Mutex<u64>>,         // Bytes written after encoding
+    processed_items_count: Arc<Mutex<u64>>, // Number of files processed (written or not)
+    processed_bytes: Arc<Mutex<u64>>,       // Bytes processed (only data)
+    raw_bytes: Arc<Mutex<u64>>,             // Bytes 'written' before encoding
+    encoded_bytes: Arc<Mutex<u64>>,         // Bytes written after encoding
 
     // Metadata
-    pub meta_raw_bytes: Arc<Mutex<u64>>, // Metadata bytes 'written' before encoding
-    pub meta_encoded_bytes: Arc<Mutex<u64>>, //Metadata bytes written after encoding
+    meta_raw_bytes: Arc<Mutex<u64>>, // Metadata bytes 'written' before encoding
+    meta_encoded_bytes: Arc<Mutex<u64>>, //Metadata bytes written after encoding
 
-    pub new_files: Arc<Mutex<u32>>,
-    pub changed_files: Arc<Mutex<u32>>,
-    pub unchanged_files: Arc<Mutex<u32>>,
-    pub deleted_files: Arc<Mutex<u32>>,
-    pub new_dirs: Arc<Mutex<u32>>,
-    pub changed_dirs: Arc<Mutex<u32>>,
-    pub unchanged_dirs: Arc<Mutex<u32>>,
-    pub deleted_dirs: Arc<Mutex<u32>>,
+    new_files: Arc<Mutex<u32>>,
+    changed_files: Arc<Mutex<u32>>,
+    unchanged_files: Arc<Mutex<u32>>,
+    deleted_files: Arc<Mutex<u32>>,
+    new_dirs: Arc<Mutex<u32>>,
+    changed_dirs: Arc<Mutex<u32>>,
+    unchanged_dirs: Arc<Mutex<u32>>,
+    deleted_dirs: Arc<Mutex<u32>>,
 
-    pub processing_items: Arc<Mutex<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
+    processing_items: Arc<Mutex<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
     #[allow(dead_code)]
     mp: MultiProgress,
@@ -129,8 +125,6 @@ impl SnapshotProgressReporter {
         }
 
         Self {
-            expected_items,
-            expected_size,
             processed_items_count: processed_items_count_arc,
             processed_bytes: processed_bytes_arc,
             raw_bytes: raw_bytes_arc,
@@ -236,5 +230,31 @@ impl SnapshotProgressReporter {
     #[inline]
     pub fn unchanged_dir(&self) {
         *self.unchanged_dirs.lock().unwrap() += 1;
+    }
+
+    pub fn get_summary(&self) -> SnapshotSummary {
+        let total_raw_bytes =
+            *self.raw_bytes.lock().unwrap() + *self.meta_raw_bytes.lock().unwrap();
+        let total_encoded_bytes =
+            *self.encoded_bytes.lock().unwrap() + *self.meta_encoded_bytes.lock().unwrap();
+
+        SnapshotSummary {
+            processed_items_count: *self.processed_items_count.lock().unwrap(),
+            processed_bytes: *self.processed_bytes.lock().unwrap(),
+            raw_bytes: *self.raw_bytes.lock().unwrap(),
+            encoded_bytes: *self.encoded_bytes.lock().unwrap(),
+            meta_raw_bytes: *self.meta_raw_bytes.lock().unwrap(),
+            meta_encoded_bytes: *self.meta_encoded_bytes.lock().unwrap(),
+            total_raw_bytes: total_raw_bytes,
+            total_encoded_bytes: total_encoded_bytes,
+            new_files: *self.new_files.lock().unwrap(),
+            changed_files: *self.changed_files.lock().unwrap(),
+            unchanged_files: *self.unchanged_files.lock().unwrap(),
+            deleted_files: *self.deleted_files.lock().unwrap(),
+            new_dirs: *self.new_dirs.lock().unwrap(),
+            changed_dirs: *self.changed_dirs.lock().unwrap(),
+            unchanged_dirs: *self.unchanged_dirs.lock().unwrap(),
+            deleted_dirs: *self.deleted_dirs.lock().unwrap(),
+        }
     }
 }

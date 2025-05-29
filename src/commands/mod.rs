@@ -29,7 +29,7 @@ pub mod cmd_snapshot;
 // CLI arguments
 #[derive(Parser, Debug)]
 #[clap(
-    version = concat!("v", env!("CARGO_PKG_VERSION")), // Version from crate metadata
+    version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
     about = "[backup] is a de-duplicating, incremental backup tool"
 )]
 pub struct Cli {

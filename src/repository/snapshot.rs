@@ -16,21 +16,18 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use super::ID;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
-    /// The snapshot timestamp is the UTC time at which the snapshot was created
-    pub timestamp: DateTime<Utc>,
+    /// The snapshot timestamp is the Local time at which the snapshot was created
+    pub timestamp: DateTime<Local>,
 
     /// Hash ID for the tree object root.
     pub tree: ID,
-
-    /// Snapshot size in bytes
-    pub size: u64,
 
     /// Snapshot root path
     pub root: PathBuf,
@@ -40,4 +37,30 @@ pub struct Snapshot {
 
     /// Description of the snapshot.
     pub description: Option<String>,
+
+    /// Summary of the Snapshot.
+    pub summary: SnapshotSummary,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct SnapshotSummary {
+    pub processed_items_count: u64, // Number of files processed
+    pub processed_bytes: u64,       // Bytes processed (only data)
+
+    pub raw_bytes: u64,           // Bytes 'written' before encoding
+    pub encoded_bytes: u64,       // Bytes written after encoding
+    pub meta_raw_bytes: u64,      // Metadata bytes 'written' before encoding
+    pub meta_encoded_bytes: u64,  //Metadata bytes written after encoding
+    pub total_raw_bytes: u64,     //Total raw bytes
+    pub total_encoded_bytes: u64, // Total bytes after encoding
+
+    pub new_files: u32,
+    pub changed_files: u32,
+    pub unchanged_files: u32,
+    pub deleted_files: u32,
+
+    pub new_dirs: u32,
+    pub changed_dirs: u32,
+    pub unchanged_dirs: u32,
+    pub deleted_dirs: u32,
 }

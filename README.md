@@ -2,15 +2,18 @@
 
 A <u>**work-in-progress**</u> de-duplicating incremental **backup** tool written in Rust.
 
+**Note:**
+This software is still a work in progress. The format of the repository is unstable and subject to change, which could render different versions incompatible. It has not been thoroughly tested. For the time being, you should not use this tool for anything important.
+
 ## Table of Contents
 
 - [About](#about)
 - [Roadmap](#roadmap)
 
 ## About
-`[[backup]]` *-placeholder name for the tool (I don't have a name yet)-* is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to backup your data to a local file system or a remote machine. This project was born because the previous backup tool that I used stopped fulfilling my needs, so I though I'd make my own and also learn something in the process.
+`[[backup]]` *-placeholder name for the tool (I don't have a name yet)-* is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to backup your data to a local file system or a remote machine. I started this project because the previous backup tool I was using no longer met my needs. I decided to create my own tool and learn something in the process.
 
-`[[backup]]` is still in an early development stage. As such, it is still not functional (only for testing and development), it is missing all sorts of features, it is unstable, etc. But more importantly, it is a personal project and a tool I'm making to cover my own backup needs.
+`[[backup]]` is still in an early development stage. As such, it is still barely functional, it is missing a lot of features, it is unstable, etc. But more importantly, it is a personal project and a tool I'm making to cover my own backup needs.
 
 The language of choice is `Rust`. I didn't choose `Rust` for any particular reason other than: it is a language I'm learning now and it seemed sufficiently safe, performant and ergonomic to use it.
 
@@ -38,7 +41,7 @@ The development of `[[backup]]` is guided by the following core principles:
 The first *`Snapshots`* milestone consists of implementing the core architecture and a minimal set of functional features. This includes:
 
 - [x] Creating `snapshots` (`Archiver` pipeline).
-- [ ] Restoring `snapshots` (`Restorer` pipeline).
+- [x] Restoring `snapshots` (`Restorer` pipeline).
 - [x] Listing `snapshots`.
 - [x] Local and SFTP backends.
 

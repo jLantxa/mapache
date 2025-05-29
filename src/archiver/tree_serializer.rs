@@ -26,7 +26,8 @@ use crate::{
     global::ID,
     repository::{
         RepositoryBackend,
-        tree::{Node, NodeType, StreamNode, Tree},
+        streamers::StreamNode,
+        tree::{Node, NodeType, Tree},
     },
     ui::snapshot_progress::SnapshotProgressReporter,
     utils,

@@ -20,6 +20,7 @@ pub mod packer;
 pub mod repository_v1;
 pub mod snapshot;
 pub mod storage;
+pub mod streamers;
 pub mod tree;
 
 use std::path::{Path, PathBuf};

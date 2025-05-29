@@ -19,8 +19,8 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 use anyhow::{Context, Result};
 
 use crate::repository::{
-    RepositoryBackend,
     tree::{Node, NodeType},
+    RepositoryBackend,
 };
 
 pub fn restore_node(repo: &dyn RepositoryBackend, node: &Node, dst_path: &Path) -> Result<()> {
@@ -37,14 +37,14 @@ pub fn restore_node(repo: &dyn RepositoryBackend, node: &Node, dst_path: &Path) 
                 })?;
 
             let chunks = node
-                .contents
+                .blobs
                 .as_ref()
                 .expect("File Node must have contents (even if empty)");
 
             for (index, chunk_hash) in chunks.iter().enumerate() {
                 let chunk_data = repo.load_blob(&chunk_hash).with_context(|| {
                     format!(
-                        "Could not load chunk #{} ({}) for restoring file '{}'",
+                        "Could not load block #{} ({}) for restoring file '{}'",
                         index + 1,
                         chunk_hash,
                         dst_path.display()
@@ -53,7 +53,7 @@ pub fn restore_node(repo: &dyn RepositoryBackend, node: &Node, dst_path: &Path) 
 
                 dst_file.write_all(&chunk_data).with_context(|| {
                     format!(
-                        "Could not restore chunk #{} ({}) to file '{}'",
+                        "Could not restore block #{} ({}) to file '{}'",
                         index + 1,
                         chunk_hash,
                         dst_path.display()

@@ -29,7 +29,7 @@ use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
     global::{self, ID},
-    repository::{self, RepositoryBackend, tree::FSNodeStreamer},
+    repository::{self, RepositoryBackend, streamers::FSNodeStreamer},
     ui,
     ui::{
         snapshot_progress::SnapshotProgressReporter,

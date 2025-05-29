@@ -72,7 +72,9 @@ use crate::{
     repository::{
         RepositoryBackend,
         snapshot::Snapshot,
-        tree::{FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
+        streamers::{
+            FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode,
+        },
     },
     ui,
     ui::snapshot_progress::SnapshotProgressReporter,

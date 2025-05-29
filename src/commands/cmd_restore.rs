@@ -23,7 +23,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot},
     global::ID,
-    repository::{self, RepositoryBackend, tree::SerializedNodeStreamer},
+    repository::{self, RepositoryBackend, streamers::SerializedNodeStreamer},
     restorer, ui,
 };
 

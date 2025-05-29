@@ -21,7 +21,8 @@ use anyhow::{Context, Result};
 use crate::{
     repository::{
         RepositoryBackend,
-        tree::{NodeDiff, NodeType, StreamNode},
+        streamers::{NodeDiff, StreamNode},
+        tree::NodeType,
     },
     ui::snapshot_progress::SnapshotProgressReporter,
 };
@@ -88,7 +89,7 @@ pub(crate) fn process_item(
                     &stream_node_info.node,
                     progress_reporter.clone(),
                 )?;
-                stream_node_info.node.contents = Some(blobs_ids);
+                stream_node_info.node.blobs = Some(blobs_ids);
             }
 
             // Notify reporter based on diff type and node type.

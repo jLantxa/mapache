@@ -104,7 +104,7 @@ impl Iterator for FSNodeStreamer {
             return Some(Ok((
                 path.clone(),
                 StreamNode {
-                    node: Node::from_path(path.clone()).unwrap(),
+                    node: Node::from_path(&path).unwrap(),
                     num_children,
                 },
             )));
@@ -113,7 +113,7 @@ impl Iterator for FSNodeStreamer {
         // Otherwise pop from the DFS stack as before
         let path = self.stack.pop()?;
         let result = (|| {
-            let node = Node::from_path(path.clone())?;
+            let node = Node::from_path(&path)?;
 
             let num_children = if node.is_dir() {
                 let children = Self::get_children_rev_sorted(&path)?;

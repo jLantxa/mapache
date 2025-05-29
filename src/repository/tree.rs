@@ -16,7 +16,7 @@
 
 use std::{
     fs::{self, Metadata as FsMetadata},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
@@ -156,7 +156,7 @@ impl Metadata {
 
 impl Node {
     /// Build a `Node` from any path on disk.
-    pub fn from_path(path: PathBuf) -> Result<Self> {
+    pub fn from_path(path: &Path) -> Result<Self> {
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())

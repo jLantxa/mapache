@@ -156,6 +156,7 @@ pub fn restore_node_to_path(
 
 /// Restores the metadata of a node to the specified destination path.
 fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
+    // mtime
     if let Some(modified_time) = node.metadata.modified_time {
         let dst_file = File::open(dst_path)?;
         let filetimes = FileTimes::new().set_modified(modified_time);
@@ -164,20 +165,22 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
             .with_context(|| format!("Could not set file times to path {:?}", dst_path))?;
     }
 
-    #[cfg(unix)]
-    if let Some(mode) = node.metadata.mode {
-        let permissions = Permissions::from_mode(mode);
-        if let Err(e) = std::fs::set_permissions(dst_path, permissions) {
-            bail!(
-                "Could not set permissions for '{}': {}",
-                dst_path.display(),
-                e.to_string()
-            );
-        }
-    }
-
+    // Unix metadata
     #[cfg(unix)]
     {
+        // mode
+        if let Some(mode) = node.metadata.mode {
+            let permissions = Permissions::from_mode(mode);
+            if let Err(e) = std::fs::set_permissions(dst_path, permissions) {
+                bail!(
+                    "Could not set permissions for '{}': {}",
+                    dst_path.display(),
+                    e.to_string()
+                );
+            }
+        }
+
+        // uid & gid
         let uid = node.metadata.owner_uid.map(|u| u as u32); // Option<u32>
         let gid = node.metadata.owner_gid.map(|g| g as u32); // Option<u32>
 
@@ -194,4 +197,39 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use std::time::SystemTime;
+
+    use chrono::{Duration, Local};
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn test_restore_mtime() -> Result<()> {
+        let temp_repo_dir = tempdir().expect("Could not create tmp dir");
+
+        let file_path = temp_repo_dir.path().join("file.txt");
+        let file = File::create_new(&file_path).expect("Could not open file");
+        std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
+        let node = Node::from_path(&file_path)?;
+
+        // Change mtime to 1 day before now
+        let prev_mtime: SystemTime = (Local::now() - Duration::days(1)).into();
+        let filetimes = FileTimes::new().set_modified(prev_mtime);
+        file.set_times(filetimes).expect("Expected to set an mtime");
+
+        restore_node_metadata(&node, &file_path)?;
+
+        assert_eq!(
+            node.metadata.modified_time.unwrap(),
+            file_path.symlink_metadata().unwrap().modified().unwrap()
+        );
+
+        Ok(())
+    }
 }

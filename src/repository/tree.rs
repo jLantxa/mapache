@@ -46,6 +46,7 @@ pub enum NodeType {
     Socket,
 }
 
+/// A node in the file system tree. This struct is serialized; keep field order stable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
@@ -214,32 +215,36 @@ impl Node {
         Ok(node)
     }
 
-    /// Convenience helpers.
     #[inline]
     pub fn is_dir(&self) -> bool {
         matches!(self.node_type, NodeType::Directory)
     }
+
     #[inline]
     pub fn is_file(&self) -> bool {
         matches!(self.node_type, NodeType::File)
     }
+
     #[inline]
     pub fn is_symlink(&self) -> bool {
         matches!(self.node_type, NodeType::Symlink)
     }
-    // You can add convenience helpers for the new types too
+
     #[inline]
     pub fn is_block_device(&self) -> bool {
         matches!(self.node_type, NodeType::BlockDevice)
     }
+
     #[inline]
     pub fn is_char_device(&self) -> bool {
         matches!(self.node_type, NodeType::CharDevice)
     }
+
     #[inline]
     pub fn is_fifo(&self) -> bool {
         matches!(self.node_type, NodeType::Fifo)
     }
+
     #[inline]
     pub fn is_socket(&self) -> bool {
         matches!(self.node_type, NodeType::Socket)
@@ -247,6 +252,7 @@ impl Node {
 }
 
 impl Tree {
+    /// Creates a new empty tree.
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
     }

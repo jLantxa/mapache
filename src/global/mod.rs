@@ -140,6 +140,7 @@ impl<'de> Deserialize<'de> for ID {
     }
 }
 
+/// Type of objects that can be stored in a repository.
 #[derive(Debug)]
 pub enum ObjectType {
     Data,

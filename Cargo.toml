@@ -17,6 +17,7 @@ crossbeam-channel = "0.5.15"
 dialoguer = "0.11.0"
 fastcdc = "3.2.1"
 indicatif = { version = "0.17.11", features = ["rayon"] }
+libc = "0.2.172"
 num_cpus = "1.16.0"
 rayon = "1.10.0"
 secrecy = "0.10.3"

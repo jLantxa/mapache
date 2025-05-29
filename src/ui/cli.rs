@@ -60,6 +60,7 @@ pub fn log_error(str: &str) {
     eprintln!("{}: {}", "Error".bold().red(), str);
 }
 
+/// Prints a separator line with a given character and count.
 pub fn print_separator(character: char, count: usize) {
     let repeated_string: String = std::iter::repeat(character).take(count).collect();
     println!("{}", repeated_string);

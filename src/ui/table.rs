@@ -38,6 +38,7 @@ fn visible_string_len(s: &str) -> usize {
     len
 }
 
+/// A simple enum to represent column alignments.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Alignment {
     Left,
@@ -78,6 +79,7 @@ impl Table {
         }
     }
 
+    /// Adds a header to the table.
     pub fn set_headers(&mut self, headers: Vec<String>) {
         self.headers = headers;
         self.calculate_column_widths();
@@ -86,6 +88,7 @@ impl Table {
             .resize(self.headers.len(), Alignment::Left);
     }
 
+    /// Adds a row to the table.
     pub fn add_row(&mut self, row: Vec<String>) {
         let row_len = row.len();
         self.data.push(row);
@@ -96,16 +99,19 @@ impl Table {
             .resize(current_max_cols, Alignment::Left);
     }
 
+    /// Sets the padding for all cells in the table.
     pub fn set_padding(&mut self, padding: usize) {
         self.padding = padding;
         self.calculate_column_widths();
     }
 
+    /// Sets the column alignments for all columns.
     pub fn set_column_alignments(&mut self, alignments: Vec<Alignment>) {
         self.column_alignments = alignments;
         self.calculate_column_widths();
     }
 
+    /// Sets the alignment for a specific column.
     pub fn set_column_alignment(&mut self, column_index: usize, alignment: Alignment) {
         if column_index >= self.column_alignments.len() {
             self.column_alignments
@@ -263,6 +269,7 @@ impl Table {
         println!("{}", self.render());
     }
 
+    /// Draws a horizontal line based on the current column widths and padding.
     fn draw_horizontal_line(&self) -> String {
         let mut line = String::new();
         let total_content_width: usize = self

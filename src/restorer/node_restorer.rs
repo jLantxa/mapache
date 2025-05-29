@@ -15,17 +15,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    ffi::CString,
     fs::{File, FileTimes, OpenOptions, Permissions},
     io::Write,
     path::Path,
 };
 
 #[cfg(unix)]
-use {
-    libc::{chown, gid_t, uid_t},
-    std::os::unix::fs::{PermissionsExt, symlink},
-};
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 use anyhow::{Context, Result, bail};
 
@@ -182,32 +178,16 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
 
     #[cfg(unix)]
     {
-        // Use -1 (u32::MAX) for uid or gid if they are not specified in the node metadata,
-        // which tells `chown` to not change that specific ID.
-        let uid = node.metadata.owner_uid.map_or(u32::MAX, |u| u as uid_t);
-        let gid = node.metadata.owner_gid.map_or(u32::MAX, |g| g as gid_t);
+        let uid = node.metadata.owner_uid.map(|u| u as u32); // Option<u32>
+        let gid = node.metadata.owner_gid.map(|g| g as u32); // Option<u32>
 
-        // Only attempt chown if either uid or gid is explicitly specified (not -1)
-        if uid != u32::MAX || gid != u32::MAX {
-            let path_cstr = CString::new(
-                dst_path
-                    .to_str()
-                    .context("Invalid path for CString conversion for chown")?,
-            )?;
-
-            let ret = unsafe {
-                // SAFETY: `chown` is a C function. The path_cstr is null-terminated and valid.
-                // The `uid` and `gid` are correctly cast from u32 to uid_t/gid_t.
-                // The return value needs to be checked for errors.
-                chown(path_cstr.as_ptr(), uid, gid)
-            };
-
-            if ret != 0 {
-                // Failed ownership changes are often critical for system integrity.
+        // Only attempt chown if either uid or gid is explicitly specified
+        if uid.is_some() || gid.is_some() {
+            if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
                 bail!(
                     "Could not set owner/group for '{}': {}. This operation often requires elevated privileges (e.g., root).",
                     dst_path.display(),
-                    std::io::Error::last_os_error()
+                    e.to_string()
                 );
             }
         }

@@ -154,7 +154,6 @@ dependencies = [
  "dialoguer",
  "fastcdc",
  "indicatif",
- "libc",
  "num_cpus",
  "rayon",
  "secrecy",

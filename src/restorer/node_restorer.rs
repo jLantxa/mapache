@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    fs::{File, FileTimes, OpenOptions, Permissions},
+    fs::{self, File, FileTimes, OpenOptions, Permissions},
     io::Write,
     path::Path,
 };
@@ -41,6 +41,15 @@ pub fn restore_node_to_path(
 ) -> Result<()> {
     match node.node_type {
         NodeType::File => {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Could not create parent directories for file '{}'",
+                        dst_path.display()
+                    )
+                })?;
+            }
+
             let mut dst_file = OpenOptions::new()
                 .create(true)
                 .truncate(true)
@@ -79,6 +88,15 @@ pub fn restore_node_to_path(
         }
 
         NodeType::Directory => {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Could not create parent directories for symlink '{}'",
+                        dst_path.display()
+                    )
+                })?;
+            }
+
             std::fs::create_dir_all(dst_path)?;
             restore_node_metadata(node, dst_path)?;
         }

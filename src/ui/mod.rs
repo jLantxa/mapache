@@ -15,5 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod cli;
+pub mod restore_progress;
 pub mod snapshot_progress;
 pub mod table;

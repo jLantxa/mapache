@@ -14,25 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, ValueEnum};
+use anyhow::{Context, Result};
+use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot},
     global::ID,
-    repository::{self, RepositoryBackend, streamers::SerializedNodeStreamer},
-    restorer, ui,
+    repository::{self, RepositoryBackend},
+    restorer::{Resolution, Restorer},
+    ui::{self, cli, restore_progress::RestoreProgressReporter},
+    utils,
 };
-
-#[derive(Debug, Clone, PartialEq, ValueEnum)]
-pub enum Resolution {
-    Skip,
-    Overwrite,
-    Fail,
-}
 
 impl std::fmt::Display for Resolution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -97,39 +92,29 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
     .with_context(|| "No snapshot was found")?;
 
-    let node_streamer =
-        SerializedNodeStreamer::new(repo.clone(), Some(snapshot.tree), PathBuf::new())?;
+    const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
+    let num_expected_items = snapshot.summary.processed_items_count;
+    let progress_reporter = Arc::new(RestoreProgressReporter::new(
+        num_expected_items,
+        NUM_SHOWN_PROCESSING_ITEMS,
+    ));
 
-    for node_res in node_streamer {
-        match node_res {
-            Ok((path, stream_node)) => {
-                let restore_path = args.target.join(path);
+    let start = Instant::now();
 
-                if restore_path.exists() {
-                    match args.resolution {
-                        Resolution::Skip => continue, // Skip restore
-                        Resolution::Overwrite => (),  // Continue with restore
-                        Resolution::Fail => {
-                            ui::cli::log_error(&format!(
-                                "Target \'{}\' already exists",
-                                restore_path.display()
-                            ));
-                            return Err(anyhow!("Failed to restore snapshot"));
-                        }
-                    }
-                }
+    Restorer::restore(
+        repo.clone(),
+        &snapshot,
+        &args.resolution,
+        &args.target,
+        progress_reporter.clone(),
+    )?;
 
-                restorer::node_restorer::restore_node_to_path(
-                    repo.as_ref(),
-                    &stream_node.node,
-                    &restore_path,
-                )?
-            }
-            Err(_) => {
-                bail!("Failed to read snapshot tree node");
-            }
-        }
-    }
+    progress_reporter.finalize();
+
+    cli::log!(
+        "Finished in {}",
+        utils::pretty_print_duration(start.elapsed())
+    );
 
     Ok(())
 }

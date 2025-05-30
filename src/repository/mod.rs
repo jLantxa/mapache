@@ -14,12 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod index;
+mod index;
 pub mod manifest;
-pub mod packer;
+mod pack_saver;
+mod packer;
 pub mod repository_v1;
 pub mod snapshot;
-pub mod storage;
+mod storage;
 pub mod streamers;
 pub mod tree;
 
@@ -37,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use snapshot::Snapshot;
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
-use crate::global::FileType;
+use crate::global::{FileType, SaveID};
 use crate::ui;
 use crate::{
     backend::StorageBackend, global::ID, global::ObjectType, repository::storage::SecureStorage,
@@ -53,19 +54,29 @@ pub trait RepositoryBackend: Sync + Send {
         Self: Sized;
 
     /// Open an existing repository from a directory
-    fn open(backend: Arc<dyn StorageBackend>, secure_storage: Arc<SecureStorage>) -> Result<Self>
+    fn open(
+        backend: Arc<dyn StorageBackend>,
+        secure_storage: Arc<SecureStorage>,
+    ) -> Result<Arc<Self>>
     where
         Self: Sized;
 
+    fn init_pack_saver(&self, concurrency: usize);
+
     /// Saves an object type to the repository
-    fn save_object(&self, data: Vec<u8>) -> Result<(ID, u64, u64)>;
+    fn save_object(&self, data: Vec<u8>, id: SaveID) -> Result<(ID, u64, u64)>;
 
     /// Loads an object file from the repository.
     fn load_object(&self, id: &ID) -> Result<Vec<u8>>;
 
     /// Saves a blob in the repository. This blob can be packed with other blobs in an object file.
     /// Returns a tuple (uncompressed size, encoded_size, object idfn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ID)>;
-    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(ID, u64, u64)>;
+    fn save_blob(
+        &self,
+        object_type: ObjectType,
+        data: Vec<u8>,
+        id: SaveID,
+    ) -> Result<(ID, u64, u64)>;
 
     /// Loads a blob from the repository.
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;
@@ -121,7 +132,7 @@ pub fn try_open(
     password: String,
     key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
-) -> Result<Box<dyn RepositoryBackend>> {
+) -> Result<Arc<dyn RepositoryBackend>> {
     if !backend.root_exists() {
         bail!("Could not open a repository. The path does not exist.");
     }
@@ -152,10 +163,10 @@ fn open_repository_with_version(
     version: RepoVersion,
     backend: Arc<dyn StorageBackend>,
     secure_storage: Arc<SecureStorage>,
-) -> Result<Box<dyn RepositoryBackend>> {
+) -> Result<Arc<dyn RepositoryBackend>> {
     if version == 1 {
         let repo_v1 = repository_v1::Repository::open(backend, secure_storage)?;
-        return Ok(Box::new(repo_v1));
+        return Ok(repo_v1);
     }
 
     bail!("Invalid repository version \'{}\'", version);

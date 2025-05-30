@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local};
@@ -89,11 +88,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo = Arc::new(repository::try_open(
-        repo_password,
-        global.key.as_ref(),
-        backend,
-    )?);
+    let repo = repository::try_open(repo_password, global.key.as_ref(), backend)?;
     let snapshots_sorted = repo.load_all_snapshots_sorted()?;
 
     let mut ids_to_keep: HashSet<ID> = HashSet::new();

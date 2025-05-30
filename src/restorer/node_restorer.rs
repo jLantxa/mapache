@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    fs::{self, File, FileTimes, OpenOptions, Permissions},
+    fs::{self, File, FileTimes, OpenOptions},
     io::Write,
     path::Path,
 };
@@ -23,7 +23,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::{
     repository::{

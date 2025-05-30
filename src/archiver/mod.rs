@@ -94,6 +94,7 @@ impl Archiver {
         absolute_source_paths: Vec<PathBuf>,
         snapshot_root_path: PathBuf,
         parent_snapshot: Option<Snapshot>,
+        (read_concurrency, write_concurrency): (usize, usize),
         progress_reporter: Arc<SnapshotProgressReporter>,
     ) -> Result<Snapshot> {
         // Extract parent snapshot tree id
@@ -110,10 +111,10 @@ impl Archiver {
         let previous_tree_streamer =
             SerializedNodeStreamer::new(repo.clone(), parent_tree_id, snapshot_root_path.clone())?;
 
-        let num_threads = std::cmp::max(1, num_cpus::get());
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
+            .num_threads(read_concurrency)
             .build()?;
+        repo.init_pack_saver(write_concurrency);
 
         // Channels
         let (diff_tx, diff_rx) = crossbeam_channel::bounded::<(
@@ -121,9 +122,9 @@ impl Archiver {
             Option<StreamNode>,
             Option<StreamNode>,
             NodeDiff,
-        )>(2 * num_threads);
+        )>(read_concurrency);
         let (process_item_tx, process_item_rx) =
-            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(2 * num_threads);
+            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(read_concurrency);
 
         let error_flag = Arc::new(AtomicBool::new(false));
 

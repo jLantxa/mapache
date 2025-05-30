@@ -278,7 +278,11 @@ impl Tree {
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_to_repo(&self, repo: &dyn RepositoryBackend) -> Result<(ID, u64, u64)> {
         let tree_json = serde_json::to_string(self)?.as_bytes().to_vec();
-        let (id, raw_size, encoded_size) = repo.save_blob(ObjectType::Tree, tree_json)?;
+        let (id, raw_size, encoded_size) = repo.save_blob(
+            ObjectType::Tree,
+            tree_json,
+            crate::global::SaveID::CalculateID,
+        )?;
         Ok((id, raw_size, encoded_size))
     }
 

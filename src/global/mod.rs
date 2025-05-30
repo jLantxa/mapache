@@ -170,6 +170,13 @@ impl std::fmt::Display for FileType {
     }
 }
 
+pub enum SaveID {
+    /// Let the callee calculate the ID
+    CalculateID,
+    /// Use a precalculated ID
+    WithID(ID),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

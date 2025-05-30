@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use blake3::{Hash, Hasher};
+use blake3::Hasher;
 
 use crate::global::ID;
 
@@ -26,6 +26,8 @@ pub struct PackedBlobDescriptor {
     pub offset: u64,
     pub length: u64,
 }
+
+pub type FlushedPack = (Vec<u8>, Vec<PackedBlobDescriptor>, ID);
 
 /// The `Packer` is an in-memory buffer designed to efficiently accumulate
 /// multiple blob objects and their raw data. When `flush` is called, it
@@ -46,7 +48,7 @@ pub struct Packer {
 
 impl Packer {
     /// Creates a new, empty `Packer`.
-    pub fn new() -> Self {
+    pub fn _new() -> Self {
         Self {
             data: Vec::new(),
             blob_descriptors: Vec::new(),
@@ -83,13 +85,13 @@ impl Packer {
     }
 
     /// Returns `true` if the packer contains no blob data and no descriptors.
-    pub fn is_empty(&self) -> bool {
+    pub fn _is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
     /// Returns the number of individual blob objects currently stored in the packer.
     #[inline]
-    pub fn num_objects(&self) -> usize {
+    pub fn _num_objects(&self) -> usize {
         self.blob_descriptors.len()
     }
 
@@ -124,7 +126,7 @@ impl Packer {
     /// After calling `flush`, the `Packer` instance will be reset to an empty state,
     /// ready to accumulate new blobs. Ownership of the `Vec<u8>` and `Vec<PackedBlobDescriptor>`
     /// is transferred to the caller, making this an efficient way to extract the packed content.
-    pub fn flush(&mut self) -> (Vec<u8>, Vec<PackedBlobDescriptor>, Hash) {
+    pub fn flush(&mut self) -> FlushedPack {
         // Efficiently take ownership of the vectors, leaving new, empty vectors behind.
         let data = std::mem::replace(&mut self.data, Vec::with_capacity(self.data_capacity));
         let descriptors = std::mem::replace(
@@ -134,6 +136,6 @@ impl Packer {
         let hash = self.hasher.finalize();
         self.hasher.reset();
 
-        (data, descriptors, hash)
+        (data, descriptors, ID::from_bytes(hash.into()))
     }
 }

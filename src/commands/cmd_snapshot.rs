@@ -190,14 +190,15 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     ));
 
     // Process and save new snapshot
-    let mut new_snapshot = Archiver::snapshot(
+    let archiver = Archiver::new(
         repo.clone(),
         absolute_source_paths,
         snapshot_root_path,
         parent_snapshot,
         (args.read_concurrency, args.write_concurrency),
         progress_reporter.clone(),
-    )?;
+    );
+    let mut new_snapshot = archiver.snapshot()?;
 
     // Finalize reporter. This removes the progress bars.
     progress_reporter.finalize();

@@ -24,15 +24,16 @@ use chrono::Utc;
 
 use crate::{
     backend::StorageBackend,
-    global::{self, FileType, ObjectType},
+    global::{self, FileType, ObjectType, SaveID},
     repository::{self, generate_new_master_key, packer::Packer, storage::SecureStorage},
-    ui,
+    ui::{self, cli},
 };
 
 use super::{
     ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     index::{Index, IndexFile, MasterIndex},
     manifest::Manifest,
+    pack_saver::PackSaver,
     snapshot::Snapshot,
 };
 
@@ -60,6 +61,7 @@ pub struct Repository {
     max_packer_size: u64,
     data_packer: Arc<Mutex<Packer>>,
     tree_packer: Arc<Mutex<Packer>>,
+    pack_saver: Arc<Mutex<Option<PackSaver>>>,
 
     index: Arc<Mutex<MasterIndex>>,
 }
@@ -127,7 +129,10 @@ impl RepositoryBackend for Repository {
     }
 
     /// Open an existing repository from a directory
-    fn open(backend: Arc<dyn StorageBackend>, secure_storage: Arc<SecureStorage>) -> Result<Self> {
+    fn open(
+        backend: Arc<dyn StorageBackend>,
+        secure_storage: Arc<SecureStorage>,
+    ) -> Result<Arc<Self>> {
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
         let index_path = PathBuf::from(INDEX_DIR);
@@ -163,21 +168,27 @@ impl RepositoryBackend for Repository {
             max_packer_size,
             data_packer,
             tree_packer,
+            pack_saver: Arc::new(Mutex::new(None)),
 
             index,
         };
 
         repo.warmup()?;
 
-        Ok(repo)
+        Ok(Arc::new(repo))
     }
 
-    fn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(ID, u64, u64)> {
+    fn save_blob(
+        &self,
+        object_type: ObjectType,
+        data: Vec<u8>,
+        save_id: SaveID,
+    ) -> Result<(ID, u64, u64)> {
         let raw_size = data.len();
-        let id = ID::from_content(&data);
-
-        let data = self.secure_storage.encode(&data)?;
-        let encoded_size = data.len();
+        let id = match save_id {
+            SaveID::CalculateID => ID::from_content(&data),
+            SaveID::WithID(id) => id,
+        };
 
         let mut index_guard = self.index.lock().unwrap();
         let blob_exists = index_guard.contains(&id) || !index_guard.add_pending_blob(&id);
@@ -187,6 +198,9 @@ impl RepositoryBackend for Repository {
         if blob_exists {
             return Ok((id, 0, 0));
         }
+
+        let data = self.secure_storage.encode(&data)?;
+        let encoded_size = data.len();
 
         let mut packer_guard = match object_type {
             ObjectType::Data => self.data_packer.lock().unwrap(),
@@ -307,9 +321,13 @@ impl RepositoryBackend for Repository {
         self.index.lock().unwrap().save(self)
     }
 
-    fn save_object(&self, data: Vec<u8>) -> Result<(ID, u64, u64)> {
-        let id = ID::from_content(&data);
-        let object_path = self.get_object_path(&id);
+    fn save_object(&self, data: Vec<u8>, save_id: SaveID) -> Result<(ID, u64, u64)> {
+        let id = match save_id {
+            SaveID::CalculateID => ID::from_content(&data),
+            SaveID::WithID(id) => id,
+        };
+
+        let object_path = Self::get_object_path(&self.objects_path, &id);
         let uncompressed_size = data.len() as u64;
 
         let data = self.secure_storage.encode(&data)?;
@@ -320,7 +338,7 @@ impl RepositoryBackend for Repository {
     }
 
     fn load_object(&self, id: &ID) -> Result<Vec<u8>> {
-        let object_path = self.get_object_path(id);
+        let object_path = Self::get_object_path(&self.objects_path, id);
         let data = self.backend.read(&object_path)?;
         self.secure_storage.decode(&data)
     }
@@ -390,10 +408,26 @@ impl RepositoryBackend for Repository {
             );
         }
 
-        let (filename, filepath) = matches.pop().unwrap(); // Safe unwrap after size check
+        let (filename, filepath) = matches.pop().unwrap();
         let id = ID::from_hex(&filename)?;
 
         Ok((id, filepath))
+    }
+
+    fn init_pack_saver(&self, concurrency: usize) {
+        let backend = self.backend.clone();
+        let objects_path = self.objects_path.clone();
+
+        let pack_saver = PackSaver::new(
+            concurrency,
+            Arc::new(move |data, id| {
+                let path = Self::get_object_path(&objects_path, &id);
+                if let Err(e) = backend.write(&path, &data) {
+                    cli::log_error(&format!("Could not save pack {}: {}", id.to_hex(), e));
+                }
+            }),
+        );
+        self.pack_saver.lock().unwrap().replace(pack_saver);
     }
 }
 
@@ -405,9 +439,9 @@ impl Drop for Repository {
 
 impl Repository {
     /// Returns the path to an object with a given hash in the repository.
-    fn get_object_path(&self, id: &ID) -> PathBuf {
+    fn get_object_path(objects_path: &Path, id: &ID) -> PathBuf {
         let id_hex = id.to_hex();
-        self.objects_path
+        objects_path
             .join(&id_hex[..OBJECTS_DIR_FANOUT])
             .join(&id_hex)
     }
@@ -446,16 +480,20 @@ impl Repository {
     }
 
     fn flush_packer(&self, mut packer_guard: MutexGuard<Packer>) -> Result<()> {
-        let (pack_data, packed_blob_descriptors, hash) = packer_guard.flush();
-        drop(packer_guard); // Drop the mutex so other workers can append to the packer
+        let (pack_data, packed_blob_descriptors, pack_id) = packer_guard.flush();
+        drop(packer_guard);
 
-        let pack_id = ID::from_bytes(hash.into());
-        let pack_path = &self.get_object_path(&pack_id);
-        self.backend.write(pack_path, &pack_data)?;
+        let pack_saver_guard = self.pack_saver.lock().unwrap();
+        if let Some(pack_saver) = pack_saver_guard.as_ref() {
+            pack_saver.save_pack(pack_data)?;
+            drop(pack_saver_guard);
 
-        let mut index_guard = self.index.lock().unwrap();
-        index_guard.add_pack(&pack_id, packed_blob_descriptors);
-        drop(index_guard);
+            let mut index_guard = self.index.lock().unwrap();
+            index_guard.add_pack(&pack_id, packed_blob_descriptors);
+            drop(index_guard);
+        } else {
+            bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
+        }
 
         Ok(())
     }
@@ -482,7 +520,7 @@ impl Repository {
     }
 
     fn load_from_pack(&self, id: &ID, offset: u64, length: u64) -> Result<Vec<u8>> {
-        let object_path = self.get_object_path(id);
+        let object_path = Self::get_object_path(&self.objects_path, id);
         let data = self.backend.seek_read(&object_path, offset, length)?;
         self.secure_storage.decode(&data)
     }

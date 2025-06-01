@@ -70,11 +70,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
     let repo_password = ui::cli::request_repo_password();
 
-    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::try_open(
-        repo_password,
-        global.key.as_ref(),
-        backend,
-    )?);
+    let repo: Arc<dyn RepositoryBackend> =
+        repository::try_open(repo_password, global.key.as_ref(), backend)?;
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
         UseSnapshot::Latest => {

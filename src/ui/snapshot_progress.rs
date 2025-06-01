@@ -54,7 +54,7 @@ pub struct SnapshotProgressReporter {
 
 impl SnapshotProgressReporter {
     pub fn new(expected_items: u64, expected_size: u64, num_processed_items: usize) -> Self {
-        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(2));
+        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(30));
         let progress_bar = mp.add(ProgressBar::new(expected_size));
 
         let processed_items_count_arc = Arc::new(Mutex::new(0));
@@ -120,7 +120,7 @@ impl SnapshotProgressReporter {
                     .unwrap()
                     .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
             );
-            file_spinner.enable_steady_tick(Duration::from_millis(500));
+            file_spinner.enable_steady_tick(Duration::from_millis(33));
             file_spinners.push(file_spinner);
         }
 
@@ -149,8 +149,11 @@ impl SnapshotProgressReporter {
     fn update_processing_items(&self, processing_items_guard: &MutexGuard<'_, VecDeque<PathBuf>>) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
             let _ = spinner.set_message(format!(
-                "{:?}",
-                processing_items_guard.get(i).unwrap_or(&PathBuf::new())
+                "{}",
+                processing_items_guard
+                    .get(i)
+                    .unwrap_or(&PathBuf::new())
+                    .to_string_lossy()
             ));
         }
     }
@@ -169,9 +172,7 @@ impl SnapshotProgressReporter {
         let mut processing_items_locked = self.processing_items.lock().unwrap();
         if let Some(idx) = processing_items_locked.iter().position(|p| *p == path) {
             processing_items_locked.remove(idx);
-
             *self.processed_items_count.lock().unwrap() += 1;
-            self.update_processing_items(&processing_items_locked);
         }
     }
 

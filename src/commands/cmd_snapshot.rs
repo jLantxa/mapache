@@ -29,7 +29,7 @@ use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
     global::{self, ID},
-    repository::{self, RepositoryBackend, snapshot::Snapshot, streamers::FSNodeStreamer},
+    repository::{self, snapshot::Snapshot, streamers::FSNodeStreamer},
     ui::{
         self,
         snapshot_progress::SnapshotProgressReporter,
@@ -59,6 +59,14 @@ pub struct CmdArgs {
     #[clap(long, group = "scan_mode",value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest )]
     pub parent: UseSnapshot,
 
+    /// Number of files to process in parallel.
+    #[clap(long, default_value_t = 2)]
+    pub read_concurrency: usize,
+
+    /// Number of writer threads.
+    #[clap(long, default_value_t = 5)]
+    pub write_concurrency: usize,
+
     /// Dry run
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
@@ -71,11 +79,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::try_open(
-        repo_password,
-        global.key.as_ref(),
-        backend,
-    )?);
+    let repo = repository::try_open(repo_password, global.key.as_ref(), backend)?;
 
     let source_paths = &args.paths;
     let mut absolute_source_paths = Vec::new();
@@ -178,21 +182,23 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     // Run Archiver
     let expected_items = num_files + num_dirs;
-    const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
+    // const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
     let progress_reporter = Arc::new(SnapshotProgressReporter::new(
         expected_items,
         total_bytes,
-        NUM_SHOWN_PROCESSING_ITEMS,
+        args.read_concurrency,
     ));
 
     // Process and save new snapshot
-    let mut new_snapshot = Archiver::snapshot(
+    let archiver = Archiver::new(
         repo.clone(),
         absolute_source_paths,
         snapshot_root_path,
         parent_snapshot,
+        (args.read_concurrency, args.write_concurrency),
         progress_reporter.clone(),
-    )?;
+    );
+    let mut new_snapshot = archiver.snapshot()?;
 
     // Finalize reporter. This removes the progress bars.
     progress_reporter.finalize();

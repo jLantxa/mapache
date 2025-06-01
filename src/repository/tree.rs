@@ -74,31 +74,43 @@ pub struct Tree {
 ///
 /// We ignore the accessed time. This field changes everytime we analyze a file for backup,
 /// altering the hash of the node. The accessed time will be updated after restoring the
-/// file anyway. We don't include it.
+/// file anyway. We don't include it in the metadata, but we still have it here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Metadata {
     /// Size in bytes
     pub size: u64,
 
+    /// Accessed time
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accessed_time: Option<SystemTime>,
+
     /// Created time
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_time: Option<SystemTime>,
     /// Modified time
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub modified_time: Option<SystemTime>,
 
     /// Unix mode
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
     // Unix owner user id
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_uid: Option<u32>,
     /// Unix owner group id
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_gid: Option<u32>,
 
     // The unique file serial number on a given device
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub inode: Option<u64>,
 
     // The number of hard links pointing to this inode
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub nlink: Option<u64>,
 
     // Raw device ID for block/char devices
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rdev: Option<u64>,
 }
 
@@ -107,6 +119,7 @@ impl Metadata {
     pub fn from_fs(meta: &FsMetadata) -> Self {
         Self {
             size: meta.len(),
+            accessed_time: None, // atime is disabled
             created_time: meta.created().ok(),
             modified_time: meta.modified().ok(),
 
@@ -278,7 +291,11 @@ impl Tree {
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_to_repo(&self, repo: &dyn RepositoryBackend) -> Result<(ID, u64, u64)> {
         let tree_json = serde_json::to_string(self)?.as_bytes().to_vec();
-        let (id, raw_size, encoded_size) = repo.save_blob(ObjectType::Tree, tree_json)?;
+        let (id, raw_size, encoded_size) = repo.save_blob(
+            ObjectType::Tree,
+            tree_json,
+            crate::global::SaveID::CalculateID,
+        )?;
         Ok((id, raw_size, encoded_size))
     }
 

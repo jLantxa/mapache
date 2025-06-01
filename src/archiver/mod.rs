@@ -14,45 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//
-//              [ Archiver pipeline architecture ]
-//
-//                                            Diff stage                   Processor stage            Serializer stage
-//              ┌────────────────────────┐   ┌───────────────────┐        ┌────────────────────┐     ┌─────────────────┐
-//              │                        │   │                   │        │                    │     │                 │
-//      Paths ──►     FSNodeStreamer     ┼───►                   │        │   Processor        │     │ Tree serializer │
-//              │                        │   │  NodeDiffStreamer │        │                    │     │                 │
-//              └────────────────────────┘   │                   │        │                    │     │                 │
-//              ┌────────────────────────┐   │                   │────────►  ┌──────────────┐  ┼─────►                 │
-//              │                        │   │      .next()      │  Diff  │  │              │  │     │ [PendingTrees]  │
-//   Snapshot ──► SerializedNodeStreamer ┼───►                   │        │  │ Processor 1  │  │     │                 │
-//              │                        │   │                   │        │  │              │  │     │                 │
-//              └────────────────────────┘   └───────────────────┘        │  └──────────────┘  │     └────────┬────────┘
-//                                                                        │  ┌──────────────┐  │              │
-//              ┌────────────────────────────────────────────────┐        │  │              │  │              ▼
-//              │                                                │        │  │ Processor 2  │  │
-//              │   Processor N           ┌─────────────┐        │        │  │              │  │          Snapshot
-//              │                         │┌───────────┐│        │        │  └──────────────┘  │
-//              │        ┌─────────┐      ││ Save blob ││        │        │                    │
-//              │        │         │      │└───────────┘│        │        │        ...         │
-//       Diff ──►────?───► Chunker ┼──────►             ┼───┬────►        │                    │
-//              │    │   │         │      │┌───────────┐│   │    │        │  ┌──────────────┐  │
-//              │    │   └─────────┘      ││ Save blob ││   │    │        │  │              │  │
-//              │    │                    │└───────────┘│   │    │        │  │ Processor N  │  │
-//              │    │                    └─────────────┘   │    │        │  │              │  │
-//              │    │                                      │    │        │  └──────────────┘  │
-//              │    │                                      │    │        │                    │
-//              │    │                                      │    │        └────────────────────┘
-//              │    │  Size < 512 KiB    ┌─────────────┐   │    │
-//              │    └────────────────────►  Save blob  ┼───┘    │
-//              │                         └─────────────┘        │
-//              │                                                │
-//              │                                                │
-//              └────────────────────────────────────────────────┘
-//
-//
-
-mod chunker;
 mod processor;
 mod tree_serializer;
 
@@ -80,40 +41,63 @@ use crate::{
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 
-pub struct Archiver {}
+pub struct Archiver {
+    repo: Arc<dyn RepositoryBackend>,
+    absolute_source_paths: Vec<PathBuf>,
+    snapshot_root_path: PathBuf,
+    parent_snapshot: Option<Snapshot>,
+    read_concurrency: usize,
+    write_concurrency: usize,
+    progress_reporter: Arc<SnapshotProgressReporter>,
+}
 
 impl Archiver {
+    pub fn new(
+        repo: Arc<dyn RepositoryBackend>,
+        absolute_source_paths: Vec<PathBuf>,
+        snapshot_root_path: PathBuf,
+        parent_snapshot: Option<Snapshot>,
+        (read_concurrency, write_concurrency): (usize, usize),
+        progress_reporter: Arc<SnapshotProgressReporter>,
+    ) -> Self {
+        Self {
+            repo,
+            absolute_source_paths,
+            snapshot_root_path,
+            parent_snapshot,
+            read_concurrency,
+            write_concurrency,
+            progress_reporter,
+        }
+    }
+
     /// Orchestrates the backup snapshot process, building a new snapshot of the source paths.
     ///
     /// This implementation utilizes a multi-threaded, channel-based architecture to manage
     /// the workflow.Dedicated threads handle generating the difference stream, processing
     /// individual file and directory changes, and serializing the resulting tree structure
     /// bottom-up to create the final snapshot.
-    pub fn snapshot(
-        repo: Arc<dyn RepositoryBackend>,
-        absolute_source_paths: Vec<PathBuf>,
-        snapshot_root_path: PathBuf,
-        parent_snapshot: Option<Snapshot>,
-        progress_reporter: Arc<SnapshotProgressReporter>,
-    ) -> Result<Snapshot> {
+    pub fn snapshot(self) -> Result<Snapshot> {
+        let arch = Arc::from(self);
+
         // Extract parent snapshot tree id
-        let parent_tree_id: Option<ID> = match &parent_snapshot {
+        let parent_tree_id: Option<ID> = match &arch.parent_snapshot {
             None => None,
             Some(snapshot) => Some(snapshot.tree.clone()),
         };
 
         // Create streamers
-        let fs_streamer = match FSNodeStreamer::from_paths(absolute_source_paths.clone()) {
+        let fs_streamer = match FSNodeStreamer::from_paths(arch.absolute_source_paths.clone()) {
             Ok(stream) => stream,
             Err(e) => bail!("Failed to create FSNodeStreamer: {:?}", e.to_string()),
         };
-        let previous_tree_streamer =
-            SerializedNodeStreamer::new(repo.clone(), parent_tree_id, snapshot_root_path.clone())?;
+        let previous_tree_streamer = SerializedNodeStreamer::new(
+            arch.repo.clone(),
+            parent_tree_id,
+            arch.snapshot_root_path.clone(),
+        )?;
 
-        let num_threads = std::cmp::max(1, num_cpus::get());
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build()?;
+        arch.repo.init_pack_saver(arch.write_concurrency);
 
         // Channels
         let (diff_tx, diff_rx) = crossbeam_channel::bounded::<(
@@ -121,9 +105,9 @@ impl Archiver {
             Option<StreamNode>,
             Option<StreamNode>,
             NodeDiff,
-        )>(2 * num_threads);
+        )>(arch.read_concurrency);
         let (process_item_tx, process_item_rx) =
-            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(2 * num_threads);
+            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(arch.read_concurrency);
 
         let error_flag = Arc::new(AtomicBool::new(false));
 
@@ -159,10 +143,10 @@ impl Archiver {
         // thread.
         let diff_rx_clone = diff_rx.clone();
         let process_item_tx_clone = process_item_tx.clone();
-        let repo_clone = repo.clone();
+        let repo_clone = arch.repo.clone();
         let error_flag_clone = error_flag.clone();
-        let processor_progress_reporter_clone = progress_reporter.clone();
-        let snapshot_root_path_clone = snapshot_root_path.clone();
+        let processor_progress_reporter_clone = arch.progress_reporter.clone();
+        let snapshot_root_path_clone = arch.snapshot_root_path.clone();
         let processor_thread = std::thread::spawn(move || {
             while let Ok(diff_tuple) = diff_rx_clone.recv() {
                 if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
@@ -174,7 +158,7 @@ impl Archiver {
                 let inner_error_flag_clone = error_flag_clone.clone();
                 let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
                 let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
-                pool.spawn(move || {
+                rayon::spawn(move || {
                     // Notify reporter
                     let (item_path, _, _, _) = &diff_tuple;
                     inner_progress_reporter_clone.processing_file(
@@ -224,14 +208,15 @@ impl Archiver {
         // Serializer thread. This thread receives processed items and serializes tree nodes as they
         // become finalized, bottom-up.
         let error_flag_clone = error_flag.clone();
-        let repo_clone = repo.clone();
-        let serializer_progress_reporter_clone = progress_reporter.clone();
-        let serializer_snapshot_root_path_clone = snapshot_root_path.clone();
+        let repo_clone = arch.repo.clone();
+        let serializer_progress_reporter_clone = arch.progress_reporter.clone();
+        let serializer_snapshot_root_path_clone = arch.snapshot_root_path.clone();
+        let arch_clone = arch.clone();
         let tree_serializer_thread = std::thread::spawn(move || {
             let mut final_root_tree_id: Option<ID> = None;
             let mut pending_trees = tree_serializer::init_pending_trees(
                 &serializer_snapshot_root_path_clone,
-                &absolute_source_paths,
+                &arch.absolute_source_paths,
             );
 
             while let Ok(item) = process_item_rx.recv() {
@@ -266,8 +251,10 @@ impl Archiver {
                 }
             }
 
-            let (index_raw_data, index_encoded_data) = repo.flush()?;
-            progress_reporter.written_meta_bytes(index_raw_data, index_encoded_data);
+            let (index_raw_data, index_encoded_data) = arch_clone.repo.flush()?;
+            arch_clone
+                .progress_reporter
+                .written_meta_bytes(index_raw_data, index_encoded_data);
 
             // The entire tree must be serialized by now, so we can create a
             // snapshot with the root tree id.
@@ -275,10 +262,10 @@ impl Archiver {
                 Some(tree_id) => Ok(Snapshot {
                     timestamp: Local::now(),
                     tree: tree_id.clone(),
-                    root: snapshot_root_path.clone(),
-                    paths: absolute_source_paths.clone(),
+                    root: arch_clone.snapshot_root_path.clone(),
+                    paths: arch_clone.absolute_source_paths.clone(),
                     description: None,
-                    summary: progress_reporter.get_summary(),
+                    summary: arch_clone.progress_reporter.get_summary(),
                 }),
                 None => Err(anyhow!("Failed to finalize snapshot")),
             }

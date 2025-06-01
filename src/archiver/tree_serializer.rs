@@ -57,9 +57,9 @@ impl From<isize> for ExpectedChildren {
 /// and the number of children expected from the stream.
 #[derive(Debug)]
 pub(crate) struct PendingTree {
+    num_expected_children: ExpectedChildren,
     node: Option<Node>,
     children: BTreeMap<String, Node>,
-    num_expected_children: ExpectedChildren,
 }
 
 impl PendingTree {
@@ -142,7 +142,7 @@ pub(crate) fn handle_processed_item(
     )
 }
 
-fn finalize_if_complete(
+pub(crate) fn finalize_if_complete(
     dir_path: PathBuf,
     repo: &dyn RepositoryBackend,
     pending_trees: &mut BTreeMap<PathBuf, PendingTree>,

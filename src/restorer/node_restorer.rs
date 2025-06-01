@@ -88,15 +88,6 @@ pub fn restore_node_to_path(
         }
 
         NodeType::Directory => {
-            if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "Could not create parent directories for symlink '{}'",
-                        dst_path.display()
-                    )
-                })?;
-            }
-
             std::fs::create_dir_all(dst_path)?;
             restore_node_metadata(node, dst_path)?;
         }

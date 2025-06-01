@@ -27,6 +27,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use chrono::Local;
+use tree_serializer::finalize_if_complete;
 
 use crate::{
     global::ID,
@@ -45,6 +46,7 @@ pub struct Archiver {
     repo: Arc<dyn RepositoryBackend>,
     absolute_source_paths: Vec<PathBuf>,
     snapshot_root_path: PathBuf,
+    exclude_paths: Vec<PathBuf>,
     parent_snapshot: Option<Snapshot>,
     read_concurrency: usize,
     write_concurrency: usize,
@@ -56,6 +58,7 @@ impl Archiver {
         repo: Arc<dyn RepositoryBackend>,
         absolute_source_paths: Vec<PathBuf>,
         snapshot_root_path: PathBuf,
+        exclude_paths: Vec<PathBuf>,
         parent_snapshot: Option<Snapshot>,
         (read_concurrency, write_concurrency): (usize, usize),
         progress_reporter: Arc<SnapshotProgressReporter>,
@@ -64,6 +67,7 @@ impl Archiver {
             repo,
             absolute_source_paths,
             snapshot_root_path,
+            exclude_paths,
             parent_snapshot,
             read_concurrency,
             write_concurrency,
@@ -87,7 +91,10 @@ impl Archiver {
         };
 
         // Create streamers
-        let fs_streamer = match FSNodeStreamer::from_paths(arch.absolute_source_paths.clone()) {
+        let fs_streamer = match FSNodeStreamer::from_paths(
+            arch.absolute_source_paths.clone(),
+            arch.exclude_paths.clone(),
+        ) {
             Ok(stream) => stream,
             Err(e) => bail!("Failed to create FSNodeStreamer: {:?}", e.to_string()),
         };
@@ -95,6 +102,8 @@ impl Archiver {
             arch.repo.clone(),
             parent_tree_id,
             arch.snapshot_root_path.clone(),
+            Vec::new(),
+            Vec::new(),
         )?;
 
         arch.repo.init_pack_saver(arch.write_concurrency);
@@ -255,6 +264,17 @@ impl Archiver {
             arch_clone
                 .progress_reporter
                 .written_meta_bytes(index_raw_data, index_encoded_data);
+
+            // Try to finalize the snapshot root node. This is necessary in case of an empty snapshot,
+            // because no stage in the pipeline would call it.
+            finalize_if_complete(
+                serializer_snapshot_root_path_clone.clone(),
+                repo_clone.as_ref(),
+                &mut pending_trees,
+                &mut final_root_tree_id,
+                &serializer_snapshot_root_path_clone,
+                &serializer_progress_reporter_clone,
+            )?;
 
             // The entire tree must be serialized by now, so we can create a
             // snapshot with the root tree id.

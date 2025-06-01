@@ -89,7 +89,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
     .with_context(|| "No snapshot was found")?;
 
-    const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
+    const NUM_SHOWN_PROCESSING_ITEMS: usize = 1;
     let num_expected_items = snapshot.summary.processed_items_count;
     let progress_reporter = Arc::new(RestoreProgressReporter::new(
         num_expected_items,
@@ -103,6 +103,8 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         &snapshot,
         &args.resolution,
         &args.target,
+        args.include.clone(),
+        args.exclude.clone(),
         progress_reporter.clone(),
     )?;
 

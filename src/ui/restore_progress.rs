@@ -17,7 +17,10 @@
 use std::{
     collections::VecDeque,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -26,9 +29,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, P
 use crate::utils;
 
 pub struct RestoreProgressReporter {
-    processed_items_count: Arc<Mutex<u64>>, // Number of files processed
+    processed_items_count: Arc<AtomicU64>, // Number of files processed
     processing_items: Arc<Mutex<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
-    processed_bytes: Arc<Mutex<u64>>,                // Bytes restored
 
     #[allow(dead_code)]
     mp: MultiProgress,
@@ -38,18 +40,16 @@ pub struct RestoreProgressReporter {
 
 impl RestoreProgressReporter {
     pub fn new(num_expected_items: u64, num_processed_items: usize) -> Self {
-        let processed_items_count_arc = Arc::new(Mutex::new(0));
-        let processed_bytes_arc = Arc::new(Mutex::new(0));
+        let processed_items_count_arc = Arc::new(AtomicU64::new(0));
 
         let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(2));
         let progress_bar = mp.add(ProgressBar::new(num_expected_items));
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
-        let processed_bytes_arc_clone = processed_bytes_arc.clone();
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] {processed_bytes_formatted}  [{processed_items_formated}]  [ETA: {custom_eta}]"
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] {processed_items_formated}  [ETA: {custom_eta}]"
                 )
                 .unwrap()
                 .progress_chars("=> ")
@@ -58,17 +58,9 @@ impl RestoreProgressReporter {
                     let custom_elapsed= utils::pretty_print_duration(elapsed);
                     let _ = w.write_str(&custom_elapsed);
                 })
-                .with_key("processed_bytes_formatted", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let bytes = processed_bytes_arc_clone.lock().unwrap();
-                    let s = format!("{} / {}", utils::format_size(*bytes), utils::format_size(num_expected_items));
-                    drop(bytes);
-
-                    let _ = w.write_str(&s);
-                })
                 .with_key("processed_items_formated", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let item_count = processed_items_count_arc_clone.lock().unwrap();
-                    let s = format!("{} / {} items",*item_count, num_expected_items);
-                    drop(item_count);
+                    let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
+                    let s = format!("{} / {} items",item_count, num_expected_items);
 
                     let _ = w.write_str(&s);
                 })
@@ -95,7 +87,6 @@ impl RestoreProgressReporter {
         Self {
             processed_items_count: processed_items_count_arc,
             processing_items: Arc::new(Mutex::new(VecDeque::new())),
-            processed_bytes: processed_bytes_arc,
             mp,
             progress_bar,
             file_spinners,
@@ -105,8 +96,11 @@ impl RestoreProgressReporter {
     fn update_processing_items(&self, processing_items_guard: &MutexGuard<'_, VecDeque<PathBuf>>) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
             let _ = spinner.set_message(format!(
-                "{:?}",
-                processing_items_guard.get(i).unwrap_or(&PathBuf::new())
+                "{}",
+                processing_items_guard
+                    .get(i)
+                    .unwrap_or(&PathBuf::new())
+                    .display()
             ));
         }
     }
@@ -119,6 +113,7 @@ impl RestoreProgressReporter {
         let mut processing_items_locked = self.processing_items.lock().unwrap();
         processing_items_locked.push_back(path);
         self.update_processing_items(&processing_items_locked);
+        self.progress_bar.inc(1);
     }
 
     pub fn processed_file(&self, path: PathBuf) {
@@ -126,13 +121,7 @@ impl RestoreProgressReporter {
         if let Some(idx) = processing_items_locked.iter().position(|p| *p == path) {
             processing_items_locked.remove(idx);
 
-            *self.processed_items_count.lock().unwrap() += 1;
-            self.update_processing_items(&processing_items_locked);
+            self.processed_items_count.fetch_add(1, Ordering::AcqRel);
         }
-    }
-
-    pub fn processed_bytes(&self, bytes: u64) {
-        *self.processed_bytes.lock().unwrap() += bytes;
-        self.progress_bar.inc(bytes);
     }
 }

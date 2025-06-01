@@ -18,19 +18,15 @@ pub mod node_restorer;
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use clap::ValueEnum;
 
 use crate::{
-    repository::{
-        RepositoryBackend,
-        snapshot::Snapshot,
-        streamers::{SerializedNodeStreamer, StreamNodeInfo},
-    },
-    ui::{self, restore_progress::RestoreProgressReporter},
+    repository::{RepositoryBackend, snapshot::Snapshot, streamers::SerializedNodeStreamer},
+    ui::restore_progress::RestoreProgressReporter,
 };
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
@@ -48,119 +44,50 @@ impl Restorer {
         snapshot: &Snapshot,
         resolution: &Resolution,
         target_path: &Path,
+        include: Vec<PathBuf>,
+        exclude: Vec<PathBuf>,
         progress_reporter: Arc<RestoreProgressReporter>,
     ) -> Result<()> {
-        let num_threads = std::cmp::max(1, num_cpus::get());
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build()?;
-
-        let (tx, rx) = crossbeam_channel::bounded::<StreamNodeInfo>(num_threads);
-
-        let error_flag = Arc::new(AtomicBool::new(false));
-
         let tree = snapshot.tree.clone();
-        let error_flag_clone = error_flag.clone();
-        let repo_clone = repo.clone();
-        let streamer_thread = std::thread::spawn(move || -> Result<()> {
-            let node_streamer =
-                SerializedNodeStreamer::new(repo_clone, Some(tree), PathBuf::new())?;
+        let node_streamer = SerializedNodeStreamer::new(
+            repo.clone(),
+            Some(tree),
+            PathBuf::new(),
+            include,
+            exclude,
+        )?;
 
-            for node_res in node_streamer {
-                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
+        for node_res in node_streamer {
+            let (path, stream_node) = node_res?;
+            progress_reporter.processing_file(path.clone());
 
-                match node_res {
-                    Ok(stream_node) => tx.send(stream_node)?,
-                    Err(e) => {
-                        error_flag_clone.fetch_and(true, std::sync::atomic::Ordering::AcqRel);
-                        bail!("Failed to iterate snapshot tree: {}", e.to_string());
+            let restore_path = target_path.join(&path);
+
+            if restore_path.exists() {
+                match resolution {
+                    Resolution::Skip => {
+                        progress_reporter.processed_file(path);
+                        continue;
+                    }
+                    Resolution::Overwrite => {}
+                    Resolution::Fail => {
+                        bail!("Target \'{}\' already exists", restore_path.display());
                     }
                 }
             }
 
-            Ok(())
-        });
-
-        let resolution_clone = resolution.clone();
-        let target_path_clone = target_path.to_path_buf();
-        let repo_clone = repo.clone();
-        let restorer_thread = std::thread::spawn(move || -> Result<()> {
-            while let Ok((path, stream_node)) = rx.recv() {
-                // If an error has already occurred, stop processing new tasks
-                // and break out of the loop.
-                if error_flag.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-
-                let error_flag_clone = error_flag.clone();
-                let progress_reporter_clone = progress_reporter.clone();
-                let repo_clone_internal = repo_clone.clone();
-                let target_path_clone_internal = target_path_clone.to_path_buf();
-                let resolution_clone_internal = resolution_clone.clone();
-
-                pool.spawn(move || {
-                    let restore_path = target_path_clone_internal.join(&path);
-
-                    if restore_path.exists() {
-                        match resolution_clone_internal {
-                            Resolution::Skip => {
-                                progress_reporter_clone.processed_file(restore_path);
-                                if stream_node.node.is_file() {
-                                    progress_reporter_clone
-                                        .processed_bytes(stream_node.node.metadata.size);
-                                }
-                                return;
-                            }
-                            Resolution::Overwrite => { /* Continue */ }
-                            Resolution::Fail => {
-                                ui::cli::log_error(&format!(
-                                    "Target \'{}\' already exists",
-                                    restore_path.display()
-                                ));
-
-                                error_flag_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-                                return;
-                            }
-                        }
-                    }
-
-                    // Attempt to restore the node.
-                    if let Err(e) = node_restorer::restore_node_to_path(
-                        repo_clone_internal.as_ref(),
-                        &stream_node.node,
-                        &restore_path,
-                    ) {
-                        ui::cli::log_error(&format!(
-                            "Failed to restore item \'{}\': {}",
-                            restore_path.display(),
-                            e
-                        ));
-                        error_flag_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-                    } else {
-                        progress_reporter_clone.processed_file(restore_path);
-                        if stream_node.node.is_file() {
-                            progress_reporter_clone.processed_bytes(stream_node.node.metadata.size);
-                        }
-                    }
-                });
+            // Attempt to restore the node.
+            if let Err(e) =
+                node_restorer::restore_node_to_path(repo.as_ref(), &stream_node.node, &restore_path)
+            {
+                bail!(
+                    "Failed to restore item \'{}\': {}",
+                    restore_path.display(),
+                    e
+                )
             }
-
-            if error_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                bail!("One or more errors occurred during the restore process.");
-            }
-
-            Ok(())
-        });
-
-        streamer_thread
-            .join()
-            .map_err(|e| anyhow!("Streamer thread panicked: {:?}", e))??;
-
-        restorer_thread
-            .join()
-            .map_err(|e| anyhow!("Restorer thread panicked: {:?}", e))??;
+            progress_reporter.processed_file(path);
+        }
 
         Ok(())
     }

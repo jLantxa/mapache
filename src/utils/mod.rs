@@ -233,6 +233,26 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
+pub fn filter_path(path: &Path, include: Option<&[PathBuf]>, exclude: Option<&[PathBuf]>) -> bool {
+    if let Some(exclude_paths) = exclude {
+        for ex_path in exclude_paths {
+            if path.starts_with(ex_path) {
+                return false;
+            }
+        }
+    }
+
+    if let Some(include_paths) = include {
+        for in_path in include_paths {
+            if !path.starts_with(in_path) && !in_path.starts_with(path) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

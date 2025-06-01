@@ -139,7 +139,7 @@ impl Index {
     /// index files if the total number of blobs exceeds a manifesturable limit.
     ///
     /// Returns the total uncompressed and compressed sizes of the saved index files.
-    pub fn save(&self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
+    pub fn save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
         let mut total_uncompressed_size = 0;
         let mut total_compressed_size = 0;
 
@@ -186,6 +186,9 @@ impl Index {
             total_uncompressed_size += u;
             total_compressed_size += c;
         }
+
+        // Since the index has been saved, we can consider it finalized.
+        self.finalize();
 
         Ok((total_uncompressed_size, total_compressed_size))
     }
@@ -268,11 +271,11 @@ impl MasterIndex {
     /// Finalized indexes are not saved again.
     ///
     /// Returns the total uncompressed and compressed sizes of the saved index files.
-    pub fn save(&self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
+    pub fn save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
         let mut uncompressed_size: u64 = 0;
         let mut compressed_size: u64 = 0;
 
-        for idx in &self.indexes {
+        for idx in &mut self.indexes {
             if idx.is_pending() {
                 let (uncompressed, compressed) = idx.save(repo)?;
                 uncompressed_size += uncompressed;

@@ -217,14 +217,14 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
     let mut new_snapshot = archiver.snapshot()?;
 
-    // Finalize reporter. This removes the progress bars.
-    progress_reporter.finalize();
-
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
     }
     let (snapshot_id, _snapshot_raw_size, _snapshot_encoded_size) =
         repo.save_snapshot(&new_snapshot)?;
+
+    // Finalize reporter. This removes the progress bars.
+    progress_reporter.finalize();
 
     // Final report
     show_final_report(&snapshot_id, &new_snapshot, args);

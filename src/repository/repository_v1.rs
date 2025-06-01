@@ -232,17 +232,17 @@ impl RepositoryBackend for Repository {
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(ID, u64, u64)> {
         let snapshot_json = serde_json::to_string_pretty(snapshot)?;
         let snapshot_json = snapshot_json.as_bytes();
-        let uncompressed_size = snapshot_json.len() as u64;
+        let sn_raw_size = snapshot_json.len() as u64;
         let snapshot_id = ID::from_content(&snapshot_json);
 
         let snapshot_path = self.snapshot_path.join(&snapshot_id.to_hex());
 
         let snapshot_json = self.secure_storage.encode(snapshot_json)?;
-        let compressed_size = snapshot_json.len() as u64;
+        let sn_encoded_size = snapshot_json.len() as u64;
 
         self.save_with_rename(&snapshot_json, &snapshot_path)?;
 
-        Ok((snapshot_id, uncompressed_size, compressed_size))
+        Ok((snapshot_id, sn_raw_size, sn_encoded_size))
     }
 
     fn remove_snapshot(&self, id: &ID) -> Result<()> {
@@ -309,7 +309,7 @@ impl RepositoryBackend for Repository {
 
         let id = ID::from_content(&index_file_json);
         let index_path = self.index_path.join(&id.to_hex());
-        self.backend.write(&index_path, &index_file_json)?;
+        self.save_with_rename(&index_file_json, &index_path)?;
 
         Ok((uncompressed_size, compressed_size))
     }
@@ -332,7 +332,7 @@ impl RepositoryBackend for Repository {
 
         let data = self.secure_storage.encode(&data)?;
         let compressed_size = data.len() as u64;
-        self.backend.write(&object_path, &data)?;
+        self.save_with_rename(&data, &object_path)?;
 
         Ok((id, uncompressed_size, compressed_size))
     }

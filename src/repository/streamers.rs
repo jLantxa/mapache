@@ -43,23 +43,31 @@ pub type StreamNodeInfo = (PathBuf, StreamNode);
 pub struct FSNodeStreamer {
     stack: Vec<PathBuf>,
     intermediate_paths: Vec<(PathBuf, usize)>,
+    exclude_paths: Vec<PathBuf>,
 }
 
 impl FSNodeStreamer {
     /// Creates an FSNodeStreamer from multiple root paths. The paths are iterated in lexicographical order.
-    pub fn from_paths(mut paths: Vec<PathBuf>) -> Result<Self> {
+    pub fn from_paths(mut paths: Vec<PathBuf>, mut exclude_paths: Vec<PathBuf>) -> Result<Self> {
         for path in &paths {
             if !path.exists() {
                 bail!("Path {} does not exist", path.display());
             }
         }
 
+        exclude_paths.sort_unstable();
+        paths.retain(|path| !utils::is_path_excluded(path, &exclude_paths));
+
         // Calculate intermediate paths and count children (root included)
         let common_root = utils::calculate_lcp(&paths);
         let (_root_children_count, intermediate_path_set) =
             utils::intermediate_paths(&common_root, &paths);
-        let mut intermediate_paths: Vec<(PathBuf, usize)> =
-            intermediate_path_set.into_iter().collect();
+
+        // Filter intermediate paths based on exclude_paths and collect
+        let mut intermediate_paths: Vec<(PathBuf, usize)> = intermediate_path_set
+            .into_iter()
+            .filter(|(path, _)| !utils::is_path_excluded(path, &exclude_paths))
+            .collect();
 
         // Sort paths in reverse order
         paths.sort_by(|a, b| b.cmp(a));
@@ -68,6 +76,7 @@ impl FSNodeStreamer {
         Ok(Self {
             stack: paths,
             intermediate_paths,
+            exclude_paths,
         })
     }
 
@@ -91,38 +100,82 @@ impl Iterator for FSNodeStreamer {
         }
 
         // Decide which source has the lexicographically smaller “next” element
-        let take_intermediate = match (self.intermediate_paths.last(), self.stack.last()) {
-            (Some(iv @ _), Some(sv @ _)) => peek_path(iv).cmp(sv) == std::cmp::Ordering::Less,
-            (Some(_), None) => true,
-            _ => false,
+        let take_intermediate = loop {
+            match (self.intermediate_paths.last(), self.stack.last()) {
+                (Some(iv @ _), Some(sv @ _)) => {
+                    let iv_path = peek_path(iv);
+                    let sv_path = sv;
+
+                    // Skip intermediate if it's excluded
+                    if utils::is_path_excluded(iv_path, &self.exclude_paths) {
+                        self.intermediate_paths.pop();
+                        continue; // Try again with the next intermediate path
+                    }
+                    // Skip stack path if it's excluded
+                    if utils::is_path_excluded(sv_path, &self.exclude_paths) {
+                        self.stack.pop();
+                        continue; // Try again with the next stack path
+                    }
+
+                    break iv_path.cmp(sv_path) == std::cmp::Ordering::Less;
+                }
+                (Some(iv @ _), None) => {
+                    let iv_path = peek_path(iv);
+                    if utils::is_path_excluded(iv_path, &self.exclude_paths) {
+                        self.intermediate_paths.pop();
+                        continue;
+                    }
+                    break true;
+                }
+                (None, Some(sv @ _)) => {
+                    if utils::is_path_excluded(sv, &self.exclude_paths) {
+                        self.stack.pop();
+                        continue;
+                    }
+                    break false;
+                }
+                (None, None) => return None, // Both are empty
+            }
         };
 
         if take_intermediate {
-            // pop from intermediate_paths
-            let (path, num_children) = self.intermediate_paths.pop().unwrap();
+            let (path, _num_children) = self.intermediate_paths.pop().unwrap();
+            let node = match Node::from_path(&path) {
+                Ok(n) => n,
+                Err(e) => return Some(Err(e)),
+            };
+            let num_children = if node.is_dir() {
+                Self::get_children_rev_sorted(&path)
+                    .map(|children| {
+                        children
+                            .into_iter()
+                            .filter(|child| !utils::is_path_excluded(child, &self.exclude_paths))
+                            .count()
+                    })
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
-            return Some(Ok((
-                path.clone(),
-                StreamNode {
-                    node: Node::from_path(&path).unwrap(),
-                    num_children,
-                },
-            )));
+            return Some(Ok((path.clone(), StreamNode { node, num_children })));
         }
 
         // Otherwise pop from the DFS stack as before
-        let path = self.stack.pop()?;
+        let path = self.stack.pop().unwrap(); // We know it's not None due to the loop logic
         let result = (|| {
             let node = Node::from_path(&path)?;
 
             let num_children = if node.is_dir() {
                 let children = Self::get_children_rev_sorted(&path)?;
-                let n = children.len();
-                // push in *reverse* so that the very first child is at the top of the stack
+                let mut valid_children_count = 0;
+
                 for child in children.into_iter() {
-                    self.stack.push(child);
+                    if !utils::is_path_excluded(&child, &self.exclude_paths) {
+                        self.stack.push(child);
+                        valid_children_count += 1;
+                    }
                 }
-                n
+                valid_children_count
             } else {
                 0
             };
@@ -392,7 +445,7 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")])?;
+        let streamer = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
 
         assert_eq!(nodes.len(), 6);
@@ -427,8 +480,10 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer =
-            FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")])?;
+        let streamer = FSNodeStreamer::from_paths(
+            vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
+            Vec::new(),
+        )?;
         let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
 
         assert_eq!(nodes.len(), 8);
@@ -468,10 +523,13 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer = FSNodeStreamer::from_paths(vec![
-            tmp_path.join("dir_a").join("file0"),
-            tmp_path.join("dir_a").join("dir2").join("file1"),
-        ])?;
+        let streamer = FSNodeStreamer::from_paths(
+            vec![
+                tmp_path.join("dir_a").join("file0"),
+                tmp_path.join("dir_a").join("dir2").join("file1"),
+            ],
+            Vec::new(),
+        )?;
         let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
 
         assert_eq!(nodes.len(), 3);
@@ -497,8 +555,8 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let dir_a = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")])?;
-        let dir_b = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_b")])?;
+        let dir_a = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
+        let dir_b = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_b")], Vec::new())?;
         let diff_streamer = NodeDiffStreamer::new(dir_a, dir_b);
         let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
             diff_streamer.collect();
@@ -522,8 +580,8 @@ mod test {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let dir_a1 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")])?;
-        let dir_a2 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")])?;
+        let dir_a1 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
+        let dir_a2 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let diff_streamer = NodeDiffStreamer::new(dir_a1, dir_a2);
         let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
             diff_streamer.collect();
@@ -535,6 +593,44 @@ mod test {
         assert_eq!(diffs[3].as_ref().unwrap().3, NodeDiff::Unchanged);
         assert_eq!(diffs[4].as_ref().unwrap().3, NodeDiff::Unchanged);
         assert_eq!(diffs[5].as_ref().unwrap().3, NodeDiff::Unchanged);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fs_node_streamer_with_exclude_paths() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let tmp_path = temp_dir.path();
+        create_tree(tmp_path)?;
+
+        let streamer = FSNodeStreamer::from_paths(
+            vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
+            vec![tmp_path.join("dir_b")],
+        )?;
+        let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
+
+        assert_eq!(nodes.len(), 6);
+        assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
+        assert_eq!(
+            nodes[1].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir0")
+        );
+        assert_eq!(
+            nodes[2].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir1")
+        );
+        assert_eq!(
+            nodes[3].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir2")
+        );
+        assert_eq!(
+            nodes[4].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("dir2").join("file1")
+        );
+        assert_eq!(
+            nodes[5].as_ref().unwrap().0,
+            tmp_path.join("dir_a").join("file0")
+        );
 
         Ok(())
     }

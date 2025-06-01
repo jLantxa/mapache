@@ -142,7 +142,7 @@ pub(crate) fn handle_processed_item(
     )
 }
 
-fn finalize_if_complete(
+pub(crate) fn finalize_if_complete(
     dir_path: PathBuf,
     repo: &dyn RepositoryBackend,
     pending_trees: &mut BTreeMap<PathBuf, PendingTree>,

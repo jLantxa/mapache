@@ -47,6 +47,10 @@ pub struct CmdArgs {
     #[clap(value_parser, required = true)]
     pub paths: Vec<PathBuf>,
 
+    /// List of paths to exclude from the backup
+    #[clap(long, value_parser, required = false)]
+    pub exclude: Vec<PathBuf>,
+
     /// Snapshot description
     #[clap(long, value_parser)]
     pub description: Option<String>,
@@ -89,6 +93,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Err(e) => bail!(e),
         }
     }
+    absolute_source_paths.retain(|p| !utils::is_path_excluded(p, &args.exclude));
 
     // Extract the snapshot root path
     let snapshot_root_path = if absolute_source_paths.is_empty() {
@@ -157,9 +162,10 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_files = 0;
     let mut num_dirs = 0;
     let mut total_bytes = 0;
-    let scan_streamer = FSNodeStreamer::from_paths(absolute_source_paths.clone())?;
+    let scan_streamer =
+        FSNodeStreamer::from_paths(absolute_source_paths.clone(), args.exclude.clone())?;
     for stream_node_result in scan_streamer {
-        let (_, stream_node) = stream_node_result?;
+        let (_path, stream_node) = stream_node_result?;
         let node = stream_node.node;
 
         if node.is_dir() {
@@ -182,7 +188,6 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     // Run Archiver
     let expected_items = num_files + num_dirs;
-    // const NUM_SHOWN_PROCESSING_ITEMS: usize = 2;
     let progress_reporter = Arc::new(SnapshotProgressReporter::new(
         expected_items,
         total_bytes,
@@ -194,6 +199,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo.clone(),
         absolute_source_paths,
         snapshot_root_path,
+        args.exclude.clone(),
         parent_snapshot,
         (args.read_concurrency, args.write_concurrency),
         progress_reporter.clone(),

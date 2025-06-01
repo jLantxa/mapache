@@ -233,6 +233,15 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
 }
 
+pub fn is_path_excluded(path_to_check: &Path, exclude_paths: &[PathBuf]) -> bool {
+    for excluded_path in exclude_paths {
+        if path_to_check == excluded_path || path_to_check.starts_with(excluded_path) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

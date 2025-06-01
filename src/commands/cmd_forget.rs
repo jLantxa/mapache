@@ -195,7 +195,6 @@ pub fn apply_retention_rules(
                     let year = snapshot.timestamp.year();
                     kept_years.entry(year).or_insert(id.clone());
                 }
-                println!("{:#?}", kept_years);
                 let mut count = 0;
                 for (_, id) in kept_years.iter().rev() {
                     // Iterate years in reverse

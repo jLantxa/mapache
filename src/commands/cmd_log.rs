@@ -14,8 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use chrono::Local;
 use clap::Args;
@@ -24,7 +22,7 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     global::{self, ID},
-    repository::{self, RepositoryBackend, snapshot::Snapshot},
+    repository::{self, snapshot::Snapshot},
     ui,
     ui::table::{Alignment, Table},
     utils,
@@ -43,11 +41,7 @@ pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global.repo)?;
     let repo_password = ui::cli::request_repo_password();
 
-    let repo: Arc<dyn RepositoryBackend> = Arc::from(repository::try_open(
-        repo_password,
-        global.key.as_ref(),
-        backend,
-    )?);
+    let repo = repository::try_open(repo_password, global.key.as_ref(), backend)?;
 
     let snapshots = repo.load_all_snapshots_sorted()?;
 

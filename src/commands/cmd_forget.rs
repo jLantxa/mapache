@@ -33,7 +33,7 @@ use super::GlobalArgs;
 #[clap(group = ArgGroup::new("retention_rules").multiple(true))] // Allow multiple --keep-* rules
 pub struct CmdArgs {
     /// Forget specific snapshots by their IDs.
-    #[arg(long, value_delimiter = ' ', group = "policy")]
+    #[arg(value_parser, value_delimiter = ' ', group = "policy")]
     pub forget: Vec<String>,
 
     /// Keep the last N snapshots.

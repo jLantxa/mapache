@@ -30,7 +30,9 @@ use super::GlobalArgs;
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {
-    /// Object to print
+    /// Object to print:
+    /// [manifest|snapshot:ID|pack:ID|blob:ID|tree:ID|index:ID|key:ID].
+    /// Blob and tree types don't accept prefixes.
     #[arg(value_parser)]
     pub object: Object,
 }
@@ -46,12 +48,12 @@ pub enum Object {
     Snapshot(String),
 }
 
-pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(&global.repo)?;
+pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let backend = new_backend_with_prompt(&global_args.repo)?;
     let repo_password = ui::cli::request_repo_password();
 
     let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(repo_password, global.key.as_ref(), backend)?;
+        repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
 
     match &args.object {
         Object::Manifest => {

@@ -30,7 +30,8 @@ pub mod cmd_snapshot;
 #[derive(Parser, Debug)]
 #[clap(
     version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
-    about = "[backup] is a de-duplicating, incremental backup tool"
+    about = "[backup] is a de-duplicating, incremental backup tool",
+
 )]
 pub struct Cli {
     // Subcommand
@@ -45,22 +46,22 @@ pub struct Cli {
 // List of commands
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    #[clap(about = "Initializes a new repository")]
+    #[clap(about = "Initialize a new repository")]
     Init(cmd_init::CmdArgs),
 
-    #[clap(about = "Creates a new snapshot")]
+    #[clap(about = "Create a new snapshot")]
     Snapshot(cmd_snapshot::CmdArgs),
 
-    #[clap(about = "Restores a snapshot")]
+    #[clap(about = "Restore a snapshot")]
     Restore(cmd_restore::CmdArgs),
 
-    #[clap(about = "Shows all snapshots present in the repository")]
+    #[clap(about = "Show all snapshots present in the repository")]
     Log(cmd_log::CmdArgs),
 
-    #[clap(about = "Removes snapshots from the repository")]
+    #[clap(about = "Remove snapshots from the repository")]
     Forget(cmd_forget::CmdArgs),
 
-    #[clap(about = "Prints repository objects")]
+    #[clap(about = "Print repository objects")]
     Cat(cmd_cat::CmdArgs),
 }
 
@@ -107,10 +108,10 @@ impl std::fmt::Display for UseSnapshot {
 pub fn run(args: &Cli) -> Result<()> {
     match &args.command {
         Command::Init(cmd_args) => cmd_init::run(&args.global_args, &cmd_args),
-        Command::Log(cmd_args) => cmd_log::run(&args.global_args, &cmd_args),
         Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, &cmd_args),
         Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, &cmd_args),
-        Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, &cmd_args),
         Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, &cmd_args),
+        Command::Log(cmd_args) => cmd_log::run(&args.global_args, &cmd_args),
+        Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, &cmd_args),
     }
 }

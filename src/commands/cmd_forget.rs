@@ -81,14 +81,14 @@ pub enum RetentionRule {
     KeepDaily(usize),
 }
 
-pub fn run(global: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(&global.repo)?;
+pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let backend = new_backend_with_prompt(&global_args.repo)?;
     let repo_password = ui::cli::request_repo_password();
 
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo = repository::try_open(repo_password, global.key.as_ref(), backend)?;
+    let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
     let snapshots_sorted = repo.load_all_snapshots_sorted()?;
 
     let mut ids_to_keep: HashSet<ID> = HashSet::new();

@@ -20,10 +20,12 @@ pub mod url;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use blake3::Hasher;
+use chrono::{DateTime, Local};
 
 use crate::global::Hash256;
 
@@ -251,6 +253,21 @@ pub fn filter_path(path: &Path, include: Option<&[PathBuf]>, exclude: Option<&[P
     }
 
     true
+}
+
+/// Pretty prints a SystemTime
+pub fn pretty_print_system_time(time: SystemTime, format_str: Option<String>) -> Result<String> {
+    // Attempt to get the duration since the Unix epoch.
+    // This handles cases where SystemTime might be before 1970-01-01.
+    let _duration_since_epoch = time
+        .duration_since(UNIX_EPOCH)
+        .with_context(|| format!("SystemTime is before UNIX EPOCH"))?;
+
+    let format = format_str.unwrap_or_else(|| "%Y-%m-%d %H:%M:%S".to_string());
+
+    // Convert SystemTime to DateTime<Local>
+    let datetime_local: DateTime<Local> = time.into();
+    Ok(datetime_local.format(&format).to_string())
 }
 
 #[cfg(test)]

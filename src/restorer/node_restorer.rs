@@ -15,15 +15,21 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    fs::{self, File, FileTimes, OpenOptions, Permissions},
+    fs::{self, File, FileTimes, OpenOptions},
     io::Write,
     path::Path,
 };
 
+#[cfg(not(unix))]
+use anyhow::{Context, Result};
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, symlink};
-
-use anyhow::{Context, Result, bail};
+use {
+    anyhow::Result,
+    std::{
+        fs::Permissions,
+        os::unix::fs::{PermissionsExt, symlink},
+    },
+};
 
 use crate::{
     repository::{
@@ -218,6 +224,7 @@ mod test {
 
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn test_restore_mtime() -> Result<()> {
         let temp_repo_dir = tempdir().expect("Could not create tmp dir");

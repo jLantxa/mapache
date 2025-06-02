@@ -417,6 +417,50 @@ where
     }
 }
 
+pub fn find_serialized_node(
+    repo: &dyn RepositoryBackend,
+    base_tree_id: &ID,
+    path: &Path,
+) -> Result<Option<Node>> {
+    if path.as_os_str().is_empty() {
+        return Ok(None);
+    }
+
+    let components: Vec<&str> = path
+        .components()
+        .map(|c| c.as_os_str().to_str().unwrap_or_default())
+        .collect();
+
+    let mut current_tree_id: ID = base_tree_id.clone();
+
+    for (i, component) in components.iter().enumerate() {
+        let tree = Tree::load_from_repo(repo, &current_tree_id).with_context(|| {
+            format!(
+                "Failed to load tree with ID {} for path component '{}'",
+                current_tree_id, component
+            )
+        })?;
+
+        if let Some(node) = tree.nodes.into_iter().find(|n| n.name == *component) {
+            if i == components.len() - 1 {
+                return Ok(Some(node));
+            } else {
+                current_tree_id = node.tree.ok_or_else(|| {
+                    anyhow!(
+                        "Path component '{}' is not a directory in tree {}",
+                        component,
+                        current_tree_id
+                    )
+                })?;
+            }
+        } else {
+            return Ok(None);
+        }
+    }
+
+    Ok(None)
+}
+
 #[cfg(test)]
 mod test {
     use tempfile::tempdir;

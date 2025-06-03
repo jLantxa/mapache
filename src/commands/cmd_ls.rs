@@ -166,10 +166,13 @@ fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
         };
 
         format!(
-            "{:<10}  {:<7}  {:<7}  {:<10}  {:<12}  {}",
+            "{:<10} {:3} {:<7}  {:<7}  {:>10}  {:<12}  {}",
             node.metadata.mode.map_or(String::from("None"), |mode| {
                 mode.to_string() // TODO: Pretty print the permissions
             }),
+            node.metadata
+                .nlink
+                .map_or(String::from("None"), |nlink| nlink.to_string()),
             node.metadata
                 .owner_uid
                 .map_or(String::from("None"), |uid| uid.to_string()),

@@ -14,17 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{
-    fs::{self, File, FileTimes, OpenOptions},
-    io::Write,
-    path::Path,
+use {
+    anyhow::{Context, Result},
+    std::{
+        fs::{self, File, FileTimes, OpenOptions},
+        io::Write,
+        path::Path,
+    },
 };
 
-#[cfg(not(unix))]
-use anyhow::{Context, Result};
 #[cfg(unix)]
 use {
-    anyhow::Result,
+    anyhow::bail,
     std::{
         fs::Permissions,
         os::unix::fs::{PermissionsExt, symlink},

@@ -79,8 +79,8 @@ impl FSNodeStreamer {
             .collect();
 
         // Sort paths in reverse order
-        paths.sort_by(|a, b| b.cmp(a));
-        intermediate_paths.sort_by(|(a, _), (b, _)| b.cmp(&a));
+        paths.sort_by(|first, second| second.cmp(first));
+        intermediate_paths.sort_by(|(first, _), (second, _)| second.cmp(&first));
 
         Ok(Self {
             stack: paths,
@@ -89,12 +89,12 @@ impl FSNodeStreamer {
         })
     }
 
-    // Get all children sorted in reverse lexicographical order.
-    fn get_children_rev_sorted(dir: &Path) -> Result<Vec<PathBuf>> {
+    // Get all children sorted in lexicographical order.
+    fn get_children_sorted(dir: &Path) -> Result<Vec<PathBuf>> {
         let mut children: Vec<_> = std::fs::read_dir(dir)?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<_, _>>()?;
-        children.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        children.sort_by(|first, second| first.file_name().cmp(&second.file_name()));
         Ok(children)
     }
 }
@@ -163,10 +163,10 @@ impl Iterator for FSNodeStreamer {
             let node = Node::from_path(&path)?;
 
             let num_children = if node.is_dir() {
-                let children = Self::get_children_rev_sorted(&path)?;
+                let children = Self::get_children_sorted(&path)?;
                 let mut valid_children_count = 0;
 
-                for child in children.into_iter() {
+                for child in children.into_iter().rev() {
                     if utils::filter_path(&child, None, Some(&self.exclude_paths)) {
                         self.stack.push(child);
                         valid_children_count += 1;
@@ -211,9 +211,11 @@ impl SerializedNodeStreamer {
         let mut stack = Vec::new();
 
         if let Some(id) = root_id {
-            let tree = Tree::load_from_repo(repo.as_ref(), &id)
+            let mut tree = Tree::load_from_repo(repo.as_ref(), &id)
                 .with_context(|| format!("Failed to load root tree with ID {}", id))?;
 
+            tree.nodes
+                .sort_by(|first, second| first.name.cmp(&second.name));
             for node in tree.nodes.into_iter().rev() {
                 stack.push((
                     base_path.clone(),
@@ -259,10 +261,13 @@ impl Iterator for SerializedNodeStreamer {
             // If it’s a subtree (i.e., a directory), load its children and push them.
             // Also, update the current `stream_node`'s `num_children` with its actual count.
             if let Some(subtree_id) = &stream_node.node.tree {
-                let subtree = Tree::load_from_repo(self.repo.as_ref(), subtree_id)?;
+                let mut subtree = Tree::load_from_repo(self.repo.as_ref(), subtree_id)?;
                 let num_children_of_this_dir = subtree.nodes.len();
 
                 // Push children for the next iteration. Their `num_children` starts at 0.
+                subtree
+                    .nodes
+                    .sort_by(|first, second| first.name.cmp(&second.name));
                 for subnode in subtree.nodes.into_iter().rev() {
                     // Use into_iter() for efficiency
                     self.stack.push((

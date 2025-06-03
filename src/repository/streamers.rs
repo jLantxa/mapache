@@ -38,7 +38,15 @@ pub struct StreamNode {
 pub type StreamNodeInfo = (PathBuf, StreamNode);
 
 /// A depth‑first *pre‑order* filesystem streamer.
-/// Items are produced in lexicographical order of their *full* paths.
+///
+/// Items are produced in lexicographical order of their *full* paths. The root path is not emitted.
+/// The internal stack only stores the nodes strictly necessary for iteration. The full tree is not
+/// stored in memory. The iteration with a stack avoids recursive calls.
+///
+/// This streamer will emit all the merged nodes as if they belong to the same tree,
+/// intercalating intermediate paths between disjoint branches.
+/// This streamer also allows excluding a list of paths. Paths in this list, and their
+/// children, are never explored nor emitted.
 #[derive(Debug)]
 pub struct FSNodeStreamer {
     stack: Vec<PathBuf>,
@@ -48,6 +56,7 @@ pub struct FSNodeStreamer {
 
 impl FSNodeStreamer {
     /// Creates an FSNodeStreamer from multiple root paths. The paths are iterated in lexicographical order.
+    /// Exclude paths and their children are neither emitted nor explored into.
     pub fn from_paths(mut paths: Vec<PathBuf>, mut exclude_paths: Vec<PathBuf>) -> Result<Self> {
         for path in &paths {
             if !path.exists() {
@@ -109,7 +118,7 @@ impl Iterator for FSNodeStreamer {
                     // Skip intermediate if it's excluded
                     if !utils::filter_path(iv_path, None, Some(&self.exclude_paths)) {
                         self.intermediate_paths.pop();
-                        continue; 
+                        continue;
                     }
                     // Skip stack path if it's excluded
                     if !utils::filter_path(sv_path, None, Some(&self.exclude_paths)) {
@@ -175,6 +184,15 @@ impl Iterator for FSNodeStreamer {
     }
 }
 
+/// A depth‑first *pre‑order* streamer of serialized nodes.
+///
+/// Items are produced in lexicographical order of their *full* paths. The root node is not emitted.
+/// Trees are loaded from the repository as they are needed. The full tree is not  stored in memory.
+/// The iteration with a stack avoids recursive calls.
+///
+/// This streamer also allows including and excluding a list of paths. Paths in the exclude list, and their
+/// children, are never explored nor emitted. If the include list is not empty, only nodes in the same branch
+/// (children and parents (intermediate nodes to reach the included path)) as those paths will be emitted.
 pub struct SerializedNodeStreamer {
     repo: Arc<dyn RepositoryBackend>,
     stack: Vec<StreamNodeInfo>,
@@ -280,7 +298,17 @@ pub enum NodeDiff {
     Unchanged,
 }
 
-/// Streaming diff between two ordered node streams.
+/// A depth‑first *pre‑order* streamer of node differences.
+///
+/// Items are produced in lexicographical order of their *full* paths. The root node is not emitted.
+///
+/// This treamer accepts any iterator of `(PathBuf, StreamNode)` and produces a stream of differences
+/// between a `previous` stream and a `next`. The differences between two nodes can be:
+///
+/// - New: `next` has a node not present in `previous`.
+/// - Deleted: `prev` has a node not present in `next`.
+/// - Changed: `previous` and `next` share a node, but they are deemed to be different (by comparing metadata).
+/// - Unchanged: `previous` and `next` share a node and they are deemed to be the same (by comparing metadata).
 pub struct NodeDiffStreamer<P, I>
 where
     P: Iterator<Item = Result<(PathBuf, StreamNode)>>,

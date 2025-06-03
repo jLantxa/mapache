@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      
+    groups:
+      all-rust-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+          
+    labels:
+      - "dependencies"
+      - "dependabot-all-updates"
+      
+    versioning-strategy: "lockfile-only"

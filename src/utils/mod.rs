@@ -59,10 +59,8 @@ pub fn format_size(bytes: u64) -> String {
         return format!("{:.2} MiB", (bytes as f64) / (size::MiB as f64));
     } else if bytes >= size::KiB {
         return format!("{:.2} KiB", (bytes as f64) / (size::KiB as f64));
-    } else if bytes != 1 {
-        return format!("{} bytes", bytes);
     } else {
-        return format!("1 byte");
+        return format!("{} B", bytes);
     }
 }
 
@@ -294,8 +292,8 @@ mod tests {
 
     #[test]
     fn test_format_size() {
-        assert_eq!(format_size(1), "1 byte");
-        assert_eq!(format_size(324), "324 bytes");
+        assert_eq!(format_size(1), "1 B");
+        assert_eq!(format_size(324), "324 B");
         assert_eq!(format_size(1_205), "1.18 KiB");
         assert_eq!(format_size(124_112), "121.20 KiB");
         assert_eq!(format_size(1_045_024), "1020.53 KiB");

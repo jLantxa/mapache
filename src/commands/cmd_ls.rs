@@ -110,10 +110,11 @@ fn ls(path: PathBuf, node: Node, repo: &dyn RepositoryBackend, args: &CmdArgs) -
 
 fn ls_tree(
     path: PathBuf, // 'path' here is the initial path
-    tree: Tree,
+    mut tree: Tree,
     repo: &dyn RepositoryBackend,
     args: &CmdArgs,
 ) -> Result<()> {
+    tree.nodes.sort_by_key(|node| node.name.to_lowercase());
     for node in &tree.nodes {
         println!("{}", node_to_string(&node, args.long, args.human_readable))
     }
@@ -132,7 +133,8 @@ fn ls_tree(
             if let Some(tree_id) = node.tree {
                 let current_path = parent_path.join(&node.name);
 
-                let tree = Tree::load_from_repo(repo, &tree_id)?;
+                let mut tree = Tree::load_from_repo(repo, &tree_id)?;
+                tree.nodes.sort_by_key(|node| node.name.to_lowercase());
 
                 println!();
 

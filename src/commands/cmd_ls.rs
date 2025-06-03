@@ -198,7 +198,10 @@ fn get_colorized_node_name(node: &Node) -> String {
     if node.is_dir() {
         format!("{}", node.name.bold().blue())
     } else if node.is_symlink() {
-        format!("{}", node.name.cyan())
+        match &node.symlink_target {
+            None => format!("{}", node.name.cyan()),
+            Some(target) => format!("{} -> {}", node.name.cyan(), target.display()),
+        }
     } else if node.is_block_device() || node.is_char_device() {
         format!("{}", node.name.yellow().on_black())
     } else {

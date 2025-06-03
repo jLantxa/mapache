@@ -168,7 +168,7 @@ fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
         format!(
             "{:<10} {:3} {:<7}  {:<7}  {:>10}  {:<12}  {}",
             node.metadata.mode.map_or(String::from("None"), |mode| {
-                mode.to_string() // TODO: Pretty print the permissions
+                utils::mode_to_permissions_string(mode)
             }),
             node.metadata
                 .nlink

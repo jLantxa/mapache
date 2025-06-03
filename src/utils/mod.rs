@@ -268,6 +268,69 @@ pub fn pretty_print_system_time(time: SystemTime, format_str: Option<String>) ->
     Ok(datetime_local.format(&format).to_string())
 }
 
+pub fn mode_to_permissions_string(mode: u32) -> String {
+    let mut s = String::with_capacity(10);
+
+    let file_type = mode & 0o170000; // Mask for file type bits
+    match file_type {
+        0o100000 => s.push('-'), // Regular file
+        0o040000 => s.push('d'), // Directory
+        0o120000 => s.push('l'), // Symbolic link
+        0o010000 => s.push('p'), // Named pipe (FIFO)
+        0o020000 => s.push('c'), // Character device
+        0o060000 => s.push('b'), // Block device
+        0o140000 => s.push('s'), // Socket
+        _ => s.push('?'),        // Unknown file type
+    }
+
+    let get_rwx =
+        |mode_val: u32, read_bit: u32, write_bit: u32, exec_bit: u32, special_bit: u32| {
+            let mut part = ['-', '-', '-'];
+
+            if (mode_val & read_bit) != 0 {
+                part[0] = 'r';
+            }
+            if (mode_val & write_bit) != 0 {
+                part[1] = 'w';
+            }
+
+            if (mode_val & exec_bit) != 0 {
+                if (mode_val & special_bit) != 0 {
+                    if special_bit == 0o1000 {
+                        part[2] = 't';
+                    } else {
+                        part[2] = 's';
+                    }
+                } else {
+                    part[2] = 'x';
+                }
+            } else {
+                if (mode_val & special_bit) != 0 {
+                    if special_bit == 0o1000 {
+                        part[2] = 'T';
+                    } else {
+                        part[2] = 'S';
+                    }
+                } else {
+                    part[2] = '-';
+                }
+            }
+            part
+        };
+
+    let owner_rwx = get_rwx(mode, 0o400, 0o200, 0o100, 0o4000);
+    s.extend(owner_rwx.iter());
+
+    let group_rwx = get_rwx(mode, 0o040, 0o020, 0o010, 0o2000);
+    s.extend(group_rwx.iter());
+
+    // 4. Others permissions (rwx, potentially t/T for Sticky
+    let others_rwx = get_rwx(mode, 0o004, 0o002, 0o001, 0o1000);
+    s.extend(others_rwx.iter());
+
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,5 +432,27 @@ mod tests {
 
         assert_eq!(root_children_count, 1);
         assert_eq!(intermediate_paths, expected);
+    }
+
+    #[test]
+    fn test_mode_to_permissions_string() {
+        assert_eq!(mode_to_permissions_string(0o100755), "-rwxr-xr-x");
+        assert_eq!(mode_to_permissions_string(0o100644), "-rw-r--r--");
+        assert_eq!(mode_to_permissions_string(0o100700), "-rwx------");
+        assert_eq!(mode_to_permissions_string(0o100000), "----------");
+        assert_eq!(mode_to_permissions_string(0o040755), "drwxr-xr-x");
+        assert_eq!(mode_to_permissions_string(0o040700), "drwx------");
+        assert_eq!(mode_to_permissions_string(0o120777), "lrwxrwxrwx");
+        assert_eq!(mode_to_permissions_string(0o104755), "-rwsr-xr-x");
+        assert_eq!(mode_to_permissions_string(0o102755), "-rwxr-sr-x");
+        assert_eq!(mode_to_permissions_string(0o041777), "drwxrwxrwt");
+        assert_eq!(mode_to_permissions_string(0o104644), "-rwSr--r--");
+        assert_eq!(mode_to_permissions_string(0o102644), "-rw-r-Sr--");
+        assert_eq!(mode_to_permissions_string(0o041644), "drw-r--r-T");
+        assert_eq!(mode_to_permissions_string(0o020666), "crw-rw-rw-");
+        assert_eq!(mode_to_permissions_string(0o060660), "brw-rw----");
+        assert_eq!(mode_to_permissions_string(0o010666), "prw-rw-rw-");
+        assert_eq!(mode_to_permissions_string(0o140666), "srw-rw-rw-");
+        assert_eq!(mode_to_permissions_string(0o000755), "?rwxr-xr-x");
     }
 }

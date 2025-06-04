@@ -29,7 +29,11 @@ use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
     global::{self, ID},
-    repository::{self, snapshot::Snapshot, streamers::FSNodeStreamer},
+    repository::{
+        self,
+        snapshot::{Snapshot, SnapshotStreamer},
+        streamers::FSNodeStreamer,
+    },
     ui::{
         self,
         snapshot_progress::SnapshotProgressReporter,
@@ -125,8 +129,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
         false => match &args.parent {
             UseSnapshot::Latest => {
-                let snapshots_sorted = repo.load_all_snapshots_sorted()?;
-                let s = snapshots_sorted.last().cloned();
+                let mut snapshots = SnapshotStreamer::new(repo.clone())?;
+                let s = snapshots.latest();
                 match &s {
                     Some((id, snap)) => {
                         ui::cli::log!(

@@ -23,7 +23,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot},
     global::ID,
-    repository::{self, RepositoryBackend},
+    repository::{self, RepositoryBackend, snapshot::SnapshotStreamer},
     restorer::{Resolution, Restorer},
     ui::{self, cli, restore_progress::RestoreProgressReporter},
     utils,
@@ -75,9 +75,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
         UseSnapshot::Latest => {
-            let snapshots_sorted = repo.load_all_snapshots_sorted()?;
-            let s = snapshots_sorted.last();
-            s.cloned()
+            let mut snapshots = SnapshotStreamer::new(repo.clone())?;
+            snapshots.latest()
         }
         UseSnapshot::SnapshotId(id_hex) => {
             let id = ID::from_hex(&id_hex)?;

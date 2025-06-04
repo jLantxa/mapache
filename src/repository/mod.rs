@@ -90,11 +90,7 @@ pub trait RepositoryBackend: Sync + Send {
     /// Get a snapshot by hash
     fn load_snapshot(&self, id: &ID) -> Result<Snapshot>;
 
-    /// Get all snapshots in the repository
-    fn load_all_snapshots(&self) -> Result<Vec<(ID, Snapshot)>>;
-
-    /// Get all snapshots in the repository, sorted by datetime.
-    fn load_all_snapshots_sorted(&self) -> Result<Vec<(ID, Snapshot)>>;
+    fn list_snapshot_ids(&self) -> Result<Vec<ID>>;
 
     /// Saves an IndexFile into the repository
     fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;

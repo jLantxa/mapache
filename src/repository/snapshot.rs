@@ -14,10 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
+use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+
+use crate::repository::RepositoryBackend;
 
 use super::ID;
 
@@ -63,4 +66,58 @@ pub struct SnapshotSummary {
     pub changed_dirs: u32,
     pub unchanged_dirs: u32,
     pub deleted_dirs: u32,
+}
+
+/// A snapshot streamer.
+///
+/// This streamer loads Snapshots on demand.
+pub struct SnapshotStreamer {
+    snapshot_ids: Vec<ID>,
+    repo: Arc<dyn RepositoryBackend>,
+}
+
+impl SnapshotStreamer {
+    /// Creates a new SnapshotStreamer. It needs a repo to load snapshots.
+    pub fn new(repo: Arc<dyn RepositoryBackend>) -> Result<Self> {
+        Ok(Self {
+            snapshot_ids: repo.list_snapshot_ids()?,
+            repo,
+        })
+    }
+
+    /// The streamer has no more Snapshot IDs to load. It is therefore empty.
+    pub fn is_empty(&self) -> bool {
+        self.snapshot_ids.is_empty()
+    }
+
+    /// Returns the number of Snapshot IDs remaining.
+    pub fn len(&self) -> usize {
+        self.snapshot_ids.len()
+    }
+
+    /// Consumes the iterator and returns the Snapshot with the latest ID.
+    pub fn latest(&mut self) -> Option<(ID, Snapshot)> {
+        let (mut latest_id, mut latest_sn) = self.next()?;
+
+        while let Some((mut id, mut snapshot)) = self.next() {
+            if snapshot.timestamp > latest_sn.timestamp {
+                std::mem::swap(&mut id, &mut latest_id);
+                std::mem::swap(&mut snapshot, &mut latest_sn);
+            }
+        }
+
+        self.snapshot_ids.clear();
+        Some((latest_id, latest_sn))
+    }
+}
+
+impl Iterator for SnapshotStreamer {
+    type Item = (ID, Snapshot);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = self.snapshot_ids.pop()?;
+        self.repo
+            .load_snapshot(&id)
+            .map_or(None, |snapshot| Some((id, snapshot)))
+    }
 }

@@ -269,9 +269,8 @@ impl RepositoryBackend for Repository {
         Ok(snapshot)
     }
 
-    /// Get all snapshots in the repository
-    fn load_all_snapshots(&self) -> Result<Vec<(ID, Snapshot)>> {
-        let mut snapshots = Vec::new();
+    fn list_snapshot_ids(&self) -> Result<Vec<ID>> {
+        let mut ids = Vec::new();
 
         let paths = self
             .backend
@@ -281,22 +280,12 @@ impl RepositoryBackend for Repository {
         for path in paths {
             if self.backend.is_file(&path) {
                 if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
-                    let snapshot = self.backend.read(&path)?;
-                    let snapshot = self.secure_storage.decode(&snapshot)?;
-                    let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
-                    snapshots.push((ID::from_hex(file_name)?, snapshot));
+                    ids.push(ID::from_hex(file_name)?);
                 }
             }
         }
 
-        Ok(snapshots)
-    }
-
-    /// Get all snapshots in the repository, sorted by datetime.
-    fn load_all_snapshots_sorted(&self) -> Result<Vec<(ID, Snapshot)>> {
-        let mut snapshots = self.load_all_snapshots()?;
-        snapshots.sort_by_key(|(_snapshot_id, snapshot)| snapshot.timestamp);
-        Ok(snapshots)
+        Ok(ids)
     }
 
     fn save_index(&self, index: IndexFile) -> Result<(u64, u64)> {

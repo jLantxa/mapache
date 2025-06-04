@@ -22,7 +22,7 @@ use clap::{ArgGroup, Parser};
 
 use crate::backend::{make_dry_backend, new_backend_with_prompt};
 use crate::global::{FileType, ID};
-use crate::repository::snapshot::Snapshot;
+use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
 use crate::{repository, ui, utils};
 
 use super::GlobalArgs;
@@ -89,7 +89,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = make_dry_backend(backend, args.dry_run);
 
     let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
-    let snapshots_sorted = repo.load_all_snapshots_sorted()?;
+    let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();
+    snapshots_sorted.sort_by_key(|(_id, snapshot)| snapshot.timestamp);
 
     let mut ids_to_keep: HashSet<ID> = HashSet::new();
 

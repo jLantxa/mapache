@@ -216,12 +216,13 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod test {
-    use std::time::SystemTime;
-
-    use chrono::{Duration, Local};
-
-    use tempfile::tempdir;
+    use {
+        chrono::{Duration, Local},
+        std::time::SystemTime,
+        tempfile::tempdir,
+    };
 
     use super::*;
 

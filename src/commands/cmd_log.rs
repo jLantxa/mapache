@@ -22,9 +22,14 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     global::{self, ID},
-    repository::{self, snapshot::Snapshot},
-    ui,
-    ui::table::{Alignment, Table},
+    repository::{
+        self,
+        snapshot::{Snapshot, SnapshotStreamer},
+    },
+    ui::{
+        self,
+        table::{Alignment, Table},
+    },
     utils,
 };
 
@@ -43,28 +48,28 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
 
-    let snapshots = repo.load_all_snapshots_sorted()?;
+    let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();
+    snapshots_sorted.sort_by_key(|(_id, snapshot)| snapshot.timestamp);
 
-    if snapshots.is_empty() {
+    if snapshots_sorted.is_empty() {
         ui::cli::log!("No snapshots found");
         return Ok(());
     }
 
     println!();
     if args.compact {
-        log_compact(&snapshots);
+        log_compact(&snapshots_sorted);
     } else {
-        log(&snapshots);
+        log(&snapshots_sorted);
     }
 
-    println!("{} snapshots", snapshots.len());
+    println!("{} snapshots", snapshots_sorted.len());
 
     Ok(())
 }
 
 fn log(snapshots: &Vec<(ID, Snapshot)>) {
     let mut peekable_snapshots = snapshots.iter().peekable();
-
     while let Some((id, snapshot)) = peekable_snapshots.next() {
         println!("{}", id.to_hex().bold().yellow());
         println!(
@@ -103,8 +108,6 @@ fn log(snapshots: &Vec<(ID, Snapshot)>) {
 }
 
 fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
-    let mut peekable_snapshots = snapshots.iter().peekable();
-
     let mut table =
         Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
 
@@ -114,7 +117,7 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
         "Size".bold().to_string(),
     ]);
 
-    while let Some((id, snapshot)) = peekable_snapshots.next() {
+    for (id, snapshot) in snapshots {
         table.add_row(vec![
             id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
                 .bold()

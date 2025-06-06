@@ -44,8 +44,8 @@ impl Restorer {
         snapshot: &Snapshot,
         resolution: &Resolution,
         target_path: &Path,
-        include: Vec<PathBuf>,
-        exclude: Vec<PathBuf>,
+        include: Option<Vec<PathBuf>>,
+        exclude: Option<Vec<PathBuf>>,
         progress_reporter: Arc<RestoreProgressReporter>,
     ) -> Result<()> {
         let tree = snapshot.tree.clone();

@@ -102,8 +102,8 @@ impl Archiver {
             arch.repo.clone(),
             parent_tree_id,
             arch.snapshot_root_path.clone(),
-            Vec::new(),
-            Vec::new(),
+            None,
+            None,
         )?;
 
         arch.repo.init_pack_saver(arch.write_concurrency);

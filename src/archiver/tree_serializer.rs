@@ -80,7 +80,7 @@ pub(crate) fn init_pending_trees(
 
     // We need to know ahead how many children the root is expecting, because the FSNodeStreamer
     // does not emit it (the root node).
-    let (root_children_count, _) = utils::intermediate_paths(snapshot_root_path, paths);
+    let (root_children_count, _) = utils::get_intermediate_paths(snapshot_root_path, paths);
 
     // The tree root, has no node
     pending_trees.insert(

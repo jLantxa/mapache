@@ -207,7 +207,7 @@ impl RepositoryBackend for Repository {
             ObjectType::Tree => self.tree_packer.lock().unwrap(),
         };
 
-        packer_guard.add_blob(&id, data);
+        packer_guard.add_blob(id.clone(), data);
 
         // Flush if the packer is considered full
         if packer_guard.size() > self.max_packer_size {

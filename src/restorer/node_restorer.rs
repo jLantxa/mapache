@@ -15,29 +15,26 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use {
-    anyhow::{Context, Result},
+    anyhow::{Context, Result, bail},
     std::{
-        fs::{self, File, FileTimes, OpenOptions},
+        fs::{self, OpenOptions},
         io::Write,
         path::Path,
     },
 };
 
 #[cfg(unix)]
-use {
-    anyhow::bail,
-    std::{
-        fs::Permissions,
-        os::unix::fs::{PermissionsExt, symlink},
-    },
+use std::{
+    fs::Permissions,
+    os::unix::fs::{PermissionsExt, symlink},
 };
 
-use crate::{
-    repository::{
-        RepositoryBackend,
-        tree::{Node, NodeType},
-    },
-    ui,
+// Add filetime imports
+use filetime::{FileTime, set_file_times}; // Import FileTime and set_file_times
+
+use crate::repository::{
+    RepositoryBackend,
+    tree::{Node, NodeType},
 };
 
 /// Restores a node to the specified destination path.
@@ -91,11 +88,14 @@ pub fn restore_node_to_path(
                 })?;
             }
 
+            // Restore metadata after content is written
             restore_node_metadata(node, dst_path)?;
         }
 
         NodeType::Directory => {
-            std::fs::create_dir_all(dst_path)?;
+            std::fs::create_dir_all(dst_path)
+                .with_context(|| format!("Could not create directory '{}'", dst_path.display()))?;
+            // Restore metadata after directory is created
             restore_node_metadata(node, dst_path)?;
         }
 
@@ -116,54 +116,63 @@ pub fn restore_node_to_path(
             }
             #[cfg(not(unix))]
             {
-                ui::cli::log_warning("Symlink restoration not supported on this operating system");
+                bail!(
+                    "Symlink restoration not supported on this operating system: '{}'",
+                    dst_path.display()
+                );
             }
-
-            // No need to restore metadata for symlinks?
         }
 
         NodeType::BlockDevice => {
-            // TODO: Implement BlockDevice restoration
             #[cfg(unix)]
-            {
-                ui::cli::log_warning("Block device restoration not supported yet");
-            }
-
+            bail!(
+                "Restoration of block device '{}' not supported yet.",
+                dst_path.display()
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning("Block device restoration not supported on this operating system");
+            bail!(
+                "Block device restoration not supported on this operating system: '{}'",
+                dst_path.display()
+            );
         }
 
         NodeType::CharDevice => {
-            // TODO: Implement CharDevice restoration
             #[cfg(unix)]
-            {
-                ui::cli::log_warning("Char device restoration not supported yet");
-            }
-
+            bail!(
+                "Restoration of character device '{}' not supported yet.",
+                dst_path.display()
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning("Char device restoration not supported on this operating system");
+            bail!(
+                "Character device restoration not supported on this operating system: '{}'",
+                dst_path.display()
+            );
         }
 
         NodeType::Fifo => {
-            // TODO: Implement Fifo restoration
             #[cfg(unix)]
-            {
-                ui::cli::log_warning("FIFO restoration not supported yet");
-            }
-
+            bail!(
+                "Restoration of FIFO (named pipe) '{}' not supported yet.",
+                dst_path.display()
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning("FIFO device restoration not supported on this operating system");
+            bail!(
+                "FIFO restoration not supported on this operating system: '{}'",
+                dst_path.display()
+            );
         }
 
         NodeType::Socket => {
-            // TODO: Implement Socket restoration
             #[cfg(unix)]
-            {
-                ui::cli::log_warning("Socket restoration not supported yet");
-            }
-
+            bail!(
+                "Restoration of socket '{}' not supported yet.",
+                dst_path.display()
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning("Socket restoration not supported on this operating system");
+            bail!(
+                "Socket restoration not supported on this operating system: '{}'",
+                dst_path.display()
+            );
         }
     }
 
@@ -172,39 +181,41 @@ pub fn restore_node_to_path(
 
 /// Restores the metadata of a node to the specified destination path.
 fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
-    // mtime
+    // Set file times
     if let Some(modified_time) = node.metadata.modified_time {
-        let dst_file = File::open(dst_path)?;
-        let filetimes = FileTimes::new().set_modified(modified_time);
-        dst_file
-            .set_times(filetimes)
-            .with_context(|| format!("Could not set file times to path {:?}", dst_path))?;
+        let ft_mtime = FileTime::from(modified_time);
+        let ft_atime = node
+            .metadata
+            .accessed_time
+            .map_or(ft_mtime, |atime| FileTime::from(atime));
+
+        set_file_times(dst_path, ft_atime, ft_mtime)
+            .with_context(|| format!("Could not set modified time for '{}'", dst_path.display()))?;
     }
 
-    // Unix metadata
+    // Unix-specific metadata (mode, uid, gid)
     #[cfg(unix)]
     {
-        // mode
+        // Set file permissions (mode)
         if let Some(mode) = node.metadata.mode {
             let permissions = Permissions::from_mode(mode);
             if let Err(e) = std::fs::set_permissions(dst_path, permissions) {
                 bail!(
-                    "Could not set permissions for '{}': {}",
+                    "Could not set permissions for '{}': {}. This may not be supported for all node types (e.g. symlinks).",
                     dst_path.display(),
                     e.to_string()
                 );
             }
         }
 
-        // uid & gid
-        let uid = node.metadata.owner_uid.map(|u| u as u32); // Option<u32>
-        let gid = node.metadata.owner_gid.map(|g| g as u32); // Option<u32>
+        // Set owner (uid) and group (gid)
+        let uid = node.metadata.owner_uid.map(|u| u as u32);
+        let gid = node.metadata.owner_gid.map(|g| g as u32);
 
-        // Only attempt chown if either uid or gid is explicitly specified
         if uid.is_some() || gid.is_some() {
             if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
                 bail!(
-                    "Could not set owner/group for '{}': {}. This operation often requires elevated privileges (e.g., root).",
+                    "Could not set owner/group for '{}': {}. This operation often requires elevated privileges (e.g., root) and may not be supported for all node types (e.g. symlinks).",
                     dst_path.display(),
                     e.to_string()
                 );
@@ -229,17 +240,25 @@ mod test {
     #[cfg(unix)]
     #[test]
     fn test_restore_mtime() -> Result<()> {
+        use std::fs::File;
+
         let temp_repo_dir = tempdir().expect("Could not create tmp dir");
 
         let file_path = temp_repo_dir.path().join("file.txt");
-        let file = File::create_new(&file_path).expect("Could not open file");
         std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
         let node = Node::from_path(&file_path)?;
 
         // Change mtime to 1 day before now
         let prev_mtime: SystemTime = (Local::now() - Duration::days(1)).into();
-        let filetimes = FileTimes::new().set_modified(prev_mtime);
-        file.set_times(filetimes).expect("Expected to set an mtime");
+        let ft_mtime = FileTime::from(prev_mtime);
+        let ft_atime = node
+            .metadata
+            .modified_time
+            .map_or(ft_mtime, |atime| FileTime::from(atime));
+
+        set_file_times(&file_path, ft_atime, ft_mtime).with_context(|| {
+            format!("Could not set modified time for '{}'", file_path.display())
+        })?;
 
         restore_node_metadata(&node, &file_path)?;
 

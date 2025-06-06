@@ -153,16 +153,6 @@ pub(crate) fn save_file(
 }
 
 // Chunks the file and saves the blobs in the repository.
-// This function completes the pipeline with two more stages:
-// 1. Stage 1 produces chunks.
-// 2. Stage 2 receives and saves the chunks. To be efficient, the second
-//    stage must not stall the chunker, for example, by blocking when a packer
-//    must be flushed.
-//
-// This is extremely useful when the only work remaining is processing a single
-// big file, which is only handled by a single worker upstream. We want to make
-// sure that our thoughput is only limited by the available I/O bandwidth, not
-// the rate at which the chunker can produce blobs.
 fn chunk_and_save_blobs(
     repo: Arc<dyn RepositoryBackend>,
     src_path: &Path,

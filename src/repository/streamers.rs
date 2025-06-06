@@ -70,7 +70,7 @@ impl FSNodeStreamer {
         // Calculate intermediate paths and count children (root included)
         let common_root = utils::calculate_lcp(&paths);
         let (_root_children_count, intermediate_path_set) =
-            utils::intermediate_paths(&common_root, &paths);
+            utils::get_intermediate_paths(&common_root, &paths);
 
         // Filter intermediate paths based on exclude_paths and collect
         let mut intermediate_paths: Vec<(PathBuf, usize)> = intermediate_path_set
@@ -196,8 +196,8 @@ impl Iterator for FSNodeStreamer {
 pub struct SerializedNodeStreamer {
     repo: Arc<dyn RepositoryBackend>,
     stack: Vec<StreamNodeInfo>,
-    include: Vec<PathBuf>,
-    exclude: Vec<PathBuf>,
+    include: Option<Vec<PathBuf>>,
+    exclude: Option<Vec<PathBuf>>,
 }
 
 impl SerializedNodeStreamer {
@@ -205,8 +205,8 @@ impl SerializedNodeStreamer {
         repo: Arc<dyn RepositoryBackend>,
         root_id: Option<ID>,
         base_path: PathBuf,
-        include: Vec<PathBuf>,
-        exclude: Vec<PathBuf>,
+        include: Option<Vec<PathBuf>>,
+        exclude: Option<Vec<PathBuf>>,
     ) -> Result<Self> {
         let mut stack = Vec::new();
 
@@ -252,7 +252,7 @@ impl Iterator for SerializedNodeStreamer {
                 }
             };
 
-            if utils::filter_path(&cpath, Some(&self.include), Some(&self.exclude)) {
+            if utils::filter_path(&cpath, self.include.as_ref(), self.exclude.as_ref()) {
                 break (cpath, node);
             }
         };

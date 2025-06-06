@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 
 use crate::{
@@ -30,11 +30,11 @@ use crate::{
 };
 
 use super::{
-    ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     index::{Index, IndexFile, MasterIndex},
     manifest::Manifest,
     pack_saver::PackSaver,
     snapshot::Snapshot,
+    RepoVersion, RepositoryBackend, ID, KEYS_DIR,
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -191,7 +191,7 @@ impl RepositoryBackend for Repository {
         };
 
         let mut index_guard = self.index.lock().unwrap();
-        let blob_exists = index_guard.contains(&id) || !index_guard.add_pending_blob(&id);
+        let blob_exists = index_guard.contains(&id) || !index_guard.add_pending_blob(id.clone());
         drop(index_guard);
 
         // If the blob was already pending, return early, as we are finished here.
@@ -207,7 +207,7 @@ impl RepositoryBackend for Repository {
             ObjectType::Tree => self.tree_packer.lock().unwrap(),
         };
 
-        packer_guard.add_blob(&id, data);
+        packer_guard.add_blob(id.clone(), data);
 
         // Flush if the packer is considered full
         if packer_guard.size() > self.max_packer_size {
@@ -502,9 +502,6 @@ impl Repository {
             master_index_guard.add_index(index);
         }
 
-        // Pending index for new blobs
-        master_index_guard.add_index(Index::new());
-
         Ok(())
     }
 
@@ -522,7 +519,7 @@ impl Repository {
 #[cfg(test)]
 mod test {
 
-    use base64::{Engine, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine};
     use tempfile::tempdir;
 
     use crate::{

@@ -50,12 +50,12 @@ pub struct CmdArgs {
     pub snapshot: UseSnapshot,
 
     /// A list of paths to restore.
-    #[clap(long, required = false)]
-    pub include: Vec<PathBuf>,
+    #[clap(long)]
+    pub include: Option<Vec<PathBuf>>,
 
     /// A list of paths to exclude.
-    #[clap(long, required = false)]
-    pub exclude: Vec<PathBuf>,
+    #[clap(long)]
+    pub exclude: Option<Vec<PathBuf>>,
 
     /// Method for conflict resolution in case a file or directory already exists in the target location.
     ///

@@ -39,10 +39,10 @@ where
     }
 
     pub fn insert(&mut self, item: T) -> usize {
-        if self.map.contains_key(&item) {
-            *self.map.get(&item).unwrap()
+        if let Some(&idx) = self.map.get(&item) {
+            idx
         } else {
-            let index: usize = self.values.len();
+            let index = self.values.len();
             self.values.push(item.clone());
             self.map.insert(item, index);
             index
@@ -61,6 +61,16 @@ where
         Iter {
             iter: self.values.iter(),
         }
+    }
+
+    /// Returns the number of unique items in the set.
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Returns `true` if the set contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 }
 
@@ -91,5 +101,115 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new() {
+        let set = IndexSet::<String>::new();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+    }
+
+    #[test]
+    fn test_insert_new_item() {
+        let mut set = IndexSet::new();
+        let index1 = set.insert("apple".to_string());
+        assert_eq!(index1, 0);
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.get_value(0), Some(&"apple".to_string()));
+        assert_eq!(set.get_index(&"apple".to_string()), Some(&0));
+
+        let index2 = set.insert("banana".to_string());
+        assert_eq!(index2, 1);
+        assert_eq!(set.len(), 2);
+        assert_eq!(set.get_value(1), Some(&"banana".to_string()));
+        assert_eq!(set.get_index(&"banana".to_string()), Some(&1));
+    }
+
+    #[test]
+    fn test_insert_existing_item() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string()); // index 0
+        let index = set.insert("apple".to_string()); // Should return existing index
+        assert_eq!(index, 0);
+        assert_eq!(set.len(), 1); // Length should not change
+    }
+
+    #[test]
+    fn test_get_index() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string());
+        set.insert("banana".to_string());
+
+        assert_eq!(set.get_index(&"apple".to_string()), Some(&0));
+        assert_eq!(set.get_index(&"banana".to_string()), Some(&1));
+        assert_eq!(set.get_index(&"orange".to_string()), None);
+    }
+
+    #[test]
+    fn test_get_value() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string());
+        set.insert("banana".to_string());
+
+        assert_eq!(set.get_value(0), Some(&"apple".to_string()));
+        assert_eq!(set.get_value(1), Some(&"banana".to_string()));
+        assert_eq!(set.get_value(2), None);
+    }
+
+    #[test]
+    fn test_iter() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string());
+        set.insert("banana".to_string());
+        set.insert("cherry".to_string());
+
+        let mut iter = set.iter();
+        assert_eq!(iter.next(), Some(&"apple".to_string()));
+        assert_eq!(iter.next(), Some(&"banana".to_string()));
+        assert_eq!(iter.next(), Some(&"cherry".to_string()));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_into_iter() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string());
+        set.insert("banana".to_string());
+        set.insert("cherry".to_string());
+
+        let vec: Vec<String> = set.into_iter().collect();
+        assert_eq!(
+            vec,
+            vec![
+                "apple".to_string(),
+                "banana".to_string(),
+                "cherry".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_len_and_is_empty() {
+        let mut set = IndexSet::new();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+
+        set.insert("first".to_string());
+        assert!(!set.is_empty());
+        assert_eq!(set.len(), 1);
+
+        set.insert("second".to_string());
+        assert!(!set.is_empty());
+        assert_eq!(set.len(), 2);
+
+        set.insert("first".to_string()); // duplicate
+        assert!(!set.is_empty());
+        assert_eq!(set.len(), 2); // Length should not change
     }
 }

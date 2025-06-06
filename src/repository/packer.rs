@@ -19,7 +19,7 @@ use blake3::Hasher;
 use crate::global::ID;
 
 /// Describes a single blob's location and size within a packed file.
-/// This metadata is crucial for retrieving individual blobs from a larger pack.
+/// This metadata is crucial for retrieving individual blobs from a pack.
 #[derive(Debug, Clone)]
 pub struct PackedBlobDescriptor {
     pub id: ID,
@@ -27,6 +27,8 @@ pub struct PackedBlobDescriptor {
     pub length: u64,
 }
 
+/// A tuple representing the flushed contents of a `Packer`:
+/// (packed data, list of blob descriptors, pack ID).
 pub type FlushedPack = (Vec<u8>, Vec<PackedBlobDescriptor>, ID);
 
 /// The `Packer` is an in-memory buffer designed to efficiently accumulate
@@ -41,20 +43,18 @@ pub struct Packer {
     data: Vec<u8>,
     blob_descriptors: Vec<PackedBlobDescriptor>,
     hasher: Hasher,
-
-    data_capacity: usize,
-    blob_descriptor_capacity: usize,
 }
 
 impl Packer {
-    /// Creates a new, empty `Packer`.
-    pub fn _new() -> Self {
+    /// Creates a new, empty `Packer` with default capacities.
+    ///
+    /// For better performance, consider using `Packer::with_capacity` if you have
+    /// an estimate of the total data size and number of blobs you intend to add.
+    pub fn new() -> Self {
         Self {
             data: Vec::new(),
             blob_descriptors: Vec::new(),
             hasher: Hasher::new(),
-            data_capacity: 0,
-            blob_descriptor_capacity: 0,
         }
     }
 
@@ -63,18 +63,13 @@ impl Packer {
     ///
     /// Using this constructor can improve performance by reducing the number of memory
     /// reallocations if you have a good estimate of the total data size and number of
-    /// blobs you intend to add.
-    ///
-    /// # Arguments
-    /// * `data_capacity`: The estimated total byte size of all blobs.
-    /// * `blobs_capacity`: The estimated number of individual blobs to be added.
+    /// blobs you intend to add. For fix pack sizes, using this can significantly reduce
+    /// memory churn.
     pub fn with_capacity(data_capacity: usize, blobs_capacity: usize) -> Self {
         Self {
             data: Vec::with_capacity(data_capacity),
             blob_descriptors: Vec::with_capacity(blobs_capacity),
             hasher: Hasher::new(),
-            data_capacity,
-            blob_descriptor_capacity: blobs_capacity,
         }
     }
 
@@ -85,13 +80,13 @@ impl Packer {
     }
 
     /// Returns `true` if the packer contains no blob data and no descriptors.
-    pub fn _is_empty(&self) -> bool {
-        self.data.is_empty()
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty() && self.blob_descriptors.is_empty()
     }
 
     /// Returns the number of individual blob objects currently stored in the packer.
     #[inline]
-    pub fn _num_objects(&self) -> usize {
+    pub fn num_objects(&self) -> usize {
         self.blob_descriptors.len()
     }
 
@@ -100,24 +95,19 @@ impl Packer {
     /// The `blob_data` `Vec<u8>` is efficiently moved into the packer's internal
     /// buffer using `Vec::append`, avoiding a costly copy. After this call, `blob_data`
     /// will be empty.
-    ///
-    /// # Arguments
-    /// * `id`: The unique `ID` of the blob. This will be cloned for the descriptor.
-    /// * `blob_data`: The raw byte data of the blob. This `Vec` will be consumed (emptied).
-    pub fn add_blob(&mut self, id: &ID, mut blob_data: Vec<u8>) {
-        let offset = self.data.len() as u64; // The new blob starts at the current end of the data buffer
-        let length = blob_data.len() as u64; // The length of the incoming blob data
-        self.hasher.update(&blob_data);
+    pub fn add_blob(&mut self, id: ID, mut blob_data: Vec<u8>) {
+        let offset = self.data.len() as u64;
+        let length = blob_data.len() as u64;
 
-        // Efficiently move `blob_data` into `self.data`
+        if !blob_data.is_empty() {
+            self.hasher.update(&blob_data);
+        }
+
         self.data.append(&mut blob_data);
 
         // Record the descriptor for the newly added blob
-        self.blob_descriptors.push(PackedBlobDescriptor {
-            id: id.clone(), // Clone the ID for the descriptor
-            offset,
-            length,
-        });
+        self.blob_descriptors
+            .push(PackedBlobDescriptor { id, offset, length });
     }
 
     /// Flushes the contents of the packer, returning the accumulated raw data
@@ -126,15 +116,19 @@ impl Packer {
     /// After calling `flush`, the `Packer` instance will be reset to an empty state,
     /// ready to accumulate new blobs. Ownership of the `Vec<u8>` and `Vec<PackedBlobDescriptor>`
     /// is transferred to the caller, making this an efficient way to extract the packed content.
+    /// The internal vectors retain their allocated capacity for future use.
     pub fn flush(&mut self) -> FlushedPack {
-        // Efficiently take ownership of the vectors, leaving new, empty vectors behind.
-        let data = std::mem::replace(&mut self.data, Vec::with_capacity(self.data_capacity));
-        let descriptors = std::mem::replace(
-            &mut self.blob_descriptors,
-            Vec::with_capacity(self.blob_descriptor_capacity),
-        );
         let hash = self.hasher.finalize();
         self.hasher.reset();
+
+        // Take ownership of the vectors, effectively swapping them with new empty ones.
+        let data = std::mem::take(&mut self.data);
+        let descriptors = std::mem::take(&mut self.blob_descriptors);
+
+        // Reset the internal vectors to be empty, but crucially,
+        // they *retain their allocated capacity* for the next pack.
+        self.data.clear();
+        self.blob_descriptors.clear();
 
         (data, descriptors, ID::from_bytes(hash.into()))
     }

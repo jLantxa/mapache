@@ -17,7 +17,7 @@
 mod index;
 pub mod manifest;
 mod pack_saver;
-mod packer;
+pub mod packer;
 pub mod repository_v1;
 pub mod snapshot;
 mod storage;

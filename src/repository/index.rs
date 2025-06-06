@@ -24,10 +24,10 @@ use crate::{
     utils::indexset::IndexSet,
 };
 
-use super::{RepositoryBackend, packer::PackedBlobDescriptor}; // Corrected import for clarity
+use super::{RepositoryBackend, packer::PackedBlobDescriptor};
 
 /// Represents the location and size of a blob within a pack file.
-#[derive(Debug, Clone, Copy)] // Assuming these are cheap for a simple struct/tuple
+#[derive(Debug)]
 struct BlobLocation {
     /// The index into the `pack_ids` `IndexSet` for the pack containing this blob. See Index.
     pub pack_array_index: usize,
@@ -117,12 +117,8 @@ impl Index {
     /// Adds all blob descriptors from a specific pack to the index.
     /// This method is optimized for adding multiple blobs from the same pack,
     /// as it only needs to look up the pack ID once.
-    pub fn add_pack(
-        &mut self,
-        pack_id: &ID,
-        packed_blob_descriptors: &[PackedBlobDescriptor], // Use slice for better ergonomics
-    ) {
-        let pack_index = self.pack_ids.insert(pack_id.clone()); // Get pack_index once for all blobs in this pack
+    pub fn add_pack(&mut self, pack_id: &ID, packed_blob_descriptors: &[PackedBlobDescriptor]) {
+        let pack_index = self.pack_ids.insert(pack_id.clone());
         for blob in packed_blob_descriptors {
             self.ids.insert(
                 blob.id.clone(),
@@ -209,7 +205,7 @@ impl MasterIndex {
     /// Creates a new, empty `MasterIndex`.
     pub fn new() -> Self {
         Self {
-            indexes: Vec::new(),
+            indexes: Vec::with_capacity(1),
             pending_blobs: HashSet::new(),
         }
     }
@@ -240,8 +236,8 @@ impl MasterIndex {
 
     /// Adds a blob ID to the set of blobs that are waiting to be packed.
     /// Returns `true` if the ID did not exist in the set and was inserted; `false` otherwise.
-    pub fn add_pending_blob(&mut self, id: &ID) -> bool {
-        self.pending_blobs.insert(id.clone())
+    pub fn add_pending_blob(&mut self, id: ID) -> bool {
+        self.pending_blobs.insert(id)
     }
 
     /// Processes a newly created pack of blobs. It removes these blobs from the
@@ -263,8 +259,14 @@ impl MasterIndex {
         for idx in &mut self.indexes {
             if idx.is_pending() {
                 idx.add_pack(pack_id, &packed_blob_descriptors);
+                return;
             }
         }
+
+        // There were no pending indexes. Create a new empty pending index and add the pack.
+        let mut new_pending_index = Index::new();
+        new_pending_index.add_pack(pack_id, &packed_blob_descriptors);
+        self.indexes.push(new_pending_index);
     }
 
     /// Saves all pending indexes managed by the `MasterIndex` to the repository.

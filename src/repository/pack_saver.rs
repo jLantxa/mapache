@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
-use std::sync::Arc;
+use std::{sync::Arc, thread::JoinHandle};
 
 use crate::global::ID;
 
@@ -24,6 +24,7 @@ pub type QueueFn = Arc<dyn Fn(Vec<u8>, ID) + Send + Sync + 'static>;
 
 pub(crate) struct PackSaver {
     tx: Sender<(Vec<u8>, ID)>,
+    join_handle: JoinHandle<()>,
 }
 
 impl PackSaver {
@@ -32,13 +33,13 @@ impl PackSaver {
 
         let worker_queue_fn = Arc::clone(&queue_fn);
 
-        rayon::spawn(move || {
+        let join_handle = std::thread::spawn(move || {
             while let Ok((data, id)) = rx.recv() {
                 worker_queue_fn(data, id);
             }
         });
 
-        PackSaver { tx }
+        PackSaver { tx, join_handle }
     }
 
     pub fn save_pack(&self, packer_data: Vec<u8>) -> Result<ID> {
@@ -49,5 +50,12 @@ impl PackSaver {
             .with_context(|| "Failed to send pack data to PackSaver channel")?;
 
         Ok(pack_id)
+    }
+
+    pub fn finish(self) {
+        drop(self.tx);
+        self.join_handle
+            .join()
+            .expect("Packer saver thread panicked");
     }
 }

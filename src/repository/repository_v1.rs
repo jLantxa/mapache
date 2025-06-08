@@ -418,6 +418,12 @@ impl RepositoryBackend for Repository {
         );
         self.pack_saver.lock().unwrap().replace(pack_saver);
     }
+
+    fn finalize_pack_saver(&self) {
+        if let Some(pack_saver) = self.pack_saver.lock().unwrap().take() {
+            pack_saver.finish();
+        }
+    }
 }
 
 impl Drop for Repository {

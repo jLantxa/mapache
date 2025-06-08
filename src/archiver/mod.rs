@@ -281,6 +281,8 @@ impl Archiver {
                         .progress_reporter
                         .written_meta_bytes(index_raw_data, index_encoded_data);
 
+                    arch.repo.finalize_pack_saver();
+
                     Ok(Snapshot {
                         timestamp: Local::now(),
                         tree: tree_id.clone(),

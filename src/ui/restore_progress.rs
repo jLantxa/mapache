@@ -26,7 +26,10 @@ use std::{
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
-use crate::utils;
+use crate::{
+    ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS},
+    utils,
+};
 
 pub struct RestoreProgressReporter {
     processed_items_count: Arc<AtomicU64>, // Number of files processed
@@ -42,7 +45,9 @@ impl RestoreProgressReporter {
     pub fn new(num_expected_items: u64, num_processed_items: usize) -> Self {
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));
 
-        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(2));
+        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(
+            PROGRESS_REFRESH_RATE_HZ,
+        ));
         let progress_bar = mp.add(ProgressBar::new(num_expected_items));
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
@@ -78,9 +83,11 @@ impl RestoreProgressReporter {
                 ProgressStyle::default_spinner()
                     .template("{spinner:.cyan} {msg}")
                     .unwrap()
-                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+                    .tick_chars(SPINNER_TICK_CHARS),
             );
-            file_spinner.enable_steady_tick(Duration::from_millis(500));
+            file_spinner.enable_steady_tick(Duration::from_millis(
+                (1.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+            ));
             file_spinners.push(file_spinner);
         }
 

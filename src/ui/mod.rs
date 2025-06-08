@@ -18,3 +18,7 @@ pub mod cli;
 pub mod restore_progress;
 pub mod snapshot_progress;
 pub mod table;
+
+// Progress UI parameters
+const PROGRESS_REFRESH_RATE_HZ: u8 = 30;
+const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";

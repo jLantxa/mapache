@@ -63,6 +63,8 @@ pub trait RepositoryBackend: Sync + Send {
 
     fn init_pack_saver(&self, concurrency: usize);
 
+    fn finalize_pack_saver(&self);
+
     /// Saves an object type to the repository
     fn save_object(&self, data: Vec<u8>, id: SaveID) -> Result<(ID, u64, u64)>;
 

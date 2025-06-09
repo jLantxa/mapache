@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use crate::{
@@ -30,11 +30,11 @@ use crate::{
 };
 
 use super::{
+    ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     index::{Index, IndexFile, MasterIndex},
     manifest::Manifest,
     pack_saver::PackSaver,
     snapshot::Snapshot,
-    RepoVersion, RepositoryBackend, ID, KEYS_DIR,
 };
 
 const REPO_VERSION: RepoVersion = 1;
@@ -157,23 +157,19 @@ impl RepositoryBackend for Repository {
 
         let mut repo = Repository {
             backend,
-
             objects_path,
             snapshot_path,
             index_path,
             keys_path,
-
             secure_storage,
-
             max_packer_size,
             data_packer,
             tree_packer,
             pack_saver: Arc::new(Mutex::new(None)),
-
             index,
         };
 
-        repo.warmup()?;
+        repo.load_master_index()?;
 
         Ok(Arc::new(repo))
     }
@@ -184,7 +180,7 @@ impl RepositoryBackend for Repository {
         data: Vec<u8>,
         save_id: SaveID,
     ) -> Result<(ID, u64, u64)> {
-        let raw_size = data.len();
+        let mut raw_size = data.len() as u64;
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
             SaveID::WithID(id) => id,
@@ -200,7 +196,7 @@ impl RepositoryBackend for Repository {
         }
 
         let data = self.secure_storage.encode(&data)?;
-        let encoded_size = data.len();
+        let mut encoded_size = data.len() as u64;
 
         let mut packer_guard = match object_type {
             ObjectType::Data => self.data_packer.lock().unwrap(),
@@ -211,7 +207,9 @@ impl RepositoryBackend for Repository {
 
         // Flush if the packer is considered full
         if packer_guard.size() > self.max_packer_size {
-            self.flush_packer(packer_guard)?;
+            let (index_raw_size, index_encoded_size) = self.flush_packer(packer_guard)?;
+            raw_size += index_raw_size;
+            encoded_size += index_encoded_size;
         }
 
         Ok((id, raw_size as u64, encoded_size as u64))
@@ -474,7 +472,8 @@ impl Repository {
         Ok(data.len())
     }
 
-    fn flush_packer(&self, mut packer_guard: MutexGuard<Packer>) -> Result<()> {
+    fn flush_packer(&self, mut packer_guard: MutexGuard<Packer>) -> Result<(u64, u64)> {
+        let (mut raw, mut encoded) = (0, 0);
         let (pack_data, packed_blob_descriptors, pack_id) = packer_guard.flush();
         drop(packer_guard);
 
@@ -485,15 +484,18 @@ impl Repository {
 
             let mut index_guard = self.index.lock().unwrap();
             index_guard.add_pack(&pack_id, packed_blob_descriptors);
+            let (r, e) = index_guard.flush_pending_if_full(self)?;
+            raw += r;
+            encoded += e;
             drop(index_guard);
         } else {
             bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
         }
 
-        Ok(())
+        Ok((raw, encoded))
     }
 
-    fn load_index(&mut self) -> Result<()> {
+    fn load_master_index(&mut self) -> Result<()> {
         let files = self.backend.read_dir(&self.index_path)?;
         let mut master_index_guard = self.index.lock().unwrap();
 
@@ -516,16 +518,12 @@ impl Repository {
         let data = self.backend.seek_read(&object_path, offset, length)?;
         self.secure_storage.decode(&data)
     }
-
-    fn warmup(&mut self) -> Result<()> {
-        self.load_index()
-    }
 }
 
 #[cfg(test)]
 mod test {
 
-    use base64::{engine::general_purpose, Engine};
+    use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
     use crate::{

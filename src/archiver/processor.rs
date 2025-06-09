@@ -168,9 +168,9 @@ fn chunk_and_save_blobs(
     // same contents will no longer produce same chunks and IDs.
     let chunker = StreamCDC::with_level(
         reader,
-        global::defaults::MIN_CHUNK_SIZE,
-        global::defaults::AVG_CHUNK_SIZE,
-        global::defaults::MAX_CHUNK_SIZE,
+        global::defaults::MIN_CHUNK_SIZE as u32,
+        global::defaults::AVG_CHUNK_SIZE as u32,
+        global::defaults::MAX_CHUNK_SIZE as u32,
         Normalization::Level1,
     );
 

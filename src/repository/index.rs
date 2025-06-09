@@ -135,9 +135,13 @@ impl Index {
     /// index files if the total number of blobs exceeds a manifesturable limit.
     ///
     /// Returns the total uncompressed and compressed sizes of the saved index files.
-    pub fn save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
-        let mut total_uncompressed_size = 0;
-        let mut total_compressed_size = 0;
+    pub fn finalize_and_save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
+        // Don't do anything if the index is empty.
+        if self.ids.is_empty() {
+            return Ok((0, 0));
+        }
+
+        self.finalize();
 
         let mut packs_with_blobs: HashMap<usize, Vec<IndexFileBlob>> = HashMap::new();
         for (blob_id, location) in &self.ids {
@@ -151,8 +155,7 @@ impl Index {
             });
         }
 
-        let mut current_index_file = IndexFile::new();
-        let mut current_blob_count: u32 = 0;
+        let mut index_file = IndexFile::new();
 
         // Iterate through packs in the order they were inserted into `pack_ids`.
         // This ensures a consistent ordering of packs in the generated index files.
@@ -162,31 +165,13 @@ impl Index {
                     id: pack_id.clone(),
                     blobs,
                 };
-                current_blob_count += index_pack_file.blobs.len() as u32;
-                current_index_file.packs.push(index_pack_file);
-
-                // If the current `IndexFile` accumulates too many blobs, save it
-                // and start a new one.
-                if current_blob_count >= global::defaults::BLOBS_PER_INDEX_FILE {
-                    let (u, c) = repo.save_index(std::mem::take(&mut current_index_file))?;
-                    total_uncompressed_size += u;
-                    total_compressed_size += c;
-                    current_blob_count = 0; // Reset count for the next index file
-                }
+                index_file.packs.push(index_pack_file);
             }
         }
 
-        // Save any remaining blobs in the last index file.
-        if current_blob_count > 0 {
-            let (u, c) = repo.save_index(current_index_file)?;
-            total_uncompressed_size += u;
-            total_compressed_size += c;
-        }
+        let (raw_size, encoded_size) = repo.save_index(index_file)?;
 
-        // Since the index has been saved, we can consider it finalized.
-        self.finalize();
-
-        Ok((total_uncompressed_size, total_compressed_size))
+        Ok((raw_size, encoded_size))
     }
 }
 
@@ -279,13 +264,33 @@ impl MasterIndex {
 
         for idx in &mut self.indexes {
             if idx.is_pending() {
-                let (uncompressed, compressed) = idx.save(repo)?;
+                let (uncompressed, compressed) = idx.finalize_and_save(repo)?;
                 uncompressed_size += uncompressed;
                 compressed_size += compressed;
             }
         }
 
         Ok((uncompressed_size, compressed_size))
+    }
+
+    // Finalize and flush all pending indexes. This function saves indexes with
+    // a smaller size than the optimum as a trade-off to commit packs often.
+    // The garbage collector should merge all small indexes and consolidate them
+    // into bigger index files.
+    pub fn flush_pending_if_full(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
+        let (mut total_raw_size, mut total_encoded_size) = (0, 0);
+        for idx in &mut self.indexes {
+            if idx.is_pending() {
+                // Save index if the number of packs surpasses the default.
+                if idx.pack_ids.len() > global::defaults::PACKS_PER_FLUSHED_INDEX_FILE {
+                    let (raw, encoded) = idx.finalize_and_save(repo)?;
+                    total_raw_size += raw;
+                    total_encoded_size += encoded;
+                }
+            }
+        }
+
+        Ok((total_raw_size, total_encoded_size))
     }
 }
 

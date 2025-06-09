@@ -18,9 +18,9 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::backend::new_backend_with_prompt;
-use crate::repository;
 use crate::repository::{LATEST_REPOSITORY_VERSION, RepoVersion};
 use crate::ui;
+use crate::{repository, utils};
 
 use super::GlobalArgs;
 
@@ -32,12 +32,11 @@ pub struct CmdArgs {
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_new_password();
 
     ui::cli::log!("Initializing a new repository in \'{}\'", &global_args.repo);
-
-    repository::init_repository_with_version(args.repository_version, backend, repo_password)?;
+    repository::init_repository_with_version(pass, args.repository_version, backend)?;
 
     Ok(())
 }

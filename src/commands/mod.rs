@@ -75,8 +75,12 @@ pub struct GlobalArgs {
     #[clap(short, long, value_parser)]
     pub repo: String,
 
+    /// Path to a file to read the repository password
+    #[clap(short = 'p', long, value_parser)]
+    pub password_file: Option<PathBuf>,
+
     /// Path to a KeyFile
-    #[clap(long, value_parser)]
+    #[clap(short = 'k', long, value_parser)]
     pub key: Option<PathBuf>,
 }
 

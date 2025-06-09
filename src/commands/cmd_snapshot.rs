@@ -30,7 +30,7 @@ use crate::{
     backend::{make_dry_backend, new_backend_with_prompt},
     global::{self, ID},
     repository::{
-        self,
+        self, RepositoryBackend,
         snapshot::{Snapshot, SnapshotStreamer},
         streamers::FSNodeStreamer,
     },
@@ -81,13 +81,14 @@ pub struct CmdArgs {
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_repo_password();
 
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
+    let repo: Arc<dyn RepositoryBackend> =
+        repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     // Cannonicalize source paths
     let source_paths = &args.paths;

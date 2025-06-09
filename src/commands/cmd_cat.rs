@@ -24,7 +24,6 @@ use crate::backend::new_backend_with_prompt;
 use crate::global::{ID, ID_LENGTH};
 use crate::repository::tree::Tree;
 use crate::repository::{self, RepositoryBackend};
-use crate::ui;
 
 use super::GlobalArgs;
 
@@ -50,10 +49,8 @@ pub enum Object {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_repo_password();
 
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
+    let repo: Arc<dyn RepositoryBackend> = repository::try_open(global_args.key.as_ref(), backend)?;
 
     match &args.object {
         Object::Manifest => {

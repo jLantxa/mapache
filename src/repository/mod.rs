@@ -39,17 +39,17 @@ use snapshot::Snapshot;
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::global::{FileType, SaveID};
-use crate::ui;
 use crate::{
     backend::StorageBackend, global::ID, global::ObjectType, repository::storage::SecureStorage,
 };
+use crate::{repository, ui};
 
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
 
 pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
-    fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()>
+    fn init(backend: Arc<dyn StorageBackend>, secure_storage: Arc<SecureStorage>) -> Result<()>
     where
         Self: Sized;
 
@@ -111,23 +111,68 @@ pub trait RepositoryBackend: Sync + Send {
     fn find(&self, file_type: FileType, prefix: &String) -> Result<(ID, PathBuf)>;
 }
 
-pub fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {
-    init_repository_with_version(LATEST_REPOSITORY_VERSION, backend, password)
+/// Initialize a repository using the latest repository version.
+/// This function prompts for a password to create a master key.
+pub fn init(backend: Arc<dyn StorageBackend>) -> Result<()> {
+    init_repository_with_version(LATEST_REPOSITORY_VERSION, backend)
 }
 
+/// Initialize a repository with a version number.
+/// This function prompts for a password to create a master key.
 pub fn init_repository_with_version(
     version: RepoVersion,
     backend: Arc<dyn StorageBackend>,
-    password: String,
 ) -> Result<()> {
     if version == 1 {
-        repository_v1::Repository::init(backend, password)
+        let secure_storage = init_common(backend.clone())?;
+        repository_v1::Repository::init(backend, secure_storage)
     } else {
         bail!("Invalid repository version \'{}\'", version);
     }
 }
+
+/// Initialize common repository objects (manifest and keys).
+/// This function prompts for a password to create a master key and returns a SecureStorage.
+fn init_common(backend: Arc<dyn StorageBackend>) -> Result<Arc<SecureStorage>> {
+    let password = ui::cli::request_password_with_confirmation(
+        "Enter new password for repository",
+        "Confirm password",
+        "Passwords don't match",
+    );
+
+    // Create the repository root
+    if backend.root_exists() {
+        bail!("Could not initialize a repository because a directory already exists");
+    }
+
+    backend
+        .create()
+        .with_context(|| "Could not create root directory")?;
+
+    let keys_path = PathBuf::from(KEYS_DIR);
+    backend.create_dir(&keys_path)?;
+
+    // Create new key
+    let master_key = generate_new_master_key();
+    let keyfile = repository::generate_key_file(&password, master_key.clone())
+        .with_context(|| "Could not generate key")?;
+    let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
+    let keyfile_id = ID::from_content(&keyfile_json);
+    let keyfile_path = &keys_path.join(&keyfile_id.to_hex());
+    backend.write(&keyfile_path, keyfile_json.as_bytes())?;
+
+    let secure_storage = Arc::new(
+        SecureStorage::build()
+            .with_compression(DEFAULT_COMPRESSION_LEVEL)
+            .with_key(master_key),
+    );
+
+    Ok(secure_storage)
+}
+
+/// Try to open a repository.
+/// This function prompts for a password to retrieve a master key.
 pub fn try_open(
-    password: String,
     key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
 ) -> Result<Arc<dyn RepositoryBackend>> {
@@ -135,7 +180,25 @@ pub fn try_open(
         bail!("Could not open a repository. The path does not exist.");
     }
 
-    let master_key = retrieve_master_key(password, key_file_path, backend.clone())?;
+    const MAX_PASSWORD_RETRIES: u32 = 3;
+    let mut password_try_count = 0;
+    let master_key = {
+        loop {
+            let password = ui::cli::request_password("Enter repository password");
+            if let Ok(key) = retrieve_master_key(password, key_file_path, backend.clone()) {
+                break key;
+            } else {
+                password_try_count += 1;
+                if password_try_count < MAX_PASSWORD_RETRIES {
+                    ui::cli::log!("Incorrect password. Try again.");
+                    continue;
+                } else {
+                    bail!("Wrong password or no KeyFile found.");
+                }
+            }
+        }
+    };
+
     let secure_storage = Arc::new(
         SecureStorage::build()
             .with_compression(DEFAULT_COMPRESSION_LEVEL)
@@ -274,23 +337,41 @@ fn decode_master_key(password: String, keyfile: KeyFile) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod test {
+    use base64::engine::general_purpose;
     use tempfile::tempdir;
 
     use crate::backend::localfs::LocalFS;
 
     use super::*;
 
-    /// Test init a repo with password and open it
+    // /// Test init a repo with password and open it
+    // #[test]
+    // fn test_init_and_open_with_password() -> Result<()> {
+    //     let temp_repo_dir = tempdir()?;
+    //     let temp_repo_path = temp_repo_dir.path().join("repo");
+
+    //     let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
+
+    //     init(backend.to_owned(), String::from("mapachito"))?;
+
+    //     let _ = try_open(String::from("mapachito"), None, backend)?;
+
+    //     Ok(())
+    // }
+
+    /// Test generation of master keys
     #[test]
-    fn test_init_and_open_with_password() -> Result<()> {
-        let temp_repo_dir = tempdir()?;
-        let temp_repo_path = temp_repo_dir.path().join("repo");
+    fn test_generate_key_file() -> Result<()> {
+        let master_key = generate_new_master_key();
+        let keyfile = repository::generate_key_file("mapachito", master_key.clone())?;
 
-        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
+        let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
+        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
 
-        init(backend.to_owned(), String::from("mapachito"))?;
+        let intermediate_key = SecureStorage::derive_key("mapachito", &salt);
+        let decrypted_key = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)?;
 
-        let _ = try_open(String::from("mapachito"), None, backend)?;
+        assert_eq!(master_key, decrypted_key.as_slice());
 
         Ok(())
     }

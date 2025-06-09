@@ -25,7 +25,7 @@ use crate::{
     global::ID,
     repository::{self, RepositoryBackend, snapshot::SnapshotStreamer},
     restorer::{Resolution, Restorer},
-    ui::{self, cli, restore_progress::RestoreProgressReporter},
+    ui::{cli, restore_progress::RestoreProgressReporter},
     utils,
 };
 
@@ -68,10 +68,7 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_repo_password();
-
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
+    let repo: Arc<dyn RepositoryBackend> = repository::try_open(global_args.key.as_ref(), backend)?;
 
     let (_snapshot_id, snapshot) = match &args.snapshot {
         UseSnapshot::Latest => {

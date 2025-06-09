@@ -29,7 +29,7 @@ use crate::{
         streamers::find_serialized_node,
         tree::{Metadata, Node, NodeType, Tree},
     },
-    ui, utils,
+    utils,
 };
 
 #[derive(Args, Debug)]
@@ -57,9 +57,7 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_repo_password();
-
-    let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
+    let repo = repository::try_open(global_args.key.as_ref(), backend)?;
 
     let snapshot = {
         let (id, _) = repo.find(FileType::Snapshot, &args.snapshot)?;

@@ -33,11 +33,9 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_new_password();
 
     ui::cli::log!("Initializing a new repository in \'{}\'", &global_args.repo);
-
-    repository::init_repository_with_version(args.repository_version, backend, repo_password)?;
+    repository::init_repository_with_version(args.repository_version, backend, )?;
 
     Ok(())
 }

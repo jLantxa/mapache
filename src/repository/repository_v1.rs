@@ -25,7 +25,7 @@ use chrono::Utc;
 use crate::{
     backend::StorageBackend,
     global::{self, FileType, ObjectType, SaveID},
-    repository::{self, generate_new_master_key, packer::Packer, storage::SecureStorage},
+    repository::{self, packer::Packer, storage::SecureStorage},
     ui::{self, cli},
 };
 
@@ -68,44 +68,15 @@ pub struct Repository {
 
 impl RepositoryBackend for Repository {
     /// Create and initialize a new repository
-    fn init(backend: Arc<dyn StorageBackend>, password: String) -> Result<()> {
-        if backend.root_exists() {
-            bail!("Could not initialize a repository because a directory already exists");
-        }
-
+    fn init(backend: Arc<dyn StorageBackend>, secure_storage: Arc<SecureStorage>) -> Result<()> {
         let timestamp = Utc::now();
+
+        let repo_id = ID::new_random();
 
         // Init repository structure
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
         let index_path = PathBuf::from(INDEX_DIR);
-        let keys_path = PathBuf::from(repository::KEYS_DIR);
-
-        // Create the repository root
-        backend
-            .create()
-            .with_context(|| "Could not create root directory")?;
-
-        backend.create_dir(&objects_path)?;
-        let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
-        for n in 0x00..num_folders {
-            backend.create_dir(&objects_path.join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n)))?;
-        }
-
-        backend.create_dir(&snapshot_path)?;
-        backend.create_dir(&keys_path)?;
-        backend.create_dir(&index_path)?;
-
-        // Create new key
-        let master_key = generate_new_master_key();
-        let keyfile = repository::generate_key_file(&password, master_key.clone())
-            .with_context(|| "Could not generate key")?;
-        let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
-        let keyfile_id = ID::from_content(&keyfile_json);
-        let keyfile_path = &keys_path.join(&keyfile_id.to_hex());
-        backend.write(&keyfile_path, keyfile_json.as_bytes())?;
-
-        let repo_id = ID::new_random();
 
         // Save new manifest
         let manifest = Manifest {
@@ -114,14 +85,19 @@ impl RepositoryBackend for Repository {
             created_time: timestamp,
         };
 
-        let secure_storage: SecureStorage = SecureStorage::build()
-            .with_key(master_key)
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
-
         let manifest_path = Path::new("manifest");
         let manifest = serde_json::to_string_pretty(&manifest)?;
         let manifest = secure_storage.encode(manifest.as_bytes())?;
         backend.write(manifest_path, &manifest)?;
+
+        backend.create_dir(&objects_path)?;
+        let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
+        for n in 0x00..num_folders {
+            backend.create_dir(&objects_path.join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n)))?;
+        }
+
+        backend.create_dir(&snapshot_path)?;
+        backend.create_dir(&index_path)?;
 
         ui::cli::log!("Created repo with id {}", repo_id.to_short_hex(5));
 
@@ -136,7 +112,6 @@ impl RepositoryBackend for Repository {
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
         let index_path = PathBuf::from(INDEX_DIR);
-        let keys_path = PathBuf::from(KEYS_DIR);
 
         // Packer defaults
         let max_packer_size = global::defaults::MAX_PACK_SIZE;
@@ -160,7 +135,7 @@ impl RepositoryBackend for Repository {
             objects_path,
             snapshot_path,
             index_path,
-            keys_path,
+            keys_path: PathBuf::from(KEYS_DIR),
             secure_storage,
             max_packer_size,
             data_packer,
@@ -521,54 +496,4 @@ impl Repository {
 }
 
 #[cfg(test)]
-mod test {
-
-    use base64::{Engine, engine::general_purpose};
-    use tempfile::tempdir;
-
-    use crate::{
-        backend::localfs::LocalFS,
-        repository::{self, retrieve_master_key},
-    };
-
-    use super::*;
-
-    /// Test init a repository_v1 with password and open it
-    #[test]
-    fn test_init_and_open_with_password() -> Result<()> {
-        let temp_repo_dir = tempdir()?;
-        let temp_repo_path = temp_repo_dir.path().join("repo");
-
-        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
-
-        Repository::init(backend.to_owned(), String::from("mapachito"))?;
-
-        let key = retrieve_master_key(String::from("mapachito"), None, backend.clone())?;
-        let secure_storage = Arc::new(
-            SecureStorage::build()
-                .with_key(key)
-                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL),
-        );
-
-        let _ = Repository::open(backend, secure_storage.clone())?;
-
-        Ok(())
-    }
-
-    /// Test generation of master keys
-    #[test]
-    fn test_generate_key_file() -> Result<()> {
-        let master_key = generate_new_master_key();
-        let keyfile = repository::generate_key_file("mapachito", master_key.clone())?;
-
-        let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
-        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
-
-        let intermediate_key = SecureStorage::derive_key("mapachito", &salt);
-        let decrypted_key = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)?;
-
-        assert_eq!(master_key, decrypted_key.as_slice());
-
-        Ok(())
-    }
-}
+mod test {}

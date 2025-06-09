@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -82,12 +82,11 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_repo_password();
 
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
+    let repo = repository::try_open(global_args.key.as_ref(), backend)?;
 
     // Cannonicalize source paths
     let source_paths = &args.paths;

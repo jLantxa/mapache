@@ -44,6 +44,19 @@ pub mod size {
     pub const TB: u64 = GB * 1000;
 }
 
+// --- Password ---
+
+pub fn get_password_from_file(password_file_path: &Option<PathBuf>) -> Result<Option<String>> {
+    password_file_path
+        .as_ref()
+        .map(|path| {
+            std::fs::read_to_string(path).with_context(|| {
+                format!("Could not read repository password from {}", path.display())
+            })
+        })
+        .transpose() // Converts Option<Result<T, E>> to Result<Option<T>, E>
+}
+
 // --- Hashing ---
 
 /// Calculates the 256-bit BLAKE3 hash of a byte array.

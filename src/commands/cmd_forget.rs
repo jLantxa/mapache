@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local};
@@ -22,6 +23,7 @@ use clap::{ArgGroup, Parser};
 
 use crate::backend::{make_dry_backend, new_backend_with_prompt};
 use crate::global::{FileType, ID};
+use crate::repository::RepositoryBackend;
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
 use crate::{repository, ui, utils};
 
@@ -82,13 +84,15 @@ pub enum RetentionRule {
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_repo_password();
 
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
+    let repo: Arc<dyn RepositoryBackend> =
+        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();
     snapshots_sorted.sort_by_key(|(_id, snapshot)| snapshot.timestamp);
 

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, bail};
 use clap::Args;
@@ -29,7 +29,7 @@ use crate::{
         streamers::find_serialized_node,
         tree::{Metadata, Node, NodeType, Tree},
     },
-    ui, utils,
+    utils,
 };
 
 #[derive(Args, Debug)]
@@ -56,10 +56,10 @@ pub struct CmdArgs {
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(&global_args.repo)?;
-    let repo_password = ui::cli::request_repo_password();
-
-    let repo = repository::try_open(repo_password, global_args.key.as_ref(), backend)?;
+    let repo: Arc<dyn RepositoryBackend> =
+        repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let snapshot = {
         let (id, _) = repo.find(FileType::Snapshot, &args.snapshot)?;

@@ -25,31 +25,6 @@ macro_rules! log {
 }
 pub use log;
 
-/// Prints a log with a green tag.
-pub fn log_green(tag: &str, str: &str) {
-    println!("{}: {}", tag.bold().green(), str);
-}
-
-/// Prints a log with a cyan tag.
-pub fn log_cyan(tag: &str, str: &str) {
-    println!("{}: {}", tag.bold().cyan(), str);
-}
-
-/// Prints a log with a purple tag.
-pub fn log_purple(tag: &str, str: &str) {
-    println!("{}: {}", tag.bold().purple(), str);
-}
-
-/// Prints a log with a yellow tag.
-pub fn log_yellow(tag: &str, str: &str) {
-    println!("{}: {}", tag.bold().yellow(), str);
-}
-
-/// Prints a log with a red tag.
-pub fn log_red(tag: &str, str: &str) {
-    println!("{}: {}", tag.bold().red(), str);
-}
-
 /// Prints a warning log (warning: ...)
 pub fn log_warning(str: &str) {
     eprintln!("{}: {}", "Warning".bold().yellow(), str);
@@ -66,22 +41,22 @@ pub fn print_separator(character: char, count: usize) {
     println!("{}", repeated_string);
 }
 
-/// Requests a new password with confirmation.
-pub fn request_new_password() -> String {
-    Password::new()
-        .with_prompt("Enter new password")
-        .with_confirmation("Confirm password", "Passwords mismatching")
-        .interact()
-        .unwrap()
-}
-
-/// Requests a repository password without confirmation.
-#[inline]
-pub fn request_repo_password() -> String {
-    request_password("Enter password for repository")
-}
-
 /// Requests a password with a prompt without confirmation.
+#[inline]
 pub fn request_password(promt: &str) -> String {
     Password::new().with_prompt(promt).interact().unwrap()
+}
+
+/// Requests a password with a prompt and confirmation.
+#[inline]
+pub fn request_password_with_confirmation(
+    prompt: &str,
+    confirmation_prompt: &str,
+    mismatch_err_prompt: &str,
+) -> String {
+    Password::new()
+        .with_prompt(prompt)
+        .with_confirmation(confirmation_prompt, mismatch_err_prompt)
+        .interact()
+        .unwrap()
 }

@@ -14,17 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod archiver;
-pub mod backend;
-pub mod commands;
-pub mod global;
-pub mod repository;
-pub mod restorer;
-pub mod ui;
-
-#[cfg(test)]
-pub mod testing;
-pub mod utils;
+use backup::{commands, ui};
 
 use anyhow::Result;
 use clap::Parser;

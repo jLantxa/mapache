@@ -272,7 +272,7 @@ pub fn apply_retention_rules(
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use std::path::PathBuf;
 
     use chrono::{NaiveDate, TimeZone};

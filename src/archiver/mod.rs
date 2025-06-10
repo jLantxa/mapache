@@ -304,4 +304,4 @@ impl Archiver {
 }
 
 #[cfg(test)]
-mod test {}
+mod tests {}

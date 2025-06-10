@@ -235,11 +235,10 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 #[allow(unused_imports)]
-mod test {
+mod tests {
     use {
         chrono::{Duration, Local},
         std::time::SystemTime,
-        tempfile::tempdir,
     };
 
     use super::*;
@@ -249,9 +248,9 @@ mod test {
     fn test_restore_mtime() -> Result<()> {
         use std::fs::File;
 
-        let temp_repo_dir = tempdir().expect("Could not create tmp dir");
+        let temp_path = testing::create_tmp_dir()?;
 
-        let file_path = temp_repo_dir.path().join("file.txt");
+        let file_path = temp_path.join("file.txt");
         std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
         let node = Node::from_path(&file_path)?;
 

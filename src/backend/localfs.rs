@@ -203,7 +203,8 @@ impl StorageBackend for LocalFS {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
+
     use tempfile::tempdir;
 
     use super::*;
@@ -216,7 +217,7 @@ mod test {
         let local_fs = Box::new(LocalFS::new(temp_dir.to_path_buf()));
 
         let write_path = Path::new("file.txt");
-        local_fs.write(&write_path, b"Mapachito")?;
+        local_fs.write(write_path, b"Mapachito")?;
         let read_content = local_fs.read(&write_path)?;
 
         assert!(local_fs.exists(&write_path));

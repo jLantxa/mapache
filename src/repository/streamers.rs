@@ -495,7 +495,7 @@ pub fn find_serialized_node(
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use tempfile::tempdir;
 
     use super::*;

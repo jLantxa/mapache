@@ -117,19 +117,24 @@ pub trait RepositoryBackend: Sync + Send {
 
 /// Initialize a repository using the latest repository version.
 /// This function prompts for a password to create a master key.
-pub fn init(password: Option<String>, backend: Arc<dyn StorageBackend>) -> Result<()> {
-    init_repository_with_version(password, LATEST_REPOSITORY_VERSION, backend)
+pub fn init(
+    password: Option<String>,
+    keyfile_path: Option<&PathBuf>,
+    backend: Arc<dyn StorageBackend>,
+) -> Result<()> {
+    init_repository_with_version(password, keyfile_path, LATEST_REPOSITORY_VERSION, backend)
 }
 
 /// Initialize a repository with a version number.
 /// This function prompts for a password to create a master key.
 pub fn init_repository_with_version(
     password: Option<String>,
+    keyfile_path: Option<&PathBuf>,
     version: RepoVersion,
     backend: Arc<dyn StorageBackend>,
 ) -> Result<()> {
     if version == 1 {
-        let secure_storage = init_common(password, backend.clone())?;
+        let secure_storage = init_common(password, keyfile_path, backend.clone())?;
         repository_v1::Repository::init(backend, secure_storage)
     } else {
         bail!("Invalid repository version \'{}\'", version);
@@ -140,6 +145,7 @@ pub fn init_repository_with_version(
 /// This function prompts for a password to create a master key and returns a SecureStorage.
 fn init_common(
     password: Option<String>,
+    keyfile_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
 ) -> Result<Arc<SecureStorage>> {
     let pass = match password {
@@ -169,7 +175,10 @@ fn init_common(
         .with_context(|| "Could not generate key")?;
     let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
     let keyfile_id = ID::from_content(&keyfile_json);
-    let keyfile_path = &keys_path.join(&keyfile_id.to_hex());
+    let keyfile_path = match keyfile_path {
+        Some(p) => p,
+        None => &keys_path.join(&keyfile_id.to_hex()),
+    };
     backend.write(&keyfile_path, keyfile_json.as_bytes())?;
 
     let secure_storage = Arc::new(
@@ -357,7 +366,7 @@ fn decode_master_key(password: &str, keyfile: KeyFile) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use base64::engine::general_purpose;
     use tempfile::tempdir;
 
@@ -375,7 +384,7 @@ mod test {
 
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        init(password.clone(), backend.to_owned())?;
+        init(password.clone(), None, backend.to_owned())?;
         let _ = try_open(password, None, backend)?;
 
         Ok(())
@@ -395,7 +404,7 @@ mod test {
         let password = utils::get_password_from_file(&Some(password_file_path))?;
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        init(password.clone(), backend.to_owned())?;
+        init(password.clone(), None, backend.to_owned())?;
         let _ = try_open(password, None, backend)?;
 
         Ok(())

@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use {
-    anyhow::{Context, Result, bail},
+    anyhow::{Context, Result},
     std::{
         fs::{self, OpenOptions},
         io::Write,
@@ -24,9 +24,12 @@ use {
 };
 
 #[cfg(unix)]
-use std::{
-    fs::Permissions,
-    os::unix::fs::{PermissionsExt, symlink},
+use {
+    anyhow::bail,
+    std::{
+        fs::Permissions,
+        os::unix::fs::{PermissionsExt, symlink},
+    },
 };
 
 // Add filetime imports
@@ -36,6 +39,8 @@ use crate::repository::{
     RepositoryBackend,
     tree::{Node, NodeType},
 };
+#[cfg(not(unix))]
+use crate::ui;
 
 /// Restores a node to the specified destination path.
 pub fn restore_node_to_path(
@@ -116,63 +121,65 @@ pub fn restore_node_to_path(
             }
             #[cfg(not(unix))]
             {
-                bail!(
+                use crate::ui;
+
+                ui::cli::log_warning(&format!(
                     "Symlink restoration not supported on this operating system: '{}'",
                     dst_path.display()
-                );
+                ));
             }
         }
 
         NodeType::BlockDevice => {
             #[cfg(unix)]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "Restoration of block device '{}' not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "Block device restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            );
+            ));
         }
 
         NodeType::CharDevice => {
             #[cfg(unix)]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "Restoration of character device '{}' not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "Character device restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            );
+            ));
         }
 
         NodeType::Fifo => {
             #[cfg(unix)]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "Restoration of FIFO (named pipe) '{}' not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "FIFO restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            );
+            ));
         }
 
         NodeType::Socket => {
             #[cfg(unix)]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "Restoration of socket '{}' not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            bail!(
+            ui::cli::log_warning(&format!(
                 "Socket restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            );
+            ));
         }
     }
 

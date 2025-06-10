@@ -22,7 +22,6 @@ mod tests {
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, cmd_init::CmdArgs},
         repository::{self},
-        testing,
     };
 
     use anyhow::{Context, Result};
@@ -33,7 +32,8 @@ mod tests {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let password = "mapachito";
-        let password_path = testing::create_password_file(&tmp_path, "password", password)?;
+        let password_path = tmp_path.join("password");
+        std::fs::write(&password_path, password)?;
 
         let repo = String::from("repo");
         let repo_path = tmp_path.join(&repo);
@@ -81,7 +81,8 @@ mod tests {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let password = "mapachito";
-        let password_path = testing::create_password_file(&tmp_path, "password", password)?;
+        let password_path = tmp_path.join("password");
+        std::fs::write(&password_path, password)?;
 
         let repo = String::from("repo");
         let repo_path = tmp_path.join(&repo);

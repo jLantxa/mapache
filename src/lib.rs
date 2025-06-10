@@ -4,6 +4,5 @@ pub mod commands;
 pub mod global;
 pub mod repository;
 pub mod restorer;
-pub mod testing;
 pub mod ui;
 pub mod utils;

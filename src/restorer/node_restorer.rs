@@ -16,11 +16,20 @@
 
 use {
     anyhow::{Context, Result},
+    filetime::{FileTime, set_file_times},
     std::{
         fs::{self, OpenOptions},
         io::Write,
         path::Path,
     },
+};
+
+use crate::{
+    repository::{
+        RepositoryBackend,
+        tree::{Node, NodeType},
+    },
+    ui,
 };
 
 #[cfg(unix)]
@@ -30,17 +39,6 @@ use {
         fs::Permissions,
         os::unix::fs::{PermissionsExt, symlink},
     },
-};
-
-// Add filetime imports
-use filetime::{FileTime, set_file_times}; // Import FileTime and set_file_times
-
-use crate::{
-    repository::{
-        RepositoryBackend,
-        tree::{Node, NodeType},
-    },
-    ui,
 };
 
 /// Restores a node to the specified destination path.
@@ -122,8 +120,6 @@ pub fn restore_node_to_path(
             }
             #[cfg(not(unix))]
             {
-                use crate::ui;
-
                 ui::cli::log_warning(&format!(
                     "Symlink restoration not supported on this operating system: '{}'",
                     dst_path.display()

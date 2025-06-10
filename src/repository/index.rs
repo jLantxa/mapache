@@ -257,7 +257,7 @@ impl MasterIndex {
     /// Saves all pending indexes managed by the `MasterIndex` to the repository.
     /// Finalized indexes are not saved again.
     ///
-    /// Returns the total uncompressed and compressed sizes of the saved index files.
+    /// Returns the total raw and encoded sizes of the saved index files.
     pub fn save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
         let mut uncompressed_size: u64 = 0;
         let mut compressed_size: u64 = 0;
@@ -277,6 +277,7 @@ impl MasterIndex {
     // a smaller size than the optimum as a trade-off to commit packs often.
     // The garbage collector should merge all small indexes and consolidate them
     // into bigger index files.
+    /// Returns a tuple (raw_size, encoded_size)
     pub fn flush_pending_if_full(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
         let (mut total_raw_size, mut total_encoded_size) = (0, 0);
         for idx in &mut self.indexes {

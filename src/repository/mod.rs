@@ -66,13 +66,14 @@ pub trait RepositoryBackend: Sync + Send {
     fn finalize_pack_saver(&self);
 
     /// Saves an object type to the repository
+    /// Returns a tuple (`ID`, raw_size, encoded_size)
     fn save_object(&self, data: Vec<u8>, id: SaveID) -> Result<(ID, u64, u64)>;
 
     /// Loads an object file from the repository.
     fn load_object(&self, id: &ID) -> Result<Vec<u8>>;
 
     /// Saves a blob in the repository. This blob can be packed with other blobs in an object file.
-    /// Returns a tuple (uncompressed size, encoded_size, object idfn save_blob(&self, object_type: ObjectType, data: Vec<u8>) -> Result<(u64, u64, ID)>;
+    /// Returns a tuple (`ID`, raw_size, encoded_size)
     fn save_blob(
         &self,
         object_type: ObjectType,
@@ -84,6 +85,7 @@ pub trait RepositoryBackend: Sync + Send {
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;
 
     /// Saves a snapshot metadata.
+    /// Returns a tuple (`ID`, raw_size, encoded_size)
     fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(ID, u64, u64)>;
 
     /// Removes a snapshot from the repository, if it exists.
@@ -95,6 +97,7 @@ pub trait RepositoryBackend: Sync + Send {
     fn list_snapshot_ids(&self) -> Result<Vec<ID>>;
 
     /// Saves an IndexFile into the repository
+    /// Returns a tuple (raw_size, encoded_size)
     fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;
 
     fn load_index(&self, id: &ID) -> Result<IndexFile>;
@@ -105,6 +108,7 @@ pub trait RepositoryBackend: Sync + Send {
     fn load_key(&self, id: &ID) -> Result<KeyFile>;
 
     /// Flushes all pending data and saves it.
+    /// Returns a tuple (raw_size, encoded_size)
     fn flush(&self) -> Result<(u64, u64)>;
 
     /// Finds a file in the repository using an ID prefix

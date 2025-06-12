@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    fs::{self, Metadata as FsMetadata},
+    fs::Metadata as FsMetadata,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -54,15 +54,21 @@ pub struct Node {
     #[serde(rename = "type")]
     pub node_type: NodeType,
 
-    #[serde(flatten)]
     pub metadata: Metadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symlink_info: Option<SymlinkInfo>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blobs: Option<Vec<ID>>, // For files
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tree: Option<ID>, // For directories
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymlinkInfo {
+    pub target_path: PathBuf, // Target path
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub symlink_target: Option<PathBuf>, // For symlinks
+    pub target_type: Option<NodeType>, // Type of node referenced by the symlink (necessary for restoration in Windows)
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -176,36 +182,9 @@ impl Node {
             .unwrap_or_default();
 
         // symlink_metadata does not follow symlinks
-        let meta = fs::symlink_metadata(&path)
+        let meta = std::fs::symlink_metadata(&path)
             .with_context(|| format!("Cannot stat {}", path.display()))?;
-
-        let file_type = meta.file_type(); // Get the FileType once
-
-        let node_type = if file_type.is_dir() {
-            NodeType::Directory
-        } else if file_type.is_file() {
-            NodeType::File
-        } else if file_type.is_symlink() {
-            NodeType::Symlink
-        } else {
-            #[cfg(unix)]
-            {
-                // Special unix file types
-                if file_type.is_block_device() {
-                    NodeType::BlockDevice
-                } else if file_type.is_char_device() {
-                    NodeType::CharDevice
-                } else if file_type.is_fifo() {
-                    NodeType::Fifo
-                } else if file_type.is_socket() {
-                    NodeType::Socket
-                } else {
-                    bail!("Unsupported file type {:?}", file_type)
-                }
-            }
-            #[cfg(not(unix))]
-            bail!("Unsupported file type {:?}", file_type)
-        };
+        let node_type = get_node_type(&meta)?;
 
         let mut node = Self {
             // Initialize the Node struct
@@ -214,15 +193,25 @@ impl Node {
             metadata: Metadata::from_fs(&meta),
             blobs: None,
             tree: None,
-            symlink_target: None,
+            symlink_info: None,
         };
 
         // If it's a symlink, read its target
         if node.is_symlink() {
-            node.symlink_target =
-                Some(fs::read_link(&path).with_context(|| {
-                    format!("Cannot read symlink target for {}", path.display())
-                })?);
+            let target_path = std::fs::read_link(&path)
+                .with_context(|| format!("Cannot read symlink target for {}", path.display()))?;
+
+            let target_type = match target_path.symlink_metadata() {
+                Ok(meta) => Some(get_node_type(&meta)?),
+                Err(_) => None,
+            };
+
+            let symlink_info = SymlinkInfo {
+                target_path,
+                target_type,
+            };
+
+            node.symlink_info = Some(symlink_info);
         }
 
         Ok(node)
@@ -262,6 +251,39 @@ impl Node {
     pub fn is_socket(&self) -> bool {
         matches!(self.node_type, NodeType::Socket)
     }
+}
+
+/// Returns the NodeType for a metadata entry
+fn get_node_type(meta: &FsMetadata) -> Result<NodeType> {
+    let file_type = meta.file_type(); // Get the FileType once
+
+    let node_type = if file_type.is_dir() {
+        NodeType::Directory
+    } else if file_type.is_file() {
+        NodeType::File
+    } else if file_type.is_symlink() {
+        NodeType::Symlink
+    } else {
+        #[cfg(unix)]
+        {
+            // Special unix file types
+            if file_type.is_block_device() {
+                NodeType::BlockDevice
+            } else if file_type.is_char_device() {
+                NodeType::CharDevice
+            } else if file_type.is_fifo() {
+                NodeType::Fifo
+            } else if file_type.is_socket() {
+                NodeType::Socket
+            } else {
+                bail!("Unsupported file type {:?}", file_type)
+            }
+        }
+        #[cfg(not(unix))]
+        bail!("Unsupported file type {:?}", file_type)
+    };
+
+    Ok(node_type)
 }
 
 impl Tree {

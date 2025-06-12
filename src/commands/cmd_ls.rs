@@ -78,7 +78,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             metadata: Metadata::default(),
             blobs: None,
             tree: Some(snapshot.tree.clone()),
-            symlink_target: None,
+            symlink_info: None,
         },
     };
 
@@ -198,9 +198,13 @@ fn get_colorized_node_name(node: &Node) -> String {
     if node.is_dir() {
         format!("{}", node.name.bold().blue())
     } else if node.is_symlink() {
-        match &node.symlink_target {
+        match &node.symlink_info {
             None => format!("{}", node.name.cyan()),
-            Some(target) => format!("{} -> {}", node.name.cyan(), target.display()),
+            Some(symlink_info) => format!(
+                "{} -> {}",
+                node.name.cyan(),
+                symlink_info.target_path.display()
+            ),
         }
     } else if node.is_block_device() || node.is_char_device() {
         format!("{}", node.name.yellow().on_black())

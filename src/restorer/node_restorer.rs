@@ -35,10 +35,7 @@ use crate::{
 #[cfg(unix)]
 use {
     anyhow::bail,
-    std::{
-        fs::Permissions,
-        os::unix::fs::{PermissionsExt, symlink},
-    },
+    std::{fs::Permissions, os::unix::fs::PermissionsExt},
 };
 
 /// Restores a node to the specified destination path.
@@ -104,26 +101,50 @@ pub fn restore_node_to_path(
         }
 
         NodeType::Symlink => {
-            #[cfg(unix)]
-            {
-                let target = node
-                    .symlink_target
-                    .as_ref()
-                    .expect("Symlink Node must have a target path");
-                symlink(target, dst_path).with_context(|| {
-                    format!(
-                        "Could not create symlink '{}' pointing to '{}'",
-                        dst_path.display(),
-                        target.display()
-                    )
-                })?;
-            }
-            #[cfg(not(unix))]
-            {
+            let symlink_info = node.symlink_info.as_ref();
+
+            // Show a warning if the symlink metadata is missing and return.
+            if symlink_info.is_none() {
                 ui::cli::log_warning(&format!(
-                    "Symlink restoration not supported on this operating system: '{}'",
+                    "Symlink {} does not have a target path",
                     dst_path.display()
                 ));
+                return Ok(());
+            }
+            let symlink_info = symlink_info.unwrap();
+
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&symlink_info.target_path, &dst_path).with_context(
+                    || {
+                        format!(
+                            "Could not create symlink '{}' pointing to '{}'",
+                            dst_path.display(),
+                            symlink_info.target_path.display()
+                        )
+                    },
+                )?;
+            }
+            #[cfg(windows)]
+            {
+                // Windows distinguishes symlinks to files and symlinks to dirs
+                match symlink_info.target_type {
+                    // Directory symlink
+                    Some(NodeType::Directory) => {
+                        std::os::windows::fs::symlink_dir(&dst_path, &symlink_info.target_path)?;
+                    }
+                    // Everything else (not a directory)
+                    Some(_) => {
+                        std::os::windows::fs::symlink_file(&dst_path, &symlink_info.target_path)?;
+                    }
+                    // No type info. Show warning.
+                    None => {
+                        ui::cli::log_warning(&format!(
+                            "Symlink {} has no type info",
+                            dst_path.display()
+                        ));
+                    }
+                }
             }
         }
 

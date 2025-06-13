@@ -175,11 +175,13 @@ fn init_common(
         .with_context(|| "Could not generate key")?;
     let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
     let keyfile_id = ID::from_content(&keyfile_json);
-    let keyfile_path = match keyfile_path {
-        Some(p) => p,
-        None => &keys_path.join(&keyfile_id.to_hex()),
-    };
-    backend.write(&keyfile_path, keyfile_json.as_bytes())?;
+    match keyfile_path {
+        Some(p) => std::fs::write(p, keyfile_json.as_bytes())?,
+        None => {
+            let p = keys_path.join(&keyfile_id.to_hex());
+            backend.write(&p, keyfile_json.as_bytes())?;
+        }
+    }
 
     let secure_storage = Arc::new(
         SecureStorage::build()

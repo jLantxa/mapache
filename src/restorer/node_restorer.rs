@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::time::SystemTime;
+
 use {
     anyhow::{Context, Result},
     filetime::{FileTime, set_file_times},
@@ -39,6 +41,8 @@ use {
 };
 
 /// Restores a node to the specified destination path.
+/// This function does not restore file times for directory nodes. This must be
+/// done in a reparate pass.
 pub fn restore_node_to_path(
     repo: &dyn RepositoryBackend,
     node: &Node,
@@ -207,15 +211,12 @@ pub fn restore_node_to_path(
 /// Restores the metadata of a node to the specified destination path.
 fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
     // Set file times
-    if let Some(modified_time) = node.metadata.modified_time {
-        let ft_mtime = FileTime::from(modified_time);
-        let ft_atime = node
-            .metadata
-            .accessed_time
-            .map_or(ft_mtime, |atime| FileTime::from(atime));
-
-        set_file_times(dst_path, ft_atime, ft_mtime)
-            .with_context(|| format!("Could not set modified time for '{}'", dst_path.display()))?;
+    if !node.is_dir() {
+        restore_times(
+            dst_path,
+            node.metadata.accessed_time.as_ref(),
+            node.metadata.modified_time.as_ref(),
+        )?;
     }
 
     // Unix-specific metadata (mode, uid, gid)
@@ -251,6 +252,23 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Restores file times
+pub fn restore_times(
+    dst_path: &Path,
+    atime: Option<&SystemTime>,
+    mtime: Option<&SystemTime>,
+) -> Result<()> {
+    if let Some(modified_time) = mtime {
+        let ft_mtime = FileTime::from(modified_time.clone());
+        let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(atime.clone()));
+
+        set_file_times(dst_path, ft_atime, ft_mtime)
+            .with_context(|| format!("Could not set modified time for '{}'", dst_path.display()))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(unused_imports)]
 mod tests {
@@ -261,7 +279,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn test_restore_mtime() -> Result<()> {
         use std::fs::File;
@@ -280,7 +297,7 @@ mod tests {
         let ft_mtime = FileTime::from(prev_mtime);
         let ft_atime = node
             .metadata
-            .modified_time
+            .accessed_time
             .map_or(ft_mtime, |atime| FileTime::from(atime));
 
         set_file_times(&file_path, ft_atime, ft_mtime).with_context(|| {

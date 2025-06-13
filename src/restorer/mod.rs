@@ -57,6 +57,12 @@ impl Restorer {
             exclude,
         )?;
 
+        // Stack directories to restore file times later
+        // Modifying the metadata of a node changes the file times of the parent directory.
+        // Since the SerializedNodeStreamer emits paths in lexicographical order, we can
+        // pop them in reverse order from the stack.
+        let mut dir_stack = Vec::new();
+
         for node_res in node_streamer {
             let (path, stream_node) = node_res?;
             progress_reporter.processing_file(path.clone());
@@ -76,6 +82,13 @@ impl Restorer {
                 }
             }
 
+            if stream_node.node.is_dir() {
+                let path = restore_path.clone();
+                let atime = stream_node.node.metadata.accessed_time;
+                let mtime = stream_node.node.metadata.modified_time;
+                dir_stack.push((path, atime, mtime));
+            }
+
             // Attempt to restore the node.
             if let Err(e) =
                 node_restorer::restore_node_to_path(repo.as_ref(), &stream_node.node, &restore_path)
@@ -87,6 +100,11 @@ impl Restorer {
                 )
             }
             progress_reporter.processed_file(path);
+        }
+
+        // Second pass for the directory file times
+        while let Some((path, atime, mtime)) = dir_stack.pop() {
+            node_restorer::restore_times(&path, atime.as_ref(), mtime.as_ref())?;
         }
 
         Ok(())

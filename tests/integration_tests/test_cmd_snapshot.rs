@@ -26,7 +26,7 @@ mod tests {
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         repository,
     };
-    
+
     use tempfile::tempdir;
 
     use crate::test_utils;
@@ -94,39 +94,35 @@ mod tests {
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
 
-        // Check restored files
-        assert!(restore_path.join("0").exists());
-        assert!(restore_path.join("0").join("file0.txt").exists());
-        assert!(restore_path.join("0").join("00").exists());
-        assert!(
-            restore_path
-                .join("0")
-                .join("00")
-                .join("file00.txt")
-                .exists()
-        );
-        assert!(restore_path.join("0").join("01").exists());
-        assert!(restore_path.join("0").join("l01").exists());
-        assert!(
-            restore_path
-                .join("0")
-                .join("01")
-                .join("file01a.txt")
-                .exists()
-        );
-        assert!(
-            restore_path
-                .join("0")
-                .join("01")
-                .join("file01b.txt")
-                .exists()
-        );
-        assert!(restore_path.join("1").exists());
-        assert!(restore_path.join("1").join("10").exists());
-        assert!(restore_path.join("2").exists());
-        assert!(restore_path.join("file.txt").exists());
+        let paths = vec![
+            PathBuf::from("0"),
+            PathBuf::from("0/file0.txt"),
+            PathBuf::from("0/00"),
+            PathBuf::from("0/00/file00.txt"),
+            PathBuf::from("0/01"),
+            PathBuf::from("0/01/file01a.txt"),
+            PathBuf::from("0/01/file01b.txt"),
+            PathBuf::from("1"),
+            PathBuf::from("1/10"),
+            PathBuf::from("2"),
+            PathBuf::from("file.txt"),
+        ];
 
-        // TODO: Check contents and metadata
+        for path in &paths {
+            let backup_path = backup_data_tmp_path.join(path);
+            let restored_path = restore_path.join(path);
+            assert!(restored_path.exists());
+
+            let restored_meta = restored_path.symlink_metadata()?;
+            let backup_meta = backup_path.symlink_metadata()?;
+
+            assert_eq!(restored_meta.len(), backup_meta.len());
+            assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+
+            if restored_path.is_file() {
+                assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);
+            }
+        }
 
         Ok(())
     }

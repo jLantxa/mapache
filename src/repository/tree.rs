@@ -187,16 +187,14 @@ impl Node {
         let node_type = get_node_type(&meta)?;
 
         let mut node = Self {
-            // Initialize the Node struct
             name,
-            node_type, // Now uses the determined node_type
+            node_type,
             metadata: Metadata::from_fs(&meta),
             blobs: None,
             tree: None,
             symlink_info: None,
         };
 
-        // If it's a symlink, read its target
         if node.is_symlink() {
             let target_path = std::fs::read_link(&path)
                 .with_context(|| format!("Cannot read symlink target for {}", path.display()))?;
@@ -255,7 +253,7 @@ impl Node {
 
 /// Returns the NodeType for a metadata entry
 fn get_node_type(meta: &FsMetadata) -> Result<NodeType> {
-    let file_type = meta.file_type(); // Get the FileType once
+    let file_type = meta.file_type();
 
     let node_type = if file_type.is_dir() {
         NodeType::Directory

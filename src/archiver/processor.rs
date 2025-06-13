@@ -63,8 +63,11 @@ pub(crate) fn process_item(
         NodeDiff::Unchanged => {
             // Unchanged item: No need to save content, but we still need to serialize the node.
             // Use `prev_node` as it contains the list of blobs from the previous snapshot.
-            let stream_node_info = prev_node
+            let mut stream_node_info = next_node
                 .with_context(|| "Unchanged item but the previous node was not provided")?;
+
+            // We take the `next` node, but we need to copy the list of blobs
+            stream_node_info.node.blobs = prev_node.unwrap().node.blobs;
 
             // Notify reporter based on node type.
             if stream_node_info.node.is_file() {

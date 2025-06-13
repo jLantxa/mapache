@@ -18,14 +18,15 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use clap::Args;
+use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot},
-    global::ID,
+    global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{self, RepositoryBackend, snapshot::SnapshotStreamer},
     restorer::{Resolution, Restorer},
-    ui::{cli, restore_progress::RestoreProgressReporter},
+    ui::{self, cli, restore_progress::RestoreProgressReporter},
     utils,
 };
 
@@ -72,13 +73,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
-    let (_snapshot_id, snapshot) = match &args.snapshot {
+    let (snapshot_id, snapshot) = match &args.snapshot {
         UseSnapshot::Latest => {
             let mut snapshots = SnapshotStreamer::new(repo.clone())?;
             snapshots.latest()
         }
         UseSnapshot::SnapshotId(id_hex) => {
-            let id = ID::from_hex(&id_hex)?;
+            let (id, _) = repo.find(FileType::Snapshot, id_hex)?;
             match repo.load_snapshot(&id) {
                 Ok(s) => Some((id.clone(), s)),
                 Err(_) => None,
@@ -86,6 +87,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     }
     .with_context(|| "No snapshot was found")?;
+
+    ui::cli::log!(
+        "Restoring snapshot {}",
+        snapshot_id
+            .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+            .bold()
+            .yellow()
+    );
 
     const NUM_SHOWN_PROCESSING_ITEMS: usize = 1;
     let num_expected_items = snapshot.summary.processed_items_count;

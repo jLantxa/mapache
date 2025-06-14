@@ -53,8 +53,8 @@ pub struct SnapshotSummary {
     pub raw_bytes: u64,           // Bytes 'written' before encoding
     pub encoded_bytes: u64,       // Bytes written after encoding
     pub meta_raw_bytes: u64,      // Metadata bytes 'written' before encoding
-    pub meta_encoded_bytes: u64,  //Metadata bytes written after encoding
-    pub total_raw_bytes: u64,     //Total raw bytes
+    pub meta_encoded_bytes: u64,  // Metadata bytes written after encoding
+    pub total_raw_bytes: u64,     // Total raw bytes
     pub total_encoded_bytes: u64, // Total bytes after encoding
 
     pub new_files: u32,

@@ -52,3 +52,5 @@ pub const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 // Display
 pub const SHORT_REPO_ID_LEN: usize = 5;
 pub const SHORT_SNAPSHOT_ID_LEN: usize = 4;
+
+pub const DEFAULT_VERBOSITY: u32 = 1;

@@ -22,6 +22,7 @@ mod tests {
     use backup::{
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, cmd_init::CmdArgs},
+        global::set_global_opts_with_args,
         repository::{self},
     };
 
@@ -43,10 +44,13 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             password_file: Some(password_path),
             key: None,
+            quiet: true,
+            verbosity: None,
         };
         let args = CmdArgs {
             repository_version: 1,
         };
+        set_global_opts_with_args(&global);
 
         // Init repo
         commands::cmd_init::run(&global, &args).with_context(|| "Failed to run cmd_init")?;
@@ -93,10 +97,13 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             password_file: Some(password_path),
             key: Some(keyfile_path.clone()),
+            quiet: true,
+            verbosity: None,
         };
         let args = CmdArgs {
             repository_version: 1,
         };
+        set_global_opts_with_args(&global);
 
         // Init repo
         commands::cmd_init::run(&global, &args).with_context(|| "Failed to run cmd_init")?;

@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
         streamers::{NodeDiff, StreamNode},
         tree::{Node, NodeType},
     },
-    ui::{self, snapshot_progress::SnapshotProgressReporter},
+    ui::snapshot_progress::SnapshotProgressReporter,
 };
 
 pub(crate) fn process_item(
@@ -195,7 +195,7 @@ fn chunk_and_save_blobs(
                 pr.written_data_bytes(raw_size, encoded_size);
                 pr.processed_bytes(processed_size);
             }
-            Err(e) => ui::cli::log_error(&format!("Failed to save blob to repository: {:?}", e)),
+            Err(e) => bail!("Failed to save blob to repository: {:?}", e),
         }
     }
 

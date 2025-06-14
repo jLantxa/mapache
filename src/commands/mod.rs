@@ -17,7 +17,7 @@
 use std::{path::PathBuf, str::FromStr};
 
 use anyhow::{Error, Result, anyhow};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 pub mod cmd_cat;
 pub mod cmd_forget;
@@ -70,6 +70,7 @@ pub enum Command {
 }
 
 #[derive(Parser, Debug)]
+#[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 pub struct GlobalArgs {
     /// Repository path
     #[clap(short, long, value_parser)]
@@ -82,6 +83,12 @@ pub struct GlobalArgs {
     /// Path to a KeyFile
     #[clap(short = 'k', long, value_parser)]
     pub key: Option<PathBuf>,
+
+    #[clap(short = 'q', long, value_parser, group = "verbosity_group")]
+    pub quiet: bool,
+
+    #[clap(short = 'v', long, value_parser, group = "verbosity_group")]
+    pub verbosity: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

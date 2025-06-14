@@ -23,6 +23,7 @@ fastcdc = "3.2.1"
 filetime = "0.2.25"
 indicatif = { version = "0.17.11", features = ["rayon"] }
 num_cpus = "1.17.0"
+parking_lot = "0.12.4"
 rayon = "1.10.0"
 secrecy = "0.10.3"
 serde = { version = "1.0.219", features = ["derive"] }

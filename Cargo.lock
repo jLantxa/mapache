@@ -156,6 +156,7 @@ dependencies = [
  "filetime",
  "indicatif",
  "num_cpus",
+ "parking_lot",
  "rayon",
  "secrecy",
  "serde",

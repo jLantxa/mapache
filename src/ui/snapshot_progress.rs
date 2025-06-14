@@ -26,6 +26,7 @@ use std::{
 };
 
 use crate::{
+    global::global_opts,
     repository::snapshot::SnapshotSummary,
     ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS},
     utils,
@@ -61,9 +62,14 @@ pub struct SnapshotProgressReporter {
 
 impl SnapshotProgressReporter {
     pub fn new(expected_items: u64, expected_size: u64, num_processed_items: usize) -> Self {
-        let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(
-            PROGRESS_REFRESH_RATE_HZ,
-        ));
+        let verbosity = global_opts().as_ref().unwrap().verbosity;
+        let draw_target = if verbosity > 0 {
+            ProgressDrawTarget::stderr_with_hz(PROGRESS_REFRESH_RATE_HZ)
+        } else {
+            ProgressDrawTarget::hidden()
+        };
+
+        let mp = MultiProgress::with_draw_target(draw_target);
         let progress_bar = mp.add(ProgressBar::new(expected_size));
 
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));

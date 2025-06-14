@@ -113,7 +113,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     // Extract the snapshot root path
     let snapshot_root_path = if absolute_source_paths.is_empty() {
-        ui::cli::log_warning("No source paths provided. Creating empty snapshot.");
+        ui::cli::warning!("No source paths provided. Creating empty snapshot.");
         PathBuf::new()
     } else if absolute_source_paths.len() == 1 {
         let single_source = absolute_source_paths.first().unwrap();
@@ -143,7 +143,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         Some(snap.clone())
                     }
                     None => {
-                        ui::cli::log_warning("No previous snapshots found. Doing full scan.");
+                        ui::cli::warning!("No previous snapshots found. Doing full scan.");
                         None
                     }
                 }
@@ -282,7 +282,7 @@ fn show_final_report(
         summary.deleted_dirs.to_string(),
         summary.unchanged_dirs.to_string(),
     ]);
-    table.print();
+    ui::cli::log!("{}", table.render());
 
     ui::cli::log!();
     if !args.dry_run {
@@ -332,7 +332,7 @@ fn show_final_report(
             .green()
             .to_string(),
     ]);
-    data_table.print();
+    ui::cli::log!("{}", data_table.render());
 
     ui::cli::log!();
 }

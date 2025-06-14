@@ -134,14 +134,14 @@ impl Archiver {
                 if let Ok(diff) = diff_result {
                     if let Err(e) = diff_tx.send(diff) {
                         error_flag_clone.fetch_and(true, std::sync::atomic::Ordering::AcqRel);
-                        ui::cli::log_error(&format!(
+                        ui::cli::error!(
                             "Archiver thread errored sending diff: {:?}",
                             e.to_string()
-                        ));
+                        );
                         break;
                     }
                 } else {
-                    ui::cli::log_error("Archiver thread errored getting next diff");
+                    ui::cli::error!("Archiver thread errored getting next diff");
                     break;
                 }
             }
@@ -188,20 +188,20 @@ impl Archiver {
                             if let Some(processed_item) = processed_item_opt {
                                 if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
                                     inner_error_flag_clone.store(true, Ordering::Release);
-                                    ui::cli::log_error(&format!(
+                                    ui::cli::error!(
                                         "Archiver thread errored sending processing item: {:?}",
                                         e.to_string()
-                                    ));
+                                    );
                                     return;
                                 }
                             }
                         }
                         Err(e) => {
                             inner_error_flag_clone.store(true, Ordering::Release);
-                            ui::cli::log_error(&format!(
+                            ui::cli::error!(
                                 "Archiver thread errored processing item: {:?}",
                                 e.to_string()
-                            ));
+                            );
                             return;
                         }
                     }
@@ -252,10 +252,10 @@ impl Archiver {
                     &serializer_progress_reporter_clone,
                 ) {
                     error_flag_clone.store(true, Ordering::Release);
-                    ui::cli::log_error(&format!(
+                    ui::cli::error!(
                         "Archiver thread errored handling processed item: {:?}",
                         e.to_string()
-                    ));
+                    );
                     break;
                 }
             }

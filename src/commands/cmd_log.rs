@@ -58,14 +58,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!();
+    ui::cli::log!();
     if args.compact {
         log_compact(&snapshots_sorted);
     } else {
         log(&snapshots_sorted);
     }
 
-    println!("{} snapshots", snapshots_sorted.len());
+    ui::cli::log!("{} snapshots", snapshots_sorted.len());
 
     Ok(())
 }
@@ -73,8 +73,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 fn log(snapshots: &Vec<(ID, Snapshot)>) {
     let mut peekable_snapshots = snapshots.iter().peekable();
     while let Some((id, snapshot)) = peekable_snapshots.next() {
-        println!("{}", id.to_hex().bold().yellow());
-        println!(
+        ui::cli::log!("{}", id.to_hex().bold().yellow());
+        ui::cli::log!(
             "{} {}",
             "Date:".bold(),
             snapshot
@@ -82,31 +82,31 @@ fn log(snapshots: &Vec<(ID, Snapshot)>) {
                 .with_timezone(&Local)
                 .format("%Y-%m-%d %H:%M:%S %Z")
         );
-        println!(
+        ui::cli::log!(
             "{} {}",
             "Size:".bold(),
             utils::format_size(snapshot.summary.processed_bytes)
         );
-        println!("{} {}", "Root:".bold(), &snapshot.root.display());
+        ui::cli::log!("{} {}", "Root:".bold(), &snapshot.root.display());
 
-        println!();
-        println!("{}", "Paths:".bold());
+        ui::cli::log!();
+        ui::cli::log!("{}", "Paths:".bold());
         for path in &snapshot.paths {
-            println!("{}", path.display());
+            ui::cli::log!("{}", path.display());
         }
 
         if let Some(description) = &snapshot.description {
-            println!();
-            println!("{}", "Description:".bold().cyan());
-            println!("{}", description);
+            ui::cli::log!();
+            ui::cli::log!("{}", "Description:".bold().cyan());
+            ui::cli::log!("{}", description);
         }
 
         if peekable_snapshots.peek().is_some() {
-            println!();
+            ui::cli::log!();
         }
     }
 
-    println!();
+    ui::cli::log!();
 }
 
 fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
@@ -134,5 +134,5 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
         ]);
     }
 
-    table.print();
+    ui::cli::log!("{}", table.render());
 }

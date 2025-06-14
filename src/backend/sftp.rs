@@ -100,10 +100,10 @@ impl SftpConnectionPool {
                     // on the server side or it was a punctual error. We can try again.
 
                     if connection_retry_count < MAX_CONNECTION_RETRIES {
-                        ui::cli::log_warning("Failed to establish SFTP connection. Retrying...");
+                        ui::cli::warning!("Failed to establish SFTP connection. Retrying...");
                         connection_retry_count += 1;
                     } else {
-                        ui::cli::log_warning("Max connection retries exceeded.");
+                        ui::cli::warning!("Max connection retries exceeded.");
                         break;
                     }
                 }

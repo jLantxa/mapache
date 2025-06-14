@@ -24,12 +24,13 @@ mod tests {
     use backup::{
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
+        global::set_global_opts_with_args,
         repository,
     };
 
     use tempfile::tempdir;
 
-    use crate::test_utils;
+    use crate::test_utils::{self};
 
     const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
 
@@ -58,6 +59,8 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             password_file: Some(password_path),
             key: None,
+            quiet: true,
+            verbosity: None,
         };
 
         // Init repo
@@ -146,6 +149,8 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             password_file: Some(password_path),
             key: None,
+            quiet: true,
+            verbosity: None,
         };
 
         // Init repo
@@ -205,7 +210,10 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             password_file: Some(password_path),
             key: None,
+            quiet: true,
+            verbosity: None,
         };
+        set_global_opts_with_args(&global);
 
         // Init repo
         init_repo(password, repo_path.clone())?;
@@ -295,7 +303,10 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             password_file: Some(password_path),
             key: None,
+            quiet: true,
+            verbosity: None,
         };
+        set_global_opts_with_args(&global);
 
         // Init repo
         init_repo(password, repo_path.clone())?;

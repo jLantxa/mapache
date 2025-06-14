@@ -109,10 +109,7 @@ pub fn restore_node_to_path(
 
             // Show a warning if the symlink metadata is missing and return.
             if symlink_info.is_none() {
-                ui::cli::log_warning(&format!(
-                    "Symlink {} does not have a target path",
-                    dst_path.display()
-                ));
+                ui::cli::warning!("Symlink {} does not have a target path", dst_path.display());
                 return Ok(());
             }
             let symlink_info = symlink_info.unwrap();
@@ -143,10 +140,7 @@ pub fn restore_node_to_path(
                     }
                     // No type info. Show warning.
                     None => {
-                        ui::cli::log_warning(&format!(
-                            "Symlink {} has no type info",
-                            dst_path.display()
-                        ));
+                        ui::cli::warning!("Symlink {} has no type info", dst_path.display());
                     }
                 }
             }
@@ -154,54 +148,54 @@ pub fn restore_node_to_path(
 
         NodeType::BlockDevice => {
             #[cfg(unix)]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "Restoration of block device '{}' not supported yet.",
                 dst_path.display()
-            ));
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "Block device restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            ));
+            );
         }
 
         NodeType::CharDevice => {
             #[cfg(unix)]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "Restoration of character device '{}' not supported yet.",
                 dst_path.display()
-            ));
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "Character device restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            ));
+            );
         }
 
         NodeType::Fifo => {
             #[cfg(unix)]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "Restoration of FIFO (named pipe) '{}' not supported yet.",
                 dst_path.display()
-            ));
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "FIFO restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            ));
+            );
         }
 
         NodeType::Socket => {
             #[cfg(unix)]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "Restoration of socket '{}' not supported yet.",
                 dst_path.display()
-            ));
+            );
             #[cfg(not(unix))]
-            ui::cli::log_warning(&format!(
+            ui::cli::warning!(
                 "Socket restoration not supported on this operating system: '{}'",
                 dst_path.display()
-            ));
+            );
         }
     }
 

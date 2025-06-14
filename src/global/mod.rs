@@ -17,14 +17,51 @@
 pub mod defaults;
 pub mod vars;
 
+use std::sync::LazyLock;
+
 use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
+use parking_lot::{RwLock, RwLockReadGuard};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::utils;
+use crate::{commands::GlobalArgs, global::defaults::DEFAULT_VERBOSITY, utils};
 
 pub const ID_LENGTH: usize = 32;
 pub type Hash256 = [u8; ID_LENGTH];
+
+pub struct GlobalOpts {
+    pub verbosity: u32,
+}
+
+impl Default for GlobalOpts {
+    fn default() -> Self {
+        Self {
+            verbosity: DEFAULT_VERBOSITY,
+        }
+    }
+}
+
+pub static GLOBAL_OPTS: LazyLock<RwLock<Option<GlobalOpts>>> =
+    LazyLock::new(|| RwLock::new(Some(GlobalOpts::default())));
+
+pub fn set_global_opts_with_args(global_args: &GlobalArgs) {
+    let verbosity = if global_args.quiet {
+        0
+    } else if let Some(v) = global_args.verbosity {
+        v
+    } else {
+        DEFAULT_VERBOSITY
+    };
+
+    let new_opts = GlobalOpts { verbosity };
+
+    let mut opts_guard = GLOBAL_OPTS.write();
+    *opts_guard = Some(new_opts);
+}
+
+pub fn global_opts() -> RwLockReadGuard<'static, Option<GlobalOpts>> {
+    GLOBAL_OPTS.read()
+}
 
 /// This is an ID that identifies object by its content.
 #[derive(Hash, Clone, Eq, PartialEq)]

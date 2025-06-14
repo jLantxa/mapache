@@ -385,7 +385,7 @@ impl RepositoryBackend for Repository {
             Arc::new(move |data, id| {
                 let path = Self::get_object_path(&objects_path, &id);
                 if let Err(e) = backend.write(&path, &data) {
-                    cli::log_error(&format!("Could not save pack {}: {}", id.to_hex(), e));
+                    cli::error!("Could not save pack {}: {}", id.to_hex(), e);
                 }
             }),
         );

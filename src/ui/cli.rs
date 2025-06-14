@@ -14,32 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::LazyLock;
+
 use colored::Colorize;
 use dialoguer::Password;
-
-#[macro_export]
-macro_rules! log {
-    ($($arg:tt)*) => {
-        println!($($arg)*)
-    };
-}
-pub use log;
-
-/// Prints a warning log (warning: ...)
-pub fn log_warning(str: &str) {
-    eprintln!("{}: {}", "Warning".bold().yellow(), str);
-}
-
-/// Prints an error log (error: ...)
-pub fn log_error(str: &str) {
-    eprintln!("{}: {}", "Error".bold().red(), str);
-}
-
-/// Prints a separator line with a given character and count.
-pub fn print_separator(character: char, count: usize) {
-    let repeated_string: String = std::iter::repeat(character).take(count).collect();
-    println!("{}", repeated_string);
-}
 
 /// Requests a password with a prompt without confirmation.
 #[inline]
@@ -60,3 +38,60 @@ pub fn request_password_with_confirmation(
         .interact()
         .unwrap()
 }
+
+pub const ERROR_PREFIX: LazyLock<String> = LazyLock::new(|| "Error:".bold().red().to_string());
+pub const WARNING_PREFIX: LazyLock<String> = LazyLock::new(|| "Warning:".bold().red().to_string());
+
+#[macro_export]
+macro_rules! log_with_level {
+    ($min_level:expr, $($arg:tt)*) => {
+        let current_verbosity = $crate::global::global_opts().as_ref().unwrap().verbosity;
+        if current_verbosity >= $min_level {
+            println!($($arg)*)
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! log_always {
+    ($($arg:tt)*) => {
+        println!($($arg)*)
+    };
+}
+
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => {
+        $crate::ui::cli::log_always!("{} {}", *$crate::ui::cli::ERROR_PREFIX, format!($($arg)*));
+    };
+}
+
+#[macro_export]
+macro_rules! warning {
+    ($($arg:tt)*) => {
+        $crate::ui::cli::log_with_level!(1, "{} {}", *$crate::ui::cli::WARNING_PREFIX, format!($($arg)*));
+    };
+}
+
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => {
+        $crate::ui::cli::log_with_level!(1, $($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! verbose_1 {
+    ($($arg:tt)*) => {
+        $crate::ui::cli::log_with_level!(2, $($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! verbose_2 {
+    ($($arg:tt)*) => {
+       $crate::ui::cli::log_with_level!(3, $($arg)*);
+    };
+}
+
+pub use {error, log, log_always, log_with_level, verbose_1, verbose_2, warning};

@@ -323,10 +323,10 @@ pub fn retrieve_master_key(
                 // The keys directory should only contain files. We can ignore anything
                 // that is not a file, but show a warning anyway.
                 if !backend.is_file(&path) {
-                    ui::cli::log_warning(&format!(
+                    ui::cli::warning!(
                         "Extraneous item \'{}\' in keys directory is not a file",
                         path.display()
-                    ));
+                    );
                     continue;
                 }
 
@@ -335,11 +335,7 @@ pub fn retrieve_master_key(
                 let keyfile: KeyFile = match serde_json::from_slice(keyfile_str.as_slice()) {
                     Ok(kf) => kf,
                     Err(e) => {
-                        ui::cli::log_warning(&format!(
-                            "Failed to parse keyfile at {}: {}",
-                            path.display(),
-                            e
-                        ));
+                        ui::cli::warning!("Failed to parse keyfile at {}: {}", path.display(), e);
                         continue;
                     }
                 };

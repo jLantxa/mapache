@@ -264,11 +264,6 @@ impl Table {
         output
     }
 
-    /// Prints the Table.
-    pub fn print(&self) {
-        println!("{}", self.render());
-    }
-
     /// Draws a horizontal line based on the current column widths and padding.
     fn draw_horizontal_line(&self) -> String {
         let mut line = String::new();

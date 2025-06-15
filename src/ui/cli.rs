@@ -14,9 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::LazyLock;
-
-use colored::Colorize;
 use dialoguer::Password;
 
 /// Requests a password with a prompt without confirmation.
@@ -39,9 +36,6 @@ pub fn request_password_with_confirmation(
         .unwrap()
 }
 
-pub const ERROR_PREFIX: LazyLock<String> = LazyLock::new(|| "Error:".bold().red().to_string());
-pub const WARNING_PREFIX: LazyLock<String> = LazyLock::new(|| "Warning:".bold().red().to_string());
-
 #[macro_export]
 macro_rules! log_with_level {
     ($min_level:expr, $($arg:tt)*) => {
@@ -62,14 +56,27 @@ macro_rules! log_always {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
-        $crate::ui::cli::log_always!("{} {}", *$crate::ui::cli::ERROR_PREFIX, format!($($arg)*));
+        $crate::ui::cli::log_always!(
+            "{}{}Error:{} {}",
+            "\x1b[1m",  // BOLD
+            "\x1b[31m", // RED
+            "\x1b[0m",  // RESET
+            format!($($arg)*)
+        );
     };
 }
 
 #[macro_export]
 macro_rules! warning {
     ($($arg:tt)*) => {
-        $crate::ui::cli::log_with_level!(1, "{} {}", *$crate::ui::cli::WARNING_PREFIX, format!($($arg)*));
+        $crate::ui::cli::log_with_level!(
+            1,
+            "{}{}Warning:{} {}",
+            "\x1b[1m",  // BOLD
+            "\x1b[33m", // YELLOW
+            "\x1b[0m",  // RESET
+            format!($($arg)*)
+        );
     };
 }
 

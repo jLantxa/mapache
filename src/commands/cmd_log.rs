@@ -92,7 +92,11 @@ fn log(snapshots: &Vec<(ID, Snapshot)>) {
         ui::cli::log!();
         ui::cli::log!("{}", "Paths:".bold());
         for path in &snapshot.paths {
-            ui::cli::log!("{}", path.display());
+            // This should work, since all paths have the common root
+            let relative_path = path
+                .strip_prefix(&snapshot.root)
+                .expect("Could not strip snapshot root from path");
+            ui::cli::log!("{}", relative_path.display());
         }
 
         if let Some(description) = &snapshot.description {

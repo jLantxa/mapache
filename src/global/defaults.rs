@@ -16,6 +16,10 @@
 
 use crate::utils::size;
 
+// -- Concurrency --
+pub const DEFAULT_READ_CONCURRENCY: usize = 4;
+pub const DEFAULT_WRITE_CONCURRENCY: usize = 5;
+
 // -- Index --
 // These are approximate numbers. Whole packs are stored in the same index
 // file and the packs don't contain a fix number of blobs.

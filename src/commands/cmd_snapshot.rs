@@ -28,7 +28,11 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
-    global::{self, ID, global_opts},
+    global::{
+        self, ID,
+        defaults::{DEFAULT_READ_CONCURRENCY, DEFAULT_WRITE_CONCURRENCY},
+        global_opts,
+    },
     repository::{
         self, RepositoryBackend,
         snapshot::{Snapshot, SnapshotStreamer},
@@ -68,11 +72,11 @@ pub struct CmdArgs {
     pub parent: UseSnapshot,
 
     /// Number of files to process in parallel.
-    #[clap(long, default_value_t = 2)]
+    #[clap(long, default_value_t = DEFAULT_READ_CONCURRENCY)]
     pub read_concurrency: usize,
 
     /// Number of writer threads.
-    #[clap(long, default_value_t = 5)]
+    #[clap(long, default_value_t = DEFAULT_WRITE_CONCURRENCY)]
     pub write_concurrency: usize,
 
     /// Dry run

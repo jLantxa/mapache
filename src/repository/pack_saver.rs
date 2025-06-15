@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use anyhow::{Context, Result};
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use std::{sync::Arc, thread::JoinHandle};
 
 use crate::global::ID;
@@ -29,14 +29,23 @@ pub(crate) struct PackSaver {
 
 impl PackSaver {
     pub fn new(concurrency: usize, queue_fn: QueueFn) -> Self {
-        let (tx, rx) = crossbeam_channel::bounded(concurrency);
-
-        let worker_queue_fn = Arc::clone(&queue_fn);
+        let (tx, rx): (Sender<(Vec<u8>, ID)>, Receiver<(Vec<u8>, ID)>) =
+            crossbeam_channel::bounded(concurrency * 2);
 
         let join_handle = std::thread::spawn(move || {
-            while let Ok((data, id)) = rx.recv() {
-                worker_queue_fn(data, id);
-            }
+            let write_pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(concurrency)
+                .build()
+                .expect("Failed to build Rayon thread pool for writing.");
+
+            write_pool.scope(|s| {
+                for (data, id) in rx.iter() {
+                    let worker_queue_fn = Arc::clone(&queue_fn);
+                    s.spawn(move |_| {
+                        worker_queue_fn(data, id);
+                    });
+                }
+            });
         });
 
         PackSaver { tx, join_handle }
@@ -54,8 +63,11 @@ impl PackSaver {
 
     pub fn finish(self) {
         drop(self.tx);
+
+        // Join the single thread that submits tasks to Rayon.
+        // This will block until all tasks within the `write_pool.scope` are done.
         self.join_handle
             .join()
-            .expect("Packer saver thread panicked");
+            .expect("Packer saver submission thread panicked");
     }
 }

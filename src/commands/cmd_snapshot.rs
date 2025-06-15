@@ -23,19 +23,19 @@ use std::{
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
-    global::{self, ID},
+    global::{self, ID, global_opts},
     repository::{
         self, RepositoryBackend,
         snapshot::{Snapshot, SnapshotStreamer},
         streamers::FSNodeStreamer,
     },
     ui::{
-        self,
+        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },
@@ -163,13 +163,21 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
+    let verbosity = global_opts().as_ref().unwrap().verbosity;
+    let draw_target = if verbosity > 0 {
+        ProgressDrawTarget::stderr_with_hz(PROGRESS_REFRESH_RATE_HZ)
+    } else {
+        ProgressDrawTarget::hidden()
+    };
+
     // Scan filesystem
     let spinner = ProgressBar::new_spinner();
+    spinner.set_draw_target(draw_target);
     spinner.set_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.cyan} {msg}")
             .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+            .tick_chars(SPINNER_TICK_CHARS),
     );
     spinner.set_message("Scanning filesystem...");
     spinner.enable_steady_tick(Duration::from_millis(100));

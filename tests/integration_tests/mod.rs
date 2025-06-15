@@ -14,5 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::{path::PathBuf, sync::Arc};
+
+use anyhow::{Context, Result};
+
+use backup::{backend::localfs::LocalFS, repository};
+
 mod test_cmd_init;
+mod test_cmd_restore;
 mod test_cmd_snapshot;
+
+const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
+
+fn init_repo(password: &str, repo_path: PathBuf) -> Result<()> {
+    let backend = Arc::new(LocalFS::new(repo_path));
+    repository::init(Some(password.to_owned()), None, backend)
+        .with_context(|| "Failed to init repo")
+}

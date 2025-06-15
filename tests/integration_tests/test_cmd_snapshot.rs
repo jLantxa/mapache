@@ -18,27 +18,20 @@
 
 mod tests {
 
-    use std::{path::PathBuf, sync::Arc};
+    use std::path::PathBuf;
 
     use anyhow::{Context, Result};
     use backup::{
-        backend::localfs::LocalFS,
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         global::set_global_opts_with_args,
-        repository,
     };
 
     use tempfile::tempdir;
 
-    use crate::test_utils::{self};
-
-    const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
-
-    fn init_repo(password: &str, repo_path: PathBuf) -> Result<()> {
-        let backend = Arc::new(LocalFS::new(repo_path));
-        repository::init(Some(password.to_owned()), None, backend)
-            .with_context(|| "Failed to init repo")
-    }
+    use crate::{
+        integration_tests::{BACKUP_DATA_PATH, init_repo},
+        test_utils::{self},
+    };
 
     #[test]
     fn test_snapshot() -> Result<()> {

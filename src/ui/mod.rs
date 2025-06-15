@@ -20,5 +20,5 @@ pub mod snapshot_progress;
 pub mod table;
 
 // Progress UI parameters
-const PROGRESS_REFRESH_RATE_HZ: u8 = 30;
-const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+pub(crate) const PROGRESS_REFRESH_RATE_HZ: u8 = 30;
+pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";

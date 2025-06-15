@@ -116,15 +116,14 @@ pub fn restore_node_to_path(
 
             #[cfg(unix)]
             {
-                std::os::unix::fs::symlink(&symlink_info.target_path, &dst_path).with_context(
-                    || {
-                        format!(
-                            "Could not create symlink '{}' pointing to '{}'",
-                            dst_path.display(),
-                            symlink_info.target_path.display()
-                        )
-                    },
-                )?;
+                if let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, &dst_path) {
+                    ui::cli::warning!(
+                        "Could not create symlink '{}' pointing to '{}' : {}",
+                        dst_path.display(),
+                        symlink_info.target_path.display(),
+                        e.to_string()
+                    );
+                }
             }
             #[cfg(windows)]
             {
@@ -132,11 +131,29 @@ pub fn restore_node_to_path(
                 match symlink_info.target_type {
                     // Directory symlink
                     Some(NodeType::Directory) => {
-                        std::os::windows::fs::symlink_dir(&dst_path, &symlink_info.target_path)?;
+                        if let Err(e) =
+                            std::os::windows::fs::symlink_dir(&dst_path, &symlink_info.target_path)
+                        {
+                            ui::cli::warning!(
+                                "Could not create symlink '{}' pointing to '{}' : {}",
+                                dst_path.display(),
+                                symlink_info.target_path.display(),
+                                e.to_string()
+                            );
+                        }
                     }
                     // Everything else (not a directory)
                     Some(_) => {
-                        std::os::windows::fs::symlink_file(&dst_path, &symlink_info.target_path)?;
+                        if let Err(e) =
+                            std::os::windows::fs::symlink_file(&dst_path, &symlink_info.target_path)
+                        {
+                            ui::cli::warning!(
+                                "Could not create symlink '{}' pointing to '{}' : {}",
+                                dst_path.display(),
+                                symlink_info.target_path.display(),
+                                e.to_string()
+                            );
+                        }
                     }
                     // No type info. Show warning.
                     None => {

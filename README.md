@@ -114,8 +114,11 @@ Commands:
   help      Print this message or the help of the given subcommand(s)
 
 Options:
-  -r, --repo <REPO>  Repository path
-      --key <KEY>    Path to a KeyFile
-  -h, --help         Print help
-  -V, --version      Print version
+  -r, --repo <REPO>                    Repository path
+  -p, --password-file <PASSWORD_FILE>  Path to a file to read the repository password
+  -k, --key <KEY>                      Path to a KeyFile
+  -q, --quiet
+  -v, --verbosity <VERBOSITY>
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```

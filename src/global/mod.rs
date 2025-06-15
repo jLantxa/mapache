@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod defaults;
-pub mod vars;
 
 use std::sync::LazyLock;
 

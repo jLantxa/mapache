@@ -225,7 +225,6 @@ impl SftpBackend {
     }
 
     fn create_dir_all_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
-        // Check if path exists using the passed client
         if self.exists_exact(path, sftp) {
             let metadata = sftp
                 .stat(path)
@@ -240,16 +239,47 @@ impl SftpBackend {
             }
         }
 
-        // Recursively create parent directories using the same client
         if let Some(parent) = path.parent() {
             if parent != Path::new("") {
-                self.create_dir_all_internal(parent, sftp)?; // Recursive call with same client
+                self.create_dir_all_internal(parent, sftp)?;
             }
         }
 
-        // Create the current directory
         sftp.mkdir(path, 0o755)
             .with_context(|| format!("Failed to create directory {:?}' in sftp backend", path))
+    }
+
+    fn remove_dir_all_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
+        if !self.exists_exact(path, sftp) {
+            return Ok(());
+        }
+
+        let metadata = sftp
+            .lstat(path)
+            .with_context(|| format!("Failed to get metadata for path: {:?}", path))?;
+
+        if metadata.is_file() {
+            sftp.unlink(path)
+                .with_context(|| format!("Failed to remove file {:?}' in sftp backend", path))?;
+            return Ok(());
+        }
+
+        let entries = sftp
+            .readdir(path)
+            .with_context(|| format!("Could not list directory {:?}' in sftp backend", path))?;
+
+        for (entry_path, entry_metadata) in entries {
+            if entry_metadata.is_dir() {
+                self.remove_dir_all_internal(&entry_path, sftp)?;
+            } else {
+                sftp.unlink(&entry_path).with_context(|| {
+                    format!("Failed to remove file {:?}' in sftp backend", entry_path)
+                })?;
+            }
+        }
+
+        sftp.rmdir(path)
+            .with_context(|| format!("Failed to remove dir {:?}' in sftp backend", path))
     }
 }
 
@@ -383,8 +413,11 @@ impl StorageBackend for SftpBackend {
             .with_context(|| format!("Failed to remove dir {:?}\' in sftp backend", path))
     }
 
-    fn remove_dir_all(&self, _path: &Path) -> Result<()> {
-        todo!()
+    fn remove_dir_all(&self, path: &Path) -> Result<()> {
+        let full_path = self.full_path(path);
+
+        let conn = self.pool.get()?;
+        self.remove_dir_all_internal(&full_path, conn.sftp())
     }
 
     fn exists(&self, path: &Path) -> bool {

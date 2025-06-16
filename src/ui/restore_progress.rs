@@ -32,7 +32,7 @@ use crate::{
     utils,
 };
 
-pub struct RestoreProgressReporter {
+pub(crate) struct RestoreProgressReporter {
     processed_items_count: Arc<AtomicU64>, // Number of files processed
     processing_items: Arc<Mutex<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 

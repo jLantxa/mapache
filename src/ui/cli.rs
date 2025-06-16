@@ -18,13 +18,13 @@ use dialoguer::Password;
 
 /// Requests a password with a prompt without confirmation.
 #[inline]
-pub fn request_password(promt: &str) -> String {
+pub(crate) fn request_password(promt: &str) -> String {
     Password::new().with_prompt(promt).interact().unwrap()
 }
 
 /// Requests a password with a prompt and confirmation.
 #[inline]
-pub fn request_password_with_confirmation(
+pub(crate) fn request_password_with_confirmation(
     prompt: &str,
     confirmation_prompt: &str,
     mismatch_err_prompt: &str,

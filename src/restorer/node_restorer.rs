@@ -43,7 +43,7 @@ use {
 /// Restores a node to the specified destination path.
 /// This function does not restore file times for directory nodes. This must be
 /// done in a reparate pass.
-pub fn restore_node_to_path(
+pub(crate) fn restore_node_to_path(
     repo: &dyn RepositoryBackend,
     node: &Node,
     dst_path: &Path,

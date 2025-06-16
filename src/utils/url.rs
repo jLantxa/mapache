@@ -20,7 +20,7 @@ use std::str::FromStr;
 
 /// Represents a parsed URL structure.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Url {
+pub(crate) struct Url {
     pub scheme: String,
     pub username: String,
     pub password: Option<String>,
@@ -33,11 +33,10 @@ pub struct Url {
 
 /// Represents errors that can occur during URL parsing.
 #[derive(Debug, PartialEq, Eq)]
-pub enum UrlError {
+pub(crate) enum UrlError {
     InvalidScheme,
     InvalidHost,
     InvalidPort,
-    ParsingError(&'static str),
     PercentDecodingError,
 }
 
@@ -47,7 +46,6 @@ impl std::fmt::Display for UrlError {
             UrlError::InvalidScheme => write!(f, "Invalid URL scheme"),
             UrlError::InvalidHost => write!(f, "Invalid host in URL"),
             UrlError::InvalidPort => write!(f, "Invalid port number in URL"),
-            UrlError::ParsingError(msg) => write!(f, "URL parsing error: {}", msg),
             UrlError::PercentDecodingError => write!(f, "Percent decoding error in URL component"),
         }
     }

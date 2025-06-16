@@ -42,7 +42,7 @@ use crate::{
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 
-pub struct Archiver {
+pub(crate) struct Archiver {
     repo: Arc<dyn RepositoryBackend>,
     absolute_source_paths: Vec<PathBuf>,
     snapshot_root_path: PathBuf,
@@ -54,7 +54,7 @@ pub struct Archiver {
 }
 
 impl Archiver {
-    pub fn new(
+    pub(crate) fn new(
         repo: Arc<dyn RepositoryBackend>,
         absolute_source_paths: Vec<PathBuf>,
         snapshot_root_path: PathBuf,

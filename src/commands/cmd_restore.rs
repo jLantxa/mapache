@@ -21,7 +21,7 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    backend::new_backend_with_prompt,
+    backend::{make_dry_backend, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot},
     global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{self, RepositoryBackend, snapshot::SnapshotStreamer},
@@ -65,11 +65,19 @@ pub struct CmdArgs {
     /// fail: Terminates the command with an error.
     #[clap(long, default_value_t=Resolution::Fail)]
     pub resolution: Resolution,
+
+    /// Dry run
+    #[clap(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(&global_args.repo)?;
+
+    // If dry-run, wrap the backend inside the DryBackend
+    let backend = make_dry_backend(backend, args.dry_run);
+
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
@@ -109,6 +117,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo.clone(),
         &snapshot,
         &args.resolution,
+        args.dry_run,
         &args.target,
         args.include.clone(),
         args.exclude.clone(),

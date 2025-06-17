@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Ok, Result, bail};
 use clap::ValueEnum;
 
 use crate::{
@@ -43,6 +43,7 @@ impl Restorer {
         repo: Arc<dyn RepositoryBackend>,
         snapshot: &Snapshot,
         resolution: &Resolution,
+        dry_run: bool,
         target_path: &Path,
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
@@ -89,22 +90,29 @@ impl Restorer {
                 dir_stack.push((path, atime, mtime));
             }
 
-            // Attempt to restore the node.
-            if let Err(e) =
-                node_restorer::restore_node_to_path(repo.as_ref(), &stream_node.node, &restore_path)
-            {
-                bail!(
-                    "Failed to restore item \'{}\': {}",
-                    restore_path.display(),
-                    e
-                )
+            if !dry_run {
+                // Attempt to restore the node.
+                if let Err(e) = node_restorer::restore_node_to_path(
+                    repo.as_ref(),
+                    &stream_node.node,
+                    &restore_path,
+                ) {
+                    bail!(
+                        "Failed to restore item \'{}\': {}",
+                        restore_path.display(),
+                        e
+                    )
+                }
             }
+
             progress_reporter.processed_file(path);
         }
 
         // Second pass for the directory file times
-        while let Some((path, atime, mtime)) = dir_stack.pop() {
-            node_restorer::restore_times(&path, atime.as_ref(), mtime.as_ref())?;
+        if !dry_run {
+            while let Some((path, atime, mtime)) = dir_stack.pop() {
+                node_restorer::restore_times(&path, atime.as_ref(), mtime.as_ref())?;
+            }
         }
 
         Ok(())

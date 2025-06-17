@@ -65,7 +65,7 @@ impl FSNodeStreamer {
         }
 
         exclude_paths.sort_unstable();
-        paths.retain(|path| utils::filter_path(path, None, Some(&exclude_paths)));
+        paths.retain(|path| utils::filter_path(path, None, Some(exclude_paths.as_ref())));
 
         // Calculate intermediate paths and count children (root included)
         let common_root = utils::calculate_lcp(&paths);
@@ -75,7 +75,7 @@ impl FSNodeStreamer {
         // Filter intermediate paths based on exclude_paths and collect
         let mut intermediate_paths: Vec<(PathBuf, usize)> = intermediate_path_set
             .into_iter()
-            .filter(|(path, _)| utils::filter_path(path, None, Some(&exclude_paths)))
+            .filter(|(path, _)| utils::filter_path(path, None, Some(exclude_paths.as_ref())))
             .collect();
 
         // Sort paths in reverse order

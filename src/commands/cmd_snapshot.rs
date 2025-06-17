@@ -57,7 +57,7 @@ pub struct CmdArgs {
 
     /// List of paths to exclude from the backup
     #[clap(long, value_parser, required = false)]
-    pub exclude: Vec<PathBuf>,
+    pub exclude: Option<Vec<PathBuf>>,
 
     /// Snapshot description
     #[clap(long, value_parser)]
@@ -104,16 +104,21 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     }
 
-    // Cannonicalize the exclude paths
-    let mut cannonical_excludes = Vec::new();
-    for path in &args.exclude {
-        match std::fs::canonicalize(path) {
-            Ok(absolute_path) => cannonical_excludes.push(absolute_path),
-            Err(e) => bail!(e),
+    // Cannonicalize the exclude paths and filter the source paths using the excludes
+    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &args.exclude {
+        let mut canonicalized_vec = Vec::new();
+        for path in exclude_paths {
+            match std::fs::canonicalize(&path) {
+                Ok(absolute_path) => canonicalized_vec.push(absolute_path),
+                Err(e) => bail!(e),
+            }
         }
-    }
+        Some(canonicalized_vec)
+    } else {
+        None
+    };
 
-    absolute_source_paths.retain(|p| utils::filter_path(p, None, Some(&cannonical_excludes)));
+    absolute_source_paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
 
     // Extract the snapshot root path
     let snapshot_root_path = if absolute_source_paths.is_empty() {
@@ -190,8 +195,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_files = 0;
     let mut num_dirs = 0;
     let mut total_bytes = 0;
-    let scan_streamer =
-        FSNodeStreamer::from_paths(absolute_source_paths.clone(), cannonical_excludes.clone())?;
+    let scan_streamer = FSNodeStreamer::from_paths(
+        absolute_source_paths.clone(),
+        cannonical_excludes.clone().unwrap_or_default(),
+    )?;
     for stream_node_result in scan_streamer {
         let (_path, stream_node) = stream_node_result?;
         let node = stream_node.node;
@@ -227,7 +234,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo.clone(),
         absolute_source_paths,
         snapshot_root_path,
-        cannonical_excludes.clone(),
+        cannonical_excludes.unwrap_or_default(),
         parent_snapshot,
         (args.read_concurrency, args.write_concurrency),
         progress_reporter.clone(),

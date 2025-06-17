@@ -67,7 +67,7 @@ mod tests {
                 backup_data_tmp_path.join("2"),
                 backup_data_tmp_path.join("file.txt"),
             ],
-            exclude: Vec::new(),
+            exclude: None,
             description: None,
             full_scan: false,
             parent: UseSnapshot::Latest,
@@ -158,7 +158,7 @@ mod tests {
                 backup_data_tmp_path.join("2"),
                 backup_data_tmp_path.join("file.txt"),
             ],
-            exclude: Vec::new(),
+            exclude: None,
             description: None,
             full_scan: false,
             parent: UseSnapshot::Latest,
@@ -168,6 +168,14 @@ mod tests {
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
             .with_context(|| "Failed to run cmd_snapshot")?;
+
+        // `snapshots` directory should be empty
+        let snapshots_read_dir = repo_path.join("snapshots").read_dir()?;
+        assert_eq!(0, snapshots_read_dir.into_iter().count());
+
+        // `index` directory should be empty
+        let index_read_dir = repo_path.join("index").read_dir()?;
+        assert_eq!(0, index_read_dir.into_iter().count());
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -221,7 +229,7 @@ mod tests {
                 backup_data_tmp_path.join("2"),
                 backup_data_tmp_path.join("file.txt"),
             ],
-            exclude: vec![backup_data_tmp_path.join("0/01")],
+            exclude: Some(vec![backup_data_tmp_path.join("0/01")]),
             description: None,
             full_scan: false,
             parent: UseSnapshot::Latest,
@@ -315,7 +323,7 @@ mod tests {
                 backup_data_tmp_path.join("2"),
                 backup_data_tmp_path.join("file.txt"),
             ],
-            exclude: vec![backup_data_tmp_path.join("0/01")],
+            exclude: Some(vec![backup_data_tmp_path.join("0/01")]),
             description: None,
             full_scan: false,
             parent: UseSnapshot::Latest,
@@ -333,7 +341,7 @@ mod tests {
                 backup_data_tmp_path.join("2"),
                 backup_data_tmp_path.join("file.txt"),
             ],
-            exclude: Vec::new(),
+            exclude: None,
             description: None,
             full_scan: false,
             parent: UseSnapshot::Latest,

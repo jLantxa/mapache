@@ -81,6 +81,7 @@ mod tests {
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
+            dry_run: false,
             include: Some(vec![PathBuf::from("0"), PathBuf::from("1")]),
             exclude: Some(vec![PathBuf::from("0/00/file00.txt")]),
             resolution: backup::restorer::Resolution::Skip,

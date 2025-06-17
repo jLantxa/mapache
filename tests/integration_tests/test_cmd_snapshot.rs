@@ -83,6 +83,7 @@ mod tests {
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
+            dry_run: false,
             include: None,
             exclude: None,
             resolution: backup::restorer::Resolution::Skip,
@@ -173,6 +174,7 @@ mod tests {
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
+            dry_run: false,
             include: None,
             exclude: None,
             resolution: backup::restorer::Resolution::Skip,
@@ -235,6 +237,7 @@ mod tests {
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
+            dry_run: false,
             include: None,
             exclude: None,
             resolution: backup::restorer::Resolution::Skip,
@@ -345,6 +348,7 @@ mod tests {
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
+            dry_run: false,
             include: None,
             exclude: None,
             resolution: backup::restorer::Resolution::Skip,

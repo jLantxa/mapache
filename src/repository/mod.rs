@@ -100,12 +100,17 @@ pub trait RepositoryBackend: Sync + Send {
     /// Returns a tuple (raw_size, encoded_size)
     fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;
 
+    /// Loads an index file
     fn load_index(&self, id: &ID) -> Result<IndexFile>;
 
+    /// Loads the repository manifest
     fn load_manifest(&self) -> Result<Manifest>;
 
     /// Loads a KeyFile.
     fn load_key(&self, id: &ID) -> Result<KeyFile>;
+
+    /// Deletes a file from the repository
+    fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()>;
 
     /// Flushes all pending data and saves it.
     /// Returns a tuple (raw_size, encoded_size)

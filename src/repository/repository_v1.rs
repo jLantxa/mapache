@@ -397,6 +397,19 @@ impl RepositoryBackend for Repository {
             pack_saver.finish();
         }
     }
+
+    fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()> {
+        let id_hex = id.to_hex();
+        let path = match file_type {
+            FileType::Object => self.objects_path.join(id_hex),
+            FileType::Snapshot => self.snapshot_path.join(id_hex),
+            FileType::Index => self.index_path.join(id_hex),
+            FileType::Key => self.keys_path.join(id_hex),
+            FileType::Manifest => return Ok(()),
+        };
+
+        self.backend.remove_file(&path)
+    }
 }
 
 impl Drop for Repository {

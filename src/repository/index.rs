@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -51,6 +54,8 @@ pub struct Index {
 
     /// If an index is pending, it is still receiving entries from packs and is not yet finalized.
     is_pending: bool,
+
+    create_time: Instant,
 }
 
 impl Index {
@@ -59,6 +64,7 @@ impl Index {
             ids: HashMap::new(),
             pack_ids: IndexSet::new(),
             is_pending: true,
+            create_time: Instant::now(),
         }
     }
 
@@ -71,6 +77,12 @@ impl Index {
     /// Returns `true` if the index is currently pending (still receiving entries).
     pub fn is_pending(&self) -> bool {
         self.is_pending
+    }
+
+    /// Returns true if the index contains enough blobs to be considered full
+    pub fn is_full(&self) -> bool {
+        self.ids.len() >= global::defaults::BLOBS_PER_INDEX_FILE
+            || self.create_time.elapsed() >= global::defaults::INDEX_FLUSH_TIMEOUT
     }
 
     /// Creates an `Index` from a serialized `IndexFile`.
@@ -173,6 +185,14 @@ impl Index {
 
         Ok((raw_size, encoded_size))
     }
+
+    pub fn num_blobs(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub fn num_packs(&self) -> usize {
+        self.pack_ids.len()
+    }
 }
 
 /// Manages a collection of `Index` instances, providing a unified view
@@ -232,9 +252,10 @@ impl MasterIndex {
     /// or that a new one will be created as part of the overall backup process if needed.
     pub fn add_pack(
         &mut self,
+        repo: &dyn RepositoryBackend,
         pack_id: &ID,
         packed_blob_descriptors: Vec<PackedBlobDescriptor>, // Take ownership as it's consumed
-    ) {
+    ) -> Result<(u64, u64)> {
         // Remove processed blobs from the pending set
         for blob in &packed_blob_descriptors {
             self.pending_blobs.remove(&blob.id);
@@ -244,7 +265,11 @@ impl MasterIndex {
         for idx in &mut self.indexes {
             if idx.is_pending() {
                 idx.add_pack(pack_id, &packed_blob_descriptors);
-                return;
+
+                return match idx.is_full() {
+                    true => idx.finalize_and_save(repo),
+                    false => Ok((0, 0)), // Nothing was added to the repository
+                };
             }
         }
 
@@ -252,6 +277,8 @@ impl MasterIndex {
         let mut new_pending_index = Index::new();
         new_pending_index.add_pack(pack_id, &packed_blob_descriptors);
         self.indexes.push(new_pending_index);
+
+        Ok((0, 0)) // Nothing was added to the repository
     }
 
     /// Saves all pending indexes managed by the `MasterIndex` to the repository.
@@ -271,27 +298,6 @@ impl MasterIndex {
         }
 
         Ok((uncompressed_size, compressed_size))
-    }
-
-    // Finalize and flush all pending indexes. This function saves indexes with
-    // a smaller size than the optimum as a trade-off to commit packs often.
-    // The garbage collector should merge all small indexes and consolidate them
-    // into bigger index files.
-    /// Returns a tuple (raw_size, encoded_size)
-    pub fn flush_pending_if_full(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
-        let (mut total_raw_size, mut total_encoded_size) = (0, 0);
-        for idx in &mut self.indexes {
-            if idx.is_pending() {
-                // Save index if the number of packs surpasses the default.
-                if idx.pack_ids.len() > global::defaults::PACKS_PER_FLUSHED_INDEX_FILE {
-                    let (raw, encoded) = idx.finalize_and_save(repo)?;
-                    total_raw_size += raw;
-                    total_encoded_size += encoded;
-                }
-            }
-        }
-
-        Ok((total_raw_size, total_encoded_size))
     }
 }
 

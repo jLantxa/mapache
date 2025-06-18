@@ -458,10 +458,10 @@ impl Repository {
             drop(pack_saver_guard);
 
             let mut index_guard = self.index.lock().unwrap();
-            index_guard.add_pack(&pack_id, packed_blob_descriptors);
-            let (r, e) = index_guard.flush_pending_if_full(self)?;
-            raw += r;
-            encoded += e;
+            let (index_raw, index_encoded) =
+                index_guard.add_pack(self, &pack_id, packed_blob_descriptors)?;
+            raw += index_raw;
+            encoded += index_encoded;
             drop(index_guard);
         } else {
             bail!("PackSaver is not initialized. Call `init_pack_saver` first.");

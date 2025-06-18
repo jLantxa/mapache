@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::time::Duration;
+
 use crate::utils::size;
 
 // -- Concurrency --
@@ -21,25 +23,8 @@ pub const DEFAULT_READ_CONCURRENCY: usize = 4;
 pub const DEFAULT_WRITE_CONCURRENCY: usize = 5;
 
 // -- Index --
-// These are approximate numbers. Whole packs are stored in the same index
-// file and the packs don't contain a fix number of blobs.
-
-// These constants dictate index flushing during the snapshot process.
-//
-// Approximate total size referenced by an index when flushing. During the snapshot
-// process, we flush the index periodically in order to commit packs frequently. If the
-// snapshot process is interrupted, the packs referenced by an index are not lost when
-// resuming the snapshot. However, flushing often means saving a lot of small indexes
-// to file.
-// The garbage collector should merge all small indexes and consolidate them
-// into bigger index files.
-pub const INDEX_FLUSH_REFERENCE_SIZE_HINT: u64 = 4 * size::GiB;
-pub const PACKS_PER_FLUSHED_INDEX_FILE: usize =
-    (INDEX_FLUSH_REFERENCE_SIZE_HINT / MAX_PACK_SIZE) as usize;
-
-// Number of packs per index file when merging indexes during garbage collection.
-pub const INDEX_REFERENCE_SIZE_HINT: u64 = 32 * size::GiB;
-pub const PACKS_PER_INDEX_FILE: usize = (INDEX_REFERENCE_SIZE_HINT / MAX_PACK_SIZE) as usize;
+pub const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub const BLOBS_PER_INDEX_FILE: usize = 65535;
 
 // Packing
 /// Minimum pack size before flushing to the backend.

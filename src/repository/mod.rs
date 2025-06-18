@@ -14,13 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod index;
+pub mod index;
 pub mod manifest;
-mod pack_saver;
+pub mod pack_saver;
 pub mod packer;
 pub mod repository_v1;
 pub mod snapshot;
-mod storage;
+pub mod storage;
 pub mod streamers;
 pub mod tree;
 

@@ -36,7 +36,7 @@ pub enum Resolution {
     Fail,
 }
 
-pub(crate) struct Restorer {}
+pub struct Restorer {}
 
 impl Restorer {
     pub fn restore(

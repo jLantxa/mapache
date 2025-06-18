@@ -32,7 +32,7 @@ use crate::{
     utils,
 };
 
-pub(crate) struct SnapshotProgressReporter {
+pub struct SnapshotProgressReporter {
     // Processed items
     processed_items_count: Arc<AtomicU64>, // Number of files processed (written or not)
     processed_bytes: Arc<AtomicU64>,       // Bytes processed (only data)

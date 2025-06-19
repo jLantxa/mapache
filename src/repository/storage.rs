@@ -24,6 +24,11 @@ use std::io::{Read, Write};
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
+use crate::global;
+
+const AES_GCM_NONCE_LEN: usize = 12;
+const ZSTD_WINDOW_LOG: u32 = global::defaults::AVG_CHUNK_SIZE.ilog2();
+
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
     key: Option<SecretBox<Vec<u8>>>,
@@ -65,8 +70,12 @@ impl SecureStorage {
 
     /// Compress a stream of bytes
     pub fn compress(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
-        let mut compressed = Vec::new();
+        let mut compressed = Vec::with_capacity(data.len());
         let mut encoder = ZstdEncoder::new(&mut compressed, compression_level)?;
+
+        encoder.set_parameter(zstd::zstd_safe::CParameter::WindowLog(ZSTD_WINDOW_LOG))?;
+        encoder.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(false))?;
+
         encoder.write_all(data)?;
         encoder.finish()?;
         Ok(compressed)
@@ -74,8 +83,10 @@ impl SecureStorage {
 
     /// Decompress a stream of bytes
     pub fn decompress(data: &[u8]) -> Result<Vec<u8>> {
-        let mut decompressed = Vec::new();
         let mut decoder = ZstdDecoder::new(data)?;
+        decoder.window_log_max(ZSTD_WINDOW_LOG)?;
+
+        let mut decompressed = Vec::with_capacity(data.len());
         decoder.read_to_end(&mut decompressed)?;
         Ok(decompressed)
     }
@@ -86,15 +97,17 @@ impl SecureStorage {
         let cipher = Aes256Gcm::new(&key);
 
         // Generate a random nonce for each encryption
-        let mut nonce = [0u8; 12];
+        let mut nonce = vec![0u8; AES_GCM_NONCE_LEN];
         OsRng.fill_bytes(&mut nonce);
-        let nonce = Nonce::from_slice(&nonce);
 
-        match cipher.encrypt(nonce, data) {
-            Ok(encrypted_data) => {
-                // Return salt + nonce + encrypted data as the result
-                // The salt must be stored together with the data.
-                Ok([nonce, encrypted_data.as_slice()].concat())
+        match cipher.encrypt(Nonce::from_slice(&nonce), data) {
+            Ok(mut ciphertext) => {
+                // Return nonce + ciphertext
+
+                let mut out = Vec::with_capacity(AES_GCM_NONCE_LEN + ciphertext.len());
+                out.append(&mut nonce);
+                out.append(&mut ciphertext);
+                Ok(out)
             }
             Err(_) => bail!("Encryption failed"),
         }
@@ -112,16 +125,16 @@ impl SecureStorage {
         let key = AesKey::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
-        if data.len() < 12 {
+        if data.len() < AES_GCM_NONCE_LEN {
             bail!("Decryption failed: invalid data");
         }
 
         // Extract the nonce from the first 12 bytes of the data
-        let (nonce, ciphertext) = data.split_at(12);
+        let (nonce, ciphertext) = data.split_at(AES_GCM_NONCE_LEN);
         let nonce = Nonce::from_slice(nonce);
 
         match cipher.decrypt(nonce, ciphertext) {
-            Ok(decrypted_data) => Ok(decrypted_data),
+            Ok(plaintext) => Ok(plaintext),
             Err(_) => bail!("Decryption failed"),
         }
     }

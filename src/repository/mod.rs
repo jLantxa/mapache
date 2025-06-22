@@ -16,7 +16,6 @@
 
 pub mod index;
 pub mod manifest;
-pub mod pack_saver;
 pub mod packer;
 pub mod repository_v1;
 pub mod snapshot;

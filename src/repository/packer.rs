@@ -14,7 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::{sync::Arc, thread::JoinHandle};
+
+use anyhow::{Context, Result};
 use blake3::Hasher;
+use crossbeam_channel::Sender;
 
 use crate::global::ID;
 
@@ -131,5 +135,54 @@ impl Packer {
         self.blob_descriptors.clear();
 
         (data, descriptors, ID::from_bytes(hash.into()))
+    }
+}
+
+pub type QueueFn = Arc<dyn Fn(Vec<u8>, ID) + Send + Sync + 'static>;
+
+pub struct PackSaver {
+    tx: Sender<(Vec<u8>, ID)>,
+    join_handle: JoinHandle<()>,
+}
+
+impl PackSaver {
+    pub fn new(concurrency: usize, queue_fn: QueueFn) -> Self {
+        let (tx, rx) = crossbeam_channel::bounded(concurrency);
+
+        let worker_queue_fn = Arc::clone(&queue_fn);
+
+        let join_handle = std::thread::spawn(move || {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(concurrency)
+                .build()
+                .expect("Failed to build thread pool");
+
+            while let Ok((data, id)) = rx.recv() {
+                pool.scope(|s| {
+                    s.spawn(|_| {
+                        worker_queue_fn(data, id);
+                    });
+                });
+            }
+        });
+
+        PackSaver { tx, join_handle }
+    }
+
+    pub fn save_pack(&self, packer_data: Vec<u8>) -> Result<ID> {
+        let pack_id = ID::from_content(&packer_data);
+
+        self.tx
+            .send((packer_data, pack_id.clone()))
+            .with_context(|| "Failed to send pack data to PackSaver channel")?;
+
+        Ok(pack_id)
+    }
+
+    pub fn finish(self) {
+        drop(self.tx);
+        self.join_handle
+            .join()
+            .expect("Packer saver thread panicked");
     }
 }

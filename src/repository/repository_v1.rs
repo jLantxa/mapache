@@ -25,7 +25,11 @@ use chrono::Utc;
 use crate::{
     backend::StorageBackend,
     global::{self, FileType, ObjectType, SaveID},
-    repository::{self, packer::Packer, storage::SecureStorage},
+    repository::{
+        self,
+        packer::{PackSaver, Packer},
+        storage::SecureStorage,
+    },
     ui::{self, cli},
 };
 
@@ -33,7 +37,6 @@ use super::{
     ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     index::{Index, IndexFile, MasterIndex},
     manifest::Manifest,
-    pack_saver::PackSaver,
     snapshot::Snapshot,
 };
 

@@ -127,13 +127,13 @@ impl Archiver {
             let diff_streamer = NodeDiffStreamer::new(previous_tree_streamer, fs_streamer);
 
             for diff_result in diff_streamer {
-                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
+                if error_flag_clone.load(Ordering::Acquire) {
                     break;
                 }
 
                 if let Ok(diff) = diff_result {
                     if let Err(e) = diff_tx.send(diff) {
-                        error_flag_clone.store(true, std::sync::atomic::Ordering::Release);
+                        error_flag_clone.store(true, Ordering::Release);
                         ui::cli::error!(
                             "Archiver diff thread errored sending diff: {:?}",
                             e.to_string()
@@ -141,53 +141,45 @@ impl Archiver {
                         break;
                     }
                 } else {
-                    error_flag_clone.store(true, std::sync::atomic::Ordering::Release);
                     ui::cli::error!("Archiver diff thread errored getting next diff");
                     break;
                 }
             }
-
-            drop(diff_tx); // Signal that no more diffs will be sent
         });
 
-        // Processor thread using Rayon for parallel processing with controlled concurrency.
-        // These threads receive diffs and process them, chunking and saving files in the process.
-        // The resulting processed nodes are passed to the serializer thread.
+        // Item processor thread pool. These threads receive diffs and process them, chunking and
+        // saving files in the process. The resulting processed nodes are passed to the serializer
+        // thread.
         let diff_rx_clone = diff_rx.clone();
         let process_item_tx_clone = process_item_tx.clone();
         let repo_clone = arch.repo.clone();
-        let error_flag_clone_for_processor = error_flag.clone();
+        let error_flag_clone = error_flag.clone();
         let processor_progress_reporter_clone = arch.progress_reporter.clone();
         let snapshot_root_path_clone = arch.snapshot_root_path.clone();
-        let read_concurrency = arch.read_concurrency;
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(arch.read_concurrency)
+            .build()
+            .expect("Failed to build thread pool");
 
         let processor_thread = std::thread::spawn(move || {
-            // Create a dedicated Rayon thread pool for read concurrency
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(read_concurrency)
-                .build()
-                .expect("Failed to build Rayon thread pool for processing.");
-
-            // Run processing within the dedicated pool
             pool.scope(|s| {
-                for diff_tuple in diff_rx_clone.iter() {
-                    if error_flag_clone_for_processor.load(std::sync::atomic::Ordering::Acquire) {
+                while let Ok(diff_tuple) = diff_rx_clone.recv() {
+                    if error_flag_clone.load(Ordering::Acquire) {
                         break;
                     }
 
                     let inner_process_item_tx_clone = process_item_tx_clone.clone();
                     let inner_repo_clone = repo_clone.clone();
-                    let inner_error_flag_clone = error_flag_clone_for_processor.clone();
+                    let inner_error_flag_clone = error_flag_clone.clone();
                     let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
                     let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
 
-
                     s.spawn(move |_| {
-                        // Notify reporter
                         let (item_path, _, _, _) = &diff_tuple;
                         inner_progress_reporter_clone.processing_file(
                             item_path
-                                .strip_prefix(inner_snapshot_root_path_clone.clone())
+                                .strip_prefix(&inner_snapshot_root_path_clone)
                                 .unwrap()
                                 .to_path_buf(),
                         );
@@ -199,35 +191,31 @@ impl Archiver {
                         );
 
                         match processed_item_result {
-                            Ok(processed_item_opt) => {
-                                if let Some(processed_item) = processed_item_opt {
-                                    if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
-                                        inner_error_flag_clone.store(true, Ordering::Release);
-                                        ui::cli::error!(
-                                            "Archiver processor task errored sending processed item: {:?}",
-                                            e.to_string()
-                                        );
-                                    }
+                            Ok(Some(processed_item)) => {
+                                if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
+                                    inner_error_flag_clone.store(true, Ordering::Release);
+                                    ui::cli::error!(
+                                        "Archiver processor task thread errored sending processing item: {:?}",
+                                        e.to_string()
+                                    );
                                 }
                             }
+                            Ok(None) => {}
                             Err(e) => {
                                 inner_error_flag_clone.store(true, Ordering::Release);
                                 ui::cli::error!(
-                                    "Archiver processor task errored processing item: {:?}",
+                                    "Archiver thread errored processing item: {:?}",
                                     e.to_string()
                                 );
                             }
                         }
                     });
                 }
-            }); // `pool.scope` blocks until all spawned tasks complete
-
-            drop(process_item_tx_clone); // Signal serializer that no more items will be sent
+            });
         });
 
         // Drop the original senders/receivers that are not used by the main thread.
         // The cloned versions are held by the spawned threads.
-        drop(diff_rx);
         drop(process_item_tx);
 
         // Serializer thread. This thread receives processed items and serializes tree nodes as they
@@ -244,8 +232,8 @@ impl Archiver {
                 &arch.absolute_source_paths,
             );
 
-            for item in process_item_rx.iter() {
-                if error_flag_clone.load(std::sync::atomic::Ordering::Acquire) {
+            while let Ok(item) = process_item_rx.recv() {
+                if error_flag_clone.load(Ordering::Acquire) {
                     break;
                 }
 
@@ -296,6 +284,7 @@ impl Archiver {
 
             match final_root_tree_id {
                 Some(tree_id) => {
+                    // Flush the repository and save the index.
                     let (index_raw_data, index_encoded_data) = arch_clone.repo.flush()?;
                     arch_clone
                         .progress_reporter

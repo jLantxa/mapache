@@ -185,7 +185,7 @@ pub enum ObjectType {
 }
 
 /// Type of objects that can be stored in a Repository
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum FileType {
     Object,
     Snapshot,

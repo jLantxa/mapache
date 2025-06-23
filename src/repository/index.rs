@@ -181,7 +181,11 @@ impl Index {
             }
         }
 
-        let (raw_size, encoded_size) = repo.save_index(index_file)?;
+        let (_id, raw_size, encoded_size) = repo.save_file(
+            global::FileType::Index,
+            serde_json::to_string(&index_file)?.as_bytes(),
+            global::SaveID::CalculateID,
+        )?;
 
         Ok((raw_size, encoded_size))
     }

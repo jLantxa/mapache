@@ -26,7 +26,7 @@ use crate::{
     backend::StorageBackend,
     global::{self, FileType, ObjectType, SaveID},
     repository::{
-        self,
+        self, MANIFEST_PATH,
         packer::{PackSaver, Packer},
         storage::SecureStorage,
     },
@@ -88,7 +88,7 @@ impl RepositoryBackend for Repository {
             created_time: timestamp,
         };
 
-        let manifest_path = Path::new("manifest");
+        let manifest_path = Path::new(MANIFEST_PATH);
         let manifest = serde_json::to_string_pretty(&manifest)?;
         let manifest = secure_storage.encode(manifest.as_bytes())?;
         backend.write(manifest_path, &manifest)?;
@@ -205,20 +205,45 @@ impl RepositoryBackend for Repository {
         }
     }
 
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(ID, u64, u64)> {
-        let snapshot_json = serde_json::to_string_pretty(snapshot)?;
-        let snapshot_json = snapshot_json.as_bytes();
-        let sn_raw_size = snapshot_json.len() as u64;
-        let snapshot_id = ID::from_content(&snapshot_json);
+    fn save_file(
+        &self,
+        file_type: FileType,
+        data: &[u8],
+        save_id: SaveID,
+    ) -> Result<(ID, u64, u64)> {
+        assert_ne!(file_type, FileType::Key);
+        assert_ne!(file_type, FileType::Manifest);
 
-        let snapshot_path = self.snapshot_path.join(&snapshot_id.to_hex());
+        let raw_size = data.len() as u64;
+        let id = match save_id {
+            SaveID::CalculateID => ID::from_content(&data),
+            SaveID::WithID(id) => id,
+        };
 
-        let snapshot_json = self.secure_storage.encode(snapshot_json)?;
-        let sn_encoded_size = snapshot_json.len() as u64;
+        let data = self.secure_storage.encode(&data)?;
+        let encoded_size = data.len() as u64;
 
-        self.save_with_rename(&snapshot_json, &snapshot_path)?;
+        let path = self.get_path(file_type, &id);
+        self.save_with_rename(&path, &data)?;
 
-        Ok((snapshot_id, sn_raw_size, sn_encoded_size))
+        Ok((id, raw_size as u64, encoded_size as u64))
+    }
+
+    fn load_file(&self, file_type: FileType, id: &ID) -> Result<Vec<u8>> {
+        assert_ne!(file_type, FileType::Key);
+        assert_ne!(file_type, FileType::Manifest);
+
+        let path = self.get_path(file_type, id);
+        let data = self.backend.read(&path)?;
+        self.secure_storage.decode(&data)
+    }
+
+    fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()> {
+        assert_ne!(file_type, FileType::Key);
+        assert_ne!(file_type, FileType::Manifest);
+
+        let path = self.get_path(file_type, id);
+        self.backend.remove_file(&path)
     }
 
     fn remove_snapshot(&self, id: &ID) -> Result<()> {
@@ -234,13 +259,9 @@ impl RepositoryBackend for Repository {
     }
 
     fn load_snapshot(&self, id: &ID) -> Result<Snapshot> {
-        let snapshot_path = self.snapshot_path.join(id.to_hex());
-        if !self.backend.exists(&snapshot_path) {
-            bail!(format!("No snapshot with ID \'{}\' exists", id));
-        }
-
-        let snapshot = self.backend.read(&snapshot_path)?;
-        let snapshot = self.secure_storage.decode(&snapshot)?;
+        let snapshot = self
+            .load_file(FileType::Snapshot, id)
+            .with_context(|| format!("No snapshot with ID \'{}\' exists", id))?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
         Ok(snapshot)
     }
@@ -264,21 +285,6 @@ impl RepositoryBackend for Repository {
         Ok(ids)
     }
 
-    fn save_index(&self, index: IndexFile) -> Result<(u64, u64)> {
-        let index_file_json = serde_json::to_string_pretty(&index)?;
-        let index_file_json = index_file_json.as_bytes();
-        let uncompressed_size = index_file_json.len() as u64;
-
-        let index_file_json = self.secure_storage.encode(index_file_json)?;
-        let compressed_size = index_file_json.len() as u64;
-
-        let id = ID::from_content(&index_file_json);
-        let index_path = self.index_path.join(&id.to_hex());
-        self.save_with_rename(&index_file_json, &index_path)?;
-
-        Ok((uncompressed_size, compressed_size))
-    }
-
     fn flush(&self) -> Result<(u64, u64)> {
         self.flush_packer(self.data_packer.lock().unwrap())?;
         self.flush_packer(self.tree_packer.lock().unwrap())?;
@@ -286,38 +292,20 @@ impl RepositoryBackend for Repository {
         self.index.lock().unwrap().save(self)
     }
 
-    fn save_object(&self, data: Vec<u8>, save_id: SaveID) -> Result<(ID, u64, u64)> {
-        let id = match save_id {
-            SaveID::CalculateID => ID::from_content(&data),
-            SaveID::WithID(id) => id,
-        };
-
-        let object_path = Self::get_object_path(&self.objects_path, &id);
-        let uncompressed_size = data.len() as u64;
-
-        let data = self.secure_storage.encode(&data)?;
-        let compressed_size = data.len() as u64;
-        self.save_with_rename(&data, &object_path)?;
-
-        Ok((id, uncompressed_size, compressed_size))
-    }
-
     fn load_object(&self, id: &ID) -> Result<Vec<u8>> {
-        let object_path = Self::get_object_path(&self.objects_path, id);
-        let data = self.backend.read(&object_path)?;
-        self.secure_storage.decode(&data)
+        self.load_file(FileType::Object, id)
     }
 
     fn load_index(&self, id: &ID) -> Result<IndexFile> {
-        let index_path = self.index_path.join(&id.to_hex());
-        let index = self.backend.read(&index_path)?;
-        let index: Vec<u8> = self.secure_storage.decode(&index)?;
+        let index: Vec<u8> = self
+            .load_file(FileType::Object, id)
+            .with_context(|| format!("Could not load index {}", id.to_hex()))?;
         let index = serde_json::from_slice(&index)?;
         Ok(index)
     }
 
     fn load_manifest(&self) -> Result<Manifest> {
-        let manifest = self.backend.read(&Path::new("manifest"))?;
+        let manifest = self.backend.read(&Path::new(MANIFEST_PATH))?;
         let manifest = self.secure_storage.decode(&manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
@@ -400,19 +388,6 @@ impl RepositoryBackend for Repository {
             pack_saver.finish();
         }
     }
-
-    fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()> {
-        let id_hex = id.to_hex();
-        let path = match file_type {
-            FileType::Object => self.objects_path.join(id_hex),
-            FileType::Snapshot => self.snapshot_path.join(id_hex),
-            FileType::Index => self.index_path.join(id_hex),
-            FileType::Key => self.keys_path.join(id_hex),
-            FileType::Manifest => return Ok(()),
-        };
-
-        self.backend.remove_file(&path)
-    }
 }
 
 impl Drop for Repository {
@@ -430,13 +405,24 @@ impl Repository {
             .join(&id_hex)
     }
 
+    fn get_path(&self, file_type: FileType, id: &ID) -> PathBuf {
+        let id_hex = id.to_hex();
+        match file_type {
+            FileType::Object => Self::get_object_path(&self.objects_path, id),
+            FileType::Snapshot => self.snapshot_path.join(id_hex),
+            FileType::Index => self.index_path.join(id_hex),
+            FileType::Key => self.keys_path.join(id_hex),
+            FileType::Manifest => PathBuf::from(MANIFEST_PATH),
+        }
+    }
+
     /// Lists all paths belonging to a file type (objects, snapshots, indexes, etc.).
     fn list_files(&self, file_type: FileType) -> Result<Vec<PathBuf>> {
         match file_type {
             FileType::Snapshot => self.backend.read_dir(&self.snapshot_path),
             FileType::Key => self.backend.read_dir(&self.keys_path),
             FileType::Index => self.backend.read_dir(&self.index_path),
-            FileType::Manifest => Ok(vec![PathBuf::from("manifest")]),
+            FileType::Manifest => Ok(vec![PathBuf::from(MANIFEST_PATH)]),
             FileType::Object => {
                 let mut files = Vec::new();
                 for n in 0x00..(1 << (4 * OBJECTS_DIR_FANOUT)) {
@@ -456,7 +442,7 @@ impl Repository {
         }
     }
 
-    fn save_with_rename(&self, data: &[u8], path: &Path) -> Result<usize> {
+    fn save_with_rename(&self, path: &Path, data: &[u8]) -> Result<usize> {
         let tmp_path = path.with_extension("tmp");
         self.backend.write(&tmp_path, data)?;
         self.backend.rename(&tmp_path, path)?;

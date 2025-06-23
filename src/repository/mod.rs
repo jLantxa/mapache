@@ -46,6 +46,8 @@ use crate::{repository, ui};
 pub type RepoVersion = u32;
 pub const LATEST_REPOSITORY_VERSION: RepoVersion = 1;
 
+pub const MANIFEST_PATH: &str = "manifest";
+
 pub trait RepositoryBackend: Sync + Send {
     /// Create and initialize a new repository
     fn init(backend: Arc<dyn StorageBackend>, secure_storage: Arc<SecureStorage>) -> Result<()>
@@ -64,10 +66,6 @@ pub trait RepositoryBackend: Sync + Send {
 
     fn finalize_pack_saver(&self);
 
-    /// Saves an object type to the repository
-    /// Returns a tuple (`ID`, raw_size, encoded_size)
-    fn save_object(&self, data: Vec<u8>, id: SaveID) -> Result<(ID, u64, u64)>;
-
     /// Loads an object file from the repository.
     fn load_object(&self, id: &ID) -> Result<Vec<u8>>;
 
@@ -83,9 +81,14 @@ pub trait RepositoryBackend: Sync + Send {
     /// Loads a blob from the repository.
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;
 
-    /// Saves a snapshot metadata.
-    /// Returns a tuple (`ID`, raw_size, encoded_size)
-    fn save_snapshot(&self, snapshot: &Snapshot) -> Result<(ID, u64, u64)>;
+    /// Saves a file to the repository
+    fn save_file(&self, file_type: FileType, data: &[u8], id: SaveID) -> Result<(ID, u64, u64)>;
+
+    /// Loads a file to the repository
+    fn load_file(&self, file_type: FileType, id: &ID) -> Result<Vec<u8>>;
+
+    /// Deletes a file from the repository
+    fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()>;
 
     /// Removes a snapshot from the repository, if it exists.
     fn remove_snapshot(&self, id: &ID) -> Result<()>;
@@ -95,10 +98,6 @@ pub trait RepositoryBackend: Sync + Send {
 
     fn list_snapshot_ids(&self) -> Result<Vec<ID>>;
 
-    /// Saves an IndexFile into the repository
-    /// Returns a tuple (raw_size, encoded_size)
-    fn save_index(&self, index: IndexFile) -> Result<(u64, u64)>;
-
     /// Loads an index file
     fn load_index(&self, id: &ID) -> Result<IndexFile>;
 
@@ -107,9 +106,6 @@ pub trait RepositoryBackend: Sync + Send {
 
     /// Loads a KeyFile.
     fn load_key(&self, id: &ID) -> Result<KeyFile>;
-
-    /// Deletes a file from the repository
-    fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()>;
 
     /// Flushes all pending data and saves it.
     /// Returns a tuple (raw_size, encoded_size)
@@ -241,7 +237,7 @@ pub fn try_open(
             .with_key(master_key),
     );
 
-    let manifest_path = Path::new("manifest");
+    let manifest_path = Path::new(MANIFEST_PATH);
 
     let manifest = backend
         .read(&manifest_path)

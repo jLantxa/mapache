@@ -28,7 +28,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
-    global::{self, ID, global_opts},
+    global::{self, ID, SaveID, global_opts},
     repository::{
         self, RepositoryBackend,
         snapshot::{Snapshot, SnapshotStreamer},
@@ -240,8 +240,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if let Some(description) = args.description.as_ref() {
         new_snapshot.description = Some(description.clone());
     }
-    let (snapshot_id, _snapshot_raw_size, _snapshot_encoded_size) =
-        repo.save_snapshot(&new_snapshot)?;
+    let (snapshot_id, _snapshot_raw_size, _snapshot_encoded_size) = repo.save_file(
+        global::FileType::Snapshot,
+        serde_json::to_string(&new_snapshot)?.as_bytes(),
+        SaveID::CalculateID,
+    )?;
 
     // Finalize reporter. This removes the progress bars.
     progress_reporter.finalize();

@@ -299,7 +299,7 @@ impl RepositoryBackend for Repository {
 
     fn load_index(&self, id: &ID) -> Result<IndexFile> {
         let index: Vec<u8> = self
-            .load_file(FileType::Object, id)
+            .load_file(FileType::Index, id)
             .with_context(|| format!("Could not load index {}", id.to_hex()))?;
         let index = serde_json::from_slice(&index)?;
         Ok(index)

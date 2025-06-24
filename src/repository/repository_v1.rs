@@ -26,7 +26,7 @@ use crate::{
     backend::StorageBackend,
     global::{self, FileType, ObjectType, SaveID},
     repository::{
-        self, MANIFEST_PATH,
+        MANIFEST_PATH,
         packer::{PackSaver, Packer},
         storage::SecureStorage,
     },
@@ -36,6 +36,7 @@ use crate::{
 use super::{
     ID, KEYS_DIR, RepoVersion, RepositoryBackend,
     index::{Index, IndexFile, MasterIndex},
+    keys,
     manifest::Manifest,
     snapshot::Snapshot,
 };
@@ -311,7 +312,7 @@ impl RepositoryBackend for Repository {
         Ok(manifest)
     }
 
-    fn load_key(&self, id: &ID) -> Result<repository::KeyFile> {
+    fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
         let key_path = self.keys_path.join(&id.to_hex());
         let key = self.backend.read(&key_path)?;
         let key = SecureStorage::decompress(&key)?;

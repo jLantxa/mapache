@@ -89,7 +89,6 @@ pub struct Metadata {
     /// Accessed time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accessed_time: Option<SystemTime>,
-
     /// Created time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_time: Option<SystemTime>,

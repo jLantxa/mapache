@@ -344,9 +344,11 @@ fn show_final_report(
     data_table.add_row(vec![
         "Total".bold().cyan().to_string(),
         utils::format_size(summary.total_raw_bytes)
+            .bold()
             .yellow()
             .to_string(),
         utils::format_size(summary.total_encoded_bytes)
+            .bold()
             .green()
             .to_string(),
     ]);

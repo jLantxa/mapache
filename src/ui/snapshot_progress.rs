@@ -14,16 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use std::{
     collections::VecDeque,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc,
         atomic::{AtomicU32, AtomicU64},
     },
     time::Duration,
 };
+
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
+use parking_lot::RwLock;
 
 use crate::{
     global::global_opts,
@@ -41,7 +43,7 @@ pub struct SnapshotProgressReporter {
 
     // Metadata
     meta_raw_bytes: Arc<AtomicU64>, // Metadata bytes 'written' before encoding
-    meta_encoded_bytes: Arc<AtomicU64>, //Metadata bytes written after encoding
+    meta_encoded_bytes: Arc<AtomicU64>, // Metadata bytes written after encoding
 
     new_files: Arc<AtomicU32>,
     changed_files: Arc<AtomicU32>,
@@ -52,7 +54,7 @@ pub struct SnapshotProgressReporter {
     unchanged_dirs: Arc<AtomicU32>,
     deleted_dirs: Arc<AtomicU32>,
 
-    processing_items: Arc<Mutex<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
+    processing_items: Arc<RwLock<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
     #[allow(dead_code)]
     mp: MultiProgress,
@@ -89,7 +91,7 @@ impl SnapshotProgressReporter {
         let unchanged_dirs_arc = Arc::new(AtomicU32::new(0));
         let deleted_dirs_arc = Arc::new(AtomicU32::new(0));
 
-        let processing_items_arc = Arc::new(Mutex::new(VecDeque::new()));
+        let processing_items_arc = Arc::new(RwLock::new(VecDeque::new()));
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
         let processed_bytes_arc_clone = processed_bytes_arc.clone();
@@ -161,11 +163,12 @@ impl SnapshotProgressReporter {
         }
     }
 
-    fn update_processing_items(&self, processing_items_guard: &MutexGuard<'_, VecDeque<PathBuf>>) {
+    fn update_processing_items(&self) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
             let _ = spinner.set_message(format!(
                 "{}",
-                processing_items_guard
+                self.processing_items
+                    .read()
                     .get(i)
                     .unwrap_or(&PathBuf::new())
                     .to_string_lossy()
@@ -178,16 +181,14 @@ impl SnapshotProgressReporter {
     }
 
     pub fn processing_file(&self, path: PathBuf) {
-        let mut processing_items_locked = self.processing_items.lock().unwrap();
-        processing_items_locked.push_back(path);
-        self.update_processing_items(&processing_items_locked);
+        self.processing_items.write().push_back(path);
+        self.update_processing_items();
     }
 
-    pub fn processed_file(&self, path: PathBuf) {
-        let mut processing_items_locked = self.processing_items.lock().unwrap();
-        if let Some(idx) = processing_items_locked.iter().position(|p| *p == path) {
-            processing_items_locked.remove(idx);
-
+    pub fn processed_file(&self, path: &Path) {
+        let idx = self.processing_items.read().iter().position(|p| *p == path);
+        if let Some(i) = idx {
+            self.processing_items.write().remove(i);
             self.processed_items_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }

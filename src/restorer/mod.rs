@@ -73,7 +73,7 @@ impl Restorer {
             if restore_path.exists() {
                 match resolution {
                     Resolution::Skip => {
-                        progress_reporter.processed_file(path);
+                        progress_reporter.processed_file(&path);
                         continue;
                     }
                     Resolution::Overwrite => {}
@@ -105,7 +105,7 @@ impl Restorer {
                 }
             }
 
-            progress_reporter.processed_file(path);
+            progress_reporter.processed_file(&path);
         }
 
         // Second pass for the directory file times

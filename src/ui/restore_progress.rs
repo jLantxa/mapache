@@ -16,15 +16,16 @@
 
 use std::{
     collections::VecDeque,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
+use parking_lot::RwLock;
 
 use crate::{
     global::global_opts,
@@ -34,7 +35,7 @@ use crate::{
 
 pub struct RestoreProgressReporter {
     processed_items_count: Arc<AtomicU64>, // Number of files processed
-    processing_items: Arc<Mutex<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
+    processing_items: Arc<RwLock<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
     #[allow(dead_code)]
     mp: MultiProgress,
@@ -99,18 +100,19 @@ impl RestoreProgressReporter {
 
         Self {
             processed_items_count: processed_items_count_arc,
-            processing_items: Arc::new(Mutex::new(VecDeque::new())),
+            processing_items: Arc::new(RwLock::new(VecDeque::new())),
             mp,
             progress_bar,
             file_spinners,
         }
     }
 
-    fn update_processing_items(&self, processing_items_guard: &MutexGuard<'_, VecDeque<PathBuf>>) {
+    fn update_processing_items(&self) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
             let _ = spinner.set_message(format!(
                 "{}",
-                processing_items_guard
+                self.processing_items
+                    .read()
                     .get(i)
                     .unwrap_or(&PathBuf::new())
                     .display()
@@ -123,18 +125,17 @@ impl RestoreProgressReporter {
     }
 
     pub fn processing_file(&self, path: PathBuf) {
-        let mut processing_items_locked = self.processing_items.lock().unwrap();
-        processing_items_locked.push_back(path);
-        self.update_processing_items(&processing_items_locked);
+        self.processing_items.write().push_back(path);
+        self.update_processing_items();
         self.progress_bar.inc(1);
     }
 
-    pub fn processed_file(&self, path: PathBuf) {
-        let mut processing_items_locked = self.processing_items.lock().unwrap();
-        if let Some(idx) = processing_items_locked.iter().position(|p| *p == path) {
-            processing_items_locked.remove(idx);
-
-            self.processed_items_count.fetch_add(1, Ordering::AcqRel);
+    pub fn processed_file(&self, path: &Path) {
+        let idx = self.processing_items.read().iter().position(|p| *p == path);
+        if let Some(i) = idx {
+            self.processing_items.write().remove(i);
+            self.processed_items_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }

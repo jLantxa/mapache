@@ -17,7 +17,6 @@
 #![cfg(test)]
 
 mod tests {
-
     use std::path::PathBuf;
 
     use anyhow::{Context, Result};

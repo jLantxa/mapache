@@ -17,7 +17,7 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
@@ -65,9 +65,9 @@ pub struct Repository {
     // By design, we pack blobs and trees separately so we can potentially cache trees
     // separately.
     max_packer_size: u64,
-    data_packer: Arc<Mutex<Packer>>,
-    tree_packer: Arc<Mutex<Packer>>,
-    pack_saver: Arc<Mutex<Option<PackSaver>>>,
+    data_packer: Arc<RwLock<Packer>>,
+    tree_packer: Arc<RwLock<Packer>>,
+    pack_saver: Arc<RwLock<Option<PackSaver>>>,
 
     index: Arc<RwLock<MasterIndex>>,
 }
@@ -125,11 +125,11 @@ impl RepositoryBackend for Repository {
         let pack_blob_capacity =
             (pack_data_capacity as u64).div_ceil(global::defaults::AVG_CHUNK_SIZE as u64) as usize;
 
-        let data_packer = Arc::new(Mutex::new(Packer::with_capacity(
+        let data_packer = Arc::new(RwLock::new(Packer::with_capacity(
             pack_data_capacity,
             pack_blob_capacity,
         )));
-        let tree_packer = Arc::new(Mutex::new(Packer::with_capacity(
+        let tree_packer = Arc::new(RwLock::new(Packer::with_capacity(
             pack_data_capacity,
             pack_blob_capacity,
         )));
@@ -146,7 +146,7 @@ impl RepositoryBackend for Repository {
             max_packer_size,
             data_packer,
             tree_packer,
-            pack_saver: Arc::new(Mutex::new(None)),
+            pack_saver: Arc::new(RwLock::new(None)),
             index,
         };
 
@@ -179,16 +179,16 @@ impl RepositoryBackend for Repository {
         let data = self.secure_storage.encode(&data)?;
         let mut encoded_size = data.len() as u64;
 
-        let mut packer_guard = match object_type {
-            ObjectType::Data => self.data_packer.lock().unwrap(),
-            ObjectType::Tree => self.tree_packer.lock().unwrap(),
+        let packer = match object_type {
+            ObjectType::Data => &self.data_packer,
+            ObjectType::Tree => &self.tree_packer,
         };
 
-        packer_guard.add_blob(id.clone(), object_type, data);
+        packer.write().add_blob(id.clone(), object_type, data);
 
         // Flush if the packer is considered full
-        if packer_guard.size() > self.max_packer_size {
-            let (index_raw_size, index_encoded_size) = self.flush_packer(packer_guard)?;
+        if packer.read().size() > self.max_packer_size {
+            let (index_raw_size, index_encoded_size) = self.flush_packer(&packer)?;
             raw_size += index_raw_size;
             encoded_size += index_encoded_size;
         }
@@ -287,8 +287,8 @@ impl RepositoryBackend for Repository {
     }
 
     fn flush(&self) -> Result<(u64, u64)> {
-        self.flush_packer(self.data_packer.lock().unwrap())?;
-        self.flush_packer(self.tree_packer.lock().unwrap())?;
+        self.flush_packer(&self.data_packer)?;
+        self.flush_packer(&self.tree_packer)?;
 
         self.index.write().save(self)
     }
@@ -381,11 +381,11 @@ impl RepositoryBackend for Repository {
                 }
             }),
         );
-        self.pack_saver.lock().unwrap().replace(pack_saver);
+        self.pack_saver.write().replace(pack_saver);
     }
 
     fn finalize_pack_saver(&self) {
-        if let Some(pack_saver) = self.pack_saver.lock().unwrap().take() {
+        if let Some(pack_saver) = self.pack_saver.write().take() {
             pack_saver.finish();
         }
     }
@@ -490,29 +490,26 @@ impl Repository {
         Ok(data.len())
     }
 
-    fn flush_packer(&self, mut packer_guard: MutexGuard<Packer>) -> Result<(u64, u64)> {
+    fn flush_packer(&self, packer: &Arc<RwLock<Packer>>) -> Result<(u64, u64)> {
         let (mut raw, mut encoded) = (0, 0);
-        let (pack_data, packed_blob_descriptors, pack_id) = packer_guard.flush();
-        drop(packer_guard);
+        let (pack_data, packed_blob_descriptors, pack_id) = packer.write().flush();
 
         if pack_data.is_empty() {
             return Ok((0, 0));
         }
 
-        let pack_saver_guard = self.pack_saver.lock().unwrap();
-        if let Some(pack_saver) = pack_saver_guard.as_ref() {
+        if let Some(pack_saver) = self.pack_saver.write().as_ref() {
             pack_saver.save_pack(pack_data)?;
-            drop(pack_saver_guard);
-
-            let (index_raw, index_encoded) =
-                self.index
-                    .write()
-                    .add_pack(self, &pack_id, packed_blob_descriptors)?;
-            raw += index_raw;
-            encoded += index_encoded;
         } else {
             bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
         }
+
+        let (index_raw, index_encoded) =
+            self.index
+                .write()
+                .add_pack(self, &pack_id, packed_blob_descriptors)?;
+        raw += index_raw;
+        encoded += index_encoded;
 
         Ok((raw, encoded))
     }

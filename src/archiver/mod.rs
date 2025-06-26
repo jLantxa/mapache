@@ -240,8 +240,7 @@ impl Archiver {
                 // Notify reporter
                 let (item_path, _) = &item;
                 serializer_progress_reporter_clone.processed_file(
-                    item_path
-                        .clone()
+                    &item_path
                         .strip_prefix(serializer_snapshot_root_path_clone.clone())
                         .unwrap()
                         .to_path_buf(),

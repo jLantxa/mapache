@@ -93,7 +93,7 @@ impl RestoreProgressReporter {
                     .tick_chars(SPINNER_TICK_CHARS),
             );
             file_spinner.enable_steady_tick(Duration::from_millis(
-                (1.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+                (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
             ));
             file_spinners.push(file_spinner);
         }

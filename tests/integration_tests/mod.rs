@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 
 use backup::{backend::localfs::LocalFS, repository};
 
+mod test_cmd_gc;
 mod test_cmd_init;
 mod test_cmd_restore;
 mod test_cmd_snapshot;

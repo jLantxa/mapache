@@ -26,11 +26,11 @@ pub const DEFAULT_WRITE_CONCURRENCY: usize = 5;
 pub const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub const BLOBS_PER_INDEX_FILE: usize = 65535;
 
-// Packing
+// -- Packing --
 /// Minimum pack size before flushing to the backend.
 pub const MAX_PACK_SIZE: u64 = 16 * size::MiB;
 
-// Chunking
+// -- Chunking --
 /// Minimum chunk size
 pub const MIN_CHUNK_SIZE: u64 = 512 * size::KiB;
 /// Average chunk size
@@ -38,8 +38,11 @@ pub const AVG_CHUNK_SIZE: u64 = 1 * size::MiB;
 /// Maximum chunk size
 pub const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 
-// Display
+// -- Display --
 pub const SHORT_REPO_ID_LEN: usize = 5;
 pub const SHORT_SNAPSHOT_ID_LEN: usize = 4;
 
 pub const DEFAULT_VERBOSITY: u32 = 1;
+
+// -- Garbage collection --
+pub const DEFAULT_GC_TOLERANCE: f32 = 5.0; // In [0-100] %

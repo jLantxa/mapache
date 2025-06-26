@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod gc;
 pub mod index;
 pub mod keys;
 pub mod manifest;
@@ -24,16 +25,19 @@ pub mod storage;
 pub mod streamers;
 pub mod tree;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use index::IndexFile;
 use manifest::Manifest;
+use parking_lot::RwLock;
 use snapshot::Snapshot;
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::global::{FileType, SaveID};
+use crate::repository::index::MasterIndex;
 use crate::repository::keys::{generate_key_file, generate_new_master_key, retrieve_master_key};
 use crate::ui;
 use crate::{
@@ -60,8 +64,10 @@ pub trait RepositoryBackend: Sync + Send {
     where
         Self: Sized;
 
+    /// Start pack saver thread.
     fn init_pack_saver(&self, concurrency: usize);
 
+    /// Finalize pack saver thread.
     fn finalize_pack_saver(&self);
 
     /// Loads an object file from the repository.
@@ -88,6 +94,16 @@ pub trait RepositoryBackend: Sync + Send {
     /// Deletes a file from the repository
     fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()>;
 
+    fn list_objects(&self) -> Result<HashSet<ID>>;
+
+    fn read_from_file(
+        &self,
+        file_type: FileType,
+        id: &ID,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>>;
+
     /// Removes a snapshot from the repository, if it exists.
     fn remove_snapshot(&self, id: &ID) -> Result<()>;
 
@@ -104,6 +120,8 @@ pub trait RepositoryBackend: Sync + Send {
 
     /// Loads a KeyFile.
     fn load_key(&self, id: &ID) -> Result<keys::KeyFile>;
+
+    fn index(&self) -> Arc<RwLock<MasterIndex>>;
 
     /// Flushes all pending data and saves it.
     /// Returns a tuple (raw_size, encoded_size)

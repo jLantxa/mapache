@@ -20,13 +20,14 @@ use anyhow::{Context, Result};
 use blake3::Hasher;
 use crossbeam_channel::Sender;
 
-use crate::global::ID;
+use crate::global::{ID, ObjectType};
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a pack.
 #[derive(Debug, Clone)]
 pub struct PackedBlobDescriptor {
     pub id: ID,
+    pub blob_type: ObjectType,
     pub offset: u64,
     pub length: u64,
 }
@@ -99,7 +100,7 @@ impl Packer {
     /// The `blob_data` `Vec<u8>` is efficiently moved into the packer's internal
     /// buffer using `Vec::append`, avoiding a costly copy. After this call, `blob_data`
     /// will be empty.
-    pub fn add_blob(&mut self, id: ID, mut blob_data: Vec<u8>) {
+    pub fn add_blob(&mut self, id: ID, blob_type: ObjectType, mut blob_data: Vec<u8>) {
         let offset = self.data.len() as u64;
         let length = blob_data.len() as u64;
 
@@ -110,8 +111,12 @@ impl Packer {
         self.data.append(&mut blob_data);
 
         // Record the descriptor for the newly added blob
-        self.blob_descriptors
-            .push(PackedBlobDescriptor { id, offset, length });
+        self.blob_descriptors.push(PackedBlobDescriptor {
+            id,
+            blob_type,
+            offset,
+            length,
+        });
     }
 
     /// Flushes the contents of the packer, returning the accumulated raw data

@@ -21,6 +21,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 
 pub mod cmd_cat;
 pub mod cmd_forget;
+pub mod cmd_gc;
 pub mod cmd_init;
 pub mod cmd_log;
 pub mod cmd_ls;
@@ -61,6 +62,9 @@ pub enum Command {
 
     #[clap(about = "Remove snapshots from the repository")]
     Forget(cmd_forget::CmdArgs),
+
+    #[clap(about = "Remove obsolete objects from the repository")]
+    Gc(cmd_gc::CmdArgs),
 
     #[clap(about = "List nodes in the repository")]
     Ls(cmd_ls::CmdArgs),
@@ -126,6 +130,7 @@ pub fn run(args: &Cli) -> Result<()> {
         Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, &cmd_args),
         Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, &cmd_args),
         Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, &cmd_args),
+        Command::Gc(cmd_args) => cmd_gc::run(&args.global_args, &cmd_args),
         Command::Log(cmd_args) => cmd_log::run(&args.global_args, &cmd_args),
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, &cmd_args),
         Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, &cmd_args),

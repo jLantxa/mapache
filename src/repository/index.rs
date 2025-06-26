@@ -23,14 +23,14 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    global::{self, ID},
+    global::{self, ID, ObjectType},
     utils::indexset::IndexSet,
 };
 
 use super::{RepositoryBackend, packer::PackedBlobDescriptor};
 
 /// Represents the location and size of a blob within a pack file.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BlobLocation {
     /// The index into the `pack_ids` `IndexSet` for the pack containing this blob. See Index.
     pub pack_array_index: usize,
@@ -40,12 +40,22 @@ struct BlobLocation {
     pub length: u64,
 }
 
+/// Represents the location and size of a blob within a pack file.
+/// This struct contains the full pack ID. This is suited for iterating.
+#[derive(Debug, Clone)]
+pub struct BlobLocator {
+    pub pack_id: ID,
+    pub offset: u64,
+    pub length: u64,
+}
+
 /// Manages the mapping of blob IDs to their locations within pack files.
 /// An `Index` can be in a 'pending' state, indicating it's still being built.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Index {
-    /// An object_id -> BlobLocation map. This is the core lookup table.
-    ids: HashMap<ID, BlobLocation>,
+    /// blob ID -> BlobLocation map. This is the core lookup table.
+    data_ids: HashMap<ID, BlobLocation>,
+    tree_ids: HashMap<ID, BlobLocation>,
 
     /// The Pack IDs referenced in this index. Using an `IndexSet` allows us
     /// to store a small `usize` index in `BlobLocation` instead of the full `ID`,
@@ -56,15 +66,20 @@ pub struct Index {
     is_pending: bool,
 
     create_time: Instant,
+
+    // The ID of this index, if it is finalized and serialized
+    id: Option<ID>,
 }
 
 impl Index {
     pub fn new() -> Self {
         Self {
-            ids: HashMap::new(),
+            data_ids: HashMap::new(),
+            tree_ids: HashMap::new(),
             pack_ids: IndexSet::new(),
             is_pending: true,
             create_time: Instant::now(),
+            id: None,
         }
     }
 
@@ -74,6 +89,22 @@ impl Index {
         self.is_pending = false;
     }
 
+    /// Marks the index as pending.
+    pub fn set_pending(&mut self) {
+        self.is_pending = true;
+        self.id = None;
+    }
+
+    /// Returns the id of this index
+    pub fn id(&self) -> Option<ID> {
+        self.id.clone()
+    }
+
+    /// Sets the index ID
+    pub fn set_id(&mut self, id: ID) {
+        self.id = Some(id);
+    }
+
     /// Returns `true` if the index is currently pending (still receiving entries).
     pub fn is_pending(&self) -> bool {
         self.is_pending
@@ -81,7 +112,7 @@ impl Index {
 
     /// Returns true if the index contains enough blobs to be considered full
     pub fn is_full(&self) -> bool {
-        self.ids.len() >= global::defaults::BLOBS_PER_INDEX_FILE
+        self.num_blobs() >= global::defaults::BLOBS_PER_INDEX_FILE
             || self.create_time.elapsed() >= global::defaults::INDEX_FLUSH_TIMEOUT
     }
 
@@ -95,7 +126,12 @@ impl Index {
         for pack in index_file.packs {
             let pack_index = index.pack_ids.insert(pack.id.clone());
             for blob in pack.blobs {
-                index.ids.insert(
+                let map = match blob.blob_type {
+                    ObjectType::Data => &mut index.data_ids,
+                    ObjectType::Tree => &mut index.tree_ids,
+                };
+
+                map.insert(
                     blob.id,
                     BlobLocation {
                         pack_array_index: pack_index,
@@ -110,20 +146,40 @@ impl Index {
 
     /// Checks if the index contains the given object ID.
     pub fn contains(&self, id: &ID) -> bool {
-        self.ids.contains_key(id)
+        self.data_ids.contains_key(id) || self.tree_ids.contains_key(id)
     }
 
     /// Retrieves the pack ID, offset, and length for a given blob ID, if it exists.
     /// Returns `None` if the blob ID is not found.
-    pub fn get(&self, id: &ID) -> Option<(ID, u64, u64)> {
-        self.ids.get(id).map(|location| {
-            // Retrieve the full pack ID from the `IndexSet` using the stored `pack_array_index`.
-            let pack_id = self
-                .pack_ids
-                .get_value(location.pack_array_index)
-                .expect("pack_index should always be valid for an existing blob");
-            (pack_id.clone(), location.offset, location.length)
-        })
+    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u64, u64)> {
+        self.data_ids
+            .get(id)
+            .map(|location| {
+                let pack_id = self
+                    .pack_ids
+                    .get_value(location.pack_array_index)
+                    .expect("pack_index should always be valid for an existing blob");
+                (
+                    pack_id.clone(),
+                    ObjectType::Data,
+                    location.offset,
+                    location.length,
+                )
+            })
+            .or_else(|| {
+                self.tree_ids.get(id).map(|location| {
+                    let pack_id = self
+                        .pack_ids
+                        .get_value(location.pack_array_index)
+                        .expect("pack_index should always be valid for an existing blob");
+                    (
+                        pack_id.clone(),
+                        ObjectType::Tree,
+                        location.offset,
+                        location.length,
+                    )
+                })
+            })
     }
 
     /// Adds all blob descriptors from a specific pack to the index.
@@ -132,7 +188,12 @@ impl Index {
     pub fn add_pack(&mut self, pack_id: &ID, packed_blob_descriptors: &[PackedBlobDescriptor]) {
         let pack_index = self.pack_ids.insert(pack_id.clone());
         for blob in packed_blob_descriptors {
-            self.ids.insert(
+            let map = match blob.blob_type {
+                ObjectType::Data => &mut self.data_ids,
+                ObjectType::Tree => &mut self.tree_ids,
+            };
+
+            map.insert(
                 blob.id.clone(),
                 BlobLocation {
                     pack_array_index: pack_index,
@@ -149,19 +210,31 @@ impl Index {
     /// Returns the total uncompressed and compressed sizes of the saved index files.
     pub fn finalize_and_save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
         // Don't do anything if the index is empty.
-        if self.ids.is_empty() {
+        if self.data_ids.is_empty() && self.tree_ids.is_empty() {
             return Ok((0, 0));
         }
 
         self.finalize();
 
         let mut packs_with_blobs: HashMap<usize, Vec<IndexFileBlob>> = HashMap::new();
-        for (blob_id, location) in &self.ids {
+        for (blob_id, location) in &self.data_ids {
             let entry = packs_with_blobs
                 .entry(location.pack_array_index)
                 .or_default();
             entry.push(IndexFileBlob {
                 id: blob_id.clone(),
+                blob_type: ObjectType::Data,
+                offset: location.offset,
+                length: location.length,
+            });
+        }
+        for (blob_id, location) in &self.tree_ids {
+            let entry = packs_with_blobs
+                .entry(location.pack_array_index)
+                .or_default();
+            entry.push(IndexFileBlob {
+                id: blob_id.clone(),
+                blob_type: ObjectType::Tree,
                 offset: location.offset,
                 length: location.length,
             });
@@ -181,27 +254,67 @@ impl Index {
             }
         }
 
-        let (_id, raw_size, encoded_size) = repo.save_file(
+        let (id, raw_size, encoded_size) = repo.save_file(
             global::FileType::Index,
             serde_json::to_string(&index_file)?.as_bytes(),
             global::SaveID::CalculateID,
         )?;
+        self.id = Some(id);
 
         Ok((raw_size, encoded_size))
     }
 
     pub fn num_blobs(&self) -> usize {
-        self.ids.len()
+        self.data_ids.len() + self.tree_ids.len()
     }
 
     pub fn num_packs(&self) -> usize {
         self.pack_ids.len()
     }
+
+    pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
+        self.data_ids
+            .iter()
+            .chain(self.tree_ids.iter())
+            .map(|(id, loc)| {
+                (
+                    id,
+                    BlobLocator {
+                        pack_id: self
+                            .pack_ids
+                            .get_value(loc.pack_array_index)
+                            .unwrap()
+                            .clone(),
+                        offset: loc.offset,
+                        length: loc.length,
+                    },
+                )
+            })
+    }
+
+    fn remove_pack(&mut self, target_pack_id: &ID) {
+        let mut blobs_to_remove = Vec::new();
+
+        for (blob_id, blob_location) in self.data_ids.iter().chain(self.tree_ids.iter()) {
+            if let Some(pack_id) = self.pack_ids.get_value(blob_location.pack_array_index) {
+                if target_pack_id == pack_id {
+                    blobs_to_remove.push(blob_id.clone());
+                }
+            }
+        }
+
+        // Clean up
+        for blob_id in blobs_to_remove.into_iter() {
+            self.data_ids.remove(&blob_id);
+            self.tree_ids.remove(&blob_id);
+        }
+        self.pack_ids.remove(target_pack_id);
+    }
 }
 
 /// Manages a collection of `Index` instances, providing a unified view
 /// over all known blobs in the repository.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MasterIndex {
     /// A list of individual indexes, some of which might be pending.
     indexes: Vec<Index>,
@@ -231,7 +344,7 @@ impl MasterIndex {
 
     /// Retrieves an entry for a given blob ID by searching through finalized indexes.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
-    pub fn get(&self, id: &ID) -> Option<(ID, u64, u64)> {
+    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u64, u64)> {
         self.indexes
             .iter()
             .find_map(|idx| if !idx.is_pending { idx.get(id) } else { None })
@@ -303,6 +416,42 @@ impl MasterIndex {
 
         Ok((uncompressed_size, compressed_size))
     }
+
+    pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
+        // We start with an "empty" chain or the first iterator
+        let mut chained_iterator: Box<dyn Iterator<Item = (&ID, BlobLocator)>> =
+            Box::new(std::iter::empty());
+
+        for index in &self.indexes {
+            // Chain each index's iterator to the accumulating chained_iterator
+            chained_iterator = Box::new(chained_iterator.chain(index.iter_ids()));
+        }
+        chained_iterator
+    }
+
+    /// Returns the IDs of all finalized (serialized) indexes
+    pub fn ids(&self) -> HashSet<ID> {
+        let mut ids = HashSet::new();
+        for idx in &self.indexes {
+            if idx.is_pending() {
+                continue;
+            }
+            if let Some(id) = idx.id() {
+                ids.insert(id);
+            }
+        }
+        ids
+    }
+
+    /// Removes obsolete packs from all indexes
+    pub fn rewrite(&mut self, obsolete_packs: &HashSet<ID>) {
+        for idx in &mut self.indexes {
+            idx.set_pending();
+            for pack_id in obsolete_packs {
+                idx.remove_pack(pack_id);
+            }
+        }
+    }
 }
 
 /// Represents the on-disk format for an index file.
@@ -329,6 +478,8 @@ pub struct IndexFilePack {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexFileBlob {
     pub id: ID,
+    #[serde(rename = "type")]
+    pub blob_type: ObjectType,
     pub offset: u64,
     pub length: u64,
 }

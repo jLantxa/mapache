@@ -1,0 +1,88 @@
+// [backup] is an incremental backup tool
+// Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use clap::Args;
+use colored::Colorize;
+
+use crate::{
+    backend::{make_dry_backend, new_backend_with_prompt},
+    commands::GlobalArgs,
+    global::defaults::DEFAULT_GC_TOLERANCE,
+    repository::{
+        self, RepositoryBackend,
+        gc::{self},
+    },
+    ui::{self, table::Alignment},
+    utils::{self},
+};
+
+#[derive(Args, Debug)]
+pub struct CmdArgs {
+    /// Garbage tolerance
+    #[clap(short, long, default_value_t = DEFAULT_GC_TOLERANCE)]
+    pub tolerance: f32,
+
+    /// Dry run
+    #[clap(long, default_value_t = false)]
+    pub dry_run: bool,
+}
+
+pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let pass = utils::get_password_from_file(&global_args.password_file)?;
+    let backend = new_backend_with_prompt(&global_args.repo)?;
+
+    // If dry-run, wrap the backend inside the DryBackend
+    let backend = make_dry_backend(backend, args.dry_run);
+
+    let repo: Arc<dyn RepositoryBackend> =
+        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+
+    run_with_repo(global_args, args, repo)
+}
+
+pub fn run_with_repo(
+    _global_args: &GlobalArgs,
+    args: &CmdArgs,
+    repo: Arc<dyn RepositoryBackend>,
+) -> Result<()> {
+    let tolerance = args.tolerance.clamp(0.0, 100.0) / 100.0;
+    let gc_plan = gc::scan(repo.clone(), tolerance)?;
+
+    let mut plan_table =
+        ui::table::Table::new_with_alignments(vec![Alignment::Left, Alignment::Right]);
+    plan_table.add_row(vec![
+        "Referenced blobs".bold().to_string(),
+        gc_plan.referenced_blobs.len().to_string(),
+    ]);
+    plan_table.add_row(vec![
+        "Obsolete packs".bold().to_string(),
+        gc_plan.obsolete_packs.len().to_string(),
+    ]);
+    plan_table.add_row(vec![
+        "Tolerated packs".bold().to_string(),
+        gc_plan.tolerated_packs.len().to_string(),
+    ]);
+    ui::cli::log!("{}", plan_table.render());
+
+    if !args.dry_run {
+        gc_plan.execute()?;
+    }
+
+    Ok(())
+}

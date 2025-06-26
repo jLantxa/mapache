@@ -15,12 +15,14 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use parking_lot::RwLock;
 
 use crate::{
     backend::StorageBackend,
@@ -67,7 +69,7 @@ pub struct Repository {
     tree_packer: Arc<Mutex<Packer>>,
     pack_saver: Arc<Mutex<Option<PackSaver>>>,
 
-    index: Arc<Mutex<MasterIndex>>,
+    index: Arc<RwLock<MasterIndex>>,
 }
 
 impl RepositoryBackend for Repository {
@@ -132,7 +134,7 @@ impl RepositoryBackend for Repository {
             pack_blob_capacity,
         )));
 
-        let index = Arc::new(Mutex::new(MasterIndex::new()));
+        let index = Arc::new(RwLock::new(MasterIndex::new()));
 
         let mut repo = Repository {
             backend,
@@ -165,9 +167,9 @@ impl RepositoryBackend for Repository {
             SaveID::WithID(id) => id,
         };
 
-        let mut index_guard = self.index.lock().unwrap();
-        let blob_exists = index_guard.contains(&id) || !index_guard.add_pending_blob(id.clone());
-        drop(index_guard);
+        let mut index_wlock = self.index.write();
+        let blob_exists = index_wlock.contains(&id) || !index_wlock.add_pending_blob(id.clone());
+        drop(index_wlock);
 
         // If the blob was already pending, return early, as we are finished here.
         if blob_exists {
@@ -182,7 +184,7 @@ impl RepositoryBackend for Repository {
             ObjectType::Tree => self.tree_packer.lock().unwrap(),
         };
 
-        packer_guard.add_blob(id.clone(), data);
+        packer_guard.add_blob(id.clone(), object_type, data);
 
         // Flush if the packer is considered full
         if packer_guard.size() > self.max_packer_size {
@@ -195,11 +197,9 @@ impl RepositoryBackend for Repository {
     }
 
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
-        let index_guard = self.index.lock().unwrap();
-        let blob_entry = index_guard.get(id);
+        let blob_entry = self.index.read().get(id);
         match blob_entry {
-            Some((pack_id, offset, length)) => {
-                drop(index_guard);
+            Some((pack_id, _blob_type, offset, length)) => {
                 self.load_from_pack(&pack_id, offset, length)
             }
             None => bail!("Could not find blob {:?} in index", id),
@@ -290,7 +290,7 @@ impl RepositoryBackend for Repository {
         self.flush_packer(self.data_packer.lock().unwrap())?;
         self.flush_packer(self.tree_packer.lock().unwrap())?;
 
-        self.index.lock().unwrap().save(self)
+        self.index.write().save(self)
     }
 
     fn load_object(&self, id: &ID) -> Result<Vec<u8>> {
@@ -389,6 +389,46 @@ impl RepositoryBackend for Repository {
             pack_saver.finish();
         }
     }
+
+    fn index(&self) -> Arc<RwLock<MasterIndex>> {
+        self.index.clone()
+    }
+
+    fn read_from_file(
+        &self,
+        file_type: FileType,
+        id: &ID,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>> {
+        assert_ne!(file_type, FileType::Key);
+        assert_ne!(file_type, FileType::Manifest);
+
+        let path = self.get_path(file_type, id);
+        let data = self.backend.seek_read(&path, offset, length)?;
+        self.secure_storage.decode(&data)
+    }
+
+    fn list_objects(&self) -> Result<HashSet<ID>> {
+        let mut list = HashSet::new();
+
+        let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
+        for n in 0..num_folders {
+            let dir = self
+                .objects_path
+                .join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n));
+
+            let files = self.backend.read_dir(&dir)?;
+            for path in files {
+                let filename = path.file_name().unwrap().to_string_lossy().to_string();
+                if let Ok(id) = ID::from_hex(&filename) {
+                    list.insert(id);
+                }
+            }
+        }
+
+        Ok(list)
+    }
 }
 
 impl Drop for Repository {
@@ -455,17 +495,21 @@ impl Repository {
         let (pack_data, packed_blob_descriptors, pack_id) = packer_guard.flush();
         drop(packer_guard);
 
+        if pack_data.is_empty() {
+            return Ok((0, 0));
+        }
+
         let pack_saver_guard = self.pack_saver.lock().unwrap();
         if let Some(pack_saver) = pack_saver_guard.as_ref() {
             pack_saver.save_pack(pack_data)?;
             drop(pack_saver_guard);
 
-            let mut index_guard = self.index.lock().unwrap();
             let (index_raw, index_encoded) =
-                index_guard.add_pack(self, &pack_id, packed_blob_descriptors)?;
+                self.index
+                    .write()
+                    .add_pack(self, &pack_id, packed_blob_descriptors)?;
             raw += index_raw;
             encoded += index_encoded;
-            drop(index_guard);
         } else {
             bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
         }
@@ -475,17 +519,23 @@ impl Repository {
 
     fn load_master_index(&mut self) -> Result<()> {
         let files = self.backend.read_dir(&self.index_path)?;
-        let mut master_index_guard = self.index.lock().unwrap();
 
         for file in files {
+            let file_name = file
+                .file_name()
+                .expect("Could not read index file name")
+                .to_string_lossy()
+                .to_owned();
+            let id = ID::from_hex(&file_name)?;
             let index_file = self.backend.read(&file)?;
             let index_file = self.secure_storage.decode(&index_file)?;
             let index_file = serde_json::from_slice(&index_file)?;
 
             let mut index = Index::from_index_file(index_file);
             index.finalize();
+            index.set_id(id);
 
-            master_index_guard.add_index(index);
+            self.index.write().add_index(index);
         }
 
         Ok(())

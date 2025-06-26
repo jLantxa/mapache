@@ -282,25 +282,22 @@ impl Archiver {
                 }
             }
 
+            // Flush repo and finalize pack saver
+            let (index_raw_data, index_encoded_data) = arch_clone.repo.flush()?;
+            arch_clone
+                .progress_reporter
+                .written_meta_bytes(index_raw_data, index_encoded_data);
+            arch_clone.repo.finalize_pack_saver();
+
             match final_root_tree_id {
-                Some(tree_id) => {
-                    // Flush the repository and save the index.
-                    let (index_raw_data, index_encoded_data) = arch_clone.repo.flush()?;
-                    arch_clone
-                        .progress_reporter
-                        .written_meta_bytes(index_raw_data, index_encoded_data);
-
-                    arch_clone.repo.finalize_pack_saver();
-
-                    Ok(Snapshot {
-                        timestamp: Local::now(),
-                        tree: tree_id.clone(),
-                        root: arch_clone.snapshot_root_path.clone(),
-                        paths: arch_clone.absolute_source_paths.clone(),
-                        description: None,
-                        summary: arch_clone.progress_reporter.get_summary(),
-                    })
-                }
+                Some(tree_id) => Ok(Snapshot {
+                    timestamp: Local::now(),
+                    tree: tree_id.clone(),
+                    root: arch_clone.snapshot_root_path.clone(),
+                    paths: arch_clone.absolute_source_paths.clone(),
+                    description: None,
+                    summary: arch_clone.progress_reporter.get_summary(),
+                }),
                 None => {
                     if error_flag_clone.load(Ordering::Acquire) {
                         Err(anyhow!("Snapshot creation failed due to a previous error."))

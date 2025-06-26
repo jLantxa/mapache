@@ -24,12 +24,11 @@ use std::{
     time::Duration,
 };
 
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
 use crate::{
-    global::global_opts,
-    ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS},
+    ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
 
@@ -47,14 +46,7 @@ impl RestoreProgressReporter {
     pub fn new(num_expected_items: u64, num_processed_items: usize) -> Self {
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));
 
-        let verbosity = global_opts().as_ref().unwrap().verbosity;
-        let draw_target = if verbosity > 0 {
-            ProgressDrawTarget::stderr_with_hz(PROGRESS_REFRESH_RATE_HZ)
-        } else {
-            ProgressDrawTarget::hidden()
-        };
-
-        let mp = MultiProgress::with_draw_target(draw_target);
+        let mp = MultiProgress::with_draw_target(default_bar_draw_target());
         let progress_bar = mp.add(ProgressBar::new(num_expected_items));
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();

@@ -21,6 +21,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
@@ -28,27 +29,33 @@ use crate::{
     repository::{
         RepositoryBackend, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer,
     },
-    ui,
+    ui::{self, default_bar_draw_target},
+    utils,
 };
 
 pub struct Plan {
     pub repo: Arc<dyn RepositoryBackend>,
+    pub total_packs: usize, // Total number of blobs in the repository
     pub referenced_blobs: HashSet<ID>, // Blobs referenced by existing snapshots
     pub referenced_packs: HashSet<ID>, // Packs referenced by the referenced blobs
-    pub obsolete_packs: HashSet<ID>,   // Packs containing non-referenced blobs
-    pub tolerated_packs: HashSet<ID>,  // Packs containing garbage, but keep due to tolerance
-    pub unused_packs: HashSet<ID>,     // Packs not referenced by any snapshot or index
-    pub index_ids: HashSet<ID>,        // Current index IDs
+    pub obsolete_packs: HashSet<ID>, // Packs containing non-referenced blobs
+    pub tolerated_packs: HashSet<ID>, // Packs containing garbage, but keep due to tolerance
+    pub unused_packs: HashSet<ID>, // Packs not referenced by any snapshot or index
+    pub index_ids: HashSet<ID>, // Current index IDs
 }
 
 pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 
-    let mut unused_packs: HashSet<ID> = repo.list_objects()?;
-    unused_packs.retain(|id| !referenced_packs.contains(id));
+    let mut repo_packs: HashSet<ID> = repo.list_objects()?;
+    let total_packs = repo_packs.len();
+
+    repo_packs.retain(|id| !referenced_packs.contains(id));
+    let unused_packs = repo_packs;
 
     let mut plan = Plan {
         repo: repo.clone(),
+        total_packs,
         referenced_blobs,
         referenced_packs,
         obsolete_packs: HashSet::new(),
@@ -79,6 +86,11 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
         }
     }
 
+    // No index files to remove if there are no obsolete packs
+    if plan.obsolete_packs.is_empty() {
+        plan.index_ids.clear();
+    }
+
     Ok(plan)
 }
 
@@ -89,9 +101,25 @@ impl Plan {
         self.repo
             .init_pack_saver(global::defaults::DEFAULT_WRITE_CONCURRENCY);
 
+        let unused_pack_delete_bar =
+            ProgressBar::with_draw_target(Some(self.unused_packs.len() as u64), default_bar_draw_target())
+                .with_style(ProgressStyle::default_bar().template(
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting unused packs: {pos}/{len}  [ETA: {custom_eta}]",
+                )
+                .unwrap()
+                .progress_chars("=> ")
+                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed= utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                }));
+
         for id in &self.unused_packs {
             self.repo.delete_file(global::FileType::Object, id)?;
+            unused_pack_delete_bar.inc(1);
         }
+        unused_pack_delete_bar.finish_and_clear();
+        ui::cli::log!("Deleted {} unused packs", unused_pack_delete_bar.position());
 
         // Collect information about the blobs to repack. Since we will rewrite the index, we will
         // lose this information.
@@ -113,6 +141,19 @@ impl Plan {
         // without creating the snapshot.
         self.repo.index().write().rewrite(&self.obsolete_packs);
 
+        let repack_bar =
+            ProgressBar::with_draw_target(Some(self.unused_packs.len() as u64), default_bar_draw_target())
+                .with_style(ProgressStyle::default_bar().template(
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] Repacking blobs: {pos}/{len}  [ETA: {custom_eta}]",
+                )
+                .unwrap()
+                .progress_chars("=> ")
+                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed= utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                }));
+
         const REPACK_CONCURRENCY: usize = 4;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(REPACK_CONCURRENCY)
@@ -132,10 +173,13 @@ impl Plan {
                         data,
                         global::SaveID::WithID(blob_id.clone()),
                     )?;
+                    repack_bar.inc(1);
                     Ok(())
                 },
             )
         });
+        repack_bar.finish_and_clear();
+        ui::cli::log!("Repacked {} blobs", repack_bar.position());
 
         if let Err(e) = process_result {
             bail!("An error occurred during repacking: {}", e);
@@ -149,26 +193,53 @@ impl Plan {
         // This can happen if an index did not change while repacking.
         let new_index_ids = self.repo.index().read().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
+
+        let index_delete_bar =
+            ProgressBar::with_draw_target(Some(self.index_ids.len() as u64), default_bar_draw_target())
+                .with_style(ProgressStyle::default_bar().template(
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting old index files: {pos}/{len}  [ETA: {custom_eta}]",
+                )
+                .unwrap()
+                .progress_chars("=> ")
+                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed= utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                }));
+
         self.index_ids.par_iter().for_each(|id| {
-            if self
-                .repo
-                .delete_file(crate::global::FileType::Index, id)
-                .is_err()
-            {
-                ui::cli::warning!("Could not delete index file {}", id);
-            }
+            let _ = self.repo.delete_file(crate::global::FileType::Index, id);
+            index_delete_bar.inc(1);
         });
+        index_delete_bar.finish_and_clear();
+        ui::cli::log!(
+            "Deleted {} obsolete index files",
+            index_delete_bar.position()
+        );
 
         // Delete obsolete pack files
+        let obsolete_pack_delete_bar =
+            ProgressBar::with_draw_target(Some(self.obsolete_packs.len() as u64), default_bar_draw_target())
+                .with_style(ProgressStyle::default_bar().template(
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting obsolete pack files: {pos}/{len}  [ETA: {custom_eta}]",
+                )
+                .unwrap()
+                .progress_chars("=> ")
+                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed= utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                }));
+
         self.obsolete_packs.par_iter().for_each(|id| {
-            if self
-                .repo
-                .delete_file(crate::global::FileType::Object, id)
-                .is_err()
-            {
-                ui::cli::warning!("Could not delete pack file {}", id);
-            }
+            let _ = self.repo.delete_file(crate::global::FileType::Object, id);
+            obsolete_pack_delete_bar.inc(1);
         });
+        obsolete_pack_delete_bar.finish_and_clear();
+        ui::cli::log!(
+            "Deleted {} obsolete packs",
+            obsolete_pack_delete_bar.position()
+        );
 
         Ok(())
     }

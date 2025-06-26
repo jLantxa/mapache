@@ -306,9 +306,11 @@ fn show_final_report(
     if !args.dry_run {
         ui::cli::log!(
             "New snapshot created {}",
-            snapshot_id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN).to_string()
-            .bold()
-            .green()
+            snapshot_id
+                .to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
+                .to_string()
+                .bold()
+                .green()
         );
         ui::cli::log!("This snapshot added:\n");
     } else {

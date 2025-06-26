@@ -85,7 +85,10 @@ impl Archiver {
         let arch = Arc::from(self);
 
         // Extract parent snapshot tree id
-        let parent_tree_id: Option<ID> = arch.parent_snapshot.as_ref().map(|snapshot| snapshot.tree.clone());
+        let parent_tree_id: Option<ID> = arch
+            .parent_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.tree.clone());
 
         // Create streamers
         let fs_streamer = match FSNodeStreamer::from_paths(

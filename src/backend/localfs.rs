@@ -242,10 +242,7 @@ mod tests {
 
         // Read range
         let seek_path = Path::new("seek.txt.");
-        local_fs.write(
-            seek_path,
-            b"I am just looking for a word in this sentence.",
-        )?;
+        local_fs.write(seek_path, b"I am just looking for a word in this sentence.")?;
         let range_str = local_fs.seek_read(seek_path, 10, 7)?;
         assert_eq!(range_str, b"looking");
 

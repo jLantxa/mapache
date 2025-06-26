@@ -125,7 +125,7 @@ impl ID {
         let mut bytes = [0; ID_LENGTH];
         let mut chars = hex_str.chars();
 
-        for i in 0..ID_LENGTH {
+        for byte in bytes.iter_mut().take(ID_LENGTH) {
             let high_nibble_char = chars.next().unwrap(); // Should be OK due to length check
             let low_nibble_char = chars.next().unwrap(); // Should be OK due to length check
 
@@ -135,7 +135,7 @@ impl ID {
             let low_nibble = Self::hex_char_to_byte(low_nibble_char)
                 .with_context(|| format!("Invalid hexadecimal character: '{}'", low_nibble_char))?;
 
-            bytes[i] = (high_nibble << 4) | low_nibble;
+            *byte = (high_nibble << 4) | low_nibble;
         }
 
         Ok(Self(bytes))

@@ -39,10 +39,7 @@ impl LocalFS {
     }
 
     fn exists_exact(&self, path: &Path) -> bool {
-        match std::fs::exists(path) {
-            Ok(exists) => exists,
-            Err(_) => false,
-        }
+        std::fs::exists(path).unwrap_or_default()
     }
 }
 
@@ -218,38 +215,38 @@ mod tests {
 
         let write_path = Path::new("file.txt");
         local_fs.write(write_path, b"Mapachito")?;
-        let read_content = local_fs.read(&write_path)?;
+        let read_content = local_fs.read(write_path)?;
 
-        assert!(local_fs.exists(&write_path));
+        assert!(local_fs.exists(write_path));
         assert_eq!(read_content, b"Mapachito");
 
         let dir0 = Path::new("dir0");
         let intermediate = dir0.join("intermediate");
         let dir1 = intermediate.join("dir1");
-        local_fs.create_dir(&dir0)?;
+        local_fs.create_dir(dir0)?;
         local_fs.create_dir_all(&dir1)?;
-        assert!(local_fs.exists(&dir0));
+        assert!(local_fs.exists(dir0));
         assert!(local_fs.exists(&intermediate));
         assert!(local_fs.exists(&dir1));
 
         local_fs.remove_dir(&dir1)?;
-        assert!(false == local_fs.exists(&dir1));
-        local_fs.remove_dir_all(&dir0)?;
-        assert!(false == local_fs.exists(&dir0));
-        assert!(false == local_fs.exists(&intermediate));
-        assert!(false == local_fs.exists(&dir1));
+        assert!(!local_fs.exists(&dir1));
+        local_fs.remove_dir_all(dir0)?;
+        assert!(!local_fs.exists(dir0));
+        assert!(!local_fs.exists(&intermediate));
+        assert!(!local_fs.exists(&dir1));
 
         let invalid_path = Path::new("fake_path");
-        assert!(false == local_fs.exists(&invalid_path));
-        assert!(local_fs.read(&invalid_path).is_err());
+        assert!(!local_fs.exists(invalid_path));
+        assert!(local_fs.read(invalid_path).is_err());
 
         // Read range
         let seek_path = Path::new("seek.txt.");
         local_fs.write(
-            &seek_path,
+            seek_path,
             b"I am just looking for a word in this sentence.",
         )?;
-        let range_str = local_fs.seek_read(&seek_path, 10, 7)?;
+        let range_str = local_fs.seek_read(seek_path, 10, 7)?;
         assert_eq!(range_str, b"looking");
 
         Ok(())

@@ -109,7 +109,7 @@ impl RestoreProgressReporter {
 
     fn update_processing_items(&self) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
-            let _ = spinner.set_message(format!(
+            spinner.set_message(format!(
                 "{}",
                 self.processing_items
                     .read()

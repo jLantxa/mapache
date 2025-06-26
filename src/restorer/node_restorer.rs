@@ -74,7 +74,7 @@ pub(crate) fn restore_node_to_path(
                 .expect("File Node must have contents (even if empty)");
 
             for (index, chunk_hash) in blocks.iter().enumerate() {
-                let chunk_data = repo.load_blob(&chunk_hash).with_context(|| {
+                let chunk_data = repo.load_blob(chunk_hash).with_context(|| {
                     format!(
                         "Could not load block #{} ({}) for restoring file '{}'",
                         index + 1,
@@ -116,7 +116,7 @@ pub(crate) fn restore_node_to_path(
 
             #[cfg(unix)]
             {
-                if let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, &dst_path) {
+                if let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, dst_path) {
                     ui::cli::warning!(
                         "Could not create symlink '{}' pointing to '{}' : {}",
                         dst_path.display(),
@@ -132,7 +132,7 @@ pub(crate) fn restore_node_to_path(
                     // Directory symlink
                     Some(NodeType::Directory) => {
                         if let Err(e) =
-                            std::os::windows::fs::symlink_dir(&dst_path, &symlink_info.target_path)
+                            std::os::windows::fs::symlink_dir(dst_path, &symlink_info.target_path)
                         {
                             ui::cli::warning!(
                                 "Could not create symlink '{}' pointing to '{}' : {}",
@@ -145,7 +145,7 @@ pub(crate) fn restore_node_to_path(
                     // Everything else (not a directory)
                     Some(_) => {
                         if let Err(e) =
-                            std::os::windows::fs::symlink_file(&dst_path, &symlink_info.target_path)
+                            std::os::windows::fs::symlink_file(dst_path, &symlink_info.target_path)
                         {
                             ui::cli::warning!(
                                 "Could not create symlink '{}' pointing to '{}' : {}",
@@ -246,8 +246,8 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
         }
 
         // Set owner (uid) and group (gid)
-        let uid = node.metadata.owner_uid.map(|u| u as u32);
-        let gid = node.metadata.owner_gid.map(|g| g as u32);
+        let uid = node.metadata.owner_uid;
+        let gid = node.metadata.owner_gid;
 
         if uid.is_some() || gid.is_some() {
             if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
@@ -270,8 +270,8 @@ pub fn restore_times(
     mtime: Option<&SystemTime>,
 ) -> Result<()> {
     if let Some(modified_time) = mtime {
-        let ft_mtime = FileTime::from(modified_time.clone());
-        let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(atime.clone()));
+        let ft_mtime = FileTime::from(*modified_time);
+        let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
         set_file_times(dst_path, ft_atime, ft_mtime)
             .with_context(|| format!("Could not set modified time for '{}'", dst_path.display()))?;
@@ -306,10 +306,7 @@ mod tests {
         // Change mtime to 1 day before now
         let prev_mtime: SystemTime = (Local::now() - Duration::days(1)).into();
         let ft_mtime = FileTime::from(prev_mtime);
-        let ft_atime = node
-            .metadata
-            .accessed_time
-            .map_or(ft_mtime, |atime| FileTime::from(atime));
+        let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
 
         set_file_times(&file_path, ft_atime, ft_mtime).with_context(|| {
             format!("Could not set modified time for '{}'", file_path.display())

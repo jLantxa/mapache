@@ -165,7 +165,7 @@ impl SnapshotProgressReporter {
 
     fn update_processing_items(&self) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
-            let _ = spinner.set_message(format!(
+            spinner.set_message(format!(
                 "{}",
                 self.processing_items
                     .read()
@@ -289,8 +289,8 @@ impl SnapshotProgressReporter {
             meta_encoded_bytes: self
                 .meta_encoded_bytes
                 .load(std::sync::atomic::Ordering::SeqCst),
-            total_raw_bytes: total_raw_bytes,
-            total_encoded_bytes: total_encoded_bytes,
+            total_raw_bytes,
+            total_encoded_bytes,
             new_files: self.new_files.load(std::sync::atomic::Ordering::SeqCst),
             changed_files: self.changed_files.load(std::sync::atomic::Ordering::SeqCst),
             unchanged_files: self

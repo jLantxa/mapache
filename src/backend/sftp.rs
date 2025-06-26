@@ -200,10 +200,7 @@ impl SftpBackend {
 
     /// Returns true if the exact path given exists (not as a relative path to the backend root).
     fn exists_exact(&self, path: &Path, sftp: &Sftp) -> bool {
-        match sftp.lstat(path) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        sftp.lstat(path).is_ok()
     }
 
     /// Creates a directory with the exact path given (not as a relative path to the backend root).

@@ -70,7 +70,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-fn log(snapshots: &Vec<(ID, Snapshot)>) {
+fn log(snapshots: &[(ID, Snapshot)]) {
     let mut peekable_snapshots = snapshots.iter().peekable();
     while let Some((id, snapshot)) = peekable_snapshots.next() {
         ui::cli::log!("{}", id.to_hex().bold().yellow());

@@ -128,7 +128,7 @@ pub trait RepositoryBackend: Sync + Send {
     fn flush(&self) -> Result<(u64, u64)>;
 
     /// Finds a file in the repository using an ID prefix
-    fn find(&self, file_type: FileType, prefix: &String) -> Result<(ID, PathBuf)>;
+    fn find(&self, file_type: FileType, prefix: &str) -> Result<(ID, PathBuf)>;
 }
 
 /// Initialize a repository using the latest repository version.
@@ -194,7 +194,7 @@ fn init_common(
     match keyfile_path {
         Some(p) => std::fs::write(p, keyfile_json.as_bytes())?,
         None => {
-            let p = keys_path.join(&keyfile_id.to_hex());
+            let p = keys_path.join(keyfile_id.to_hex());
             backend.write(&p, keyfile_json.as_bytes())?;
         }
     }
@@ -256,7 +256,7 @@ pub fn try_open(
     let manifest_path = Path::new(MANIFEST_PATH);
 
     let manifest = backend
-        .read(&manifest_path)
+        .read(manifest_path)
         .with_context(|| "Could not load manifest file")?;
     let manifest = secure_storage
         .decode(&manifest)

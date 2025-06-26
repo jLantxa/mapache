@@ -85,10 +85,7 @@ impl Archiver {
         let arch = Arc::from(self);
 
         // Extract parent snapshot tree id
-        let parent_tree_id: Option<ID> = match &arch.parent_snapshot {
-            None => None,
-            Some(snapshot) => Some(snapshot.tree.clone()),
-        };
+        let parent_tree_id: Option<ID> = arch.parent_snapshot.as_ref().map(|snapshot| snapshot.tree.clone());
 
         // Create streamers
         let fs_streamer = match FSNodeStreamer::from_paths(
@@ -240,10 +237,9 @@ impl Archiver {
                 // Notify reporter
                 let (item_path, _) = &item;
                 serializer_progress_reporter_clone.processed_file(
-                    &item_path
+                    item_path
                         .strip_prefix(serializer_snapshot_root_path_clone.clone())
-                        .unwrap()
-                        .to_path_buf(),
+                        .unwrap(),
                 );
 
                 if let Err(e) = tree_serializer::handle_processed_item(

@@ -99,7 +99,7 @@ impl SnapshotStreamer {
     pub fn latest(&mut self) -> Option<(ID, Snapshot)> {
         let (mut latest_id, mut latest_sn) = self.next()?;
 
-        while let Some((mut id, mut snapshot)) = self.next() {
+        for (mut id, mut snapshot) in self.by_ref() {
             if snapshot.timestamp > latest_sn.timestamp {
                 std::mem::swap(&mut id, &mut latest_id);
                 std::mem::swap(&mut snapshot, &mut latest_sn);

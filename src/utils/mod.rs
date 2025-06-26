@@ -146,7 +146,7 @@ pub fn calculate_lcp(paths: &[PathBuf]) -> PathBuf {
         let first_comp = current_components[0].as_ref().unwrap();
         let all_match = current_components[1..]
             .iter()
-            .all(|comp_opt| comp_opt.as_ref().map_or(false, |comp| comp.eq(first_comp)));
+            .all(|comp_opt| comp_opt.as_ref().is_some_and(|comp| comp.eq(first_comp)));
 
         if all_match {
             common_prefix.push(first_comp);
@@ -191,7 +191,7 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
 
             children_map
                 .entry(parent.to_path_buf())
-                .or_insert_with(BTreeSet::new)
+                .or_default()
                 .insert(current_ancestor.to_path_buf());
 
             current_ancestor = parent;
@@ -219,18 +219,20 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
 /// # Arguments
 /// * `path` - The path to filter.
 /// * `include` - An optional slice of paths to include. If `None`, all paths are implicitly included
-///               unless excluded. If `Some`, the path must either be an include path, a descendant
-///               of an include path, or an ancestor of an include path.
+///   unless excluded. If `Some`, the path must either be an include path, a descendant
+///   of an include path, or an ancestor of an include path.
+///
 /// * `exclude` - An optional slice of paths to exclude. If `Some`, the path is excluded if it
-///               starts with any of the exclude paths.
+///   starts with any of the exclude paths.
 ///
 /// # Behavior
 /// 1. If `path` starts with any `exclude_path`, it's excluded (returns `false`).
 /// 2. If `include_paths` is `Some`:
 ///    a. The path is included only if it is either:
-///       i. An include path itself (`path == in_path`).
-///       ii. A descendant of an include path (`path.starts_with(in_path)`).
-///       iii. An ancestor of an include path (`in_path.starts_with(path)`).
+///      - An include path itself (`path == in_path`).
+///      - A descendant of an include path (`path.starts_with(in_path)`).
+///      - An ancestor of an include path (`in_path.starts_with(path)`).
+///
 ///    b. If it doesn't satisfy any of these conditions for any `include_path`, it's excluded (returns `false`).
 /// 3. If `include_paths` is `None` and not excluded by step 1, it's included (returns `true`).
 pub fn filter_path(
@@ -314,9 +316,9 @@ pub fn pretty_print_duration(duration: std::time::Duration) -> String {
 pub fn parse_duration_string(s: &str) -> Result<Duration> {
     let mut total_duration = Duration::seconds(0);
     let mut current_num_str = String::new();
-    let mut chars = s.chars().peekable();
+    let chars = s.chars().peekable();
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         if c.is_ascii_digit() {
             current_num_str.push(c);
         } else {
@@ -333,12 +335,12 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
             })?;
 
             match c {
-                's' => total_duration = total_duration + Duration::seconds(num),
-                'm' => total_duration = total_duration + Duration::minutes(num),
-                'h' => total_duration = total_duration + Duration::hours(num),
-                'd' => total_duration = total_duration + Duration::days(num),
-                'w' => total_duration = total_duration + Duration::weeks(num),
-                'y' => total_duration = total_duration + Duration::days(num * 365),
+                's' => total_duration += Duration::seconds(num),
+                'm' => total_duration += Duration::minutes(num),
+                'h' => total_duration += Duration::hours(num),
+                'd' => total_duration += Duration::days(num),
+                'w' => total_duration += Duration::weeks(num),
+                'y' => total_duration += Duration::days(num * 365),
                 _ => return Err(anyhow!("Invalid duration unit: '{}' in \"{}\"", c, s)),
             }
             current_num_str.clear();
@@ -392,12 +394,10 @@ pub fn mode_to_permissions_string(mode: u32) -> String {
                 } else {
                     char_arr[2] = 'x';
                 }
+            } else if (mode_val & special_bit) != 0 {
+                char_arr[2] = if special_bit == 0o1000 { 'T' } else { 'S' };
             } else {
-                if (mode_val & special_bit) != 0 {
-                    char_arr[2] = if special_bit == 0o1000 { 'T' } else { 'S' };
-                } else {
-                    char_arr[2] = '-';
-                }
+                char_arr[2] = '-';
             }
             char_arr
         };

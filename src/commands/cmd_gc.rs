@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
@@ -28,7 +28,10 @@ use crate::{
         self, RepositoryBackend,
         gc::{self},
     },
-    ui::{self, table::Alignment},
+    ui::{
+        self,
+        table::{Alignment, Table},
+    },
     utils::{self},
 };
 
@@ -62,26 +65,49 @@ pub fn run_with_repo(
     repo: Arc<dyn RepositoryBackend>,
 ) -> Result<()> {
     let tolerance = args.tolerance.clamp(0.0, 100.0) / 100.0;
-    let gc_plan = gc::scan(repo.clone(), tolerance)?;
 
-    let mut plan_table =
-        ui::table::Table::new_with_alignments(vec![Alignment::Left, Alignment::Right]);
+    let start = Instant::now();
+
+    let plan = gc::scan(repo.clone(), tolerance)?;
+
+    let mut plan_table = Table::new_with_alignments(vec![Alignment::Left, Alignment::Right]);
     plan_table.add_row(vec![
-        "Referenced blobs".bold().to_string(),
-        gc_plan.referenced_blobs.len().to_string(),
+        "Number of packs".bold().to_string(),
+        plan.total_packs.to_string(),
     ]);
     plan_table.add_row(vec![
-        "Obsolete packs".bold().to_string(),
-        gc_plan.obsolete_packs.len().to_string(),
+        "Blobs to keep".bold().to_string(),
+        plan.referenced_blobs.len().to_string(),
+    ]);
+    plan_table.add_row(vec![
+        "Packs to keep".bold().to_string(),
+        plan.referenced_packs.len().to_string(),
+    ]);
+    plan_table.add_row(vec![
+        "Packs to repack".bold().to_string(),
+        plan.obsolete_packs.len().to_string(),
     ]);
     plan_table.add_row(vec![
         "Tolerated packs".bold().to_string(),
-        gc_plan.tolerated_packs.len().to_string(),
+        plan.tolerated_packs.len().to_string(),
     ]);
+    plan_table.add_row(vec![
+        "Unused packs".bold().to_string(),
+        plan.unused_packs.len().to_string(),
+    ]);
+    ui::cli::log!("{}", "Plan summary:".bold());
     ui::cli::log!("{}", plan_table.render());
 
-    if !args.dry_run {
-        gc_plan.execute()?;
+    if args.dry_run {
+        ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
+    } else {
+        plan.execute()?;
+
+        ui::cli::log!();
+        ui::cli::log!(
+            "Finished in {}",
+            utils::pretty_print_duration(start.elapsed())
+        );
     }
 
     Ok(())

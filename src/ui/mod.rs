@@ -14,6 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use indicatif::ProgressDrawTarget;
+
+use crate::global::global_opts;
+
 pub mod cli;
 pub mod restore_progress;
 pub mod snapshot_progress;
@@ -22,3 +26,12 @@ pub mod table;
 // Progress UI parameters
 pub(crate) const PROGRESS_REFRESH_RATE_HZ: u8 = 30;
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {
+    let verbosity = global_opts().as_ref().unwrap().verbosity;
+    if verbosity > 0 {
+        ProgressDrawTarget::stderr_with_hz(PROGRESS_REFRESH_RATE_HZ)
+    } else {
+        ProgressDrawTarget::hidden()
+    }
+}

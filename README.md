@@ -62,8 +62,8 @@ The first `Snapshots` milestone consists of implementing the core architecture a
 The second milestone consists of adding features related to repository maintenance and garbage collection and other convenience options. This includes:
 
 -   [x] Removing snapshots, with basic retention rules. The `forget` command.
--   [ ] `gc` command. A command to remove obsolete objects from the repository that are not referenced by any snapshot.
--   [ ] Run `gc` optionally in `forget` command. Run `gc` after `forget` for convenience.
+-   [x] `gc` command. A command to remove obsolete objects from the repository that are not referenced by any snapshot.
+-   [x] Run `gc` optionally in `forget` command. Run `gc` after `forget` for convenience.
 -   [x] `--exclude` filter in `snapshot` command.
 -   [x] `--include` / `--exclude` in `restore` command.
 -   [x] `ls` command to list paths in a snapshot.

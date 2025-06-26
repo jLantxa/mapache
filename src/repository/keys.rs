@@ -72,16 +72,16 @@ pub fn retrieve_master_key(
 ) -> Result<Vec<u8>> {
     match keyfile_path {
         Some(path) => {
-            let file = std::fs::File::open(&path)
+            let file = std::fs::File::open(path)
                 .with_context(|| format!("Could not open KeyFile at {:?}", path))?;
             let keyfile: KeyFile = serde_json::from_reader(file)
                 .with_context(|| format!("KeyFile at {:?} is invalid", path))?;
 
-            decode_master_key(&password, keyfile)
+            decode_master_key(password, keyfile)
         }
         None => {
             let keys_path = Path::new(KEYS_DIR);
-            let entries = backend.read_dir(&keys_path)?;
+            let entries = backend.read_dir(keys_path)?;
 
             for path in entries {
                 // The keys directory should only contain files. We can ignore anything
@@ -104,15 +104,14 @@ pub fn retrieve_master_key(
                     }
                 };
 
-                if let Ok(master_key) = decode_master_key(&password, keyfile) {
+                if let Ok(master_key) = decode_master_key(password, keyfile) {
                     return Ok(master_key);
                 }
             }
 
             Err(anyhow::anyhow!(
                 "No valid KeyFile found for the provided password in the keys directory."
-            )
-            .into())
+            ))
         }
     }
 }
@@ -122,7 +121,7 @@ fn decode_master_key(password: &str, keyfile: KeyFile) -> Result<Vec<u8>> {
     let salt = base64::engine::general_purpose::STANDARD.decode(keyfile.salt)?;
     let encrypted_key = base64::engine::general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
 
-    let intermediate_key = SecureStorage::derive_key(&password, &salt);
+    let intermediate_key = SecureStorage::derive_key(password, &salt);
     SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)
         .with_context(|| "Could not retrieve master key from this keyfile")
 }

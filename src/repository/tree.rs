@@ -181,7 +181,7 @@ impl Node {
             .unwrap_or_default();
 
         // symlink_metadata does not follow symlinks
-        let meta = std::fs::symlink_metadata(&path)
+        let meta = std::fs::symlink_metadata(path)
             .with_context(|| format!("Cannot stat {}", path.display()))?;
         let node_type = get_node_type(&meta)?;
 
@@ -195,7 +195,7 @@ impl Node {
         };
 
         if node.is_symlink() {
-            let target_path = std::fs::read_link(&path)
+            let target_path = std::fs::read_link(path)
                 .with_context(|| format!("Cannot read symlink target for {}", path.display()))?;
 
             let target_type = match target_path.symlink_metadata() {

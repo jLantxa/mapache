@@ -74,7 +74,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             if prefix.len() != 2 * ID_LENGTH {
                 bail!("Tree search not supported with prefix. Use the whole ID string.");
             }
-            let id = ID::from_hex(&prefix)?;
+            let id = ID::from_hex(prefix)?;
             let tree = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
             let tree: Tree = serde_json::from_slice(&tree)?;
             println!("{}", serde_json::to_string_pretty(&tree)?);
@@ -85,7 +85,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 bail!("Blob search not supported with prefix. Use the whole ID string.");
             }
 
-            let id = ID::from_hex(&prefix)?;
+            let id = ID::from_hex(prefix)?;
             let blob = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
             println!("{}", String::from_utf8(blob)?);
             Ok(())

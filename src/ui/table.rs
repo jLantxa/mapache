@@ -55,6 +55,12 @@ pub struct Table {
     padding: usize,
 }
 
+impl Default for Table {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Table {
     /// Creates a Table with default alignments
     pub fn new() -> Self {

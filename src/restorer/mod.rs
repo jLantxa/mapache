@@ -39,6 +39,7 @@ pub enum Resolution {
 pub struct Restorer {}
 
 impl Restorer {
+    #[allow(clippy::too_many_arguments)]
     pub fn restore(
         repo: Arc<dyn RepositoryBackend>,
         snapshot: &Snapshot,

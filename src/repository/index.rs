@@ -71,6 +71,12 @@ pub struct Index {
     id: Option<ID>,
 }
 
+impl Default for Index {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Index {
     pub fn new() -> Self {
         Self {
@@ -321,6 +327,12 @@ pub struct MasterIndex {
 
     /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
     pending_blobs: HashSet<ID>,
+}
+
+impl Default for MasterIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MasterIndex {

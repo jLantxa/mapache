@@ -80,7 +80,7 @@ impl FSNodeStreamer {
 
         // Sort paths in reverse order
         paths.sort_by(|first, second| second.cmp(first));
-        intermediate_paths.sort_by(|(first, _), (second, _)| second.cmp(&first));
+        intermediate_paths.sort_by(|(first, _), (second, _)| second.cmp(first));
 
         Ok(Self {
             stack: paths,
@@ -111,7 +111,7 @@ impl Iterator for FSNodeStreamer {
         // Decide which source has the lexicographically smaller “next” element
         let take_intermediate = loop {
             match (self.intermediate_paths.last(), self.stack.last()) {
-                (Some(iv @ _), Some(sv @ _)) => {
+                (Some(iv), Some(sv)) => {
                     let iv_path = peek_path(iv);
                     let sv_path = sv;
 
@@ -128,7 +128,7 @@ impl Iterator for FSNodeStreamer {
 
                     break iv_path.cmp(sv_path) == std::cmp::Ordering::Less;
                 }
-                (Some(iv @ _), None) => {
+                (Some(iv), None) => {
                     let iv_path = peek_path(iv);
                     if !utils::filter_path(iv_path, None, Some(&self.exclude_paths)) {
                         self.intermediate_paths.pop();
@@ -136,7 +136,7 @@ impl Iterator for FSNodeStreamer {
                     }
                     break true;
                 }
-                (None, Some(sv @ _)) => {
+                (None, Some(sv)) => {
                     if !utils::filter_path(sv, None, Some(&self.exclude_paths)) {
                         self.stack.pop();
                         continue;
@@ -303,6 +303,8 @@ pub enum NodeDiff {
     Unchanged,
 }
 
+pub type DiffTuple = (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff);
+
 /// A depth‑first *pre‑order* streamer of node differences.
 ///
 /// Items are produced in lexicographical order of their *full* paths. The root node is not emitted.
@@ -345,106 +347,104 @@ where
     P: Iterator<Item = Result<(PathBuf, StreamNode)>>,
     I: Iterator<Item = Result<(PathBuf, StreamNode)>>,
 {
-    type Item = Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>;
+    type Item = Result<DiffTuple>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match (&self.head_prev, &self.head_next) {
-                (None, None) => return None,
-                (Some(Err(_)), _) => {
-                    let err = self.head_prev.take().unwrap();
-                    self.head_prev = self.prev.next();
-                    return Some(Err(anyhow!("Previous node error: {}", err.unwrap_err())));
-                }
-                (_, Some(Err(_))) => {
-                    let err = self.head_next.take().unwrap();
-                    self.head_next = self.next.next();
-                    return Some(Err(anyhow!("Next node error: {}", err.unwrap_err())));
-                }
-                (Some(Ok(item_a_ref)), Some(Ok(item_b_ref))) => {
-                    let path_a = &item_a_ref.0;
-                    let path_b = &item_b_ref.0;
+        match (&self.head_prev, &self.head_next) {
+            (None, None) => None,
+            (Some(Err(_)), _) => {
+                let err = self.head_prev.take().unwrap();
+                self.head_prev = self.prev.next();
+                Some(Err(anyhow!("Previous node error: {}", err.unwrap_err())))
+            }
+            (_, Some(Err(_))) => {
+                let err = self.head_next.take().unwrap();
+                self.head_next = self.next.next();
+                Some(Err(anyhow!("Next node error: {}", err.unwrap_err())))
+            }
+            (Some(Ok(item_a_ref)), Some(Ok(item_b_ref))) => {
+                let path_a = &item_a_ref.0;
+                let path_b = &item_b_ref.0;
 
-                    match path_a.cmp(path_b) {
-                        Ordering::Less => {
-                            let item = self.head_prev.take().unwrap().unwrap();
-                            let (previous_path, previous_node) = item;
+                match path_a.cmp(path_b) {
+                    Ordering::Less => {
+                        let item = self.head_prev.take().unwrap().unwrap();
+                        let (previous_path, previous_node) = item;
 
-                            self.head_prev = self.prev.next();
+                        self.head_prev = self.prev.next();
 
-                            return Some(Ok((
-                                previous_path,
-                                Some(previous_node),
-                                None,
-                                NodeDiff::Deleted,
-                            )));
-                        }
-                        Ordering::Greater => {
-                            let item = self.head_next.take().unwrap().unwrap();
-                            let (incoming_path, incoming_node) = item;
+                        Some(Ok((
+                            previous_path,
+                            Some(previous_node),
+                            None,
+                            NodeDiff::Deleted,
+                        )))
+                    }
+                    Ordering::Greater => {
+                        let item = self.head_next.take().unwrap().unwrap();
+                        let (incoming_path, incoming_node) = item;
 
-                            self.head_next = self.next.next();
+                        self.head_next = self.next.next();
 
-                            return Some(Ok((
-                                incoming_path,
-                                None,
-                                Some(incoming_node),
-                                NodeDiff::New,
-                            )));
-                        }
-                        Ordering::Equal => {
-                            let item_a = self.head_prev.take().unwrap().unwrap();
-                            let (previous_path, previous_node) = item_a;
+                        Some(Ok((
+                            incoming_path,
+                            None,
+                            Some(incoming_node),
+                            NodeDiff::New,
+                        )))
+                    }
+                    Ordering::Equal => {
+                        let item_a = self.head_prev.take().unwrap().unwrap();
+                        let (previous_path, previous_node) = item_a;
 
-                            let item_b = self.head_next.take().unwrap().unwrap();
-                            let (_, incoming_node) = item_b;
+                        let item_b = self.head_next.take().unwrap().unwrap();
+                        let (_, incoming_node) = item_b;
 
-                            self.head_prev = self.prev.next();
-                            self.head_next = self.next.next();
+                        self.head_prev = self.prev.next();
+                        self.head_next = self.next.next();
 
-                            let diff_type = if previous_node
-                                .node
-                                .metadata
-                                .has_changed(&incoming_node.node.metadata)
-                            {
-                                NodeDiff::Changed
-                            } else {
-                                NodeDiff::Unchanged
-                            };
+                        let diff_type = if previous_node
+                            .node
+                            .metadata
+                            .has_changed(&incoming_node.node.metadata)
+                        {
+                            NodeDiff::Changed
+                        } else {
+                            NodeDiff::Unchanged
+                        };
 
-                            return Some(Ok((
-                                previous_path,
-                                Some(previous_node),
-                                Some(incoming_node),
-                                diff_type,
-                            )));
-                        }
+                        Some(Ok((
+                            previous_path,
+                            Some(previous_node),
+                            Some(incoming_node),
+                            diff_type,
+                        )))
                     }
                 }
-                (Some(Ok(_)), None) => {
-                    let item = self.head_prev.take().unwrap().unwrap();
-                    let (previous_path, previous_node) = item;
-                    self.head_prev = self.prev.next();
+            }
+            (Some(Ok(_)), None) => {
+                let item = self.head_prev.take().unwrap().unwrap();
+                let (previous_path, previous_node) = item;
+                self.head_prev = self.prev.next();
 
-                    return Some(Ok((
-                        previous_path,
-                        Some(previous_node),
-                        None,
-                        NodeDiff::Deleted,
-                    )));
-                }
-                (None, Some(Ok(_))) => {
-                    let item = self.head_next.take().unwrap().unwrap();
-                    let (incoming_path, incoming_node) = item;
-                    self.head_next = self.next.next();
+                Some(Ok((
+                    previous_path,
+                    Some(previous_node),
+                    None,
+                    NodeDiff::Deleted,
+                )))
+            }
+            (None, Some(Ok(_))) => {
+                let item = self.head_next.take().unwrap().unwrap();
+                let (incoming_path, incoming_node) = item;
+                self.head_next = self.next.next();
 
-                    return Some(Ok((
-                        incoming_path,
-                        None,
-                        Some(incoming_node),
-                        NodeDiff::New,
-                    )));
-                }
+                Some(Ok((
+                    incoming_path,
+                    None,
+                    Some(incoming_node),
+                    NodeDiff::New,
+                )))
             }
         }
     }
@@ -642,8 +642,7 @@ mod tests {
         let dir_a = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let dir_b = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_b")], Vec::new())?;
         let diff_streamer = NodeDiffStreamer::new(dir_a, dir_b);
-        let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
-            diff_streamer.collect();
+        let diffs: Vec<Result<DiffTuple>> = diff_streamer.collect();
 
         assert_eq!(diffs.len(), 8);
         assert_eq!(diffs[0].as_ref().unwrap().3, NodeDiff::Deleted);
@@ -667,8 +666,7 @@ mod tests {
         let dir_a1 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let dir_a2 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let diff_streamer = NodeDiffStreamer::new(dir_a1, dir_a2);
-        let diffs: Vec<Result<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>> =
-            diff_streamer.collect();
+        let diffs: Vec<Result<DiffTuple>> = diff_streamer.collect();
 
         assert_eq!(diffs.len(), 6);
         assert_eq!(diffs[0].as_ref().unwrap().3, NodeDiff::Unchanged);

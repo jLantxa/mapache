@@ -34,7 +34,7 @@ pub const MAX_PACK_SIZE: u64 = 16 * size::MiB;
 /// Minimum chunk size
 pub const MIN_CHUNK_SIZE: u64 = 512 * size::KiB;
 /// Average chunk size
-pub const AVG_CHUNK_SIZE: u64 = 1 * size::MiB;
+pub const AVG_CHUNK_SIZE: u64 = size::MiB;
 /// Maximum chunk size
 pub const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 

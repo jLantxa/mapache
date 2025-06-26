@@ -95,7 +95,7 @@ impl FromStr for Url {
         let mut password = None;
         let host: Option<String>; // Initialize host as None
         let mut port = None;
-        let path: Vec<String>;
+
         let mut query = None;
         let mut fragment = None;
 
@@ -254,11 +254,11 @@ impl FromStr for Url {
             // current_parsing_slice holds the *entire* remaining part that should be path.
             // No leading slash to remove here if it wasn't there initially.
             current_parsing_slice
-        } else if current_parsing_slice.starts_with('/') {
+        } else if let Some(stripped) = current_parsing_slice.strip_prefix('/') {
             // For network-path URLs (http, https, or file:///),
             // a leading slash indicates the root but is not stored as an empty segment
             // in the path list, unless it's a `//` sequence (empty segment).
-            &current_parsing_slice[1..]
+            stripped
         } else {
             current_parsing_slice
         };
@@ -275,7 +275,7 @@ impl FromStr for Url {
                 }
             }
         }
-        path = segments_to_process;
+        let path: Vec<String> = segments_to_process;
 
         Ok(Url {
             scheme,

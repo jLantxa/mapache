@@ -62,7 +62,7 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
 
     // Find obsolete packs and blobs in index
     for (id, locator) in repo.index().read().iter_ids() {
-        if !plan.referenced_blobs.contains(&id) {
+        if !plan.referenced_blobs.contains(id) {
             pack_garbage
                 .entry(locator.pack_id)
                 .and_modify(|size| *size += locator.length)
@@ -98,7 +98,7 @@ impl Plan {
         let mut repack_blob_info = HashMap::new();
         for referenced_blob_id in &self.referenced_blobs {
             if let Some((pack_id, blob_type, offset, length)) =
-                self.repo.index().read().get(&referenced_blob_id)
+                self.repo.index().read().get(referenced_blob_id)
             {
                 if self.obsolete_packs.contains(&pack_id) {
                     repack_blob_info
@@ -150,14 +150,22 @@ impl Plan {
         let new_index_ids = self.repo.index().read().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
         self.index_ids.par_iter().for_each(|id| {
-            if let Err(_) = self.repo.delete_file(crate::global::FileType::Index, id) {
+            if self
+                .repo
+                .delete_file(crate::global::FileType::Index, id)
+                .is_err()
+            {
                 ui::cli::warning!("Could not delete index file {}", id);
             }
         });
 
         // Delete obsolete pack files
         self.obsolete_packs.par_iter().for_each(|id| {
-            if let Err(_) = self.repo.delete_file(crate::global::FileType::Object, id) {
+            if self
+                .repo
+                .delete_file(crate::global::FileType::Object, id)
+                .is_err()
+            {
                 ui::cli::warning!("Could not delete pack file {}", id);
             }
         });

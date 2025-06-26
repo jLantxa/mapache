@@ -304,317 +304,314 @@ mod tests {
     }
 
     fn create_mock_snapshots() -> Vec<(ID, Snapshot)> {
-        let mut snapshots = Vec::new();
-
-        // Daily snapshots for a few days
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000000")
-                .unwrap(),
-            Snapshot {
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(21),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000000",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap(),
-            Snapshot {
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(1),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000001",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap(),
-            Snapshot {
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(2),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000002",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000003")
-                .unwrap(),
-            Snapshot {
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(3),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000003",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000004")
-                .unwrap(),
-            Snapshot {
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(4),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000004",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-
-        // Weekly snapshots (e.g., one per week, starting from week 1, 2023)
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000005")
-                .unwrap(),
-            Snapshot {
-                // End of Week 1
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(7),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000005",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000006")
-                .unwrap(),
-            Snapshot {
-                // End of Week 2
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(14),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000006",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000007")
-                .unwrap(),
-            Snapshot {
-                // End of Week 3
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 1)
-                            .unwrap()
-                            .and_hms_opt(0, 0, 0)
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    + Duration::days(21),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000007",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-
-        // Monthly snapshots
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000008")
-                .unwrap(),
-            Snapshot {
-                // End of Jan
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 1, 28)
-                            .unwrap()
-                            .and_hms_opt(23, 59, 59)
-                            .unwrap(),
+        let snapshots = vec![
+            // Daily snapshots for a few days
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000000")
+                    .unwrap(),
+                Snapshot {
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(21),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000000",
                     )
                     .unwrap(),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000008",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000009")
-                .unwrap(),
-            Snapshot {
-                // End of Feb
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 2, 28)
-                            .unwrap()
-                            .and_hms_opt(23, 59, 0)
-                            .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                    .unwrap(),
+                Snapshot {
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(1),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000001",
                     )
                     .unwrap(),
-                tree: ID::from_hex(
-                    "0000000000000000000000000000000000000000000000000000000000000009",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-
-        // Yearly snapshots
-        snapshots.push((
-            ID::from_hex("000000000000000000000000000000000000000000000000000000000000000A")
-                .unwrap(),
-            Snapshot {
-                // End of 2023
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2023, 12, 31)
-                            .unwrap()
-                            .and_hms_opt(23, 59, 0)
-                            .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+                    .unwrap(),
+                Snapshot {
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(2),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000002",
                     )
                     .unwrap(),
-                tree: ID::from_hex(
-                    "000000000000000000000000000000000000000000000000000000000000000A",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("000000000000000000000000000000000000000000000000000000000000000B")
-                .unwrap(),
-            Snapshot {
-                // End of 2024
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2024, 12, 31)
-                            .unwrap()
-                            .and_hms_opt(23, 59, 0)
-                            .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000003")
+                    .unwrap(),
+                Snapshot {
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(3),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000003",
                     )
                     .unwrap(),
-                tree: ID::from_hex(
-                    "000000000000000000000000000000000000000000000000000000000000000B",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
-        snapshots.push((
-            ID::from_hex("000000000000000000000000000000000000000000000000000000000000000C")
-                .unwrap(),
-            Snapshot {
-                // Current time (for testing KeepWithin)
-                timestamp: Local
-                    .from_local_datetime(
-                        &NaiveDate::from_ymd_opt(2025, 5, 25)
-                            .unwrap()
-                            .and_hms_opt(20, 29, 46)
-                            .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000004")
+                    .unwrap(),
+                Snapshot {
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(4),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000004",
                     )
                     .unwrap(),
-                tree: ID::from_hex(
-                    "000000000000000000000000000000000000000000000000000000000000000C",
-                )
-                .unwrap(),
-                root: PathBuf::from("/"),
-                paths: vec![],
-                description: None,
-                summary: Default::default(),
-            },
-        ));
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            // Weekly snapshots (e.g., one per week, starting from week 1, 2023)
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000005")
+                    .unwrap(),
+                Snapshot {
+                    // End of Week 1
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(7),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000005",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000006")
+                    .unwrap(),
+                Snapshot {
+                    // End of Week 2
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(14),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000006",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000007")
+                    .unwrap(),
+                Snapshot {
+                    // End of Week 3
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(21),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000007",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            // Monthly snapshots
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000008")
+                    .unwrap(),
+                Snapshot {
+                    // End of Jan
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 28)
+                                .unwrap()
+                                .and_hms_opt(23, 59, 59)
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000008",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000009")
+                    .unwrap(),
+                Snapshot {
+                    // End of Feb
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 2, 28)
+                                .unwrap()
+                                .and_hms_opt(23, 59, 0)
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000009",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            // Yearly snapshots
+            (
+                ID::from_hex("000000000000000000000000000000000000000000000000000000000000000A")
+                    .unwrap(),
+                Snapshot {
+                    // End of 2023
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 12, 31)
+                                .unwrap()
+                                .and_hms_opt(23, 59, 0)
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    tree: ID::from_hex(
+                        "000000000000000000000000000000000000000000000000000000000000000A",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("000000000000000000000000000000000000000000000000000000000000000B")
+                    .unwrap(),
+                Snapshot {
+                    // End of 2024
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2024, 12, 31)
+                                .unwrap()
+                                .and_hms_opt(23, 59, 0)
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    tree: ID::from_hex(
+                        "000000000000000000000000000000000000000000000000000000000000000B",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("000000000000000000000000000000000000000000000000000000000000000C")
+                    .unwrap(),
+                Snapshot {
+                    // Current time (for testing KeepWithin)
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2025, 5, 25)
+                                .unwrap()
+                                .and_hms_opt(20, 29, 46)
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    tree: ID::from_hex(
+                        "000000000000000000000000000000000000000000000000000000000000000C",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+        ];
 
         snapshots
     }

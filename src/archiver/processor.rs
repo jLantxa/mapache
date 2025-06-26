@@ -142,7 +142,7 @@ pub(crate) fn save_file(
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
     // Do not chunk if the file is smaller than the minimum chunk size
-    if node.metadata.size < global::defaults::MIN_CHUNK_SIZE.into() {
+    if node.metadata.size < global::defaults::MIN_CHUNK_SIZE {
         let data = std::fs::read(src_path)?;
         let (id, raw_size, encoded_size) =
             repo.save_blob(ObjectType::Data, data, global::SaveID::CalculateID)?;

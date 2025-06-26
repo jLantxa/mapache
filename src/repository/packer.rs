@@ -50,6 +50,12 @@ pub struct Packer {
     hasher: Hasher,
 }
 
+impl Default for Packer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Packer {
     /// Creates a new, empty `Packer` with default capacities.
     ///

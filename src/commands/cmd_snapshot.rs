@@ -94,7 +94,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let source_paths = &args.paths;
     let mut absolute_source_paths = Vec::new();
     for path in source_paths {
-        match std::fs::canonicalize(&path) {
+        match std::fs::canonicalize(path) {
             Ok(absolute_path) => absolute_source_paths.push(absolute_path),
             Err(e) => bail!(e),
         }
@@ -104,7 +104,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &args.exclude {
         let mut canonicalized_vec = Vec::new();
         for path in exclude_paths {
-            match std::fs::canonicalize(&path) {
+            match std::fs::canonicalize(path) {
                 Ok(absolute_path) => canonicalized_vec.push(absolute_path),
                 Err(e) => bail!(e),
             }
@@ -122,7 +122,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         PathBuf::new()
     } else if absolute_source_paths.len() == 1 {
         let single_source = absolute_source_paths.first().unwrap();
-        utils::extract_parent(single_source).unwrap_or(PathBuf::new())
+        utils::extract_parent(single_source).unwrap_or_default()
     } else {
         utils::calculate_lcp(&absolute_source_paths)
     };
@@ -154,7 +154,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
             }
             UseSnapshot::SnapshotId(id_hex) => {
-                let id = ID::from_hex(&id_hex)?;
+                let id = ID::from_hex(id_hex)?;
                 match &repo.load_snapshot(&id) {
                     Ok(snap) => {
                         ui::cli::log!("Using snapshot {:?} as parent", id);
@@ -306,10 +306,7 @@ fn show_final_report(
     if !args.dry_run {
         ui::cli::log!(
             "New snapshot created {}",
-            format!(
-                "{}",
-                &snapshot_id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
-            )
+            snapshot_id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN).to_string()
             .bold()
             .green()
         );

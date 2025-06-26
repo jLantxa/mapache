@@ -123,7 +123,7 @@ impl RepositoryBackend for Repository {
         let max_packer_size = global::defaults::MAX_PACK_SIZE;
         let pack_data_capacity = max_packer_size as usize;
         let pack_blob_capacity =
-            (pack_data_capacity as u64).div_ceil(global::defaults::AVG_CHUNK_SIZE as u64) as usize;
+            (pack_data_capacity as u64).div_ceil(global::defaults::AVG_CHUNK_SIZE) as usize;
 
         let data_packer = Arc::new(RwLock::new(Packer::with_capacity(
             pack_data_capacity,
@@ -188,12 +188,12 @@ impl RepositoryBackend for Repository {
 
         // Flush if the packer is considered full
         if packer.read().size() > self.max_packer_size {
-            let (index_raw_size, index_encoded_size) = self.flush_packer(&packer)?;
+            let (index_raw_size, index_encoded_size) = self.flush_packer(packer)?;
             raw_size += index_raw_size;
             encoded_size += index_encoded_size;
         }
 
-        Ok((id, raw_size as u64, encoded_size as u64))
+        Ok((id, raw_size, encoded_size))
     }
 
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
@@ -217,17 +217,17 @@ impl RepositoryBackend for Repository {
 
         let raw_size = data.len() as u64;
         let id = match save_id {
-            SaveID::CalculateID => ID::from_content(&data),
+            SaveID::CalculateID => ID::from_content(data),
             SaveID::WithID(id) => id,
         };
 
-        let data = self.secure_storage.encode(&data)?;
+        let data = self.secure_storage.encode(data)?;
         let encoded_size = data.len() as u64;
 
         let path = self.get_path(file_type, &id);
         self.save_with_rename(&path, &data)?;
 
-        Ok((id, raw_size as u64, encoded_size as u64))
+        Ok((id, raw_size, encoded_size))
     }
 
     fn load_file(&self, file_type: FileType, id: &ID) -> Result<Vec<u8>> {
@@ -306,21 +306,21 @@ impl RepositoryBackend for Repository {
     }
 
     fn load_manifest(&self) -> Result<Manifest> {
-        let manifest = self.backend.read(&Path::new(MANIFEST_PATH))?;
+        let manifest = self.backend.read(Path::new(MANIFEST_PATH))?;
         let manifest = self.secure_storage.decode(&manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
     }
 
     fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
-        let key_path = self.keys_path.join(&id.to_hex());
+        let key_path = self.keys_path.join(id.to_hex());
         let key = self.backend.read(&key_path)?;
         let key = SecureStorage::decompress(&key)?;
         let key = serde_json::from_slice(&key)?;
         Ok(key)
     }
 
-    fn find(&self, file_type: FileType, prefix: &String) -> Result<(ID, PathBuf)> {
+    fn find(&self, file_type: FileType, prefix: &str) -> Result<(ID, PathBuf)> {
         if prefix.len() > 2 * global::ID_LENGTH {
             // A hex string has 2 characters per byte.
             bail!(
@@ -522,7 +522,7 @@ impl Repository {
                 .file_name()
                 .expect("Could not read index file name")
                 .to_string_lossy()
-                .to_owned();
+                .clone();
             let id = ID::from_hex(&file_name)?;
             let index_file = self.backend.read(&file)?;
             let index_file = self.secure_storage.decode(&index_file)?;

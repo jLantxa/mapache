@@ -86,7 +86,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         args.path.clone().unwrap_or_default(),
         node,
         repo.as_ref(),
-        &args,
+        args,
     )
 }
 
@@ -116,7 +116,7 @@ fn ls_tree(
 ) -> Result<()> {
     tree.nodes.sort_by_key(|node| node.name.to_lowercase());
     for node in &tree.nodes {
-        println!("{}", node_to_string(&node, args.long, args.human_readable))
+        println!("{}", node_to_string(node, args.long, args.human_readable))
     }
 
     if args.recursive {
@@ -142,7 +142,7 @@ fn ls_tree(
                     println!("{}:", current_path.display());
                 }
                 for node in &tree.nodes {
-                    println!("{}", node_to_string(&node, args.long, args.human_readable))
+                    println!("{}", node_to_string(node, args.long, args.human_readable))
                 }
                 for node in tree.nodes.into_iter().rev() {
                     if node.tree.is_some() {
@@ -188,7 +188,7 @@ fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
             node_name_str
         )
     } else {
-        format!("{}", node_name_str)
+        node_name_str.to_string()
     }
 }
 

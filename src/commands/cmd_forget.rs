@@ -22,10 +22,11 @@ use chrono::{DateTime, Datelike, Duration, Local};
 use clap::{ArgGroup, Parser};
 
 use crate::backend::{make_dry_backend, new_backend_with_prompt};
+use crate::global::defaults::DEFAULT_GC_TOLERANCE;
 use crate::global::{FileType, ID};
 use crate::repository::RepositoryBackend;
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
-use crate::{repository, ui, utils};
+use crate::{commands, repository, ui, utils};
 
 use super::GlobalArgs;
 
@@ -39,7 +40,7 @@ pub struct CmdArgs {
     pub forget: Vec<String>,
 
     /// Keep the last N snapshots.
-    #[arg(long, help = "Keep the last N snapshots.", group = "retention_rules")]
+    #[arg(long, group = "retention_rules")]
     pub keep_last: Option<usize>,
 
     /// Keep snapshots within a specified duration (e.g., '1d', '2w', '3m', '4y', '5h', '6s').
@@ -47,20 +48,24 @@ pub struct CmdArgs {
     pub keep_within: Option<Duration>,
 
     /// Keep N yearly snapshots.
-    #[arg(long, help = "Keep N yearly snapshots.", group = "retention_rules")]
+    #[arg(long, group = "retention_rules")]
     pub keep_yearly: Option<usize>,
 
     /// Keep N monthly snapshots.
-    #[arg(long, help = "Keep N monthly snapshots.", group = "retention_rules")]
+    #[arg(long, group = "retention_rules")]
     pub keep_monthly: Option<usize>,
 
     /// Keep N weekly snapshots.
-    #[arg(long, help = "Keep N weekly snapshots.", group = "retention_rules")]
+    #[arg(long, group = "retention_rules")]
     pub keep_weekly: Option<usize>,
 
     /// Keep N daily snapshots.
-    #[arg(long, help = "Keep N daily snapshots.", group = "retention_rules")]
+    #[arg(long, group = "retention_rules")]
     pub keep_daily: Option<usize>,
+
+    /// Run the garbage collector after this command
+    #[arg(long = "gc")]
+    pub run_gc: bool,
 
     /// Perform a dry run: show which snapshots would be removed without actually removing them.
     #[arg(long)]
@@ -153,6 +158,16 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             "This would remove {}",
             utils::format_count(removed_count, "snapshot", "snapshots")
         );
+    }
+
+    // Run the garbage collector
+    if args.run_gc {
+        let gc_args = commands::cmd_gc::CmdArgs {
+            tolerance: DEFAULT_GC_TOLERANCE,
+            dry_run: args.dry_run,
+        };
+
+        commands::cmd_gc::run_with_repo(global_args, &gc_args, repo)?;
     }
 
     Ok(())

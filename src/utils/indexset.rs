@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 /// IndexSet is a set that can be enumerated by index.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct IndexSet<T>
 where
     T: Hash + Eq + Clone,
@@ -47,6 +47,27 @@ where
             self.map.insert(item, index);
             index
         }
+    }
+
+    pub fn remove(&mut self, item: &T) -> bool {
+        if let Some(_value_index) = self.map.remove(item) {
+            // TODO: Remove the value from the vector.
+            //
+            // This would require updating all values in the map since the vector
+            // was shifted after the item was removed. It is ok to leave it like
+            // this for now. The unremoved values are simply not used.
+            //
+            // self.values.remove(value_index);
+            //
+
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn contains(&self, value: &T) -> bool {
+        self.values.contains(value)
     }
 
     pub fn get_index(&self, item: &T) -> Option<&usize> {

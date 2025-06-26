@@ -39,9 +39,11 @@ pub(crate) fn request_password_with_confirmation(
 #[macro_export]
 macro_rules! log_with_level {
     ($min_level:expr, $($arg:tt)*) => {
-        let current_verbosity = $crate::global::global_opts().as_ref().unwrap().verbosity;
-        if current_verbosity >= $min_level {
-            println!($($arg)*)
+        {
+            let current_verbosity = $crate::global::global_opts().as_ref().unwrap().verbosity;
+            if current_verbosity >= $min_level {
+                println!($($arg)*)
+            }
         }
     };
 }
@@ -50,7 +52,7 @@ macro_rules! log_with_level {
 macro_rules! log_always {
     ($($arg:tt)*) => {
         println!($($arg)*)
-    };
+    }
 }
 
 #[macro_export]
@@ -76,28 +78,28 @@ macro_rules! warning {
             "\x1b[33m", // YELLOW
             "\x1b[0m",  // RESET
             format!($($arg)*)
-        );
+        )
     };
 }
 
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
-        $crate::ui::cli::log_with_level!(1, $($arg)*);
+        $crate::ui::cli::log_with_level!(1, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! verbose_1 {
     ($($arg:tt)*) => {
-        $crate::ui::cli::log_with_level!(2, $($arg)*);
+        $crate::ui::cli::log_with_level!(2, $($arg)*)
     };
 }
 
 #[macro_export]
 macro_rules! verbose_2 {
     ($($arg:tt)*) => {
-       $crate::ui::cli::log_with_level!(3, $($arg)*);
+       $crate::ui::cli::log_with_level!(3, $($arg)*)
     };
 }
 

@@ -114,9 +114,9 @@ impl Archiver {
             Option<StreamNode>,
             Option<StreamNode>,
             NodeDiff,
-        )>(arch.read_concurrency * 2);
+        )>(arch.read_concurrency);
         let (process_item_tx, process_item_rx) =
-            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(arch.read_concurrency * 2);
+            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(arch.read_concurrency);
 
         let error_flag = Arc::new(AtomicBool::new(false));
 
@@ -131,8 +131,8 @@ impl Archiver {
                     break;
                 }
 
-                if let Ok(diff) = diff_result {
-                    if let Err(e) = diff_tx.send(diff) {
+                if let Ok((path, prev, next, diff)) = diff_result {
+                    if let Err(e) = diff_tx.send((path, prev, next, diff)) {
                         error_flag_clone.store(true, Ordering::Release);
                         ui::cli::error!(
                             "Archiver diff thread errored sending diff: {:?}",
@@ -164,7 +164,7 @@ impl Archiver {
 
         let processor_thread = std::thread::spawn(move || {
             pool.scope(|s| {
-                while let Ok(diff_tuple) = diff_rx_clone.recv() {
+                while let Ok((path, prev, next, diff)) = diff_rx_clone.recv() {
                     if error_flag_clone.load(Ordering::Acquire) {
                         break;
                     }
@@ -176,16 +176,14 @@ impl Archiver {
                     let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
 
                     s.spawn(move |_| {
-                        let (item_path, _, _, _) = &diff_tuple;
+                        let stripped_path = path.strip_prefix(&inner_snapshot_root_path_clone).unwrap().to_path_buf();
                         inner_progress_reporter_clone.processing_file(
-                            item_path
-                                .strip_prefix(&inner_snapshot_root_path_clone)
-                                .unwrap()
-                                .to_path_buf(),
+                            stripped_path, diff
                         );
 
+
                         let processed_item_result = processor::process_item(
-                            diff_tuple,
+                            (path, prev, next, diff),
                             inner_repo_clone,
                             inner_progress_reporter_clone,
                         );

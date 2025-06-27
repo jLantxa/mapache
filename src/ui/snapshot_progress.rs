@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU32, AtomicU64},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -28,7 +28,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
 use crate::{
-    repository::snapshot::SnapshotSummary,
+    global::global_opts,
+    repository::{snapshot::SnapshotSummary, streamers::NodeDiff},
     ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
@@ -59,11 +60,14 @@ pub struct SnapshotProgressReporter {
     mp: MultiProgress,
     progress_bar: ProgressBar,
     file_spinners: Vec<ProgressBar>,
+
+    verbosity: u32,
 }
 
 impl SnapshotProgressReporter {
     pub fn new(expected_items: u64, expected_size: u64, num_processed_items: usize) -> Self {
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
+
         let progress_bar = mp.add(ProgressBar::new(expected_size));
 
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));
@@ -90,7 +94,7 @@ impl SnapshotProgressReporter {
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] {processed_bytes_formatted}  [{processed_items_formated}]  [ETA: {custom_eta}]"
+                    "{msg}[{custom_elapsed}] [{bar:25.cyan/white}] {processed_bytes_formatted}  [{processed_items_formated}]  [ETA: {custom_eta}]"
                 )
                 .unwrap()
                 .progress_chars("=> ")
@@ -100,13 +104,13 @@ impl SnapshotProgressReporter {
                     let _ = w.write_str(&custom_elapsed);
                 })
                 .with_key("processed_bytes_formatted", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let bytes = processed_bytes_arc_clone.load(std::sync::atomic::Ordering::SeqCst);
+                    let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
                     let s = format!("{} / {}", utils::format_size(bytes), utils::format_size(expected_size));
 
                     let _ = w.write_str(&s);
                 })
                 .with_key("processed_items_formated", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let item_count = processed_items_count_arc_clone.load(std::sync::atomic::Ordering::SeqCst);
+                    let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
                     let s = format!("{} / {} items",item_count, expected_items);
 
                     let _ = w.write_str(&s);
@@ -152,6 +156,7 @@ impl SnapshotProgressReporter {
             mp,
             progress_bar,
             file_spinners,
+            verbosity: global_opts().as_ref().unwrap().verbosity,
         }
     }
 
@@ -172,129 +177,107 @@ impl SnapshotProgressReporter {
         let _ = self.mp.clear();
     }
 
-    pub fn processing_file(&self, path: PathBuf) {
-        self.processing_items.write().push_back(path);
-        self.update_processing_items();
+    pub fn processing_file(&self, path: PathBuf, diff: NodeDiff) {
+        if diff != NodeDiff::Deleted {
+            self.processing_items.write().push_back(path.clone());
+            self.update_processing_items();
+        }
+
+        if self.verbosity >= 3 {
+            self.progress_bar
+                .println(format!("{:?} {}", diff, path.display()));
+        }
     }
 
     pub fn processed_file(&self, path: &Path) {
-        let idx = self.processing_items.read().iter().position(|p| *p == path);
+        let idx = self.processing_items.read().iter().position(|p| p.eq(path));
         if let Some(i) = idx {
             self.processing_items.write().remove(i);
-            self.processed_items_count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.processed_items_count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     pub fn processed_bytes(&self, bytes: u64) {
-        self.processed_bytes
-            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        self.processed_bytes.fetch_add(bytes, Ordering::Relaxed);
         self.progress_bar.inc(bytes);
     }
 
     #[inline]
     pub fn written_data_bytes(&self, raw: u64, encoded: u64) {
-        self.raw_bytes
-            .fetch_add(raw, std::sync::atomic::Ordering::Relaxed);
-        self.encoded_bytes
-            .fetch_add(encoded, std::sync::atomic::Ordering::Relaxed);
+        self.raw_bytes.fetch_add(raw, Ordering::Relaxed);
+        self.encoded_bytes.fetch_add(encoded, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn written_meta_bytes(&self, raw: u64, encoded: u64) {
-        self.meta_raw_bytes
-            .fetch_add(raw, std::sync::atomic::Ordering::Relaxed);
+        self.meta_raw_bytes.fetch_add(raw, Ordering::Relaxed);
         self.meta_encoded_bytes
-            .fetch_add(encoded, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(encoded, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn new_file(&self) {
-        self.new_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.new_files.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn changed_file(&self) {
-        self.changed_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.changed_files.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn unchanged_file(&self) {
-        self.unchanged_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.unchanged_files.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn deleted_file(&self) {
-        self.deleted_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.deleted_files.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn new_dir(&self) {
-        self.new_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.new_dirs.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn changed_dir(&self) {
-        self.changed_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.changed_dirs.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn deleted_dir(&self) {
-        self.deleted_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.deleted_dirs.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn unchanged_dir(&self) {
-        self.unchanged_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.unchanged_dirs.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn get_summary(&self) -> SnapshotSummary {
-        let total_raw_bytes = self.raw_bytes.load(std::sync::atomic::Ordering::SeqCst)
-            + self
-                .meta_raw_bytes
-                .load(std::sync::atomic::Ordering::SeqCst);
-        let total_encoded_bytes = self.encoded_bytes.load(std::sync::atomic::Ordering::SeqCst)
-            + self
-                .meta_encoded_bytes
-                .load(std::sync::atomic::Ordering::SeqCst);
+        let total_raw_bytes =
+            self.raw_bytes.load(Ordering::SeqCst) + self.meta_raw_bytes.load(Ordering::SeqCst);
+        let total_encoded_bytes = self.encoded_bytes.load(Ordering::SeqCst)
+            + self.meta_encoded_bytes.load(Ordering::SeqCst);
 
         SnapshotSummary {
-            processed_items_count: self
-                .processed_items_count
-                .load(std::sync::atomic::Ordering::SeqCst),
-            processed_bytes: self
-                .processed_bytes
-                .load(std::sync::atomic::Ordering::SeqCst),
-            raw_bytes: self.raw_bytes.load(std::sync::atomic::Ordering::SeqCst),
-            encoded_bytes: self.encoded_bytes.load(std::sync::atomic::Ordering::SeqCst),
-            meta_raw_bytes: self
-                .meta_raw_bytes
-                .load(std::sync::atomic::Ordering::SeqCst),
-            meta_encoded_bytes: self
-                .meta_encoded_bytes
-                .load(std::sync::atomic::Ordering::SeqCst),
+            processed_items_count: self.processed_items_count.load(Ordering::SeqCst),
+            processed_bytes: self.processed_bytes.load(Ordering::SeqCst),
+            raw_bytes: self.raw_bytes.load(Ordering::SeqCst),
+            encoded_bytes: self.encoded_bytes.load(Ordering::SeqCst),
+            meta_raw_bytes: self.meta_raw_bytes.load(Ordering::SeqCst),
+            meta_encoded_bytes: self.meta_encoded_bytes.load(Ordering::SeqCst),
             total_raw_bytes,
             total_encoded_bytes,
-            new_files: self.new_files.load(std::sync::atomic::Ordering::SeqCst),
-            changed_files: self.changed_files.load(std::sync::atomic::Ordering::SeqCst),
-            unchanged_files: self
-                .unchanged_files
-                .load(std::sync::atomic::Ordering::SeqCst),
-            deleted_files: self.deleted_files.load(std::sync::atomic::Ordering::SeqCst),
-            new_dirs: self.new_dirs.load(std::sync::atomic::Ordering::SeqCst),
-            changed_dirs: self.changed_dirs.load(std::sync::atomic::Ordering::SeqCst),
-            unchanged_dirs: self
-                .unchanged_dirs
-                .load(std::sync::atomic::Ordering::SeqCst),
-            deleted_dirs: self.deleted_dirs.load(std::sync::atomic::Ordering::SeqCst),
+            new_files: self.new_files.load(Ordering::SeqCst),
+            changed_files: self.changed_files.load(Ordering::SeqCst),
+            unchanged_files: self.unchanged_files.load(Ordering::SeqCst),
+            deleted_files: self.deleted_files.load(Ordering::SeqCst),
+            new_dirs: self.new_dirs.load(Ordering::SeqCst),
+            changed_dirs: self.changed_dirs.load(Ordering::SeqCst),
+            unchanged_dirs: self.unchanged_dirs.load(Ordering::SeqCst),
+            deleted_dirs: self.deleted_dirs.load(Ordering::SeqCst),
         }
     }
 }

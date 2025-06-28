@@ -105,7 +105,7 @@ pub fn new_backend_with_prompt(global_args: &GlobalArgs) -> Result<Arc<dyn Stora
                     passphrase: None,
                 }
             } else {
-                let password_prompt = format!("{}@{}'s password", username, host);
+                let password_prompt = format!("{username}@{host}'s password");
                 let password = ui::cli::request_password(&password_prompt);
                 sftp::AuthMethod::Password(password)
             };

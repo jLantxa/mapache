@@ -72,12 +72,8 @@ impl StorageBackend for LocalFS {
         })?;
 
         // Seek to the specified offset
-        file.seek(SeekFrom::Start(offset)).with_context(|| {
-            format!(
-                "Could not seek to offset {} in local file {:?}",
-                offset, path
-            )
-        })?;
+        file.seek(SeekFrom::Start(offset))
+            .with_context(|| format!("Could not seek to offset {offset} in local file {path:?}"))?;
 
         // Read the specified number of bytes
         let mut buffer = vec![0; length as usize];

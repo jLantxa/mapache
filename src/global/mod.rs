@@ -129,11 +129,10 @@ impl ID {
             let high_nibble_char = chars.next().unwrap(); // Should be OK due to length check
             let low_nibble_char = chars.next().unwrap(); // Should be OK due to length check
 
-            let high_nibble = Self::hex_char_to_byte(high_nibble_char).with_context(|| {
-                format!("Invalid hexadecimal character: '{}'", high_nibble_char)
-            })?;
+            let high_nibble = Self::hex_char_to_byte(high_nibble_char)
+                .with_context(|| format!("Invalid hexadecimal character: '{high_nibble_char}'"))?;
             let low_nibble = Self::hex_char_to_byte(low_nibble_char)
-                .with_context(|| format!("Invalid hexadecimal character: '{}'", low_nibble_char))?;
+                .with_context(|| format!("Invalid hexadecimal character: '{low_nibble_char}'"))?;
 
             *byte = (high_nibble << 4) | low_nibble;
         }

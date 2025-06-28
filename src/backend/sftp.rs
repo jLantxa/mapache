@@ -49,7 +49,7 @@ pub struct SftpConnection {
 impl SftpConnection {
     /// Creates a new SFTP connection.
     pub fn new(username: &str, host: &str, port: u16, auth_method: &AuthMethod) -> Result<Self> {
-        let addr = format!("{}:{}", host, port);
+        let addr = format!("{host}:{port}");
         let tcp = TcpStream::connect(&addr).with_context(|| "Failed to connect to SFTP server")?;
         let mut session = Session::new().with_context(|| "Failed to create SSH session")?;
         session.set_tcp_stream(tcp);
@@ -255,7 +255,7 @@ impl SftpBackend {
             }
         } else {
             sftp.mkdir(path, 0o755)
-                .with_context(|| format!("Failed to create directory {:?}' in sftp backend", path))
+                .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))
         }
     }
 
@@ -263,7 +263,7 @@ impl SftpBackend {
         if self.exists_exact(path, sftp) {
             let metadata = sftp
                 .stat(path)
-                .with_context(|| format!("Failed to get metadata for path: {:?}", path))?;
+                .with_context(|| format!("Failed to get metadata for path: {path:?}"))?;
             if metadata.is_dir() {
                 return Ok(());
             } else {
@@ -281,7 +281,7 @@ impl SftpBackend {
         }
 
         sftp.mkdir(path, 0o755)
-            .with_context(|| format!("Failed to create directory {:?}' in sftp backend", path))
+            .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))
     }
 
     fn remove_dir_all_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
@@ -291,30 +291,30 @@ impl SftpBackend {
 
         let metadata = sftp
             .lstat(path)
-            .with_context(|| format!("Failed to get metadata for path: {:?}", path))?;
+            .with_context(|| format!("Failed to get metadata for path: {path:?}"))?;
 
         if metadata.is_file() {
             sftp.unlink(path)
-                .with_context(|| format!("Failed to remove file {:?}' in sftp backend", path))?;
+                .with_context(|| format!("Failed to remove file {path:?}' in sftp backend"))?;
             return Ok(());
         }
 
         let entries = sftp
             .readdir(path)
-            .with_context(|| format!("Could not list directory {:?}' in sftp backend", path))?;
+            .with_context(|| format!("Could not list directory {path:?}' in sftp backend"))?;
 
         for (entry_path, entry_metadata) in entries {
             if entry_metadata.is_dir() {
                 self.remove_dir_all_internal(&entry_path, sftp)?;
             } else {
                 sftp.unlink(&entry_path).with_context(|| {
-                    format!("Failed to remove file {:?}' in sftp backend", entry_path)
+                    format!("Failed to remove file {entry_path:?}' in sftp backend")
                 })?;
             }
         }
 
         sftp.rmdir(path)
-            .with_context(|| format!("Failed to remove dir {:?}' in sftp backend", path))
+            .with_context(|| format!("Failed to remove dir {path:?}' in sftp backend"))
     }
 }
 
@@ -334,14 +334,11 @@ impl StorageBackend for SftpBackend {
 
         let conn = self.pool.get()?;
         let mut file = conn.sftp().open(full_path).with_context(|| {
-            format!(
-                "Failed to open file {:?}\' in sftp backend for reading",
-                path
-            )
+            format!("Failed to open file {path:?}\' in sftp backend for reading")
         })?;
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)
-            .with_context(|| format!("Failed to read file {:?}\' in sftp backend", path))?;
+            .with_context(|| format!("Failed to read file {path:?}\' in sftp backend"))?;
         Ok(contents)
     }
 
@@ -350,10 +347,7 @@ impl StorageBackend for SftpBackend {
 
         let conn = self.pool.get()?;
         let mut file = conn.sftp().open(full_path).with_context(|| {
-            format!(
-                "Failed to open file {:?}\' in sftp backend for ranged reading",
-                path
-            )
+            format!("Failed to open file {path:?}\' in sftp backend for ranged reading")
         })?;
 
         // Read into preallocated vector
@@ -364,7 +358,7 @@ impl StorageBackend for SftpBackend {
         }
 
         file.read_exact(&mut contents)
-            .with_context(|| format!("Failed to seek read file {:?}\' in sftp backend", path))?;
+            .with_context(|| format!("Failed to seek read file {path:?}\' in sftp backend"))?;
         Ok(contents)
     }
 
@@ -375,9 +369,9 @@ impl StorageBackend for SftpBackend {
         let mut file = conn
             .sftp()
             .create(&full_path)
-            .with_context(|| format!("Failed to create file for writing: {:?}", path))?;
+            .with_context(|| format!("Failed to create file for writing: {path:?}"))?;
         file.write_all(contents)
-            .with_context(|| format!("Failed to write to file: {:?}", path))?;
+            .with_context(|| format!("Failed to write to file: {path:?}"))?;
         Ok(())
     }
 
@@ -392,12 +386,7 @@ impl StorageBackend for SftpBackend {
                 &full_path_from_to,
                 Some(RenameFlags::all()),
             )
-            .with_context(|| {
-                format!(
-                    "Failed to rename {:?}\' to {:?}\' in sftp backend",
-                    from, to
-                )
-            })
+            .with_context(|| format!("Failed to rename {from:?}\' to {to:?}\' in sftp backend"))
     }
 
     fn remove_file(&self, file_path: &Path) -> Result<()> {
@@ -406,7 +395,7 @@ impl StorageBackend for SftpBackend {
         let conn = self.pool.get()?;
         conn.sftp()
             .unlink(&full_path)
-            .with_context(|| format!("Failed to remove file {:?}\' in sftp backend", file_path))
+            .with_context(|| format!("Failed to remove file {file_path:?}\' in sftp backend"))
     }
 
     fn create_dir(&self, path: &Path) -> Result<()> {
@@ -431,7 +420,7 @@ impl StorageBackend for SftpBackend {
         let entries = conn
             .sftp()
             .readdir(full_path)
-            .with_context(|| format!("Could not list directory {:?}\' in sftp backend", path))?;
+            .with_context(|| format!("Could not list directory {path:?}\' in sftp backend"))?;
 
         Ok(entries
             .iter()
@@ -445,7 +434,7 @@ impl StorageBackend for SftpBackend {
         let conn = self.pool.get()?;
         conn.sftp()
             .rmdir(&full_path)
-            .with_context(|| format!("Failed to remove dir {:?}\' in sftp backend", path))
+            .with_context(|| format!("Failed to remove dir {path:?}\' in sftp backend"))
     }
 
     fn remove_dir_all(&self, path: &Path) -> Result<()> {

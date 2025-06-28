@@ -212,7 +212,7 @@ impl SerializedNodeStreamer {
 
         if let Some(id) = root_id {
             let mut tree = Tree::load_from_repo(repo.as_ref(), &id)
-                .with_context(|| format!("Failed to load root tree with ID {}", id))?;
+                .with_context(|| format!("Failed to load root tree with ID {id}"))?;
 
             tree.nodes
                 .sort_by(|first, second| first.name.cmp(&second.name));
@@ -469,8 +469,7 @@ pub fn find_serialized_node(
     for (i, component) in components.iter().enumerate() {
         let tree = Tree::load_from_repo(repo, &current_tree_id).with_context(|| {
             format!(
-                "Failed to load tree with ID {} for path component '{}'",
-                current_tree_id, component
+                "Failed to load tree with ID {current_tree_id} for path component '{component}'"
             )
         })?;
 

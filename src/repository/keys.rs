@@ -73,9 +73,9 @@ pub fn retrieve_master_key(
     match keyfile_path {
         Some(path) => {
             let file = std::fs::File::open(path)
-                .with_context(|| format!("Could not open KeyFile at {:?}", path))?;
+                .with_context(|| format!("Could not open KeyFile at {path:?}"))?;
             let keyfile: KeyFile = serde_json::from_reader(file)
-                .with_context(|| format!("KeyFile at {:?} is invalid", path))?;
+                .with_context(|| format!("KeyFile at {path:?} is invalid"))?;
 
             decode_master_key(password, keyfile)
         }

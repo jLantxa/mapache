@@ -14,10 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, str::FromStr};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{Error, Result, anyhow, bail};
 use clap::{ArgGroup, Parser, Subcommand};
+
+use crate::{
+    global::ID,
+    repository::{
+        RepositoryBackend,
+        snapshot::{Snapshot, SnapshotStreamer},
+    },
+};
 
 pub mod cmd_cat;
 pub mod cmd_forget;
@@ -127,7 +135,26 @@ impl std::fmt::Display for UseSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UseSnapshot::Latest => write!(f, "latest"),
-            UseSnapshot::SnapshotId(id) => write!(f, "{}", id),
+            UseSnapshot::SnapshotId(id) => write!(f, "{id}"),
+        }
+    }
+}
+
+pub(crate) fn find_use_snapshot(
+    repo: Arc<dyn RepositoryBackend>,
+    use_snapshot: &UseSnapshot,
+) -> Result<Option<(ID, Snapshot)>> {
+    match use_snapshot {
+        UseSnapshot::Latest => {
+            let mut snapshots = SnapshotStreamer::new(repo.clone())?;
+            Ok(snapshots.latest())
+        }
+        UseSnapshot::SnapshotId(id_hex) => {
+            let id = ID::from_hex(id_hex)?;
+            match &repo.load_snapshot(&id) {
+                Ok(snap) => Ok(Some((id, snap.clone()))),
+                Err(_) => bail!("Snapshot {:?} not found", id),
+            }
         }
     }
 }

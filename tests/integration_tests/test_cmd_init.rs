@@ -64,12 +64,7 @@ mod tests {
         assert!(repo_path.join("snapshots").exists());
         assert!(repo_path.join("objects").exists());
         for i in 0x00..=0xff {
-            assert!(
-                repo_path
-                    .join("objects")
-                    .join(format!("{:02x}", i))
-                    .exists()
-            );
+            assert!(repo_path.join("objects").join(format!("{i:02x}")).exists());
         }
 
         let keys = repo_path.join("keys").read_dir()?;
@@ -119,12 +114,7 @@ mod tests {
         assert!(repo_path.join("snapshots").exists());
         assert!(repo_path.join("objects").exists());
         for i in 0x00..=0xff {
-            assert!(
-                repo_path
-                    .join("objects")
-                    .join(format!("{:02x}", i))
-                    .exists()
-            );
+            assert!(repo_path.join("objects").join(format!("{i:02x}")).exists());
         }
 
         assert!(keyfile_path.exists());

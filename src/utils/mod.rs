@@ -82,7 +82,7 @@ pub fn format_size(bytes: u64) -> String {
     } else if bytes >= size::KiB {
         format!("{:.2} KiB", (bytes as f64) / (size::KiB as f64))
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -92,9 +92,9 @@ where
     T: std::fmt::Display + PartialEq + From<u8>,
 {
     if count == T::from(1) {
-        format!("{} {}", count, singular)
+        format!("{count} {singular}")
     } else {
-        format!("{} {}", count, plural)
+        format!("{count} {plural}")
     }
 }
 
@@ -102,7 +102,7 @@ where
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        s.push_str(&format!("{:02x}", byte));
+        s.push_str(&format!("{byte:02x}"));
     }
     s
 }
@@ -113,7 +113,7 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
 /// Returns an `Err` if the `SystemTime` is before the Unix epoch.
 pub fn pretty_print_system_time(time: SystemTime, format_str: Option<&str>) -> Result<String> {
     time.duration_since(UNIX_EPOCH)
-        .with_context(|| format!("SystemTime {:?} is before UNIX EPOCH", time))?;
+        .with_context(|| format!("SystemTime {time:?} is before UNIX EPOCH"))?;
 
     let format = format_str.unwrap_or("%Y-%m-%d %H:%M:%S");
 
@@ -279,21 +279,21 @@ pub fn pretty_print_duration(duration: std::time::Duration) -> String {
     let mut parts = Vec::with_capacity(2);
 
     if days > 0 {
-        parts.push(format!("{}d", days));
+        parts.push(format!("{days}d"));
     }
     if (hours > 0 || (days > 0 && minutes > 0) || (days > 0 && seconds > 0 && parts.is_empty()))
         && parts.len() < 2
     {
-        parts.push(format!("{}h", hours));
+        parts.push(format!("{hours}h"));
     }
     if (minutes > 0 || (hours > 0 && seconds > 0 && parts.is_empty())) && parts.len() < 2 {
-        parts.push(format!("{}m", minutes));
+        parts.push(format!("{minutes}m"));
     }
     if (seconds > 0 || (minutes > 0 && milliseconds > 0 && parts.is_empty())) && parts.len() < 2 {
-        parts.push(format!("{}s", seconds));
+        parts.push(format!("{seconds}s"));
     }
     if parts.is_empty() && milliseconds > 0 {
-        parts.push(format!("{}ms", milliseconds));
+        parts.push(format!("{milliseconds}ms"));
     }
 
     if parts.is_empty() {
@@ -330,9 +330,9 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
                 ));
             }
 
-            let num = current_num_str.parse::<i64>().with_context(|| {
-                format!("Failed to parse number before unit '{}' in \"{}\"", c, s)
-            })?;
+            let num = current_num_str
+                .parse::<i64>()
+                .with_context(|| format!("Failed to parse number before unit '{c}' in \"{s}\""))?;
 
             match c {
                 's' => total_duration += Duration::seconds(num),

@@ -22,8 +22,7 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::GlobalArgs,
-    global::FileType,
+    commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
     repository::{
         self, RepositoryBackend,
         streamers::find_serialized_node,
@@ -35,8 +34,8 @@ use crate::{
 #[derive(Args, Debug)]
 pub struct CmdArgs {
     /// Snapshot ID (or prefix)
-    #[clap(value_parser, required = true)]
-    pub snapshot: String,
+    #[clap(value_parser, default_value_t = UseSnapshot::Latest)]
+    pub snapshot: UseSnapshot,
 
     /// Path
     #[clap(long, value_parser)]
@@ -61,9 +60,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
-    let snapshot = {
-        let (id, _) = repo.find(FileType::Snapshot, &args.snapshot)?;
-        repo.load_snapshot(&id)?
+    let (_snapshot_id, snapshot) = {
+        match find_use_snapshot(repo.clone(), &args.snapshot) {
+            Ok(Some((id, snap))) => (id, snap),
+            Ok(None) | Err(_) => bail!("Snapshot not found"),
+        }
     };
 
     let node: Node = match &args.path {

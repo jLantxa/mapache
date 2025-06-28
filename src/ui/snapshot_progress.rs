@@ -111,7 +111,7 @@ impl SnapshotProgressReporter {
                 })
                 .with_key("processed_items_formated", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
                     let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
-                    let s = format!("{} / {} items",item_count, expected_items);
+                    let s = format!("{item_count} / {expected_items} items");
 
                     let _ = w.write_str(&s);
                 })

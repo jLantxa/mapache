@@ -16,15 +16,15 @@
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
 
 use crate::{
     backend::{make_dry_backend, new_backend_with_prompt},
-    commands::{GlobalArgs, UseSnapshot},
-    global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::{self, RepositoryBackend, snapshot::SnapshotStreamer},
+    commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
+    global::defaults::SHORT_SNAPSHOT_ID_LEN,
+    repository::{self, RepositoryBackend},
     restorer::{Resolution, Restorer},
     ui::{self, cli, restore_progress::RestoreProgressReporter},
     utils,
@@ -81,20 +81,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
-    let (snapshot_id, snapshot) = match &args.snapshot {
-        UseSnapshot::Latest => {
-            let mut snapshots = SnapshotStreamer::new(repo.clone())?;
-            snapshots.latest()
-        }
-        UseSnapshot::SnapshotId(id_hex) => {
-            let (id, _) = repo.find(FileType::Snapshot, id_hex)?;
-            match repo.load_snapshot(&id) {
-                Ok(s) => Some((id.clone(), s)),
-                Err(_) => None,
-            }
-        }
-    }
-    .with_context(|| "No snapshot was found")?;
+    let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
+        Ok(Some((id, snap))) => (id, snap),
+        Ok(None) | Err(_) => bail!("Snapshot not found"),
+    };
 
     ui::cli::log!(
         "Restoring snapshot {}",

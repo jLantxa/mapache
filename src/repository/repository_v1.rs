@@ -99,7 +99,7 @@ impl RepositoryBackend for Repository {
         backend.create_dir(&objects_path)?;
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
         for n in 0x00..num_folders {
-            backend.create_dir(&objects_path.join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n)))?;
+            backend.create_dir(&objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}")))?;
         }
 
         backend.create_dir(&snapshot_path)?;
@@ -256,13 +256,13 @@ impl RepositoryBackend for Repository {
 
         self.backend
             .remove_file(&snapshot_path)
-            .with_context(|| format!("Could not remove snapshot {}", id))
+            .with_context(|| format!("Could not remove snapshot {id}"))
     }
 
     fn load_snapshot(&self, id: &ID) -> Result<Snapshot> {
         let snapshot = self
             .load_file(FileType::Snapshot, id)
-            .with_context(|| format!("No snapshot with ID \'{}\' exists", id))?;
+            .with_context(|| format!("No snapshot with ID \'{id}\' exists"))?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
         Ok(snapshot)
     }
@@ -416,7 +416,7 @@ impl RepositoryBackend for Repository {
         for n in 0..num_folders {
             let dir = self
                 .objects_path
-                .join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n));
+                .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
             let files = self.backend.read_dir(&dir)?;
             for path in files {
@@ -469,7 +469,7 @@ impl Repository {
                 for n in 0x00..(1 << (4 * OBJECTS_DIR_FANOUT)) {
                     let dir_name = self
                         .objects_path
-                        .join(format!("{:0>OBJECTS_DIR_FANOUT$x}", n));
+                        .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
                     let sub_files = self.backend.read_dir(&dir_name)?;
                     for f in sub_files.into_iter() {

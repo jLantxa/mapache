@@ -28,12 +28,9 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
+    commands::find_use_snapshot,
     global::{self, ID, SaveID, global_opts},
-    repository::{
-        self, RepositoryBackend,
-        snapshot::{Snapshot, SnapshotStreamer},
-        streamers::FSNodeStreamer,
-    },
+    repository::{self, RepositoryBackend, snapshot::Snapshot, streamers::FSNodeStreamer},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
         snapshot_progress::SnapshotProgressReporter,
@@ -133,36 +130,16 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("Full scan");
             None
         }
-        false => match &args.parent {
-            UseSnapshot::Latest => {
-                let mut snapshots = SnapshotStreamer::new(repo.clone())?;
-                let s = snapshots.latest();
-                match &s {
-                    Some((id, snap)) => {
-                        ui::cli::log!(
-                            "Using last snapshot {} as parent",
-                            &id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
-                                .bold()
-                                .yellow()
-                        );
-                        Some(snap.clone())
-                    }
-                    None => {
-                        ui::cli::warning!("No previous snapshots found. Doing full scan.");
-                        None
-                    }
-                }
+        false => match find_use_snapshot(repo.clone(), &args.parent) {
+            Ok(Some((id, snap))) => {
+                ui::cli::log!("Using snapshot {:?} as parent", id);
+                Some(snap)
             }
-            UseSnapshot::SnapshotId(id_hex) => {
-                let id = ID::from_hex(id_hex)?;
-                match &repo.load_snapshot(&id) {
-                    Ok(snap) => {
-                        ui::cli::log!("Using snapshot {:?} as parent", id);
-                        Some(snap.clone())
-                    }
-                    Err(_) => bail!("Snapshot {:?} not found", id),
-                }
+            Ok(None) => {
+                ui::cli::warning!("No previous snapshots found. Doing full scan.");
+                None
             }
+            Err(_) => bail!("Parent snapshot not found"),
         },
     };
 

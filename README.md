@@ -70,12 +70,14 @@ The second milestone consists of adding features related to repository maintenan
 
 After that, the plan is to expand the functionality with new options, features, optimizations, and ergonomics. Choosing a name for the tool is also something that should happen at some time –I hope–.
 
+**This milestone is complete.**
+
 ### Other planned features
 
 This is a non-exhaustive list of features that I want to add:
 
 -   [x] `ssh` authentication with public key for the `sftp` backend.
--   [ ] FUSE (I don't even know how this works).
+-   [ ] FUSE mount (I don't even know how this works).
 
 ### Others
 

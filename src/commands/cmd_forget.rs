@@ -90,7 +90,7 @@ pub enum RetentionRule {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(&global_args.repo)?;
+    let backend = new_backend_with_prompt(global_args)?;
 
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);

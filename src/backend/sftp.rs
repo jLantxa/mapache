@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ssh2::{RenameFlags, Session, Sftp};
 
@@ -31,6 +31,15 @@ use super::StorageBackend;
 
 const MAX_CONNECTION_POOL_SIZE: usize = 5;
 
+pub enum AuthMethod {
+    Password(String),
+    PubKey {
+        pubkey: Option<PathBuf>,
+        private_key: PathBuf,
+        passphrase: Option<String>,
+    },
+}
+
 /// Represents a single SFTP connection, holding its SSH session and SFTP client.
 pub struct SftpConnection {
     _session: Arc<Session>,
@@ -39,7 +48,7 @@ pub struct SftpConnection {
 
 impl SftpConnection {
     /// Creates a new SFTP connection.
-    pub fn new(username: &str, host: &str, port: u16, password: &str) -> Result<Self> {
+    pub fn new(username: &str, host: &str, port: u16, auth_method: &AuthMethod) -> Result<Self> {
         let addr = format!("{}:{}", host, port);
         let tcp = TcpStream::connect(&addr).with_context(|| "Failed to connect to SFTP server")?;
         let mut session = Session::new().with_context(|| "Failed to create SSH session")?;
@@ -47,9 +56,9 @@ impl SftpConnection {
         session
             .handshake()
             .with_context(|| "Failed to perform SSH handshake")?;
-        session
-            .userauth_password(username, password)
-            .with_context(|| "Failed to authenticate with password")?;
+
+        Self::authenticate(&session, username, auth_method)?;
+
         session.set_keepalive(true, 30);
         session.set_compress(false);
 
@@ -71,6 +80,32 @@ impl SftpConnection {
     pub fn sftp_mut(&mut self) -> &mut Sftp {
         &mut self.sftp
     }
+
+    fn authenticate(session: &Session, username: &str, auth_method: &AuthMethod) -> Result<()> {
+        // Authenticate
+        match auth_method {
+            AuthMethod::Password(password) => session
+                .userauth_password(username, password)
+                .with_context(|| "Failed to authenticate with password"),
+            AuthMethod::PubKey {
+                pubkey,
+                private_key,
+                passphrase,
+            } => session
+                .userauth_pubkey_file(
+                    username,
+                    pubkey.as_deref(),
+                    private_key,
+                    passphrase.as_deref(),
+                )
+                .map_err(|e| {
+                    anyhow!(format!(
+                        "Failed to authenticate with pubkey: {}",
+                        e.to_string()
+                    ))
+                }),
+        }
+    }
 }
 
 /// A pool of SFTP connections.
@@ -86,21 +121,24 @@ impl SftpConnectionPool {
         username: String,
         host: String,
         port: u16,
-        password: String,
+        auth_method: &AuthMethod,
     ) -> Result<Self> {
         let mut connections = Vec::new();
 
         const MAX_CONNECTION_RETRIES: u32 = 3;
         let mut connection_retry_count = 0;
         for _ in 0..capacity {
-            match SftpConnection::new(&username, &host, port, &password) {
+            match SftpConnection::new(&username, &host, port, auth_method) {
                 Ok(conn) => connections.push(conn),
-                Err(_) => {
+                Err(e) => {
                     // We could not establish a connection. That could mean that we reached a limit
                     // on the server side or it was a punctual error. We can try again.
 
                     if connection_retry_count < MAX_CONNECTION_RETRIES {
-                        ui::cli::warning!("Failed to establish SFTP connection. Retrying...");
+                        ui::cli::warning!(
+                            "Failed to establish SFTP connection: {}. Retrying...",
+                            e.to_string()
+                        );
                         connection_retry_count += 1;
                     } else {
                         ui::cli::warning!("Max connection retries exceeded.");
@@ -180,14 +218,14 @@ impl SftpBackend {
         username: String,
         host: String,
         port: u16,
-        password: String,
+        auth_method: AuthMethod,
     ) -> Result<Self> {
         let pool = Arc::new(SftpConnectionPool::new(
             MAX_CONNECTION_POOL_SIZE,
             username,
             host,
             port,
-            password,
+            &auth_method,
         )?);
 
         Ok(Self { repo_path, pool })

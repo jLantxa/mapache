@@ -53,6 +53,8 @@ mod tests {
             key: None,
             quiet: true,
             verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
 
         // Init repo
@@ -144,6 +146,8 @@ mod tests {
             key: None,
             quiet: true,
             verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
 
         // Init repo
@@ -214,6 +218,8 @@ mod tests {
             key: None,
             quiet: true,
             verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
         set_global_opts_with_args(&global);
 
@@ -308,6 +314,8 @@ mod tests {
             key: None,
             quiet: true,
             verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
         set_global_opts_with_args(&global);
 

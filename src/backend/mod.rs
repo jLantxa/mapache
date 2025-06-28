@@ -24,7 +24,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::backend::sftp::SftpBackend;
+use crate::{backend::sftp::SftpBackend, commands::GlobalArgs};
 use anyhow::{Result, anyhow, bail};
 use dry::DryBackend;
 use localfs::LocalFS;
@@ -92,16 +92,30 @@ pub fn make_dry_backend(backend: Arc<dyn StorageBackend>, dry: bool) -> Arc<dyn 
     }
 }
 
-pub fn new_backend_with_prompt(url: &str) -> Result<Arc<dyn StorageBackend>> {
-    let backend_url = BackendUrl::from(url)?;
+pub fn new_backend_with_prompt(global_args: &GlobalArgs) -> Result<Arc<dyn StorageBackend>> {
+    let backend_url = BackendUrl::from(&global_args.repo)?;
 
     match backend_url {
         BackendUrl::Local(repo_path) => Ok(Arc::new(LocalFS::new(repo_path))),
         BackendUrl::Sftp(username, host, port, repo_path) => {
-            let password_prompt = format!("{}@{}'s password", username, host);
-            let password = ui::cli::request_password(&password_prompt);
+            let auth_method = if let Some(private_key) = &global_args.ssh_privatekey {
+                sftp::AuthMethod::PubKey {
+                    pubkey: global_args.ssh_pubkey.clone(),
+                    private_key: private_key.to_path_buf(),
+                    passphrase: None,
+                }
+            } else {
+                let password_prompt = format!("{}@{}'s password", username, host);
+                let password = ui::cli::request_password(&password_prompt);
+                sftp::AuthMethod::Password(password)
+            };
+
             Ok(Arc::new(SftpBackend::new(
-                repo_path, username, host, port, password,
+                repo_path,
+                username,
+                host,
+                port,
+                auth_method,
             )?))
         }
     }

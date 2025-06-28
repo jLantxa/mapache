@@ -46,6 +46,8 @@ mod tests {
             key: None,
             quiet: true,
             verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
         let args = CmdArgs {
             repository_version: 1,
@@ -99,6 +101,8 @@ mod tests {
             key: Some(keyfile_path.clone()),
             quiet: true,
             verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
         let args = CmdArgs {
             repository_version: 1,

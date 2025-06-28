@@ -80,6 +80,14 @@ pub struct GlobalArgs {
     #[clap(short, long, value_parser)]
     pub repo: String,
 
+    /// SSH public key
+    #[clap(long, value_parser)]
+    pub ssh_pubkey: Option<PathBuf>,
+
+    /// SSH private key
+    #[clap(long, value_parser)]
+    pub ssh_privatekey: Option<PathBuf>,
+
     /// Path to a file to read the repository password
     #[clap(short = 'p', long, value_parser)]
     pub password_file: Option<PathBuf>,

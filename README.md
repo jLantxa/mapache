@@ -74,7 +74,7 @@ After that, the plan is to expand the functionality with new options, features, 
 
 This is a non-exhaustive list of features that I want to add:
 
--   [ ] `ssh` authentication with public key for the `sftp` backend.
+-   [x] `ssh` authentication with public key for the `sftp` backend.
 -   [ ] FUSE (I don't even know how this works).
 
 ### Others

@@ -51,6 +51,8 @@ mod tests {
             key: None,
             quiet: true,
             verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
 
         // Init repo

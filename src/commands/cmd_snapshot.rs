@@ -113,6 +113,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     absolute_source_paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
 
+    // Sort the source paths before passing them to the Archiver.
+    // This sorting is not necessary for the Archival process, but the paths
+    // will appear sorted in the Snapshot metadata.
+    absolute_source_paths.sort_unstable();
+
     // Extract the snapshot root path
     let snapshot_root_path = if absolute_source_paths.is_empty() {
         ui::cli::warning!("No source paths provided. Creating empty snapshot.");

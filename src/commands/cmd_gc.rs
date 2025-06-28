@@ -37,11 +37,13 @@ use crate::{
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {
-    /// Garbage tolerance
+    /// Garbage tolerance. The percentage [0-100] of garbage to tolerate in a
+    /// pack file before repacking.
     #[clap(short, long, default_value_t = DEFAULT_GC_TOLERANCE)]
     pub tolerance: f32,
 
-    /// Dry run
+    /// Dry run. Displays what this command would do without
+    /// making changes to the repository.
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
 }

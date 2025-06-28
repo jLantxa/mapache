@@ -16,6 +16,7 @@
 
 use anyhow::Result;
 use clap::Args;
+use colored::Colorize;
 
 use crate::backend::new_backend_with_prompt;
 use crate::repository::{LATEST_REPOSITORY_VERSION, RepoVersion};
@@ -42,6 +43,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         args.repository_version,
         backend,
     )?;
+
+    ui::cli::warning!(
+        "{}\n{}",
+        "This password is the key to your repository and the only way to access your data.",
+        "Don't forget it.".bold().green()
+    );
 
     Ok(())
 }

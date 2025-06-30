@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::{DateTime, Datelike, Duration, Local};
 use clap::{ArgGroup, Parser};
 
@@ -47,20 +47,20 @@ pub struct CmdArgs {
     #[arg(long, value_parser = utils::parse_duration_string, group = "retention_rules")]
     pub keep_within: Option<Duration>,
 
-    /// Keep N yearly snapshots.
-    #[arg(long, group = "retention_rules")]
+    /// Keep N yearly snapshots. N must be greater than 1 or "all".
+    #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     pub keep_yearly: Option<usize>,
 
-    /// Keep N monthly snapshots.
-    #[arg(long, group = "retention_rules")]
+    /// Keep N monthly snapshots. N must be greater than 1 or "all".
+    #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     pub keep_monthly: Option<usize>,
 
-    /// Keep N weekly snapshots.
-    #[arg(long, group = "retention_rules")]
+    /// Keep N weekly snapshots. N must be greater than 1 or "all".
+    #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     pub keep_weekly: Option<usize>,
 
-    /// Keep N daily snapshots.
-    #[arg(long, group = "retention_rules")]
+    /// Keep N daily snapshots. N must be greater than 1 or "all".
+    #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     pub keep_daily: Option<usize>,
 
     /// Run the garbage collector after this command
@@ -86,6 +86,24 @@ pub enum RetentionRule {
     KeepWeekly(usize),
     /// Keep N daily snapshots.
     KeepDaily(usize),
+}
+
+pub fn parse_retention_number(s: &str) -> Result<usize> {
+    if s == "all" {
+        Ok(usize::MAX)
+    } else {
+        let n = s.parse::<isize>();
+        match n {
+            Ok(num) => {
+                if num > 0 {
+                    Ok(num as usize)
+                } else {
+                    bail!("N must be greater than 0")
+                }
+            }
+            Err(_) => bail!("{} is not a number", s),
+        }
+    }
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -215,15 +233,13 @@ pub fn apply_retention_rules(
                     let year = snapshot.timestamp.year();
                     kept_years.entry(year).or_insert(id.clone());
                 }
-                let mut count = 0;
-                for (_, id) in kept_years.iter().rev() {
+                for (i, (_, id)) in kept_years.iter().rev().enumerate() {
                     // Iterate years in reverse
-                    if count < *n {
-                        snapshots_to_keep.insert(id.clone());
-                        count += 1;
-                    } else {
+                    if i >= *n {
                         break;
                     }
+
+                    snapshots_to_keep.insert(id.clone());
                 }
             }
             RetentionRule::KeepMonthly(n) => {
@@ -233,15 +249,13 @@ pub fn apply_retention_rules(
                     let month = snapshot.timestamp.month();
                     kept_months.entry((year, month)).or_insert(id.clone());
                 }
-                let mut count = 0;
-                for (_, id) in kept_months.iter().rev() {
+                for (i, (_, id)) in kept_months.iter().rev().enumerate() {
                     // Iterate months in reverse
-                    if count < *n {
-                        snapshots_to_keep.insert(id.clone());
-                        count += 1;
-                    } else {
+                    if i >= *n {
                         break;
                     }
+
+                    snapshots_to_keep.insert(id.clone());
                 }
             }
             RetentionRule::KeepWeekly(n) => {
@@ -252,14 +266,12 @@ pub fn apply_retention_rules(
                     let week = iso_week.week();
                     kept_weeks.entry((year, week)).or_insert(id.clone());
                 }
-                let mut count = 0;
-                for (_, id) in kept_weeks.iter().rev() {
-                    if count < *n {
-                        snapshots_to_keep.insert(id.clone());
-                        count += 1;
-                    } else {
+                for (i, (_, id)) in kept_weeks.iter().rev().enumerate() {
+                    if i >= *n {
                         break;
                     }
+
+                    snapshots_to_keep.insert(id.clone());
                 }
             }
             RetentionRule::KeepDaily(n) => {
@@ -270,14 +282,12 @@ pub fn apply_retention_rules(
                     let day = snapshot.timestamp.day();
                     kept_days.entry((year, month, day)).or_insert(id.clone());
                 }
-                let mut count = 0;
-                for (_, id) in kept_days.iter().rev() {
-                    if count < *n {
-                        snapshots_to_keep.insert(id.clone());
-                        count += 1;
-                    } else {
+                for (i, (_, id)) in kept_days.iter().rev().enumerate() {
+                    if i >= *n {
                         break;
                     }
+
+                    snapshots_to_keep.insert(id.clone());
                 }
             }
         }
@@ -462,6 +472,54 @@ mod tests {
                         + Duration::days(14),
                     tree: ID::from_hex(
                         "0000000000000000000000000000000000000000000000000000000000000006",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000106")
+                    .unwrap(),
+                Snapshot {
+                    // Week 3
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(15),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000106",
+                    )
+                    .unwrap(),
+                    root: PathBuf::from("/"),
+                    paths: vec![],
+                    description: None,
+                    summary: Default::default(),
+                },
+            ),
+            (
+                ID::from_hex("0000000000000000000000000000000000000000000000000000000000000206")
+                    .unwrap(),
+                Snapshot {
+                    // Week 3
+                    timestamp: Local
+                        .from_local_datetime(
+                            &NaiveDate::from_ymd_opt(2023, 1, 1)
+                                .unwrap()
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        + Duration::days(16),
+                    tree: ID::from_hex(
+                        "0000000000000000000000000000000000000000000000000000000000000206",
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
@@ -722,9 +780,9 @@ mod tests {
 
         let expected_ids: HashSet<ID> = [
             // 2023
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000005")
+            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000106")
                 .unwrap(),
-            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000006")
+            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000206")
                 .unwrap(),
             ID::from_hex("0000000000000000000000000000000000000000000000000000000000000007")
                 .unwrap(),

@@ -142,7 +142,7 @@ impl Plan {
         self.repo.index().write().rewrite(&self.obsolete_packs);
 
         let repack_bar =
-            ProgressBar::with_draw_target(Some(self.unused_packs.len() as u64), default_bar_draw_target())
+            ProgressBar::with_draw_target(Some(repack_blob_info.len() as u64), default_bar_draw_target())
                 .with_style(ProgressStyle::default_bar().template(
                     "[{custom_elapsed}] [{bar:25.cyan/white}] Repacking blobs: {pos}/{len}  [ETA: {custom_eta}]",
                 )

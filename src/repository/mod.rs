@@ -189,21 +189,25 @@ fn init_common(
     let master_key = generate_new_master_key();
     let keyfile =
         generate_key_file(&pass, master_key.clone()).with_context(|| "Could not generate key")?;
-    let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
-    let keyfile_id = ID::from_content(&keyfile_json);
-    match keyfile_path {
-        Some(p) => std::fs::write(p, keyfile_json.as_bytes())?,
-        None => {
-            let p = keys_path.join(keyfile_id.to_hex());
-            backend.write(&p, keyfile_json.as_bytes())?;
-        }
-    }
-
     let secure_storage = Arc::new(
         SecureStorage::build()
             .with_compression(DEFAULT_COMPRESSION_LEVEL)
             .with_key(master_key),
     );
+
+    let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
+    let keyfile_json = SecureStorage::compress(keyfile_json.as_bytes(), DEFAULT_COMPRESSION_LEVEL)?;
+    let keyfile_id = ID::from_content(&keyfile_json);
+    match keyfile_path {
+        Some(p) => {
+            std::fs::write(p, &keyfile_json)?;
+        }
+        None => {
+            let p = keys_path.join(keyfile_id.to_hex());
+
+            backend.write(&p, &keyfile_json)?;
+        }
+    }
 
     Ok(secure_storage)
 }

@@ -72,9 +72,9 @@ pub fn retrieve_master_key(
 ) -> Result<Vec<u8>> {
     match keyfile_path {
         Some(path) => {
-            let file = std::fs::File::open(path)
-                .with_context(|| format!("Could not open KeyFile at {path:?}"))?;
-            let keyfile: KeyFile = serde_json::from_reader(file)
+            let keyfile = std::fs::read(path)?;
+            let keyfile = SecureStorage::decompress(&keyfile)?;
+            let keyfile: KeyFile = serde_json::from_slice(&keyfile)
                 .with_context(|| format!("KeyFile at {path:?} is invalid"))?;
 
             decode_master_key(password, keyfile)
@@ -95,8 +95,9 @@ pub fn retrieve_master_key(
                 }
 
                 // Load keyfile
-                let keyfile_str = backend.read(&path)?;
-                let keyfile: KeyFile = match serde_json::from_slice(keyfile_str.as_slice()) {
+                let keyfile = backend.read(&path)?;
+                let keyfile = SecureStorage::decompress(&keyfile)?;
+                let keyfile: KeyFile = match serde_json::from_slice(keyfile.as_slice()) {
                     Ok(kf) => kf,
                     Err(e) => {
                         ui::cli::warning!("Failed to parse keyfile at {}: {}", path.display(), e);

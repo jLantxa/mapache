@@ -45,6 +45,13 @@ pub struct Snapshot {
     pub summary: SnapshotSummary,
 }
 
+impl Snapshot {
+    #[inline]
+    pub fn size(&self) -> u64 {
+        self.summary.processed_bytes
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SnapshotSummary {
     pub processed_items_count: u64, // Number of files processed

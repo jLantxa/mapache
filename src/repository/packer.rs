@@ -91,6 +91,7 @@ impl Packer {
     }
 
     /// Returns `true` if the packer contains no blob data and no descriptors.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty() && self.blob_descriptors.is_empty()
     }

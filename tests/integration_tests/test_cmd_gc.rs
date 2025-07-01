@@ -68,7 +68,7 @@ mod tests {
             ],
             exclude: None,
             description: None,
-            full_scan: false,
+            rescan: false,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
             write_concurrency: 5,
@@ -85,7 +85,7 @@ mod tests {
             ],
             exclude: None,
             description: None,
-            full_scan: false,
+            rescan: false,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
             write_concurrency: 5,
@@ -105,6 +105,7 @@ mod tests {
             keep_daily: None,
             run_gc: false,
             dry_run: false,
+            tolerance: 0.0_f32,
         };
         commands::cmd_forget::run(&global, &forget_args)
             .with_context(|| "Failed to run cmd_forget")?;

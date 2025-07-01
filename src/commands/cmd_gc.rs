@@ -69,6 +69,7 @@ pub fn run_with_repo(
     let tolerance = args.tolerance.clamp(0.0, 100.0) / 100.0;
 
     let start = Instant::now();
+    ui::cli::log!();
 
     let plan = gc::scan(repo.clone(), tolerance)?;
 
@@ -97,6 +98,8 @@ pub fn run_with_repo(
         "Unused packs".bold().to_string(),
         plan.unused_packs.len().to_string(),
     ]);
+
+    ui::cli::log!();
     ui::cli::log!("{}", "Plan summary:".bold());
     ui::cli::log!("{}", plan_table.render());
 

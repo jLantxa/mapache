@@ -134,7 +134,7 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
                 .with_timezone(&Local)
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string(),
-            utils::format_size(snapshot.summary.processed_bytes),
+            utils::format_size(snapshot.size()),
         ]);
     }
 

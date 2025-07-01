@@ -1,4 +1,4 @@
-// [backup] is an incremental backup tool
+// mapache is an incremental backup tool
 // Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
@@ -40,7 +40,7 @@ pub mod cmd_snapshot;
 #[derive(Parser, Debug)]
 #[clap(
     version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
-    about = "[backup] is a de-duplicating, incremental backup tool",
+    about = "mapache is a de-duplicating, incremental backup tool",
 
 )]
 pub struct Cli {

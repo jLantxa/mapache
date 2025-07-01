@@ -1,9 +1,11 @@
-# backup
+# mapache
 
 A **work-in-progress** de-duplicating incremental **backup** tool written in Rust.
 
 **Note:**
 This software is still a work in progress. The format of the repository is unstable and subject to change, which could render different versions incompatible. It has not been thoroughly tested. For the time being, you should not use this tool for anything important.
+
+<img src="doc/res/mapache.png" alt="mapache logo" width="200"/>
 
 ---
 
@@ -17,19 +19,19 @@ This software is still a work in progress. The format of the repository is unsta
 
 ## About
 
-`[[backup]]` *–placeholder name for the tool (I don't have a name yet)–* is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to back up your data to a local file system or a remote machine. I started this project because the previous backup tool I was using no longer met my needs. I decided to create my own tool and learn something in the process.
+`mapache` is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to back up your data to a local file system or a remote machine. I started this project because the previous backup tool I was using no longer met my needs. I decided to create my own tool and learn something in the process.
 
-`[[backup]]` is still in an early development stage. As such, it is still barely functional, it is missing a lot of features, it is unstable, etc. But more importantly, it is a personal project and a tool I'm making to cover my own backup needs.
+`mapache` is still in an early development stage. As such, it is still barely functional, it is missing a lot of features, it is unstable, etc. But more importantly, it is a personal project and a tool I'm making to cover my own backup needs.
 
 The language of choice is `Rust`. I didn't choose `Rust` for any particular reason other than it is a language I'm learning now and it seemed sufficiently safe, performant, and ergonomic to use it.
 
-`[[backup]]` is inspired in its design by other similar tools like `git`, [`BorgBackup`](https://www.borgbackup.org/) and [`restic`](https://restic.net/). It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking. Each 'backup' is saved as a `Snapshot`. `Snapshots` are independent of each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
+`mapache` is inspired in its design by other similar tools like `git`, [`BorgBackup`](https://www.borgbackup.org/) and [`restic`](https://restic.net/). It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking. Each 'backup' is saved as a `Snapshot`. `Snapshots` are independent of each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
 
 To provide data protection, all data stored in the repository is encrypted and authenticated using 256-bit AES-GCM, with Argon2 for key derivation.
 
 ### Guiding Principles
 
-The development of `[[backup]]` is guided by the following core principles:
+The development of `mapache` is guided by the following core principles:
 
 -   **Generality**: The tool should function effectively across various contexts, from small to large repositories and diverse machine specifications.
 
@@ -39,12 +41,12 @@ The development of `[[backup]]` is guided by the following core principles:
 
 -   **Security**: All data in the repository must be encrypted and authenticated.
 
--   **Self-Containment**: I'm aiming for `[[backup]]` to be entirely self-contained, with all dependencies statically linked. Even if this means longer compilation times and a larger executable, it offers the significant benefit of being executable from a USB stick on a fresh installation without an internet connection in a hard time.
+-   **Self-Containment**: I'm aiming for `mapache` to be entirely self-contained, with all dependencies statically linked. Even if this means longer compilation times and a larger executable, it offers the significant benefit of being executable from a USB stick on a fresh installation without an internet connection in a hard time.
 
 
 ## Roadmap
 
-`[[backup]]` is still in early development. I have two milestones currently planned.
+`mapache` is still in early development. I have two milestones currently planned.
 
 ### `Snapshots` milestone *(complete)*
 
@@ -86,7 +88,7 @@ Right now, I am working on a functional prototype that works so I can start doin
 ## Getting started
 
 ### Building with `cargo`
-To compile `[[backup]]` from source you just need to install `Rust` on your machine and build it with cargo:
+To compile `mapache` from source you just need to install `Rust` on your machine and build it with cargo:
 
 ```
 cargo build
@@ -101,9 +103,9 @@ You need to install `perl` in our system in order to compile the `openssl` sourc
 If you run the executable, you will be greeted by something like this:
 
 ```
-[backup] is a de-duplicating, incremental backup tool
+[mapache] is a de-duplicating, incremental backup tool
 
-Usage: backup [OPTIONS] --repo <REPO> <COMMAND>
+Usage: mapache [OPTIONS] --repo <REPO> <COMMAND>
 
 Commands:
   init      Initialize a new repository

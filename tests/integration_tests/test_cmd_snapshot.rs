@@ -1,4 +1,4 @@
-// [backup] is an incremental backup tool
+// mapache is an incremental backup tool
 // Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
@@ -20,7 +20,7 @@ mod tests {
     use std::path::PathBuf;
 
     use anyhow::{Context, Result};
-    use backup::{
+    use mapache::{
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         global::set_global_opts_with_args,
     };
@@ -87,7 +87,7 @@ mod tests {
             dry_run: false,
             include: None,
             exclude: None,
-            resolution: backup::restorer::Resolution::Skip,
+            resolution: mapache::restorer::Resolution::Skip,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -188,7 +188,7 @@ mod tests {
             dry_run: false,
             include: None,
             exclude: None,
-            resolution: backup::restorer::Resolution::Skip,
+            resolution: mapache::restorer::Resolution::Skip,
         };
 
         let restore_result = commands::cmd_restore::run(&global, &restore_args);
@@ -253,7 +253,7 @@ mod tests {
             dry_run: false,
             include: None,
             exclude: None,
-            resolution: backup::restorer::Resolution::Skip,
+            resolution: mapache::restorer::Resolution::Skip,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -366,7 +366,7 @@ mod tests {
             dry_run: false,
             include: None,
             exclude: None,
-            resolution: backup::restorer::Resolution::Skip,
+            resolution: mapache::restorer::Resolution::Skip,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;

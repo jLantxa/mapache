@@ -139,36 +139,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
-name = "backup"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "base64",
- "blake3",
- "chrono",
- "clap",
- "colored",
- "crossbeam-channel",
- "dialoguer",
- "fastcdc",
- "filetime",
- "indicatif",
- "num_cpus",
- "parking_lot",
- "rayon",
- "secrecy",
- "serde",
- "serde_json",
- "ssh2",
- "tar",
- "tempfile",
- "xz2",
- "zstd",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -687,6 +657,36 @@ dependencies = [
  "cc",
  "libc",
  "pkg-config",
+]
+
+[[package]]
+name = "mapache"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "base64",
+ "blake3",
+ "chrono",
+ "clap",
+ "colored",
+ "crossbeam-channel",
+ "dialoguer",
+ "fastcdc",
+ "filetime",
+ "indicatif",
+ "num_cpus",
+ "parking_lot",
+ "rayon",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "ssh2",
+ "tar",
+ "tempfile",
+ "xz2",
+ "zstd",
 ]
 
 [[package]]

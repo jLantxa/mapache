@@ -1,4 +1,4 @@
-// [backup] is an incremental backup tool
+// mapache is an incremental backup tool
 // Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use backup::{commands, global, ui};
+use mapache::{commands, global, ui};
 
 use anyhow::Result;
 use clap::Parser;

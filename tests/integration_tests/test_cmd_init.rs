@@ -1,4 +1,4 @@
-// [backup] is an incremental backup tool
+// mapache is an incremental backup tool
 // Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
@@ -19,7 +19,7 @@
 mod tests {
     use std::sync::Arc;
 
-    use backup::{
+    use mapache::{
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, cmd_init::CmdArgs},
         global::set_global_opts_with_args,

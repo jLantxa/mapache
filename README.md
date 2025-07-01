@@ -80,6 +80,9 @@ This is a non-exhaustive list of features that I want to add:
 
 -   [x] `ssh` authentication with public key for the `sftp` backend.
 -   [ ] FUSE mount (I don't even know how this works).
+-   [ ] `amend` command to remove files from existing snapshots and modify metadata.
+-   [ ] `diff` command to show differences between snapshots
+-   [ ] Key managment.
 
 ### Others
 

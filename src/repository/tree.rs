@@ -175,6 +175,10 @@ impl Metadata {
 impl Node {
     /// Build a `Node` from any path on disk.
     pub fn from_path(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            bail!("{:?} does not exist", path)
+        }
+
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())

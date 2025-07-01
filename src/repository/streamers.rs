@@ -91,11 +91,18 @@ impl FSNodeStreamer {
 
     // Get all children sorted in lexicographical order.
     fn get_children_sorted(dir: &Path) -> Result<Vec<PathBuf>> {
-        let mut children: Vec<_> = std::fs::read_dir(dir)?
-            .map(|res| res.map(|e| e.path()))
-            .collect::<Result<_, _>>()?;
-        children.sort_by(|first, second| first.file_name().cmp(&second.file_name()));
-        Ok(children)
+        match std::fs::read_dir(dir) {
+            Ok(read_dir) => {
+                let mut children: Vec<PathBuf> = read_dir
+                    .map(|res| res.map(|e| e.path()))
+                    .collect::<Result<_, _>>()?;
+                children.sort_by(|first, second| first.file_name().cmp(&second.file_name()));
+                Ok(children)
+            }
+            Err(e) => {
+                bail!("Cannot read {:?}: {}", dir, e.to_string())
+            }
+        }
     }
 }
 

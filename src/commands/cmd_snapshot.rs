@@ -93,7 +93,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     for path in source_paths {
         match std::fs::canonicalize(path) {
             Ok(absolute_path) => absolute_source_paths.push(absolute_path),
-            Err(e) => bail!(e),
+            Err(e) => bail!("{:?}: {}", path, e.to_string()),
         }
     }
 
@@ -103,7 +103,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         for path in exclude_paths {
             match std::fs::canonicalize(path) {
                 Ok(absolute_path) => canonicalized_vec.push(absolute_path),
-                Err(e) => bail!(e),
+                Err(e) => bail!("{:?}: {}", path, e.to_string()),
             }
         }
         Some(canonicalized_vec)
@@ -289,7 +289,6 @@ fn show_final_report(
     ]);
     ui::cli::log!("{}", table.render());
 
-    ui::cli::log!();
     if !args.dry_run {
         ui::cli::log!(
             "New snapshot created {}",
@@ -339,6 +338,4 @@ fn show_final_report(
             .to_string(),
     ]);
     ui::cli::log!("{}", data_table.render());
-
-    ui::cli::log!();
 }

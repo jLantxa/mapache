@@ -18,10 +18,11 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Result, bail};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
@@ -29,8 +30,7 @@ use crate::{
     repository::{
         RepositoryBackend, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer,
     },
-    ui::{self, default_bar_draw_target},
-    utils,
+    ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
 };
 
 pub struct Plan {
@@ -68,16 +68,40 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     let mut pack_garbage: HashMap<ID, u64> = HashMap::new();
 
     // Find obsolete packs and blobs in index
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} Finding obsolete blobs: {pos}")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(Duration::from_millis(
+        (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+    ));
     for (id, locator) in repo.index().read().iter_ids() {
         if !plan.referenced_blobs.contains(id) {
             pack_garbage
                 .entry(locator.pack_id)
                 .and_modify(|size| *size += locator.length)
                 .or_insert(locator.length);
+            spinner.inc(1);
         }
     }
+    spinner.finish_and_clear();
+    ui::cli::log!(
+        "Found {} obsolete blobs in {} packs",
+        spinner.position(),
+        pack_garbage.len()
+    );
 
     // Check garbage levels
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} Checking garbage levels...")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
         if (garbage_bytes as f32 / MAX_PACK_SIZE as f32) > tolerance {
             plan.obsolete_packs.insert(pack_id);
@@ -85,6 +109,7 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
             plan.tolerated_packs.insert(pack_id);
         }
     }
+    spinner.finish_and_clear();
 
     // No index files to remove if there are no obsolete packs
     if plan.obsolete_packs.is_empty() {
@@ -101,18 +126,18 @@ impl Plan {
         self.repo
             .init_pack_saver(global::defaults::DEFAULT_WRITE_CONCURRENCY);
 
-        let unused_pack_delete_bar =
-            ProgressBar::with_draw_target(Some(self.unused_packs.len() as u64), default_bar_draw_target())
-                .with_style(ProgressStyle::default_bar().template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting unused packs: {pos}/{len}  [ETA: {custom_eta}]",
+        let unused_pack_delete_bar = ProgressBar::with_draw_target(
+            Some(self.unused_packs.len() as u64),
+            default_bar_draw_target(),
+        )
+        .with_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting unused packs: {pos}/{len}",
                 )
                 .unwrap()
-                .progress_chars("=> ")
-                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let elapsed = state.elapsed();
-                    let custom_elapsed= utils::pretty_print_duration(elapsed);
-                    let _ = w.write_str(&custom_elapsed);
-                }));
+                .progress_chars("=> "),
+        );
 
         for id in &self.unused_packs {
             self.repo.delete_file(global::FileType::Object, id)?;
@@ -141,18 +166,16 @@ impl Plan {
         // without creating the snapshot.
         self.repo.index().write().rewrite(&self.obsolete_packs);
 
-        let repack_bar =
-            ProgressBar::with_draw_target(Some(repack_blob_info.len() as u64), default_bar_draw_target())
-                .with_style(ProgressStyle::default_bar().template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] Repacking blobs: {pos}/{len}  [ETA: {custom_eta}]",
-                )
+        let repack_bar = ProgressBar::with_draw_target(
+            Some(repack_blob_info.len() as u64),
+            default_bar_draw_target(),
+        )
+        .with_style(
+            ProgressStyle::default_bar()
+                .template("[{custom_elapsed}] [{bar:25.cyan/white}] Repacking blobs: {pos}/{len}")
                 .unwrap()
-                .progress_chars("=> ")
-                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let elapsed = state.elapsed();
-                    let custom_elapsed= utils::pretty_print_duration(elapsed);
-                    let _ = w.write_str(&custom_elapsed);
-                }));
+                .progress_chars("=> "),
+        );
 
         const REPACK_CONCURRENCY: usize = 4;
         let pool = rayon::ThreadPoolBuilder::new()
@@ -197,15 +220,11 @@ impl Plan {
         let index_delete_bar =
             ProgressBar::with_draw_target(Some(self.index_ids.len() as u64), default_bar_draw_target())
                 .with_style(ProgressStyle::default_bar().template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting old index files: {pos}/{len}  [ETA: {custom_eta}]",
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting old index files: {pos}/{len}",
                 )
                 .unwrap()
                 .progress_chars("=> ")
-                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let elapsed = state.elapsed();
-                    let custom_elapsed= utils::pretty_print_duration(elapsed);
-                    let _ = w.write_str(&custom_elapsed);
-                }));
+            );
 
         self.index_ids.par_iter().for_each(|id| {
             let _ = self.repo.delete_file(crate::global::FileType::Index, id);
@@ -221,15 +240,11 @@ impl Plan {
         let obsolete_pack_delete_bar =
             ProgressBar::with_draw_target(Some(self.obsolete_packs.len() as u64), default_bar_draw_target())
                 .with_style(ProgressStyle::default_bar().template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting obsolete pack files: {pos}/{len}  [ETA: {custom_eta}]",
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting obsolete pack files: {pos}/{len}",
                 )
                 .unwrap()
                 .progress_chars("=> ")
-                .with_key("custom_elapsed", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let elapsed = state.elapsed();
-                    let custom_elapsed= utils::pretty_print_duration(elapsed);
-                    let _ = w.write_str(&custom_elapsed);
-                }));
+            );
 
         self.obsolete_packs.par_iter().for_each(|id| {
             let _ = self.repo.delete_file(crate::global::FileType::Object, id);
@@ -254,6 +269,17 @@ fn get_referenced_blobs_and_packs(
 
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
 
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} Searching referenced blobs: {pos}")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(Duration::from_millis(
+        (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+    ));
+
     for (_snapshot_id, snapshot) in snapshot_streamer {
         let tree_id = snapshot.tree;
         let (pack_id, _, _, _) = repo.index().read().get(&tree_id).unwrap();
@@ -269,6 +295,7 @@ fn get_referenced_blobs_and_packs(
                     // Tree blob
                     if let Some(tree) = stream_node.node.tree {
                         referenced_blobs.insert(tree.clone());
+                        spinner.inc(1);
 
                         match repo.index().read().get(&tree) {
                             None => {
@@ -285,6 +312,7 @@ fn get_referenced_blobs_and_packs(
                     } else if let Some(blobs) = stream_node.node.blobs {
                         for blob_id in blobs {
                             referenced_blobs.insert(blob_id.clone());
+                            spinner.inc(1);
 
                             match repo.index().read().get(&blob_id) {
                                 None => {
@@ -303,6 +331,9 @@ fn get_referenced_blobs_and_packs(
             }
         }
     }
+
+    spinner.finish_and_clear();
+    ui::cli::log!("Found {} referenced blobs", referenced_blobs.len());
 
     Ok((referenced_blobs, referenced_packs))
 }

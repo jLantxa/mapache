@@ -29,7 +29,7 @@ use crate::{
     archiver::Archiver,
     backend::{make_dry_backend, new_backend_with_prompt},
     commands::find_use_snapshot,
-    global::{self, ID, SaveID, global_opts},
+    global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, global_opts},
     repository::{self, RepositoryBackend, snapshot::Snapshot, streamers::FSNodeStreamer},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
@@ -57,8 +57,8 @@ pub struct CmdArgs {
     pub description: Option<String>,
 
     /// Force a complete analysis of all files and directories
-    #[clap(long, group = "scan_mode")]
-    pub full_scan: bool,
+    #[clap(long = "no-parent", group = "scan_mode")]
+    pub rescan: bool,
 
     /// Use a snapshot as parent. This snapshot will be the base when analyzing differences.
     #[clap(long, group = "scan_mode",value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest )]
@@ -130,14 +130,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     ui::cli::log!();
-    let parent_snapshot = match args.full_scan {
+    let parent_snapshot = match args.rescan {
         true => {
             ui::cli::log!("Full scan");
             None
         }
         false => match find_use_snapshot(repo.clone(), &args.parent) {
             Ok(Some((id, snap))) => {
-                ui::cli::log!("Using snapshot {:?} as parent", id);
+                ui::cli::log!(
+                    "Using snapshot {} as parent",
+                    id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
+                );
                 Some(snap)
             }
             Ok(None) => {
@@ -167,7 +170,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .tick_chars(SPINNER_TICK_CHARS),
     );
     spinner.set_message("Scanning filesystem...");
-    spinner.enable_steady_tick(Duration::from_millis(100));
+    spinner.enable_steady_tick(Duration::from_millis(
+        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+    ));
 
     // Scan the filesystem to collect stats about the targets
     let mut num_files = 0;

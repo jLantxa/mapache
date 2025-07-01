@@ -20,12 +20,14 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use chrono::{DateTime, Datelike, Duration, Local};
 use clap::{ArgGroup, Parser};
+use colored::Colorize;
 
 use crate::backend::{make_dry_backend, new_backend_with_prompt};
 use crate::global::defaults::DEFAULT_GC_TOLERANCE;
-use crate::global::{FileType, ID};
+use crate::global::{self, FileType, ID};
 use crate::repository::RepositoryBackend;
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
+use crate::ui::table::{Alignment, Table};
 use crate::{commands, repository, ui, utils};
 
 use super::GlobalArgs;
@@ -63,13 +65,19 @@ pub struct CmdArgs {
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     pub keep_daily: Option<usize>,
 
+    /// Perform a dry run: show which snapshots would be removed without actually removing them.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    // -- Garbage collector --
     /// Run the garbage collector after this command
     #[arg(long = "gc")]
     pub run_gc: bool,
 
-    /// Perform a dry run: show which snapshots would be removed without actually removing them.
-    #[arg(long)]
-    pub dry_run: bool,
+    /// Garbage tolerance. The percentage [0-100] of garbage to tolerate in a
+    /// pack file before repacking.
+    #[clap(short, long, default_value_t = DEFAULT_GC_TOLERANCE)]
+    pub tolerance: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,13 +165,60 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ids_to_keep = apply_retention_rules(&snapshots_sorted, &retention_rules, Local::now());
     }
 
+    let mut removed_ids_table =
+        Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
+    removed_ids_table.set_headers(vec![
+        "ID".bold().to_string(),
+        "Date".bold().to_string(),
+        "Size".bold().to_string(),
+    ]);
+
+    let mut kept_ids_table =
+        Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
+    kept_ids_table.set_headers(vec![
+        "ID".bold().to_string(),
+        "Date".bold().to_string(),
+        "Size".bold().to_string(),
+    ]);
+
     // Forget snapshots
     let mut removed_count = 0;
-    for (id, _) in snapshots_sorted {
-        if !ids_to_keep.contains(&id) {
+    for (id, snapshot) in snapshots_sorted {
+        let table = if !ids_to_keep.contains(&id) {
             repo.remove_snapshot(&id)?;
             removed_count += 1;
-        }
+            &mut removed_ids_table
+        } else {
+            &mut kept_ids_table
+        };
+
+        table.add_row(vec![
+            id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
+                .bold()
+                .yellow()
+                .to_string(),
+            snapshot
+                .timestamp
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string(),
+            utils::format_size(snapshot.size()),
+        ]);
+    }
+
+    ui::cli::log!();
+    ui::cli::log!(
+        "{}\n{}",
+        "Snapshots to keep:".bold(),
+        kept_ids_table.render()
+    );
+
+    if removed_count > 0 {
+        ui::cli::log!(
+            "{}\n{}",
+            "Snapshots to remove:".bold(),
+            removed_ids_table.render()
+        );
     }
 
     if !args.dry_run {
@@ -181,10 +236,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Run the garbage collector
     if args.run_gc {
         let gc_args = commands::cmd_gc::CmdArgs {
-            tolerance: DEFAULT_GC_TOLERANCE,
+            tolerance: args.tolerance,
             dry_run: args.dry_run,
         };
 
+        ui::cli::log!();
+        ui::cli::log!("Running garbage collector...");
         commands::cmd_gc::run_with_repo(global_args, &gc_args, repo)?;
     }
 

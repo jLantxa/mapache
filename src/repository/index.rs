@@ -91,32 +91,38 @@ impl Index {
 
     /// Marks the index as finalized. A finalized index no longer accepts new entries
     /// and is typically ready for persistence or read-only operations.
+    #[inline]
     pub fn finalize(&mut self) {
         self.is_pending = false;
     }
 
     /// Marks the index as pending.
+    #[inline]
     pub fn set_pending(&mut self) {
         self.is_pending = true;
         self.id = None;
     }
 
     /// Returns the id of this index
+    #[inline]
     pub fn id(&self) -> Option<ID> {
         self.id.clone()
     }
 
     /// Sets the index ID
+    #[inline]
     pub fn set_id(&mut self, id: ID) {
         self.id = Some(id);
     }
 
     /// Returns `true` if the index is currently pending (still receiving entries).
+    #[inline]
     pub fn is_pending(&self) -> bool {
         self.is_pending
     }
 
     /// Returns true if the index contains enough blobs to be considered full
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.num_blobs() >= global::defaults::BLOBS_PER_INDEX_FILE
             || self.create_time.elapsed() >= global::defaults::INDEX_FLUSH_TIMEOUT
@@ -151,6 +157,7 @@ impl Index {
     }
 
     /// Checks if the index contains the given object ID.
+    #[inline]
     pub fn contains(&self, id: &ID) -> bool {
         self.data_ids.contains_key(id) || self.tree_ids.contains_key(id)
     }
@@ -270,10 +277,12 @@ impl Index {
         Ok((raw_size, encoded_size))
     }
 
+    #[inline]
     pub fn num_blobs(&self) -> usize {
         self.data_ids.len() + self.tree_ids.len()
     }
 
+    #[inline]
     pub fn num_packs(&self) -> usize {
         self.pack_ids.len()
     }

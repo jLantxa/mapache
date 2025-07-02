@@ -200,7 +200,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "To commit:".bold().cyan(),
         num_files,
         num_dirs,
-        utils::format_size(total_bytes),
+        utils::format_size(total_bytes, 3),
     );
     ui::cli::log!();
 
@@ -291,7 +291,7 @@ fn show_final_report(
 
     if !args.dry_run {
         ui::cli::log!(
-            "New snapshot created {}",
+            "New snapshot created: {}",
             snapshot_id
                 .to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
                 .to_string()
@@ -312,27 +312,30 @@ fn show_final_report(
     ]);
     data_table.add_row(vec![
         "Data".bold().to_string(),
-        utils::format_size(summary.raw_bytes).yellow().to_string(),
-        utils::format_size(summary.encoded_bytes)
+        utils::format_size(summary.raw_bytes, 3)
+            .yellow()
+            .to_string(),
+        utils::format_size(summary.encoded_bytes, 3)
             .green()
             .to_string(),
     ]);
     data_table.add_row(vec![
         "Metadata".bold().to_string(),
-        utils::format_size(summary.meta_raw_bytes)
+        utils::format_size(summary.meta_raw_bytes, 3)
             .yellow()
             .to_string(),
-        utils::format_size(summary.meta_encoded_bytes)
+        utils::format_size(summary.meta_encoded_bytes, 3)
             .green()
             .to_string(),
     ]);
+    data_table.add_separator();
     data_table.add_row(vec![
-        "Total".bold().cyan().to_string(),
-        utils::format_size(summary.total_raw_bytes)
+        "Total".bold().to_string(),
+        utils::format_size(summary.total_raw_bytes, 3)
             .bold()
             .yellow()
             .to_string(),
-        utils::format_size(summary.total_encoded_bytes)
+        utils::format_size(summary.total_encoded_bytes, 3)
             .bold()
             .green()
             .to_string(),

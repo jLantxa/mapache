@@ -202,7 +202,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 .with_timezone(&Local)
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string(),
-            utils::format_size(snapshot.size()),
+            utils::format_size(snapshot.size(), 3),
         ]);
     }
 

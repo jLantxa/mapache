@@ -105,7 +105,7 @@ impl SnapshotProgressReporter {
                 })
                 .with_key("processed_bytes_formatted", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
                     let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
-                    let s = format!("{} / {}", utils::format_size(bytes), utils::format_size(expected_size));
+                    let s = format!("{} / {}", utils::format_size(bytes, 3), utils::format_size(expected_size, 3));
 
                     let _ = w.write_str(&s);
                 })

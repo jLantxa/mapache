@@ -19,15 +19,13 @@ This software is still a work in progress. The format of the repository is unsta
 
 ## About
 
-`mapache` is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to back up your data to a local file system or a remote machine. I started this project because the previous backup tool I was using no longer met my needs. I decided to create my own tool and learn something in the process.
+`mapache` is a de-duplicating incremental backup tool written in Rust. It is a CLI tool to back up your data to a local file system or a remote machine. I started this project because the previous backup tool I was using no longer met my needs. I decided to create my own tool and learn something in the process. It is still in an early development stage. As such, it is still missing a lot of features, it is unstable, etc.
 
-`mapache` is still in an early development stage. As such, it is still barely functional, it is missing a lot of features, it is unstable, etc. But more importantly, it is a personal project and a tool I'm making to cover my own backup needs.
+`mapache` is writen in `Rust`. I didn't choose `Rust` for any particular reason. Other languages like Go or C++ could have been a good choice too. For a tool like this, the language is not so important.
 
-The language of choice is `Rust`. I didn't choose `Rust` for any particular reason other than it is a language I'm learning now and it seemed sufficiently safe, performant, and ergonomic to use it.
+`mapache` is inspired in its design by other similar tools like `git` and [`restic`](https://restic.net/). It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the v2020 FastCDC algorithm for chunking and deduplication. Each 'backup' is saved as a `Snapshot`. `Snapshots` are independent of each other and they describe the status of your filesystem when you did the backup (files, directories and their metadata). Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
 
-`mapache` is inspired in its design by other similar tools like `git`, [`BorgBackup`](https://www.borgbackup.org/) and [`restic`](https://restic.net/). It implements a content-addressable repository to store and retrieve binary objects and `content-defined chunking` to de-duplicate the contents of files. It uses the FastCDC algorithm for chunking. Each 'backup' is saved as a `Snapshot`. `Snapshots` are independent of each other and they describe what was backed up and when. Although the `snapshots` are independent, every new `snapshot` only appends the new information that was different from the already existing `snapshots`.
-
-To provide data protection, all data stored in the repository is encrypted and authenticated using 256-bit AES-GCM, with Argon2 for key derivation.
+To provide data protection, all data stored in the repository are encrypted and authenticated using 256-bit AES-GCM, with Argon2 for key derivation.
 
 ### Guiding Principles
 
@@ -39,54 +37,52 @@ The development of `mapache` is guided by the following core principles:
 
 -   **Robustness**: The tool needs to resume operations seamlessly after interruptions, ensuring repository integrity and data reliability.
 
--   **Security**: All data in the repository must be encrypted and authenticated.
+-   **Security**: All data in the repository must be encrypted and authenticated. No one but you should be able to access the data even if others get access to the storage medium.
 
--   **Self-Containment**: I'm aiming for `mapache` to be entirely self-contained, with all dependencies statically linked. Even if this means longer compilation times and a larger executable, it offers the significant benefit of being executable from a USB stick on a fresh installation without an internet connection in a hard time.
+-   **Self-Containment**: I'm aiming for `mapache` to be entirely self-contained, with all dependencies statically linked. Even if this means longer compilation times and a larger executable, it offers the significant benefit of being executable from a USB stick on a fresh installation without an internet connection in a hard time. This is a soft requirement that could be lost in favour of the others.
 
 
 ## Roadmap
 
-`mapache` is still in early development. I have two milestones currently planned.
+`mapache` is still in early development going through milestones.
 
-### `Snapshots` milestone *(complete)*
+### 1. `Snapshots` *(complete)*
 
 The first `Snapshots` milestone consists of implementing the core architecture and a minimal set of functional features. This includes:
 
--   [x] Creating `snapshots` (`Archiver` pipeline).
--   [x] Restoring `snapshots` (`Restorer` pipeline).
--   [x] Listing `snapshots`.
--   [x] Local and SFTP backends.
+- [x] Creating `snapshots` (`Archiver` pipeline).
+- [x] Restoring `snapshots` (`Restorer` pipeline).
+- [x] Listing `snapshots`.
+- [x] Local and SFTP backends.
 
-**This milestone is complete.**
-
-### `Garbage Collection` milestone
+### 2. `Garbage Collection` *(complete)*
 
 The second milestone consists of adding features related to repository maintenance and garbage collection and other convenience options. This includes:
 
--   [x] Removing snapshots, with basic retention rules. The `forget` command.
--   [x] `gc` command. A command to remove obsolete objects from the repository that are not referenced by any snapshot.
--   [x] Run `gc` optionally in `forget` command. Run `gc` after `forget` for convenience.
--   [x] `--exclude` filter in `snapshot` command.
--   [x] `--include` / `--exclude` in `restore` command.
--   [x] `ls` command to list paths in a snapshot.
+- [x] Removing snapshots, with basic retention rules. The `forget` command.
+- [x] `gc` command. A command to remove obsolete objects from the repository that are not referenced by any snapshot.
+- [x] Run `gc` optionally in `forget` command. Run `gc` after `forget` for convenience.
+- [x] `--exclude` filter in `snapshot` command.
+- [x] `--include` / `--exclude` in `restore` command.
+- [x] `ls` command to list paths in a snapshot.
+- [x] `ssh` authentication with public key for the `sftp` backend.
 
 After that, the plan is to expand the functionality with new options, features, optimizations, and ergonomics. Choosing a name for the tool is also something that should happen at some time –I hope–.
 
-**This milestone is complete.**
+### 3. *`Smooth mapache`*
+
+The goal of this milestone is to add convenience and quality of like feature. Things that are not strictly necessary but make mapache nicer to use. The real goal is to work towards a stable repository format that allows me to add features in the future without making previous versions incompatible. This includes:
+
+- [ ] `amend` command to remove files from existing snapshots and modify metadata.
+- [ ] `diff` command to show differences between snapshots
+- [ ] `verify` command to verify the integrity of the data stored in the repository.
+- [ ] Key managment.
 
 ### Other planned features
 
 This is a non-exhaustive list of features that I want to add:
 
--   [x] `ssh` authentication with public key for the `sftp` backend.
--   [ ] FUSE mount (I don't even know how this works).
--   [ ] `amend` command to remove files from existing snapshots and modify metadata.
--   [ ] `diff` command to show differences between snapshots
--   [ ] Key managment.
-
-### Others
-
-Right now, I am working on a functional prototype that works so I can start doing backups ASAP. Even though I am trying to develop with optimizations in mind, I am aware that a better job can always be done. Better optimizations are a job for future me.
+- [ ] FUSE mount (I don't even know how this works).
 
 ## Getting started
 
@@ -106,7 +102,7 @@ You need to install `perl` in our system in order to compile the `openssl` sourc
 If you run the executable, you will be greeted by something like this:
 
 ```
-[mapache] is a de-duplicating, incremental backup tool
+mapache is a de-duplicating, incremental backup tool
 
 Usage: mapache [OPTIONS] --repo <REPO> <COMMAND>
 
@@ -116,16 +112,19 @@ Commands:
   restore   Restore a snapshot
   log       Show all snapshots present in the repository
   forget    Remove snapshots from the repository
+  gc        Remove obsolete objects from the repository
   ls        List nodes in the repository
   cat       Print repository objects
   help      Print this message or the help of the given subcommand(s)
 
 Options:
-  -r, --repo <REPO>                    Repository path
-  -p, --password-file <PASSWORD_FILE>  Path to a file to read the repository password
-  -k, --key <KEY>                      Path to a KeyFile
+  -r, --repo <REPO>                      Repository path
+      --ssh-pubkey <SSH_PUBKEY>          SSH public key
+      --ssh-privatekey <SSH_PRIVATEKEY>  SSH private key
+  -p, --password-file <PASSWORD_FILE>    Path to a file to read the repository password
+  -k, --key <KEY>                        Path to a KeyFile
   -q, --quiet
   -v, --verbosity <VERBOSITY>
-  -h, --help                           Print help
-  -V, --version                        Print version
+  -h, --help                             Print help
+  -V, --version                          Print version
 ```

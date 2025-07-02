@@ -20,7 +20,7 @@ use anyhow::{Error, Result, anyhow, bail};
 use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::{
-    global::ID,
+    global::{FileType, ID},
     repository::{
         RepositoryBackend,
         snapshot::{Snapshot, SnapshotStreamer},
@@ -149,8 +149,8 @@ pub(crate) fn find_use_snapshot(
             let mut snapshots = SnapshotStreamer::new(repo.clone())?;
             Ok(snapshots.latest())
         }
-        UseSnapshot::SnapshotId(id_hex) => {
-            let id = ID::from_hex(id_hex)?;
+        UseSnapshot::SnapshotId(prefix) => {
+            let (id, _path) = repo.find(FileType::Snapshot, prefix)?;
             match &repo.load_snapshot(&id) {
                 Ok(snap) => Ok(Some((id, snap.clone()))),
                 Err(_) => bail!("Snapshot {:?} not found", id),

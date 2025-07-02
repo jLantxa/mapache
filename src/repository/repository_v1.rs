@@ -499,7 +499,7 @@ impl Repository {
         }
 
         if let Some(pack_saver) = self.pack_saver.write().as_ref() {
-            pack_saver.save_pack(pack_data)?;
+            pack_saver.save_pack(pack_data, SaveID::WithID(pack_id.clone()))?;
         } else {
             bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
         }
@@ -538,9 +538,11 @@ impl Repository {
         Ok(())
     }
 
-    fn load_from_pack(&self, id: &ID, offset: u64, length: u64) -> Result<Vec<u8>> {
+    fn load_from_pack(&self, id: &ID, offset: u32, length: u32) -> Result<Vec<u8>> {
         let object_path = Self::get_object_path(&self.objects_path, id);
-        let data = self.backend.seek_read(&object_path, offset, length)?;
+        let data = self
+            .backend
+            .seek_read(&object_path, offset as u64, length as u64)?;
         self.secure_storage.decode(&data)
     }
 }

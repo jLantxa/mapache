@@ -35,9 +35,9 @@ struct BlobLocation {
     /// The index into the `pack_ids` `IndexSet` for the pack containing this blob. See Index.
     pub pack_array_index: usize,
     /// The offset of the blob within its pack file.
-    pub offset: u64,
+    pub offset: u32,
     /// The length of the blob within its pack file.
-    pub length: u64,
+    pub length: u32,
 }
 
 /// Represents the location and size of a blob within a pack file.
@@ -45,8 +45,8 @@ struct BlobLocation {
 #[derive(Debug, Clone)]
 pub struct BlobLocator {
     pub pack_id: ID,
-    pub offset: u64,
-    pub length: u64,
+    pub offset: u32,
+    pub length: u32,
 }
 
 /// Manages the mapping of blob IDs to their locations within pack files.
@@ -164,7 +164,7 @@ impl Index {
 
     /// Retrieves the pack ID, offset, and length for a given blob ID, if it exists.
     /// Returns `None` if the blob ID is not found.
-    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u64, u64)> {
+    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u32, u32)> {
         self.data_ids
             .get(id)
             .map(|location| {
@@ -365,7 +365,7 @@ impl MasterIndex {
 
     /// Retrieves an entry for a given blob ID by searching through finalized indexes.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
-    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u64, u64)> {
+    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u32, u32)> {
         self.indexes
             .iter()
             .find_map(|idx| if !idx.is_pending { idx.get(id) } else { None })
@@ -501,6 +501,6 @@ pub struct IndexFileBlob {
     pub id: ID,
     #[serde(rename = "type")]
     pub blob_type: ObjectType,
-    pub offset: u64,
-    pub length: u64,
+    pub offset: u32,
+    pub length: u32,
 }

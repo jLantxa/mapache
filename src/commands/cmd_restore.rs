@@ -42,13 +42,13 @@ impl std::fmt::Display for Resolution {
 
 #[derive(Args, Debug)]
 pub struct CmdArgs {
+    /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
+    #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
+    pub snapshot: UseSnapshot,
+
     /// A path where the files will be restored.
     #[clap(long, required = true)]
     pub target: PathBuf,
-
-    /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
-    #[clap(long, value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
-    pub snapshot: UseSnapshot,
 
     /// A list of paths to restore.
     #[clap(long)]

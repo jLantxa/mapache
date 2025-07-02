@@ -139,6 +139,10 @@ impl ID {
 
         Ok(Self(bytes))
     }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 /// Implementation of the Display trait for ID.
@@ -177,10 +181,29 @@ impl<'de> Deserialize<'de> for ID {
 }
 
 /// Type of objects that can be stored in a repository.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum ObjectType {
-    Data,
-    Tree,
+    Data = 0x00,
+    Tree = 0x01,
+}
+
+impl From<ObjectType> for u8 {
+    fn from(obj_type: ObjectType) -> Self {
+        obj_type as u8
+    }
+}
+
+impl TryFrom<u8> for ObjectType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x00 => Ok(ObjectType::Data),
+            0x01 => Ok(ObjectType::Tree),
+            _ => Err(anyhow::anyhow!("Invalid ObjectType value: {}", value)),
+        }
+    }
 }
 
 /// Type of objects that can be stored in a Repository

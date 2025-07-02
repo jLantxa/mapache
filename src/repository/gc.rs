@@ -82,8 +82,8 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
         if !plan.referenced_blobs.contains(id) {
             pack_garbage
                 .entry(locator.pack_id)
-                .and_modify(|size| *size += locator.length)
-                .or_insert(locator.length);
+                .and_modify(|size| *size += locator.length as u64)
+                .or_insert(locator.length as u64);
             spinner.inc(1);
         }
     }
@@ -188,8 +188,8 @@ impl Plan {
                     let data = self.repo.read_from_file(
                         global::FileType::Object,
                         &pack_id,
-                        offset,
-                        length,
+                        offset as u64,
+                        length as u64,
                     )?;
                     self.repo.save_blob(
                         blob_type,

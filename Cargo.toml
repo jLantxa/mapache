@@ -25,7 +25,7 @@ crossbeam-channel = "0.5.15"
 dialoguer = "0.11.0"
 fastcdc = "3.2.1"
 filetime = "0.2.25"
-indicatif = { version = "0.17.11", features = ["rayon"] }
+indicatif = { version = "0.17.12", features = ["rayon"] }
 num_cpus = "1.17.0"
 parking_lot = "0.12.4"
 rayon = "1.10.0"

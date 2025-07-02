@@ -16,20 +16,22 @@
 
 use std::{sync::Arc, thread::JoinHandle};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use blake3::Hasher;
 use crossbeam_channel::Sender;
 
-use crate::global::{ID, ObjectType};
+use crate::global::{ID, ObjectType, SaveID};
+
+const HEADER_BLOB_LEN: usize = 32 + 4 + 1; // id (256 bits) + length (u32) + type (u8)
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a pack.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PackedBlobDescriptor {
     pub id: ID,
     pub blob_type: ObjectType,
-    pub offset: u64,
-    pub length: u64,
+    pub offset: u32,
+    pub length: u32,
 }
 
 /// A tuple representing the flushed contents of a `Packer`:
@@ -108,8 +110,8 @@ impl Packer {
     /// buffer using `Vec::append`, avoiding a costly copy. After this call, `blob_data`
     /// will be empty.
     pub fn add_blob(&mut self, id: ID, blob_type: ObjectType, mut blob_data: Vec<u8>) {
-        let offset = self.data.len() as u64;
-        let length = blob_data.len() as u64;
+        let offset = self.data.len() as u32;
+        let length = blob_data.len() as u32;
 
         if !blob_data.is_empty() {
             self.hasher.update(&blob_data);
@@ -134,12 +136,37 @@ impl Packer {
     /// is transferred to the caller, making this an efficient way to extract the packed content.
     /// The internal vectors retain their allocated capacity for future use.
     pub fn flush(&mut self) -> FlushedPack {
+        // Take ownership of the vectors, effectively swapping them with new empty ones.
+        let mut data = std::mem::take(&mut self.data);
+        let descriptors = std::mem::take(&mut self.blob_descriptors);
+
+        // Append header
+        {
+            // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
+            let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len() + 4);
+
+            for blob in &descriptors {
+                let id = blob.id.as_slice();
+                pack_header.extend_from_slice(id);
+                self.hasher.update(id);
+
+                let length = blob.length.to_le_bytes();
+                pack_header.extend_from_slice(&length);
+                self.hasher.update(&length);
+
+                let blob_type: [u8; 1] = (blob.blob_type.to_owned() as u8).to_le_bytes();
+                pack_header.extend_from_slice(&blob_type);
+                self.hasher.update(&blob_type);
+            }
+            let header_length = (4 + pack_header.len() as u32).to_le_bytes();
+            pack_header.extend_from_slice(&header_length);
+            self.hasher.update(&header_length);
+
+            data.append(&mut pack_header);
+        }
+
         let hash = self.hasher.finalize();
         self.hasher.reset();
-
-        // Take ownership of the vectors, effectively swapping them with new empty ones.
-        let data = std::mem::take(&mut self.data);
-        let descriptors = std::mem::take(&mut self.blob_descriptors);
 
         // Reset the internal vectors to be empty, but crucially,
         // they *retain their allocated capacity* for the next pack.
@@ -147,6 +174,68 @@ impl Packer {
         self.blob_descriptors.clear();
 
         (data, descriptors, ID::from_bytes(hash.into()))
+    }
+
+    pub fn read_header(pack_data: &[u8]) -> Result<Vec<PackedBlobDescriptor>> {
+        let pack_len = pack_data.len();
+        if pack_len < 4 {
+            bail!(
+                "Pack header is invalid: data too short for header length (got {} bytes, need at least 4).",
+                pack_len
+            );
+        }
+
+        let header_length_bytes: [u8; 4] = pack_data[(pack_len - 4)..]
+            .try_into()
+            .with_context(|| "Could not read pack header length bytes.")?;
+        let header_length = u32::from_le_bytes(header_length_bytes) as usize;
+
+        if pack_len < header_length {
+            bail!(
+                "Pack header is invalid: declared header_length ({}) exceeds total pack_len ({}).",
+                header_length,
+                pack_len
+            );
+        }
+
+        let header_blob_info_actual_len = header_length - 4;
+        if header_blob_info_actual_len % HEADER_BLOB_LEN != 0 {
+            bail!(
+                "Pack header is invalid: header blob info length ({}) is not a multiple of expected blob descriptor size ({}).",
+                header_blob_info_actual_len,
+                HEADER_BLOB_LEN
+            );
+        }
+
+        let num_blobs = (header_length - 4) / HEADER_BLOB_LEN;
+        let header_blob_info = &pack_data[(pack_len - header_length)..];
+
+        let mut blob_descriptors = Vec::new();
+        let mut current_offset: u32 = 0;
+        for i in 0..num_blobs {
+            let blob_info = &header_blob_info[(i * HEADER_BLOB_LEN)..((i + 1) * HEADER_BLOB_LEN)];
+
+            let blob_id_bytes: [u8; 32] = blob_info[0..32].try_into().unwrap();
+            let id = ID::from_bytes(blob_id_bytes);
+
+            let offset = current_offset;
+
+            let length_bytes: [u8; 4] = blob_info[32..36].try_into().unwrap();
+            let length = u32::from_le_bytes(length_bytes);
+            current_offset += length;
+
+            let blob_type: ObjectType = blob_info[36].try_into()?;
+
+            let blob_descriptor = PackedBlobDescriptor {
+                id,
+                blob_type,
+                offset,
+                length,
+            };
+            blob_descriptors.push(blob_descriptor);
+        }
+
+        Ok(blob_descriptors)
     }
 }
 
@@ -181,8 +270,11 @@ impl PackSaver {
         PackSaver { tx, join_handle }
     }
 
-    pub fn save_pack(&self, packer_data: Vec<u8>) -> Result<ID> {
-        let pack_id = ID::from_content(&packer_data);
+    pub fn save_pack(&self, packer_data: Vec<u8>, save_id: SaveID) -> Result<ID> {
+        let pack_id = match save_id {
+            SaveID::CalculateID => ID::from_content(&packer_data),
+            SaveID::WithID(id) => id,
+        };
 
         self.tx
             .send((packer_data, pack_id.clone()))
@@ -196,5 +288,65 @@ impl PackSaver {
         self.join_handle
             .join()
             .expect("Packer saver thread panicked");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pack_flush() -> Result<()> {
+        let mut packer = Packer::new();
+
+        let blob1: Vec<u8> = b"mapache".to_vec(); // 7 bytes
+        packer.add_blob(ID::from_content(&blob1), ObjectType::Data, blob1);
+
+        let blob2: Vec<u8> = b"backup".to_vec(); // 6 bytes
+        packer.add_blob(ID::from_content(&blob2), ObjectType::Data, blob2);
+
+        let blob3: Vec<u8> = b"rust".to_vec(); // 4 bytes
+        packer.add_blob(ID::from_content(&blob3), ObjectType::Data, blob3);
+
+        assert_eq!(packer.size(), 7 + 6 + 4);
+        assert!(!packer.is_empty());
+
+        let (data, descriptors, id) = packer.flush();
+
+        let expected_header_length = 4 + (3 * HEADER_BLOB_LEN);
+        assert_eq!(data.len(), (7 + 6 + 4) + expected_header_length);
+        assert_eq!(
+            id.to_hex(),
+            "492d12ce69b75f6ce252969172077bed586ce631fb59b59f0107bee77a93ba01"
+        );
+
+        let header_descriptors = Packer::read_header(&data)?;
+        assert_eq!(descriptors.len(), 3);
+        assert_eq!(descriptors, header_descriptors);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_pack_flush() -> Result<()> {
+        let mut packer = Packer::new();
+
+        assert_eq!(packer.size(), 0);
+        assert!(packer.is_empty());
+
+        let (data, descriptors, id) = packer.flush();
+
+        let expected_header_length = 4 + (0 * HEADER_BLOB_LEN);
+        assert_eq!(data.len(), (0) + expected_header_length);
+        assert_eq!(
+            id.to_hex(),
+            "669c13550a3e727bb53d0d458f2e96e48571aa045dfabcfb4b7de16809484f11"
+        );
+
+        let header_descriptors = Packer::read_header(&data)?;
+        assert!(descriptors.is_empty());
+        assert_eq!(descriptors, header_descriptors);
+
+        Ok(())
     }
 }

@@ -18,8 +18,8 @@ pub mod defaults;
 
 use std::sync::LazyLock;
 
-use aes_gcm::aead::{OsRng, rand_core::RngCore};
-use anyhow::{Context, Result, bail};
+use aes_gcm::aead::{rand_core::RngCore, OsRng};
+use anyhow::{bail, Context, Result};
 use parking_lot::{RwLock, RwLockReadGuard};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -138,6 +138,10 @@ impl ID {
         }
 
         Ok(Self(bytes))
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
     }
 }
 

@@ -50,6 +50,9 @@ pub struct Packer {
     data: Vec<u8>,
     blob_descriptors: Vec<PackedBlobDescriptor>,
     hasher: Hasher,
+
+    data_papacity_hint: usize,
+    blob_descriptor_capacity_hint: usize,
 }
 
 impl Default for Packer {
@@ -68,6 +71,8 @@ impl Packer {
             data: Vec::new(),
             blob_descriptors: Vec::new(),
             hasher: Hasher::new(),
+            data_papacity_hint: 0,
+            blob_descriptor_capacity_hint: 0,
         }
     }
 
@@ -83,6 +88,8 @@ impl Packer {
             data: Vec::with_capacity(data_capacity),
             blob_descriptors: Vec::with_capacity(blobs_capacity),
             hasher: Hasher::new(),
+            data_papacity_hint: data_capacity,
+            blob_descriptor_capacity_hint: blobs_capacity,
         }
     }
 
@@ -140,40 +147,41 @@ impl Packer {
         let mut data = std::mem::take(&mut self.data);
         let descriptors = std::mem::take(&mut self.blob_descriptors);
 
-        // Append header
-        {
-            // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
-            let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len() + 4);
-
-            for blob in &descriptors {
-                let id = blob.id.as_slice();
-                pack_header.extend_from_slice(id);
-                self.hasher.update(id);
-
-                let length = blob.length.to_le_bytes();
-                pack_header.extend_from_slice(&length);
-                self.hasher.update(&length);
-
-                let blob_type: [u8; 1] = (blob.blob_type.to_owned() as u8).to_le_bytes();
-                pack_header.extend_from_slice(&blob_type);
-                self.hasher.update(&blob_type);
-            }
-            let header_length = (4 + pack_header.len() as u32).to_le_bytes();
-            pack_header.extend_from_slice(&header_length);
-            self.hasher.update(&header_length);
-
-            data.append(&mut pack_header);
-        }
+        // Append metadata section
+        let mut pack_header = Self::generate_header(&descriptors);
+        self.hasher.update(&pack_header);
+        data.append(&mut pack_header);
 
         let hash = self.hasher.finalize();
         self.hasher.reset();
 
-        // Reset the internal vectors to be empty, but crucially,
-        // they *retain their allocated capacity* for the next pack.
-        self.data.clear();
-        self.blob_descriptors.clear();
+        // Reserve capacity
+        self.data.reserve(self.data_papacity_hint);
+        self.blob_descriptors
+            .reserve(self.blob_descriptor_capacity_hint);
 
         (data, descriptors, ID::from_bytes(hash.into()))
+    }
+
+    fn generate_header(descriptors: &Vec<PackedBlobDescriptor>) -> Vec<u8> {
+        // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
+        let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len() + 4);
+
+        for blob in descriptors {
+            let id = blob.id.as_slice();
+            pack_header.extend_from_slice(id);
+
+            let length = blob.length.to_le_bytes();
+            pack_header.extend_from_slice(&length);
+
+            let blob_type: [u8; 1] = (blob.blob_type.to_owned() as u8).to_le_bytes();
+            pack_header.extend_from_slice(&blob_type);
+        }
+
+        let header_length = (4 + pack_header.len() as u32).to_le_bytes();
+        pack_header.extend_from_slice(&header_length);
+
+        pack_header
     }
 
     pub fn read_header(pack_data: &[u8]) -> Result<Vec<PackedBlobDescriptor>> {

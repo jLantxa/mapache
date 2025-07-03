@@ -20,7 +20,7 @@ use anyhow::{Context, Result, bail};
 use blake3::Hasher;
 use crossbeam_channel::Sender;
 
-use crate::global::{ID, ObjectType, SaveID};
+use crate::global::{BlobType, ID, SaveID};
 
 const HEADER_BLOB_LEN: usize = 32 + 4 + 1; // id (256 bits) + length (u32) + type (u8)
 
@@ -29,7 +29,7 @@ const HEADER_BLOB_LEN: usize = 32 + 4 + 1; // id (256 bits) + length (u32) + typ
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackedBlobDescriptor {
     pub id: ID,
-    pub blob_type: ObjectType,
+    pub blob_type: BlobType,
     pub offset: u32,
     pub length: u32,
 }
@@ -116,7 +116,7 @@ impl Packer {
     /// The `blob_data` `Vec<u8>` is efficiently moved into the packer's internal
     /// buffer using `Vec::append`, avoiding a costly copy. After this call, `blob_data`
     /// will be empty.
-    pub fn add_blob(&mut self, id: ID, blob_type: ObjectType, mut blob_data: Vec<u8>) {
+    pub fn add_blob(&mut self, id: ID, blob_type: BlobType, mut blob_data: Vec<u8>) {
         let offset = self.data.len() as u32;
         let length = blob_data.len() as u32;
 
@@ -236,7 +236,7 @@ impl Packer {
             let length = u32::from_le_bytes(length_bytes);
             current_offset += length;
 
-            let blob_type: ObjectType = blob_info[36].try_into()?;
+            let blob_type: BlobType = blob_info[36].try_into()?;
 
             let blob_descriptor = PackedBlobDescriptor {
                 id,
@@ -312,13 +312,13 @@ mod tests {
         let mut packer = Packer::new();
 
         let blob1: Vec<u8> = b"mapache".to_vec(); // 7 bytes
-        packer.add_blob(ID::from_content(&blob1), ObjectType::Data, blob1);
+        packer.add_blob(ID::from_content(&blob1), BlobType::Data, blob1);
 
         let blob2: Vec<u8> = b"backup".to_vec(); // 6 bytes
-        packer.add_blob(ID::from_content(&blob2), ObjectType::Data, blob2);
+        packer.add_blob(ID::from_content(&blob2), BlobType::Data, blob2);
 
         let blob3: Vec<u8> = b"rust".to_vec(); // 4 bytes
-        packer.add_blob(ID::from_content(&blob3), ObjectType::Data, blob3);
+        packer.add_blob(ID::from_content(&blob3), BlobType::Data, blob3);
 
         assert_eq!(packer.size(), 7 + 6 + 4);
         assert!(!packer.is_empty());

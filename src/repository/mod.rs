@@ -41,7 +41,7 @@ use crate::repository::index::MasterIndex;
 use crate::repository::keys::{generate_key_file, generate_new_master_key, retrieve_master_key};
 use crate::ui;
 use crate::{
-    backend::StorageBackend, global::ID, global::ObjectType, repository::storage::SecureStorage,
+    backend::StorageBackend, global::BlobType, global::ID, repository::storage::SecureStorage,
 };
 
 pub type RepoVersion = u32;
@@ -75,12 +75,8 @@ pub trait RepositoryBackend: Sync + Send {
 
     /// Saves a blob in the repository. This blob can be packed with other blobs in an object file.
     /// Returns a tuple (`ID`, raw_size, encoded_size)
-    fn save_blob(
-        &self,
-        object_type: ObjectType,
-        data: Vec<u8>,
-        id: SaveID,
-    ) -> Result<(ID, u64, u64)>;
+    fn save_blob(&self, object_type: BlobType, data: Vec<u8>, id: SaveID)
+    -> Result<(ID, u64, u64)>;
 
     /// Loads a blob from the repository.
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;

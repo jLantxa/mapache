@@ -25,7 +25,7 @@ use anyhow::{Context, Result, bail};
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
-    global::{self, ID, ObjectType},
+    global::{self, BlobType, ID},
     repository::{
         RepositoryBackend,
         streamers::{NodeDiff, StreamNode},
@@ -145,7 +145,7 @@ pub(crate) fn save_file(
     if node.metadata.size < global::defaults::MIN_CHUNK_SIZE {
         let data = std::fs::read(src_path)?;
         let (id, raw_size, encoded_size) =
-            repo.save_blob(ObjectType::Data, data, global::SaveID::CalculateID)?;
+            repo.save_blob(BlobType::Data, data, global::SaveID::CalculateID)?;
         progress_reporter.written_data_bytes(raw_size, encoded_size);
         progress_reporter.processed_bytes(node.metadata.size);
 
@@ -188,7 +188,7 @@ fn chunk_and_save_blobs(
 
         let processed_size = chunk.data.len() as u64;
         let save_blob_res =
-            repo_clone.save_blob(ObjectType::Data, chunk.data, global::SaveID::WithID(id));
+            repo_clone.save_blob(BlobType::Data, chunk.data, global::SaveID::WithID(id));
 
         match save_blob_res {
             Ok((_id, raw_size, encoded_size)) => {

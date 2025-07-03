@@ -183,25 +183,25 @@ impl<'de> Deserialize<'de> for ID {
 /// Type of objects that can be stored in a repository.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]
-pub enum ObjectType {
+pub enum BlobType {
     Data = 0x00,
     Tree = 0x01,
 }
 
-impl From<ObjectType> for u8 {
-    fn from(obj_type: ObjectType) -> Self {
+impl From<BlobType> for u8 {
+    fn from(obj_type: BlobType) -> Self {
         obj_type as u8
     }
 }
 
-impl TryFrom<u8> for ObjectType {
+impl TryFrom<u8> for BlobType {
     type Error = anyhow::Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x00 => Ok(ObjectType::Data),
-            0x01 => Ok(ObjectType::Tree),
-            _ => Err(anyhow::anyhow!("Invalid ObjectType value: {}", value)),
+            0x00 => Ok(BlobType::Data),
+            0x01 => Ok(BlobType::Tree),
+            _ => Err(anyhow::anyhow!("Invalid BlobType value: {}", value)),
         }
     }
 }

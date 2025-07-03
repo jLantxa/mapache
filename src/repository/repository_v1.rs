@@ -26,7 +26,7 @@ use parking_lot::RwLock;
 
 use crate::{
     backend::StorageBackend,
-    global::{self, FileType, ObjectType, SaveID},
+    global::{self, BlobType, FileType, SaveID},
     repository::{
         MANIFEST_PATH,
         packer::{PackSaver, Packer},
@@ -157,7 +157,7 @@ impl RepositoryBackend for Repository {
 
     fn save_blob(
         &self,
-        object_type: ObjectType,
+        object_type: BlobType,
         data: Vec<u8>,
         save_id: SaveID,
     ) -> Result<(ID, u64, u64)> {
@@ -180,8 +180,8 @@ impl RepositoryBackend for Repository {
         let mut encoded_size = data.len() as u64;
 
         let packer = match object_type {
-            ObjectType::Data => &self.data_packer,
-            ObjectType::Tree => &self.tree_packer,
+            BlobType::Data => &self.data_packer,
+            BlobType::Tree => &self.tree_packer,
         };
 
         packer.write().add_blob(id.clone(), object_type, data);

@@ -23,7 +23,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    global::{self, ID, ObjectType},
+    global::{self, BlobType, ID},
     utils::indexset::IndexSet,
 };
 
@@ -139,8 +139,8 @@ impl Index {
             let pack_index = index.pack_ids.insert(pack.id.clone());
             for blob in pack.blobs {
                 let map = match blob.blob_type {
-                    ObjectType::Data => &mut index.data_ids,
-                    ObjectType::Tree => &mut index.tree_ids,
+                    BlobType::Data => &mut index.data_ids,
+                    BlobType::Tree => &mut index.tree_ids,
                 };
 
                 map.insert(
@@ -164,7 +164,7 @@ impl Index {
 
     /// Retrieves the pack ID, offset, and length for a given blob ID, if it exists.
     /// Returns `None` if the blob ID is not found.
-    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u32, u32)> {
+    pub fn get(&self, id: &ID) -> Option<(ID, BlobType, u32, u32)> {
         self.data_ids
             .get(id)
             .map(|location| {
@@ -174,7 +174,7 @@ impl Index {
                     .expect("pack_index should always be valid for an existing blob");
                 (
                     pack_id.clone(),
-                    ObjectType::Data,
+                    BlobType::Data,
                     location.offset,
                     location.length,
                 )
@@ -187,7 +187,7 @@ impl Index {
                         .expect("pack_index should always be valid for an existing blob");
                     (
                         pack_id.clone(),
-                        ObjectType::Tree,
+                        BlobType::Tree,
                         location.offset,
                         location.length,
                     )
@@ -202,8 +202,8 @@ impl Index {
         let pack_index = self.pack_ids.insert(pack_id.clone());
         for blob in packed_blob_descriptors {
             let map = match blob.blob_type {
-                ObjectType::Data => &mut self.data_ids,
-                ObjectType::Tree => &mut self.tree_ids,
+                BlobType::Data => &mut self.data_ids,
+                BlobType::Tree => &mut self.tree_ids,
             };
 
             map.insert(
@@ -236,7 +236,7 @@ impl Index {
                 .or_default();
             entry.push(IndexFileBlob {
                 id: blob_id.clone(),
-                blob_type: ObjectType::Data,
+                blob_type: BlobType::Data,
                 offset: location.offset,
                 length: location.length,
             });
@@ -247,7 +247,7 @@ impl Index {
                 .or_default();
             entry.push(IndexFileBlob {
                 id: blob_id.clone(),
-                blob_type: ObjectType::Tree,
+                blob_type: BlobType::Tree,
                 offset: location.offset,
                 length: location.length,
             });
@@ -365,7 +365,7 @@ impl MasterIndex {
 
     /// Retrieves an entry for a given blob ID by searching through finalized indexes.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
-    pub fn get(&self, id: &ID) -> Option<(ID, ObjectType, u32, u32)> {
+    pub fn get(&self, id: &ID) -> Option<(ID, BlobType, u32, u32)> {
         self.indexes
             .iter()
             .find_map(|idx| if !idx.is_pending { idx.get(id) } else { None })
@@ -500,7 +500,7 @@ pub struct IndexFilePack {
 pub struct IndexFileBlob {
     pub id: ID,
     #[serde(rename = "type")]
-    pub blob_type: ObjectType,
+    pub blob_type: BlobType,
     pub offset: u32,
     pub length: u32,
 }

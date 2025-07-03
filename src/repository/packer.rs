@@ -142,7 +142,11 @@ impl Packer {
     /// ready to accumulate new blobs. Ownership of the `Vec<u8>` and `Vec<PackedBlobDescriptor>`
     /// is transferred to the caller, making this an efficient way to extract the packed content.
     /// The internal vectors retain their allocated capacity for future use.
-    pub fn flush(&mut self) -> FlushedPack {
+    pub fn flush(&mut self) -> Option<FlushedPack> {
+        if self.is_empty() {
+            return None;
+        }
+
         // Take ownership of the vectors, effectively swapping them with new empty ones.
         let mut data = std::mem::take(&mut self.data);
         let descriptors = std::mem::take(&mut self.blob_descriptors);
@@ -160,7 +164,7 @@ impl Packer {
         self.blob_descriptors
             .reserve(self.blob_descriptor_capacity_hint);
 
-        (data, descriptors, ID::from_bytes(hash.into()))
+        Some((data, descriptors, ID::from_bytes(hash.into())))
     }
 
     fn generate_header(descriptors: &Vec<PackedBlobDescriptor>) -> Vec<u8> {
@@ -319,7 +323,7 @@ mod tests {
         assert_eq!(packer.size(), 7 + 6 + 4);
         assert!(!packer.is_empty());
 
-        let (data, descriptors, id) = packer.flush();
+        let (data, descriptors, id) = packer.flush().expect("Flushed pack data must be Some");
 
         let expected_header_length = 4 + (3 * HEADER_BLOB_LEN);
         assert_eq!(data.len(), (7 + 6 + 4) + expected_header_length);
@@ -342,18 +346,8 @@ mod tests {
         assert_eq!(packer.size(), 0);
         assert!(packer.is_empty());
 
-        let (data, descriptors, id) = packer.flush();
-
-        let expected_header_length = 4 + (0 * HEADER_BLOB_LEN);
-        assert_eq!(data.len(), (0) + expected_header_length);
-        assert_eq!(
-            id.to_hex(),
-            "669c13550a3e727bb53d0d458f2e96e48571aa045dfabcfb4b7de16809484f11"
-        );
-
-        let header_descriptors = Packer::read_header(&data)?;
-        assert!(descriptors.is_empty());
-        assert_eq!(descriptors, header_descriptors);
+        let flushed_pack_data = packer.flush();
+        assert!(flushed_pack_data.is_none());
 
         Ok(())
     }

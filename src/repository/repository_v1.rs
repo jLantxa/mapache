@@ -491,27 +491,23 @@ impl Repository {
     }
 
     fn flush_packer(&self, packer: &Arc<RwLock<Packer>>) -> Result<(u64, u64)> {
-        let (mut raw, mut encoded) = (0, 0);
-        let (pack_data, packed_blob_descriptors, pack_id) = packer.write().flush();
+        match packer.write().flush() {
+            None => Ok((0, 0)),
+            Some((pack_data, packed_blob_descriptors, pack_id)) => {
+                if let Some(pack_saver) = self.pack_saver.write().as_ref() {
+                    pack_saver.save_pack(pack_data, SaveID::WithID(pack_id.clone()))?;
+                } else {
+                    bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
+                }
 
-        if pack_data.is_empty() {
-            return Ok((0, 0));
+                let (raw, encoded) =
+                    self.index
+                        .write()
+                        .add_pack(self, &pack_id, packed_blob_descriptors)?;
+
+                Ok((raw, encoded))
+            }
         }
-
-        if let Some(pack_saver) = self.pack_saver.write().as_ref() {
-            pack_saver.save_pack(pack_data, SaveID::WithID(pack_id.clone()))?;
-        } else {
-            bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
-        }
-
-        let (index_raw, index_encoded) =
-            self.index
-                .write()
-                .add_pack(self, &pack_id, packed_blob_descriptors)?;
-        raw += index_raw;
-        encoded += index_encoded;
-
-        Ok((raw, encoded))
     }
 
     fn load_master_index(&mut self) -> Result<()> {

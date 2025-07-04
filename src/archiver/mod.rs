@@ -42,12 +42,18 @@ use crate::{
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 
+pub struct SnapshotOptions {
+    pub absolute_source_paths: Vec<PathBuf>,
+    pub snapshot_root_path: PathBuf,
+    pub exclude_paths: Vec<PathBuf>,
+    pub parent_snapshot: Option<Snapshot>,
+    pub tags: Vec<String>,
+    pub description: Option<String>,
+}
+
 pub struct Archiver {
     repo: Arc<dyn RepositoryBackend>,
-    absolute_source_paths: Vec<PathBuf>,
-    snapshot_root_path: PathBuf,
-    exclude_paths: Vec<PathBuf>,
-    parent_snapshot: Option<Snapshot>,
+    snapshot_options: SnapshotOptions,
     read_concurrency: usize,
     write_concurrency: usize,
     progress_reporter: Arc<SnapshotProgressReporter>,
@@ -56,19 +62,13 @@ pub struct Archiver {
 impl Archiver {
     pub fn new(
         repo: Arc<dyn RepositoryBackend>,
-        absolute_source_paths: Vec<PathBuf>,
-        snapshot_root_path: PathBuf,
-        exclude_paths: Vec<PathBuf>,
-        parent_snapshot: Option<Snapshot>,
+        snapshot_options: SnapshotOptions,
         (read_concurrency, write_concurrency): (usize, usize),
         progress_reporter: Arc<SnapshotProgressReporter>,
     ) -> Self {
         Self {
             repo,
-            absolute_source_paths,
-            snapshot_root_path,
-            exclude_paths,
-            parent_snapshot,
+            snapshot_options,
             read_concurrency,
             write_concurrency,
             progress_reporter,
@@ -86,14 +86,15 @@ impl Archiver {
 
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ID> = arch
+            .snapshot_options
             .parent_snapshot
             .as_ref()
             .map(|snapshot| snapshot.tree.clone());
 
         // Create streamers
         let fs_streamer = match FSNodeStreamer::from_paths(
-            arch.absolute_source_paths.clone(),
-            arch.exclude_paths.clone(),
+            arch.snapshot_options.absolute_source_paths.clone(),
+            arch.snapshot_options.exclude_paths.clone(),
         ) {
             Ok(stream) => stream,
             Err(e) => bail!("Failed to create FSNodeStreamer: {:?}", e.to_string()),
@@ -101,7 +102,7 @@ impl Archiver {
         let previous_tree_streamer = SerializedNodeStreamer::new(
             arch.repo.clone(),
             parent_tree_id,
-            arch.snapshot_root_path.clone(),
+            arch.snapshot_options.snapshot_root_path.clone(),
             None,
             None,
         )?;
@@ -155,7 +156,7 @@ impl Archiver {
         let repo_clone = arch.repo.clone();
         let error_flag_clone = error_flag.clone();
         let processor_progress_reporter_clone = arch.progress_reporter.clone();
-        let snapshot_root_path_clone = arch.snapshot_root_path.clone();
+        let snapshot_root_path_clone = arch.snapshot_options.snapshot_root_path.clone();
 
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(arch.read_concurrency)
@@ -221,13 +222,13 @@ impl Archiver {
         let error_flag_clone = error_flag.clone();
         let repo_clone = arch.repo.clone();
         let serializer_progress_reporter_clone = arch.progress_reporter.clone();
-        let serializer_snapshot_root_path_clone = arch.snapshot_root_path.clone();
+        let serializer_snapshot_root_path_clone = arch.snapshot_options.snapshot_root_path.clone();
         let arch_clone = arch.clone();
-        let tree_serializer_thread = std::thread::spawn(move || {
+        let tree_serializer_thread = std::thread::spawn(move || -> Option<ID> {
             let mut final_root_tree_id: Option<ID> = None;
             let mut pending_trees = tree_serializer::init_pending_trees(
                 &serializer_snapshot_root_path_clone,
-                &arch.absolute_source_paths,
+                &arch_clone.snapshot_options.absolute_source_paths,
             );
 
             while let Ok(item) = process_item_rx.recv() {
@@ -278,38 +279,45 @@ impl Archiver {
                 }
             }
 
-            // Flush repo and finalize pack saver
-            let (index_raw_data, index_encoded_data) = arch_clone.repo.flush()?;
-            arch_clone
-                .progress_reporter
-                .written_meta_bytes(index_raw_data, index_encoded_data);
-            arch_clone.repo.finalize_pack_saver();
-
-            match final_root_tree_id {
-                Some(tree_id) => Ok(Snapshot {
-                    timestamp: Local::now(),
-                    tree: tree_id.clone(),
-                    root: arch_clone.snapshot_root_path.clone(),
-                    paths: arch_clone.absolute_source_paths.clone(),
-                    description: None,
-                    summary: arch_clone.progress_reporter.get_summary(),
-                }),
-                None => {
-                    if error_flag_clone.load(Ordering::Acquire) {
-                        Err(anyhow!("Snapshot creation failed due to a previous error."))
-                    } else {
-                        Err(anyhow!(
-                            "Failed to finalize snapshot: No root tree ID was generated."
-                        ))
-                    }
-                }
-            }
+            final_root_tree_id
         });
 
         // Join threads
         let _ = diff_thread.join();
         let _ = processor_thread.join();
-        tree_serializer_thread.join().unwrap()
+        let root_tree_id = tree_serializer_thread.join().unwrap();
+
+        let arch = match Arc::try_unwrap(arch) {
+            Ok(a) => a,
+            Err(_) => bail!("Cosa"),
+        };
+
+        // Flush repo and finalize pack saver
+        let (index_raw_data, index_encoded_data) = arch.repo.flush()?;
+        arch.progress_reporter
+            .written_meta_bytes(index_raw_data, index_encoded_data);
+        arch.repo.finalize_pack_saver();
+
+        match root_tree_id {
+            Some(tree_id) => Ok(Snapshot {
+                timestamp: Local::now(),
+                tree: tree_id,
+                root: arch.snapshot_options.snapshot_root_path,
+                paths: arch.snapshot_options.absolute_source_paths,
+                tags: arch.snapshot_options.tags,
+                description: arch.snapshot_options.description,
+                summary: arch.progress_reporter.get_summary(),
+            }),
+            None => {
+                if error_flag.load(Ordering::Acquire) {
+                    Err(anyhow!("Snapshot creation failed due to a previous error."))
+                } else {
+                    Err(anyhow!(
+                        "Failed to finalize snapshot: No root tree ID was generated."
+                    ))
+                }
+            }
+        }
     }
 }
 

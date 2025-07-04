@@ -16,14 +16,14 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Local;
 use clap::Args;
 use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    global::{self, ID},
+    global::{self, FileType, ID},
     repository::{
         self, RepositoryBackend,
         snapshot::{Snapshot, SnapshotStreamer},
@@ -40,6 +40,10 @@ use super::GlobalArgs;
 #[derive(Args, Debug)]
 pub struct CmdArgs {
     /// Show a compact list of snapshots
+    #[arg(value_parser)]
+    pub snapshot: Option<String>,
+
+    /// Show a compact list of snapshots
     #[arg(short, long)]
     pub compact: bool,
 }
@@ -50,7 +54,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
-    let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();
+    let mut snapshots_sorted: Vec<(ID, Snapshot)> = match &args.snapshot {
+        None => SnapshotStreamer::new(repo.clone())?.collect(),
+        Some(prefix) => {
+            let (id, _) = repo
+                .find(FileType::Snapshot, prefix)
+                .with_context(|| format!("Could not find snapshot {}", prefix))?;
+            let snapshot = repo.load_snapshot(&id)?;
+            vec![(id, snapshot)]
+        }
+    };
+
     snapshots_sorted.sort_by_key(|(_id, snapshot)| snapshot.timestamp);
 
     if snapshots_sorted.is_empty() {
@@ -89,6 +103,10 @@ fn log(snapshots: &[(ID, Snapshot)]) {
         );
         ui::cli::log!("{} {}", "Root:".bold(), &snapshot.root.display());
 
+        if !snapshot.tags.is_empty() {
+            ui::cli::log!("{} {}", "Tags:".bold(), &snapshot.tags.join(", "));
+        }
+
         ui::cli::log!();
         ui::cli::log!("{}", "Paths:".bold());
         for path in &snapshot.paths {
@@ -96,12 +114,11 @@ fn log(snapshots: &[(ID, Snapshot)]) {
             let relative_path = path
                 .strip_prefix(&snapshot.root)
                 .expect("Could not strip snapshot root from path");
-            ui::cli::log!("{}", relative_path.display());
+            ui::cli::log!("  {}", relative_path.display());
         }
 
         if let Some(description) = &snapshot.description {
             ui::cli::log!();
-            ui::cli::log!("{}", "Description:".bold().cyan());
             ui::cli::log!("{}", description);
         }
 

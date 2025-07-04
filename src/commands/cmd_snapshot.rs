@@ -26,7 +26,7 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::{
-    archiver::Archiver,
+    archiver::{Archiver, SnapshotOptions},
     backend::{make_dry_backend, new_backend_with_prompt},
     commands::find_use_snapshot,
     global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, global_opts},
@@ -51,6 +51,10 @@ pub struct CmdArgs {
     /// List of paths to exclude from the backup
     #[clap(long, value_parser, required = false)]
     pub exclude: Option<Vec<PathBuf>>,
+
+    /// Tags (comma-separated)
+    #[clap(long, value_delimiter = ',', value_parser)]
+    pub tags: Vec<String>,
 
     /// Snapshot description
     #[clap(long, value_parser)]
@@ -215,18 +219,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Process and save new snapshot
     let archiver = Archiver::new(
         repo.clone(),
-        absolute_source_paths,
-        snapshot_root_path,
-        cannonical_excludes.unwrap_or_default(),
-        parent_snapshot,
+        SnapshotOptions {
+            absolute_source_paths,
+            snapshot_root_path,
+            exclude_paths: cannonical_excludes.unwrap_or_default(),
+            parent_snapshot,
+            tags: args.tags.clone(),
+            description: args.description.clone(),
+        },
         (args.read_concurrency, args.write_concurrency),
         progress_reporter.clone(),
     );
-    let mut new_snapshot = archiver.snapshot()?;
+    let new_snapshot = archiver.snapshot()?;
 
-    if let Some(description) = args.description.as_ref() {
-        new_snapshot.description = Some(description.clone());
-    }
     let (snapshot_id, _snapshot_raw_size, _snapshot_encoded_size) = repo.save_file(
         global::FileType::Snapshot,
         serde_json::to_string(&new_snapshot)?.as_bytes(),

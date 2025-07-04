@@ -36,9 +36,15 @@ pub struct Snapshot {
     pub root: PathBuf,
 
     /// Absolute paths to the targets
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<PathBuf>,
 
+    /// Tags
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+
     /// Description of the snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     /// Summary of the Snapshot.

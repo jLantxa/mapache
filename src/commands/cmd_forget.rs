@@ -391,7 +391,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -414,7 +415,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -437,7 +439,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -460,7 +463,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -483,7 +487,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -508,7 +513,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -532,7 +538,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -556,7 +563,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -580,7 +588,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -604,7 +613,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -628,7 +638,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -651,7 +662,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -675,7 +687,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -698,7 +711,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -721,7 +735,8 @@ mod tests {
                     )
                     .unwrap(),
                     root: PathBuf::from("/"),
-                    paths: vec![],
+                    paths: Vec::new(),
+                    tags: Vec::new(),
                     description: None,
                     summary: Default::default(),
                 },

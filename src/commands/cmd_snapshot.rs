@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
+    collections::BTreeSet,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -91,12 +92,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
-    // Cannonicalize source paths
+    // Cannonicalize and deduplicate source paths
+    // Use a BTreeSet to remove duplicate paths and sort them alphabetically.
     let source_paths = &args.paths;
-    let mut absolute_source_paths = Vec::new();
+    let mut absolute_source_paths = BTreeSet::new();
     for path in source_paths {
         match std::fs::canonicalize(path) {
-            Ok(absolute_path) => absolute_source_paths.push(absolute_path),
+            Ok(absolute_path) => {
+                let _ = absolute_source_paths.insert(absolute_path);
+            }
             Err(e) => bail!("{:?}: {}", path, e.to_string()),
         }
     }
@@ -116,11 +120,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     absolute_source_paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
-
-    // Sort the source paths before passing them to the Archiver.
-    // This sorting is not necessary for the Archival process, but the paths
-    // will appear sorted in the Snapshot metadata.
-    absolute_source_paths.sort_unstable();
+    let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
 
     // Extract the snapshot root path
     let snapshot_root_path = if absolute_source_paths.is_empty() {

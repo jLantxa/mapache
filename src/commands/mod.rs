@@ -27,6 +27,7 @@ use crate::{
     },
 };
 
+pub mod cmd_amend;
 pub mod cmd_cat;
 pub mod cmd_forget;
 pub mod cmd_gc;
@@ -67,6 +68,9 @@ pub enum Command {
 
     #[clap(about = "Show all snapshots present in the repository")]
     Log(cmd_log::CmdArgs),
+
+    #[clap(about = "Amend an existing snapshot")]
+    Amend(cmd_amend::CmdArgs),
 
     #[clap(about = "Remove snapshots from the repository")]
     Forget(cmd_forget::CmdArgs),
@@ -165,6 +169,7 @@ pub fn run(args: &Cli) -> Result<()> {
         Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, cmd_args),
         Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, cmd_args),
         Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, cmd_args),
+        Command::Amend(cmd_args) => cmd_amend::run(&args.global_args, cmd_args),
         Command::Gc(cmd_args) => cmd_gc::run(&args.global_args, cmd_args),
         Command::Log(cmd_args) => cmd_log::run(&args.global_args, cmd_args),
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),

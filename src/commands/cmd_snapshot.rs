@@ -24,20 +24,20 @@ use std::{
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     archiver::{Archiver, SnapshotOptions},
     backend::{make_dry_backend, new_backend_with_prompt},
     commands::find_use_snapshot,
-    global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, global_opts},
+    global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{self, RepositoryBackend, snapshot::Snapshot, streamers::FSNodeStreamer},
     ui::{
-        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
+        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target,
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },
-    utils,
+    utils::{self, format_size},
 };
 
 use super::{GlobalArgs, UseSnapshot};
@@ -157,23 +157,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    let verbosity = global_opts().as_ref().unwrap().verbosity;
-    let draw_target = if verbosity > 0 {
-        ProgressDrawTarget::stderr_with_hz(PROGRESS_REFRESH_RATE_HZ)
-    } else {
-        ProgressDrawTarget::hidden()
-    };
-
     // Scan filesystem
     let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(draw_target);
+    spinner.set_draw_target(default_bar_draw_target());
     spinner.set_style(
         ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
+            .template("{spinner:.cyan} Scanning filesystem ({msg})")
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.set_message("Scanning filesystem...");
     spinner.enable_steady_tick(Duration::from_millis(
         (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
     ));
@@ -186,8 +178,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         absolute_source_paths.clone(),
         cannonical_excludes.clone().unwrap_or_default(),
     )?;
-    for stream_node_result in scan_streamer {
-        let (_path, stream_node) = stream_node_result?;
+    for (_path, stream_node) in scan_streamer.flatten() {
         let node = stream_node.node;
 
         if node.is_dir() {
@@ -196,17 +187,23 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             num_files += 1;
             total_bytes += node.metadata.size;
         }
+
+        spinner.set_message(format!(
+            "{} files, {} dirs, {}",
+            num_files,
+            num_dirs,
+            format_size(total_bytes, 3)
+        ));
     }
 
     spinner.finish_and_clear();
     ui::cli::log!(
-        "{} {} files, {} directories, {}",
+        "{} {} files, {} directories, {}\n",
         "To commit:".bold().cyan(),
         num_files,
         num_dirs,
         utils::format_size(total_bytes, 3),
     );
-    ui::cli::log!();
 
     // Run Archiver
     let expected_items = num_files + num_dirs;

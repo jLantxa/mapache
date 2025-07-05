@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use {
@@ -31,7 +32,7 @@ use crate::{
         RepositoryBackend,
         tree::{Node, NodeType},
     },
-    ui,
+    ui::{self, restore_progress::RestoreProgressReporter},
 };
 
 #[cfg(unix)]
@@ -45,6 +46,7 @@ use {
 /// done in a reparate pass.
 pub(crate) fn restore_node_to_path(
     repo: &dyn RepositoryBackend,
+    progress_reporter: Arc<RestoreProgressReporter>,
     node: &Node,
     dst_path: &Path,
 ) -> Result<()> {
@@ -83,6 +85,8 @@ pub(crate) fn restore_node_to_path(
                     )
                 })?;
 
+                let chunk_size = chunk_data.len() as u64;
+
                 dst_file.write_all(&chunk_data).with_context(|| {
                     format!(
                         "Could not restore block #{} ({}) to file '{}'",
@@ -91,6 +95,8 @@ pub(crate) fn restore_node_to_path(
                         dst_path.display()
                     )
                 })?;
+
+                progress_reporter.processed_bytes(chunk_size);
             }
 
             // Restore metadata after content is written

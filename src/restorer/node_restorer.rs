@@ -49,65 +49,94 @@ pub(crate) fn restore_node_to_path(
     progress_reporter: Arc<RestoreProgressReporter>,
     node: &Node,
     dst_path: &Path,
+    dry_run: bool,
 ) -> Result<()> {
     match node.node_type {
         NodeType::File => {
-            if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "Could not create parent directories for file '{}'",
-                        dst_path.display()
-                    )
-                })?;
+            if !dry_run {
+                if let Some(parent) = dst_path.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "Could not create parent directories for file '{}'",
+                            dst_path.display()
+                        )
+                    })?;
+                }
+
+                let mut dst_file = OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(dst_path)
+                    .with_context(|| {
+                        format!("Could not create destination file '{}'", dst_path.display())
+                    })?;
+
+                let blocks = node
+                    .blobs
+                    .as_ref()
+                    .expect("File Node must have contents (even if empty)");
+
+                for (index, chunk_hash) in blocks.iter().enumerate() {
+                    let chunk_data = repo.load_blob(chunk_hash).with_context(|| {
+                        format!(
+                            "Could not load block #{} ({}) for restoring file '{}'",
+                            index + 1,
+                            chunk_hash,
+                            dst_path.display()
+                        )
+                    })?;
+
+                    let chunk_size = chunk_data.len() as u64;
+
+                    dst_file.write_all(&chunk_data).with_context(|| {
+                        format!(
+                            "Could not restore block #{} ({}) to file '{}'",
+                            index + 1,
+                            chunk_hash,
+                            dst_path.display()
+                        )
+                    })?;
+
+                    progress_reporter.processed_bytes(chunk_size);
+                }
+
+                // Restore metadata after content is written
+                restore_node_metadata(node, dst_path)?;
+            } else {
+                // dry-run restore doesn't read the blobs. It only access the blob metadata
+                // from the master index in the repository.
+                let blocks = node
+                    .blobs
+                    .as_ref()
+                    .expect("File Node must have contents (even if empty)");
+
+                let index = repo.index();
+
+                for (i, blob_id) in blocks.iter().enumerate() {
+                    match index.read().get(blob_id) {
+                        Some((_pack_od, _blob_type, _offset, length)) => {
+                            progress_reporter.processed_bytes(length as u64)
+                        }
+                        None => ui::cli::warning!(
+                            "Could not load block #{} ({}) for restoring file '{}'",
+                            i + 1,
+                            blob_id,
+                            dst_path.display()
+                        ),
+                    }
+                }
             }
-
-            let mut dst_file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(dst_path)
-                .with_context(|| {
-                    format!("Could not create destination file '{}'", dst_path.display())
-                })?;
-
-            let blocks = node
-                .blobs
-                .as_ref()
-                .expect("File Node must have contents (even if empty)");
-
-            for (index, chunk_hash) in blocks.iter().enumerate() {
-                let chunk_data = repo.load_blob(chunk_hash).with_context(|| {
-                    format!(
-                        "Could not load block #{} ({}) for restoring file '{}'",
-                        index + 1,
-                        chunk_hash,
-                        dst_path.display()
-                    )
-                })?;
-
-                let chunk_size = chunk_data.len() as u64;
-
-                dst_file.write_all(&chunk_data).with_context(|| {
-                    format!(
-                        "Could not restore block #{} ({}) to file '{}'",
-                        index + 1,
-                        chunk_hash,
-                        dst_path.display()
-                    )
-                })?;
-
-                progress_reporter.processed_bytes(chunk_size);
-            }
-
-            // Restore metadata after content is written
-            restore_node_metadata(node, dst_path)?;
         }
 
         NodeType::Directory => {
-            std::fs::create_dir_all(dst_path)
-                .with_context(|| format!("Could not create directory '{}'", dst_path.display()))?;
-            // Restore metadata after directory is created
-            restore_node_metadata(node, dst_path)?;
+            if !dry_run {
+                std::fs::create_dir_all(dst_path).with_context(|| {
+                    format!("Could not create directory '{}'", dst_path.display())
+                })?;
+                // Restore metadata after directory is created
+                restore_node_metadata(node, dst_path)?;
+            }
         }
 
         NodeType::Symlink => {
@@ -122,7 +151,9 @@ pub(crate) fn restore_node_to_path(
 
             #[cfg(unix)]
             {
-                if let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, dst_path) {
+                if !dry_run
+                    && let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, dst_path)
+                {
                     ui::cli::warning!(
                         "Could not create symlink '{}' pointing to '{}' : {}",
                         dst_path.display(),
@@ -137,8 +168,11 @@ pub(crate) fn restore_node_to_path(
                 match symlink_info.target_type {
                     // Directory symlink
                     Some(NodeType::Directory) => {
-                        if let Err(e) =
-                            std::os::windows::fs::symlink_dir(dst_path, &symlink_info.target_path)
+                        if !dry_run
+                            && let Err(e) = std::os::windows::fs::symlink_dir(
+                                dst_path,
+                                &symlink_info.target_path,
+                            )
                         {
                             ui::cli::warning!(
                                 "Could not create symlink '{}' pointing to '{}' : {}",
@@ -150,8 +184,11 @@ pub(crate) fn restore_node_to_path(
                     }
                     // Everything else (not a directory)
                     Some(_) => {
-                        if let Err(e) =
-                            std::os::windows::fs::symlink_file(dst_path, &symlink_info.target_path)
+                        if !dry_run
+                            && let Err(e) = std::os::windows::fs::symlink_file(
+                                dst_path,
+                                &symlink_info.target_path,
+                            )
                         {
                             ui::cli::warning!(
                                 "Could not create symlink '{}' pointing to '{}' : {}",

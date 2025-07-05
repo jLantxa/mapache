@@ -36,6 +36,11 @@ pub enum Resolution {
     Fail,
 }
 
+pub struct Options {
+    pub resolution: Resolution,
+    pub dry_run: bool,
+}
+
 pub struct Restorer {}
 
 impl Restorer {
@@ -43,11 +48,10 @@ impl Restorer {
     pub fn restore(
         repo: Arc<dyn RepositoryBackend>,
         snapshot: &Snapshot,
-        resolution: &Resolution,
-        dry_run: bool,
         target_path: &Path,
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
+        opts: Options,
         progress_reporter: Arc<RestoreProgressReporter>,
     ) -> Result<()> {
         let tree = snapshot.tree.clone();
@@ -72,7 +76,7 @@ impl Restorer {
             let restore_path = target_path.join(&path);
 
             if restore_path.exists() {
-                match resolution {
+                match opts.resolution {
                     Resolution::Skip => {
                         progress_reporter.processed_file(&path);
                         continue;
@@ -91,27 +95,26 @@ impl Restorer {
                 dir_stack.push((path, atime, mtime));
             }
 
-            if !dry_run {
-                // Attempt to restore the node.
-                if let Err(e) = node_restorer::restore_node_to_path(
-                    repo.as_ref(),
-                    progress_reporter.clone(),
-                    &stream_node.node,
-                    &restore_path,
-                ) {
-                    bail!(
-                        "Failed to restore item \'{}\': {}",
-                        restore_path.display(),
-                        e
-                    )
-                }
+            // Attempt to restore the node.
+            if let Err(e) = node_restorer::restore_node_to_path(
+                repo.as_ref(),
+                progress_reporter.clone(),
+                &stream_node.node,
+                &restore_path,
+                opts.dry_run,
+            ) {
+                bail!(
+                    "Failed to restore item \'{}\': {}",
+                    restore_path.display(),
+                    e
+                )
             }
 
             progress_reporter.processed_file(&path);
         }
 
         // Second pass for the directory file times
-        if !dry_run {
+        if !opts.dry_run {
             while let Some((path, atime, mtime)) = dir_stack.pop() {
                 node_restorer::restore_times(&path, atime.as_ref(), mtime.as_ref())?;
             }

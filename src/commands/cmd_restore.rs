@@ -30,7 +30,7 @@ use crate::{
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
     repository::{self, RepositoryBackend, streamers::SerializedNodeStreamer},
-    restorer::{Resolution, Restorer},
+    restorer::{self, Resolution, Restorer},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, cli, default_bar_draw_target,
         restore_progress::RestoreProgressReporter,
@@ -164,11 +164,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     Restorer::restore(
         repo.clone(),
         &snapshot,
-        &args.resolution,
-        args.dry_run,
         &args.target,
         args.include.clone(),
         args.exclude.clone(),
+        restorer::Options {
+            dry_run: args.dry_run,
+            resolution: args.resolution.clone(),
+        },
         progress_reporter.clone(),
     )?;
 

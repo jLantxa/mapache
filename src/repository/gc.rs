@@ -96,18 +96,23 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
 
     // Check garbage levels
     let spinner = ProgressBar::new_spinner();
+    spinner.set_length(pack_garbage.len() as u64);
     spinner.set_style(
         ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Checking garbage levels...")
+            .template("{spinner:.cyan} Checking garbage levels ({pos} / {len} packs)")
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
+    spinner.enable_steady_tick(Duration::from_millis(
+        (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+    ));
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
         if (garbage_bytes as f32 / MAX_PACK_SIZE as f32) > tolerance {
             plan.obsolete_packs.insert(pack_id);
         } else {
             plan.tolerated_packs.insert(pack_id);
         }
+        spinner.inc(1);
     }
     spinner.finish_and_clear();
 
@@ -132,9 +137,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting unused packs: {pos}/{len}",
-                )
+                .template("[{bar:25.cyan/white}] Deleting unused packs: {pos}/{len}")
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -172,7 +175,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{custom_elapsed}] [{bar:25.cyan/white}] Repacking blobs: {pos}/{len}")
+                .template("[{bar:25.cyan/white}] Repacking blobs: {pos}/{len}")
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -217,14 +220,16 @@ impl Plan {
         let new_index_ids = self.repo.index().read().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
 
-        let index_delete_bar =
-            ProgressBar::with_draw_target(Some(self.index_ids.len() as u64), default_bar_draw_target())
-                .with_style(ProgressStyle::default_bar().template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting old index files: {pos}/{len}",
-                )
+        let index_delete_bar = ProgressBar::with_draw_target(
+            Some(self.index_ids.len() as u64),
+            default_bar_draw_target(),
+        )
+        .with_style(
+            ProgressStyle::default_bar()
+                .template("[{bar:25.cyan/white}] Deleting old index files: {pos}/{len}")
                 .unwrap()
-                .progress_chars("=> ")
-            );
+                .progress_chars("=> "),
+        );
 
         self.index_ids.par_iter().for_each(|id| {
             let _ = self.repo.delete_file(crate::global::FileType::Index, id);
@@ -237,14 +242,16 @@ impl Plan {
         );
 
         // Delete obsolete pack files
-        let obsolete_pack_delete_bar =
-            ProgressBar::with_draw_target(Some(self.obsolete_packs.len() as u64), default_bar_draw_target())
-                .with_style(ProgressStyle::default_bar().template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] Deleting obsolete pack files: {pos}/{len}",
-                )
+        let obsolete_pack_delete_bar = ProgressBar::with_draw_target(
+            Some(self.obsolete_packs.len() as u64),
+            default_bar_draw_target(),
+        )
+        .with_style(
+            ProgressStyle::default_bar()
+                .template("[{bar:25.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
                 .unwrap()
-                .progress_chars("=> ")
-            );
+                .progress_chars("=> "),
+        );
 
         self.obsolete_packs.par_iter().for_each(|id| {
             let _ = self.repo.delete_file(crate::global::FileType::Object, id);

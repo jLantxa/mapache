@@ -43,17 +43,17 @@ pub struct RestoreProgressReporter {
 }
 
 impl RestoreProgressReporter {
-    pub fn new(num_expected_items: u64, num_processed_items: usize) -> Self {
+    pub fn new(num_expected_items: u64, num_expected_bytes: u64, num_display_items: usize) -> Self {
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));
 
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
-        let progress_bar = mp.add(ProgressBar::new(num_expected_items));
+        let progress_bar = mp.add(ProgressBar::new(num_expected_bytes));
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template(
-                    "[{custom_elapsed}] [{bar:25.cyan/white}] {processed_items_formated}  [ETA: {custom_eta}]"
+                    "[{custom_elapsed}] [{bar:25.cyan/white}] [{processed_bytes_formated}] [{processed_items_formated}]  [ETA: {custom_eta}]"
                 )
                 .unwrap()
                 .progress_chars("=> ")
@@ -65,18 +65,21 @@ impl RestoreProgressReporter {
                 .with_key("processed_items_formated", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
                     let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
                     let s = format!("{item_count} / {num_expected_items} items");
-
                     let _ = w.write_str(&s);
                 })
-                 .with_key("custom_eta", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
+                .with_key("processed_bytes_formated", move |state:&ProgressState, w: &mut dyn std::fmt::Write|{
+                    let s = format!("{} / {}", utils::format_size(state.pos(), 3), utils::format_size(state.len().unwrap(), 3));
+                    let _ = w.write_str(&s);
+                })
+                .with_key("custom_eta", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {
                     let eta = state.eta();
                     let custom_eta= utils::pretty_print_duration(eta);
                     let _ = w.write_str(&custom_eta);
                 })
         );
 
-        let mut file_spinners = Vec::with_capacity(num_processed_items);
-        for _ in 0..num_processed_items {
+        let mut file_spinners = Vec::with_capacity(num_display_items);
+        for _ in 0..num_display_items {
             let file_spinner = mp.add(ProgressBar::new_spinner());
             file_spinner.set_style(
                 ProgressStyle::default_spinner()
@@ -126,8 +129,11 @@ impl RestoreProgressReporter {
         let idx = self.processing_items.read().iter().position(|p| *p == path);
         if let Some(i) = idx {
             self.processing_items.write().remove(i);
-            self.processed_items_count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.processed_items_count.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    pub fn processed_bytes(&self, bytes: u64) {
+        self.progress_bar.inc(bytes);
     }
 }

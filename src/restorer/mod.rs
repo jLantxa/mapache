@@ -95,6 +95,7 @@ impl Restorer {
                 // Attempt to restore the node.
                 if let Err(e) = node_restorer::restore_node_to_path(
                     repo.as_ref(),
+                    progress_reporter.clone(),
                     &stream_node.node,
                     &restore_path,
                 ) {

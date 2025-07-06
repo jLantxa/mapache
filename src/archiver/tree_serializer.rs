@@ -17,7 +17,6 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use anyhow::{Context, Result};
@@ -29,7 +28,6 @@ use crate::{
         streamers::StreamNode,
         tree::{Node, NodeType, Tree},
     },
-    ui::snapshot_progress::SnapshotProgressReporter,
     utils,
 };
 
@@ -101,8 +99,7 @@ pub(crate) fn handle_processed_item(
     pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
     final_root_tree_id: &mut Option<ID>,
     snapshot_root_path: &Path,
-    progress_reporter: &Arc<SnapshotProgressReporter>,
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     let mut dir_path = utils::extract_parent(&path)
         .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
 
@@ -138,7 +135,6 @@ pub(crate) fn handle_processed_item(
         pending_trees,
         final_root_tree_id,
         snapshot_root_path,
-        progress_reporter,
     )
 }
 
@@ -148,15 +144,14 @@ pub(crate) fn finalize_if_complete(
     pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
     final_root_tree_id: &mut Option<ID>,
     snapshot_root_path: &Path,
-    progress_reporter: &Arc<SnapshotProgressReporter>,
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     // Check if the tree exists and is not pending without consuming it
     let Some(this_pending_tree_peek) = pending_trees.get(&dir_path) else {
-        return Ok(());
+        return Ok((0, 0));
     };
 
     if this_pending_tree_peek.is_pending() {
-        return Ok(());
+        return Ok((0, 0));
     }
 
     // Now that we know it's complete, remove it
@@ -172,9 +167,6 @@ pub(crate) fn finalize_if_complete(
     };
 
     let (tree_id, raw_tree_size, encoded_tree_size) = completed_tree.save_to_repo(repo)?;
-
-    // Notify reporter
-    progress_reporter.written_meta_bytes(raw_tree_size, encoded_tree_size);
 
     // If the current directory is the snapshot root, store its tree ID as the
     // final root ID. Otherwise, it's an intermediate directory, so update its
@@ -207,11 +199,10 @@ pub(crate) fn finalize_if_complete(
             pending_trees,
             final_root_tree_id,
             snapshot_root_path,
-            progress_reporter,
         )?;
     }
 
-    Ok(())
+    Ok((raw_tree_size, encoded_tree_size))
 }
 
 #[inline]

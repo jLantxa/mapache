@@ -20,23 +20,23 @@ pub mod tree_serializer;
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use chrono::Local;
 use tree_serializer::finalize_if_complete;
 
 use crate::{
     global::ID,
     repository::{
-        RepositoryBackend,
         snapshot::Snapshot,
         streamers::{
             FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode,
         },
+        RepositoryBackend,
     },
     ui,
     ui::snapshot_progress::SnapshotProgressReporter,
@@ -289,30 +289,36 @@ impl Archiver {
         let _ = processor_thread.join();
         let root_tree_id = tree_serializer_thread.join().unwrap();
 
-        let arch = match Arc::try_unwrap(arch) {
+        // Unwrap the archiver Arc to avoid cloning the contents.
+        // Archiver cannot implement Debug, so unwrap is not available.
+        // This match is unavoidable.
+        let archiver = match Arc::try_unwrap(arch) {
             Ok(a) => a,
-            Err(_) => bail!("Cosa"),
+            // This error is never supposed to happen because at this point
+            // only one copy of the Arc exists.
+            Err(_) => bail!("Fatal error ocurred unwrapping the Archiver pointer."),
         };
 
         // Flush repo and finalize pack saver
-        let (index_raw_data, index_encoded_data) = arch.repo.flush()?;
-        arch.progress_reporter
+        let (index_raw_data, index_encoded_data) = archiver.repo.flush()?;
+        archiver
+            .progress_reporter
             .written_meta_bytes(index_raw_data, index_encoded_data);
-        arch.repo.finalize_pack_saver();
+        archiver.repo.finalize_pack_saver();
 
         match root_tree_id {
             Some(tree_id) => Ok(Snapshot {
                 timestamp: Local::now(),
-                parent: arch
+                parent: archiver
                     .snapshot_options
                     .parent_snapshot
                     .map(|(id, _)| id.clone()),
                 tree: tree_id,
-                root: arch.snapshot_options.snapshot_root_path,
-                paths: arch.snapshot_options.absolute_source_paths,
-                tags: arch.snapshot_options.tags,
-                description: arch.snapshot_options.description,
-                summary: arch.progress_reporter.get_summary(),
+                root: archiver.snapshot_options.snapshot_root_path,
+                paths: archiver.snapshot_options.absolute_source_paths,
+                tags: archiver.snapshot_options.tags,
+                description: archiver.snapshot_options.description,
+                summary: archiver.progress_reporter.get_summary(),
             }),
             None => {
                 if error_flag.load(Ordering::Acquire) {

@@ -111,9 +111,11 @@ Commands:
   snapshot  Create a new snapshot
   restore   Restore a snapshot
   log       Show all snapshots present in the repository
+  amend     Amend an existing snapshot
   forget    Remove snapshots from the repository
   gc        Remove obsolete objects from the repository
   ls        List nodes in the repository
+  diff      Show differences between snapshots
   cat       Print repository objects
   help      Print this message or the help of the given subcommand(s)
 

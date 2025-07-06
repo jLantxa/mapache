@@ -14,17 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
+use crate::utils::format_size;
 use crate::{
+    archiver::tree_serializer,
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
-    global::{FileType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::{self, RepositoryBackend},
+    global::{FileType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    repository::{self, RepositoryBackend, snapshot::Snapshot, streamers::SerializedNodeStreamer},
     ui, utils,
 };
 
@@ -51,6 +54,10 @@ pub struct CmdArgs {
     /// Clear description
     #[clap(long, value_parser, group = "description_group")]
     pub clear_description: bool,
+
+    /// List of paths to exclude from the backup
+    #[clap(long, value_parser, required = false)]
+    pub exclude: Option<Vec<PathBuf>>,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -59,6 +66,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
+
+    let (mut raw, mut encoded) = (0, 0);
+    repo.init_pack_saver(1);
 
     let (orig_snapshot_id, mut snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
         Ok(Some((id, snap))) => (id, snap),
@@ -77,22 +87,118 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         snapshot.tags = Vec::new();
     }
 
+    if args.exclude.is_some() {
+        rewrite_snapshot_tree(repo.clone(), &mut snapshot, args.exclude.clone())?;
+    }
+
     // Save the amended snapshot and delete the old snapshot file
-    let (new_id, _raw, _encoded) = repo.save_file(
+    let (new_id, raw_meta, encoded_meta) = repo.save_file(
         FileType::Snapshot,
         serde_json::to_string(&snapshot)?.as_bytes(),
         SaveID::CalculateID,
     )?;
-    repo.delete_file(FileType::Snapshot, &orig_snapshot_id)?;
+    raw += raw_meta;
+    encoded += encoded_meta;
+
+    // Delete the old snapshot ID if it changed
+    // Note: To protect the repo from interruptions, we delete the snapshot only
+    // after the new one is saved.
+    if new_id != orig_snapshot_id {
+        repo.delete_file(FileType::Snapshot, &orig_snapshot_id)?;
+    }
+
+    let (raw_meta, encoded_meta) = repo.flush()?;
+    raw += raw_meta;
+    encoded += encoded_meta;
+
+    repo.finalize_pack_saver();
 
     ui::cli::log!(
         "Snapshot {} amended.\nNew snapshot ID {}",
         orig_snapshot_id
             .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
             .bold()
-            .yellow(),
+            .red(),
         new_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().green()
+    );
+    ui::cli::log!(
+        "Added to the repository: {} {}",
+        format_size(raw, 3).bold().yellow(),
+        format!("({} compressed)", format_size(encoded, 3))
+            .bold()
+            .green()
     );
 
     Ok(())
+}
+
+fn rewrite_snapshot_tree(
+    repo: Arc<dyn RepositoryBackend>,
+    snapshot: &mut Snapshot,
+    excludes: Option<Vec<PathBuf>>,
+) -> Result<(u64, u64)> {
+    let (mut raw_bytes, mut encoded_bytes) = (0, 0);
+
+    let node_streamer = SerializedNodeStreamer::new(
+        repo.clone(),
+        Some(snapshot.tree.clone()),
+        PathBuf::new(),
+        None,
+        excludes.clone(),
+    )?;
+
+    let mut final_root_tree_id: Option<ID> = None;
+    let mut pending_trees: BTreeMap<PathBuf, tree_serializer::PendingTree> = BTreeMap::new();
+    pending_trees.insert(
+        PathBuf::new(),
+        tree_serializer::PendingTree {
+            node: None,
+            children: BTreeMap::new(),
+            num_expected_children: tree_serializer::ExpectedChildren::Known(snapshot.paths.len()),
+        },
+    );
+
+    for (path, stream_node) in node_streamer.flatten() {
+        // The path is not excluded, so we add the node to the pending trees map.
+        let (raw, encoded) = tree_serializer::handle_processed_item(
+            (path, stream_node),
+            repo.as_ref(),
+            &mut pending_trees,
+            &mut final_root_tree_id,
+            &PathBuf::new(),
+        )?;
+
+        raw_bytes += raw;
+        encoded_bytes += encoded;
+    }
+
+    for ex_path in excludes.unwrap_or_default() {
+        // The path must be excluded, so, instead of adding the node to the pending trees map,
+        // we decrease the parent's expected children counter by 1.
+        let parent_path = utils::extract_parent(&ex_path)
+            .expect("Excluded path must have a parent in the snapshot tree");
+        pending_trees.entry(parent_path.clone()).and_modify(|p| {
+            if let tree_serializer::ExpectedChildren::Known(n) = p.num_expected_children {
+                p.num_expected_children = tree_serializer::ExpectedChildren::Known(n - 1);
+            }
+        });
+
+        let (raw, encoded) = tree_serializer::finalize_if_complete(
+            parent_path,
+            repo.as_ref(),
+            &mut pending_trees,
+            &mut final_root_tree_id,
+            &PathBuf::new(),
+        )?;
+
+        raw_bytes += raw;
+        encoded_bytes += encoded;
+    }
+
+    match final_root_tree_id {
+        Some(amended_tree_id) => snapshot.tree = amended_tree_id,
+        None => bail!("Failed to serialize new snapshot tree"),
+    }
+
+    Ok((raw_bytes, encoded_bytes))
 }

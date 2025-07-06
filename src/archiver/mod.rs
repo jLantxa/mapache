@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 mod processor;
-mod tree_serializer;
+pub mod tree_serializer;
 
 use std::{
     path::PathBuf,
@@ -244,20 +244,23 @@ impl Archiver {
                         .unwrap(),
                 );
 
-                if let Err(e) = tree_serializer::handle_processed_item(
+                match tree_serializer::handle_processed_item(
                     item,
                     repo_clone.as_ref(),
                     &mut pending_trees,
                     &mut final_root_tree_id,
                     &serializer_snapshot_root_path_clone,
-                    &serializer_progress_reporter_clone,
                 ) {
-                    error_flag_clone.store(true, Ordering::Release);
-                    ui::cli::error!(
-                        "Archiver serializer thread errored handling processed item: {:?}",
-                        e.to_string()
-                    );
-                    break;
+                    Ok((raw_tree_size, encoded_tree_size)) => serializer_progress_reporter_clone
+                        .written_meta_bytes(raw_tree_size, encoded_tree_size),
+                    Err(e) => {
+                        error_flag_clone.store(true, Ordering::Release);
+                        ui::cli::error!(
+                            "Archiver serializer thread errored handling processed item: {:?}",
+                            e.to_string()
+                        );
+                        break;
+                    }
                 }
             }
 
@@ -269,7 +272,6 @@ impl Archiver {
                     &mut pending_trees,
                     &mut final_root_tree_id,
                     &serializer_snapshot_root_path_clone,
-                    &serializer_progress_reporter_clone,
                 ) {
                     error_flag_clone.store(true, Ordering::Release);
                     ui::cli::error!(

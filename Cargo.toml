@@ -8,10 +8,6 @@ edition = "2024"
 opt-level = 3
 
 
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-
-
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.98"

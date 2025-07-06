@@ -93,7 +93,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     for (path, source, target, diff_type) in diff_streamer.flatten() {
         match diff_type {
             NodeDiff::New => {
-                ui::cli::log!("{} {}", "+".bold().green(), path.display());
+                ui::cli::log!("{}  {}", "+".bold().green(), path.display());
                 if target
                     .expect("Target node (new) should not be None")
                     .node
@@ -105,7 +105,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
             }
             NodeDiff::Deleted => {
-                ui::cli::log!("{} {}", "-".bold().red(), path.display());
+                ui::cli::log!("{}  {}", "-".bold().red(), path.display());
                 if source
                     .expect("Source node (deleted) should not be None")
                     .node
@@ -117,7 +117,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
             }
             NodeDiff::Changed => {
-                ui::cli::log!("{} {}", "M".bold().yellow(), path.display());
+                ui::cli::log!("{}  {}", "M".bold().yellow(), path.display());
                 if target
                     .expect("Target node (changed) should not be None")
                     .node

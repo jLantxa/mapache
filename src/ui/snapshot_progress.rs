@@ -24,6 +24,7 @@ use std::{
     time::Duration,
 };
 
+use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
@@ -184,8 +185,14 @@ impl SnapshotProgressReporter {
         }
 
         if self.verbosity >= 3 {
+            let diff_mark = match diff {
+                NodeDiff::New => "+".bold().green(),
+                NodeDiff::Deleted => "-".bold().red(),
+                NodeDiff::Changed => "M".bold().yellow(),
+                NodeDiff::Unchanged => "U".bold(),
+            };
             self.progress_bar
-                .println(format!("{:?} {}", diff, path.display()));
+                .println(format!("{}  {}", diff_mark, path.display()));
         }
     }
 

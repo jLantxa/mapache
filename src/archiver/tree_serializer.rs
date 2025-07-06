@@ -33,7 +33,7 @@ use crate::{
 
 /// Represents the expected number of children for a directory node.
 #[derive(Debug, PartialEq, Eq)]
-enum ExpectedChildren {
+pub(crate) enum ExpectedChildren {
     /// The number of children is known.
     Known(usize),
     /// The number of children is not yet known (e.g., for the root before stream processing).
@@ -55,9 +55,9 @@ impl From<isize> for ExpectedChildren {
 /// and the number of children expected from the stream.
 #[derive(Debug)]
 pub(crate) struct PendingTree {
-    num_expected_children: ExpectedChildren,
-    node: Option<Node>,
-    children: BTreeMap<String, Node>,
+    pub num_expected_children: ExpectedChildren,
+    pub node: Option<Node>,
+    pub children: BTreeMap<String, Node>,
 }
 
 impl PendingTree {

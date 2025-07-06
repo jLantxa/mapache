@@ -73,7 +73,7 @@ After that, the plan is to expand the functionality with new options, features, 
 
 The goal of this milestone is to add convenience and quality of like feature. Things that are not strictly necessary but make mapache nicer to use. The real goal is to work towards a stable repository format that allows me to add features in the future without making previous versions incompatible. This includes:
 
-- [ ] `amend` command to remove files from existing snapshots and modify metadata.
+- [x] `amend` command to remove files from existing snapshots and modify metadata.
 - [ ] `diff` command to show differences between snapshots
 - [ ] `verify` command to verify the integrity of the data stored in the repository.
 - [ ] Key managment.

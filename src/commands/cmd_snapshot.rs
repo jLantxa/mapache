@@ -31,7 +31,11 @@ use crate::{
     backend::{make_dry_backend, new_backend_with_prompt},
     commands::find_use_snapshot,
     global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::{self, RepositoryBackend, snapshot::Snapshot, streamers::FSNodeStreamer},
+    repository::{
+        self, RepositoryBackend,
+        snapshot::{Snapshot, SnapshotTuple},
+        streamers::FSNodeStreamer,
+    },
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target,
         snapshot_progress::SnapshotProgressReporter,
@@ -134,7 +138,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     ui::cli::log!();
-    let parent_snapshot = match args.rescan {
+    let parent_snapshot_tuple: Option<SnapshotTuple> = match args.rescan {
         true => {
             ui::cli::log!("Full scan");
             None
@@ -145,7 +149,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     "Using snapshot {} as parent",
                     id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
                 );
-                Some(snap)
+                Some((id, snap))
             }
             Ok(None) => {
                 ui::cli::warning!("No previous snapshots found. Doing full scan.");
@@ -220,7 +224,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             absolute_source_paths,
             snapshot_root_path,
             exclude_paths: cannonical_excludes.unwrap_or_default(),
-            parent_snapshot,
+            parent_snapshot: parent_snapshot_tuple,
             tags: args.tags.clone(),
             description: args.description.clone(),
         },

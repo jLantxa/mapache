@@ -24,10 +24,16 @@ use crate::repository::RepositoryBackend;
 
 use super::ID;
 
+pub type SnapshotTuple = (ID, Snapshot);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The snapshot timestamp is the Local time at which the snapshot was created
     pub timestamp: DateTime<Local>,
+
+    /// The ID of the parent snapshot, if any
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ID>,
 
     /// Hash ID for the tree object root.
     pub tree: ID,

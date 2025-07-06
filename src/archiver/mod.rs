@@ -46,7 +46,7 @@ pub struct SnapshotOptions {
     pub absolute_source_paths: Vec<PathBuf>,
     pub snapshot_root_path: PathBuf,
     pub exclude_paths: Vec<PathBuf>,
-    pub parent_snapshot: Option<Snapshot>,
+    pub parent_snapshot: Option<(ID, Snapshot)>,
     pub tags: Vec<String>,
     pub description: Option<String>,
 }
@@ -89,7 +89,7 @@ impl Archiver {
             .snapshot_options
             .parent_snapshot
             .as_ref()
-            .map(|snapshot| snapshot.tree.clone());
+            .map(|(_id, snapshot)| snapshot.tree.clone());
 
         // Create streamers
         let fs_streamer = match FSNodeStreamer::from_paths(
@@ -303,6 +303,10 @@ impl Archiver {
         match root_tree_id {
             Some(tree_id) => Ok(Snapshot {
                 timestamp: Local::now(),
+                parent: arch
+                    .snapshot_options
+                    .parent_snapshot
+                    .map(|(id, _)| id.clone()),
                 tree: tree_id,
                 root: arch.snapshot_options.snapshot_root_path,
                 paths: arch.snapshot_options.absolute_source_paths,

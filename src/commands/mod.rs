@@ -29,6 +29,7 @@ use crate::{
 
 pub mod cmd_amend;
 pub mod cmd_cat;
+pub mod cmd_diff;
 pub mod cmd_forget;
 pub mod cmd_gc;
 pub mod cmd_init;
@@ -80,6 +81,9 @@ pub enum Command {
 
     #[clap(about = "List nodes in the repository")]
     Ls(cmd_ls::CmdArgs),
+
+    #[clap(about = "Show differences between snapshots")]
+    Diff(cmd_diff::CmdArgs),
 
     #[clap(about = "Print repository objects")]
     Cat(cmd_cat::CmdArgs),
@@ -173,6 +177,7 @@ pub fn run(args: &Cli) -> Result<()> {
         Command::Gc(cmd_args) => cmd_gc::run(&args.global_args, cmd_args),
         Command::Log(cmd_args) => cmd_log::run(&args.global_args, cmd_args),
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),
+        Command::Diff(cmd_args) => cmd_diff::run(&args.global_args, cmd_args),
         Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, cmd_args),
     }
 }

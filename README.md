@@ -74,7 +74,7 @@ After that, the plan is to expand the functionality with new options, features, 
 The goal of this milestone is to add convenience and quality of like feature. Things that are not strictly necessary but make mapache nicer to use. The real goal is to work towards a stable repository format that allows me to add features in the future without making previous versions incompatible. This includes:
 
 - [x] `amend` command to remove files from existing snapshots and modify metadata.
-- [ ] `diff` command to show differences between snapshots
+- [x] `diff` command to show differences between snapshots
 - [ ] `verify` command to verify the integrity of the data stored in the repository.
 - [ ] Key managment.
 
@@ -111,9 +111,11 @@ Commands:
   snapshot  Create a new snapshot
   restore   Restore a snapshot
   log       Show all snapshots present in the repository
+  amend     Amend an existing snapshot
   forget    Remove snapshots from the repository
   gc        Remove obsolete objects from the repository
   ls        List nodes in the repository
+  diff      Show differences between snapshots
   cat       Print repository objects
   help      Print this message or the help of the given subcommand(s)
 

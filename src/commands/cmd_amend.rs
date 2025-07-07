@@ -22,6 +22,7 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::commands::{EMPTY_TAG_MARK, parse_tags};
+use crate::repository::snapshot::SnapshotStreamer;
 use crate::utils::format_size;
 use crate::{
     archiver::tree_serializer,
@@ -33,12 +34,16 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
+#[clap(group = ArgGroup::new("snapshot_group").multiple(false))]
 #[clap(group = ArgGroup::new("tags_group").multiple(false))]
 #[clap(group = ArgGroup::new("description_group").multiple(false))]
 pub struct CmdArgs {
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
-    #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
+    #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest, group = "snapshot_group")]
     pub snapshot: UseSnapshot,
+
+    #[arg(short, long, group = "snapshot_group")]
+    pub all: bool,
 
     /// Tags (comma-separated)
     #[clap(long = "tags", value_parser, group = "tags_group")]
@@ -68,13 +73,47 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
-    let (mut raw, mut encoded) = (0, 0);
-    repo.init_pack_saver(1);
+    let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
 
-    let (orig_snapshot_id, mut snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
-        Ok(Some((id, snap))) => (id, snap),
-        Ok(None) | Err(_) => bail!("Snapshot not found"),
-    };
+    if args.all {
+        let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
+        let mut all_snapshots: Vec<(ID, Snapshot)> = snapshot_streamer.collect();
+        snapshots.append(&mut all_snapshots);
+    } else {
+        match find_use_snapshot(repo.clone(), &args.snapshot) {
+            Ok(Some((id, snap))) => snapshots.push((id, snap)),
+            Ok(None) | Err(_) => bail!("Snapshot not found"),
+        }
+    }
+
+    repo.init_pack_saver(1);
+    let num_snapshots = snapshots.len();
+    for (i, (id, snapshot)) in snapshots.iter_mut().rev().enumerate() {
+        let amend_str = format!(
+            "Amending snapshot {}",
+            id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).red()
+        );
+        if args.all {
+            ui::cli::log!("{} ({}/{})", amend_str, i + 1, num_snapshots);
+        } else {
+            ui::cli::log!("{} ", amend_str);
+        }
+
+        amend(repo.clone(), id, snapshot, args)?;
+        ui::cli::log!();
+    }
+    repo.finalize_pack_saver();
+
+    Ok(())
+}
+
+fn amend(
+    repo: Arc<dyn RepositoryBackend>,
+    orig_snapshot_id: &ID,
+    snapshot: &mut Snapshot,
+    args: &CmdArgs,
+) -> Result<()> {
+    let (mut raw, mut encoded) = (0, 0);
 
     if args.description.is_some() {
         snapshot.description = args.description.clone();
@@ -91,7 +130,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     if args.exclude.is_some() {
-        rewrite_snapshot_tree(repo.clone(), &mut snapshot, args.exclude.clone())?;
+        rewrite_snapshot_tree(repo.clone(), snapshot, args.exclude.clone())?;
     }
 
     // Save the amended snapshot and delete the old snapshot file
@@ -106,31 +145,27 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Delete the old snapshot ID if it changed
     // Note: To protect the repo from interruptions, we delete the snapshot only
     // after the new one is saved.
-    if new_id != orig_snapshot_id {
-        repo.delete_file(FileType::Snapshot, &orig_snapshot_id)?;
+    if new_id != *orig_snapshot_id {
+        repo.delete_file(FileType::Snapshot, orig_snapshot_id)?;
+
+        let (raw_meta, encoded_meta) = repo.flush()?;
+        raw += raw_meta;
+        encoded += encoded_meta;
+
+        ui::cli::log!(
+            "New snapshot ID {}",
+            new_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().green()
+        );
+        ui::cli::log!(
+            "Added to the repository: {} {}",
+            format_size(raw, 3).bold().yellow(),
+            format!("({} compressed)", format_size(encoded, 3))
+                .bold()
+                .green()
+        );
+    } else {
+        ui::cli::log!("No changes");
     }
-
-    let (raw_meta, encoded_meta) = repo.flush()?;
-    raw += raw_meta;
-    encoded += encoded_meta;
-
-    repo.finalize_pack_saver();
-
-    ui::cli::log!(
-        "Snapshot {} amended.\nNew snapshot ID {}",
-        orig_snapshot_id
-            .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
-            .bold()
-            .red(),
-        new_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().green()
-    );
-    ui::cli::log!(
-        "Added to the repository: {} {}",
-        format_size(raw, 3).bold().yellow(),
-        format!("({} compressed)", format_size(encoded, 3))
-            .bold()
-            .green()
-    );
 
     Ok(())
 }

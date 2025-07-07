@@ -43,6 +43,14 @@ pub struct CmdArgs {
 
     #[arg(value_parser)]
     pub target_snapshot_id: String,
+
+    /// A list of paths to include.
+    #[clap(long)]
+    pub include: Option<Vec<PathBuf>>,
+
+    /// A list of paths to exclude.
+    #[clap(long)]
+    pub exclude: Option<Vec<PathBuf>>,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -61,15 +69,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo.clone(),
         Some(source_snapshot.tree.clone()),
         PathBuf::new(),
-        None,
-        None,
+        args.include.clone(),
+        args.exclude.clone(),
     )?;
     let target_node_streamer = SerializedNodeStreamer::new(
         repo.clone(),
         Some(target_snapshot.tree.clone()),
         PathBuf::new(),
-        None,
-        None,
+        args.include.clone(),
+        args.exclude.clone(),
     )?;
     let diff_streamer = NodeDiffStreamer::new(source_node_streamer, target_node_streamer);
 

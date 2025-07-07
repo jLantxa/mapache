@@ -67,7 +67,7 @@ mod tests {
                 backup_data_tmp_path.join("file.txt"),
             ],
             exclude: None,
-            tags: Vec::new(),
+            tags_str: String::new(),
             description: None,
             rescan: false,
             parent: UseSnapshot::Latest,
@@ -85,7 +85,7 @@ mod tests {
                 backup_data_tmp_path.join("2"),
             ],
             exclude: None,
-            tags: Vec::new(),
+            tags_str: String::new(),
             description: None,
             rescan: false,
             parent: UseSnapshot::Latest,
@@ -108,6 +108,8 @@ mod tests {
             run_gc: false,
             dry_run: false,
             tolerance: 0.0_f32,
+            tags_str: Some(String::new()),
+            keep_tags_str: Some(String::new()),
         };
         commands::cmd_forget::run(&global, &forget_args)
             .with_context(|| "Failed to run cmd_forget")?;

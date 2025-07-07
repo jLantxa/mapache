@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, str::FromStr, sync::Arc};
+use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Error, Result, anyhow, bail};
 use clap::{ArgGroup, Parser, Subcommand};
@@ -164,6 +164,26 @@ pub(crate) fn find_use_snapshot(
                 Err(_) => bail!("Snapshot {:?} not found", id),
             }
         }
+    }
+}
+
+/// A marker for an empty tag set
+pub(crate) const EMPTY_TAG_MARK: &str = "[]";
+
+pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
+    if s.is_none() {
+        return BTreeSet::new();
+    }
+
+    let s = s.unwrap().trim();
+
+    if s.is_empty() {
+        BTreeSet::new()
+    } else {
+        s.split(",")
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect()
     }
 }
 

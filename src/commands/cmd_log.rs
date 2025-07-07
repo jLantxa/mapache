@@ -23,6 +23,7 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
+    commands::parse_tags,
     global::{self, FileType, ID},
     repository::{
         self, RepositoryBackend,
@@ -46,6 +47,10 @@ pub struct CmdArgs {
     /// Show a compact list of snapshots
     #[arg(short, long)]
     pub compact: bool,
+
+    /// Only consider snapshots with tags: tag[,tag,...]
+    #[arg(long = "tags", value_parser)]
+    pub tags_str: Option<String>,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -65,6 +70,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     };
 
+    if let Some(tags_str) = &args.tags_str {
+        let tags = parse_tags(Some(tags_str));
+        snapshots_sorted.retain(|(_id, sn)| sn.has_tags(&tags));
+    }
     snapshots_sorted.sort_by_key(|(_id, snapshot)| snapshot.timestamp);
 
     if snapshots_sorted.is_empty() {
@@ -104,7 +113,11 @@ fn log(snapshots: &[(ID, Snapshot)]) {
         ui::cli::log!("{} {}", "Root:".bold(), &snapshot.root.display());
 
         if !snapshot.tags.is_empty() {
-            ui::cli::log!("{} {}", "Tags:".bold(), &snapshot.tags.join(", "));
+            ui::cli::log!(
+                "{} {}",
+                "Tags:".bold(),
+                snapshot.tags.iter().map(|s| s.as_str()).collect::<String>()
+            )
         }
 
         ui::cli::log!();
@@ -153,7 +166,7 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string(),
             utils::format_size(snapshot.size(), 3),
-            snapshot.tags.join(", "),
+            snapshot.tags.iter().map(|s| s.as_str()).collect::<String>(),
         ]);
     }
 

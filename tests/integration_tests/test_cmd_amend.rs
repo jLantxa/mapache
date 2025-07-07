@@ -17,7 +17,7 @@
 #![cfg(test)]
 
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
     use anyhow::{Context, Result};
     use mapache::{
@@ -70,7 +70,7 @@ mod tests {
                 backup_data_tmp_path.join("file.txt"),
             ],
             exclude: None,
-            tags: Vec::new(),
+            tags_str: String::new(),
             description: None,
             rescan: false,
             parent: UseSnapshot::Latest,
@@ -84,7 +84,7 @@ mod tests {
         let excluded_paths = vec![PathBuf::from("2"), PathBuf::from("file.txt")];
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
-            tags: None,
+            tags_str: None,
             clear_tags: false,
             description: None,
             clear_description: false,
@@ -175,7 +175,7 @@ mod tests {
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: Vec::new(),
             exclude: None,
-            tags: vec![String::from("tag0"), String::from("tag1")],
+            tags_str: "tag0,tag1".to_string(),
             description: Some(String::from("This snapshot will be amended")),
             rescan: false,
             parent: UseSnapshot::Latest,
@@ -188,7 +188,7 @@ mod tests {
 
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
-            tags: None,
+            tags_str: None,
             clear_tags: true,
             description: None,
             clear_description: true,
@@ -207,7 +207,7 @@ mod tests {
 
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
-            tags: Some(vec![String::from("new_tag")]),
+            tags_str: Some("new_tag".to_string()),
             clear_tags: false,
             description: Some(String::from("This description is new")),
             clear_description: false,
@@ -221,7 +221,10 @@ mod tests {
             .latest()
             .expect("There should be at least one snapshot");
 
-        assert_eq!(snapshot.tags, vec![String::from("new_tag")]);
+        let expected_tags: BTreeSet<String> =
+            ["new_tag"].into_iter().map(|s| s.to_string()).collect();
+
+        assert_eq!(snapshot.tags, expected_tags);
         assert_eq!(
             snapshot
                 .description

@@ -58,12 +58,12 @@ pub struct CmdArgs {
     #[clap(long, required = true)]
     pub target: PathBuf,
 
-    /// A list of paths to restore.
-    #[clap(long)]
+    /// A list of paths to restore: path[,path,...]
+    #[clap(long, value_delimiter = ',')]
     pub include: Option<Vec<PathBuf>>,
 
-    /// A list of paths to exclude.
-    #[clap(long)]
+    /// A list of paths to exclude: path[,path,...]
+    #[clap(long, value_delimiter = ',')]
     pub exclude: Option<Vec<PathBuf>>,
 
     /// Method for conflict resolution in case a file or directory already exists in the target location.

@@ -58,7 +58,7 @@ pub struct CmdArgs {
     pub exclude: Option<Vec<PathBuf>>,
 
     /// Tags
-    #[clap(long = "tags", value_parser)]
+    #[clap(long = "tags", value_parser, default_value_t = EMPTY_TAG_MARK.to_string())]
     pub tags_str: String,
 
     /// Snapshot description

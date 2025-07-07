@@ -84,6 +84,7 @@ mod tests {
         let excluded_paths = vec![PathBuf::from("2"), PathBuf::from("file.txt")];
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
+            all: false,
             tags_str: None,
             clear_tags: false,
             description: None,
@@ -188,6 +189,7 @@ mod tests {
 
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
+            all: false,
             tags_str: None,
             clear_tags: true,
             description: None,
@@ -207,6 +209,7 @@ mod tests {
 
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
+            all: false,
             tags_str: Some("new_tag".to_string()),
             clear_tags: false,
             description: Some(String::from("This description is new")),

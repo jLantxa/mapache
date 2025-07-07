@@ -136,8 +136,9 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
 
     table.set_headers(vec![
         "ID".bold().to_string(),
-        "Date".bold().to_string(),
+        "Date ▼".bold().to_string(),
         "Size".bold().to_string(),
+        "Tags".bold().to_string(),
     ]);
 
     for (id, snapshot) in snapshots {
@@ -152,6 +153,7 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string(),
             utils::format_size(snapshot.size(), 3),
+            snapshot.tags.join(", "),
         ]);
     }
 

@@ -169,7 +169,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
     removed_ids_table.set_headers(vec![
         "ID".bold().to_string(),
-        "Date".bold().to_string(),
+        "Date ▼".bold().to_string(),
         "Size".bold().to_string(),
     ]);
 
@@ -177,7 +177,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
     kept_ids_table.set_headers(vec![
         "ID".bold().to_string(),
-        "Date".bold().to_string(),
+        "Date Date ▼".bold().to_string(),
         "Size".bold().to_string(),
     ]);
 

@@ -281,17 +281,17 @@ fn show_final_report(
 
     table.add_row(vec![
         "Files".bold().to_string(),
-        summary.new_files.to_string(),
-        summary.changed_files.to_string(),
-        summary.deleted_files.to_string(),
-        summary.unchanged_files.to_string(),
+        summary.diff_counts.new_files.to_string(),
+        summary.diff_counts.changed_files.to_string(),
+        summary.diff_counts.deleted_files.to_string(),
+        summary.diff_counts.unchanged_files.to_string(),
     ]);
     table.add_row(vec![
         "Dirs".bold().to_string(),
-        summary.new_dirs.to_string(),
-        summary.changed_dirs.to_string(),
-        summary.deleted_dirs.to_string(),
-        summary.unchanged_dirs.to_string(),
+        summary.diff_counts.new_dirs.to_string(),
+        summary.diff_counts.changed_dirs.to_string(),
+        summary.diff_counts.deleted_dirs.to_string(),
+        summary.diff_counts.unchanged_dirs.to_string(),
     ]);
     ui::cli::log!("{}", table.render());
 

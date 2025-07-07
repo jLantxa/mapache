@@ -20,7 +20,7 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::repository::RepositoryBackend;
+use crate::repository::{RepositoryBackend, streamers::NodeDiff};
 
 use super::ID;
 
@@ -65,6 +65,53 @@ impl Snapshot {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct DiffCounts {
+    pub new_files: usize,
+    pub deleted_files: usize,
+    pub changed_files: usize,
+    pub new_dirs: usize,
+    pub deleted_dirs: usize,
+    pub changed_dirs: usize,
+    pub unchanged_files: usize,
+    pub unchanged_dirs: usize,
+}
+
+impl DiffCounts {
+    pub fn increment(&mut self, is_dir: bool, diff_type: &NodeDiff) {
+        match diff_type {
+            NodeDiff::New => {
+                if is_dir {
+                    self.new_dirs += 1;
+                } else {
+                    self.new_files += 1;
+                }
+            }
+            NodeDiff::Deleted => {
+                if is_dir {
+                    self.deleted_dirs += 1;
+                } else {
+                    self.deleted_files += 1;
+                }
+            }
+            NodeDiff::Changed => {
+                if is_dir {
+                    self.changed_dirs += 1;
+                } else {
+                    self.changed_files += 1;
+                }
+            }
+            NodeDiff::Unchanged => {
+                if is_dir {
+                    self.unchanged_dirs += 1;
+                } else {
+                    self.unchanged_files += 1;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SnapshotSummary {
     pub processed_items_count: u64, // Number of files processed
     pub processed_bytes: u64,       // Bytes processed (only data)
@@ -76,15 +123,8 @@ pub struct SnapshotSummary {
     pub total_raw_bytes: u64,     // Total raw bytes
     pub total_encoded_bytes: u64, // Total bytes after encoding
 
-    pub new_files: u32,
-    pub changed_files: u32,
-    pub unchanged_files: u32,
-    pub deleted_files: u32,
-
-    pub new_dirs: u32,
-    pub changed_dirs: u32,
-    pub unchanged_dirs: u32,
-    pub deleted_dirs: u32,
+    #[serde(flatten)]
+    pub diff_counts: DiffCounts,
 }
 
 /// A snapshot streamer.

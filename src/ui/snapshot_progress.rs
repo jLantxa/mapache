@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -30,7 +30,10 @@ use parking_lot::RwLock;
 
 use crate::{
     global::global_opts,
-    repository::{snapshot::SnapshotSummary, streamers::NodeDiff},
+    repository::{
+        snapshot::{DiffCounts, SnapshotSummary},
+        streamers::NodeDiff,
+    },
     ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
@@ -46,14 +49,7 @@ pub struct SnapshotProgressReporter {
     meta_raw_bytes: Arc<AtomicU64>, // Metadata bytes 'written' before encoding
     meta_encoded_bytes: Arc<AtomicU64>, // Metadata bytes written after encoding
 
-    new_files: Arc<AtomicU32>,
-    changed_files: Arc<AtomicU32>,
-    unchanged_files: Arc<AtomicU32>,
-    deleted_files: Arc<AtomicU32>,
-    new_dirs: Arc<AtomicU32>,
-    changed_dirs: Arc<AtomicU32>,
-    unchanged_dirs: Arc<AtomicU32>,
-    deleted_dirs: Arc<AtomicU32>,
+    diff_counts: RwLock<DiffCounts>,
 
     processing_items: Arc<RwLock<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
@@ -78,15 +74,6 @@ impl SnapshotProgressReporter {
 
         let meta_raw_bytes_arc = Arc::new(AtomicU64::new(0));
         let meta_encoded_bytes_arc = Arc::new(AtomicU64::new(0));
-
-        let new_files_arc = Arc::new(AtomicU32::new(0));
-        let changed_files_arc = Arc::new(AtomicU32::new(0));
-        let unchanged_files_arc = Arc::new(AtomicU32::new(0));
-        let deleted_files_arc = Arc::new(AtomicU32::new(0));
-        let new_dirs_arc = Arc::new(AtomicU32::new(0));
-        let changed_dirs_arc = Arc::new(AtomicU32::new(0));
-        let unchanged_dirs_arc = Arc::new(AtomicU32::new(0));
-        let deleted_dirs_arc = Arc::new(AtomicU32::new(0));
 
         let processing_items_arc = Arc::new(RwLock::new(VecDeque::new()));
 
@@ -145,14 +132,7 @@ impl SnapshotProgressReporter {
             encoded_bytes: encoded_bytes_arc,
             meta_raw_bytes: meta_raw_bytes_arc,
             meta_encoded_bytes: meta_encoded_bytes_arc,
-            new_files: new_files_arc,
-            changed_files: changed_files_arc,
-            unchanged_files: unchanged_files_arc,
-            deleted_files: deleted_files_arc,
-            new_dirs: new_dirs_arc,
-            changed_dirs: changed_dirs_arc,
-            unchanged_dirs: unchanged_dirs_arc,
-            deleted_dirs: deleted_dirs_arc,
+            diff_counts: RwLock::new(DiffCounts::default()),
             processing_items: processing_items_arc,
             mp,
             progress_bar,
@@ -191,6 +171,7 @@ impl SnapshotProgressReporter {
                 NodeDiff::Changed => "M".bold().yellow(),
                 NodeDiff::Unchanged => "U".bold(),
             };
+
             self.progress_bar
                 .println(format!("{}  {}", diff_mark, path.display()));
         }
@@ -224,42 +205,42 @@ impl SnapshotProgressReporter {
 
     #[inline]
     pub fn new_file(&self) {
-        self.new_files.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().new_files += 1;
     }
 
     #[inline]
     pub fn changed_file(&self) {
-        self.changed_files.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().changed_files += 1;
     }
 
     #[inline]
     pub fn unchanged_file(&self) {
-        self.unchanged_files.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().unchanged_files += 1;
     }
 
     #[inline]
     pub fn deleted_file(&self) {
-        self.deleted_files.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().deleted_files += 1;
     }
 
     #[inline]
     pub fn new_dir(&self) {
-        self.new_dirs.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().new_dirs += 1;
     }
 
     #[inline]
     pub fn changed_dir(&self) {
-        self.changed_dirs.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().changed_dirs += 1;
     }
 
     #[inline]
     pub fn deleted_dir(&self) {
-        self.deleted_dirs.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().deleted_dirs += 1;
     }
 
     #[inline]
     pub fn unchanged_dir(&self) {
-        self.unchanged_dirs.fetch_add(1, Ordering::Relaxed);
+        self.diff_counts.write().unchanged_dirs += 1;
     }
 
     pub fn get_summary(&self) -> SnapshotSummary {
@@ -277,14 +258,7 @@ impl SnapshotProgressReporter {
             meta_encoded_bytes: self.meta_encoded_bytes.load(Ordering::SeqCst),
             total_raw_bytes,
             total_encoded_bytes,
-            new_files: self.new_files.load(Ordering::SeqCst),
-            changed_files: self.changed_files.load(Ordering::SeqCst),
-            unchanged_files: self.unchanged_files.load(Ordering::SeqCst),
-            deleted_files: self.deleted_files.load(Ordering::SeqCst),
-            new_dirs: self.new_dirs.load(Ordering::SeqCst),
-            changed_dirs: self.changed_dirs.load(Ordering::SeqCst),
-            unchanged_dirs: self.unchanged_dirs.load(Ordering::SeqCst),
-            deleted_dirs: self.deleted_dirs.load(Ordering::SeqCst),
+            diff_counts: self.diff_counts.read().clone(),
         }
     }
 }

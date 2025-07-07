@@ -27,6 +27,7 @@ use crate::{
     global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         self, RepositoryBackend,
+        snapshot::DiffCounts,
         streamers::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
     },
     ui::{
@@ -82,7 +83,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let diff_streamer = NodeDiffStreamer::new(source_node_streamer, target_node_streamer);
 
     ui::cli::log!(
-        "Calculating diffs {}..{}\n",
+        "Finding diffs {}..{}\n",
         source_id
             .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
             .bold()
@@ -90,62 +91,58 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         target_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().green()
     );
 
-    let mut new_files = 0;
-    let mut deleted_files = 0;
-    let mut changed_files = 0;
-    let mut new_dirs = 0;
-    let mut deleted_dirs = 0;
-    let mut changed_dirs = 0;
-    let mut unchanged_files = 0;
-    let mut unchanged_dirs = 0;
+    let mut counts = DiffCounts::default();
     for (path, source, target, diff_type) in diff_streamer.flatten() {
-        match diff_type {
+        let (diff_mark, node_for_log) = match &diff_type {
             NodeDiff::New => {
-                ui::cli::log!("{}  {}", "+".bold().green(), path.display());
-                if target
+                let target_node = &target
+                    .as_ref()
                     .expect("Target node (new) should not be None")
-                    .node
-                    .is_dir()
-                {
-                    new_dirs += 1;
-                } else {
-                    new_files += 1;
-                }
+                    .node;
+                counts.increment(target_node.is_dir(), &diff_type);
+                ("+".bold().green().to_string(), target.as_ref())
             }
             NodeDiff::Deleted => {
-                ui::cli::log!("{}  {}", "-".bold().red(), path.display());
-                if source
+                let source_node = &source
+                    .as_ref()
                     .expect("Source node (deleted) should not be None")
-                    .node
-                    .is_dir()
-                {
-                    deleted_dirs += 1;
-                } else {
-                    deleted_files += 1;
-                }
+                    .node;
+                counts.increment(source_node.is_dir(), &diff_type);
+                ("-".bold().red().to_string(), source.as_ref())
             }
             NodeDiff::Changed => {
-                ui::cli::log!("{}  {}", "M".bold().yellow(), path.display());
-                if target
+                let target_node = &target
+                    .as_ref()
                     .expect("Target node (changed) should not be None")
-                    .node
-                    .is_dir()
-                {
-                    changed_dirs += 1;
+                    .node;
+                let source_node = &source
+                    .as_ref()
+                    .expect("Source node (changed) should not be None")
+                    .node;
+
+                counts.increment(target_node.is_dir(), &diff_type);
+
+                if source_node.node_type == target_node.node_type {
+                    ("M".bold().yellow().to_string(), target.as_ref())
                 } else {
-                    changed_files += 1;
+                    ("T".bold().purple().to_string(), target.as_ref())
                 }
             }
             NodeDiff::Unchanged => {
-                if target
-                    .expect("Target node (changed) should not be None")
-                    .node
-                    .is_dir()
-                {
-                    unchanged_dirs += 1;
-                } else {
-                    unchanged_files += 1;
-                }
+                let target_node = &target
+                    .as_ref()
+                    .expect("Target node (unchanged) should not be None")
+                    .node;
+                counts.increment(target_node.is_dir(), &diff_type);
+                (String::new(), None)
+            }
+        };
+
+        if let Some(n) = node_for_log {
+            if n.node.is_dir() {
+                ui::cli::log!("{}  {}", diff_mark, path.display().to_string().blue());
+            } else {
+                ui::cli::log!("{}  {}", diff_mark, path.display());
             }
         }
     }
@@ -169,17 +166,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     changes_table.add_row(vec![
         "Files".bold().to_string(),
-        new_files.to_string(),
-        changed_files.to_string(),
-        deleted_files.to_string(),
-        unchanged_files.to_string(),
+        counts.new_files.to_string(),
+        counts.changed_files.to_string(),
+        counts.deleted_files.to_string(),
+        counts.unchanged_files.to_string(),
     ]);
     changes_table.add_row(vec![
         "Dirs".bold().to_string(),
-        new_dirs.to_string(),
-        changed_dirs.to_string(),
-        deleted_dirs.to_string(),
-        unchanged_dirs.to_string(),
+        counts.new_dirs.to_string(),
+        counts.changed_dirs.to_string(),
+        counts.deleted_dirs.to_string(),
+        counts.unchanged_dirs.to_string(),
     ]);
     ui::cli::log!("{}", changes_table.render());
 

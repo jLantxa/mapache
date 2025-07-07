@@ -20,23 +20,23 @@ pub mod tree_serializer;
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use chrono::Local;
 use tree_serializer::finalize_if_complete;
 
 use crate::{
     global::ID,
     repository::{
+        RepositoryBackend,
         snapshot::Snapshot,
         streamers::{
             FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode,
         },
-        RepositoryBackend,
     },
     ui,
     ui::snapshot_progress::SnapshotProgressReporter,

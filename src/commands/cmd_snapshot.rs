@@ -29,7 +29,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     archiver::{Archiver, SnapshotOptions},
     backend::{make_dry_backend, new_backend_with_prompt},
-    commands::find_use_snapshot,
+    commands::{EMPTY_TAG_MARK, find_use_snapshot, parse_tags},
     global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         self, RepositoryBackend,
@@ -54,12 +54,12 @@ pub struct CmdArgs {
     pub paths: Vec<PathBuf>,
 
     /// List of paths to exclude from the backup
-    #[clap(long, value_parser, required = false)]
+    #[clap(long, value_parser, value_delimiter = ',', required = false)]
     pub exclude: Option<Vec<PathBuf>>,
 
-    /// Tags (comma-separated)
-    #[clap(long, value_delimiter = ',', value_parser)]
-    pub tags: Vec<String>,
+    /// Tags
+    #[clap(long = "tags", value_parser)]
+    pub tags_str: String,
 
     /// Snapshot description
     #[clap(long, value_parser)]
@@ -95,6 +95,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
+
+    let mut tags: BTreeSet<String> = parse_tags(Some(&args.tags_str));
+    tags.retain(|tag| tag != EMPTY_TAG_MARK);
 
     // Cannonicalize and deduplicate source paths
     // Use a BTreeSet to remove duplicate paths and sort them alphabetically.
@@ -225,7 +228,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             snapshot_root_path,
             exclude_paths: cannonical_excludes.unwrap_or_default(),
             parent_snapshot: parent_snapshot_tuple,
-            tags: args.tags.clone(),
+            tags,
             description: args.description.clone(),
         },
         (args.read_concurrency, args.write_concurrency),

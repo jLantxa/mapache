@@ -14,13 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
+use crate::commands::{EMPTY_TAG_MARK, parse_tags};
 use crate::utils::format_size;
 use crate::{
     archiver::tree_serializer,
@@ -40,8 +41,8 @@ pub struct CmdArgs {
     pub snapshot: UseSnapshot,
 
     /// Tags (comma-separated)
-    #[clap(long, value_delimiter = ',', value_parser, group = "tags_group")]
-    pub tags: Option<Vec<String>>,
+    #[clap(long = "tags", value_parser, group = "tags_group")]
+    pub tags_str: Option<String>,
 
     /// Clear tags
     #[clap(long, value_parser, group = "tags_group")]
@@ -81,10 +82,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         snapshot.description = None;
     }
 
-    if let Some(tags) = &args.tags {
+    if let Some(a_tag_str) = &args.tags_str {
+        let mut tags: BTreeSet<String> = parse_tags(Some(a_tag_str));
+        tags.retain(|tag| tag != EMPTY_TAG_MARK);
         snapshot.tags = tags.clone();
     } else if args.clear_tags {
-        snapshot.tags = Vec::new();
+        snapshot.tags = BTreeSet::new();
     }
 
     if args.exclude.is_some() {

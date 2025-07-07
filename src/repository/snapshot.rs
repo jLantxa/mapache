@@ -14,13 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::repository::{RepositoryBackend, streamers::NodeDiff};
+use crate::{
+    commands::EMPTY_TAG_MARK,
+    repository::{RepositoryBackend, streamers::NodeDiff},
+};
 
 use super::ID;
 
@@ -46,8 +49,8 @@ pub struct Snapshot {
     pub paths: Vec<PathBuf>,
 
     /// Tags
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub tags: BTreeSet<String>,
 
     /// Description of the snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,6 +64,19 @@ impl Snapshot {
     #[inline]
     pub fn size(&self) -> u64 {
         self.summary.processed_bytes
+    }
+
+    pub fn has_tags(&self, tags: &BTreeSet<String>) -> bool {
+        if tags.contains(EMPTY_TAG_MARK) && self.tags.is_empty() {
+            return true;
+        }
+
+        for tag in &self.tags {
+            if tags.contains(tag) {
+                return true;
+            }
+        }
+        false
     }
 }
 

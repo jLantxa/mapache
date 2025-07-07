@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -23,6 +23,7 @@ use clap::{ArgGroup, Parser};
 use colored::Colorize;
 
 use crate::backend::{make_dry_backend, new_backend_with_prompt};
+use crate::commands::parse_tags;
 use crate::global::defaults::DEFAULT_GC_TOLERANCE;
 use crate::global::{self, FileType, ID};
 use crate::repository::RepositoryBackend;
@@ -40,6 +41,10 @@ pub struct CmdArgs {
     /// Forget specific snapshots by their IDs.
     #[arg(value_parser, value_delimiter = ' ', group = "policy")]
     pub forget: Vec<String>,
+
+    /// Only consider snapshots with any tag from the list: tag[,tag,...]
+    #[arg(long = "tags", value_parser)]
+    pub tags_str: Option<String>,
 
     /// Keep the last N snapshots.
     #[arg(long, group = "retention_rules")]
@@ -65,6 +70,10 @@ pub struct CmdArgs {
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     pub keep_daily: Option<usize>,
 
+    /// Keep all snapshots with tags
+    #[arg(long = "keep-tags", value_parser, group = "retention_rules")]
+    pub keep_tags_str: Option<String>,
+
     /// Perform a dry run: show which snapshots would be removed without actually removing them.
     #[arg(long)]
     pub dry_run: bool,
@@ -80,6 +89,11 @@ pub struct CmdArgs {
     pub tolerance: f32,
 }
 
+// Snapshot retention rules.
+// The rules are applied as a union. Snapshots are kept as long as there is at least
+// one rule that applies. For example, KeepLast(4) will keep the last 4 snapshots
+// (after applying filtering), but if the 5th snapshot has a tag contained in
+// KeepTags(tags), the 5th snapshot is kept as well.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RetentionRule {
     /// Keep the last N snapshots.
@@ -94,6 +108,8 @@ pub enum RetentionRule {
     KeepWeekly(usize),
     /// Keep N daily snapshots.
     KeepDaily(usize),
+    /// Keep snapshots with tag
+    KeepTags(BTreeSet<String>),
 }
 
 pub fn parse_retention_number(s: &str) -> Result<usize> {
@@ -124,7 +140,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo: Arc<dyn RepositoryBackend> =
         repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
+    // All sapshots, filter by tags and sorted by timestamp
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();
+    if let Some(tags) = &args.tags_str {
+        let tags = parse_tags(Some(tags));
+        snapshots_sorted.retain(|(_id, sn)| sn.has_tags(&tags));
+    }
     snapshots_sorted.sort_by_key(|(_id, snapshot)| snapshot.timestamp);
 
     let mut ids_to_keep: HashSet<ID> = HashSet::new();
@@ -135,7 +156,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let (id, _) = repo.find(FileType::Snapshot, prefix)?;
             forget_ids.insert(id);
         }
-        for (id, _) in &snapshots_sorted {
+
+        for (id, _snapshot) in &snapshots_sorted {
             if !forget_ids.contains(id) {
                 ids_to_keep.insert(id.clone());
             }
@@ -161,6 +183,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         if let Some(n) = args.keep_daily {
             retention_rules.push(RetentionRule::KeepDaily(n));
         }
+        if let Some(tags_str) = &args.keep_tags_str {
+            let keep_tags = parse_tags(Some(tags_str));
+            retention_rules.push(RetentionRule::KeepTags(keep_tags));
+        }
 
         ids_to_keep = apply_retention_rules(&snapshots_sorted, &retention_rules, Local::now());
     }
@@ -171,6 +197,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "ID".bold().to_string(),
         "Date ▼".bold().to_string(),
         "Size".bold().to_string(),
+        "Tags".bold().to_string(),
     ]);
 
     let mut kept_ids_table =
@@ -179,6 +206,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "ID".bold().to_string(),
         "Date Date ▼".bold().to_string(),
         "Size".bold().to_string(),
+        "Tags".bold().to_string(),
     ]);
 
     // Forget snapshots
@@ -203,6 +231,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string(),
             utils::format_size(snapshot.size(), 3),
+            snapshot.tags.iter().map(|s| s.as_str()).collect::<String>(),
         ]);
     }
 
@@ -347,6 +376,13 @@ pub fn apply_retention_rules(
                     snapshots_to_keep.insert(id.clone());
                 }
             }
+            RetentionRule::KeepTags(tags) => {
+                for (id, snapshot) in snapshots_sorted.iter() {
+                    if snapshot.has_tags(tags) {
+                        snapshots_to_keep.insert(id.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -355,7 +391,7 @@ pub fn apply_retention_rules(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::BTreeSet, path::PathBuf};
 
     use chrono::{NaiveDate, TimeZone};
 
@@ -393,7 +429,10 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: ["tag0".to_string(), "tag1".to_string()]
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -418,7 +457,10 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: ["tag0".to_string()]
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -443,7 +485,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -468,7 +510,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -493,7 +535,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -520,7 +562,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -546,7 +588,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -572,7 +614,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -598,7 +640,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -624,7 +666,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -650,7 +692,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -675,7 +717,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -701,7 +743,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -726,7 +768,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -751,7 +793,7 @@ mod tests {
                     .unwrap(),
                     root: PathBuf::from("/"),
                     paths: Vec::new(),
-                    tags: Vec::new(),
+                    tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
                 },
@@ -919,17 +961,43 @@ mod tests {
     }
 
     #[test]
+    fn test_keep_tags() {
+        let snapshots = create_mock_snapshots();
+        let rules = vec![RetentionRule::KeepTags(
+            ["tag0"].into_iter().map(|s| s.to_string()).collect(),
+        )];
+
+        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+
+        let expected_ids: HashSet<ID> = [
+            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000000")
+                .unwrap(),
+            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+
+        assert_eq!(kept_ids, expected_ids);
+    }
+
+    #[test]
     fn test_keep_multiple_rules() {
         let snapshots = create_mock_snapshots();
         let rules = vec![
             RetentionRule::KeepLast(4),
             RetentionRule::KeepWithin(Duration::days(2 * 365)),
             RetentionRule::KeepYearly(3),
+            RetentionRule::KeepTags(["tag1"].into_iter().map(|s| s.to_string()).collect()),
         ];
 
         let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
 
         let expected_ids: HashSet<ID> = [
+            // Has tag1
+            ID::from_hex("0000000000000000000000000000000000000000000000000000000000000000")
+                .unwrap(),
             // 2023
             ID::from_hex("0000000000000000000000000000000000000000000000000000000000000009")
                 .unwrap(),

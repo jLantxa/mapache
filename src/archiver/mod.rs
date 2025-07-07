@@ -18,6 +18,7 @@ mod processor;
 pub mod tree_serializer;
 
 use std::{
+    collections::BTreeSet,
     path::PathBuf,
     sync::{
         Arc,
@@ -47,7 +48,7 @@ pub struct SnapshotOptions {
     pub snapshot_root_path: PathBuf,
     pub exclude_paths: Vec<PathBuf>,
     pub parent_snapshot: Option<(ID, Snapshot)>,
-    pub tags: Vec<String>,
+    pub tags: BTreeSet<String>,
     pub description: Option<String>,
 }
 

@@ -166,26 +166,26 @@ fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
             false => node.metadata.size.to_string(),
         };
 
+        const NA: &str = "_";
+
         format!(
             "{:<10} {:3} {:<7}  {:<7}  {:>10}  {:<12}  {}",
-            node.metadata.mode.map_or(String::from("None"), |mode| {
+            node.metadata.mode.map_or(NA.to_string(), |mode| {
                 utils::mode_to_permissions_string(mode)
             }),
             node.metadata
                 .nlink
-                .map_or(String::from("None"), |nlink| nlink.to_string()),
+                .map_or(NA.to_string(), |nlink| nlink.to_string()),
             node.metadata
                 .owner_uid
-                .map_or(String::from("None"), |uid| uid.to_string()),
+                .map_or(NA.to_string(), |uid| uid.to_string()),
             node.metadata
                 .owner_gid
-                .map_or(String::from("None"), |gid| gid.to_string()),
+                .map_or(NA.to_string(), |gid| gid.to_string()),
             size_str,
-            node.metadata
-                .modified_time
-                .map_or(String::from("None"), |mtime| {
-                    utils::pretty_print_system_time(mtime, None).unwrap_or(String::from("Error"))
-                }),
+            node.metadata.modified_time.map_or(NA.to_string(), |mtime| {
+                utils::pretty_print_system_time(mtime, None).unwrap_or(String::from("Error"))
+            }),
             node_name_str
         )
     } else {

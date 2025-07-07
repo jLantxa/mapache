@@ -21,7 +21,7 @@ use chrono::{DateTime, Datelike, Duration, Local};
 use clap::{ArgGroup, Parser};
 use colored::Colorize;
 
-use crate::backend::{make_dry_backend, new_backend_with_prompt};
+use crate::backend::new_backend_with_prompt;
 use crate::commands::parse_tags;
 use crate::global::defaults::DEFAULT_GC_TOLERANCE;
 use crate::global::{self, FileType, ID};
@@ -136,11 +136,7 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(global_args)?;
-
-    // If dry-run, wrap the backend inside the DryBackend
-    let backend = make_dry_backend(backend, args.dry_run);
-
+    let backend = new_backend_with_prompt(global_args, args.dry_run)?;
     let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     // All sapshots, filter by tags and sorted by timestamp

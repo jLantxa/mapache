@@ -14,42 +14,46 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#![cfg(unix)]
+
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
 
-use crate::backend::new_backend_with_prompt;
-use crate::repository::{LATEST_REPOSITORY_VERSION, RepoVersion};
-use crate::ui;
-use crate::{repository, utils};
-
-use super::GlobalArgs;
+use crate::{
+    backend::new_backend_with_prompt,
+    commands::GlobalArgs,
+    fuse::fs::MapacheFS,
+    repository::{self},
+    ui, utils,
+};
 
 #[derive(Args, Debug)]
-#[clap(about = "Initialize a new repository")]
+#[clap(about = "Mount the repository as a file system")]
 pub struct CmdArgs {
-    /// Repository version
-    #[clap(long, default_value_t = LATEST_REPOSITORY_VERSION)]
-    pub repository_version: RepoVersion,
+    /// Mount point
+    #[arg(value_parser)]
+    pub mountpoint: PathBuf,
+
+    /// Mount point
+    #[arg(long, value_parser, default_value_t = false)]
+    pub allow_other: bool,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(global_args, false)?;
+    let backend = new_backend_with_prompt(global_args, true)?;
+    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
-    ui::cli::log!("Initializing a new repository in \'{}\'", &global_args.repo);
-    repository::init_repository_with_version(
-        pass,
-        global_args.key.as_ref(),
-        args.repository_version,
-        backend,
-    )?;
-
-    ui::cli::warning!(
-        "{}\n{}",
-        "This password is the key to your repository and the only way to access your data.",
-        "Don't forget it.".bold().green()
+    ui::cli::log!(
+        "Mounting repository in {}",
+        args.mountpoint.display().to_string().bold()
     );
+    unsafe {
+        MapacheFS::mount(repo, &args.mountpoint, args.allow_other)?;
+    }
 
     Ok(())
 }

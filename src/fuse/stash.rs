@@ -14,14 +14,34 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod archiver;
-pub mod backend;
-pub mod commands;
-pub mod global;
-pub mod repository;
-pub mod restorer;
-pub mod ui;
-pub mod utils;
+use std::{collections::BTreeMap, sync::Arc};
 
-#[cfg(unix)]
-pub mod fuse;
+use crate::{
+    fuse::{cache::SnapshotTreeCache, fs::Inode},
+    global::ID,
+    repository::RepositoryBackend,
+};
+
+#[derive(Debug)]
+pub(super) enum FsNode {
+    Root,
+    Dir {
+        name: String,
+        tree_id: Option<ID>,
+        parent_ino: Inode,
+    },
+    TreeNode {
+        name: String,
+        tree_id: Option<ID>,
+        node_idx: usize,
+        parent_ino: Inode,
+    },
+}
+
+pub(super) struct Stash {
+    repo: Arc<dyn RepositoryBackend>,
+
+    nodes: BTreeMap<Inode, FsNode>,
+    path_cache: BTreeMap<(Inode, String), Inode>,
+    tree_cache: SnapshotTreeCache,
+}

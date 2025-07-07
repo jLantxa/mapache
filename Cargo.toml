@@ -19,6 +19,7 @@ chrono = { version = "0.4.41", features = ["serde"] }
 clap = { version = "4.5.40", features = ["derive", "wrap_help"] }
 colored = "3.0.0"
 crossbeam-channel = "0.5.15"
+ctrlc = "3.4.7"
 dialoguer = "0.11.0"
 fastcdc = "3.2.1"
 filetime = "0.2.25"
@@ -34,3 +35,7 @@ tar = "0.4.44"
 tempfile = "3.20.0"
 xz2 = "0.1.7"
 zstd = "0.13.3"
+
+[target.'cfg(unix)'.dependencies]
+fuser = "0.15.1"
+libc = "0.2.174"

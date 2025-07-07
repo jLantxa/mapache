@@ -26,7 +26,7 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
-    backend::{make_dry_backend, new_backend_with_prompt},
+    backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
     repository::{self, streamers::SerializedNodeStreamer},
@@ -91,11 +91,7 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(global_args)?;
-
-    // If dry-run, wrap the backend inside the DryBackend
-    let backend = make_dry_backend(backend, args.dry_run);
-
+    let backend = new_backend_with_prompt(global_args, args.dry_run)?;
     let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {

@@ -28,7 +28,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     archiver::{Archiver, SnapshotOptions},
-    backend::{make_dry_backend, new_backend_with_prompt},
+    backend::new_backend_with_prompt,
     commands::{EMPTY_TAG_MARK, find_use_snapshot, parse_tags},
     global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
@@ -89,11 +89,7 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(global_args)?;
-
-    // If dry-run, wrap the backend inside the DryBackend
-    let backend = make_dry_backend(backend, args.dry_run);
-
+    let backend = new_backend_with_prompt(global_args, args.dry_run)?;
     let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let mut tags: BTreeSet<String> = parse_tags(Some(&args.tags_str));

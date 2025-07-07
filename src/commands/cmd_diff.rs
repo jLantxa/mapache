@@ -93,22 +93,42 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let mut counts = DiffCounts::default();
     for (path, source, target, diff_type) in diff_streamer.flatten() {
-        let (diff_mark, node_for_log) = match &diff_type {
+        match &diff_type {
             NodeDiff::New => {
                 let target_node = &target
                     .as_ref()
                     .expect("Target node (new) should not be None")
                     .node;
+
+                if target_node.is_dir() {
+                    ui::cli::log!(
+                        "{}  {}",
+                        "+".bold().green().to_string(),
+                        path.display().to_string().blue()
+                    );
+                } else {
+                    ui::cli::log!("{}  {}", "+".bold().green().to_string(), path.display());
+                }
+
                 counts.increment(target_node.is_dir(), &diff_type);
-                ("+".bold().green().to_string(), target.as_ref())
             }
             NodeDiff::Deleted => {
                 let source_node = &source
                     .as_ref()
                     .expect("Source node (deleted) should not be None")
                     .node;
+
+                if source_node.is_dir() {
+                    ui::cli::log!(
+                        "{}  {}",
+                        "+".bold().green().to_string(),
+                        path.display().to_string().blue()
+                    );
+                } else {
+                    ui::cli::log!("{}  {}", "-".bold().red().to_string(), path.display());
+                }
+
                 counts.increment(source_node.is_dir(), &diff_type);
-                ("-".bold().red().to_string(), source.as_ref())
             }
             NodeDiff::Changed => {
                 let target_node = &target
@@ -120,13 +140,22 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Source node (changed) should not be None")
                     .node;
 
-                counts.increment(target_node.is_dir(), &diff_type);
-
-                if source_node.node_type == target_node.node_type {
-                    ("M".bold().yellow().to_string(), target.as_ref())
+                let symbol = if source_node.node_type == target_node.node_type {
+                    "M".bold().yellow().to_string()
                 } else {
-                    ("T".bold().purple().to_string(), target.as_ref())
+                    "T".bold().purple().to_string()
+                };
+                if target_node.is_dir() {
+                    ui::cli::log!(
+                        "{}  {}",
+                        "+".bold().green().to_string(),
+                        path.display().to_string().blue()
+                    );
+                } else {
+                    ui::cli::log!("{}  {}", symbol, path.display());
                 }
+
+                counts.increment(target_node.is_dir(), &diff_type);
             }
             NodeDiff::Unchanged => {
                 let target_node = &target
@@ -134,15 +163,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Target node (unchanged) should not be None")
                     .node;
                 counts.increment(target_node.is_dir(), &diff_type);
-                (String::new(), None)
-            }
-        };
 
-        if let Some(n) = node_for_log {
-            if n.node.is_dir() {
-                ui::cli::log!("{}  {}", diff_mark, path.display().to_string().blue());
-            } else {
-                ui::cli::log!("{}  {}", diff_mark, path.display());
+                if target_node.is_dir() {
+                    ui::cli::verbose_1!("{}  {}", "U".bold(), path.display().to_string().blue());
+                } else {
+                    ui::cli::verbose_1!("{}  {}", "U".bold(), path.display());
+                }
             }
         }
     }

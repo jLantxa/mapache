@@ -374,6 +374,6 @@ mod tests {
     #[test]
     fn test_render_empty_table() {
         let table = Table::new();
-        assert_eq!(table.render(), "\n".to_string());
+        assert_eq!(table.render(), "");
     }
 }

@@ -100,14 +100,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Target node (new) should not be None")
                     .node;
 
+                let new_symbol = "+".bold().green().to_string();
+
                 if target_node.is_dir() {
-                    ui::cli::log!(
-                        "{}  {}",
-                        "+".bold().green().to_string(),
-                        path.display().to_string().blue()
-                    );
+                    ui::cli::log!("{}  {}", new_symbol, path.display().to_string().blue());
                 } else {
-                    ui::cli::log!("{}  {}", "+".bold().green().to_string(), path.display());
+                    ui::cli::log!("{}  {}", new_symbol, path.display());
                 }
 
                 counts.increment(target_node.is_dir(), &diff_type);
@@ -118,14 +116,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Source node (deleted) should not be None")
                     .node;
 
+                let deleted_symbol = "-".bold().red().to_string();
+
                 if source_node.is_dir() {
-                    ui::cli::log!(
-                        "{}  {}",
-                        "+".bold().green().to_string(),
-                        path.display().to_string().blue()
-                    );
+                    ui::cli::log!("{}  {}", deleted_symbol, path.display().to_string().blue());
                 } else {
-                    ui::cli::log!("{}  {}", "-".bold().red().to_string(), path.display());
+                    ui::cli::log!("{}  {}", deleted_symbol, path.display());
                 }
 
                 counts.increment(source_node.is_dir(), &diff_type);
@@ -140,17 +136,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Source node (changed) should not be None")
                     .node;
 
-                let symbol = if source_node.node_type == target_node.node_type {
-                    "M".bold().yellow().to_string()
-                } else {
+                let content_changed = target_node.blobs != source_node.blobs;
+                let node_type_changed = source_node.node_type != target_node.node_type;
+
+                let symbol = if node_type_changed {
                     "T".bold().purple().to_string()
+                } else if content_changed && !node_type_changed {
+                    "m".bold().cyan().to_string()
+                } else {
+                    "M".bold().yellow().to_string()
                 };
+
                 if target_node.is_dir() {
-                    ui::cli::log!(
-                        "{}  {}",
-                        "+".bold().green().to_string(),
-                        path.display().to_string().blue()
-                    );
+                    ui::cli::log!("{}  {}", symbol, path.display().to_string().blue());
                 } else {
                     ui::cli::log!("{}  {}", symbol, path.display());
                 }
@@ -163,11 +161,23 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Target node (unchanged) should not be None")
                     .node;
                 counts.increment(target_node.is_dir(), &diff_type);
+                let source_node = &source
+                    .as_ref()
+                    .expect("Source node (changed) should not be None")
+                    .node;
+
+                let content_changed = target_node.blobs != source_node.blobs;
+
+                let symbol = if content_changed {
+                    "?".bold().white().on_red().to_string()
+                } else {
+                    "U".bold().to_string()
+                };
 
                 if target_node.is_dir() {
-                    ui::cli::verbose_1!("{}  {}", "U".bold(), path.display().to_string().blue());
+                    ui::cli::verbose_1!("{}  {}", symbol, path.display().to_string().blue());
                 } else {
-                    ui::cli::verbose_1!("{}  {}", "U".bold(), path.display());
+                    ui::cli::verbose_1!("{}  {}", symbol, path.display());
                 }
             }
         }

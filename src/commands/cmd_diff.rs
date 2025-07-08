@@ -100,15 +100,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Target node (new) should not be None")
                     .node;
 
-                if target_node.is_dir() {
-                    ui::cli::log!(
-                        "{}  {}",
-                        "+".bold().green().to_string(),
-                        path.display().to_string().blue()
-                    );
+                let new_symbol = "+".bold().green().to_string();
+
+                let path_str = if target_node.is_dir() {
+                    format!("{}", path.to_string_lossy().blue())
                 } else {
-                    ui::cli::log!("{}  {}", "+".bold().green().to_string(), path.display());
-                }
+                    path.display().to_string()
+                };
+
+                ui::cli::log!("{}  {}", new_symbol, path_str);
 
                 counts.increment(target_node.is_dir(), &diff_type);
             }
@@ -118,15 +118,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Source node (deleted) should not be None")
                     .node;
 
-                if source_node.is_dir() {
-                    ui::cli::log!(
-                        "{}  {}",
-                        "+".bold().green().to_string(),
-                        path.display().to_string().blue()
-                    );
+                let deleted_symbol = "-".bold().red().to_string();
+
+                let path_str = if source_node.is_dir() {
+                    format!("{}", path.to_string_lossy().blue())
                 } else {
-                    ui::cli::log!("{}  {}", "-".bold().red().to_string(), path.display());
-                }
+                    path.display().to_string()
+                };
+
+                ui::cli::log!("{}  {}", deleted_symbol, path_str);
 
                 counts.increment(source_node.is_dir(), &diff_type);
             }
@@ -140,20 +140,24 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Source node (changed) should not be None")
                     .node;
 
-                let symbol = if source_node.node_type == target_node.node_type {
-                    "M".bold().yellow().to_string()
+                let content_changed = target_node.blobs != source_node.blobs;
+                let node_type_changed = source_node.node_type != target_node.node_type;
+
+                let path_str = if source_node.is_dir() {
+                    format!("{}", path.to_string_lossy().blue())
                 } else {
-                    "T".bold().purple().to_string()
+                    path.display().to_string()
                 };
-                if target_node.is_dir() {
-                    ui::cli::log!(
-                        "{}  {}",
-                        "+".bold().green().to_string(),
-                        path.display().to_string().blue()
-                    );
+
+                let symbol = if node_type_changed {
+                    "T".bold().purple().to_string()
+                } else if content_changed && !node_type_changed {
+                    "m".bold().cyan().to_string()
                 } else {
-                    ui::cli::log!("{}  {}", symbol, path.display());
-                }
+                    "M".bold().yellow().to_string()
+                };
+
+                ui::cli::log!("{}  {}", symbol, path_str);
 
                 counts.increment(target_node.is_dir(), &diff_type);
             }
@@ -163,11 +167,26 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .expect("Target node (unchanged) should not be None")
                     .node;
                 counts.increment(target_node.is_dir(), &diff_type);
+                let source_node = &source
+                    .as_ref()
+                    .expect("Source node (changed) should not be None")
+                    .node;
 
-                if target_node.is_dir() {
-                    ui::cli::verbose_1!("{}  {}", "U".bold(), path.display().to_string().blue());
+                let content_changed = target_node.blobs != source_node.blobs;
+                let path_str = if target_node.is_dir() {
+                    format!("{}", path.to_string_lossy().blue())
                 } else {
-                    ui::cli::verbose_1!("{}  {}", "U".bold(), path.display());
+                    path.display().to_string()
+                };
+
+                if content_changed {
+                    ui::cli::log!(
+                        "{}  {}",
+                        "?".bold().white().on_red().to_string(),
+                        path.display()
+                    );
+                } else {
+                    ui::cli::verbose_1!("{}  {}", "U".bold().to_string(), path_str);
                 }
             }
         }

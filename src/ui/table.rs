@@ -295,8 +295,6 @@ impl Table {
             output.push_str(&self.draw_horizontal_line());
         }
 
-        output.push('\n');
-
         output
     }
 

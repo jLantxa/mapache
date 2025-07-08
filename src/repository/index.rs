@@ -33,7 +33,7 @@ use super::{RepositoryBackend, packer::PackedBlobDescriptor};
 #[derive(Debug, Clone)]
 struct BlobLocation {
     /// The index into the `pack_ids` `IndexSet` for the pack containing this blob. See Index.
-    pub pack_array_index: usize,
+    pub pack_array_index: u32,
     /// The offset of the blob within its pack file.
     pub offset: u32,
     /// The length of the blob within its pack file.
@@ -146,7 +146,7 @@ impl Index {
                 map.insert(
                     blob.id,
                     BlobLocation {
-                        pack_array_index: pack_index,
+                        pack_array_index: pack_index as u32,
                         offset: blob.offset,
                         length: blob.length,
                     },
@@ -170,7 +170,7 @@ impl Index {
             .map(|location| {
                 let pack_id = self
                     .pack_ids
-                    .get_value(location.pack_array_index)
+                    .get_value(location.pack_array_index as usize)
                     .expect("pack_index should always be valid for an existing blob");
                 (
                     pack_id.clone(),
@@ -183,7 +183,7 @@ impl Index {
                 self.tree_ids.get(id).map(|location| {
                     let pack_id = self
                         .pack_ids
-                        .get_value(location.pack_array_index)
+                        .get_value(location.pack_array_index as usize)
                         .expect("pack_index should always be valid for an existing blob");
                     (
                         pack_id.clone(),
@@ -209,7 +209,7 @@ impl Index {
             map.insert(
                 blob.id.clone(),
                 BlobLocation {
-                    pack_array_index: pack_index,
+                    pack_array_index: pack_index as u32,
                     offset: blob.offset,
                     length: blob.length,
                 },
@@ -232,7 +232,7 @@ impl Index {
         let mut packs_with_blobs: HashMap<usize, Vec<IndexFileBlob>> = HashMap::new();
         for (blob_id, location) in &self.data_ids {
             let entry = packs_with_blobs
-                .entry(location.pack_array_index)
+                .entry(location.pack_array_index as usize)
                 .or_default();
             entry.push(IndexFileBlob {
                 id: blob_id.clone(),
@@ -243,7 +243,7 @@ impl Index {
         }
         for (blob_id, location) in &self.tree_ids {
             let entry = packs_with_blobs
-                .entry(location.pack_array_index)
+                .entry(location.pack_array_index as usize)
                 .or_default();
             entry.push(IndexFileBlob {
                 id: blob_id.clone(),
@@ -297,7 +297,7 @@ impl Index {
                     BlobLocator {
                         pack_id: self
                             .pack_ids
-                            .get_value(loc.pack_array_index)
+                            .get_value(loc.pack_array_index as usize)
                             .unwrap()
                             .clone(),
                         offset: loc.offset,
@@ -311,7 +311,10 @@ impl Index {
         let mut blobs_to_remove = Vec::new();
 
         for (blob_id, blob_location) in self.data_ids.iter().chain(self.tree_ids.iter()) {
-            if let Some(pack_id) = self.pack_ids.get_value(blob_location.pack_array_index) {
+            if let Some(pack_id) = self
+                .pack_ids
+                .get_value(blob_location.pack_array_index as usize)
+            {
                 if target_pack_id == pack_id {
                     blobs_to_remove.push(blob_id.clone());
                 }

@@ -46,6 +46,7 @@ impl SecureStorage {
 
     /// Builder method to set an encryption key
     pub fn with_key(mut self, key: Vec<u8>) -> Self {
+        assert_eq!(key.len(), 32);
         self.key = Some(SecretBox::new(Box::new(key)));
         self
     }

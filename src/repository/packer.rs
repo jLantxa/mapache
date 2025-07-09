@@ -39,6 +39,7 @@ pub struct PackedBlobDescriptor {
 
 /// A tuple representing the flushed contents of a `Packer`:
 /// (packed data, list of blob descriptors, pack ID).
+#[derive(Debug)]
 pub struct FlushedPack {
     pub data: Vec<u8>,
     pub descriptors: Vec<PackedBlobDescriptor>,
@@ -217,17 +218,21 @@ impl Packer {
         let header_length_bytes: [u8; 4] = pack_data[(pack_len - 4)..]
             .try_into()
             .with_context(|| "Could not read pack header length bytes.")?;
-        let header_length = u32::from_le_bytes(header_length_bytes) as usize;
+        let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
 
-        if pack_len < header_length {
+        if pack_len < encoded_header_length {
             bail!(
                 "Pack header is invalid: declared header_length ({}) exceeds total pack_len ({}).",
-                header_length,
+                encoded_header_length,
                 pack_len
             );
         }
 
-        let header_blob_info_actual_len = header_length - 4;
+        let header_blob_info = secure_storage
+            .decode(&pack_data[(pack_len - encoded_header_length - 4)..pack_len - 4])?;
+        let header_len = header_blob_info.len();
+
+        let header_blob_info_actual_len = header_len;
         if header_blob_info_actual_len % HEADER_BLOB_LEN != 0 {
             bail!(
                 "Pack header is invalid: header blob info length ({}) is not a multiple of expected blob descriptor size ({}).",
@@ -236,9 +241,7 @@ impl Packer {
             );
         }
 
-        let num_blobs = (header_length - 4) / HEADER_BLOB_LEN;
-        let header_blob_info =
-            secure_storage.decode(&pack_data[(pack_len - header_length)..pack_len - 4])?;
+        let num_blobs = (header_len) / HEADER_BLOB_LEN;
 
         let mut blob_descriptors = Vec::new();
         let mut current_offset: u32 = 0;
@@ -321,52 +324,61 @@ impl PackSaver {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-// use super::*;
+#[cfg(test)]
+mod tests {
 
-// #[test]
-// fn test_pack_flush() -> Result<()> {
-//     let mut packer = Packer::new();
+    use super::*;
 
-//     let blob1: Vec<u8> = b"mapache".to_vec(); // 7 bytes
-//     packer.add_blob(ID::from_content(&blob1), BlobType::Data, blob1);
+    #[test]
+    fn test_pack_flush() -> Result<()> {
+        let mut packer = Packer::new();
 
-//     let blob2: Vec<u8> = b"backup".to_vec(); // 6 bytes
-//     packer.add_blob(ID::from_content(&blob2), BlobType::Data, blob2);
+        let blob1: Vec<u8> = b"mapache".to_vec(); // 7 bytes
+        packer.add_blob(ID::from_content(&blob1), BlobType::Data, blob1);
 
-//     let blob3: Vec<u8> = b"rust".to_vec(); // 4 bytes
-//     packer.add_blob(ID::from_content(&blob3), BlobType::Data, blob3);
+        let blob2: Vec<u8> = b"backup".to_vec(); // 6 bytes
+        packer.add_blob(ID::from_content(&blob2), BlobType::Data, blob2);
 
-//     assert_eq!(packer.size(), 7 + 6 + 4);
-//     assert!(!packer.is_empty());
+        let blob3: Vec<u8> = b"rust".to_vec(); // 4 bytes
+        packer.add_blob(ID::from_content(&blob3), BlobType::Data, blob3);
 
-//     let (data, descriptors, id) = packer.flush().expect("Flushed pack data must be Some");
+        assert_eq!(packer.size(), (7 + 6 + 4));
+        assert!(!packer.is_empty());
 
-//     let expected_header_length = 4 + (3 * HEADER_BLOB_LEN);
-//     assert_eq!(data.len(), (7 + 6 + 4) + expected_header_length);
-//     assert_eq!(
-//         id.to_hex(),
-//         "492d12ce69b75f6ce252969172077bed586ce631fb59b59f0107bee77a93ba01"
-//     );
+        // We cannot test with encryption enabled because the NONCE is randomized every time.
+        let secure_storage = SecureStorage::build();
 
-//     let header_descriptors = Packer::read_header(&data)?;
-//     assert_eq!(descriptors.len(), 3);
-//     assert_eq!(descriptors, header_descriptors);
+        let flushed_pack = packer
+            .flush(&secure_storage)
+            .expect("Failed to flush packer")
+            .expect("Flushed pack data must be Some");
 
-//     Ok(())
-// }
+        assert_eq!(flushed_pack.data.len(), 141);
+        assert_eq!(
+            flushed_pack.id.to_hex(),
+            "dcb221b14ed973f1b6e6e996273e6d284d3adb8860a58cc14c24fae244026344"
+        );
 
-// #[test]
-// fn test_empty_pack_flush() -> Result<()> {
-//     let mut packer = Packer::new();
+        let header_descriptors = Packer::read_header(&secure_storage, &flushed_pack.data)?;
+        assert_eq!(flushed_pack.descriptors.len(), 3);
+        assert_eq!(flushed_pack.descriptors, header_descriptors);
 
-//     assert_eq!(packer.size(), 0);
-//     assert!(packer.is_empty());
+        Ok(())
+    }
 
-//     let flushed_pack_data = packer.flush();
-//     assert!(flushed_pack_data.is_none());
+    #[test]
+    fn test_empty_pack_flush() -> Result<()> {
+        let mut packer = Packer::new();
 
-//     Ok(())
-// }
-// }
+        assert_eq!(packer.size(), 0);
+        assert!(packer.is_empty());
+
+        // We cannot test with encryption enabled because the NONCE is randomized every time.
+        let secure_storage = SecureStorage::build();
+
+        let flushed_pack_data = packer.flush(&secure_storage)?;
+        assert!(flushed_pack_data.is_none());
+
+        Ok(())
+    }
+}

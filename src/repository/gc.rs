@@ -22,6 +22,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
@@ -116,11 +117,6 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     }
     spinner.finish_and_clear();
 
-    // No index files to remove if there are no obsolete packs
-    if plan.obsolete_packs.is_empty() {
-        plan.index_ids.clear();
-    }
-
     Ok(plan)
 }
 
@@ -167,7 +163,10 @@ impl Plan {
         // We read the blobs we need to repack and pass them to the repository.
         // Since they are no longer in the index, this is like doing a backup of those blobs,
         // without creating the snapshot.
-        self.repo.index().write().rewrite(&self.obsolete_packs);
+        self.repo
+            .index()
+            .write()
+            .cleanup(Some(&self.obsolete_packs));
 
         let repack_bar = ProgressBar::with_draw_target(
             Some(repack_blob_info.len() as u64),
@@ -292,23 +291,25 @@ fn get_referenced_blobs_and_packs(
         let (pack_id, _, _, _) = repo.index().read().get(&tree_id).unwrap();
         referenced_blobs.insert(tree_id.clone());
         referenced_packs.insert(pack_id);
+        spinner.inc(1);
 
         let node_streamer =
             SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 
+        let mut dangling_tree_blobs: usize = 0;
+        let mut dangling_data_blobs: usize = 0;
         for node_res in node_streamer {
             match node_res {
                 Ok((_path, stream_node)) => {
                     // Tree blob
                     if let Some(tree) = stream_node.node.tree {
-                        referenced_blobs.insert(tree.clone());
-                        spinner.inc(1);
+                        if referenced_blobs.insert(tree.clone()) {
+                            spinner.set_position(referenced_blobs.len() as u64);
+                        }
 
                         match repo.index().read().get(&tree) {
                             None => {
-                                ui::cli::warning!(
-                                    "Tree referenced in snapshot is not contained in index"
-                                );
+                                dangling_tree_blobs += 1;
                             }
                             Some((pack_id, _, _, _)) => {
                                 referenced_packs.insert(pack_id);
@@ -318,14 +319,13 @@ fn get_referenced_blobs_and_packs(
                     // Data blobs
                     } else if let Some(blobs) = stream_node.node.blobs {
                         for blob_id in blobs {
-                            referenced_blobs.insert(blob_id.clone());
-                            spinner.inc(1);
+                            if referenced_blobs.insert(blob_id.clone()) {
+                                spinner.set_position(referenced_blobs.len() as u64);
+                            }
 
                             match repo.index().read().get(&blob_id) {
                                 None => {
-                                    ui::cli::warning!(
-                                        "Blob referenced in snapshot is not contained in index"
-                                    );
+                                    dangling_data_blobs += 1;
                                 }
                                 Some((pack_id, _, _, _)) => {
                                     referenced_packs.insert(pack_id);
@@ -336,6 +336,19 @@ fn get_referenced_blobs_and_packs(
                 }
                 Err(e) => ui::cli::warning!("Error parsing node: {}", e.to_string()),
             }
+        }
+
+        if dangling_tree_blobs > 0 {
+            ui::cli::warning!(
+                "{} tree blobs referenced in snapshots are not contained in index",
+                dangling_tree_blobs.to_string().bold()
+            );
+        }
+        if dangling_data_blobs > 0 {
+            ui::cli::warning!(
+                "{} data blobs referenced in snapshots are not contained in index",
+                dangling_data_blobs.to_string().bold()
+            );
         }
     }
 

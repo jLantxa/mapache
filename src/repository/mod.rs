@@ -36,12 +36,15 @@ use parking_lot::RwLock;
 use snapshot::Snapshot;
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
-use crate::global::{FileType, SaveID};
-use crate::repository::index::MasterIndex;
-use crate::repository::keys::{generate_key_file, generate_new_master_key, retrieve_master_key};
-use crate::ui;
 use crate::{
-    backend::StorageBackend, global::BlobType, global::ID, repository::storage::SecureStorage,
+    backend::StorageBackend,
+    global::{BlobType, FileType, ID, SaveID},
+    repository::{
+        index::MasterIndex,
+        keys::{generate_key_file, generate_new_master_key, retrieve_master_key},
+        storage::SecureStorage,
+    },
+    ui,
 };
 
 pub type RepoVersion = u32;

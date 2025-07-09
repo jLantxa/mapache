@@ -39,7 +39,7 @@ use crate::{
 pub struct CmdArgs {
     /// Garbage tolerance. The percentage [0-100] of garbage to tolerate in a
     /// pack file before repacking.
-    #[clap(short, long, default_value_t = DEFAULT_GC_TOLERANCE)]
+    #[clap(short, long, default_value_t = 100.0 * DEFAULT_GC_TOLERANCE)]
     pub tolerance: f32,
 
     /// Dry run. Displays what this command would do without

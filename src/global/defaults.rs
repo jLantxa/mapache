@@ -45,4 +45,5 @@ pub const SHORT_SNAPSHOT_ID_LEN: usize = 4;
 pub const DEFAULT_VERBOSITY: u32 = 1;
 
 // -- Garbage collection --
-pub const DEFAULT_GC_TOLERANCE: f32 = 5.0; // In [0-100] %
+pub const DEFAULT_GC_TOLERANCE: f32 = 0.05; // In [0-100] %
+pub const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.10; // Repack files smaller than this factor of the max pack size

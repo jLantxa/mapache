@@ -27,9 +27,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-    global::{self, ID, defaults::MAX_PACK_SIZE},
+    global::{
+        self, ID,
+        defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, MAX_PACK_SIZE},
+    },
     repository::{
-        RepositoryBackend, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer,
+        RepositoryBackend, packer::Packer, snapshot::SnapshotStreamer,
+        streamers::SerializedNodeStreamer,
     },
     ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
 };
@@ -48,15 +52,15 @@ pub struct Plan {
 pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 
-    let mut repo_packs: HashSet<ID> = repo.list_objects()?;
-    let total_packs = repo_packs.len();
+    let mut keep_packs: HashSet<ID> = repo.list_objects()?;
+    let mut unused_packs = keep_packs.clone();
 
-    repo_packs.retain(|id| !referenced_packs.contains(id));
-    let unused_packs = repo_packs;
+    keep_packs.retain(|id| referenced_packs.contains(id));
+    unused_packs.retain(|id| !referenced_packs.contains(id));
 
     let mut plan = Plan {
         repo: repo.clone(),
-        total_packs,
+        total_packs: keep_packs.len(),
         referenced_blobs,
         referenced_packs,
         obsolete_packs: HashSet::new(),
@@ -109,6 +113,7 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     ));
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
         if (garbage_bytes as f32 / MAX_PACK_SIZE as f32) > tolerance {
+            keep_packs.remove(&pack_id);
             plan.obsolete_packs.insert(pack_id);
         } else {
             plan.tolerated_packs.insert(pack_id);
@@ -116,6 +121,25 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
         spinner.inc(1);
     }
     spinner.finish_and_clear();
+
+    // Determine small packs to repack
+    let mut repack_small_packs = HashSet::new();
+    for pack_id in &keep_packs {
+        let pack = repo.load_object(pack_id)?;
+        let blob_descriptors = Packer::read_header(&pack)?;
+        let pack_size: u32 = blob_descriptors.iter().map(|d| d.length).sum();
+
+        if DEFAULT_MIN_PACK_SIZE_FACTOR
+            > (pack_size as f32 / global::defaults::MAX_PACK_SIZE as f32)
+        {
+            repack_small_packs.insert(pack_id.clone());
+        }
+    }
+    if repack_small_packs.len() > 1 && !plan.obsolete_packs.is_empty() {
+        for id in repack_small_packs.into_iter() {
+            plan.obsolete_packs.insert(id);
+        }
+    }
 
     Ok(plan)
 }

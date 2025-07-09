@@ -236,7 +236,12 @@ impl RepositoryBackend for Repository {
 
         let path = self.get_path(file_type, id);
         let data = self.backend.read(&path)?;
-        self.secure_storage.decode(&data)
+
+        if file_type != FileType::Object {
+            return self.secure_storage.decode(&data);
+        }
+
+        Ok(data)
     }
 
     fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()> {

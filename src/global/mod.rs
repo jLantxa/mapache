@@ -63,7 +63,7 @@ pub fn global_opts() -> RwLockReadGuard<'static, Option<GlobalOpts>> {
 }
 
 /// This is an ID that identifies object by its content.
-#[derive(Hash, Clone, Eq, PartialEq)]
+#[derive(Hash, Clone, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ID(Hash256);
 
 impl ID {

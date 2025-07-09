@@ -512,6 +512,7 @@ impl Repository {
 
     fn load_master_index(&mut self) -> Result<()> {
         let files = self.backend.read_dir(&self.index_path)?;
+        let num_index_files = files.len();
 
         for file in files {
             let file_name = file
@@ -530,6 +531,8 @@ impl Repository {
 
             self.index.write().add_index(index);
         }
+
+        ui::cli::verbose_1!("Loaded {} index files", num_index_files);
 
         Ok(())
     }

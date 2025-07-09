@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     time::Instant,
 };
 
@@ -287,6 +287,11 @@ impl Index {
         self.pack_ids.len()
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.num_blobs() == 0 && self.num_packs() == 0
+    }
+
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
         self.data_ids
             .iter()
@@ -468,13 +473,66 @@ impl MasterIndex {
     }
 
     /// Removes obsolete packs from all indexes
-    pub fn rewrite(&mut self, obsolete_packs: &HashSet<ID>) {
-        for idx in &mut self.indexes {
-            idx.set_pending();
-            for pack_id in obsolete_packs {
-                idx.remove_pack(pack_id);
+    pub fn cleanup(&mut self, obsolete_packs: Option<&HashSet<ID>>) {
+        if let Some(packs_to_remove) = obsolete_packs {
+            for idx in &mut self.indexes {
+                idx.set_pending();
+                for pack_id in packs_to_remove {
+                    idx.remove_pack(pack_id);
+                }
             }
         }
+        self.merge_index();
+    }
+
+    fn merge_index(&mut self) {
+        let mut new_indexes = Vec::new();
+        let mut pack_ids = BTreeSet::new();
+
+        let mut current_index = Index::new();
+        for idx in &mut self.indexes {
+            for pack_id in idx.pack_ids.iter() {
+                if pack_ids.contains(pack_id) {
+                    continue;
+                }
+
+                if current_index.is_full() {
+                    // Important: The index is not saved yet, so it must not be finalized
+                    new_indexes.push(current_index);
+                    current_index = Index::new();
+                }
+
+                pack_ids.insert(pack_id);
+                let mut packed_blob_descriptors = Vec::new();
+
+                let mut process_blobs =
+                    |blob_map: &HashMap<ID, BlobLocation>, blob_type: BlobType| {
+                        for (blob_id, _) in blob_map.iter() {
+                            let (blob_pack_id, _, offset, length) = idx.get(blob_id).unwrap();
+                            if blob_pack_id == *pack_id {
+                                let blob_descriptor = PackedBlobDescriptor {
+                                    id: blob_id.clone(),
+                                    blob_type: blob_type.clone(),
+                                    offset,
+                                    length,
+                                };
+                                packed_blob_descriptors.push(blob_descriptor);
+                            }
+                        }
+                    };
+
+                process_blobs(&idx.data_ids, BlobType::Data);
+                process_blobs(&idx.tree_ids, BlobType::Tree);
+                current_index.add_pack(pack_id, &packed_blob_descriptors);
+            }
+        }
+
+        if !current_index.is_empty() {
+            new_indexes.push(current_index);
+        }
+
+        self.indexes.clear();
+        self.indexes = new_indexes;
     }
 }
 

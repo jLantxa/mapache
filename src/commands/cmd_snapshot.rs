@@ -130,15 +130,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
 
     // Extract the snapshot root path
-    let snapshot_root_path = if absolute_source_paths.is_empty() {
+    if absolute_source_paths.is_empty() {
         ui::cli::warning!("No source paths provided. Creating empty snapshot.");
-        PathBuf::new()
-    } else if absolute_source_paths.len() == 1 {
-        let single_source = absolute_source_paths.first().unwrap();
-        utils::extract_parent(single_source).unwrap_or_default()
-    } else {
-        utils::calculate_lcp(&absolute_source_paths)
     };
+    let snapshot_root_path = utils::calculate_lcp(&absolute_source_paths, false);
 
     ui::cli::log!();
     let parent_snapshot_tuple: Option<SnapshotTuple> = match args.rescan {

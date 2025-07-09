@@ -66,6 +66,10 @@ pub struct CmdArgs {
     #[clap(long, value_delimiter = ',')]
     pub exclude: Option<Vec<PathBuf>>,
 
+    /// Strip the longest common prefix from all restored routes.
+    #[clap(long, value_parser, default_value_t = false)]
+    pub strip_prefix: bool,
+
     /// Method for conflict resolution in case a file or directory already exists in the target location.
     ///
     /// skip: Skips restoring the conflicting item.
@@ -92,6 +96,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
         Ok(Some((id, snap))) => (id, snap),
         Ok(None) | Err(_) => bail!("Snapshot not found"),
+    };
+
+    let common_prefix: Option<PathBuf> = if args.strip_prefix {
+        args.include
+            .as_ref()
+            .map(|includes| utils::calculate_lcp(includes, false))
+    } else {
+        None
     };
 
     ui::cli::log!(
@@ -170,6 +182,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         restorer::Options {
             dry_run: args.dry_run,
             resolution: args.resolution.clone(),
+            strip_prefix: common_prefix,
         },
         progress_reporter.clone(),
     )?;

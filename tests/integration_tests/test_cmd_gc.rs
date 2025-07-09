@@ -128,6 +128,7 @@ mod tests {
             dry_run: false,
             include: None,
             exclude: None,
+            strip_prefix: false,
             resolution: mapache::restorer::Resolution::Skip,
         };
         commands::cmd_restore::run(&global, &restore_args)

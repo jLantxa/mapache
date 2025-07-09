@@ -68,7 +68,7 @@ impl FSNodeStreamer {
         paths.retain(|path| utils::filter_path(path, None, Some(exclude_paths.as_ref())));
 
         // Calculate intermediate paths and count children (root included)
-        let common_root = utils::calculate_lcp(&paths);
+        let common_root = utils::calculate_lcp(&paths, false);
         let (_root_children_count, intermediate_path_set) =
             utils::get_intermediate_paths(&common_root, &paths);
 

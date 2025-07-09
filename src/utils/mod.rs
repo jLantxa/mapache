@@ -124,12 +124,20 @@ pub fn pretty_print_system_time(time: SystemTime, format_str: Option<&str>) -> R
 
 /// Calculates the longest common prefix for a set of paths.
 /// Returns an empty PathBuf if the input is empty or if no common prefix exists.
-pub fn calculate_lcp(paths: &[PathBuf]) -> PathBuf {
+/// If `strict_prefix` is true, the LCP of a single path is itself,
+/// otherwise, the LCP is the parent:
+///
+/// - `true`: a/b/c -> a/b/c
+/// - `false`: a/b/c -> a/b
+pub fn calculate_lcp(paths: &[PathBuf], strict_prefix: bool) -> PathBuf {
     if paths.is_empty() {
         return PathBuf::new();
-    }
-    if paths.len() == 1 {
-        return paths[0].clone();
+    } else if paths.len() == 1 {
+        if strict_prefix {
+            return paths[0].clone();
+        } else {
+            return extract_parent(&paths[0]).expect("Path should have a parent");
+        }
     }
 
     let mut common_prefix = PathBuf::new();
@@ -471,37 +479,43 @@ mod tests {
     #[test]
     fn test_calculate_lcp() {
         let paths: Vec<PathBuf> = vec![];
-        assert_eq!(calculate_lcp(&paths), PathBuf::new());
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
 
         let paths = vec![PathBuf::from("/home/user/docs")];
-        assert_eq!(calculate_lcp(&paths), PathBuf::from("/home/user/docs"));
+        assert_eq!(
+            calculate_lcp(&paths, true),
+            PathBuf::from("/home/user/docs")
+        );
+
+        let paths = vec![PathBuf::from("/home/user/docs")];
+        assert_eq!(calculate_lcp(&paths, false), PathBuf::from("/home/user"));
 
         let paths = vec![
             PathBuf::from("/home/user/a"),
             PathBuf::from("/home/user/b/file.txt"),
             PathBuf::from("/home/user/c"),
         ];
-        assert_eq!(calculate_lcp(&paths), PathBuf::from("/home/user"));
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::from("/home/user"));
 
         let paths = vec![
             PathBuf::from("/home/user/docs"),
             PathBuf::from("/etc"),
             PathBuf::from("/var/log"),
         ];
-        assert_eq!(calculate_lcp(&paths), PathBuf::from("/"));
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::from("/"));
 
         let paths = vec![
             PathBuf::from("a/b/c"),
             PathBuf::from("a/b/d"),
             PathBuf::from("a/b"),
         ];
-        assert_eq!(calculate_lcp(&paths), PathBuf::from("a/b"));
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::from("a/b"));
 
         let paths = vec![PathBuf::from("a/b"), PathBuf::from("x/y")];
-        assert_eq!(calculate_lcp(&paths), PathBuf::new());
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
 
         let paths = vec![PathBuf::from("/home/user/a"), PathBuf::from("a")];
-        assert_eq!(calculate_lcp(&paths), PathBuf::new());
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
     }
 
     #[test]

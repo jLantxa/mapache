@@ -17,16 +17,18 @@
 pub mod node_restorer;
 
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use anyhow::{Ok, Result, bail};
+use anyhow::{Context, Ok, Result, bail};
 use clap::ValueEnum;
 
 use crate::{
     repository::{RepositoryBackend, snapshot::Snapshot, streamers::SerializedNodeStreamer},
     ui::restore_progress::RestoreProgressReporter,
+    utils,
 };
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
@@ -38,6 +40,7 @@ pub enum Resolution {
 
 pub struct Options {
     pub resolution: Resolution,
+    pub strip_prefix: Option<PathBuf>,
     pub dry_run: bool,
 }
 
@@ -63,6 +66,15 @@ impl Restorer {
             exclude,
         )?;
 
+        // Exclude prefix components
+        let strip_excludes = if let Some(ref prefix) = opts.strip_prefix {
+            let (_, inter) =
+                utils::get_intermediate_paths(&PathBuf::new(), &[prefix.to_path_buf()]);
+            inter.into_keys().collect()
+        } else {
+            BTreeSet::new()
+        };
+
         // Stack directories to restore file times later
         // Modifying the metadata of a node changes the file times of the parent directory.
         // Since the SerializedNodeStreamer emits paths in lexicographical order, we can
@@ -70,8 +82,23 @@ impl Restorer {
         let mut dir_stack = Vec::new();
 
         for node_res in node_streamer {
-            let (path, stream_node) = node_res?;
+            let (mut path, stream_node) = node_res?;
             progress_reporter.processing_file(path.clone());
+
+            if let Some(prefix) = &opts.strip_prefix {
+                if strip_excludes.contains(&path) {
+                    continue;
+                }
+
+                path = path
+                    .strip_prefix(prefix)
+                    .with_context(|| "Failed to strip prefix from restore path")?
+                    .to_path_buf();
+
+                if path.to_str().unwrap() == "" {
+                    continue;
+                }
+            }
 
             let restore_path = target_path.join(&path);
 

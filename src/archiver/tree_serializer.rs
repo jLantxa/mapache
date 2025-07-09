@@ -166,7 +166,7 @@ pub(crate) fn finalize_if_complete(
         nodes: this_pending_tree.children.into_values().collect(),
     };
 
-    let (tree_id, raw_tree_size, encoded_tree_size) = completed_tree.save_to_repo(repo)?;
+    let (tree_id, (raw_tree_size, encoded_tree_size)) = completed_tree.save_to_repo(repo)?;
 
     // If the current directory is the snapshot root, store its tree ID as the
     // final root ID. Otherwise, it's an intermediate directory, so update its

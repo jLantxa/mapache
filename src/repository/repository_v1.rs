@@ -160,8 +160,8 @@ impl RepositoryBackend for Repository {
         object_type: BlobType,
         data: Vec<u8>,
         save_id: SaveID,
-    ) -> Result<(ID, u64, u64)> {
-        let mut raw_size = data.len() as u64;
+    ) -> Result<(ID, (u64, u64), (u64, u64))> {
+        let raw_size = data.len() as u64;
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
             SaveID::WithID(id) => id,
@@ -173,11 +173,11 @@ impl RepositoryBackend for Repository {
 
         // If the blob was already pending, return early, as we are finished here.
         if blob_exists {
-            return Ok((id, 0, 0));
+            return Ok((id, (0, 0), (0, 0)));
         }
 
         let data = self.secure_storage.encode(&data)?;
-        let mut encoded_size = data.len() as u64;
+        let encoded_size = data.len() as u64;
 
         let packer = match object_type {
             BlobType::Data => &self.data_packer,
@@ -187,13 +187,13 @@ impl RepositoryBackend for Repository {
         packer.write().add_blob(id.clone(), object_type, data);
 
         // Flush if the packer is considered full
-        if packer.read().size() > self.max_packer_size {
-            let (index_raw_size, index_encoded_size) = self.flush_packer(packer)?;
-            raw_size += index_raw_size;
-            encoded_size += index_encoded_size;
-        }
+        let packer_meta_size = if packer.read().size() > self.max_packer_size {
+            self.flush_packer(packer)?
+        } else {
+            (0, 0)
+        };
 
-        Ok((id, raw_size, encoded_size))
+        Ok((id, (raw_size, encoded_size), packer_meta_size))
     }
 
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
@@ -292,10 +292,15 @@ impl RepositoryBackend for Repository {
     }
 
     fn flush(&self) -> Result<(u64, u64)> {
-        self.flush_packer(&self.data_packer)?;
-        self.flush_packer(&self.tree_packer)?;
+        let data_packer_meta_size = self.flush_packer(&self.data_packer)?;
+        let tree_packer_meta_size = self.flush_packer(&self.tree_packer)?;
 
-        self.index.write().save(self)
+        let (index_raw_size, index_encoded_size) = self.index.write().save(self)?;
+
+        Ok((
+            data_packer_meta_size.1 + tree_packer_meta_size.0 + index_raw_size,
+            data_packer_meta_size.1 + tree_packer_meta_size.1 + index_encoded_size,
+        ))
     }
 
     fn load_object(&self, id: &ID) -> Result<Vec<u8>> {
@@ -496,21 +501,26 @@ impl Repository {
     }
 
     fn flush_packer(&self, packer: &Arc<RwLock<Packer>>) -> Result<(u64, u64)> {
-        match packer.write().flush() {
+        match packer.write().flush(&self.secure_storage)? {
             None => Ok((0, 0)),
-            Some((pack_data, packed_blob_descriptors, pack_id)) => {
+            Some(flushed_pack) => {
                 if let Some(pack_saver) = self.pack_saver.write().as_ref() {
-                    pack_saver.save_pack(pack_data, SaveID::WithID(pack_id.clone()))?;
+                    pack_saver
+                        .save_pack(flushed_pack.data, SaveID::WithID(flushed_pack.id.clone()))?;
                 } else {
                     bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
                 }
 
-                let (raw, encoded) =
-                    self.index
-                        .write()
-                        .add_pack(self, &pack_id, packed_blob_descriptors)?;
+                let (index_raw, index_encoded) = self.index.write().add_pack(
+                    self,
+                    &flushed_pack.id,
+                    flushed_pack.descriptors,
+                )?;
 
-                Ok((raw, encoded))
+                Ok((
+                    flushed_pack.meta_size + index_raw,
+                    flushed_pack.meta_size + index_encoded,
+                ))
             }
         }
     }

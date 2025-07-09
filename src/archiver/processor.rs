@@ -144,9 +144,10 @@ pub(crate) fn save_file(
     // Do not chunk if the file is smaller than the minimum chunk size
     if node.metadata.size < global::defaults::MIN_CHUNK_SIZE {
         let data = std::fs::read(src_path)?;
-        let (id, raw_size, encoded_size) =
+        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
             repo.save_blob(BlobType::Data, data, global::SaveID::CalculateID)?;
-        progress_reporter.written_data_bytes(raw_size, encoded_size);
+        progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
+        progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);
         progress_reporter.processed_bytes(node.metadata.size);
 
         Ok(vec![id])
@@ -191,8 +192,9 @@ fn chunk_and_save_blobs(
             repo_clone.save_blob(BlobType::Data, chunk.data, global::SaveID::WithID(id));
 
         match save_blob_res {
-            Ok((_id, raw_size, encoded_size)) => {
-                pr.written_data_bytes(raw_size, encoded_size);
+            Ok((_id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size))) => {
+                pr.written_data_bytes(raw_data_size, encoded_data_size);
+                pr.written_meta_bytes(raw_meta_size, encoded_meta_size);
                 pr.processed_bytes(processed_size);
             }
             Err(e) => bail!("Failed to save blob to repository: {:?}", e),

@@ -78,8 +78,13 @@ pub trait RepositoryBackend: Sync + Send {
 
     /// Saves a blob in the repository. This blob can be packed with other blobs in an object file.
     /// Returns a tuple (`ID`, raw_size, encoded_size)
-    fn save_blob(&self, object_type: BlobType, data: Vec<u8>, id: SaveID)
-    -> Result<(ID, u64, u64)>;
+    #[allow(clippy::type_complexity)]
+    fn save_blob(
+        &self,
+        object_type: BlobType,
+        data: Vec<u8>,
+        id: SaveID,
+    ) -> Result<(ID, (u64, u64), (u64, u64))>;
 
     /// Loads a blob from the repository.
     fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;

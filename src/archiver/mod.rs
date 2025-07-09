@@ -301,10 +301,10 @@ impl Archiver {
         };
 
         // Flush repo and finalize pack saver
-        let (index_raw_data, index_encoded_data) = archiver.repo.flush()?;
+        let (flushed_raw_meta_size, flushed_encode_meta_size) = archiver.repo.flush()?;
         archiver
             .progress_reporter
-            .written_meta_bytes(index_raw_data, index_encoded_data);
+            .written_meta_bytes(flushed_raw_meta_size, flushed_encode_meta_size);
         archiver.repo.finalize_pack_saver();
 
         match root_tree_id {

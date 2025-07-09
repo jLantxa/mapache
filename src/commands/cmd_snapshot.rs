@@ -33,7 +33,7 @@ use crate::{
     global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         self, RepositoryBackend,
-        snapshot::{Snapshot, SnapshotTuple},
+        snapshot::{SnapshotSummary, SnapshotTuple},
         streamers::FSNodeStreamer,
     },
     ui::{
@@ -236,17 +236,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
     let new_snapshot = archiver.snapshot()?;
 
-    let (snapshot_id, _snapshot_raw_size, _snapshot_encoded_size) = repo.save_file(
+    let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) = repo.save_file(
         global::FileType::Snapshot,
         serde_json::to_string(&new_snapshot)?.as_bytes(),
         SaveID::CalculateID,
     )?;
 
+    progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);
+
     // Finalize reporter. This removes the progress bars.
     progress_reporter.finalize();
 
     // Final report
-    show_final_report(&snapshot_id, &new_snapshot, args);
+    show_final_report(&snapshot_id, &progress_reporter.get_summary(), args);
 
     ui::cli::log!(
         "Finished in {}",
@@ -256,12 +258,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-fn show_final_report(
-    snapshot_id: &ID,
-    // The type changes here!
-    snapshot: &Snapshot,
-    args: &CmdArgs,
-) {
+fn show_final_report(snapshot_id: &ID, summary: &SnapshotSummary, args: &CmdArgs) {
     ui::cli::log!("{}", "Changes since parent snapshot".bold());
     ui::cli::log!();
 
@@ -279,8 +276,6 @@ fn show_final_report(
         "deleted".bold().red().to_string(),
         "unmodiffied".bold().to_string(),
     ]);
-
-    let summary = &snapshot.summary;
 
     table.add_row(vec![
         "Files".bold().to_string(),

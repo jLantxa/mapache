@@ -32,8 +32,7 @@ use crate::{
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, MAX_PACK_SIZE},
     },
     repository::{
-        RepositoryBackend, packer::Packer, snapshot::SnapshotStreamer,
-        streamers::SerializedNodeStreamer,
+        RepositoryBackend, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer,
     },
     ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
 };
@@ -70,6 +69,7 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     };
 
     // Count garbage bytes in each pack
+    let mut kept_pack_size: HashMap<ID, u64> = HashMap::new();
     let mut pack_garbage: HashMap<ID, u64> = HashMap::new();
 
     // Find obsolete packs and blobs in index
@@ -84,12 +84,25 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
         (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
     ));
     for (id, locator) in repo.index().read().iter_ids() {
+        kept_pack_size
+            .entry(locator.pack_id.clone())
+            .and_modify(|size| {
+                *size += locator.length as u64;
+            })
+            .or_default();
+
         if !plan.referenced_blobs.contains(id) {
             pack_garbage
                 .entry(locator.pack_id)
                 .and_modify(|size| *size += locator.length as u64)
                 .or_insert(locator.length as u64);
             spinner.inc(1);
+        }
+    }
+    // Find small packs to repack
+    for (pack_id, size) in kept_pack_size {
+        if (size as f32 / MAX_PACK_SIZE as f32) < DEFAULT_MIN_PACK_SIZE_FACTOR {
+            plan.obsolete_packs.insert(pack_id);
         }
     }
     spinner.finish_and_clear();
@@ -121,25 +134,6 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
         spinner.inc(1);
     }
     spinner.finish_and_clear();
-
-    // Determine small packs to repack
-    let mut repack_small_packs = HashSet::new();
-    for pack_id in &keep_packs {
-        let pack = repo.load_object(pack_id)?;
-        let blob_descriptors = Packer::read_header(&pack)?;
-        let pack_size: u32 = blob_descriptors.iter().map(|d| d.length).sum();
-
-        if DEFAULT_MIN_PACK_SIZE_FACTOR
-            > (pack_size as f32 / global::defaults::MAX_PACK_SIZE as f32)
-        {
-            repack_small_packs.insert(pack_id.clone());
-        }
-    }
-    if repack_small_packs.len() > 1 && !plan.obsolete_packs.is_empty() {
-        for id in repack_small_packs.into_iter() {
-            plan.obsolete_packs.insert(id);
-        }
-    }
 
     Ok(plan)
 }

@@ -36,6 +36,10 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
+#[clap(
+    about = "Clean up the repository",
+    long_about = "Clean up the repository removing obsolete objects and merging pack and index files."
+)]
 pub struct CmdArgs {
     /// Garbage tolerance. The percentage [0-100] of garbage to tolerate in a
     /// pack file before repacking.

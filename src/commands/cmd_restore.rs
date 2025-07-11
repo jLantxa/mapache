@@ -49,6 +49,7 @@ impl std::fmt::Display for Resolution {
 }
 
 #[derive(Args, Debug)]
+#[clap(about = "Restore a snapshot")]
 pub struct CmdArgs {
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
     #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
@@ -58,11 +59,11 @@ pub struct CmdArgs {
     #[clap(long, required = true)]
     pub target: PathBuf,
 
-    /// A list of paths to restore: path[,path,...]
+    /// A list of paths to restore: path[,path,...]. Can be used multiple times.
     #[clap(long, value_delimiter = ',')]
     pub include: Option<Vec<PathBuf>>,
 
-    /// A list of paths to exclude: path[,path,...]
+    /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_delimiter = ',')]
     pub exclude: Option<Vec<PathBuf>>,
 

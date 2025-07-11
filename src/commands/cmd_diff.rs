@@ -38,6 +38,7 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
+#[clap(about = "Show differences between snapshots")]
 pub struct CmdArgs {
     #[arg(value_parser)]
     pub source_snapshot_id: String,
@@ -151,7 +152,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
                 let symbol = if node_type_changed {
                     "T".bold().purple().to_string()
-                } else if content_changed && !node_type_changed {
+                } else if !content_changed {
                     "m".bold().cyan().to_string()
                 } else {
                     "M".bold().yellow().to_string()

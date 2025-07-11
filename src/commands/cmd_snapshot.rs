@@ -48,12 +48,13 @@ use super::{GlobalArgs, UseSnapshot};
 
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
+#[clap(about = "Create a new snapshot")]
 pub struct CmdArgs {
     /// List of paths to backup
     #[clap(value_parser, required = true)]
     pub paths: Vec<PathBuf>,
 
-    /// List of paths to exclude from the backup
+    /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, value_delimiter = ',', required = false)]
     pub exclude: Option<Vec<PathBuf>>,
 

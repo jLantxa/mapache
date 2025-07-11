@@ -39,8 +39,9 @@ use crate::{
 use super::GlobalArgs;
 
 #[derive(Args, Debug)]
+#[clap(about = "Show all snapshots present in the repository")]
 pub struct CmdArgs {
-    /// Show a compact list of snapshots
+    /// Show a single snapshot
     #[arg(value_parser)]
     pub snapshot: Option<String>,
 
@@ -116,7 +117,12 @@ fn log(snapshots: &[(ID, Snapshot)]) {
             ui::cli::log!(
                 "{} {}",
                 "Tags:".bold(),
-                snapshot.tags.iter().map(|s| s.as_str()).collect::<String>()
+                snapshot
+                    .tags
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         }
 
@@ -166,7 +172,12 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
                 .format("%Y-%m-%d %H:%M:%S %Z")
                 .to_string(),
             utils::format_size(snapshot.size(), 3),
-            snapshot.tags.iter().map(|s| s.as_str()).collect::<String>(),
+            snapshot
+                .tags
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
         ]);
     }
 

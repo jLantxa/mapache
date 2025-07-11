@@ -32,6 +32,7 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
+#[clap(about = "List nodes in the repository")]
 pub struct CmdArgs {
     /// Snapshot ID (or prefix)
     #[clap(value_parser, default_value_t = UseSnapshot::Latest)]

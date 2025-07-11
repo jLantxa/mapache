@@ -29,6 +29,7 @@ use crate::utils;
 use super::GlobalArgs;
 
 #[derive(Args, Debug)]
+#[clap(about = "Print repository objects")]
 pub struct CmdArgs {
     /// Object to print:
     /// [manifest|snapshot:ID|pack:ID|blob:ID|tree:ID|index:ID|key:ID].

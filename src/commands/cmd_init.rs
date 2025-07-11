@@ -26,6 +26,7 @@ use crate::{repository, utils};
 use super::GlobalArgs;
 
 #[derive(Args, Debug)]
+#[clap(about = "Initialize a new repository")]
 pub struct CmdArgs {
     /// Repository version
     #[clap(long, default_value_t = LATEST_REPOSITORY_VERSION)]

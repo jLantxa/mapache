@@ -29,9 +29,9 @@ use crate::{
 
 pub mod cmd_amend;
 pub mod cmd_cat;
+pub mod cmd_clean;
 pub mod cmd_diff;
 pub mod cmd_forget;
-pub mod cmd_gc;
 pub mod cmd_init;
 pub mod cmd_log;
 pub mod cmd_ls;
@@ -42,8 +42,7 @@ pub mod cmd_snapshot;
 #[derive(Parser, Debug)]
 #[clap(
     version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
-    about = "mapache is a de-duplicating, incremental backup tool",
-
+    about = "mapache backup tool",
 )]
 pub struct Cli {
     // Subcommand
@@ -58,34 +57,15 @@ pub struct Cli {
 // List of commands
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    #[clap(about = "Initialize a new repository")]
     Init(cmd_init::CmdArgs),
-
-    #[clap(about = "Create a new snapshot")]
     Snapshot(cmd_snapshot::CmdArgs),
-
-    #[clap(about = "Restore a snapshot")]
     Restore(cmd_restore::CmdArgs),
-
-    #[clap(about = "Show all snapshots present in the repository")]
     Log(cmd_log::CmdArgs),
-
-    #[clap(about = "Amend an existing snapshot")]
-    Amend(cmd_amend::CmdArgs),
-
-    #[clap(about = "Remove snapshots from the repository")]
     Forget(cmd_forget::CmdArgs),
-
-    #[clap(about = "Remove obsolete objects from the repository")]
-    Gc(cmd_gc::CmdArgs),
-
-    #[clap(about = "List nodes in the repository")]
+    Clean(cmd_clean::CmdArgs),
+    Amend(cmd_amend::CmdArgs),
     Ls(cmd_ls::CmdArgs),
-
-    #[clap(about = "Show differences between snapshots")]
     Diff(cmd_diff::CmdArgs),
-
-    #[clap(about = "Print repository objects")]
     Cat(cmd_cat::CmdArgs),
 }
 
@@ -93,7 +73,7 @@ pub enum Command {
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 pub struct GlobalArgs {
     /// Repository path
-    #[clap(short, long, value_parser)]
+    #[clap(short = 'r', long = "repo", value_parser)]
     pub repo: String,
 
     /// SSH public key
@@ -109,12 +89,14 @@ pub struct GlobalArgs {
     pub password_file: Option<PathBuf>,
 
     /// Path to a KeyFile
-    #[clap(short = 'k', long, value_parser)]
+    #[clap(short = 'k', long = "key-file", value_parser)]
     pub key: Option<PathBuf>,
 
-    #[clap(short = 'q', long, value_parser, group = "verbosity_group")]
+    /// Disable logging (verbosity = 0)
+    #[clap(long, value_parser, group = "verbosity_group")]
     pub quiet: bool,
 
+    /// Set the verbosity level [0-3]
     #[clap(short = 'v', long, value_parser, group = "verbosity_group")]
     pub verbosity: Option<u32>,
 }
@@ -194,7 +176,7 @@ pub fn run(args: &Cli) -> Result<()> {
         Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, cmd_args),
         Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, cmd_args),
         Command::Amend(cmd_args) => cmd_amend::run(&args.global_args, cmd_args),
-        Command::Gc(cmd_args) => cmd_gc::run(&args.global_args, cmd_args),
+        Command::Clean(cmd_args) => cmd_clean::run(&args.global_args, cmd_args),
         Command::Log(cmd_args) => cmd_log::run(&args.global_args, cmd_args),
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),
         Command::Diff(cmd_args) => cmd_diff::run(&args.global_args, cmd_args),

@@ -37,6 +37,7 @@ use crate::{
 #[clap(group = ArgGroup::new("snapshot_group").multiple(false))]
 #[clap(group = ArgGroup::new("tags_group").multiple(false))]
 #[clap(group = ArgGroup::new("description_group").multiple(false))]
+#[clap(about = "Amend an existing snapshot")]
 pub struct CmdArgs {
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
     #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest, group = "snapshot_group")]

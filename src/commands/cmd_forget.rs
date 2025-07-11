@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use chrono::{DateTime, Datelike, Duration, Local};
@@ -26,7 +25,6 @@ use crate::backend::{make_dry_backend, new_backend_with_prompt};
 use crate::commands::parse_tags;
 use crate::global::defaults::DEFAULT_GC_TOLERANCE;
 use crate::global::{self, FileType, ID};
-use crate::repository::RepositoryBackend;
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
 use crate::ui::table::{Alignment, Table};
 use crate::{commands, repository, ui, utils};
@@ -143,8 +141,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     // All sapshots, filter by tags and sorted by timestamp
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();

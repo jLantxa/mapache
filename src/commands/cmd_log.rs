@@ -14,8 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
 use chrono::Local;
 use clap::Args;
@@ -26,7 +24,7 @@ use crate::{
     commands::parse_tags,
     global::{self, FileType, ID},
     repository::{
-        self, RepositoryBackend,
+        self,
         snapshot::{Snapshot, SnapshotStreamer},
     },
     ui::{
@@ -57,8 +55,7 @@ pub struct CmdArgs {
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args)?;
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = match &args.snapshot {
         None => SnapshotStreamer::new(repo.clone())?.collect(),

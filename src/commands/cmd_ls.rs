@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::Args;
@@ -58,8 +58,7 @@ pub struct CmdArgs {
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args)?;
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let (_snapshot_id, snapshot) = {
         match find_use_snapshot(repo.clone(), &args.snapshot) {

@@ -24,6 +24,7 @@ pub mod snapshot;
 pub mod storage;
 pub mod streamers;
 pub mod tree;
+pub mod verify;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -222,7 +223,7 @@ pub fn try_open(
     mut password: Option<String>,
     key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
-) -> Result<Arc<dyn RepositoryBackend>> {
+) -> Result<(Arc<dyn RepositoryBackend>, Arc<SecureStorage>)> {
     if !backend.root_exists() {
         bail!("Could not open a repository. The path does not exist.");
     }
@@ -273,7 +274,9 @@ pub fn try_open(
 
     let version = manifest.version;
 
-    open_repository_with_version(version, backend, secure_storage)
+    let repo = open_repository_with_version(version, backend, secure_storage.clone())?;
+
+    Ok((repo, secure_storage))
 }
 
 fn open_repository_with_version(

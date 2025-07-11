@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Args;
@@ -26,7 +25,7 @@ use crate::{
     commands::GlobalArgs,
     global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        self, RepositoryBackend,
+        self,
         snapshot::DiffCounts,
         streamers::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
     },
@@ -58,8 +57,7 @@ pub struct CmdArgs {
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args)?;
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     // Load snapshots
     let (source_id, _) = repo.find(FileType::Snapshot, &args.source_snapshot_id)?;

@@ -37,6 +37,7 @@ pub mod cmd_log;
 pub mod cmd_ls;
 pub mod cmd_restore;
 pub mod cmd_snapshot;
+pub mod cmd_verify;
 
 // CLI arguments
 #[derive(Parser, Debug)]
@@ -67,6 +68,7 @@ pub enum Command {
     Ls(cmd_ls::CmdArgs),
     Diff(cmd_diff::CmdArgs),
     Cat(cmd_cat::CmdArgs),
+    Verify(cmd_verify::CmdArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -181,5 +183,6 @@ pub fn run(args: &Cli) -> Result<()> {
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),
         Command::Diff(cmd_args) => cmd_diff::run(&args.global_args, cmd_args),
         Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, cmd_args),
+        Command::Verify(cmd_args) => cmd_verify::run(&args.global_args, cmd_args),
     }
 }

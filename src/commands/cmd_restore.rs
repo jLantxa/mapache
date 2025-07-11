@@ -29,7 +29,7 @@ use crate::{
     backend::{make_dry_backend, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
-    repository::{self, RepositoryBackend, streamers::SerializedNodeStreamer},
+    repository::{self, streamers::SerializedNodeStreamer},
     restorer::{self, Resolution, Restorer},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, cli, default_bar_draw_target,
@@ -49,7 +49,12 @@ impl std::fmt::Display for Resolution {
 }
 
 #[derive(Args, Debug)]
-#[clap(about = "Restore a snapshot")]
+#[clap(
+    about = "Restore a snapshot in a target path",
+    long_about = "Restore a snapshot in a target path. Running this command in\
+    --dry-run mode simulates the restoration of a snapshot, and can be used to\
+    detect errors before running the actual restore."
+)]
 pub struct CmdArgs {
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
     #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
@@ -91,8 +96,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
         Ok(Some((id, snap))) => (id, snap),

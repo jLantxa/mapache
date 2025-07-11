@@ -171,7 +171,7 @@ mod tests {
 
         // Init repo
         init_repo(password, repo_path.clone())?;
-        let repo = try_open(Some(password.to_string()), None, backend)?;
+        let (repo, _) = try_open(Some(password.to_string()), None, backend)?;
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {

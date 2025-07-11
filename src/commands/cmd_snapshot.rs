@@ -32,7 +32,7 @@ use crate::{
     commands::{EMPTY_TAG_MARK, find_use_snapshot, parse_tags},
     global::{self, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        self, RepositoryBackend,
+        self,
         snapshot::{SnapshotSummary, SnapshotTuple},
         streamers::FSNodeStreamer,
     },
@@ -94,8 +94,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // If dry-run, wrap the backend inside the DryBackend
     let backend = make_dry_backend(backend, args.dry_run);
 
-    let repo: Arc<dyn RepositoryBackend> =
-        repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let mut tags: BTreeSet<String> = parse_tags(Some(&args.tags_str));
     tags.retain(|tag| tag != EMPTY_TAG_MARK);

@@ -39,6 +39,7 @@ use crate::{
 use super::GlobalArgs;
 
 #[derive(Args, Debug)]
+#[clap(about = "Show all snapshots present in the repository")]
 pub struct CmdArgs {
     /// Show a compact list of snapshots
     #[arg(value_parser)]

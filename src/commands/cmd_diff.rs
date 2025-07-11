@@ -38,6 +38,8 @@ use crate::{
 };
 
 #[derive(Args, Debug)]
+#[clap(about = "Show differences between snapshots")]
+#[clap(about = "Print repository objects")]
 pub struct CmdArgs {
     #[arg(value_parser)]
     pub source_snapshot_id: String,

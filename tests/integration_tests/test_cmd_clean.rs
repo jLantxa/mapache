@@ -20,7 +20,7 @@ mod tests {
     use std::path::PathBuf;
 
     use anyhow::{Context, Result};
-    use mapache::commands::{self, GlobalArgs, UseSnapshot, cmd_gc, cmd_restore, cmd_snapshot};
+    use mapache::commands::{self, GlobalArgs, UseSnapshot, cmd_clean, cmd_restore, cmd_snapshot};
 
     use tempfile::tempdir;
 
@@ -114,11 +114,11 @@ mod tests {
         commands::cmd_forget::run(&global, &forget_args)
             .with_context(|| "Failed to run cmd_forget")?;
 
-        let gc_args = cmd_gc::CmdArgs {
+        let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: false,
         };
-        commands::cmd_gc::run(&global, &gc_args).with_context(|| "Failed to run cmd_gc")?;
+        commands::cmd_clean::run(&global, &gc_args).with_context(|| "Failed to run cmd_gc")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");

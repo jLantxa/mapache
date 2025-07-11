@@ -37,6 +37,12 @@ use super::GlobalArgs;
 #[derive(Parser, Debug)]
 #[clap(group = ArgGroup::new("policy").multiple(false))] // Either forget OR retention_rules, but not both
 #[clap(group = ArgGroup::new("retention_rules").multiple(true))] // Allow multiple --keep-* rules
+#[clap(
+    about = "Remove snapshots from the repository",
+    long_about = "Remove snapshots from the repository and apply retention policies. \
+                  When applying retention rules, snapshots are kept as long as there is at \
+                  least one rule that applies."
+)]
 pub struct CmdArgs {
     /// Forget specific snapshots by their IDs.
     #[arg(value_parser, value_delimiter = ' ', group = "policy")]
@@ -80,7 +86,7 @@ pub struct CmdArgs {
 
     // -- Garbage collector --
     /// Run the garbage collector after this command
-    #[arg(long = "gc")]
+    #[arg(long = "clean")]
     pub run_gc: bool,
 
     /// Garbage tolerance. The percentage [0-100] of garbage to tolerate in a
@@ -264,14 +270,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     // Run the garbage collector
     if args.run_gc {
-        let gc_args = commands::cmd_gc::CmdArgs {
+        let gc_args = commands::cmd_clean::CmdArgs {
             tolerance: args.tolerance,
             dry_run: args.dry_run,
         };
 
         ui::cli::log!();
         ui::cli::log!("Running garbage collector...");
-        commands::cmd_gc::run_with_repo(global_args, &gc_args, repo)?;
+        commands::cmd_clean::run_with_repo(global_args, &gc_args, repo)?;
     }
 
     Ok(())

@@ -14,20 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
 
 use crate::{
     global::ID,
-    repository::{
-        RepositoryBackend, packer::Packer, storage::SecureStorage,
-        streamers::SerializedNodeStreamer, tree::NodeType,
-    },
+    repository::{RepositoryBackend, packer::Packer, storage::SecureStorage},
     utils,
 };
 
-pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID, len: Option<u32>) -> Result<()> {
+pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID, len: Option<u32>) -> Result<u64> {
     let blob_data = repo.load_blob(id)?;
     let checksum = utils::calculate_hash(&blob_data);
     if checksum != id.0[..] {
@@ -39,7 +36,7 @@ pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID, len: Option<u32>) -> R
         bail!("Invalid blob length");
     }
 
-    Ok(())
+    Ok(blob_data.len() as u64)
 }
 
 pub fn verify_pack(
@@ -59,46 +56,6 @@ pub fn verify_pack(
         if !visited_blobs.contains(&blob_descriptor.id) {
             verify_blob(repo, &blob_descriptor.id, Some(blob_descriptor.length))?;
             visited_blobs.insert(blob_descriptor.id.clone());
-        }
-    }
-
-    Ok(())
-}
-
-pub fn verify_snapshot(
-    repo: Arc<dyn RepositoryBackend>,
-    snapshot_id: &ID,
-    visited_blobs: &mut BTreeSet<ID>,
-) -> Result<()> {
-    let snapshot_data = repo.load_file(crate::global::FileType::Snapshot, snapshot_id)?;
-    let checksum = utils::calculate_hash(snapshot_data);
-    if checksum != snapshot_id.0[..] {
-        bail!("Invalid snapshot checksum");
-    }
-
-    let snapshot = repo.load_snapshot(snapshot_id)?;
-    let tree_id = snapshot.tree;
-    let streamer =
-        SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
-    for (_path, stream_node) in streamer.flatten() {
-        let node = stream_node.node;
-        match node.node_type {
-            NodeType::File => {
-                if let Some(blobs) = node.blobs {
-                    for blob in blobs {
-                        if !visited_blobs.contains(&blob) {
-                            verify_blob(repo.as_ref(), &blob, None)?;
-                            visited_blobs.insert(blob);
-                        }
-                    }
-                }
-            }
-            NodeType::Symlink
-            | NodeType::Directory
-            | NodeType::BlockDevice
-            | NodeType::CharDevice
-            | NodeType::Fifo
-            | NodeType::Socket => (),
         }
     }
 

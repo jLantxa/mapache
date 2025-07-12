@@ -83,20 +83,14 @@ pub trait StorageBackend: Send + Sync {
     fn is_dir(&self, path: &Path) -> bool;
 }
 
-/// Encapsulates a StorageBackend inside a DryBackend.
-#[inline]
-pub fn make_dry_backend(backend: Arc<dyn StorageBackend>, dry: bool) -> Arc<dyn StorageBackend> {
-    match dry {
-        true => Arc::new(DryBackend::new(backend.clone())),
-        false => backend,
-    }
-}
-
-pub fn new_backend_with_prompt(global_args: &GlobalArgs) -> Result<Arc<dyn StorageBackend>> {
+pub fn new_backend_with_prompt(
+    global_args: &GlobalArgs,
+    dry_backend: bool,
+) -> Result<Arc<dyn StorageBackend>> {
     let backend_url = BackendUrl::from(&global_args.repo)?;
 
-    match backend_url {
-        BackendUrl::Local(repo_path) => Ok(Arc::new(LocalFS::new(repo_path))),
+    let backend: Arc<dyn StorageBackend> = match backend_url {
+        BackendUrl::Local(repo_path) => Arc::new(LocalFS::new(repo_path)),
         BackendUrl::Sftp(username, host, port, repo_path) => {
             let auth_method = if let Some(private_key) = &global_args.ssh_privatekey {
                 sftp::AuthMethod::PubKey {
@@ -110,15 +104,22 @@ pub fn new_backend_with_prompt(global_args: &GlobalArgs) -> Result<Arc<dyn Stora
                 sftp::AuthMethod::Password(password)
             };
 
-            Ok(Arc::new(SftpBackend::new(
+            Arc::new(SftpBackend::new(
                 repo_path,
                 username,
                 host,
                 port,
                 auth_method,
-            )?))
+            )?)
         }
-    }
+    };
+
+    let backend = match dry_backend {
+        true => Arc::new(DryBackend::new(backend.clone())),
+        false => backend,
+    };
+
+    Ok(backend)
 }
 
 #[derive(Debug, Clone, PartialEq)]

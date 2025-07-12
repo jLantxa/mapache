@@ -35,7 +35,7 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(global_args)?;
+    let backend = new_backend_with_prompt(global_args, false)?;
 
     ui::cli::log!("Initializing a new repository in \'{}\'", &global_args.repo);
     repository::init_repository_with_version(

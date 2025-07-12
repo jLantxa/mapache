@@ -23,6 +23,7 @@ mod tests {
     use mapache::{
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         global::set_global_opts_with_args,
+        restorer::Resolution,
     };
 
     use tempfile::tempdir;
@@ -259,7 +260,7 @@ mod tests {
             include: None,
             exclude: None,
             strip_prefix: false,
-            resolution: mapache::restorer::Resolution::Skip,
+            resolution: Resolution::Skip,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;

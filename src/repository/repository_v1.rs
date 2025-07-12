@@ -26,7 +26,10 @@ use parking_lot::RwLock;
 
 use crate::{
     backend::StorageBackend,
-    global::{self, BlobType, FileType, SaveID},
+    global::{
+        self, BlobType, FileType, SaveID,
+        defaults::{MAX_PACK_SIZE, SHORT_REPO_ID_LEN},
+    },
     repository::{
         MANIFEST_PATH,
         packer::{PackSaver, Packer},
@@ -105,7 +108,10 @@ impl RepositoryBackend for Repository {
         backend.create_dir(&snapshot_path)?;
         backend.create_dir(&index_path)?;
 
-        ui::cli::log!("Created repo with id {}", repo_id.to_short_hex(5));
+        ui::cli::log!(
+            "Created repo with id {}",
+            repo_id.to_short_hex(SHORT_REPO_ID_LEN)
+        );
 
         Ok(())
     }
@@ -120,19 +126,10 @@ impl RepositoryBackend for Repository {
         let index_path = PathBuf::from(INDEX_DIR);
 
         // Packer defaults
-        let max_packer_size = global::defaults::MAX_PACK_SIZE;
-        let pack_data_capacity = max_packer_size as usize;
-        let pack_blob_capacity =
-            (pack_data_capacity as u64).div_ceil(global::defaults::AVG_CHUNK_SIZE) as usize;
+        let max_packer_size = MAX_PACK_SIZE;
 
-        let data_packer = Arc::new(RwLock::new(Packer::with_capacity(
-            pack_data_capacity,
-            pack_blob_capacity,
-        )));
-        let tree_packer = Arc::new(RwLock::new(Packer::with_capacity(
-            pack_data_capacity,
-            pack_blob_capacity,
-        )));
+        let data_packer = Arc::new(RwLock::new(Packer::new()));
+        let tree_packer = Arc::new(RwLock::new(Packer::new()));
 
         let index = Arc::new(RwLock::new(MasterIndex::new()));
 
@@ -161,6 +158,12 @@ impl RepositoryBackend for Repository {
         data: Vec<u8>,
         save_id: SaveID,
     ) -> Result<(ID, (u64, u64), (u64, u64))> {
+        let packer = match object_type {
+            BlobType::Data => &self.data_packer,
+            BlobType::Tree => &self.tree_packer,
+            BlobType::Padding => panic!("Internal error: blob type not allowed"),
+        };
+
         let raw_size = data.len() as u64;
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
@@ -178,11 +181,6 @@ impl RepositoryBackend for Repository {
 
         let data = self.secure_storage.encode(&data)?;
         let encoded_size = data.len() as u64;
-
-        let packer = match object_type {
-            BlobType::Data => &self.data_packer,
-            BlobType::Tree => &self.tree_packer,
-        };
 
         packer.write().add_blob(id.clone(), object_type, data);
 

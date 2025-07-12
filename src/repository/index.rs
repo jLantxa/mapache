@@ -141,6 +141,7 @@ impl Index {
                 let map = match blob.blob_type {
                     BlobType::Data => &mut index.data_ids,
                     BlobType::Tree => &mut index.tree_ids,
+                    BlobType::Padding => continue,
                 };
 
                 map.insert(
@@ -204,6 +205,7 @@ impl Index {
             let map = match blob.blob_type {
                 BlobType::Data => &mut self.data_ids,
                 BlobType::Tree => &mut self.tree_ids,
+                BlobType::Padding => continue,
             };
 
             map.insert(

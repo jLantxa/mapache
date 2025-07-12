@@ -19,31 +19,32 @@ use std::time::Duration;
 use crate::utils::size;
 
 // -- Concurrency --
-pub const DEFAULT_READ_CONCURRENCY: usize = 4;
-pub const DEFAULT_WRITE_CONCURRENCY: usize = 5;
+pub(crate) const DEFAULT_READ_CONCURRENCY: usize = 4;
+pub(crate) const DEFAULT_WRITE_CONCURRENCY: usize = 5;
 
 // -- Index --
-pub const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-pub const BLOBS_PER_INDEX_FILE: usize = 65535;
+pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(crate) const BLOBS_PER_INDEX_FILE: usize = 65535;
 
 // -- Packing --
 /// Minimum pack size before flushing to the backend.
 pub const MAX_PACK_SIZE: u64 = 16 * size::MiB;
+pub(crate) const HEADER_BLOB_MULTIPLE: usize = 64;
 
 // -- Chunking --
 /// Minimum chunk size
-pub const MIN_CHUNK_SIZE: u64 = 512 * size::KiB;
+pub(crate) const MIN_CHUNK_SIZE: u64 = 512 * size::KiB;
 /// Average chunk size
-pub const AVG_CHUNK_SIZE: u64 = size::MiB;
+pub(crate) const AVG_CHUNK_SIZE: u64 = size::MiB;
 /// Maximum chunk size
-pub const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
+pub(crate) const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 
 // -- Display --
-pub const SHORT_REPO_ID_LEN: usize = 5;
-pub const SHORT_SNAPSHOT_ID_LEN: usize = 4;
+pub(crate) const SHORT_REPO_ID_LEN: usize = 5;
+pub(crate) const SHORT_SNAPSHOT_ID_LEN: usize = 4;
 
-pub const DEFAULT_VERBOSITY: u32 = 1;
+pub(crate) const DEFAULT_VERBOSITY: u32 = 1;
 
 // -- Garbage collection --
-pub const DEFAULT_GC_TOLERANCE: f32 = 0.05; // In [0-100] %
-pub const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.10; // Repack files smaller than this factor of the max pack size
+pub(crate) const DEFAULT_GC_TOLERANCE: f32 = 0.05; // In [0-100] %
+pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.10; // Repack files smaller than this factor of the max pack size

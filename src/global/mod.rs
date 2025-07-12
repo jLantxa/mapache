@@ -20,6 +20,7 @@ use std::sync::LazyLock;
 
 use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
+use num_enum::FromPrimitive;
 use parking_lot::{RwLock, RwLockReadGuard};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -181,29 +182,15 @@ impl<'de> Deserialize<'de> for ID {
 }
 
 /// Type of objects that can be stored in a repository.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, FromPrimitive)]
 #[repr(u8)]
 pub enum BlobType {
     Data = 0x00,
     Tree = 0x01,
-}
 
-impl From<BlobType> for u8 {
-    fn from(obj_type: BlobType) -> Self {
-        obj_type as u8
-    }
-}
-
-impl TryFrom<u8> for BlobType {
-    type Error = anyhow::Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x00 => Ok(BlobType::Data),
-            0x01 => Ok(BlobType::Tree),
-            _ => Err(anyhow::anyhow!("Invalid BlobType value: {}", value)),
-        }
-    }
+    /// A padding blob descriptor used for obfuscation. This blob is fake and must be ignored.
+    #[num_enum(default)]
+    Padding = 0xff,
 }
 
 /// Type of objects that can be stored in a Repository

@@ -17,15 +17,16 @@
 use std::{sync::Arc, thread::JoinHandle};
 
 use anyhow::{Context, Result, bail};
-use blake3::Hasher;
 use crossbeam_channel::Sender;
+use rand::Rng;
 
 use crate::{
-    global::{BlobType, ID, SaveID},
+    global::{BlobType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
     repository::storage::SecureStorage,
+    utils,
 };
 
-const HEADER_BLOB_LEN: usize = 32 + 4 + 1; // id (256 bits) + length (u32) + type (u8)
+pub(crate) const HEADER_BLOB_LEN: usize = 32 + 4 + 1; // id (256 bits) + length (u32) + type (u8)
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a pack.
@@ -55,12 +56,8 @@ pub struct FlushedPack {
 /// This design helps minimize memory reallocations by consolidating all blob
 /// data into a single `Vec<u8>` and tracking individual blob locations.
 pub struct Packer {
-    data: Vec<u8>,
-    blob_descriptors: Vec<PackedBlobDescriptor>,
-    hasher: Hasher,
-
-    data_papacity_hint: usize,
-    blob_descriptor_capacity_hint: usize,
+    blobs: Vec<(ID, BlobType, Vec<u8>)>,
+    size: u64,
 }
 
 impl Default for Packer {
@@ -70,53 +67,29 @@ impl Default for Packer {
 }
 
 impl Packer {
-    /// Creates a new, empty `Packer` with default capacities.
-    ///
-    /// For better performance, consider using `Packer::with_capacity` if you have
-    /// an estimate of the total data size and number of blobs you intend to add.
     pub fn new() -> Self {
         Self {
-            data: Vec::new(),
-            blob_descriptors: Vec::new(),
-            hasher: Hasher::new(),
-            data_papacity_hint: 0,
-            blob_descriptor_capacity_hint: 0,
-        }
-    }
-
-    /// Creates a new `Packer` with pre-allocated capacity for its internal data buffer
-    /// and blob descriptor list.
-    ///
-    /// Using this constructor can improve performance by reducing the number of memory
-    /// reallocations if you have a good estimate of the total data size and number of
-    /// blobs you intend to add. For fix pack sizes, using this can significantly reduce
-    /// memory churn.
-    pub fn with_capacity(data_capacity: usize, blobs_capacity: usize) -> Self {
-        Self {
-            data: Vec::with_capacity(data_capacity),
-            blob_descriptors: Vec::with_capacity(blobs_capacity),
-            hasher: Hasher::new(),
-            data_papacity_hint: data_capacity,
-            blob_descriptor_capacity_hint: blobs_capacity,
+            blobs: Vec::new(),
+            size: 0,
         }
     }
 
     /// Returns the current total byte size of all raw data accumulated in the packer.
     #[inline]
     pub fn size(&self) -> u64 {
-        self.data.len() as u64
+        self.size
     }
 
     /// Returns `true` if the packer contains no blob data and no descriptors.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty() && self.blob_descriptors.is_empty()
+        self.blobs.is_empty()
     }
 
     /// Returns the number of individual blob objects currently stored in the packer.
     #[inline]
     pub fn num_objects(&self) -> usize {
-        self.blob_descriptors.len()
+        self.blobs.len()
     }
 
     /// Appends a new blob's data to the packer and records its corresponding descriptor.
@@ -124,23 +97,10 @@ impl Packer {
     /// The `blob_data` `Vec<u8>` is efficiently moved into the packer's internal
     /// buffer using `Vec::append`, avoiding a costly copy. After this call, `blob_data`
     /// will be empty.
-    pub fn add_blob(&mut self, id: ID, blob_type: BlobType, mut blob_data: Vec<u8>) {
-        let offset = self.data.len() as u32;
-        let length = blob_data.len() as u32;
-
-        if !blob_data.is_empty() {
-            self.hasher.update(&blob_data);
-        }
-
-        self.data.append(&mut blob_data);
-
-        // Record the descriptor for the newly added blob
-        self.blob_descriptors.push(PackedBlobDescriptor {
-            id,
-            blob_type,
-            offset,
-            length,
-        });
+    pub fn add_blob(&mut self, id: ID, blob_type: BlobType, blob_data: Vec<u8>) {
+        let length = blob_data.len();
+        self.size += length as u64;
+        self.blobs.push((id, blob_type, blob_data));
     }
 
     /// Flushes the contents of the packer, returning the accumulated raw data
@@ -149,45 +109,65 @@ impl Packer {
     /// After calling `flush`, the `Packer` instance will be reset to an empty state,
     /// ready to accumulate new blobs. Ownership of the `Vec<u8>` and `Vec<PackedBlobDescriptor>`
     /// is transferred to the caller, making this an efficient way to extract the packed content.
-    /// The internal vectors retain their allocated capacity for future use.
     pub fn flush(&mut self, secure_storage: &SecureStorage) -> Result<Option<FlushedPack>> {
         if self.is_empty() {
             return Ok(None);
         }
 
-        // Take ownership of the vectors, effectively swapping them with new empty ones.
-        let mut data = std::mem::take(&mut self.data);
-        let descriptors = std::mem::take(&mut self.blob_descriptors);
+        let blobs = std::mem::take(&mut self.blobs);
+        self.size = 0;
 
-        // Append metadata section
-        let pack_header = Self::generate_header(&descriptors);
-        let mut pack_header = secure_storage.encode(&pack_header)?;
-        let mut header_length_bytes = (pack_header.len() as u32).to_le_bytes().to_vec();
-        pack_header.append(&mut header_length_bytes);
-        let meta_size = pack_header.len() as u64;
+        let mut offset: u32 = 0;
+        let mut data = Vec::new();
+        let mut descriptors = Vec::new();
 
-        self.hasher.update(&pack_header);
-        data.append(&mut pack_header);
+        for blob in blobs {
+            let mut blob_data = blob.2;
+            let length = blob_data.len() as u32;
+            descriptors.push(PackedBlobDescriptor {
+                id: blob.0,
+                blob_type: blob.1,
+                offset,
+                length,
+            });
+            data.append(&mut blob_data);
+            offset += length;
+        }
 
-        let hash = self.hasher.finalize();
-        self.hasher.reset();
+        let header = Self::generate_header(&mut descriptors);
+        let mut header = secure_storage.encode(&header)?;
+        let mut header_length_bytes = (header.len() as u32).to_le_bytes().to_vec();
+        header.append(&mut header_length_bytes);
+        let meta_size: u64 = header.len() as u64;
+        data.append(&mut header);
 
-        // Reserve capacity
-        self.data.reserve(self.data_papacity_hint);
-        self.blob_descriptors
-            .reserve(self.blob_descriptor_capacity_hint);
+        let hash = utils::calculate_hash(&data);
 
         Ok(Some(FlushedPack {
             data,
             descriptors,
             meta_size,
-            id: ID::from_bytes(hash.into()),
+            id: ID::from_bytes(hash),
         }))
     }
 
-    fn generate_header(descriptors: &Vec<PackedBlobDescriptor>) -> Vec<u8> {
+    fn generate_header(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
         // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
         let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len());
+
+        if descriptors.len() % HEADER_BLOB_MULTIPLE > 0 {
+            let num_padding_blobs =
+                HEADER_BLOB_MULTIPLE - (descriptors.len() % HEADER_BLOB_MULTIPLE);
+            for _ in 0..num_padding_blobs {
+                // Add random fields so the compressor cannot reduce the padding size.
+                descriptors.push(PackedBlobDescriptor {
+                    id: ID::new_random(),
+                    blob_type: BlobType::Padding,
+                    offset: rand::rng().random(),
+                    length: rand::rng().random(),
+                });
+            }
+        }
 
         for blob in descriptors {
             let id = blob.id.as_slice();
@@ -248,6 +228,12 @@ impl Packer {
         for i in 0..num_blobs {
             let blob_info = &header_blob_info[(i * HEADER_BLOB_LEN)..((i + 1) * HEADER_BLOB_LEN)];
 
+            let blob_type: BlobType = blob_info[36].into();
+            if matches!(blob_type, BlobType::Padding) {
+                // Ignore padding blobs. They "don't exist".
+                continue;
+            }
+
             let blob_id_bytes: [u8; 32] = blob_info[0..32].try_into().unwrap();
             let id = ID::from_bytes(blob_id_bytes);
 
@@ -256,8 +242,6 @@ impl Packer {
             let length_bytes: [u8; 4] = blob_info[32..36].try_into().unwrap();
             let length = u32::from_le_bytes(length_bytes);
             current_offset += length;
-
-            let blob_type: BlobType = blob_info[36].try_into()?;
 
             let blob_descriptor = PackedBlobDescriptor {
                 id,
@@ -353,15 +337,13 @@ mod tests {
             .expect("Failed to flush packer")
             .expect("Flushed pack data must be Some");
 
-        assert_eq!(flushed_pack.data.len(), 141);
-        assert_eq!(
-            flushed_pack.id.to_hex(),
-            "dcb221b14ed973f1b6e6e996273e6d284d3adb8860a58cc14c24fae244026344"
-        );
+        assert_eq!(flushed_pack.data.len(), 2398);
+        // Due to obfuscation we cannot make assumptions about the hash
 
         let header_descriptors = Packer::read_header(&secure_storage, &flushed_pack.data)?;
-        assert_eq!(flushed_pack.descriptors.len(), 3);
-        assert_eq!(flushed_pack.descriptors, header_descriptors);
+        assert_eq!(flushed_pack.descriptors.len(), 64);
+        assert_eq!(header_descriptors.len(), 3);
+        assert_ne!(flushed_pack.descriptors, header_descriptors);
 
         Ok(())
     }

@@ -21,7 +21,7 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    backend::{make_dry_backend, new_backend_with_prompt},
+    backend::new_backend_with_prompt,
     commands::GlobalArgs,
     global::defaults::DEFAULT_GC_TOLERANCE,
     repository::{
@@ -54,11 +54,7 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(global_args)?;
-
-    // If dry-run, wrap the backend inside the DryBackend
-    let backend = make_dry_backend(backend, args.dry_run);
-
+    let backend = new_backend_with_prompt(global_args, args.dry_run)?;
     let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     run_with_repo(global_args, args, repo)

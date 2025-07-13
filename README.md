@@ -75,7 +75,7 @@ The goal of this milestone is to add convenience and quality of like feature. Th
 
 - [x] `amend` command to remove files from existing snapshots and modify metadata.
 - [x] `diff` command to show differences between snapshots
-- [ ] `verify` command to verify the integrity of the data stored in the repository.
+- [x] `verify` command to verify the integrity of the data stored in the repository.
 - [ ] Key managment.
 
 ### Other planned features

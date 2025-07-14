@@ -70,8 +70,9 @@ pub struct CmdArgs {
     #[clap(long = "no-parent", group = "scan_mode")]
     pub rescan: bool,
 
-    /// Use a snapshot as parent. This snapshot will be the base when analyzing differences.
-    #[clap(long, group = "scan_mode",value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest )]
+    /// Use a snapshot as parent (ID or 'latest'). This snapshot will be the base when analyzing differences.
+    #[clap(long, group = "scan_mode", value_parser = clap::value_parser!(UseSnapshot),
+           default_value_t = UseSnapshot::Latest )]
     pub parent: UseSnapshot,
 
     /// Number of files to process in parallel.

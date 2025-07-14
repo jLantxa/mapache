@@ -27,7 +27,7 @@ use crate::{
     utils::indexset::IndexSet,
 };
 
-use super::{RepositoryBackend, packer::PackedBlobDescriptor};
+use super::{packer::PackedBlobDescriptor, RepositoryBackend};
 
 /// Represents the location and size of a blob within a pack file.
 #[derive(Debug, Clone)]
@@ -341,8 +341,8 @@ impl Index {
 /// over all known blobs in the repository.
 #[derive(Debug, Clone)]
 pub struct MasterIndex {
-    /// A list of individual indexes, some of which might be pending.
-    indexes: Vec<Index>,
+    /// A list of individual indices, some of which might be pending.
+    indices: Vec<Index>,
 
     /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
     pending_blobs: HashSet<ID>,
@@ -358,7 +358,7 @@ impl MasterIndex {
     /// Creates a new, empty `MasterIndex`.
     pub fn new() -> Self {
         Self {
-            indexes: Vec::with_capacity(1),
+            indices: Vec::with_capacity(1),
             pending_blobs: HashSet::new(),
         }
     }
@@ -366,25 +366,25 @@ impl MasterIndex {
     /// Returns `true` if the object ID is known either in a finalized index
     /// or is currently a pending blob.
     pub fn contains(&self, id: &ID) -> bool {
-        // Check finalized indexes first
-        self.indexes
+        // Check finalized indices first
+        self.indices
             .iter()
             .any(|idx| !idx.is_pending && idx.contains(id))
             || self.pending_blobs.contains(id) // Then check pending blobs
     }
 
-    /// Retrieves an entry for a given blob ID by searching through finalized indexes.
+    /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
     pub fn get(&self, id: &ID) -> Option<(ID, BlobType, u32, u32)> {
-        self.indexes
+        self.indices
             .iter()
             .find_map(|idx| if !idx.is_pending { idx.get(id) } else { None })
     }
 
     /// Adds a fully constructed `Index` to the master index.
-    /// This is typically used for adding loaded, finalized indexes.
+    /// This is typically used for adding loaded, finalized indices.
     pub fn add_index(&mut self, index: Index) {
-        self.indexes.push(index);
+        self.indices.push(index);
     }
 
     /// Adds a blob ID to the set of blobs that are waiting to be packed.
@@ -409,8 +409,8 @@ impl MasterIndex {
             self.pending_blobs.remove(&blob.id);
         }
 
-        // Add the pack's blobs to all currently pending indexes.
-        for idx in &mut self.indexes {
+        // Add the pack's blobs to all currently pending indices.
+        for idx in &mut self.indices {
             if idx.is_pending() {
                 idx.add_pack(pack_id, &packed_blob_descriptors);
 
@@ -421,23 +421,23 @@ impl MasterIndex {
             }
         }
 
-        // There were no pending indexes. Create a new empty pending index and add the pack.
+        // There were no pending indices. Create a new empty pending index and add the pack.
         let mut new_pending_index = Index::new();
         new_pending_index.add_pack(pack_id, &packed_blob_descriptors);
-        self.indexes.push(new_pending_index);
+        self.indices.push(new_pending_index);
 
         Ok((0, 0)) // Nothing was added to the repository
     }
 
-    /// Saves all pending indexes managed by the `MasterIndex` to the repository.
-    /// Finalized indexes are not saved again.
+    /// Saves all pending indices managed by the `MasterIndex` to the repository.
+    /// Finalized indices are not saved again.
     ///
     /// Returns the total raw and encoded sizes of the saved index files.
     pub fn save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
         let mut uncompressed_size: u64 = 0;
         let mut compressed_size: u64 = 0;
 
-        for idx in &mut self.indexes {
+        for idx in &mut self.indices {
             if idx.is_pending() {
                 let (uncompressed, compressed) = idx.finalize_and_save(repo)?;
                 uncompressed_size += uncompressed;
@@ -453,17 +453,17 @@ impl MasterIndex {
         let mut chained_iterator: Box<dyn Iterator<Item = (&ID, BlobLocator)>> =
             Box::new(std::iter::empty());
 
-        for index in &self.indexes {
+        for index in &self.indices {
             // Chain each index's iterator to the accumulating chained_iterator
             chained_iterator = Box::new(chained_iterator.chain(index.iter_ids()));
         }
         chained_iterator
     }
 
-    /// Returns the IDs of all finalized (serialized) indexes
+    /// Returns the IDs of all finalized (serialized) indices
     pub fn ids(&self) -> HashSet<ID> {
         let mut ids = HashSet::new();
-        for idx in &self.indexes {
+        for idx in &self.indices {
             if idx.is_pending() {
                 continue;
             }
@@ -474,10 +474,10 @@ impl MasterIndex {
         ids
     }
 
-    /// Removes obsolete packs from all indexes
+    /// Removes obsolete packs from all indices
     pub fn cleanup(&mut self, obsolete_packs: Option<&HashSet<ID>>) {
         if let Some(packs_to_remove) = obsolete_packs {
-            for idx in &mut self.indexes {
+            for idx in &mut self.indices {
                 idx.set_pending();
                 for pack_id in packs_to_remove {
                     idx.remove_pack(pack_id);
@@ -487,12 +487,16 @@ impl MasterIndex {
         self.merge_index();
     }
 
+    /// Merges all current indices into a new collection of full indices.
+    /// This function can be used to defragment the current master index into
+    /// a small set of full index files then it becomes fragmented into many
+    /// small files.
     fn merge_index(&mut self) {
-        let mut new_indexes = Vec::new();
+        let mut new_indices = Vec::new();
         let mut pack_ids = BTreeSet::new();
 
         let mut current_index = Index::new();
-        for idx in &mut self.indexes {
+        for idx in &mut self.indices {
             for pack_id in idx.pack_ids.iter() {
                 if pack_ids.contains(pack_id) {
                     continue;
@@ -500,7 +504,7 @@ impl MasterIndex {
 
                 if current_index.is_full() {
                     // Important: The index is not saved yet, so it must not be finalized
-                    new_indexes.push(current_index);
+                    new_indices.push(current_index);
                     current_index = Index::new();
                 }
 
@@ -530,11 +534,11 @@ impl MasterIndex {
         }
 
         if !current_index.is_empty() {
-            new_indexes.push(current_index);
+            new_indices.push(current_index);
         }
 
-        self.indexes.clear();
-        self.indexes = new_indexes;
+        self.indices.clear();
+        self.indices = new_indices;
     }
 }
 

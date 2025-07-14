@@ -24,6 +24,7 @@ use crate::{
     utils,
 };
 
+/// Verify the checksum and contents of a blob with a known ID in the repository.
 pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID, len: Option<u32>) -> Result<u64> {
     let blob_data = repo.load_blob(id)?;
     let checksum = utils::calculate_hash(&blob_data);
@@ -39,6 +40,7 @@ pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID, len: Option<u32>) -> R
     Ok(blob_data.len() as u64)
 }
 
+/// Verify the checksum and contents of a pack  with a known ID in the repository.
 pub fn verify_pack(
     repo: &dyn RepositoryBackend,
     secure_storage: &SecureStorage,

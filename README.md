@@ -82,7 +82,7 @@ The goal of this milestone is to add convenience and quality of like feature. Th
 
 This is a non-exhaustive list of features that I want to add:
 
-- [ ] FUSE mount (I don't even know how this works).
+- [x] FUSE mount ~~(I don't even know how this works)~~.
 
 ## Getting started
 
@@ -111,11 +111,12 @@ Commands:
   snapshot  Create a new snapshot
   restore   Restore a snapshot in a target path
   log       Show all snapshots present in the repository
+  diff      Show differences between snapshots
   forget    Remove snapshots from the repository
   clean     Clean up the repository
   amend     Amend an existing snapshot
   ls        List nodes in the repository
-  diff      Show differences between snapshots
+  mount     Mount the repository as a file system
   cat       Print repository objects
   verify    Verify the integrity of the data stored in the repository
   help      Print this message or the help of the given subcommand(s)

@@ -120,6 +120,13 @@ pub fn pretty_print_system_time(time: SystemTime, format_str: Option<&str>) -> R
     Ok(datetime_local.format(format).to_string())
 }
 
+pub fn pretty_print_timestamp(timestamp: &DateTime<Local>) -> String {
+    timestamp
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string()
+}
+
 // --- Path Utilities ---
 
 /// Calculates the longest common prefix for a set of paths.

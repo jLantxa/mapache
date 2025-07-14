@@ -39,7 +39,7 @@ use super::GlobalArgs;
 #[derive(Args, Debug)]
 #[clap(about = "Show all snapshots present in the repository")]
 pub struct CmdArgs {
-    /// Show a single snapshot
+    /// Show a single snapshot with a given ID
     #[arg(value_parser)]
     pub snapshot: Option<String>,
 

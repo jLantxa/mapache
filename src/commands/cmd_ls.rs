@@ -34,7 +34,7 @@ use crate::{
 #[derive(Args, Debug)]
 #[clap(about = "List nodes in the repository")]
 pub struct CmdArgs {
-    /// Snapshot ID (or prefix)
+    /// Snapshot ID (prefix) or 'latest' for the most recent snapshots.
     #[clap(value_parser, default_value_t = UseSnapshot::Latest)]
     pub snapshot: UseSnapshot,
 
@@ -91,6 +91,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
 }
 
+/// List the contents of a node.
 fn ls(path: PathBuf, node: Node, repo: &dyn RepositoryBackend, args: &CmdArgs) -> Result<()> {
     if !node.is_dir() {
         println!("{}", node_to_string(&node, args.long, args.human_readable));
@@ -109,6 +110,7 @@ fn ls(path: PathBuf, node: Node, repo: &dyn RepositoryBackend, args: &CmdArgs) -
     Ok(())
 }
 
+/// List a snapshot tree.
 fn ls_tree(
     path: PathBuf, // 'path' here is the initial path
     mut tree: Tree,
@@ -121,8 +123,6 @@ fn ls_tree(
     }
 
     if args.recursive {
-        println!();
-
         let mut stack: Vec<(PathBuf, Node)> = Vec::new();
         for node in tree.nodes.into_iter().rev() {
             if node.tree.is_some() {
@@ -157,6 +157,7 @@ fn ls_tree(
     Ok(())
 }
 
+/// Prints the relevant metadata of a node as a single line, similar to the Unix ls command.
 fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
     let node_name_str = get_colorized_node_name(node);
 

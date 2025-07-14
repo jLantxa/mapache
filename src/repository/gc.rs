@@ -37,6 +37,9 @@ use crate::{
     ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
 };
 
+/// The cleanup plan. This struct contains lists of items that are valid, unused or need some work.
+/// A plan can be executed to complete the garbage collection process. Once executed, the plan
+/// object is consumed and cannot be used again. This is an intended safety measure.
 pub struct Plan {
     pub repo: Arc<dyn RepositoryBackend>,
     pub total_packs: usize, // Total number of blobs in the repository
@@ -48,6 +51,7 @@ pub struct Plan {
     pub index_ids: HashSet<ID>, // Current index IDs
 }
 
+/// Scan the repository and make a plan of what needs to be cleaned.
 pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 

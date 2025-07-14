@@ -102,21 +102,22 @@ You need to install `perl` in our system in order to compile the `openssl` sourc
 If you run the executable, you will be greeted by something like this:
 
 ```
-mapache is a de-duplicating, incremental backup tool
+mapache backup tool
 
 Usage: mapache [OPTIONS] --repo <REPO> <COMMAND>
 
 Commands:
   init      Initialize a new repository
   snapshot  Create a new snapshot
-  restore   Restore a snapshot
+  restore   Restore a snapshot in a target path
   log       Show all snapshots present in the repository
-  amend     Amend an existing snapshot
   forget    Remove snapshots from the repository
-  gc        Remove obsolete objects from the repository
+  clean     Clean up the repository
+  amend     Amend an existing snapshot
   ls        List nodes in the repository
   diff      Show differences between snapshots
   cat       Print repository objects
+  verify    Verify the integrity of the data stored in the repository
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -124,9 +125,9 @@ Options:
       --ssh-pubkey <SSH_PUBKEY>          SSH public key
       --ssh-privatekey <SSH_PRIVATEKEY>  SSH private key
   -p, --password-file <PASSWORD_FILE>    Path to a file to read the repository password
-  -k, --key <KEY>                        Path to a KeyFile
-  -q, --quiet
-  -v, --verbosity <VERBOSITY>
+  -k, --key-file <KEY>                   Path to a KeyFile
+      --quiet                            Disable logging (verbosity = 0)
+  -v, --verbosity <VERBOSITY>            Set the verbosity level [0-3]
   -h, --help                             Print help
   -V, --version                          Print version
 ```

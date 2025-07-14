@@ -60,6 +60,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     run_with_repo(global_args, args, repo)
 }
 
+/// Run the command with an initialized repository object.
 pub fn run_with_repo(
     _global_args: &GlobalArgs,
     args: &CmdArgs,

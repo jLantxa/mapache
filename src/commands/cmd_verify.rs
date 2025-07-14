@@ -75,8 +75,10 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         snapshot_counter += 1;
     }
 
-    ui::cli::log!();
-    ui::cli::log!("{} snapshots verified", snapshot_counter);
+    ui::cli::log!(
+        "{} verified",
+        utils::format_count(snapshot_counter, "snapshot", "snapshots"),
+    );
     if ok_counter > 0 {
         ui::cli::log!("{} {}", ok_counter, "[OK]".bold().green());
     }
@@ -87,6 +89,8 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
+/// Verify the checksum and contents of a snapshot with a known ID in the repository.
+///  This function will verify the checksum of the Snapshot object and all blobs referenced by it.
 pub fn verify_snapshot(
     repo: Arc<dyn RepositoryBackend>,
     snapshot_id: &ID,

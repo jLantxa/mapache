@@ -465,7 +465,7 @@ impl Repository {
         }
     }
 
-    /// Lists all paths belonging to a file type (objects, snapshots, indexes, etc.).
+    /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.).
     fn list_files(&self, file_type: FileType) -> Result<Vec<PathBuf>> {
         match file_type {
             FileType::Snapshot => self.backend.read_dir(&self.snapshot_path),

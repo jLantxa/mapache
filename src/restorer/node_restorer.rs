@@ -53,7 +53,12 @@ pub(crate) fn restore_node_to_path(
 ) -> Result<()> {
     match node.node_type {
         NodeType::File => {
-            if !dry_run {
+            let blocks = node
+                .blobs
+                .as_ref()
+                .expect("File Node must have contents (even if empty)");
+
+            let dst_file = if !dry_run {
                 if let Some(parent) = dst_path.parent() {
                     fs::create_dir_all(parent).with_context(|| {
                         format!(
@@ -63,69 +68,53 @@ pub(crate) fn restore_node_to_path(
                     })?;
                 }
 
-                let mut dst_file = OpenOptions::new()
-                    .create(true)
-                    .truncate(true)
-                    .write(true)
-                    .open(dst_path)
-                    .with_context(|| {
-                        format!("Could not create destination file '{}'", dst_path.display())
-                    })?;
-
-                let blocks = node
-                    .blobs
-                    .as_ref()
-                    .expect("File Node must have contents (even if empty)");
-
-                for (index, chunk_hash) in blocks.iter().enumerate() {
-                    let chunk_data = repo.load_blob(chunk_hash).with_context(|| {
-                        format!(
-                            "Could not load block #{} ({}) for restoring file '{}'",
-                            index + 1,
-                            chunk_hash,
-                            dst_path.display()
-                        )
-                    })?;
-
-                    let chunk_size = chunk_data.len() as u64;
-
-                    dst_file.write_all(&chunk_data).with_context(|| {
-                        format!(
-                            "Could not restore block #{} ({}) to file '{}'",
-                            index + 1,
-                            chunk_hash,
-                            dst_path.display()
-                        )
-                    })?;
-
-                    progress_reporter.processed_bytes(chunk_size);
-                }
-
-                // Restore metadata after content is written
-                restore_node_metadata(node, dst_path)?;
+                Some(
+                    OpenOptions::new()
+                        .create(true)
+                        .truncate(true)
+                        .write(true)
+                        .open(dst_path)
+                        .with_context(|| {
+                            format!("Could not create destination file '{}'", dst_path.display())
+                        })?,
+                )
             } else {
-                // dry-run restore doesn't read the blobs. It only access the blob metadata
-                // from the master index in the repository.
-                let blocks = node
-                    .blobs
-                    .as_ref()
-                    .expect("File Node must have contents (even if empty)");
+                None
+            };
 
-                let index = repo.index();
+            for (index, blob_id) in blocks.iter().enumerate() {
+                let chunk_data = repo.load_blob(blob_id).with_context(|| {
+                    format!(
+                        "Could not load block #{} ({}) for restoring file '{}'",
+                        index + 1,
+                        blob_id,
+                        dst_path.display()
+                    )
+                })?;
 
-                for (i, blob_id) in blocks.iter().enumerate() {
-                    match index.read().get(blob_id) {
-                        Some((_pack_od, _blob_type, _offset, length)) => {
-                            progress_reporter.processed_bytes(length as u64)
-                        }
-                        None => ui::cli::warning!(
-                            "Could not load block #{} ({}) for restoring file '{}'",
-                            i + 1,
-                            blob_id,
-                            dst_path.display()
-                        ),
-                    }
+                let chunk_size = chunk_data.len() as u64;
+
+                if !dry_run {
+                    dst_file
+                        .as_ref()
+                        .expect("Destination file should exist")
+                        .write_all(&chunk_data)
+                        .with_context(|| {
+                            format!(
+                                "Could not restore block #{} ({}) to file '{}'",
+                                index + 1,
+                                blob_id,
+                                dst_path.display()
+                            )
+                        })?;
                 }
+
+                progress_reporter.processed_bytes(chunk_size);
+            }
+
+            // Restore metadata after content is written
+            if !dry_run {
+                restore_node_metadata(node, dst_path)?;
             }
         }
 

@@ -104,6 +104,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             resolution: mapache::restorer::Resolution::Skip,
+            no_verify: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;

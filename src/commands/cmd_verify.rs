@@ -16,7 +16,7 @@
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::Args;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -24,10 +24,14 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::GlobalArgs,
-    global::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    global::{defaults::SHORT_SNAPSHOT_ID_LEN, ID},
     repository::{
-        self, RepositoryBackend, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer,
-        tree::NodeType, verify::verify_blob,
+        self,
+        snapshot::SnapshotStreamer,
+        streamers::SerializedNodeStreamer,
+        tree::NodeType,
+        verify::{verify_blob, verify_pack, verify_snapshot_links},
+        RepositoryBackend,
     },
     ui::{self, default_bar_draw_target},
     utils,
@@ -40,15 +44,79 @@ use crate::{
                   associated to a any active snapshots are valid and reachable. This guarantees\
                   that any active snapshot can be restored."
 )]
-pub struct CmdArgs {}
+pub struct CmdArgs {
+    /// Read actual data from the repository. If false, only verify that blobs are indexed.
+    #[clap(long, value_parser, default_value_t = false)]
+    pub read_data: bool,
+}
 
-pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args, false)?;
-    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, secure_storage) =
+        repository::try_open(pass, global_args.key.as_ref(), backend.clone())?;
 
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
     let mut visited_blobs = BTreeSet::new();
+
+    if args.read_data {
+        let packs = repo.list_objects()?;
+
+        let bar = ProgressBar::new(packs.len() as u64);
+        bar.set_draw_target(default_bar_draw_target());
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "[{custom_elapsed}] [{bar:20.cyan/white}] Verifying packs: {pos} / {len}  [ETA: {custom_eta}]",
+                )
+                .unwrap()
+                .progress_chars("=> ")
+                .with_key(
+                    "custom_elapsed",
+                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let elapsed = state.elapsed();
+                        let custom_elapsed = utils::pretty_print_duration(elapsed);
+                        let _ = w.write_str(&custom_elapsed);
+                    },
+                )
+                .with_key(
+                    "custom_eta",
+                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let eta = state.eta();
+                        let custom_eta = utils::pretty_print_duration(eta);
+                        let _ = w.write_str(&custom_eta);
+                    },
+                ),
+        );
+
+        let mut num_dangling_blobs = 0;
+        for pack_id in &packs {
+            let verify_res = verify_pack(
+                repo.as_ref(),
+                backend.as_ref(),
+                secure_storage.as_ref(),
+                pack_id,
+                &mut visited_blobs,
+            );
+
+            if let Ok(dangling_blobs) = verify_res {
+                num_dangling_blobs += dangling_blobs;
+            }
+            bar.inc(1);
+        }
+
+        bar.finish_and_clear();
+        ui::cli::log!(
+            "Verified {} blobs from {} packs",
+            visited_blobs.len(),
+            packs.len()
+        );
+        if num_dangling_blobs > 0 {
+            ui::cli::log!("Found {} dangling blobs", num_dangling_blobs);
+        }
+
+        ui::cli::log!();
+    }
 
     let mut snapshot_counter = 0;
     let mut ok_counter = 0;
@@ -62,19 +130,27 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
                 .yellow()
         );
 
-        match verify_snapshot(repo.clone(), &snapshot_id, &mut visited_blobs) {
+        let res = if args.read_data {
+            verify_snapshot(repo.clone(), &snapshot_id, &mut visited_blobs)
+        } else {
+            verify_snapshot_links(repo.clone(), &snapshot_id)
+        };
+
+        match res {
             Ok(_) => {
-                ui::cli::log!("{}\n", "[OK]".bold().green());
+                ui::cli::log!("{}", "[OK]".bold().green());
                 ok_counter += 1;
             }
             Err(e) => {
-                ui::cli::log!("{} {}\n", "[ERROR]".bold().red(), e.to_string());
+                ui::cli::log!("{} {}", "[ERROR]".bold().red(), e.to_string());
                 error_counter += 1
             }
         }
+
         snapshot_counter += 1;
     }
 
+    ui::cli::log!();
     ui::cli::log!(
         "{} verified",
         utils::format_count(snapshot_counter, "snapshot", "snapshots"),
@@ -90,7 +166,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 }
 
 /// Verify the checksum and contents of a snapshot with a known ID in the repository.
-///  This function will verify the checksum of the Snapshot object and all blobs referenced by it.
+/// This function will verify the checksum of the Snapshot object and all blobs referenced by it.
 pub fn verify_snapshot(
     repo: Arc<dyn RepositoryBackend>,
     snapshot_id: &ID,
@@ -144,7 +220,7 @@ pub fn verify_snapshot(
                     for blob in blobs {
                         if !visited_blobs.contains(&blob) {
                             visited_blobs.insert(blob.clone());
-                            match verify_blob(repo.as_ref(), &blob, None) {
+                            match verify_blob(repo.as_ref(), &blob) {
                                 Ok(blob_len) => bar.inc(blob_len),
                                 Err(_) => {
                                     error_counter += 1;

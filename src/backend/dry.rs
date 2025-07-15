@@ -119,4 +119,9 @@ impl StorageBackend for DryBackend {
     fn is_dir(&self, path: &Path) -> bool {
         self.backend.is_dir(path)
     }
+
+    #[inline]
+    fn seek_read_from_end(&self, path: &Path, offset: i64, length: u64) -> Result<Vec<u8>> {
+        self.backend.seek_read_from_end(path, offset, length)
+    }
 }

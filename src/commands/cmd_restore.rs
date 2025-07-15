@@ -29,7 +29,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
-    repository::{self, streamers::SerializedNodeStreamer},
+    repository::{self, streamers::SerializedNodeStreamer, verify::verify_snapshot_links},
     restorer::{self, Resolution, Restorer},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, cli, default_bar_draw_target,
@@ -84,6 +84,10 @@ pub struct CmdArgs {
     #[clap(long, default_value_t=Resolution::Fail)]
     pub resolution: Resolution,
 
+    /// Skip verification of data
+    #[clap(long = "no-verify", value_parser, default_value_t = false)]
+    pub no_verify: bool,
+
     /// Dry run
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
@@ -106,6 +110,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     } else {
         None
     };
+
+    if !args.no_verify {
+        ui::cli::log!("Verifying snapshot links...");
+        verify_snapshot_links(repo.clone(), &snapshot_id)?;
+        ui::cli::log!("{}\n", "[OK]".bold().green());
+    }
 
     ui::cli::log!(
         "Restoring snapshot {}",

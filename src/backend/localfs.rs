@@ -193,6 +193,34 @@ impl StorageBackend for LocalFS {
         let full_path = self.full_path(path);
         full_path.is_dir()
     }
+
+    fn seek_read_from_end(&self, path: &Path, offset: i64, length: u64) -> Result<Vec<u8>> {
+        let full_path = self.full_path(path);
+        let mut file = std::fs::File::open(full_path).with_context(|| {
+            format!(
+                "Could not open file {} for range reading from local filesystem",
+                path.display()
+            )
+        })?;
+
+        // Seek to the specified offset
+        file.seek(SeekFrom::End(offset)).with_context(|| {
+            format!("Could not seek to offset (from End) {offset} in local file {path:?}")
+        })?;
+
+        // Read the specified number of bytes
+        let mut buffer = vec![0; length as usize];
+        file.read_exact(&mut buffer).with_context(|| {
+            format!(
+                "Could not read {} bytes from offset (from End) {} in local file {}",
+                length,
+                offset,
+                path.display()
+            )
+        })?;
+
+        Ok(buffer)
+    }
 }
 
 #[cfg(test)]

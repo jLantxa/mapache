@@ -21,8 +21,9 @@ use crossbeam_channel::Sender;
 use rand::Rng;
 
 use crate::{
-    global::{BlobType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
-    repository::storage::SecureStorage,
+    backend::StorageBackend,
+    global::{BlobType, FileType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
+    repository::{RepositoryBackend, storage::SecureStorage},
     utils,
 };
 
@@ -151,6 +152,7 @@ impl Packer {
         }))
     }
 
+    /// Generates a pack header given a vector of blob descriptors.
     fn generate_header(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
         // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
         let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len());
@@ -183,33 +185,60 @@ impl Packer {
         pack_header
     }
 
-    pub fn read_header(
+    /// Parses the header for a pack with a given ID. This function only reads the header bytes from
+    /// the pack file using the seek read trait function from the backend.
+    pub fn parse_pack_header(
+        repo: &dyn RepositoryBackend,
+        backend: &dyn StorageBackend,
         secure_storage: &SecureStorage,
-        pack_data: &[u8],
+        pack_id: &ID,
     ) -> Result<Vec<PackedBlobDescriptor>> {
-        let pack_len = pack_data.len();
-        if pack_len < 4 {
+        let (_id, pack_path) = repo.find(FileType::Object, &pack_id.to_hex())?;
+        let header_length_bytes: [u8; 4] = backend
+            .seek_read_from_end(&pack_path, -4, 4)?
+            .as_slice()
+            .try_into()?;
+        let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
+
+        let header_data = backend.seek_read_from_end(
+            &pack_path,
+            -(4 + encoded_header_length as i64),
+            4 + encoded_header_length as u64,
+        )?;
+
+        Self::parse_header(secure_storage, &header_data)
+    }
+
+    /// Parses a pack header data from a sliice of bytes. `header_data` must contain the header and
+    /// the length field. Since this function reads the length field, other bytes before the header
+    /// can be still passed and they will be ignored.
+    fn parse_header(
+        secure_storage: &SecureStorage,
+        header_data: &[u8],
+    ) -> Result<Vec<PackedBlobDescriptor>> {
+        if header_data.len() < 4 {
             bail!(
                 "Pack header is invalid: data too short for header length (got {} bytes, need at least 4).",
-                pack_len
+                header_data.len()
             );
         }
 
-        let header_length_bytes: [u8; 4] = pack_data[(pack_len - 4)..]
+        let header_length_bytes: [u8; 4] = header_data[(header_data.len() - 4)..]
             .try_into()
             .with_context(|| "Could not read pack header length bytes.")?;
         let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
 
-        if pack_len < encoded_header_length {
+        if header_data.len() < encoded_header_length {
             bail!(
-                "Pack header is invalid: declared header_length ({}) exceeds total pack_len ({}).",
+                "Pack header is invalid: declared header_length ({}) exceeds total data length ({}).",
                 encoded_header_length,
-                pack_len
+                header_data.len()
             );
         }
 
-        let header_blob_info = secure_storage
-            .decode(&pack_data[(pack_len - encoded_header_length - 4)..pack_len - 4])?;
+        let header_blob_info = secure_storage.decode(
+            &header_data[(header_data.len() - encoded_header_length - 4)..header_data.len() - 4],
+        )?;
         let header_len = header_blob_info.len();
 
         let header_blob_info_actual_len = header_len;
@@ -340,7 +369,7 @@ mod tests {
         assert_eq!(flushed_pack.data.len(), 2398);
         // Due to obfuscation we cannot make assumptions about the hash
 
-        let header_descriptors = Packer::read_header(&secure_storage, &flushed_pack.data)?;
+        let header_descriptors = Packer::parse_header(&secure_storage, &flushed_pack.data)?;
         assert_eq!(flushed_pack.descriptors.len(), 64);
         assert_eq!(header_descriptors.len(), 3);
         assert_ne!(flushed_pack.descriptors, header_descriptors);

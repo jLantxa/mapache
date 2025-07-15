@@ -470,4 +470,24 @@ impl StorageBackend for SftpBackend {
             Err(_) => false,
         }
     }
+
+    fn seek_read_from_end(&self, path: &Path, offset: i64, length: u64) -> Result<Vec<u8>> {
+        let full_path = self.full_path(path);
+
+        let conn = self.pool.get()?;
+        let mut file = conn.sftp().open(full_path).with_context(|| {
+            format!("Failed to open file {path:?}\' in sftp backend for ranged reading")
+        })?;
+
+        // Read into preallocated vector
+        let mut contents = vec![0; length as usize];
+
+        if offset > 0 {
+            let _ = file.seek(SeekFrom::End(offset));
+        }
+
+        file.read_exact(&mut contents)
+            .with_context(|| format!("Failed to seek read file {path:?}\' in sftp backend"))?;
+        Ok(contents)
+    }
 }

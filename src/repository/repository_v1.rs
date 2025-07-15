@@ -480,9 +480,8 @@ impl Repository {
                         .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
                     let sub_files = self.backend.read_dir(&dir_name)?;
-                    for f in sub_files.into_iter() {
-                        let object_file_path = self.objects_path.join(&dir_name).join(f);
-                        files.push(object_file_path);
+                    for file_path in sub_files.into_iter() {
+                        files.push(file_path);
                     }
                 }
 

@@ -48,7 +48,8 @@ pub struct CmdArgs {}
 pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args, false)?;
-    let (repo, secure_storage) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, secure_storage) =
+        repository::try_open(pass, global_args.key.as_ref(), backend.clone())?;
 
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
     let mut visited_blobs = BTreeSet::new();
@@ -76,6 +77,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     for pack_id in &packs {
         num_dangling_blobs += verify_pack(
             repo.as_ref(),
+            backend.as_ref(),
             secure_storage.as_ref(),
             &pack_id,
             &mut visited_blobs,

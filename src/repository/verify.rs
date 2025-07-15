@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 use anyhow::{Result, bail};
 
 use crate::{
+    backend::StorageBackend,
     global::ID,
     repository::{RepositoryBackend, packer::Packer, storage::SecureStorage},
     utils,
@@ -52,6 +53,7 @@ pub fn verify_data(id: &ID, data: &[u8], expected_len: Option<u32>) -> Result<u6
 /// Verify the checksum and contents of a pack  with a known ID in the repository.
 pub fn verify_pack(
     repo: &dyn RepositoryBackend,
+    backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
     id: &ID,
     visited_blobs: &mut BTreeSet<ID>,
@@ -62,7 +64,7 @@ pub fn verify_pack(
         bail!("Invalid pack checksum");
     }
 
-    let pack_header = Packer::read_header(secure_storage, &pack_data)?;
+    let pack_header = Packer::parse_pack_header(repo, backend, secure_storage, id)?;
     let mut num_dangling_blobs = 0;
     for blob_descriptor in pack_header {
         if !visited_blobs.contains(&blob_descriptor.id) {
@@ -70,9 +72,9 @@ pub fn verify_pack(
             if repo.index().read().contains(&blob_descriptor.id) {
                 verify_blob(repo, &blob_descriptor.id)?;
                 visited_blobs.insert(blob_descriptor.id.clone());
+            } else {
+                num_dangling_blobs += 1;
             }
-        } else {
-            num_dangling_blobs += 1;
         }
     }
 

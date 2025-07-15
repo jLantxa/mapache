@@ -14,12 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use parking_lot::Mutex;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -52,11 +60,11 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         repository::try_open(pass, global_args.key.as_ref(), backend.clone())?;
 
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
-    let mut visited_blobs = BTreeSet::new();
+    let visited_blobs = Arc::new(Mutex::new(BTreeSet::new()));
 
     let packs = repo.list_objects()?;
 
-    let bar = ProgressBar::new(packs.len() as u64);
+    let bar = Arc::new(ProgressBar::new(packs.len() as u64));
     bar.set_draw_target(default_bar_draw_target());
     bar.set_style(
         ProgressStyle::default_bar()
@@ -73,26 +81,52 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             ),
     );
 
-    let mut num_dangling_blobs = 0;
-    for pack_id in &packs {
-        num_dangling_blobs += verify_pack(
-            repo.as_ref(),
-            backend.as_ref(),
-            secure_storage.as_ref(),
-            &pack_id,
-            &mut visited_blobs,
-        )?;
-        bar.inc(1);
-    }
+    let num_dangling_blobs = Arc::new(AtomicUsize::new(0));
+
+    const CONCURRENCY: usize = 4;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(CONCURRENCY)
+        .build()
+        .expect("Failed to build thread pool");
+    pool.scope(|s| {
+        for pack_id in &packs {
+            let bar_clone = bar.clone();
+            let repo_clone = repo.clone();
+            let backend_clone = backend.clone();
+            let secure_storage_clone = secure_storage.clone();
+            let visited_blobs_clone = visited_blobs.clone();
+            let num_dangling_blobs_clone = num_dangling_blobs.clone();
+
+            s.spawn(move |_| {
+                let verify_res = verify_pack(
+                    repo_clone.as_ref(),
+                    backend_clone.as_ref(),
+                    secure_storage_clone.as_ref(),
+                    &pack_id,
+                    visited_blobs_clone,
+                );
+
+                if let Ok(dangling_blobs) = verify_res {
+                    num_dangling_blobs_clone.fetch_add(dangling_blobs, Ordering::AcqRel);
+                }
+                bar_clone.inc(1);
+            });
+        }
+    });
+
     bar.finish_and_clear();
     ui::cli::log!(
         "Verified {} blobs from {} packs",
-        visited_blobs.len(),
+        visited_blobs.lock().len(),
         packs.len()
     );
-    if num_dangling_blobs > 0 {
-        ui::cli::log!("Found {} dangling blobs", num_dangling_blobs);
+    if num_dangling_blobs.load(Ordering::Relaxed) > 0 {
+        ui::cli::log!(
+            "Found {} dangling blobs",
+            num_dangling_blobs.load(Ordering::Relaxed)
+        );
     }
+
     ui::cli::log!();
 
     let mut snapshot_counter = 0;
@@ -107,7 +141,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
                 .yellow()
         );
 
-        match verify_snapshot(repo.clone(), &snapshot_id, &mut visited_blobs) {
+        match verify_snapshot(repo.clone(), &snapshot_id, visited_blobs.clone()) {
             Ok(_) => {
                 ui::cli::log!("{}", "[OK]".bold().green());
                 ok_counter += 1;
@@ -140,7 +174,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 pub fn verify_snapshot(
     repo: Arc<dyn RepositoryBackend>,
     snapshot_id: &ID,
-    visited_blobs: &mut BTreeSet<ID>,
+    visited_blobs: Arc<Mutex<BTreeSet<ID>>>,
 ) -> Result<()> {
     let snapshot_data = repo.load_file(crate::global::FileType::Snapshot, snapshot_id)?;
     let checksum = utils::calculate_hash(snapshot_data);
@@ -182,14 +216,15 @@ pub fn verify_snapshot(
     );
 
     let mut error_counter = 0;
+    let mut visited_blobs_guard = visited_blobs.lock();
     for (_path, stream_node) in streamer.flatten() {
         let node = stream_node.node;
         match node.node_type {
             NodeType::File => {
                 if let Some(blobs) = node.blobs {
                     for blob in blobs {
-                        if !visited_blobs.contains(&blob) {
-                            visited_blobs.insert(blob.clone());
+                        if !visited_blobs_guard.contains(&blob) {
+                            visited_blobs_guard.insert(blob.clone());
                             match verify_blob(repo.as_ref(), &blob) {
                                 Ok(blob_len) => bar.inc(blob_len),
                                 Err(_) => {

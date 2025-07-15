@@ -27,7 +27,7 @@ use crate::{
     utils::indexset::IndexSet,
 };
 
-use super::{packer::PackedBlobDescriptor, RepositoryBackend};
+use super::{RepositoryBackend, packer::PackedBlobDescriptor};
 
 /// Represents the location and size of a blob within a pack file.
 #[derive(Debug, Clone)]

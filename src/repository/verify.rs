@@ -14,9 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::{Result, bail};
+use parking_lot::Mutex;
 
 use crate::{
     backend::StorageBackend,
@@ -56,7 +57,7 @@ pub fn verify_pack(
     backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
     id: &ID,
-    visited_blobs: &mut BTreeSet<ID>,
+    visited_blobs: Arc<Mutex<BTreeSet<ID>>>,
 ) -> Result<usize> {
     let pack_data = repo.load_object(id)?;
     let checksum = utils::calculate_hash(&pack_data);
@@ -67,11 +68,11 @@ pub fn verify_pack(
     let pack_header = Packer::parse_pack_header(repo, backend, secure_storage, id)?;
     let mut num_dangling_blobs = 0;
     for blob_descriptor in pack_header {
-        if !visited_blobs.contains(&blob_descriptor.id) {
+        if !visited_blobs.lock().contains(&blob_descriptor.id) {
             // Only verify blobs referenced by the master index
             if repo.index().read().contains(&blob_descriptor.id) {
                 verify_blob(repo, &blob_descriptor.id)?;
-                visited_blobs.insert(blob_descriptor.id.clone());
+                visited_blobs.lock().insert(blob_descriptor.id.clone());
             } else {
                 num_dangling_blobs += 1;
             }

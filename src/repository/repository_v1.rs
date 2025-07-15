@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -417,8 +417,8 @@ impl RepositoryBackend for Repository {
         self.secure_storage.decode(&data)
     }
 
-    fn list_objects(&self) -> Result<HashSet<ID>> {
-        let mut list = HashSet::new();
+    fn list_objects(&self) -> Result<BTreeSet<ID>> {
+        let mut list = BTreeSet::new();
 
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
         for n in 0..num_folders {

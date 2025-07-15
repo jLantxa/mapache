@@ -91,6 +91,10 @@ pub struct CmdArgs {
     /// pack file before repacking.
     #[clap(short, long, default_value_t = DEFAULT_GC_TOLERANCE)]
     pub tolerance: f32,
+
+    /// Verify that all referenced IDs are stored in the index without reading the data.
+    #[clap(long, default_value_t = false)]
+    pub verify: bool,
 }
 
 // Snapshot retention rules.
@@ -149,7 +153,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let mut ids_to_keep: HashSet<ID> = HashSet::new();
 
-    if !&args.forget.is_empty() {
+    if !args.forget.is_empty() {
         let mut forget_ids = HashSet::new();
         for prefix in &args.forget {
             let (id, _) = repo.find(FileType::Snapshot, prefix)?;
@@ -271,6 +275,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         let gc_args = commands::cmd_clean::CmdArgs {
             tolerance: args.tolerance,
             dry_run: args.dry_run,
+            verify: args.verify,
         };
 
         ui::cli::log!();

@@ -14,22 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::GlobalArgs,
-    global::defaults::DEFAULT_GC_TOLERANCE,
+    global::defaults::{DEFAULT_GC_TOLERANCE, SHORT_REPO_ID_LEN},
     repository::{
         self, RepositoryBackend,
         gc::{self},
+        verify::verify_snapshot_links,
     },
     ui::{
-        self,
+        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
         table::{Alignment, Table},
     },
     utils::{self},
@@ -45,6 +50,10 @@ pub struct CmdArgs {
     /// pack file before repacking.
     #[clap(short, long, default_value_t = 100.0 * DEFAULT_GC_TOLERANCE)]
     pub tolerance: f32,
+
+    /// Verify that all referenced IDs are stored in the index without reading the data.
+    #[clap(long, default_value_t = false)]
+    pub verify: bool,
 
     /// Dry run. Displays what this command would do without
     /// making changes to the repository.
@@ -75,28 +84,32 @@ pub fn run_with_repo(
 
     let mut plan_table = Table::new_with_alignments(vec![Alignment::Left, Alignment::Right]);
     plan_table.add_row(vec![
-        "Number of packs".bold().to_string(),
+        "Total packs".bold().to_string(),
         plan.total_packs.to_string(),
     ]);
     plan_table.add_row(vec![
-        "Blobs to keep".bold().to_string(),
+        "Referenced blobs".bold().to_string(),
         plan.referenced_blobs.len().to_string(),
     ]);
     plan_table.add_row(vec![
-        "Packs to keep".bold().to_string(),
+        "Referenced packs".bold().to_string(),
         plan.referenced_packs.len().to_string(),
+    ]);
+    plan_table.add_row(vec![
+        "Unused packs".bold().to_string(),
+        plan.unused_packs.len().to_string(),
     ]);
     plan_table.add_row(vec![
         "Packs to repack".bold().to_string(),
         plan.obsolete_packs.len().to_string(),
     ]);
     plan_table.add_row(vec![
-        "Tolerated packs".bold().to_string(),
-        plan.tolerated_packs.len().to_string(),
+        "Small packs".bold().to_string(),
+        plan.small_packs.len().to_string(),
     ]);
     plan_table.add_row(vec![
-        "Unused packs".bold().to_string(),
-        plan.unused_packs.len().to_string(),
+        "Tolerated packs".bold().to_string(),
+        plan.tolerated_packs.len().to_string(),
     ]);
 
     ui::cli::log!();
@@ -108,12 +121,42 @@ pub fn run_with_repo(
     } else {
         plan.execute()?;
 
+        if args.verify {
+            ui::cli::log!();
+            verify_snapshots(repo.clone())?;
+        }
+
         ui::cli::log!();
         ui::cli::log!(
             "Finished in {}",
             utils::pretty_print_duration(start.elapsed())
         );
     }
+
+    Ok(())
+}
+
+fn verify_snapshots(repo: Arc<dyn RepositoryBackend>) -> Result<()> {
+    ui::cli::log!("Verifying snapshots...");
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(Duration::from_millis(
+        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+    ));
+
+    for id in repo.list_snapshot_ids()? {
+        spinner.set_message(format!("{}", id.to_short_hex(SHORT_REPO_ID_LEN).yellow()));
+        verify_snapshot_links(repo.clone(), &id)?;
+    }
+
+    spinner.finish_and_clear();
+    ui::cli::log!("{}\n", "[OK]".bold().green());
 
     Ok(())
 }

@@ -26,7 +26,7 @@ pub mod streamers;
 pub mod tree;
 pub mod verify;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -99,7 +99,7 @@ pub trait RepositoryBackend: Sync + Send {
     /// Deletes a file from the repository
     fn delete_file(&self, file_type: FileType, id: &ID) -> Result<()>;
 
-    fn list_objects(&self) -> Result<HashSet<ID>>;
+    fn list_objects(&self) -> Result<BTreeSet<ID>>;
 
     fn read_from_file(
         &self,

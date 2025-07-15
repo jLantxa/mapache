@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -43,19 +43,20 @@ use crate::{
 pub struct Plan {
     pub repo: Arc<dyn RepositoryBackend>,
     pub total_packs: usize, // Total number of blobs in the repository
-    pub referenced_blobs: HashSet<ID>, // Blobs referenced by existing snapshots
-    pub referenced_packs: HashSet<ID>, // Packs referenced by the referenced blobs
-    pub obsolete_packs: HashSet<ID>, // Packs containing non-referenced blobs
-    pub tolerated_packs: HashSet<ID>, // Packs containing garbage, but keep due to tolerance
-    pub unused_packs: HashSet<ID>, // Packs not referenced by any snapshot or index
-    pub index_ids: HashSet<ID>, // Current index IDs
+    pub referenced_blobs: BTreeSet<ID>, // Blobs referenced by existing snapshots
+    pub referenced_packs: BTreeSet<ID>, // Packs referenced by the referenced blobs
+    pub obsolete_packs: BTreeSet<ID>, // Packs containing non-referenced blobs
+    pub small_packs: BTreeSet<ID>, // Small packs marked to be repacked (to merge)
+    pub tolerated_packs: BTreeSet<ID>, // Packs containing garbage, but keep due to tolerance
+    pub unused_packs: BTreeSet<ID>, // Packs not referenced by any snapshot or index
+    pub index_ids: BTreeSet<ID>, // Current index IDs
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
 pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 
-    let mut keep_packs: HashSet<ID> = repo.list_objects()?;
+    let mut keep_packs: BTreeSet<ID> = repo.list_objects()?;
     let mut unused_packs = keep_packs.clone();
 
     keep_packs.retain(|id| referenced_packs.contains(id));
@@ -66,10 +67,11 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
         total_packs: keep_packs.len(),
         referenced_blobs,
         referenced_packs,
-        obsolete_packs: HashSet::new(),
-        tolerated_packs: HashSet::new(),
+        obsolete_packs: BTreeSet::new(),
+        tolerated_packs: BTreeSet::new(),
         unused_packs,
         index_ids: repo.index().read().ids(),
+        small_packs: BTreeSet::new(),
     };
 
     // Count garbage bytes in each pack
@@ -103,12 +105,14 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
             spinner.inc(1);
         }
     }
+
     // Find small packs to repack
     for (pack_id, size) in kept_pack_size {
         if (size as f32 / MAX_PACK_SIZE as f32) < DEFAULT_MIN_PACK_SIZE_FACTOR {
-            plan.obsolete_packs.insert(pack_id);
+            plan.small_packs.insert(pack_id);
         }
     }
+
     spinner.finish_and_clear();
     ui::cli::log!(
         "Found {} obsolete blobs in {} packs",
@@ -146,9 +150,35 @@ impl Plan {
     /// Execute the plan. Calling this method consumes the plan so it cannot be
     /// executed more than once.
     pub fn execute(mut self) -> Result<()> {
-        self.repo
-            .init_pack_saver(global::defaults::DEFAULT_WRITE_CONCURRENCY);
+        // Append small packs to the obsolete pack list. Do this only if there are
+        // at least 2 packs that can be merged.
+        // Small packs will not always be merged with other packs. If all other packs
+        // are full merging will result in a new pack with the leftovers. If two small
+        // packs contain different types of blobs (data and tree), they will be repacked
+        // in separate pack files.
+        if self.small_packs.len() > 1 {
+            self.obsolete_packs.append(&mut self.small_packs);
+        }
 
+        self.delete_unused_packs()?;
+
+        // No need to repack and rewrite the indices if there are no obsolete packs
+        if !self.obsolete_packs.is_empty() {
+            self.repo
+                .init_pack_saver(global::defaults::DEFAULT_WRITE_CONCURRENCY);
+
+            self.repack()?;
+            self.repo.flush()?;
+            self.repo.finalize_pack_saver();
+
+            self.delete_old_indices()?;
+            self.delete_obsolete_packs()?;
+        }
+
+        Ok(())
+    }
+
+    fn delete_unused_packs(&self) -> Result<()> {
         let unused_pack_delete_bar = ProgressBar::with_draw_target(
             Some(self.unused_packs.len() as u64),
             default_bar_draw_target(),
@@ -167,6 +197,10 @@ impl Plan {
         unused_pack_delete_bar.finish_and_clear();
         ui::cli::log!("Deleted {} unused packs", unused_pack_delete_bar.position());
 
+        Ok(())
+    }
+
+    fn repack(&self) -> Result<()> {
         // Collect information about the blobs to repack. Since we will rewrite the index, we will
         // lose this information.
         let mut repack_blob_info = HashMap::new();
@@ -232,9 +266,10 @@ impl Plan {
             bail!("An error occurred during repacking: {}", e);
         }
 
-        self.repo.flush()?;
-        self.repo.finalize_pack_saver();
+        Ok(())
+    }
 
+    fn delete_old_indices(&mut self) -> Result<()> {
         // Delete obsolete index files
         // Make sure that the new index files don't overlap the files to delete.
         // This can happen if an index did not change while repacking.
@@ -262,6 +297,10 @@ impl Plan {
             index_delete_bar.position()
         );
 
+        Ok(())
+    }
+
+    fn delete_obsolete_packs(&self) -> Result<()> {
         // Delete obsolete pack files
         let obsolete_pack_delete_bar = ProgressBar::with_draw_target(
             Some(self.obsolete_packs.len() as u64),
@@ -288,12 +327,13 @@ impl Plan {
     }
 }
 
-/// Returns all blobs and packs referenced by all exising snapshots in the repository.
+/// Returns all blobs and packs referenced by all existing snapshots in the repository.
 fn get_referenced_blobs_and_packs(
     repo: Arc<dyn RepositoryBackend>,
-) -> Result<(HashSet<ID>, HashSet<ID>)> {
-    let mut referenced_blobs = HashSet::new();
-    let mut referenced_packs = HashSet::new();
+) -> Result<(BTreeSet<ID>, BTreeSet<ID>)> {
+    let mut referenced_blobs = BTreeSet::new();
+    let mut referenced_packs = BTreeSet::new();
+    let index = repo.index();
 
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
 
@@ -305,77 +345,102 @@ fn get_referenced_blobs_and_packs(
             .tick_chars(SPINNER_TICK_CHARS),
     );
     spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
     ));
 
     for (_snapshot_id, snapshot) in snapshot_streamer {
-        let tree_id = snapshot.tree;
-        let (pack_id, _, _, _) = repo.index().read().get(&tree_id).unwrap();
-        referenced_blobs.insert(tree_id.clone());
-        referenced_packs.insert(pack_id);
-        spinner.inc(1);
+        let tree_id = snapshot.tree.clone();
 
+        // Tree blob of the snapshot
+        if referenced_blobs.insert(tree_id.clone()) {
+            spinner.set_position(referenced_blobs.len() as u64);
+        }
+
+        match index.read().get(&tree_id) {
+            Some((pack_id, _, _, _)) => {
+                referenced_packs.insert(pack_id);
+            }
+            None => {
+                ui::cli::warning!(
+                    "Snapshot tree {} is referenced but not found in index",
+                    tree_id
+                );
+            }
+        }
+
+        // Stream all nodes in the snapshot
         let node_streamer =
             SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 
-        let mut dangling_tree_blobs: usize = 0;
-        let mut dangling_data_blobs: usize = 0;
+        let mut missing_tree_blobs = 0;
+        let mut missing_data_blobs = 0;
+
         for node_res in node_streamer {
             match node_res {
                 Ok((_path, stream_node)) => {
-                    // Tree blob
-                    if let Some(tree) = stream_node.node.tree {
+                    let node = &stream_node.node;
+
+                    // Tree blobs
+                    if let Some(tree) = &node.tree {
                         if referenced_blobs.insert(tree.clone()) {
                             spinner.set_position(referenced_blobs.len() as u64);
                         }
 
-                        match repo.index().read().get(&tree) {
-                            None => {
-                                dangling_tree_blobs += 1;
-                            }
+                        match index.read().get(tree) {
                             Some((pack_id, _, _, _)) => {
                                 referenced_packs.insert(pack_id);
                             }
+                            None => {
+                                missing_tree_blobs += 1;
+                            }
                         }
+                    }
 
                     // Data blobs
-                    } else if let Some(blobs) = stream_node.node.blobs {
+                    if let Some(blobs) = &node.blobs {
                         for blob_id in blobs {
                             if referenced_blobs.insert(blob_id.clone()) {
                                 spinner.set_position(referenced_blobs.len() as u64);
                             }
 
-                            match repo.index().read().get(&blob_id) {
-                                None => {
-                                    dangling_data_blobs += 1;
-                                }
+                            match index.read().get(blob_id) {
                                 Some((pack_id, _, _, _)) => {
                                     referenced_packs.insert(pack_id);
+                                }
+                                None => {
+                                    missing_data_blobs += 1;
                                 }
                             }
                         }
                     }
                 }
-                Err(e) => ui::cli::warning!("Error parsing node: {}", e.to_string()),
+                Err(e) => {
+                    ui::cli::warning!("Error parsing node: {e}");
+                }
             }
         }
 
-        if dangling_tree_blobs > 0 {
+        if missing_tree_blobs > 0 {
             ui::cli::warning!(
-                "{} tree blobs referenced in snapshots are not contained in index",
-                dangling_tree_blobs.to_string().bold()
+                "{} tree blobs referenced in snapshot are missing in the index",
+                missing_tree_blobs.to_string().bold()
             );
         }
-        if dangling_data_blobs > 0 {
+
+        if missing_data_blobs > 0 {
             ui::cli::warning!(
-                "{} data blobs referenced in snapshots are not contained in index",
-                dangling_data_blobs.to_string().bold()
+                "{} data blobs referenced in snapshot are missing in the index",
+                missing_data_blobs.to_string().bold()
             );
         }
     }
 
     spinner.finish_and_clear();
-    ui::cli::log!("Found {} referenced blobs", referenced_blobs.len());
+    ui::cli::log!(
+        "Found {} referenced blobs and {} packs",
+        referenced_blobs.len(),
+        referenced_packs.len()
+    );
 
     Ok((referenced_blobs, referenced_packs))
 }

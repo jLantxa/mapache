@@ -110,6 +110,7 @@ mod tests {
             tolerance: 0.0_f32,
             tags_str: Some(String::new()),
             keep_tags_str: Some(String::new()),
+            verify: true,
         };
         commands::cmd_forget::run(&global, &forget_args)
             .with_context(|| "Failed to run cmd_forget")?;
@@ -117,6 +118,7 @@ mod tests {
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: false,
+            verify: true,
         };
         commands::cmd_clean::run(&global, &gc_args).with_context(|| "Failed to run cmd_gc")?;
 

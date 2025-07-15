@@ -16,7 +16,7 @@
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -24,14 +24,13 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::GlobalArgs,
-    global::{defaults::SHORT_SNAPSHOT_ID_LEN, ID},
+    global::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        self,
+        self, RepositoryBackend,
         snapshot::SnapshotStreamer,
         streamers::SerializedNodeStreamer,
         tree::NodeType,
         verify::{verify_blob, verify_pack, verify_snapshot_links},
-        RepositoryBackend,
     },
     ui::{self, default_bar_draw_target},
     utils,
@@ -166,7 +165,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 /// Verify the checksum and contents of a snapshot with a known ID in the repository.
-/// This function will verify the checksum of the Snapshot object and all blobs referenced by it.
+/// This function will verify the checksum of the Snapshot object and the contents of all blobs
+/// referenced by it.
 pub fn verify_snapshot(
     repo: Arc<dyn RepositoryBackend>,
     snapshot_id: &ID,

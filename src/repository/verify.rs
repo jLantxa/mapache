@@ -40,7 +40,7 @@ pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID) -> Result<u64> {
 }
 
 pub fn verify_data(id: &ID, data: &[u8], expected_len: Option<u32>) -> Result<u64> {
-    let checksum = utils::calculate_hash(&data);
+    let checksum = utils::calculate_hash(data);
     if checksum != id.0[..] {
         bail!("Invalid blob checksum");
     }
@@ -84,7 +84,11 @@ pub fn verify_pack(
     Ok(num_dangling_blobs)
 }
 
-/// Verify that all blobs referenced by a snapshot are indexed
+/// Verify that all blobs referenced by a snapshot are indexed.
+///
+/// This function only verifies that all IDs referenced in a snapshot are listed in the  master
+/// index, but it doesn't check the actual data. The blobs or packs could actually not exist
+/// or be corrupted.
 pub fn verify_snapshot_links(repo: Arc<dyn RepositoryBackend>, snapshot_id: &ID) -> Result<()> {
     let snapshot_data = repo.load_file(crate::global::FileType::Snapshot, snapshot_id)?;
     let checksum = utils::calculate_hash(snapshot_data);
@@ -104,7 +108,7 @@ pub fn verify_snapshot_links(repo: Arc<dyn RepositoryBackend>, snapshot_id: &ID)
             NodeType::File => {
                 if let Some(blobs) = node.blobs {
                     for blob_id in blobs {
-                        if let None = repo.index().read().get(&blob_id) {
+                        if repo.index().read().get(&blob_id).is_none() {
                             error_counter += 1;
                         }
                     }
@@ -112,7 +116,7 @@ pub fn verify_snapshot_links(repo: Arc<dyn RepositoryBackend>, snapshot_id: &ID)
             }
             NodeType::Directory => {
                 if let Some(tree_id) = node.tree {
-                    if let None = repo.index().read().get(&tree_id) {
+                    if repo.index().read().get(&tree_id).is_none() {
                         error_counter += 1;
                     }
                 }

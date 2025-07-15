@@ -461,8 +461,8 @@ impl MasterIndex {
     }
 
     /// Returns the IDs of all finalized (serialized) indices
-    pub fn ids(&self) -> HashSet<ID> {
-        let mut ids = HashSet::new();
+    pub fn ids(&self) -> BTreeSet<ID> {
+        let mut ids = BTreeSet::new();
         for idx in &self.indices {
             if idx.is_pending() {
                 continue;
@@ -475,7 +475,7 @@ impl MasterIndex {
     }
 
     /// Removes obsolete packs from all indices
-    pub fn cleanup(&mut self, obsolete_packs: Option<&HashSet<ID>>) {
+    pub fn cleanup(&mut self, obsolete_packs: Option<&BTreeSet<ID>>) {
         if let Some(packs_to_remove) = obsolete_packs {
             for idx in &mut self.indices {
                 idx.set_pending();

@@ -47,4 +47,4 @@ pub(crate) const DEFAULT_VERBOSITY: u32 = 1;
 
 // -- Garbage collection --
 pub(crate) const DEFAULT_GC_TOLERANCE: f32 = 0.05; // In [0-100] %
-pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.10; // Repack files smaller than this factor of the max pack size
+pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05; // Repack files smaller than this factor of the max pack size

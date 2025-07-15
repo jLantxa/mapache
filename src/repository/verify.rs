@@ -25,19 +25,28 @@ use crate::{
 };
 
 /// Verify the checksum and contents of a blob with a known ID in the repository.
-pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID, len: Option<u32>) -> Result<u64> {
+pub fn verify_blob(repo: &dyn RepositoryBackend, id: &ID) -> Result<u64> {
     let blob_data = repo.load_blob(id)?;
     let checksum = utils::calculate_hash(&blob_data);
     if checksum != id.0[..] {
         bail!("Invalid blob checksum");
     }
-    if let Some(some_len) = len
-        && blob_data.len() != some_len as usize
+
+    Ok(blob_data.len() as u64)
+}
+
+pub fn verify_data(id: &ID, data: &[u8], expected_len: Option<u32>) -> Result<u64> {
+    let checksum = utils::calculate_hash(&data);
+    if checksum != id.0[..] {
+        bail!("Invalid blob checksum");
+    }
+    if let Some(some_len) = expected_len
+        && data.len() != some_len as usize
     {
         bail!("Invalid blob length");
     }
 
-    Ok(blob_data.len() as u64)
+    Ok(data.len() as u64)
 }
 
 /// Verify the checksum and contents of a pack  with a known ID in the repository.
@@ -46,7 +55,7 @@ pub fn verify_pack(
     secure_storage: &SecureStorage,
     id: &ID,
     visited_blobs: &mut BTreeSet<ID>,
-) -> Result<()> {
+) -> Result<usize> {
     let pack_data = repo.load_object(id)?;
     let checksum = utils::calculate_hash(&pack_data);
     if checksum != id.0[..] {
@@ -54,12 +63,18 @@ pub fn verify_pack(
     }
 
     let pack_header = Packer::read_header(secure_storage, &pack_data)?;
+    let mut num_dangling_blobs = 0;
     for blob_descriptor in pack_header {
         if !visited_blobs.contains(&blob_descriptor.id) {
-            verify_blob(repo, &blob_descriptor.id, Some(blob_descriptor.length))?;
-            visited_blobs.insert(blob_descriptor.id.clone());
+            // Only verify blobs referenced by the master index
+            if repo.index().read().contains(&blob_descriptor.id) {
+                verify_blob(repo, &blob_descriptor.id)?;
+                visited_blobs.insert(blob_descriptor.id.clone());
+            }
+        } else {
+            num_dangling_blobs += 1;
         }
     }
 
-    Ok(())
+    Ok(num_dangling_blobs)
 }

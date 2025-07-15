@@ -90,6 +90,7 @@ mod tests {
             exclude: Some(vec![PathBuf::from("0/00/file00.txt")]),
             strip_prefix: false,
             resolution: mapache::restorer::Resolution::Skip,
+            no_verify: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -196,6 +197,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             resolution: mapache::restorer::Resolution::Skip,
+            no_verify: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -267,6 +269,7 @@ mod tests {
             exclude: None,
             strip_prefix: true,
             resolution: mapache::restorer::Resolution::Skip,
+            no_verify: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore 1")?;
@@ -287,6 +290,7 @@ mod tests {
             exclude: None,
             strip_prefix: true,
             resolution: mapache::restorer::Resolution::Skip,
+            no_verify: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore 2")?;

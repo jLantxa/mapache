@@ -84,6 +84,10 @@ pub struct CmdArgs {
     #[clap(long, default_value_t=Resolution::Fail)]
     pub resolution: Resolution,
 
+    /// Skip verification of data
+    #[clap(long = "no-verify", value_parser, default_value_t = false)]
+    pub no_verify: bool,
+
     /// Dry run
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
@@ -184,6 +188,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             dry_run: args.dry_run,
             resolution: args.resolution.clone(),
             strip_prefix: common_prefix,
+            verify: !args.no_verify,
         },
         progress_reporter.clone(),
     )?;

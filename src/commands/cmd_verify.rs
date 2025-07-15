@@ -26,8 +26,11 @@ use crate::{
     commands::GlobalArgs,
     global::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        self, RepositoryBackend, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer,
-        tree::NodeType, verify::verify_blob,
+        self, RepositoryBackend,
+        snapshot::SnapshotStreamer,
+        streamers::SerializedNodeStreamer,
+        tree::NodeType,
+        verify::{verify_blob, verify_pack},
     },
     ui::{self, default_bar_draw_target},
     utils,
@@ -45,10 +48,50 @@ pub struct CmdArgs {}
 pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args, false)?;
-    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, secure_storage) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
 
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
     let mut visited_blobs = BTreeSet::new();
+
+    let packs = repo.list_objects()?;
+
+    let bar = ProgressBar::new(packs.len() as u64);
+    bar.set_draw_target(default_bar_draw_target());
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[{bar:20.cyan/white}] Verifying packs: {pos} / {len}")
+            .unwrap()
+            .progress_chars("=> ")
+            .with_key(
+                "custom_elapsed",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed = utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                },
+            ),
+    );
+
+    let mut num_dangling_blobs = 0;
+    for pack_id in &packs {
+        num_dangling_blobs += verify_pack(
+            repo.as_ref(),
+            secure_storage.as_ref(),
+            &pack_id,
+            &mut visited_blobs,
+        )?;
+        bar.inc(1);
+    }
+    bar.finish_and_clear();
+    ui::cli::log!(
+        "Verified {} blobs from {} packs",
+        visited_blobs.len(),
+        packs.len()
+    );
+    if num_dangling_blobs > 0 {
+        ui::cli::log!("Found {} dangling blobs", num_dangling_blobs);
+    }
+    ui::cli::log!();
 
     let mut snapshot_counter = 0;
     let mut ok_counter = 0;
@@ -64,17 +107,18 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
         match verify_snapshot(repo.clone(), &snapshot_id, &mut visited_blobs) {
             Ok(_) => {
-                ui::cli::log!("{}\n", "[OK]".bold().green());
+                ui::cli::log!("{}", "[OK]".bold().green());
                 ok_counter += 1;
             }
             Err(e) => {
-                ui::cli::log!("{} {}\n", "[ERROR]".bold().red(), e.to_string());
+                ui::cli::log!("{} {}", "[ERROR]".bold().red(), e.to_string());
                 error_counter += 1
             }
         }
         snapshot_counter += 1;
     }
 
+    ui::cli::log!();
     ui::cli::log!(
         "{} verified",
         utils::format_count(snapshot_counter, "snapshot", "snapshots"),
@@ -144,7 +188,7 @@ pub fn verify_snapshot(
                     for blob in blobs {
                         if !visited_blobs.contains(&blob) {
                             visited_blobs.insert(blob.clone());
-                            match verify_blob(repo.as_ref(), &blob, None) {
+                            match verify_blob(repo.as_ref(), &blob) {
                                 Ok(blob_len) => bar.inc(blob_len),
                                 Err(_) => {
                                     error_counter += 1;

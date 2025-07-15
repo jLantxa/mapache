@@ -41,6 +41,7 @@ pub enum Resolution {
 pub struct Options {
     pub resolution: Resolution,
     pub strip_prefix: Option<PathBuf>,
+    pub verify: bool,
     pub dry_run: bool,
 }
 
@@ -80,6 +81,8 @@ impl Restorer {
         // Since the SerializedNodeStreamer emits paths in lexicographical order, we can
         // pop them in reverse order from the stack.
         let mut dir_stack = Vec::new();
+
+        let mut verified_blobs = BTreeSet::new();
 
         for node_res in node_streamer {
             let (mut path, stream_node) = node_res?;
@@ -128,6 +131,8 @@ impl Restorer {
                 progress_reporter.clone(),
                 &stream_node.node,
                 &restore_path,
+                opts.verify,
+                &mut verified_blobs,
                 opts.dry_run,
             ) {
                 bail!(

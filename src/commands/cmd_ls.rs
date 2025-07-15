@@ -170,7 +170,7 @@ fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
         const NA: &str = "_";
 
         format!(
-            "{:<10} {:3} {:<7}  {:<7}  {:>10}  {:<12}  {}",
+            "{:10} {:3} {:7}  {:7}  {:>14}  {:12}  {}",
             node.metadata.mode.map_or(NA.to_string(), |mode| {
                 utils::mode_to_permissions_string(mode)
             }),

@@ -137,7 +137,8 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args, args.dry_run)?;
-    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, secure_storage) =
+        repository::try_open(pass, global_args.key.as_ref(), backend.clone())?;
 
     // All sapshots, filter by tags and sorted by timestamp
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();
@@ -275,7 +276,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         ui::cli::log!();
         ui::cli::log!("Running garbage collector...");
-        commands::cmd_clean::run_with_repo(global_args, &gc_args, repo)?;
+        commands::cmd_clean::run_with_repo(global_args, &gc_args, repo, backend, secure_storage)?;
     }
 
     Ok(())

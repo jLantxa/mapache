@@ -21,12 +21,13 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    backend::new_backend_with_prompt,
+    backend::{StorageBackend, new_backend_with_prompt},
     commands::GlobalArgs,
     global::defaults::DEFAULT_GC_TOLERANCE,
     repository::{
         self, RepositoryBackend,
         gc::{self},
+        storage::SecureStorage,
     },
     ui::{
         self,
@@ -55,9 +56,10 @@ pub struct CmdArgs {
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
     let backend = new_backend_with_prompt(global_args, args.dry_run)?;
-    let (repo, _) = repository::try_open(pass, global_args.key.as_ref(), backend)?;
+    let (repo, secure_storage) =
+        repository::try_open(pass, global_args.key.as_ref(), backend.clone())?;
 
-    run_with_repo(global_args, args, repo)
+    run_with_repo(global_args, args, repo, backend, secure_storage)
 }
 
 /// Run the command with an initialized repository object.
@@ -65,13 +67,15 @@ pub fn run_with_repo(
     _global_args: &GlobalArgs,
     args: &CmdArgs,
     repo: Arc<dyn RepositoryBackend>,
+    backend: Arc<dyn StorageBackend>,
+    secure_storage: Arc<SecureStorage>,
 ) -> Result<()> {
     let tolerance = args.tolerance.clamp(0.0, 100.0) / 100.0;
 
     let start = Instant::now();
     ui::cli::log!();
 
-    let plan = gc::scan(repo.clone(), tolerance)?;
+    let plan = gc::scan(repo.clone(), backend, secure_storage, tolerance)?;
 
     let mut plan_table = Table::new_with_alignments(vec![Alignment::Left, Alignment::Right]);
     plan_table.add_row(vec![

@@ -27,12 +27,14 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
+    backend::StorageBackend,
     global::{
         self, ID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, MAX_PACK_SIZE},
     },
     repository::{
-        RepositoryBackend, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer,
+        RepositoryBackend, packer::Packer, snapshot::SnapshotStreamer, storage::SecureStorage,
+        streamers::SerializedNodeStreamer,
     },
     ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
 };
@@ -52,7 +54,12 @@ pub struct Plan {
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
-pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
+pub fn scan(
+    repo: Arc<dyn RepositoryBackend>,
+    backend: Arc<dyn StorageBackend>,
+    secure_storage: Arc<SecureStorage>,
+    tolerance: f32,
+) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 
     let mut keep_packs: HashSet<ID> = repo.list_objects()?;
@@ -76,7 +83,7 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     let mut kept_pack_size: HashMap<ID, u64> = HashMap::new();
     let mut pack_garbage: HashMap<ID, u64> = HashMap::new();
 
-    // Find obsolete packs and blobs in index
+    // Find obsolete packs and blobs
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -87,28 +94,43 @@ pub fn scan(repo: Arc<dyn RepositoryBackend>, tolerance: f32) -> Result<Plan> {
     spinner.enable_steady_tick(Duration::from_millis(
         (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
     ));
-    for (id, locator) in repo.index().read().iter_ids() {
-        kept_pack_size
-            .entry(locator.pack_id.clone())
-            .and_modify(|size| {
-                *size += locator.length as u64;
-            })
-            .or_default();
 
-        if !plan.referenced_blobs.contains(id) {
-            pack_garbage
-                .entry(locator.pack_id)
-                .and_modify(|size| *size += locator.length as u64)
-                .or_insert(locator.length as u64);
-            spinner.inc(1);
+    for pack_id in &keep_packs {
+        let blob_descriptors = Packer::parse_pack_header(
+            repo.as_ref(),
+            backend.as_ref(),
+            secure_storage.as_ref(),
+            pack_id,
+        )?;
+
+        for descriptor in &blob_descriptors {
+            kept_pack_size
+                .entry(pack_id.clone())
+                .and_modify(|size| {
+                    *size += descriptor.length as u64;
+                })
+                .or_default();
+
+            if !plan.referenced_blobs.contains(&descriptor.id) {
+                plan.obsolete_packs.insert(pack_id.clone());
+                pack_garbage
+                    .entry(pack_id.clone())
+                    .and_modify(|size| *size += descriptor.length as u64)
+                    .or_insert(descriptor.length as u64);
+                spinner.inc(1);
+            }
         }
     }
+
+    keep_packs.retain(|id| !plan.obsolete_packs.contains(id));
+
     // Find small packs to repack
     for (pack_id, size) in kept_pack_size {
         if (size as f32 / MAX_PACK_SIZE as f32) < DEFAULT_MIN_PACK_SIZE_FACTOR {
             plan.obsolete_packs.insert(pack_id);
         }
     }
+
     spinner.finish_and_clear();
     ui::cli::log!(
         "Found {} obsolete blobs in {} packs",

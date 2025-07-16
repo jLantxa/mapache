@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use aes_gcm::{Aes256Gcm, Key as AesKey, KeyInit, Nonce, aead::Aead};
+use aes_gcm_siv::{Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use anyhow::{Result, bail};
 use argon2::Argon2;
 use rand::TryRngCore;
@@ -95,8 +95,8 @@ impl SecureStorage {
 
     /// Encrypt data using AES-GCM
     pub fn encrypt_with_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        let key = AesKey::<Aes256Gcm>::from_slice(key);
-        let cipher = Aes256Gcm::new(key);
+        let key = AesKey::<Aes256GcmSiv>::from_slice(key);
+        let cipher = Aes256GcmSiv::new(key);
 
         // Generate a random nonce for each encryption
         let mut nonce = vec![0u8; AES_GCM_NONCE_LEN];
@@ -126,8 +126,8 @@ impl SecureStorage {
 
     /// Decrypt data using AES-GCM
     pub fn decrypt_with_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        let key = AesKey::<Aes256Gcm>::from_slice(key);
-        let cipher = Aes256Gcm::new(key);
+        let key = AesKey::<Aes256GcmSiv>::from_slice(key);
+        let cipher = Aes256GcmSiv::new(key);
 
         if data.len() < AES_GCM_NONCE_LEN {
             bail!("Decryption failed: invalid data");

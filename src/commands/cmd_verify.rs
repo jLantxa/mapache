@@ -46,7 +46,11 @@ use crate::{
 pub struct CmdArgs {
     /// Read actual data from the repository. If false, only verify that blobs are indexed.
     #[clap(long, value_parser, default_value_t = false)]
-    pub read_data: bool,
+    pub snapshot_data: bool,
+
+    /// Read all packs and discover unreferenced blobs
+    #[clap(long, value_parser, default_value_t = false)]
+    pub unreferenced: bool,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -58,7 +62,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
     let mut visited_blobs = BTreeSet::new();
 
-    if args.read_data {
+    if args.unreferenced {
         let packs = repo.list_objects()?;
 
         let bar = ProgressBar::new(packs.len() as u64);
@@ -66,7 +70,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         bar.set_style(
             ProgressStyle::default_bar()
                 .template(
-                    "[{custom_elapsed}] [{bar:20.cyan/white}] Verifying packs: {pos} / {len}  [ETA: {custom_eta}]",
+                    "[{custom_elapsed}] [{bar:20.cyan/white}] Reading packs: {pos} / {len}  [ETA: {custom_eta}]",
                 )
                 .unwrap()
                 .progress_chars("=> ")
@@ -111,7 +115,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             packs.len()
         );
         if num_dangling_blobs > 0 {
-            ui::cli::log!("Found {} dangling blobs", num_dangling_blobs);
+            ui::cli::log!("Found {} unreferenced blobs", num_dangling_blobs);
         }
 
         ui::cli::log!();
@@ -129,7 +133,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 .yellow()
         );
 
-        let res = if args.read_data {
+        let res = if args.snapshot_data {
             verify_snapshot(repo.clone(), &snapshot_id, &mut visited_blobs)
         } else {
             verify_snapshot_links(repo.clone(), &snapshot_id)
@@ -187,7 +191,7 @@ pub fn verify_snapshot(
     bar.set_draw_target(default_bar_draw_target());
     bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{custom_elapsed}] [{bar:20.cyan/white}] {processed_bytes_formated} {msg}")
+            .template("[{custom_elapsed}] [{bar:20.cyan/white}] {processed_bytes_formated}  [ETA: {custom_eta}]")
             .unwrap()
             .progress_chars("=> ")
             .with_key(
@@ -207,6 +211,14 @@ pub fn verify_snapshot(
                         utils::format_size(state.len().unwrap(), 3)
                     );
                     let _ = w.write_str(&s);
+                },
+            )
+            .with_key(
+                "custom_eta",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let eta = state.eta();
+                    let custom_eta = utils::pretty_print_duration(eta);
+                    let _ = w.write_str(&custom_eta);
                 },
             ),
     );

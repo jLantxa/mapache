@@ -10,7 +10,7 @@ opt-level = 3
 
 
 [dependencies]
-aes-gcm = "0.10.3"
+aes-gcm-siv = "0.11.1"
 anyhow = "1.0.98"
 argon2 = "0.5.3"
 base64 = "0.22.1"

@@ -18,10 +18,10 @@ pub mod defaults;
 
 use std::sync::LazyLock;
 
-use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
 use parking_lot::{RwLock, RwLockReadGuard};
+use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{commands::GlobalArgs, global::defaults::DEFAULT_VERBOSITY, utils};
@@ -71,7 +71,10 @@ impl ID {
     /// Creates a new, random ID.
     pub fn new_random() -> Self {
         let mut random_bytes: Hash256 = Default::default();
-        OsRng.fill_bytes(&mut random_bytes);
+        if let Err(e) = OsRng.try_fill_bytes(&mut random_bytes) {
+            panic!("Error: {e}");
+        }
+
         Self(random_bytes)
     }
 

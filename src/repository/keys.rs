@@ -19,10 +19,10 @@ use std::{
     sync::Arc,
 };
 
-use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -41,7 +41,10 @@ pub struct KeyFile {
 
 pub fn generate_new_master_key() -> Vec<u8> {
     let mut new_random_key = vec![0u8; 32];
-    OsRng.fill_bytes(&mut new_random_key);
+    if let Err(e) = OsRng.try_fill_bytes(&mut new_random_key) {
+        panic!("Error: {e}");
+    }
+
     new_random_key
 }
 

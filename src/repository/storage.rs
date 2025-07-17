@@ -181,19 +181,23 @@ impl Drop for SecureStorage {
 
 #[cfg(test)]
 mod tests {
-    use crate::ui;
+    use zstd::DEFAULT_COMPRESSION_LEVEL;
+
+    use crate::{repository::keys::generate_new_master_key, ui};
 
     use super::*;
 
+    const TEXT: &[u8; 431] = br#"
+Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt
+ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation
+ullamco laboris nisi ut aliquid ex ea commodi consequat. Quis aute iure reprehenderit in
+voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint obcaecat
+cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+"#;
+
     #[test]
     fn test_compression_and_decompression() {
-        let original_data = br#"
-             Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt
-             ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation
-             ullamco laboris nisi ut aliquid ex ea commodi consequat. Quis aute iure reprehenderit in
-             voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint obcaecat
-             cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-             "#;
+        let original_data = TEXT;
 
         let compression_levels = [0, 10, 22];
 
@@ -226,5 +230,19 @@ mod tests {
 
         let salt = SecureStorage::generate_salt::<32>();
         assert_eq!(salt.len(), 32);
+    }
+
+    #[test]
+    fn test_deterministic_encryption() -> Result<()> {
+        let key = generate_new_master_key();
+        let secure_storage = SecureStorage::build()
+            .with_compression(DEFAULT_COMPRESSION_LEVEL)
+            .with_key(key);
+        let ciphertext = secure_storage.encode(TEXT)?;
+        let decoded_plaintext = secure_storage.decode(&ciphertext)?;
+
+        assert_eq!(TEXT, decoded_plaintext.as_slice());
+
+        Ok(())
     }
 }

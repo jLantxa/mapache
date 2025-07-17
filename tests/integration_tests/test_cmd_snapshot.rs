@@ -102,10 +102,13 @@ mod tests {
             PathBuf::from("0/00"),
             PathBuf::from("0/00/file00.txt"),
             PathBuf::from("0/01"),
+            PathBuf::from("0/l01"),
             PathBuf::from("0/01/file01a.txt"),
             PathBuf::from("0/01/file01b.txt"),
             PathBuf::from("1"),
             PathBuf::from("1/10"),
+            PathBuf::from("1/10/file10.txt"),
+            PathBuf::from("1/10/lfile10.txt"),
             PathBuf::from("2"),
             PathBuf::from("file.txt"),
         ];
@@ -119,7 +122,10 @@ mod tests {
             let backup_meta = backup_path.symlink_metadata()?;
 
             assert_eq!(restored_meta.len(), backup_meta.len());
-            assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+
+            if !restored_path.is_symlink() {
+                assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            }
 
             if restored_path.is_file() {
                 assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);
@@ -275,6 +281,8 @@ mod tests {
             PathBuf::from("0/00/file00.txt"),
             PathBuf::from("1"),
             PathBuf::from("1/10"),
+            PathBuf::from("1/10/file10.txt"),
+            PathBuf::from("1/10/lfile10.txt"),
             PathBuf::from("2"),
             PathBuf::from("file.txt"),
         ];
@@ -287,8 +295,6 @@ mod tests {
             let restored_meta = restored_path.symlink_metadata()?;
             let backup_meta = backup_path.symlink_metadata()?;
 
-            assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
-
             if restored_path.is_file() {
                 assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);
             }
@@ -297,6 +303,9 @@ mod tests {
                 // Excluded paths decrease the size of parent directories.
                 // We only test the size of files in this case
                 assert_eq!(restored_meta.len(), backup_meta.len());
+            }
+            if !restored_path.is_symlink() {
+                assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
             }
         }
 

@@ -268,29 +268,31 @@ impl Iterator for SerializedNodeStreamer {
             // If it’s a subtree (i.e., a directory), load its children and push them.
             // Also, update the current `stream_node`'s `num_children` with its actual count.
             if let Some(subtree_id) = &stream_node.node.tree {
-                let mut subtree = Tree::load_from_repo(self.repo.as_ref(), subtree_id)?;
-                let num_children_of_this_dir = subtree.nodes.len();
+                let subtree = Tree::load_from_repo(self.repo.as_ref(), subtree_id)?;
 
-                // Push children for the next iteration. Their `num_children` starts at 0.
-                subtree
-                    .nodes
-                    .sort_by(|first, second| first.name.cmp(&second.name));
-                for subnode in subtree.nodes.into_iter().rev() {
-                    // Use into_iter() for efficiency
+                // Filter children based on include/exclude lists before counting and pushing.
+                let mut filtered_children = Vec::new();
+                for subnode in subtree.nodes.into_iter() {
+                    let child_path = current_path.join(&subnode.name);
+                    if utils::filter_path(&child_path, self.include.as_ref(), self.exclude.as_ref())
+                    {
+                        filtered_children.push(subnode);
+                    }
+                }
+
+                stream_node.num_children = filtered_children.len();
+
+                // Push filtered children for the next iteration, in reverse lexicographical order
+                filtered_children.sort_by(|first, second| first.name.cmp(&second.name));
+                for subnode in filtered_children.into_iter().rev() {
                     self.stack.push((
                         current_path.clone(),
                         StreamNode {
                             node: subnode,
-
-                            // Children nodes initially have 0, their own children
-                            // count is set when *they* are processed
-                            num_children: 0,
+                            num_children: 0, // Children nodes initially have 0, their own children count is set when *they* are processed
                         },
                     ));
                 }
-
-                // Update the current stream_node's num_children before emitting it
-                stream_node.num_children = num_children_of_this_dir;
             } else {
                 // For files or symlinks, ensure num_children is 0.
                 stream_node.num_children = 0;

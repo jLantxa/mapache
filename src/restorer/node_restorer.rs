@@ -123,8 +123,10 @@ pub(crate) fn restore_node_to_path(
                 std::fs::create_dir_all(dst_path).with_context(|| {
                     format!("Could not create directory '{}'", dst_path.display())
                 })?;
-                // Restore metadata after directory is created
-                restore_node_metadata(node, dst_path)?;
+
+                // We don't restore metadata for directories now, as the filetimes
+                // will change if we touch any children nodes. We will restore the
+                // directory metadata in a second, dedicated bottom-up pass.
             }
         }
 
@@ -193,6 +195,9 @@ pub(crate) fn restore_node_to_path(
                     }
                 }
             }
+
+            // TODO:
+            // Restoring symlink metadata is a bit special, so let's skip it for now.
         }
 
         NodeType::BlockDevice => {
@@ -254,19 +259,19 @@ pub(crate) fn restore_node_to_path(
 /// Restores the metadata of a node to the specified destination path.
 fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
     // Set file times
-    if !node.is_dir() {
-        restore_times(
-            dst_path,
-            node.metadata.accessed_time.as_ref(),
-            node.metadata.modified_time.as_ref(),
-        )?;
-    }
+    restore_times(
+        dst_path,
+        node.metadata.accessed_time.as_ref(),
+        node.metadata.modified_time.as_ref(),
+    )?;
 
     // Unix-specific metadata (mode, uid, gid)
     #[cfg(unix)]
     {
         // Set file permissions (mode)
-        if let Some(mode) = node.metadata.mode {
+        if !node.is_symlink()
+            && let Some(mode) = node.metadata.mode
+        {
             let permissions = Permissions::from_mode(mode);
             if let Err(e) = std::fs::set_permissions(dst_path, permissions) {
                 bail!(
@@ -277,17 +282,19 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
             }
         }
 
-        // Set owner (uid) and group (gid)
-        let uid = node.metadata.owner_uid;
-        let gid = node.metadata.owner_gid;
+        if !node.is_symlink() {
+            // Set owner (uid) and group (gid)
+            let uid = node.metadata.owner_uid;
+            let gid = node.metadata.owner_gid;
 
-        if uid.is_some() || gid.is_some() {
-            if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
-                bail!(
-                    "Could not set owner/group for '{}': {}. This operation often requires elevated privileges (e.g., root) and may not be supported for all node types (e.g. symlinks).",
-                    dst_path.display(),
-                    e.to_string()
-                );
+            if uid.is_some() || gid.is_some() {
+                if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
+                    bail!(
+                        "Could not set owner/group for '{}': {}. This operation often requires elevated privileges (e.g., root) and may not be supported for all node types (e.g. symlinks).",
+                        dst_path.display(),
+                        e.to_string()
+                    );
+                }
             }
         }
     }
@@ -306,7 +313,7 @@ pub fn restore_times(
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
         set_file_times(dst_path, ft_atime, ft_mtime)
-            .with_context(|| format!("Could not set modified time for '{}'", dst_path.display()))?;
+            .with_context(|| format!("Could not set file times for '{}'", dst_path.display()))?;
     }
 
     Ok(())

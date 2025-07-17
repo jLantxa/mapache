@@ -14,13 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
+use crate::archiver::tree_serializer::init_pending_trees;
 use crate::commands::{EMPTY_TAG_MARK, parse_tags};
 use crate::repository::snapshot::SnapshotStreamer;
 use crate::utils::format_size;
@@ -176,65 +177,41 @@ fn rewrite_snapshot_tree(
 ) -> Result<(u64, u64)> {
     let (mut raw_bytes, mut encoded_bytes) = (0, 0);
 
+    // Cannonicalize the exclude paths and filter the source paths using the excludes
+    // This is a simulated cannonical path, since we don't refer to a path in the host,
+    // but rather a relative path in the snapshot tree. We can just append the relative path
+    // to the snapshot root.
+    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &excludes {
+        let mut canonicalized_vec = Vec::new();
+        for path in exclude_paths {
+            canonicalized_vec.push(snapshot.root.join(path));
+        }
+        Some(canonicalized_vec)
+    } else {
+        None
+    };
+
+    let mut paths = snapshot.paths.clone();
+    paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
+
+    let mut final_root_tree_id: Option<ID> = None;
+    let mut pending_trees = init_pending_trees(&snapshot.root, &paths);
     let node_streamer = SerializedNodeStreamer::new(
         repo.clone(),
         Some(snapshot.tree.clone()),
-        PathBuf::new(),
+        snapshot.root.clone(),
         None,
-        excludes.clone(),
+        cannonical_excludes.clone(),
     )?;
-
-    // Count the direct children of the root
-    let mut direct_children = HashSet::new();
-    for path in &snapshot.paths {
-        if let Some(first_component) = path.components().next() {
-            direct_children.insert(first_component.as_os_str().to_string_lossy().to_string());
-        }
-    }
-
-    let mut final_root_tree_id: Option<ID> = None;
-    let mut pending_trees = HashMap::new();
-    pending_trees.insert(
-        PathBuf::new(),
-        tree_serializer::PendingTree {
-            node: None,
-            children: HashMap::new(),
-            num_expected_children: tree_serializer::ExpectedChildren::Known(direct_children.len()),
-        },
-    );
-    drop(direct_children);
 
     for (path, stream_node) in node_streamer.flatten() {
         // The path is not excluded, so we add the node to the pending trees map.
         let (raw, encoded) = tree_serializer::handle_processed_item(
-            (path, stream_node),
+            (path.clone(), stream_node),
             repo.as_ref(),
             &mut pending_trees,
             &mut final_root_tree_id,
-            &PathBuf::new(),
-        )?;
-
-        raw_bytes += raw;
-        encoded_bytes += encoded;
-    }
-
-    for ex_path in excludes.unwrap_or_default() {
-        // The path must be excluded, so, instead of adding the node to the pending trees map,
-        // we decrease the parent's expected children counter by 1.
-        let parent_path = utils::extract_parent(&ex_path)
-            .expect("Excluded path must have a parent in the snapshot tree");
-        pending_trees.entry(parent_path.clone()).and_modify(|p| {
-            if let tree_serializer::ExpectedChildren::Known(n) = p.num_expected_children {
-                p.num_expected_children = tree_serializer::ExpectedChildren::Known(n - 1);
-            }
-        });
-
-        let (raw, encoded) = tree_serializer::finalize_if_complete(
-            parent_path,
-            repo.as_ref(),
-            &mut pending_trees,
-            &mut final_root_tree_id,
-            &PathBuf::new(),
+            &snapshot.root,
         )?;
 
         raw_bytes += raw;

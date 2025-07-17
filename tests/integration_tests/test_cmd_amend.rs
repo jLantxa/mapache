@@ -61,7 +61,7 @@ mod tests {
         // Init repo
         init_repo(password, repo_path.clone())?;
 
-        // Run snapshot twice
+        // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![
                 backup_data_tmp_path.join("0"),
@@ -81,7 +81,11 @@ mod tests {
         commands::cmd_snapshot::run(&global, &snapshot_args)
             .with_context(|| "Failed to run cmd_snapshot")?;
 
-        let excluded_paths = vec![PathBuf::from("2"), PathBuf::from("file.txt")];
+        let excluded_paths = vec![
+            PathBuf::from("2"),
+            PathBuf::from("file.txt"),
+            PathBuf::from("0/00/file00.txt"),
+        ];
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
             all: false,
@@ -113,15 +117,18 @@ mod tests {
             PathBuf::from("0"),
             PathBuf::from("0/file0.txt"),
             PathBuf::from("0/00"),
-            PathBuf::from("0/00/file00.txt"),
             PathBuf::from("0/01"),
             PathBuf::from("0/01/file01a.txt"),
             PathBuf::from("0/01/file01b.txt"),
             PathBuf::from("1"),
             PathBuf::from("1/10"),
+            PathBuf::from("1/10/file10.txt"),
+            PathBuf::from("1/10/lfile10.txt"),
         ];
 
         for path in &paths {
+            println!("{:?}", path);
+
             let backup_path = backup_data_tmp_path.join(path);
             let restored_path = restore_path.join(path);
             assert!(restored_path.exists());
@@ -129,8 +136,10 @@ mod tests {
             let restored_meta = restored_path.symlink_metadata()?;
             let backup_meta = backup_path.symlink_metadata()?;
 
-            assert_eq!(restored_meta.len(), backup_meta.len());
-            assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            if !restored_path.is_symlink() {
+                assert_eq!(restored_meta.len(), backup_meta.len());
+                assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            }
 
             if restored_path.is_file() {
                 assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);

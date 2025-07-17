@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 
@@ -57,7 +57,7 @@ impl From<isize> for ExpectedChildren {
 pub(crate) struct PendingTree {
     pub num_expected_children: ExpectedChildren,
     pub node: Option<Node>,
-    pub children: BTreeMap<String, Node>,
+    pub children: HashMap<String, Node>,
 }
 
 impl PendingTree {
@@ -73,8 +73,8 @@ impl PendingTree {
 pub(crate) fn init_pending_trees(
     snapshot_root_path: &Path,
     paths: &[PathBuf],
-) -> BTreeMap<PathBuf, PendingTree> {
-    let mut pending_trees = BTreeMap::new();
+) -> HashMap<PathBuf, PendingTree> {
+    let mut pending_trees = HashMap::new();
 
     // We need to know ahead how many children the root is expecting, because the FSNodeStreamer
     // does not emit it (the root node).
@@ -85,7 +85,7 @@ pub(crate) fn init_pending_trees(
         snapshot_root_path.to_path_buf(),
         PendingTree {
             node: None,
-            children: BTreeMap::new(),
+            children: HashMap::new(),
             num_expected_children: ExpectedChildren::Known(root_children_count),
         },
     );
@@ -96,7 +96,7 @@ pub(crate) fn init_pending_trees(
 pub(crate) fn handle_processed_item(
     (path, stream_node): (PathBuf, StreamNode),
     repo: &dyn RepositoryBackend,
-    pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
+    pending_trees: &mut HashMap<PathBuf, PendingTree>,
     final_root_tree_id: &mut Option<ID>,
     snapshot_root_path: &Path,
 ) -> Result<(u64, u64)> {
@@ -117,7 +117,7 @@ pub(crate) fn handle_processed_item(
                 .entry(path.clone())
                 .or_insert_with(|| PendingTree {
                     node: Some(stream_node.node.clone()),
-                    children: BTreeMap::new(),
+                    children: HashMap::new(),
                     num_expected_children: ExpectedChildren::Unknown, // Will be updated below
                 });
 
@@ -141,7 +141,7 @@ pub(crate) fn handle_processed_item(
 pub(crate) fn finalize_if_complete(
     dir_path: PathBuf,
     repo: &dyn RepositoryBackend,
-    pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
+    pending_trees: &mut HashMap<PathBuf, PendingTree>,
     final_root_tree_id: &mut Option<ID>,
     snapshot_root_path: &Path,
 ) -> Result<(u64, u64)> {
@@ -207,7 +207,7 @@ pub(crate) fn finalize_if_complete(
 
 #[inline]
 fn insert_finalized_node(
-    pending_trees: &mut BTreeMap<PathBuf, PendingTree>,
+    pending_trees: &mut HashMap<PathBuf, PendingTree>,
     parent_path: &Path,
     node: Node,
 ) {
@@ -215,7 +215,7 @@ fn insert_finalized_node(
         .entry(parent_path.to_path_buf())
         .or_insert_with(|| PendingTree {
             node: None,
-            children: BTreeMap::new(),
+            children: HashMap::new(),
             // When a directory is inserted as a child, its parent's num_expected_children is still unknown.
             // This will be properly set when the parent directory itself is processed as a StreamNode.
             num_expected_children: ExpectedChildren::Unknown,

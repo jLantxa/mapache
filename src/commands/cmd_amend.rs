@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, bail};
@@ -184,16 +184,25 @@ fn rewrite_snapshot_tree(
         excludes.clone(),
     )?;
 
+    // Count the direct children of the root
+    let mut direct_children = HashSet::new();
+    for path in &snapshot.paths {
+        if let Some(first_component) = path.components().next() {
+            direct_children.insert(first_component.as_os_str().to_string_lossy().to_string());
+        }
+    }
+
     let mut final_root_tree_id: Option<ID> = None;
-    let mut pending_trees: BTreeMap<PathBuf, tree_serializer::PendingTree> = BTreeMap::new();
+    let mut pending_trees = HashMap::new();
     pending_trees.insert(
         PathBuf::new(),
         tree_serializer::PendingTree {
             node: None,
-            children: BTreeMap::new(),
-            num_expected_children: tree_serializer::ExpectedChildren::Known(snapshot.paths.len()),
+            children: HashMap::new(),
+            num_expected_children: tree_serializer::ExpectedChildren::Known(direct_children.len()),
         },
     );
+    drop(direct_children);
 
     for (path, stream_node) in node_streamer.flatten() {
         // The path is not excluded, so we add the node to the pending trees map.

@@ -113,17 +113,17 @@ pub(crate) fn handle_processed_item(
             insert_finalized_node(pending_trees, &dir_path, stream_node.node);
         }
         NodeType::Directory => {
-            let pending_tree = pending_trees
+            pending_trees
                 .entry(path.clone())
+                .and_modify(|pt| {
+                    pt.node = Some(stream_node.node.clone());
+                    pt.num_expected_children = ExpectedChildren::Known(stream_node.num_children);
+                })
                 .or_insert_with(|| PendingTree {
-                    node: Some(stream_node.node.clone()),
+                    node: Some(stream_node.node),
                     children: HashMap::new(),
-                    num_expected_children: ExpectedChildren::Unknown, // Will be updated below
+                    num_expected_children: ExpectedChildren::Known(stream_node.num_children),
                 });
-
-            // Update node and expected children count, preserving existing children if present
-            pending_tree.node = Some(stream_node.node);
-            pending_tree.num_expected_children = ExpectedChildren::Known(stream_node.num_children);
 
             dir_path = path;
         }

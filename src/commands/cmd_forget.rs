@@ -191,6 +191,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             retention_rules.push(RetentionRule::KeepTags(keep_tags));
         }
 
+        if retention_rules.is_empty() {
+            bail!("At least one retention rule must be used.");
+        }
+
         ids_to_keep = apply_retention_rules(&snapshots_sorted, &retention_rules, Local::now());
     }
 

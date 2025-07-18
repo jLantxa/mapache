@@ -312,7 +312,10 @@ impl Tree {
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_to_repo(&self, repo: &dyn RepositoryBackend) -> Result<(ID, (u64, u64))> {
+    pub fn save_to_repo(&mut self, repo: &dyn RepositoryBackend) -> Result<(ID, (u64, u64))> {
+        // Sort all nodes by name before serializing
+        self.nodes.sort_by_key(|node| node.name.clone());
+
         let tree_json = serde_json::to_string(self)?.as_bytes().to_vec();
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
             .save_blob(
@@ -320,6 +323,7 @@ impl Tree {
                 tree_json,
                 crate::global::SaveID::CalculateID,
             )?;
+
         Ok((
             id,
             (

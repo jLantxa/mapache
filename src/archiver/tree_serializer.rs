@@ -162,7 +162,7 @@ pub(crate) fn finalize_if_complete(
         )
     })?;
 
-    let completed_tree = Tree {
+    let mut completed_tree = Tree {
         nodes: this_pending_tree.children.into_values().collect(),
     };
 

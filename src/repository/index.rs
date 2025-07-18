@@ -219,17 +219,15 @@ impl Index {
         }
     }
 
-    /// Saves the index to the repository. This operation might generate multiple
-    /// index files if the total number of blobs exceeds a manifesturable limit.
-    ///
+    /// Saves the index to the repository.
     /// Returns the total uncompressed and compressed sizes of the saved index files.
     pub fn finalize_and_save(&mut self, repo: &dyn RepositoryBackend) -> Result<(u64, u64)> {
+        self.finalize();
+
         // Don't do anything if the index is empty.
         if self.data_ids.is_empty() && self.tree_ids.is_empty() {
             return Ok((0, 0));
         }
-
-        self.finalize();
 
         let mut packs_with_blobs: HashMap<usize, Vec<IndexFileBlob>> = HashMap::new();
         for (blob_id, location) in &self.data_ids {

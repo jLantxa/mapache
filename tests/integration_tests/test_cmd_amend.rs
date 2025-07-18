@@ -137,8 +137,12 @@ mod tests {
             let backup_meta = backup_path.symlink_metadata()?;
 
             if !restored_path.is_symlink() {
-                assert_eq!(restored_meta.len(), backup_meta.len());
                 assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            }
+
+            // We excluded some paths, so the size of directories will not be consistent
+            if !restore_path.is_dir() {
+                assert_eq!(restored_meta.len(), backup_meta.len());
             }
 
             if restored_path.is_file() {

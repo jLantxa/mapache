@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use anyhow::{Context, Result};
-use chrono::Local;
 use clap::Args;
 use colored::Colorize;
 
@@ -98,10 +97,7 @@ fn log(snapshots: &[(ID, Snapshot)]) {
         ui::cli::log!(
             "{} {}",
             "Date:".bold(),
-            snapshot
-                .timestamp
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M:%S %Z")
+            utils::pretty_print_timestamp(&snapshot.timestamp)
         );
         ui::cli::log!(
             "{} {}",
@@ -163,11 +159,7 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
                 .bold()
                 .yellow()
                 .to_string(),
-            snapshot
-                .timestamp
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M:%S %Z")
-                .to_string(),
+            utils::pretty_print_timestamp(&snapshot.timestamp),
             utils::format_size(snapshot.size(), 3),
             snapshot
                 .tags

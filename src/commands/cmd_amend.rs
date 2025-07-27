@@ -22,17 +22,15 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
-use crate::archiver::tree_serializer::init_pending_trees;
-use crate::commands::{EMPTY_TAG_MARK, parse_tags};
 use crate::repository::repo::{RepoConfig, Repository};
-use crate::repository::snapshot::SnapshotStreamer;
-use crate::utils::{format_size, size};
+use crate::utils::size;
 use crate::{
-    archiver::tree_serializer,
+    archiver::tree_serializer::{self, init_pending_trees},
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
+    commands::{EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, find_use_snapshot, parse_tags},
+    fs::tree::SerializedNodeStreamer,
     global::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::{snapshot::Snapshot, streamers::SerializedNodeStreamer},
+    repository::snapshot::{Snapshot, SnapshotStreamer},
     ui, utils,
 };
 
@@ -175,8 +173,8 @@ fn amend(
         );
         ui::cli::log!(
             "Added to the repository: {} {}",
-            format_size(raw, 3).bold().yellow(),
-            format!("({} compressed)", format_size(encoded, 3))
+            utils::format_size(raw, 3).bold().yellow(),
+            format!("({} compressed)", utils::format_size(encoded, 3))
                 .bold()
                 .green()
         );

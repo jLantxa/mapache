@@ -18,10 +18,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Result, bail};
 
-use crate::{
-    global::ID,
-    repository::{repo::Repository, tree::Tree},
-};
+use crate::{fs::tree::Tree, global::ID, repository::repo::Repository};
 
 /// A cache for `Tree` objects that uses a Least Recently Used (LRU) eviction policy.
 pub(super) struct TreeCache {

@@ -30,11 +30,12 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
+    fs::tree::SerializedNodeStreamer,
     global::{
         self, FileType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
     },
-    repository::{repo::Repository, snapshot::SnapshotStreamer, streamers::SerializedNodeStreamer},
+    repository::{repo::Repository, snapshot::SnapshotStreamer},
     ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
 };
 

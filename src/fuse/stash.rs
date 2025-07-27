@@ -24,16 +24,13 @@ use anyhow::{Result, bail};
 use fuser::{FUSE_ROOT_ID, FileAttr};
 
 use crate::{
+    fs::node::{Node, NodeType},
     fuse::{
         cache::{BlobCache, TreeCache},
         fs::Inode,
     },
     global::ID,
-    repository::{
-        manifest::Manifest,
-        repo::Repository,
-        tree::{Node, NodeType},
-    },
+    repository::{manifest::Manifest, repo::Repository},
     utils::size,
 };
 

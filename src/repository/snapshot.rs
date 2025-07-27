@@ -20,10 +20,7 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    commands::EMPTY_TAG_MARK,
-    repository::{repo::Repository, streamers::NodeDiff},
-};
+use crate::{commands::EMPTY_TAG_MARK, fs::tree::NodeDiff, repository::repo::Repository};
 
 use crate::global::ID;
 

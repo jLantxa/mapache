@@ -21,10 +21,70 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 
-use crate::{global::ID, repository::repo::Repository, utils};
+use crate::{
+    fs::node::Node,
+    global::{BlobType, ID, SaveID},
+    repository::repo::Repository,
+    utils,
+};
 
-use super::tree::{Node, Tree};
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Tree {
+    pub nodes: Vec<Node>,
+}
+
+impl Tree {
+    /// Creates a new empty tree.
+    pub fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+
+    /// Add a node to the tree. This function makes sure to order the list of
+    /// nodes alphabetically by name. If a node with the same name already exists,
+    /// it is replaced.
+    pub fn add_node(&mut self, node: Node) {
+        match self
+            .nodes
+            .binary_search_by(|probe| probe.name.cmp(&node.name))
+        {
+            Ok(idx) => {
+                self.nodes[idx] = node;
+            }
+            Err(idx) => {
+                self.nodes.insert(idx, node);
+            }
+        }
+    }
+
+    /// Saves a tree in the repository. This function should be called when a tree is complete,
+    /// that is, when all the contents and/or tree hashes have been resolved.
+    pub fn save_to_repo(&mut self, repo: &Repository) -> Result<(ID, (u64, u64))> {
+        // Sort all nodes by name before serializing
+        self.nodes.sort_by_key(|node| node.name.clone());
+
+        let tree_json = serde_json::to_string(self)?.as_bytes().to_vec();
+        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
+            repo.encode_and_save_blob(BlobType::Tree, tree_json, SaveID::CalculateID)?;
+
+        Ok((
+            id,
+            (
+                raw_data_size + raw_meta_size,
+                encoded_data_size + encoded_meta_size,
+            ),
+        ))
+    }
+
+    /// Load a tree from the repository.
+    pub fn load_from_repo(repo: &Repository, root_id: &ID) -> Result<Tree> {
+        let tree_object = repo.load_blob(root_id)?;
+        let tree: Tree = serde_json::from_slice(&tree_object)?;
+        Ok(tree)
+    }
+}
 
 #[derive(Debug)]
 pub struct StreamNode {

@@ -14,15 +14,5 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod archiver;
-pub mod backend;
-pub mod commands;
-pub mod fs;
-pub mod global;
-pub mod repository;
-pub mod restorer;
-pub mod ui;
-pub mod utils;
-
-#[cfg(unix)]
-pub mod fuse;
+pub mod node;
+pub mod tree;

@@ -28,10 +28,8 @@ use {
 };
 
 use crate::{
-    repository::{
-        repo::Repository,
-        tree::{Node, NodeType},
-    },
+    fs::node::{Node, NodeType},
+    repository::repo::Repository,
     ui::{self, restore_progress::RestoreProgressReporter},
 };
 

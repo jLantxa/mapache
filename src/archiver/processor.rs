@@ -25,12 +25,12 @@ use anyhow::{Context, Result, bail};
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
-    global::{self, BlobType, ID, SaveID},
-    repository::{
-        repo::Repository,
-        streamers::{NodeDiff, StreamNode},
-        tree::{Node, NodeType},
+    fs::{
+        node::{Node, NodeType},
+        tree::{NodeDiff, StreamNode},
     },
+    global::{self, BlobType, ID, SaveID},
+    repository::repo::Repository,
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 

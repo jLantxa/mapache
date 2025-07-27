@@ -23,11 +23,9 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
-    repository::{
-        repo::{RepoConfig, Repository},
-        streamers::find_serialized_node,
-        tree::{Metadata, Node, NodeType, Tree},
-    },
+    fs::node::{Metadata, Node, NodeType},
+    fs::tree::{Tree, find_serialized_node},
+    repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},
 };

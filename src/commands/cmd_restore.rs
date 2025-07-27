@@ -28,11 +28,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
+    fs::tree::SerializedNodeStreamer,
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
-    repository::{
-        repo::RepoConfig, repo::Repository, streamers::SerializedNodeStreamer,
-        verify::verify_snapshot_links,
-    },
+    repository::{repo::RepoConfig, repo::Repository, verify::verify_snapshot_links},
     restorer::{self, Resolution, Restorer},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, cli, default_bar_draw_target,

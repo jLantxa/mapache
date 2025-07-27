@@ -119,17 +119,17 @@ impl Archiver {
             let diff_streamer = NodeDiffStreamer::new(previous_tree_streamer, fs_streamer);
 
             for diff_result in diff_streamer {
-                if let Ok((path, prev, next, diff)) = diff_result {
-                    if let Err(e) = diff_tx.send((path, prev, next, diff)) {
-                        diff_progress_reporter_clone.error();
-                        ui::cli::error!(
-                            "Archiver diff thread errored sending diff: {:?}",
-                            e.to_string()
-                        );
+                match diff_result {
+                    Ok((path, prev, next, diff)) => {
+                        if let Err(e) = diff_tx.send((path, prev, next, diff)) {
+                            diff_progress_reporter_clone.error();
+                            ui::cli::error!("Archiver errored sending diff: {:?}", e.to_string());
+                        }
                     }
-                } else {
-                    diff_progress_reporter_clone.error();
-                    ui::cli::error!("Archiver diff thread errored getting next diff");
+                    Err(e) => {
+                        diff_progress_reporter_clone.error();
+                        ui::cli::error!("Diff error: {}", e);
+                    }
                 }
             }
         });

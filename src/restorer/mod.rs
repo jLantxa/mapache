@@ -26,7 +26,8 @@ use anyhow::{Context, Ok, Result, bail};
 use clap::ValueEnum;
 
 use crate::{
-    repository::{repo::Repository, snapshot::Snapshot, streamers::SerializedNodeStreamer},
+    fs::tree::SerializedNodeStreamer,
+    repository::{repo::Repository, snapshot::Snapshot},
     ui::restore_progress::RestoreProgressReporter,
     utils,
 };

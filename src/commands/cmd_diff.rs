@@ -23,11 +23,11 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::GlobalArgs,
+    fs::tree::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
     global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::DiffCounts,
-        streamers::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
     },
     ui::{
         self,

@@ -22,12 +22,12 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
-    global::ID,
-    repository::{
-        repo::Repository,
-        streamers::StreamNode,
-        tree::{Node, NodeType, Tree},
+    fs::{
+        node::{Node, NodeType},
+        tree::{StreamNode, Tree},
     },
+    global::ID,
+    repository::repo::Repository,
     utils,
 };
 

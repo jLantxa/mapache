@@ -23,12 +23,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
     commands::GlobalArgs,
+    fs::{node::NodeType, tree::SerializedNodeStreamer},
     global::FileType,
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStreamer,
-        streamers::SerializedNodeStreamer,
-        tree::NodeType,
     },
     ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, size},

@@ -20,11 +20,9 @@ use anyhow::{Result, bail};
 
 use crate::{
     backend::StorageBackend,
+    fs::{node::NodeType, tree::SerializedNodeStreamer},
     global::{FileType, ID},
-    repository::{
-        packer::Packer, repo::Repository, storage::SecureStorage,
-        streamers::SerializedNodeStreamer, tree::NodeType,
-    },
+    repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils,
 };
 

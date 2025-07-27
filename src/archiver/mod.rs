@@ -24,14 +24,9 @@ use chrono::Local;
 use tree_serializer::finalize_if_complete;
 
 use crate::{
+    fs::tree::{FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
     global::ID,
-    repository::{
-        repo::Repository,
-        snapshot::Snapshot,
-        streamers::{
-            FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode,
-        },
-    },
+    repository::{repo::Repository, snapshot::Snapshot},
     ui::{self, snapshot_progress::SnapshotProgressReporter},
 };
 

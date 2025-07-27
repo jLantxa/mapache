@@ -30,12 +30,11 @@ use crate::{
     archiver::{Archiver, SnapshotOptions},
     backend::new_backend_with_prompt,
     commands::{EMPTY_TAG_MARK, find_use_snapshot, parse_tags},
+    fs::tree::FSNodeStreamer,
     global::{self, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        repo::RepoConfig,
-        repo::Repository,
+        repo::{RepoConfig, Repository},
         snapshot::{SnapshotSummary, SnapshotTuple},
-        streamers::FSNodeStreamer,
     },
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target,

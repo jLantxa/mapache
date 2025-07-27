@@ -22,6 +22,4 @@ pub mod packer;
 pub mod repo;
 pub mod snapshot;
 pub mod storage;
-pub mod streamers;
-pub mod tree;
 pub mod verify;

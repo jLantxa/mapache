@@ -29,12 +29,11 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
     commands::GlobalArgs,
+    fs::{node::NodeType, tree::SerializedNodeStreamer},
     global::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStreamer,
-        streamers::SerializedNodeStreamer,
-        tree::NodeType,
         verify::{verify_blob, verify_pack, verify_snapshot_links},
     },
     ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},

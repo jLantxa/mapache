@@ -19,14 +19,15 @@ use std::str::FromStr;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 
-use crate::global::{ID, ID_LENGTH};
-use crate::repository::repo::{RepoConfig, Repository};
-use crate::repository::tree::Tree;
-use crate::ui;
-use crate::utils::{self, size};
-use crate::{backend::new_backend_with_prompt, global::FileType};
-
-use super::GlobalArgs;
+use crate::{
+    backend::new_backend_with_prompt,
+    commands::GlobalArgs,
+    fs::tree::Tree,
+    global::{FileType, ID, ID_LENGTH},
+    repository::repo::{RepoConfig, Repository},
+    ui,
+    utils::{self, size},
+};
 
 #[derive(Args, Debug)]
 #[clap(about = "Print repository objects")]

@@ -29,11 +29,9 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
 use crate::{
+    fs::tree::NodeDiff,
     global::global_opts,
-    repository::{
-        snapshot::{DiffCounts, SnapshotSummary},
-        streamers::NodeDiff,
-    },
+    repository::snapshot::{DiffCounts, SnapshotSummary},
     ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };

@@ -14,5 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::path::Path;
+
 pub mod node;
 pub mod tree;
+
+pub fn path_exists(path: &Path) -> bool {
+    path.symlink_metadata().is_ok()
+}
+
+pub fn path_exists_follow_symlink(path: &Path) -> bool {
+    path.exists()
+}

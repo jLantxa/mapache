@@ -24,7 +24,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    fs::node::Node,
+    fs::{self, node::Node},
     global::{BlobType, ID, SaveID},
     repository::repo::Repository,
     utils,
@@ -116,7 +116,7 @@ impl FSNodeStreamer {
     /// Exclude paths and their children are neither emitted nor explored into.
     pub fn from_paths(mut paths: Vec<PathBuf>, mut exclude_paths: Vec<PathBuf>) -> Result<Self> {
         for path in &paths {
-            if !path.exists() {
+            if !fs::path_exists(path) {
                 bail!("Path {} does not exist", path.display());
             }
         }

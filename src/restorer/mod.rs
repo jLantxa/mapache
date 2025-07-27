@@ -26,7 +26,7 @@ use anyhow::{Context, Ok, Result, bail};
 use clap::ValueEnum;
 
 use crate::{
-    fs::tree::SerializedNodeStreamer,
+    fs::{self, tree::SerializedNodeStreamer},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::restore_progress::RestoreProgressReporter,
     utils,
@@ -102,7 +102,7 @@ impl Restorer {
 
             let restore_path = target_path.join(&path);
 
-            if restore_path.exists() {
+            if fs::path_exists(&restore_path) {
                 match opts.resolution {
                     Resolution::Skip => {
                         progress_reporter.processed_file(&path);

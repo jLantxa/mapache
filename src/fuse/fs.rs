@@ -60,7 +60,8 @@ impl MapacheFS {
             stash: Stash::new_root(repo.clone())?,
         };
 
-        let mut mount_options: Vec<MountOption> = vec![MountOption::RO];
+        let mut mount_options: Vec<MountOption> =
+            vec![MountOption::RO, MountOption::DefaultPermissions];
         if allow_other {
             mount_options.push(MountOption::AllowOther);
         }
@@ -81,7 +82,7 @@ impl MapacheFS {
     }
 
     /// Unmounts the filesystem from `mountpoint`
-    fn unmount(mountpoint: &Path) -> Result<()> {
+    pub fn unmount(mountpoint: &Path) -> Result<()> {
         std::process::Command::new("fusermount")
             .arg("-u")
             .arg(mountpoint)

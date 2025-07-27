@@ -171,19 +171,17 @@ impl Metadata {
 impl Node {
     /// Build a `Node` from any path on disk.
     pub fn from_path(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            bail!("{:?} does not exist", path)
-        }
+        // symlink_metadata does not follow symlinks
+        // Failing to read these metadata could also mean that the file does not
+        // exist, so we can exit early.
+        let meta = std::fs::symlink_metadata(path)
+            .with_context(|| format!("Cannot stat {}", path.display()))?;
+        let node_type = get_node_type(&meta)?;
 
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-
-        // symlink_metadata does not follow symlinks
-        let meta = std::fs::symlink_metadata(path)
-            .with_context(|| format!("Cannot stat {}", path.display()))?;
-        let node_type = get_node_type(&meta)?;
 
         let mut node = Self {
             name,

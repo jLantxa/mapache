@@ -60,22 +60,21 @@ pub(crate) fn restore_node_to_path(
                 if let Some(parent) = dst_path.parent() {
                     fs::create_dir_all(parent).with_context(|| {
                         format!(
-                            "Could not create parent directories for file '{}'",
+                            "Could not create parent directories for file {}",
                             dst_path.display()
                         )
                     })?;
                 }
 
-                Some(
-                    OpenOptions::new()
-                        .create(true)
-                        .truncate(true)
-                        .write(true)
-                        .open(dst_path)
-                        .with_context(|| {
-                            format!("Could not create destination file '{}'", dst_path.display())
-                        })?,
-                )
+                match OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(dst_path)
+                {
+                    Ok(file) => Some(file),
+                    Err(e) => bail!("Could not create file {}: {}", dst_path.display(), e),
+                }
             } else {
                 None
             };
@@ -83,7 +82,7 @@ pub(crate) fn restore_node_to_path(
             for (index, blob_id) in blocks.iter().enumerate() {
                 let chunk_data = repo.load_blob(blob_id).with_context(|| {
                     format!(
-                        "Could not load block #{} ({}) for restoring file '{}'",
+                        "Could not load block #{} ({}) for restoring file {}",
                         index + 1,
                         blob_id,
                         dst_path.display()
@@ -99,7 +98,7 @@ pub(crate) fn restore_node_to_path(
                         .write_all(&chunk_data)
                         .with_context(|| {
                             format!(
-                                "Could not restore block #{} ({}) to file '{}'",
+                                "Could not restore block #{} ({}) to file {}",
                                 index + 1,
                                 blob_id,
                                 dst_path.display()
@@ -119,7 +118,7 @@ pub(crate) fn restore_node_to_path(
         NodeType::Directory => {
             if !dry_run {
                 std::fs::create_dir_all(dst_path).with_context(|| {
-                    format!("Could not create directory '{}'", dst_path.display())
+                    format!("Could not create directory {}", dst_path.display())
                 })?;
 
                 // We don't restore metadata for directories now, as the filetimes
@@ -144,7 +143,7 @@ pub(crate) fn restore_node_to_path(
                     && let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, dst_path)
                 {
                     ui::cli::warning!(
-                        "Could not create symlink '{}' pointing to '{}' : {}",
+                        "Could not create symlink {} pointing to {} : {}",
                         dst_path.display(),
                         symlink_info.target_path.display(),
                         e.to_string()
@@ -164,7 +163,7 @@ pub(crate) fn restore_node_to_path(
                             )
                         {
                             ui::cli::warning!(
-                                "Could not create symlink '{}' pointing to '{}' : {}",
+                                "Could not create symlink {} pointing to {} : {}",
                                 dst_path.display(),
                                 symlink_info.target_path.display(),
                                 e.to_string()
@@ -180,7 +179,7 @@ pub(crate) fn restore_node_to_path(
                             )
                         {
                             ui::cli::warning!(
-                                "Could not create symlink '{}' pointing to '{}' : {}",
+                                "Could not create symlink {} pointing to '{}' : {}",
                                 dst_path.display(),
                                 symlink_info.target_path.display(),
                                 e.to_string()
@@ -201,12 +200,12 @@ pub(crate) fn restore_node_to_path(
         NodeType::BlockDevice => {
             #[cfg(unix)]
             ui::cli::warning!(
-                "Restoration of block device '{}' not supported yet.",
+                "Restoration of block device {} not supported yet.",
                 dst_path.display()
             );
             #[cfg(not(unix))]
             ui::cli::warning!(
-                "Block device restoration not supported on this operating system: '{}'",
+                "Block device restoration not supported on this operating system: {}",
                 dst_path.display()
             );
         }
@@ -214,12 +213,12 @@ pub(crate) fn restore_node_to_path(
         NodeType::CharDevice => {
             #[cfg(unix)]
             ui::cli::warning!(
-                "Restoration of character device '{}' not supported yet.",
+                "Restoration of character device {} not supported yet.",
                 dst_path.display()
             );
             #[cfg(not(unix))]
             ui::cli::warning!(
-                "Character device restoration not supported on this operating system: '{}'",
+                "Character device restoration not supported on this operating system: {}",
                 dst_path.display()
             );
         }
@@ -227,12 +226,12 @@ pub(crate) fn restore_node_to_path(
         NodeType::Fifo => {
             #[cfg(unix)]
             ui::cli::warning!(
-                "Restoration of FIFO (named pipe) '{}' not supported yet.",
+                "Restoration of FIFO (named pipe) {} not supported yet.",
                 dst_path.display()
             );
             #[cfg(not(unix))]
             ui::cli::warning!(
-                "FIFO restoration not supported on this operating system: '{}'",
+                "FIFO restoration not supported on this operating system: {}",
                 dst_path.display()
             );
         }
@@ -240,12 +239,12 @@ pub(crate) fn restore_node_to_path(
         NodeType::Socket => {
             #[cfg(unix)]
             ui::cli::warning!(
-                "Restoration of socket '{}' not supported yet.",
+                "Restoration of socket {} not supported yet.",
                 dst_path.display()
             );
             #[cfg(not(unix))]
             ui::cli::warning!(
-                "Socket restoration not supported on this operating system: '{}'",
+                "Socket restoration not supported on this operating system: {}",
                 dst_path.display()
             );
         }
@@ -273,7 +272,7 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
             let permissions = Permissions::from_mode(mode);
             if let Err(e) = std::fs::set_permissions(dst_path, permissions) {
                 bail!(
-                    "Could not set permissions for '{}': {}. This may not be supported for all node types (e.g. symlinks).",
+                    "Could not set permissions for {}: {}. This may not be supported for all node types (e.g. symlinks).",
                     dst_path.display(),
                     e.to_string()
                 );
@@ -288,7 +287,7 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
             if uid.is_some() || gid.is_some() {
                 if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
                     bail!(
-                        "Could not set owner/group for '{}': {}. This operation often requires elevated privileges (e.g., root) and may not be supported for all node types (e.g. symlinks).",
+                        "Could not set owner/group for {}: {}. This operation often requires elevated privileges (e.g., root) and may not be supported for all node types (e.g. symlinks).",
                         dst_path.display(),
                         e.to_string()
                     );
@@ -311,7 +310,7 @@ pub fn restore_times(
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
         set_file_times(dst_path, ft_atime, ft_mtime)
-            .with_context(|| format!("Could not set file times for '{}'", dst_path.display()))?;
+            .with_context(|| format!("Could not set file times for {}", dst_path.display()))?;
     }
 
     Ok(())
@@ -345,9 +344,8 @@ mod tests {
         let ft_mtime = FileTime::from(prev_mtime);
         let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
 
-        set_file_times(&file_path, ft_atime, ft_mtime).with_context(|| {
-            format!("Could not set modified time for '{}'", file_path.display())
-        })?;
+        set_file_times(&file_path, ft_atime, ft_mtime)
+            .with_context(|| format!("Could not set modified time for {}", file_path.display()))?;
 
         restore_node_metadata(&node, &file_path)?;
 

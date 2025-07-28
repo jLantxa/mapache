@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -51,7 +51,7 @@ pub struct SnapshotProgressReporter {
 
     processing_items: Arc<RwLock<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
-    error_counter: Arc<AtomicU32>,
+    error_counter: Arc<AtomicU64>,
 
     #[allow(dead_code)]
     mp: MultiProgress,
@@ -76,7 +76,7 @@ impl SnapshotProgressReporter {
         let meta_encoded_bytes_arc = Arc::new(AtomicU64::new(0));
 
         let processing_items_arc = Arc::new(RwLock::new(VecDeque::new()));
-        let error_counter_arc = Arc::new(AtomicU32::new(0));
+        let error_counter_arc = Arc::new(AtomicU64::new(0));
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
         let processed_bytes_arc_clone = processed_bytes_arc.clone();

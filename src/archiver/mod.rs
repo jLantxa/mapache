@@ -28,6 +28,7 @@ use crate::{
     global::ID,
     repository::{repo::Repository, snapshot::Snapshot},
     ui::{self, snapshot_progress::SnapshotProgressReporter},
+    utils,
 };
 
 pub struct SnapshotOptions {
@@ -272,6 +273,8 @@ impl Archiver {
             .written_meta_bytes(flushed_raw_meta_size, flushed_encode_meta_size);
         archiver.repo.finalize_pack_saver();
 
+        let (hostname, username) = utils::get_system_info();
+
         match root_tree_id {
             Some(tree_id) => Ok(Snapshot {
                 timestamp: Local::now(),
@@ -282,6 +285,8 @@ impl Archiver {
                 tree: tree_id,
                 root: archiver.snapshot_options.snapshot_root_path,
                 paths: archiver.snapshot_options.absolute_source_paths,
+                hostname,
+                username,
                 tags: archiver.snapshot_options.tags,
                 description: archiver.snapshot_options.description,
                 summary: archiver.progress_reporter.get_summary(),

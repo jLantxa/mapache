@@ -110,6 +110,14 @@ fn log(snapshots: &[(ID, Snapshot)]) {
         );
         ui::cli::log!("{} {}", "Root:".bold(), &snapshot.root.display());
 
+        if let Some(hostname) = &snapshot.hostname {
+            ui::cli::log!("{} {}", "Host:".bold(), hostname);
+        }
+
+        if let Some(username) = &snapshot.username {
+            ui::cli::log!("{} {}", "User:".bold(), username);
+        }
+
         if !snapshot.tags.is_empty() {
             ui::cli::log!(
                 "{} {}",
@@ -147,12 +155,18 @@ fn log(snapshots: &[(ID, Snapshot)]) {
 }
 
 fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
-    let mut table =
-        Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
+    let mut table = Table::new_with_alignments(vec![
+        Alignment::Left,
+        Alignment::Center,
+        Alignment::Center,
+        Alignment::Center,
+        Alignment::Right,
+    ]);
 
     table.set_headers(vec![
         "ID".bold().to_string(),
         "Date ▼".bold().to_string(),
+        "Host".bold().to_string(),
         "Size".bold().to_string(),
         "Tags".bold().to_string(),
     ]);
@@ -164,6 +178,7 @@ fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
                 .yellow()
                 .to_string(),
             utils::pretty_print_timestamp(&snapshot.timestamp),
+            snapshot.hostname.clone().unwrap_or_default(),
             utils::format_size(snapshot.size(), 3),
             snapshot
                 .tags

@@ -101,7 +101,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     for (i, (id, snapshot)) in snapshots.iter_mut().rev().enumerate() {
         let amend_str = format!(
             "Amending snapshot {}",
-            id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).red()
+            id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().red()
         );
         if args.all {
             ui::cli::log!("{} ({}/{})", amend_str, i + 1, num_snapshots);

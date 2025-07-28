@@ -183,6 +183,7 @@ fn chunk_and_save_blobs(
 
         let repo_clone = repo.clone();
         let pr = progress_reporter.clone();
+        pr.processed_bytes(chunk.data.len() as u64);
 
         let save_blob_res =
             repo_clone.encode_and_save_blob(BlobType::Data, chunk.data, SaveID::CalculateID);
@@ -191,7 +192,6 @@ fn chunk_and_save_blobs(
                 chunk_ids.push(id.clone());
                 pr.written_data_bytes(raw_data_size, encoded_data_size);
                 pr.written_meta_bytes(raw_meta_size, encoded_meta_size);
-                pr.processed_bytes(raw_data_size);
             }
             Err(e) => bail!("Failed to save blob to repository: {:?}", e),
         }

@@ -454,6 +454,8 @@ mod tests {
                         .collect(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -482,6 +484,8 @@ mod tests {
                         .collect(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -507,6 +511,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -532,6 +538,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -557,6 +565,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             // Weekly snapshots (e.g., one per week, starting from week 1, 2023)
@@ -584,6 +594,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -610,6 +622,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -636,6 +650,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -662,6 +678,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -688,6 +706,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             // Monthly snapshots
@@ -714,6 +734,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -739,6 +761,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             // Yearly snapshots
@@ -765,6 +789,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -790,6 +816,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
             (
@@ -815,6 +843,8 @@ mod tests {
                     tags: BTreeSet::new(),
                     description: None,
                     summary: Default::default(),
+                    hostname: None,
+                    username: None,
                 },
             ),
         ];

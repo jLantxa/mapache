@@ -24,6 +24,7 @@ use std::{
     time::Duration,
 };
 
+use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
@@ -36,6 +37,8 @@ pub struct RestoreProgressReporter {
     processed_items_count: Arc<AtomicU64>, // Number of files processed
     processing_items: Arc<RwLock<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
+    pub(crate) error_counter: Arc<AtomicU64>,
+
     #[allow(dead_code)]
     mp: MultiProgress,
     progress_bar: ProgressBar,
@@ -45,15 +48,17 @@ pub struct RestoreProgressReporter {
 impl RestoreProgressReporter {
     pub fn new(num_expected_items: u64, num_expected_bytes: u64, num_display_items: usize) -> Self {
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));
+        let error_counter_arc = Arc::new(AtomicU64::new(0));
 
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
         let progress_bar = mp.add(ProgressBar::new(num_expected_bytes));
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
+        let error_counter_arc_clone = error_counter_arc.clone();
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template(
-                    "[{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_formated}]  [{processed_items_formated}]  [ETA: {custom_eta}]"
+                    "[{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_formated}]  [{processed_items_formated}]  [ETA: {custom_eta}]  {errors} errors"
                 )
                 .unwrap()
                 .progress_chars("=> ")
@@ -76,6 +81,9 @@ impl RestoreProgressReporter {
                     let custom_eta= utils::pretty_print_duration(eta);
                     let _ = w.write_str(&custom_eta);
                 })
+                .with_key("errors", move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let _ = w.write_str(&error_counter_arc_clone.load(Ordering::SeqCst).to_string());
+                })
         );
 
         let mut file_spinners = Vec::with_capacity(num_display_items);
@@ -96,6 +104,7 @@ impl RestoreProgressReporter {
         Self {
             processed_items_count: processed_items_count_arc,
             processing_items: Arc::new(RwLock::new(VecDeque::new())),
+            error_counter: error_counter_arc,
             mp,
             progress_bar,
             file_spinners,
@@ -135,5 +144,10 @@ impl RestoreProgressReporter {
 
     pub fn processed_bytes(&self, bytes: u64) {
         self.progress_bar.inc(bytes);
+    }
+
+    pub fn error(&self, msg: &str) {
+        self.error_counter.fetch_add(1, Ordering::SeqCst);
+        let _ = self.mp.println(format!("{} {msg}", "Error:".bold().red()));
     }
 }

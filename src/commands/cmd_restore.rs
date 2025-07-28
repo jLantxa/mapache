@@ -85,6 +85,10 @@ pub struct CmdArgs {
     #[clap(long, default_value_t=Resolution::Fail)]
     pub resolution: Resolution,
 
+    /// Quit immediately if a restore error occurs
+    #[clap(long, default_value_t = false)]
+    pub quit_on_error: bool,
+
     /// Skip verification of data
     #[clap(long = "no-verify", value_parser, default_value_t = false)]
     pub no_verify: bool,
@@ -199,16 +203,21 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         restorer::Options {
             dry_run: args.dry_run,
             resolution: args.resolution.clone(),
+            quit_on_error: args.quit_on_error,
             strip_prefix: common_prefix,
         },
         progress_reporter.clone(),
     )?;
 
     progress_reporter.finalize();
+    let error_count = progress_reporter
+        .error_counter
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     cli::log!(
-        "Finished in {}",
-        utils::pretty_print_duration(start.elapsed())
+        "Finished in {} with {}",
+        utils::pretty_print_duration(start.elapsed(),),
+        utils::format_count(error_count, "error", "errors")
     );
 
     Ok(())

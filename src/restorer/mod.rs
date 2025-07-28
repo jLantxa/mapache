@@ -43,6 +43,7 @@ pub struct Options {
     pub resolution: Resolution,
     pub strip_prefix: Option<PathBuf>,
     pub dry_run: bool,
+    pub quit_on_error: bool,
 }
 
 pub struct Restorer {}
@@ -124,7 +125,7 @@ impl Restorer {
 
             progress_reporter.processing_file(path.clone());
 
-            // Attempt to restore the node.
+            // Attempt to restore the node
             if let Err(e) = node_restorer::restore_node_to_path(
                 repo.as_ref(),
                 progress_reporter.clone(),
@@ -132,11 +133,12 @@ impl Restorer {
                 &restore_path,
                 opts.dry_run,
             ) {
-                bail!(
-                    "Failed to restore item \'{}\': {}",
-                    restore_path.display(),
-                    e
-                )
+                let error_msg = format!("Failed to restore item {}: {}", restore_path.display(), e);
+
+                if opts.quit_on_error {
+                    bail!(error_msg);
+                }
+                progress_reporter.error(&error_msg);
             }
 
             progress_reporter.processed_file(&path);

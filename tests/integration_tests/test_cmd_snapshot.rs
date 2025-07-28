@@ -95,6 +95,7 @@ mod tests {
             strip_prefix: false,
             resolution: mapache::restorer::Resolution::Skip,
             no_verify: false,
+            quit_on_error: true,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -208,6 +209,7 @@ mod tests {
             strip_prefix: false,
             resolution: mapache::restorer::Resolution::Skip,
             no_verify: false,
+            quit_on_error: true,
         };
 
         let restore_result = commands::cmd_restore::run(&global, &restore_args);
@@ -278,6 +280,7 @@ mod tests {
             strip_prefix: false,
             resolution: Resolution::Skip,
             no_verify: false,
+            quit_on_error: true,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -401,6 +404,7 @@ mod tests {
             strip_prefix: false,
             resolution: mapache::restorer::Resolution::Skip,
             no_verify: false,
+            quit_on_error: true,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;

@@ -19,7 +19,7 @@ pub mod url;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -273,6 +273,70 @@ pub fn filter_path(
     }
 
     true
+}
+
+pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
+    let origin_path_str = path.to_string_lossy().to_string();
+
+    if origin_path_str.is_empty() {
+        return String::new();
+    } else if origin_path_str.len() <= max_len || path.components().count() <= 2 {
+        return origin_path_str;
+    }
+
+    let filename = path
+        .file_name()
+        .expect("Path should have a filename")
+        .to_string_lossy()
+        .to_string();
+
+    let mut components: Vec<Component> = path.components().collect();
+    components.pop(); // Remove the last component (filename) as it's handled separately
+
+    let ellipsis = "...";
+    let ellipsis_len = ellipsis.len();
+
+    let mut abbreviated_parts = vec![
+        components
+            .first()
+            .expect("Path should have a root component")
+            .as_os_str()
+            .to_string_lossy()
+            .to_string(),
+        filename,
+    ];
+
+    let mut current_len = abbreviated_parts[0].len() + ellipsis_len + abbreviated_parts[1].len();
+
+    // Add components from the left until max_len is approached
+    for i in 1..components.len() {
+        let next_component_str = components[i].as_os_str().to_string_lossy().to_string();
+        if current_len + 1 + next_component_str.len() <= max_len {
+            abbreviated_parts.insert(i, next_component_str);
+            current_len += 1 + abbreviated_parts[i].len(); // +1 for the separator
+        } else {
+            break;
+        }
+    }
+
+    // Reconstruct the path, inserting ellipsis if needed
+    let mut result = String::with_capacity(max_len);
+
+    for (i, part) in abbreviated_parts.iter().enumerate() {
+        if i == abbreviated_parts.len() - 1 {
+            if abbreviated_parts.len() > 2 {
+                result.push_str("/");
+                result.push_str(ellipsis);
+            }
+            result.push_str("/");
+        } else {
+            result.push_str("/");
+        }
+
+        result.push_str(part);
+    }
+
+    result
 }
 
 // --- Duration Utilities ---

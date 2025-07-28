@@ -325,12 +325,12 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
     for (i, part) in abbreviated_parts.iter().enumerate() {
         if i == abbreviated_parts.len() - 1 {
             if abbreviated_parts.len() > 2 {
-                result.push_str("/");
+                result.push('/');
                 result.push_str(ellipsis);
             }
-            result.push_str("/");
+            result.push('/');
         } else {
-            result.push_str("/");
+            result.push('/');
         }
 
         result.push_str(part);

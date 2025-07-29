@@ -194,12 +194,14 @@ mod tests {
 
         // Init repo
         init_repo(password, repo_path.clone())?;
-        let (repo, _) = Repository::try_open(
+        let (repo, _, test_repo_lock_handle) = Repository::try_open_with_lock(
             Some(password.to_string()),
             None,
             backend,
             RepoConfig::default(),
+            false,
         )?;
+        drop(test_repo_lock_handle);
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -228,7 +230,7 @@ mod tests {
             exclude: None,
         };
         commands::cmd_amend::run(&global, &amend_args)
-            .with_context(|| "Failed to run cmd_amend")?;
+            .with_context(|| "Failed to run cmd_amend (1/2)")?;
 
         let mut snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
         let (_, snapshot) = snapshot_streamer
@@ -249,7 +251,7 @@ mod tests {
             exclude: None,
         };
         commands::cmd_amend::run(&global, &amend_args)
-            .with_context(|| "Failed to run cmd_amend")?;
+            .with_context(|| "Failed to run cmd_amend (2/2)")?;
 
         let mut snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
         let (_, snapshot) = snapshot_streamer

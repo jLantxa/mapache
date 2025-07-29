@@ -23,6 +23,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
     commands::GlobalArgs,
+    defer,
     fs::{node::NodeType, tree::SerializedNodeStreamer},
     global::FileType,
     repository::{
@@ -62,7 +63,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, _) = Repository::try_open(pass, global_args.key.as_ref(), backend.clone(), config)?;
+    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+        pass,
+        global_args.key.as_ref(),
+        backend.clone(),
+        config,
+        false,
+    )?;
+
+    defer!({
+        let _ = lock_handle.write().unlock();
+    });
 
     match args.mode {
         Mode::Repository => stats_repository(repo, backend),

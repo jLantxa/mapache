@@ -21,6 +21,7 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::parse_tags,
+    defer,
     global::{self, FileType, ID},
     repository::{
         repo::{RepoConfig, Repository},
@@ -58,7 +59,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, _) = Repository::try_open(pass, global_args.key.as_ref(), backend, config)?;
+    let (repo, _, lock_handle) =
+        Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
+
+    defer!({
+        let _ = lock_handle.write().unlock();
+    });
 
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = match &args.snapshot {
         None => SnapshotStreamer::new(repo.clone())?.collect(),

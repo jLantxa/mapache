@@ -28,9 +28,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
+    defer,
     fs::tree::SerializedNodeStreamer,
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
-    repository::{repo::RepoConfig, repo::Repository, verify::verify_snapshot_links},
+    repository::{
+        repo::{RepoConfig, Repository},
+        verify::verify_snapshot_links,
+    },
     restorer::{self, Resolution, Restorer},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, cli, default_bar_draw_target,
@@ -105,7 +109,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, _) = Repository::try_open(pass, global_args.key.as_ref(), backend.clone(), config)?;
+    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+        pass,
+        global_args.key.as_ref(),
+        backend.clone(),
+        config,
+        false,
+    )?;
+
+    defer!({
+        let _ = lock_handle.write().unlock();
+    });
 
     let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
         Ok(Some((id, snap))) => (id, snap),

@@ -29,6 +29,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
     commands::GlobalArgs,
+    defer,
     fs::{node::NodeType, tree::SerializedNodeStreamer},
     global::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
@@ -69,8 +70,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, secure_storage) =
-        Repository::try_open(pass, global_args.key.as_ref(), backend.clone(), config)?;
+    let (repo, secure_storage, lock_handle) = Repository::try_open_with_lock(
+        pass,
+        global_args.key.as_ref(),
+        backend.clone(),
+        config,
+        false,
+    )?;
+
+    defer!({
+        let _ = lock_handle.write().unlock();
+    });
 
     let start = Instant::now();
 

@@ -14,13 +14,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod gc;
-pub mod index;
-pub mod keys;
-pub mod lock;
-pub mod manifest;
-pub mod packer;
-pub mod repo;
-pub mod snapshot;
-pub mod storage;
-pub mod verify;
+pub struct ScopeCall<F: FnMut()> {
+    pub c: F,
+}
+impl<F: FnMut()> Drop for ScopeCall<F> {
+    fn drop(&mut self) {
+        (self.c)();
+    }
+}
+
+#[macro_export]
+macro_rules! defer {
+    ($e:expr) => {
+        let _scope_call = $crate::macros::ScopeCall {
+            c: || -> () {
+                $e;
+            },
+        };
+    };
+}

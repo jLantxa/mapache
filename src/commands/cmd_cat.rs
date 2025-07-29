@@ -22,6 +22,7 @@ use clap::Args;
 use crate::{
     backend::new_backend_with_prompt,
     commands::GlobalArgs,
+    defer,
     fs::tree::Tree,
     global::{FileType, ID, ID_LENGTH},
     repository::repo::{RepoConfig, Repository},
@@ -57,7 +58,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, _) = Repository::try_open(pass, global_args.key.as_ref(), backend, config)?;
+    let (repo, _, lock_handle) =
+        Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
+
+    defer!({
+        let _ = lock_handle.write().unlock();
+    });
 
     match &args.object {
         Object::Manifest => {

@@ -22,7 +22,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
@@ -33,6 +33,7 @@ use crate::{
     },
     repository::{
         keys::{generate_key_file, generate_new_master_key, retrieve_master_key},
+        lock::{Lock, LockHandle},
         packer::{PackSaver, Packer},
         storage::SecureStorage,
     },
@@ -51,8 +52,9 @@ pub const THIS_REPOSITORY_VERSION: u32 = 1;
 const OBJECTS_DIR: &str = "objects";
 const SNAPSHOTS_DIR: &str = "snapshots";
 const INDEX_DIR: &str = "index";
-pub(crate) const MANIFEST_PATH: &str = "manifest";
+const MANIFEST_PATH: &str = "manifest";
 pub(crate) const KEYS_DIR: &str = "keys";
+pub(crate) const LOCKS_DIR: &str = "locks";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 
@@ -76,6 +78,7 @@ pub struct Repository {
     snapshot_path: PathBuf,
     index_path: PathBuf,
     keys_path: PathBuf,
+    locks_path: PathBuf,
 
     secure_storage: Arc<SecureStorage>,
 
@@ -151,6 +154,7 @@ impl Repository {
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
         let index_path = PathBuf::from(INDEX_DIR);
+        let locks_path = PathBuf::from(LOCKS_DIR);
 
         // Save new manifest
         let manifest = Manifest {
@@ -172,6 +176,7 @@ impl Repository {
 
         backend.create_dir(&snapshot_path)?;
         backend.create_dir(&index_path)?;
+        backend.create_dir(&locks_path)?;
 
         ui::cli::log!(
             "Created repo with id {}",
@@ -181,9 +186,28 @@ impl Repository {
         Ok(())
     }
 
-    /// Try to open a repository.
+    /// Try to open a repository and acquire a lock.
     /// This function prompts for a password to retrieve a master key.
-    pub fn try_open(
+    #[allow(clippy::type_complexity)]
+    pub fn try_open_with_lock(
+        password: Option<String>,
+        key_file_path: Option<&PathBuf>,
+        backend: Arc<dyn StorageBackend>,
+        config: RepoConfig,
+        exclusive_lock: bool,
+    ) -> Result<(Arc<Repository>, Arc<SecureStorage>, Arc<RwLock<LockHandle>>)> {
+        let (repo, secure_storage) =
+            Self::try_open_unlocked(password, key_file_path, backend, config)?;
+        let lock = repo.acquire_lock(exclusive_lock)?;
+        let lock_handle = Arc::new(RwLock::new(LockHandle::new(repo.clone(), lock)));
+
+        Ok((repo, secure_storage, lock_handle))
+    }
+
+    /// Try to open a repository  without acquiring a lock.
+    /// This function prompts for a password to retrieve a master key.
+    #[allow(clippy::type_complexity)]
+    pub fn try_open_unlocked(
         mut password: Option<String>,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
@@ -238,13 +262,13 @@ impl Repository {
         let manifest: Manifest = serde_json::from_slice(&manifest)?;
 
         let version = manifest.version;
-
-        if version == 1 {
-            let repo = Repository::open(backend, secure_storage.clone(), config)?;
-            Ok((repo, secure_storage))
-        } else {
+        if version > THIS_REPOSITORY_VERSION {
             bail!("Invalid repository version \'{}\'", version);
         }
+
+        let repo = Repository::open(backend, secure_storage.clone(), config)?;
+
+        Ok((repo, secure_storage))
     }
 
     /// Open an existing repository from a directory
@@ -253,10 +277,6 @@ impl Repository {
         secure_storage: Arc<SecureStorage>,
         config: RepoConfig,
     ) -> Result<Arc<Self>> {
-        let objects_path = PathBuf::from(OBJECTS_DIR);
-        let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
-        let index_path = PathBuf::from(INDEX_DIR);
-
         let data_packer = Arc::new(RwLock::new(Packer::new()));
         let tree_packer = Arc::new(RwLock::new(Packer::new()));
 
@@ -264,10 +284,11 @@ impl Repository {
 
         let mut repo = Repository {
             backend,
-            objects_path,
-            snapshot_path,
-            index_path,
+            objects_path: PathBuf::from(OBJECTS_DIR),
+            snapshot_path: PathBuf::from(SNAPSHOTS_DIR),
+            index_path: PathBuf::from(INDEX_DIR),
             keys_path: PathBuf::from(KEYS_DIR),
+            locks_path: PathBuf::from(LOCKS_DIR),
             secure_storage,
             max_packer_size: config.pack_size,
             data_packer,
@@ -346,6 +367,7 @@ impl Repository {
     pub fn save_file(&self, file_type: FileType, data: &[u8]) -> Result<(ID, u64, u64)> {
         assert_ne!(file_type, FileType::Key);
         assert_ne!(file_type, FileType::Manifest);
+        assert_ne!(file_type, FileType::Lock);
 
         let raw_size = data.len() as u64;
         let data = self.secure_storage.encode(data)?;
@@ -613,6 +635,7 @@ impl Repository {
             FileType::Index => self.index_path.join(id_hex),
             FileType::Key => self.keys_path.join(id_hex),
             FileType::Manifest => PathBuf::from(MANIFEST_PATH),
+            FileType::Lock => self.locks_path.join(id_hex),
         }
     }
 
@@ -638,6 +661,7 @@ impl Repository {
 
                 Ok(files)
             }
+            FileType::Lock => self.backend.read_dir(&self.locks_path),
         }
     }
 
@@ -673,6 +697,7 @@ impl Repository {
         }
     }
 
+    /// Load the master index from file
     fn load_master_index(&mut self) -> Result<()> {
         let files = self.backend.read_dir(&self.index_path)?;
         let num_index_files = files.len();
@@ -703,6 +728,7 @@ impl Repository {
         Ok(())
     }
 
+    /// Load and decode data from a pack file
     pub fn load_from_pack(&self, id: &ID, offset: u32, length: u32) -> Result<Vec<u8>> {
         let object_path = Self::get_object_path(&self.objects_path, id);
         let data = self
@@ -710,11 +736,105 @@ impl Repository {
             .seek_read(&object_path, offset as u64, length as u64)?;
         self.secure_storage.decode(&data)
     }
+
+    /// Try to acquire a lock
+    fn acquire_lock(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
+        let locks = self.get_locks()?;
+
+        for lock in locks {
+            if exclusive {
+                bail!("Cannot acquire exclusive lock. Other locks exist.");
+            } else if lock.is_exclusive() {
+                bail!("Cannot acquire non-exclusive lock. An exclusive lock exist.");
+            }
+        }
+
+        // Can acquire lock
+        let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
+        self.write_lock(&new_lock)
+            .with_context(|| "Failed to write lock")?;
+
+        Ok(new_lock)
+    }
+
+    fn write_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
+        let lock_guard = lock.lock();
+
+        let lock_json = serde_json::to_string(&*lock_guard)?;
+        let lock_json = self.secure_storage.encode(lock_json.as_bytes())?;
+
+        let lock_path = self.get_path(FileType::Lock, lock_guard.id());
+        self.backend.write(&lock_path, &lock_json)
+    }
+
+    pub fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
+        lock.lock().refresh();
+        self.write_lock(lock)
+    }
+
+    /// Get all locks in the repository. If a lock file cannot be read, decoded
+    /// or deserialized, it will be ignored.
+    pub fn get_locks(&self) -> Result<Vec<Lock>> {
+        let all_lock_paths = self.list_files(FileType::Lock)?;
+        let mut locks = Vec::new();
+
+        for path in all_lock_paths {
+            // Attempt to read the lock file
+            let lock_data_result = self.backend.read(&path);
+
+            let lock = match lock_data_result {
+                Ok(data) => data,
+                Err(e) => {
+                    // Log the error for debugging, but continue
+                    eprintln!(
+                        "Warning: Could not read lock file {}: {}",
+                        path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            // Attempt to decode the lock data
+            let decoded_lock_result = self.secure_storage.decode(&lock);
+            let decoded_lock = match decoded_lock_result {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Could not decode lock from {}: {}",
+                        path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            // Attempt to deserialize the lock
+            let lock_obj_result: Result<Lock, serde_json::Error> =
+                serde_json::from_slice(&decoded_lock);
+            match lock_obj_result {
+                Ok(lock_obj) => {
+                    locks.push(lock_obj);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Could not deserialize lock from {}: {}",
+                        path.display(),
+                        e
+                    );
+                    continue;
+                }
+            }
+        }
+
+        Ok(locks)
+    }
 }
 
 impl Drop for Repository {
     fn drop(&mut self) {
         let _ = self.flush();
+        self.finalize_pack_saver();
     }
 }
 
@@ -737,7 +857,7 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(password.clone(), None, backend.to_owned())?;
-        Repository::try_open(password, None, backend, RepoConfig::default())?;
+        Repository::try_open_with_lock(password, None, backend, RepoConfig::default(), false)?;
 
         Ok(())
     }
@@ -757,7 +877,7 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(password.clone(), None, backend.to_owned())?;
-        Repository::try_open(password, None, backend, RepoConfig::default())?;
+        Repository::try_open_with_lock(password, None, backend, RepoConfig::default(), false)?;
 
         Ok(())
     }

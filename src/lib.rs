@@ -19,6 +19,7 @@ pub mod backend;
 pub mod commands;
 pub mod fs;
 pub mod global;
+pub(crate) mod macros;
 pub mod repository;
 pub mod restorer;
 pub mod ui;

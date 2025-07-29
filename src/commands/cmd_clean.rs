@@ -27,6 +27,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::GlobalArgs,
+    defer,
     global::defaults::{DEFAULT_GC_TOLERANCE, SHORT_REPO_ID_LEN},
     repository::{
         gc::{self},
@@ -65,7 +66,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, _) = Repository::try_open(pass, global_args.key.as_ref(), backend, config)?;
+    let (repo, _, lock_handle) =
+        Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, true)?;
+
+    defer!({
+        let _ = lock_handle.write().unlock();
+    });
 
     run_with_repo(global_args, args, repo)
 }

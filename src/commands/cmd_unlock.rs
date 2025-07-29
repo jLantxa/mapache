@@ -14,62 +14,49 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::Args;
-use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler},
-    defer,
-    fuse::fs::MapacheFS,
+    global::FileType,
     repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},
 };
 
-#[derive(Args, Debug)]
-#[clap(about = "Mount the repository as a file system")]
-pub struct CmdArgs {
-    /// Mount point
-    #[arg(value_parser)]
-    pub mountpoint: PathBuf,
+use super::GlobalArgs;
 
-    /// Mount point
-    #[arg(long, value_parser, default_value_t = false)]
-    pub allow_other: bool,
+#[derive(Args, Debug)]
+#[clap(about = "Removes existing locks")]
+pub struct CmdArgs {
+    #[clap(short, long, default_value_t = false)]
+    pub force: bool,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let pass = utils::get_password_from_file(&global_args.password_file)?;
-    let backend = new_backend_with_prompt(global_args, true)?;
+    let backend = new_backend_with_prompt(global_args, false)?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, _, lock_handle) =
-        Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let (repo, _) = Repository::try_open_unlocked(pass, global_args.key.as_ref(), backend, config)?;
 
-    // Listen for CTRL + C to unmount.
-    let mpoint = args.mountpoint.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        let _ = MapacheFS::unmount(&mpoint);
-    })?;
-
-    ui::cli::log!("Mounting repository in {}", &args.mountpoint.display());
-    ui::cli::log!(
-        "Press {} to finish or unmount the filesystem manually.",
-        "Ctrl+C".bold()
-    );
-    unsafe {
-        MapacheFS::mount(repo, &args.mountpoint, args.allow_other)?;
+    let locks = repo.get_locks()?;
+    let mut num_deleted_locks = 0;
+    for lock in locks {
+        if args.force || lock.is_expired() {
+            repo.delete_file(FileType::Lock, lock.id())?;
+            num_deleted_locks += 1;
+        }
     }
+
+    ui::cli::log!(
+        "Deleted {}",
+        utils::format_count(num_deleted_locks, "lock", "locks")
+    );
 
     Ok(())
 }

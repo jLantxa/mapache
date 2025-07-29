@@ -22,16 +22,19 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
-use crate::repository::repo::{RepoConfig, Repository};
-use crate::utils::size;
 use crate::{
     archiver::tree_serializer::{self, init_pending_trees},
     backend::new_backend_with_prompt,
     commands::{EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, find_use_snapshot, parse_tags},
+    defer,
     fs::tree::SerializedNodeStreamer,
     global::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::snapshot::{Snapshot, SnapshotStreamer},
-    ui, utils,
+    repository::{
+        repo::{RepoConfig, Repository},
+        snapshot::{Snapshot, SnapshotStreamer},
+    },
+    ui::{self},
+    utils::{self, size},
 };
 
 #[derive(Args, Debug)]
@@ -80,7 +83,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, _) = Repository::try_open(pass, global_args.key.as_ref(), backend, config)?;
+    let (repo, _, lock_handle) =
+        Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, true)?;
+
+    defer!({
+        let _ = lock_handle.write().unlock();
+    });
 
     let start = Instant::now();
 

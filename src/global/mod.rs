@@ -204,6 +204,7 @@ pub enum FileType {
     Index,
     Key,
     Manifest,
+    Lock,
 }
 
 // Implement the Display trait for FileType
@@ -215,6 +216,7 @@ impl std::fmt::Display for FileType {
             FileType::Index => write!(f, "index"),
             FileType::Key => write!(f, "key"),
             FileType::Manifest => write!(f, "manifest"),
+            FileType::Lock => write!(f, "lock"),
         }
     }
 }

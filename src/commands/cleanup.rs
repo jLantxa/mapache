@@ -1,0 +1,66 @@
+// mapache is an incremental backup tool
+// Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use anyhow::Result;
+use parking_lot::Mutex;
+use signal_hook_registry::{self, register};
+use std::sync::Arc;
+
+use crate::ui;
+
+pub struct CleanupHandler {}
+
+impl CleanupHandler {
+    /// Register callbacks for the SIGINT and SIGTERM signals. These callbacks with
+    /// be unregistered when the handler is dropped.
+    pub fn new<F: FnMut() + Send + 'static>(cleanup_fn: F) -> Result<Self> {
+        let shared_cleanup = Arc::new(Mutex::new(cleanup_fn));
+
+        let clone_for_sigint = shared_cleanup.clone();
+        let _ = unsafe {
+            register(libc::SIGINT, move || {
+                ui::cli::log!("Process interrupted: cleaning up...");
+                clone_for_sigint.lock()();
+                std::process::exit(128 + libc::SIGINT);
+            })?
+        };
+
+        let clone_for_sigterm = Arc::clone(&shared_cleanup);
+        let _ = unsafe {
+            register(libc::SIGTERM, move || {
+                ui::cli::log!("Process terminated: cleaning up...");
+                clone_for_sigterm.lock()();
+                std::process::exit(128 + libc::SIGTERM);
+            })?
+        };
+
+        Ok(CleanupHandler {})
+    }
+}
+
+impl Drop for CleanupHandler {
+    fn drop(&mut self) {
+        // Register default termination callbacks
+        unsafe {
+            let _ = register(libc::SIGINT, move || {
+                std::process::exit(128 + libc::SIGINT);
+            });
+            let _ = register(libc::SIGTERM, move || {
+                std::process::exit(128 + libc::SIGTERM);
+            });
+        }
+    }
+}

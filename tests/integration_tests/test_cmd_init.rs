@@ -71,11 +71,12 @@ mod tests {
 
         // Try to open repo
         let backend = Arc::new(LocalFS::new(repo_path));
-        Repository::try_open(
+        Repository::try_open_with_lock(
             Some(password.to_string()),
             None,
             backend,
             RepoConfig::default(),
+            false,
         )
         .with_context(|| "Failed to open repository")?;
 
@@ -126,11 +127,12 @@ mod tests {
 
         // Try to open repo
         let backend = Arc::new(LocalFS::new(repo_path));
-        Repository::try_open(
+        Repository::try_open_with_lock(
             Some(password.to_string()),
             Some(&keyfile_path),
             backend,
             RepoConfig::default(),
+            false,
         )
         .with_context(|| "Failed to open repository")?;
 

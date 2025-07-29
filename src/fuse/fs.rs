@@ -19,8 +19,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use colored::Colorize;
-use ctrlc;
 use fuser::{
     FUSE_ROOT_ID, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyData, ReplyDirectory,
     ReplyEntry, ReplyOpen, Request,
@@ -49,12 +47,6 @@ pub struct MapacheFS {
 impl MapacheFS {
     /// Mounts a `Repository` in `mountpoint`
     pub unsafe fn mount(repo: Arc<Repository>, mountpoint: &Path, allow_other: bool) -> Result<()> {
-        // Listen for CTRL + C to unmount.
-        let mpoint = mountpoint.to_path_buf();
-        ctrlc::set_handler(move || {
-            let _ = Self::unmount(&mpoint);
-        })?;
-
         let filesystem = Self {
             repo: repo.clone(),
             stash: Stash::new_root(repo.clone())?,
@@ -65,12 +57,6 @@ impl MapacheFS {
         if allow_other {
             mount_options.push(MountOption::AllowOther);
         }
-
-        ui::cli::log!("Mounting repository in {}", mountpoint.display());
-        ui::cli::log!(
-            "Press {} to finish or unmount the filesystem manually.",
-            "Ctrl+C".bold()
-        );
 
         if let Err(e) = fuser::mount2(filesystem, mountpoint, &mount_options) {
             ui::cli::error!("FUSE error: {}", e.to_string());

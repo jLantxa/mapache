@@ -22,8 +22,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
-    commands::GlobalArgs,
-    defer,
+    commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
     global::FileType,
     repository::{
@@ -71,9 +70,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
     )?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        let _ = lock_handle_clone.write().unlock();
+    })?;
 
     match args.mode {
         Mode::Repository => stats_repository(repo, backend),

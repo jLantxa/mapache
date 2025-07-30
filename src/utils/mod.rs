@@ -308,7 +308,7 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
 
     let mut current_len = abbreviated_parts[0].len() + ellipsis_len + abbreviated_parts[1].len();
     if abbreviated_parts.len() > 1 {
-        current_len += (abbreviated_parts.len() - 1) * 1; // Account for initial separators
+        current_len += abbreviated_parts.len() - 1; // Account for initial separators
     }
 
     // Add components from the left until max_len is approached

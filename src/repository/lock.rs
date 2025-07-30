@@ -140,9 +140,11 @@ impl LockHandle {
             loop {
                 std::thread::sleep(LOCK_REFRESH_PERIOD);
 
-                if alive_flag_clone.load(Ordering::Relaxed)
-                    && repo_clone.refresh_lock(&lock_clone).is_err()
-                {
+                if !alive_flag_clone.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                if repo_clone.refresh_lock(&lock_clone).is_err() {
                     ui::cli::warning!("Failed to refresh lock");
                 }
             }
@@ -150,6 +152,7 @@ impl LockHandle {
     }
 
     pub fn unlock(&mut self) -> Result<()> {
+        println!("Unlock");
         self.alive_flag.store(false, Ordering::SeqCst);
         self.repo
             .delete_file(FileType::Lock, self.lock.lock().id())?;
@@ -159,6 +162,7 @@ impl LockHandle {
 
 impl Drop for LockHandle {
     fn drop(&mut self) {
+        println!("Drop lock handle");
         let _ = self.unlock();
     }
 }

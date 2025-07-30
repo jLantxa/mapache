@@ -23,7 +23,6 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    defer,
     fuse::fs::MapacheFS,
     repository::repo::{RepoConfig, Repository},
     ui,
@@ -51,10 +50,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
     let (repo, _, lock_handle) =
         Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
-
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
 
     // Listen for CTRL + C to unmount.
     let mpoint = args.mountpoint.clone();

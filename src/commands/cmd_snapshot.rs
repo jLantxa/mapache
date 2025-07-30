@@ -30,7 +30,6 @@ use crate::{
     archiver::{Archiver, SnapshotOptions},
     backend::new_backend_with_prompt,
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
-    defer,
     fs::tree::FSNodeStreamer,
     global::{self, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
@@ -111,9 +110,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         let _ = lock_handle_clone.write().unlock();
         repo_clone.finalize_pack_saver();
     })?;
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
 
     let start = Instant::now();
 

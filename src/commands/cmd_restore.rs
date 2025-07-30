@@ -27,8 +27,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
-    defer,
+    commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::tree::SerializedNodeStreamer,
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
     repository::{
@@ -117,9 +116,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
     )?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        let _ = lock_handle_clone.write().unlock();
+    })?;
 
     let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
         Ok(Some((id, snap))) => (id, snap),

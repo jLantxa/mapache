@@ -22,6 +22,7 @@ use clap::{ArgGroup, Parser};
 use colored::Colorize;
 
 use crate::backend::new_backend_with_prompt;
+use crate::commands::cleanup::CleanupHandler;
 use crate::commands::parse_tags;
 use crate::global::defaults::DEFAULT_GC_TOLERANCE;
 use crate::global::{self, FileType, ID};
@@ -29,7 +30,7 @@ use crate::repository::repo::{RepoConfig, Repository};
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
 use crate::ui::table::{Alignment, Table};
 use crate::utils::size;
-use crate::{commands, defer, ui, utils};
+use crate::{commands, ui, utils};
 
 use super::GlobalArgs;
 
@@ -150,9 +151,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let (repo, _, lock_handle) =
         Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, true)?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        let _ = lock_handle_clone.write().unlock();
+    })?;
 
     // All sapshots, filter by tags and sorted by timestamp
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();

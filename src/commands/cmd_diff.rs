@@ -22,8 +22,7 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::GlobalArgs,
-    defer,
+    commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
     global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
@@ -65,9 +64,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let (repo, _, lock_handle) =
         Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        let _ = lock_handle_clone.write().unlock();
+    })?;
 
     // Load snapshots
     let (source_id, _) = repo.find(FileType::Snapshot, &args.source_snapshot_id)?;

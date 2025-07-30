@@ -21,11 +21,13 @@ use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::GlobalArgs,
-    defer,
+    commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::Tree,
     global::{FileType, ID, ID_LENGTH},
-    repository::repo::{RepoConfig, Repository},
+    repository::{
+        lock::Lock,
+        repo::{RepoConfig, Repository},
+    },
     ui,
     utils::{self, size},
 };
@@ -34,7 +36,7 @@ use crate::{
 #[clap(about = "Print repository objects")]
 pub struct CmdArgs {
     /// Object to print:
-    /// [manifest|snapshot:ID|pack:ID|blob:ID|tree:ID|index:ID|key:ID].
+    /// [manifest|snapshot:ID|pack:ID|blob:ID|tree:ID|index:ID|key:ID|lock:ID].
     /// Blob and tree types don't accept prefixes.
     #[arg(value_parser)]
     pub object: Object,
@@ -49,6 +51,7 @@ pub enum Object {
     Index(String),
     Key(String),
     Snapshot(String),
+    Lock(String),
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -61,9 +64,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let (repo, _, lock_handle) =
         Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        let _ = lock_handle_clone.write().unlock();
+    })?;
 
     match &args.object {
         Object::Manifest => {
@@ -123,6 +127,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("{}", serde_json::to_string_pretty(&snapshot)?);
             Ok(())
         }
+        Object::Lock(prefix) => {
+            let (id, _) = repo.find(FileType::Lock, prefix)?;
+            let lock = repo.load_file(FileType::Lock, &id)?;
+            let lock: Lock = serde_json::from_slice(&lock)?;
+            ui::cli::log!("{}", serde_json::to_string_pretty(&lock)?);
+            Ok(())
+        }
     }
 }
 
@@ -173,6 +184,13 @@ impl FromStr for Object {
                     Ok(Object::Snapshot(parts[1].to_string()))
                 } else {
                     Err("Snapshot object requires an ID, e.g., 'snapshot:some_id'".to_string())
+                }
+            }
+            "lock" => {
+                if parts.len() == 2 {
+                    Ok(Object::Lock(parts[1].to_string()))
+                } else {
+                    Err("Lock object requires an ID, e.g., 'lock:some_id'".to_string())
                 }
             }
             _ => Err(format!("Unknown object type: {}", parts[0])),

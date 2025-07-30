@@ -22,8 +22,7 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, UseSnapshot, find_use_snapshot},
-    defer,
+    commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::{
         node::{Metadata, Node, NodeType},
         tree::{Tree, find_serialized_node},
@@ -67,9 +66,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let (repo, _, lock_handle) =
         Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        let _ = lock_handle_clone.write().unlock();
+    })?;
 
     let (_snapshot_id, snapshot) = {
         match find_use_snapshot(repo.clone(), &args.snapshot) {

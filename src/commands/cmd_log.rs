@@ -20,8 +20,7 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::parse_tags,
-    defer,
+    commands::{cleanup::CleanupHandler, parse_tags},
     global::{self, FileType, ID},
     repository::{
         repo::{RepoConfig, Repository},
@@ -62,9 +61,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let (repo, _, lock_handle) =
         Repository::try_open_with_lock(pass, global_args.key.as_ref(), backend, config, false)?;
 
-    defer!({
-        let _ = lock_handle.write().unlock();
-    });
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        let _ = lock_handle_clone.write().unlock();
+    })?;
 
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = match &args.snapshot {
         None => SnapshotStreamer::new(repo.clone())?.collect(),

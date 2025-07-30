@@ -152,7 +152,6 @@ impl LockHandle {
     }
 
     pub fn unlock(&mut self) -> Result<()> {
-        println!("Unlock");
         self.alive_flag.store(false, Ordering::SeqCst);
         self.repo
             .delete_file(FileType::Lock, self.lock.lock().id())?;
@@ -162,7 +161,6 @@ impl LockHandle {
 
 impl Drop for LockHandle {
     fn drop(&mut self) {
-        println!("Drop lock handle");
         let _ = self.unlock();
     }
 }

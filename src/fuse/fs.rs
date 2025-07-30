@@ -86,7 +86,6 @@ impl Filesystem for MapacheFS {
             ui::cli::error!("Failed to read snapshots: {}", e.to_string());
         }
         let snapshots: Vec<(ID, Snapshot)> = snapshot_streamer.unwrap().collect();
-        let (latest_id, latest_snapshot) = snapshots.last().unwrap().clone();
 
         // snapshots
         let snapshots_ino = self.stash.add_dir(FUSE_ROOT_ID, String::from("snapshots"));
@@ -98,8 +97,6 @@ impl Filesystem for MapacheFS {
             self.stash
                 .add_snapshot_dir(ids_ino, id.to_hex(), snapshot.tree.clone());
         }
-        self.stash
-            .add_symlink(ids_ino, String::from("latest"), latest_id.to_hex());
 
         // by_date
         let by_date_ino = self.stash.add_dir(snapshots_ino, String::from("by_date"));
@@ -108,11 +105,18 @@ impl Filesystem for MapacheFS {
             let target = format!("../ids/{}", id.to_hex());
             self.stash.add_symlink(by_date_ino, name.clone(), target);
         }
-        self.stash.add_symlink(
-            by_date_ino,
-            String::from("latest"),
-            utils::pretty_print_timestamp(&latest_snapshot.timestamp),
-        );
+
+        // Links to the latest snapshot
+        if !snapshots.is_empty() {
+            let (latest_id, latest_snapshot) = snapshots.last().unwrap().clone();
+            self.stash
+                .add_symlink(ids_ino, String::from("latest"), latest_id.to_hex());
+            self.stash.add_symlink(
+                by_date_ino,
+                String::from("latest"),
+                utils::pretty_print_timestamp(&latest_snapshot.timestamp),
+            );
+        }
 
         Ok(())
     }

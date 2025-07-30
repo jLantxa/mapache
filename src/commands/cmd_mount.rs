@@ -16,13 +16,14 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use colored::Colorize;
 
 use crate::{
     backend::{BackendUrl, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
+    fs,
     fuse::fs::MapacheFS,
     repository::repo::{RepoConfig, Repository},
     ui,
@@ -39,11 +40,30 @@ pub struct CmdArgs {
     /// Mount point
     #[arg(long, value_parser, default_value_t = false)]
     pub allow_other: bool,
+
+    /// Create the mountpoint if it does not exist
+    #[arg(short, long, value_parser, default_value_t = false)]
+    pub create_mountpoint: bool,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    // Check that mountpoint exists and is a directory, or create it if requested
+    let actual_mountpoint = args.mountpoint.clone();
+
+    if !fs::path_exists(&actual_mountpoint) {
+        if args.create_mountpoint {
+            std::fs::create_dir_all(&actual_mountpoint)
+                .with_context(|| "Could not create mount point")?;
+        } else {
+            bail!("Mountpoint doesn't exist");
+        }
+    } else if !actual_mountpoint.is_dir() {
+        bail!("Mountpoint must be a directory");
+    }
+
+    let cannonical_mountpoint = actual_mountpoint.canonicalize()?;
+
     // Don't allow mounting on the repo path
-    let cannonical_mountpoint = std::fs::canonicalize(args.mountpoint.clone())?;
     if let BackendUrl::Local(repo_path) = BackendUrl::from(&global_args.repo)? {
         if cannonical_mountpoint == repo_path.canonicalize()? {
             bail!("Cannot mount the repository on itself");

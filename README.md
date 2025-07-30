@@ -77,6 +77,7 @@ The goal of this milestone is to add convenience and quality of like feature. Th
 - [x] `diff` command to show differences between snapshots.
 - [x] `verify` command to verify the integrity of the data stored in the repository.
 - [x] `stats` command to display stats about the repository and its contents.
+- [x] Repository locks.
 - [ ] Key managment.
 - [x] FUSE mount.
 
@@ -116,6 +117,7 @@ Commands:
   cat       Print repository objects
   verify    Verify the integrity of the data stored in the repository
   stats     Display stats about the repository and its contents
+  unlock    Removes existing locks
   help      Print this message or the help of the given subcommand(s)
 
 Options:

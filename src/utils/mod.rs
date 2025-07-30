@@ -19,7 +19,7 @@ pub mod url;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Component, Path, PathBuf},
+    path::{Component, MAIN_SEPARATOR, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -307,6 +307,9 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
     ];
 
     let mut current_len = abbreviated_parts[0].len() + ellipsis_len + abbreviated_parts[1].len();
+    if abbreviated_parts.len() > 1 {
+        current_len += (abbreviated_parts.len() - 1) * 1; // Account for initial separators
+    }
 
     // Add components from the left until max_len is approached
     for i in 1..components.len() {
@@ -321,18 +324,20 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
 
     // Reconstruct the path, inserting ellipsis if needed
     let mut result = String::with_capacity(max_len);
+    if !abbreviated_parts.is_empty() {
+        result.push_str(&abbreviated_parts[0]);
+    }
 
-    for (i, part) in abbreviated_parts.iter().enumerate() {
+    for (i, part) in abbreviated_parts.iter().enumerate().skip(1) {
         if i == abbreviated_parts.len() - 1 {
             if abbreviated_parts.len() > 2 {
-                result.push('/');
+                result.push(MAIN_SEPARATOR);
                 result.push_str(ellipsis);
             }
-            result.push('/');
+            result.push(MAIN_SEPARATOR);
         } else {
-            result.push('/');
+            result.push(MAIN_SEPARATOR);
         }
-
         result.push_str(part);
     }
 

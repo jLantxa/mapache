@@ -18,7 +18,7 @@ use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
     sync::{
-        Arc, LazyLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -32,7 +32,10 @@ use crate::{
     fs::tree::NodeDiff,
     global::global_opts,
     repository::snapshot::{DiffCounts, SnapshotSummary},
-    ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{
+        EMPTY_PATHBUF, MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
+        default_bar_draw_target,
+    },
     utils,
 };
 
@@ -174,13 +177,10 @@ impl SnapshotProgressReporter {
     }
 
     fn update_processing_items(&self) {
-        const MAX_PATH_LEN: usize = 100;
-        static EMPTY_PATHBUF: LazyLock<PathBuf> = LazyLock::new(PathBuf::new);
-
         for (i, spinner) in self.file_spinners.iter().enumerate() {
             let processing_items_guard = self.processing_items.read();
             let path = processing_items_guard.get(i).unwrap_or(&*EMPTY_PATHBUF);
-            let abbr_path = utils::abbreviate_path(path, MAX_PATH_LEN);
+            let abbr_path = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
             spinner.set_message(abbr_path);
         }
     }

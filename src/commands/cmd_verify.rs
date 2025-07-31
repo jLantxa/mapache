@@ -36,7 +36,10 @@ use crate::{
         snapshot::SnapshotStreamer,
         verify::{verify_blob, verify_pack, verify_snapshot_links},
     },
-    ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{
+        self, MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
+        default_bar_draw_target,
+    },
     utils::{self, size},
 };
 
@@ -273,7 +276,7 @@ pub fn verify_snapshot(
 
     bar.set_position(0);
     for (path, stream_node) in streamer.flatten() {
-        spinner.set_message(format!("{}", path.display()));
+        spinner.set_message(utils::abbreviate_path(&path, MAX_PATH_DISPLAY_LEN));
 
         let node = stream_node.node;
         match node.node_type {

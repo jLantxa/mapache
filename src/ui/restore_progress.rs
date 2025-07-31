@@ -29,7 +29,10 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
 use crate::{
-    ui::{PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{
+        EMPTY_PATHBUF, MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
+        default_bar_draw_target,
+    },
     utils,
 };
 
@@ -113,14 +116,10 @@ impl RestoreProgressReporter {
 
     fn update_processing_items(&self) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
-            spinner.set_message(format!(
-                "{}",
-                self.processing_items
-                    .read()
-                    .get(i)
-                    .unwrap_or(&PathBuf::new())
-                    .display()
-            ));
+            let processing_items_guard = self.processing_items.read();
+            let path = processing_items_guard.get(i).unwrap_or(&*EMPTY_PATHBUF);
+            let abbr_path = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
+            spinner.set_message(abbr_path);
         }
     }
 

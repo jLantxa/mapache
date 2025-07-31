@@ -2,9 +2,9 @@ all:
 	@make debug
 	@make release
 	@make fmt
-	@make lint
 	@make doc
 	@make test
+	@make lint
 
 debug:
 	@cargo build --all --all-targets

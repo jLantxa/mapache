@@ -20,7 +20,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use fuser::{FUSE_ROOT_ID, FileAttr};
 
 use crate::{
@@ -66,6 +66,7 @@ pub(super) enum FsNode {
     TreeNode {
         tree_id: Option<ID>,
         blobs: Option<Vec<ID>>,
+        symlink_target: Option<String>,
         parent_ino: Inode,
         attr: FileAttr,
     },
@@ -226,6 +227,9 @@ impl Stash {
                 let fs_node = FsNode::TreeNode {
                     tree_id: node.tree.clone(),
                     blobs: node.blobs.clone(),
+                    symlink_target: node.symlink_info.clone().map_or(None, |info| {
+                        Some(info.target_path.to_string_lossy().to_string())
+                    }),
                     parent_ino,
                     attr: file_attr,
                 };
@@ -405,6 +409,9 @@ impl Stash {
                         let fs_node = FsNode::TreeNode {
                             tree_id: node.tree.clone(),
                             blobs: node.blobs.clone(),
+                            symlink_target: node.symlink_info.clone().map_or(None, |info| {
+                                Some(info.target_path.to_string_lossy().to_string())
+                            }),
                             parent_ino: ino,
                             attr: file_attr,
                         };
@@ -439,10 +446,13 @@ impl Stash {
 
     // New method to read the target of a symlink
     pub(super) fn read_link(&self, ino: Inode) -> Result<String> {
-        if let Some(FsNode::Symlink { target, .. }) = self.nodes.get(&ino) {
-            Ok(target.clone())
-        } else {
-            Err(anyhow::anyhow!("Inode is not a symlink"))
+        match self.nodes.get(&ino) {
+            Some(FsNode::Symlink { target, .. }) => Ok(target.clone()),
+            Some(FsNode::TreeNode { symlink_target, .. }) => match symlink_target {
+                Some(target) => Ok(target.to_string()),
+                None => Err(anyhow!("Inode is not a symlink")),
+            },
+            _ => Err(anyhow!("Inode is not a symlink or does not exist")),
         }
     }
 

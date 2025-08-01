@@ -64,24 +64,24 @@ pub struct Cli {
     pub global_args: GlobalArgs,
 }
 
-// List of commands
+/// List of commands in ALPHABETICAL ORDER
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    Init(cmd_init::CmdArgs),
-    Snapshot(cmd_snapshot::CmdArgs),
-    Restore(cmd_restore::CmdArgs),
-    Log(cmd_log::CmdArgs),
-    Forget(cmd_forget::CmdArgs),
-    Clean(cmd_clean::CmdArgs),
     Amend(cmd_amend::CmdArgs),
-    Ls(cmd_ls::CmdArgs),
+    Cat(cmd_cat::CmdArgs),
+    Clean(cmd_clean::CmdArgs),
     Diff(cmd_diff::CmdArgs),
+    Forget(cmd_forget::CmdArgs),
+    Init(cmd_init::CmdArgs),
+    Log(cmd_log::CmdArgs),
+    Ls(cmd_ls::CmdArgs),
     #[cfg(unix)]
     Mount(cmd_mount::CmdArgs),
-    Cat(cmd_cat::CmdArgs),
-    Verify(cmd_verify::CmdArgs),
+    Restore(cmd_restore::CmdArgs),
+    Snapshot(cmd_snapshot::CmdArgs),
     Stats(cmd_stats::CmdArgs),
     Unlock(cmd_unlock::CmdArgs),
+    Verify(cmd_verify::CmdArgs),
 }
 
 fn pack_size_parser(s: &str) -> Result<f32> {

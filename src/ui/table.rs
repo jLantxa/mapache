@@ -203,27 +203,10 @@ impl Table {
 
                 let (spaces_before, spaces_after);
 
-                let alignment = self
-                    .column_alignments
-                    .get(i)
-                    .copied()
-                    .unwrap_or(Alignment::Center);
-
-                match alignment {
-                    Alignment::Left => {
-                        spaces_before = self.padding;
-                        spaces_after = cell_total_width - visible_len - spaces_before;
-                    }
-                    Alignment::Right => {
-                        spaces_after = self.padding;
-                        spaces_before = cell_total_width - visible_len - spaces_after;
-                    }
-                    Alignment::Center => {
-                        let total_extra_spaces = cell_total_width - visible_len;
-                        spaces_before = total_extra_spaces / 2;
-                        spaces_after = total_extra_spaces - spaces_before;
-                    }
-                }
+                // Header is always aligned to the center
+                let total_extra_spaces = cell_total_width - visible_len;
+                spaces_before = total_extra_spaces / 2;
+                spaces_after = total_extra_spaces - spaces_before;
 
                 output.push_str(&" ".repeat(spaces_before));
                 output.push_str(header);

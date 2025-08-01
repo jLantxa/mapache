@@ -21,15 +21,12 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{cleanup::CleanupHandler, parse_tags},
-    global::{self, FileType, ID},
+    global::{FileType, ID},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStreamer},
     },
-    ui::{
-        self,
-        table::{Alignment, Table},
-    },
+    ui::{self, log_snapshots_compact},
     utils::{self, size},
 };
 
@@ -90,9 +87,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     ui::cli::log!();
     if args.compact {
-        log_compact(&snapshots_sorted);
+        log_snapshots_compact(&snapshots_sorted);
     } else {
-        log(&snapshots_sorted);
+        log_snapshots_full(&snapshots_sorted);
     }
 
     ui::cli::log!("{} snapshots", snapshots_sorted.len());
@@ -100,7 +97,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-fn log(snapshots: &[(ID, Snapshot)]) {
+fn log_snapshots_full(snapshots: &[(ID, Snapshot)]) {
     let mut peekable_snapshots = snapshots.iter().peekable();
     while let Some((id, snapshot)) = peekable_snapshots.next() {
         ui::cli::log!("{}", id.to_hex().bold().yellow());
@@ -158,42 +155,4 @@ fn log(snapshots: &[(ID, Snapshot)]) {
     }
 
     ui::cli::log!();
-}
-
-fn log_compact(snapshots: &Vec<(ID, Snapshot)>) {
-    let mut table = Table::new_with_alignments(vec![
-        Alignment::Left,
-        Alignment::Center,
-        Alignment::Center,
-        Alignment::Center,
-        Alignment::Right,
-    ]);
-
-    table.set_headers(vec![
-        "ID".bold().to_string(),
-        "Date ▼".bold().to_string(),
-        "Host".bold().to_string(),
-        "Size".bold().to_string(),
-        "Tags".bold().to_string(),
-    ]);
-
-    for (id, snapshot) in snapshots {
-        table.add_row(vec![
-            id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
-                .bold()
-                .yellow()
-                .to_string(),
-            utils::pretty_print_timestamp(&snapshot.timestamp),
-            snapshot.hostname.clone().unwrap_or_default(),
-            utils::format_size(snapshot.size(), 3),
-            snapshot
-                .tags
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-        ]);
-    }
-
-    ui::cli::log!("{}", table.render());
 }

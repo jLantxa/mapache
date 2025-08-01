@@ -25,10 +25,10 @@ use crate::backend::new_backend_with_prompt;
 use crate::commands::cleanup::CleanupHandler;
 use crate::commands::parse_tags;
 use crate::global::defaults::DEFAULT_GC_TOLERANCE;
-use crate::global::{self, FileType, ID};
+use crate::global::{FileType, ID};
 use crate::repository::repo::{RepoConfig, Repository};
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
-use crate::ui::table::{Alignment, Table};
+use crate::ui::log_snapshots_compact;
 use crate::utils::size;
 use crate::{commands, ui, utils};
 
@@ -211,79 +211,39 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ids_to_keep = apply_retention_rules(&snapshots_sorted, &retention_rules, Local::now());
     }
 
-    let mut removed_ids_table =
-        Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
-    removed_ids_table.set_headers(vec![
-        "ID".bold().to_string(),
-        "Date ▼".bold().to_string(),
-        "Size".bold().to_string(),
-        "Tags".bold().to_string(),
-    ]);
-
-    let mut kept_ids_table =
-        Table::new_with_alignments(vec![Alignment::Left, Alignment::Center, Alignment::Right]);
-    kept_ids_table.set_headers(vec![
-        "ID".bold().to_string(),
-        "Date Date ▼".bold().to_string(),
-        "Size".bold().to_string(),
-        "Tags".bold().to_string(),
-    ]);
-
-    // Forget snapshots
-    let mut removed_count = 0;
-    for (id, snapshot) in snapshots_sorted {
-        let table = if !ids_to_keep.contains(&id) {
-            repo.remove_snapshot(&id)?;
-            removed_count += 1;
-            &mut removed_ids_table
+    let mut kept_snapshots = Vec::new();
+    let mut removed_snapshots = Vec::new();
+    for (id, snapshot) in snapshots_sorted.into_iter() {
+        if !ids_to_keep.contains(&id) {
+            removed_snapshots.push((id, snapshot));
         } else {
-            &mut kept_ids_table
+            kept_snapshots.push((id, snapshot));
         };
-
-        table.add_row(vec![
-            id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
-                .bold()
-                .yellow()
-                .to_string(),
-            snapshot
-                .timestamp
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M:%S %Z")
-                .to_string(),
-            utils::format_size(snapshot.size(), 3),
-            snapshot
-                .tags
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-        ]);
     }
 
     ui::cli::log!();
-    ui::cli::log!(
-        "{}\n{}",
-        "Snapshots to keep:".bold(),
-        kept_ids_table.render()
-    );
+    ui::cli::log!("{}", "Snapshots to keep:".bold());
+    log_snapshots_compact(&kept_snapshots);
 
-    if removed_count > 0 {
-        ui::cli::log!(
-            "{}\n{}",
-            "Snapshots to remove:".bold(),
-            removed_ids_table.render()
-        );
+    if !removed_snapshots.is_empty() {
+        ui::cli::log!("{}", "Snapshots to remove:".bold());
+        log_snapshots_compact(&removed_snapshots);
     }
 
     if !args.dry_run {
+        let num_removed_snapshots = removed_snapshots.len();
+        for (id, _) in removed_snapshots {
+            repo.remove_snapshot(&id)?;
+        }
+
         ui::cli::log!(
             "Removed {}",
-            utils::format_count(removed_count, "snapshot", "snapshots")
+            utils::format_count(num_removed_snapshots, "snapshot", "snapshots")
         );
     } else {
         ui::cli::log!(
             "This would remove {}",
-            utils::format_count(removed_count, "snapshot", "snapshots")
+            utils::format_count(removed_snapshots.len(), "snapshot", "snapshots")
         );
     }
 

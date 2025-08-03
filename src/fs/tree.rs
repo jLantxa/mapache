@@ -251,7 +251,7 @@ impl Iterator for FSNodeStreamer {
 /// A depth‑first *pre‑order* streamer of serialized nodes.
 ///
 /// Items are produced in lexicographical order of their *full* paths. The root node is not emitted.
-/// Trees are loaded from the repository as they are needed. The full tree is not  stored in memory.
+/// Trees are loaded from the repository as they are needed. The full tree is not stored in memory.
 /// The iteration with a stack avoids recursive calls.
 ///
 /// This streamer also allows including and excluding a list of paths. Paths in the exclude list, and their
@@ -356,6 +356,86 @@ impl Iterator for SerializedNodeStreamer {
             }
 
             Ok((current_path, stream_node))
+        })();
+        Some(res)
+    }
+}
+
+/// A depth‑first *pre‑order* streamer of serialized trees.
+///
+/// Items are produced in lexicographical order of their *full* paths. The root tree is emitted.
+/// Trees are loaded from the repository as they are needed. The full tree is not stored in memory.
+/// The iteration with a stack avoids recursive calls.
+///
+/// This streamer also allows including and excluding a list of paths. Paths in the exclude list, and their
+/// children, are never explored nor emitted. If the include list is not empty, only nodes in the same branch
+/// (children and parents (intermediate nodes to reach the included path)) as those paths will be emitted.
+pub struct SerializedTreeStreamer {
+    repo: Arc<Repository>,
+    stack: Vec<(PathBuf, ID)>,
+    include: Option<Vec<PathBuf>>,
+    exclude: Option<Vec<PathBuf>>,
+}
+
+impl SerializedTreeStreamer {
+    pub fn new(
+        repo: Arc<Repository>,
+        root_id: &ID,
+        base_path: PathBuf,
+        include: Option<Vec<PathBuf>>,
+        exclude: Option<Vec<PathBuf>>,
+    ) -> Result<Self> {
+        let mut stack = Vec::new();
+        if utils::filter_path(&base_path, include.as_ref(), exclude.as_ref()) {
+            stack.push((base_path, root_id.clone()));
+        }
+
+        Ok(Self {
+            repo,
+            stack,
+            include,
+            exclude,
+        })
+    }
+}
+
+impl Iterator for SerializedTreeStreamer {
+    type Item = Result<(PathBuf, Tree)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (current_path, tree_id) = match self.stack.pop() {
+            None => return None, // Stack is empty, no more trees to stream
+            Some((path, id)) => (path, id),
+        };
+
+        let res = (|| {
+            let tree = Tree::load_from_repo(self.repo.as_ref(), &tree_id).with_context(|| {
+                format!(
+                    "Failed to load tree with ID {tree_id} for path {}",
+                    current_path.display()
+                )
+            })?;
+
+            // Collect children (directories only)
+            let mut children = Vec::new();
+            for node in tree.nodes.iter() {
+                if let Some(subtree_id) = &node.tree {
+                    // Check if the node is a directory (has a subtree ID) and apply filter
+                    let child_path = current_path.join(&node.name);
+                    if utils::filter_path(&child_path, self.include.as_ref(), self.exclude.as_ref())
+                    {
+                        children.push((child_path, subtree_id.clone()));
+                    }
+                }
+            }
+
+            // Push children to stack in reverse lexicographical order
+            children.sort_by(|(path1, _), (path2, _)| path1.cmp(path2));
+            for (child_path, child_id) in children.into_iter().rev() {
+                self.stack.push((child_path, child_id));
+            }
+
+            Ok((current_path, tree))
         })();
         Some(res)
     }
@@ -516,6 +596,7 @@ where
     }
 }
 
+/// Returns a serialized Node in a Tree if it exists.
 pub fn find_serialized_node(
     repo: &Repository,
     base_tree_id: &ID,

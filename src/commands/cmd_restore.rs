@@ -34,9 +34,9 @@ use crate::{
         repo::{RepoConfig, Repository},
         verify::verify_snapshot_links,
     },
-    restorer::{self, Resolution, Restorer},
+    restorer::{self, Resolution, RestoreOptions},
     ui::{
-        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, cli, default_bar_draw_target,
+        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target,
         restore_progress::RestoreProgressReporter,
     },
     utils::{self, format_size, size},
@@ -45,8 +45,9 @@ use crate::{
 impl std::fmt::Display for Resolution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Resolution::Skip => write!(f, "skip"),
-            Resolution::Overwrite => write!(f, "overwrite"),
+            Resolution::Repo => write!(f, "repo"),
+            Resolution::Local => write!(f, "local"),
+            Resolution::Newer => write!(f, "newer"),
             Resolution::Fail => write!(f, "fail"),
         }
     }
@@ -82,11 +83,16 @@ pub struct CmdArgs {
 
     /// Method for conflict resolution in case a file or directory already exists in the target location.
     ///
-    /// skip: Skips restoring the conflicting item.
-    /// overwrite: Overwrites the item in the target location.
     /// fail: Terminates the command with an error.
+    /// local: Skips restoring and keeps the local item.
+    /// repo: Overwrites the item in the target location with the node from the snapshot.
+    /// newer: Keeps the item with the more recent modified time.
     #[clap(long, default_value_t=Resolution::Fail)]
     pub resolution: Resolution,
+
+    /// Delete files in the target directory that are not present in the snapshot.
+    #[clap(long, value_parser, default_value_t = false)]
+    pub delete: bool,
 
     /// Quit immediately if a restore error occurs
     #[clap(long, default_value_t = false)]
@@ -208,13 +214,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    Restorer::restore(
+    restorer::restore(
         repo.clone(),
         &snapshot,
         &args.target,
         args.include.clone(),
         args.exclude.clone(),
-        restorer::Options {
+        RestoreOptions {
             dry_run: args.dry_run,
             resolution: args.resolution.clone(),
             quit_on_error: args.quit_on_error,
@@ -228,7 +234,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         .error_counter
         .load(std::sync::atomic::Ordering::Relaxed);
 
-    cli::log!(
+    if args.delete {
+        // Delete local nodes not present in the snapshot tree
+        restorer::sync::delete_nodes(
+            repo,
+            args.target.clone(),
+            &snapshot.tree,
+            args.include.clone(),
+            args.exclude.clone(),
+            args.dry_run,
+        )?;
+    }
+
+    ui::cli::log!(
         "Finished in {} with {}",
         utils::pretty_print_duration(start.elapsed(),),
         utils::format_count(error_count, "error", "errors")

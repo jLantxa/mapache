@@ -186,6 +186,11 @@ impl SnapshotProgressReporter {
     }
 
     pub fn finalize(&self) {
+        self.progress_bar.finish_and_clear();
+        self.companion_bar.finish_and_clear();
+        for spinner in self.file_spinners.iter() {
+            spinner.finish_and_clear();
+        }
         let _ = self.mp.clear();
     }
 

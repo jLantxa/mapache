@@ -23,6 +23,7 @@ mod tests {
     use mapache::{
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
+        restorer::Resolution,
     };
     use tempfile::tempdir;
 
@@ -91,9 +92,10 @@ mod tests {
             include: Some(vec![PathBuf::from("0"), PathBuf::from("1")]),
             exclude: Some(vec![PathBuf::from("0/00/file00.txt")]),
             strip_prefix: false,
-            resolution: mapache::restorer::Resolution::Skip,
+            resolution: Resolution::Local,
             no_verify: false,
             quit_on_error: true,
+            delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -201,9 +203,10 @@ mod tests {
             include: None,
             exclude: None,
             strip_prefix: false,
-            resolution: mapache::restorer::Resolution::Skip,
+            resolution: Resolution::Local,
             no_verify: false,
             quit_on_error: true,
+            delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;
@@ -276,9 +279,10 @@ mod tests {
             ]),
             exclude: None,
             strip_prefix: true,
-            resolution: mapache::restorer::Resolution::Skip,
+            resolution: Resolution::Local,
             no_verify: false,
             quit_on_error: true,
+            delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore 1")?;
@@ -289,7 +293,7 @@ mod tests {
             assert!(restored_path.exists());
         }
 
-        // Run restore 1
+        // Run restore 2
         let restore_path = tmp_path.join("restore2");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
@@ -298,9 +302,10 @@ mod tests {
             include: Some(vec![PathBuf::from("0/00/file00.txt")]),
             exclude: None,
             strip_prefix: true,
-            resolution: mapache::restorer::Resolution::Skip,
+            resolution: Resolution::Local,
             no_verify: false,
             quit_on_error: true,
+            delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore 2")?;
@@ -310,6 +315,139 @@ mod tests {
             let restored_path = restore_path.join(path);
             assert!(restored_path.exists());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_restore_sync() -> Result<()> {
+        let tmp_dir = tempdir()?;
+        let tmp_path = tmp_dir.path();
+        let password = "mapachito";
+        let password_path = tmp_path.join("password");
+        std::fs::write(&password_path, password)?;
+
+        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
+        let backup_data_tmp_path = tmp_path.join("backup");
+        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
+
+        let repo = String::from("repo");
+        let repo_path = tmp_path.join(&repo);
+
+        let global = GlobalArgs {
+            repo: repo_path.to_string_lossy().to_string(),
+            password_file: Some(password_path),
+            key: None,
+            quiet: true,
+            verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
+            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+        };
+        set_global_opts_with_args(&global);
+
+        // Init repo
+        init_repo(password, repo_path.clone())?;
+
+        // Run snapshot
+        let snapshot_args = cmd_snapshot::CmdArgs {
+            paths: vec![
+                backup_data_tmp_path.join("0"),
+                backup_data_tmp_path.join("1"),
+                backup_data_tmp_path.join("2"),
+                backup_data_tmp_path.join("file.txt"),
+            ],
+            as_root: false,
+            exclude: None,
+            tags_str: String::new(),
+            description: None,
+            rescan: false,
+            parent: UseSnapshot::Latest,
+            read_concurrency: 2,
+            write_concurrency: 5,
+            dry_run: false,
+        };
+        commands::cmd_snapshot::run(&global, &snapshot_args)
+            .with_context(|| "Failed to run cmd_snapshot")?;
+
+        // Run restore to create base files
+        let restore_path = tmp_path.join("restore");
+        let restore_args = cmd_restore::CmdArgs {
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            resolution: Resolution::Repo,
+            no_verify: true,
+            quit_on_error: false,
+            delete: false,
+        };
+        commands::cmd_restore::run(&global, &restore_args)
+            .with_context(|| "Failed to run cmd_restore (1/2)")?;
+
+        // Create extra files
+        std::fs::create_dir_all(restore_path.join("0"))?;
+        std::fs::create_dir_all(restore_path.join("1").join("10"))?;
+        std::fs::File::create(restore_path.join("extra_root.txt"))?;
+        std::fs::File::create(restore_path.join("0").join("extra0.txt"))?;
+        std::fs::File::create(restore_path.join("1").join("10").join("extra10.txt"))?;
+        assert!(restore_path.join("extra_root.txt").exists());
+        assert!(restore_path.join("0").join("extra0.txt").exists());
+        assert!(
+            restore_path
+                .join("1")
+                .join("10")
+                .join("extra10.txt")
+                .exists()
+        );
+
+        // Restore with --delete
+        let restore_args = cmd_restore::CmdArgs {
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            resolution: Resolution::Repo,
+            no_verify: true,
+            quit_on_error: false,
+            delete: true,
+        };
+        commands::cmd_restore::run(&global, &restore_args)
+            .with_context(|| "Failed to run cmd_restore (2/2)")?;
+
+        let paths = vec![
+            PathBuf::from("0"),
+            PathBuf::from("0/file0.txt"),
+            PathBuf::from("0/00"),
+            PathBuf::from("0/00/file00.txt"),
+            PathBuf::from("0/01"),
+            PathBuf::from("0/01/file01a.txt"),
+            PathBuf::from("0/01/file01b.txt"),
+            PathBuf::from("1"),
+            PathBuf::from("1/10"),
+            PathBuf::from("2"),
+            PathBuf::from("file.txt"),
+        ];
+
+        for path in &paths {
+            let restored_path = restore_path.join(path);
+            assert!(restored_path.exists());
+        }
+
+        // Assert that extra files were deleted, except at root level
+        assert!(restore_path.join("extra_root.txt").exists()); // Don't delete this node!
+        assert!(!restore_path.join("0").join("extra0.txt").exists());
+        assert!(
+            !restore_path
+                .join("1")
+                .join("10")
+                .join("extra10.txt")
+                .exists()
+        );
 
         Ok(())
     }

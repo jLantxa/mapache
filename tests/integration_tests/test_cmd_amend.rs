@@ -28,6 +28,7 @@ mod tests {
             repo::{RepoConfig, Repository},
             snapshot::SnapshotStreamer,
         },
+        restorer::Resolution,
     };
 
     use tempfile::tempdir;
@@ -115,9 +116,10 @@ mod tests {
             include: None,
             exclude: None,
             strip_prefix: false,
-            resolution: mapache::restorer::Resolution::Skip,
+            resolution: Resolution::Local,
             no_verify: false,
             quit_on_error: true,
+            delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
             .with_context(|| "Failed to run cmd_restore")?;

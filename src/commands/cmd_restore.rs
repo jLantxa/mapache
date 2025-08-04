@@ -91,7 +91,7 @@ pub struct CmdArgs {
     pub resolution: Resolution,
 
     /// Delete files in the target directory that are not present in the snapshot.
-    #[clap(long, value_parser, default_value_t = false)]
+    #[clap(long, value_parser, default_value_t = false, hide = true)]
     pub delete: bool,
 
     /// Quit immediately if a restore error occurs

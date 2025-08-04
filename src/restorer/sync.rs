@@ -34,30 +34,30 @@ pub fn delete_nodes(
     exclude: Option<Vec<PathBuf>>,
     dry_run: bool,
 ) -> Result<()> {
-    ui::cli::log!("Starting sync delete for '{}'", target_path.display());
-
     let tree_streamer =
-        SerializedTreeStreamer::new(repo, root_tree_id, target_path.clone(), include, exclude)
+        SerializedTreeStreamer::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
             .with_context(|| {
-                format!("Failed to initialize snapshot tree streamer for root ID {root_tree_id:?}")
-            })?;
+            format!("Failed to initialize snapshot tree streamer for root ID {root_tree_id:?}")
+        })?;
 
-    // NOTE:
-    // It is crucial that the first item (the root tree) is skipped. The root path was never a part
-    // of the snapshot, only the selected nodes that were explicitly added. We MUST skip the root
-    // directory or there will be catastrophic consequences, i.e., deleting all other nodes in
-    // the root path that were never backed up.
-    for item_result in tree_streamer.skip(1) {
+    for item_result in tree_streamer {
         // Handle potential errors from the streamer itself.
         // If an error occurs, log a warning and skip to the next item,
         // rather than bailing out entirely, which seems to be the intended behavior.
-        let (dir_path, snapshot_tree) = match item_result {
+        let (path, snapshot_tree) = match item_result {
             Ok(data) => data,
             Err(e) => {
                 ui::cli::warning!("Could not read snapshot subtree entry: {e}");
                 continue; // Skip to the next item in the stream
             }
         };
+
+        // Only delete nodes within the include paths
+        // The intermediate tree nodes are emitted so the children can be reached.
+        // This doesn't mean they must be considered.
+        if !path_is_below_includes(&path, include.as_ref()) {
+            continue;
+        }
 
         // Pre-process snapshot tree nodes into a HashSet for fast lookups
         let snapshot_node_names: HashSet<&str> = snapshot_tree
@@ -67,10 +67,10 @@ pub fn delete_nodes(
             .collect();
 
         // Delegate the processing of the local directory to a helper function
-        process_local_directory(&dir_path, &snapshot_node_names, dry_run)?
+        let local_dir = &target_path.join(path);
+        process_local_directory(local_dir, &snapshot_node_names, dry_run)?
     }
 
-    ui::cli::log!("Finished sync delete for '{}'\n", target_path.display());
     Ok(())
 }
 
@@ -136,7 +136,7 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool) -> Result<()> {
             path_to_delete.display()
         );
     } else if path_to_delete.is_dir() {
-        ui::cli::verbose_1!("Deleting directory '{}'", path_to_delete.display(),);
+        ui::cli::verbose_1!("Deleted {path_to_delete:?}");
         std::fs::remove_dir_all(path_to_delete).with_context(|| {
             format!(
                 "Failed to delete local directory '{}'",
@@ -144,11 +144,25 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool) -> Result<()> {
             )
         })?;
     } else {
-        ui::cli::verbose_1!("Deleting file '{}'", path_to_delete.display(),);
-        std::fs::remove_file(path_to_delete).with_context(|| {
-            format!("Failed to delete local file '{}'", path_to_delete.display())
-        })?;
+        ui::cli::verbose_1!("Deleted {path_to_delete:?}");
+        std::fs::remove_file(path_to_delete)
+            .with_context(|| format!("Failed to delete local file {path_to_delete:?}"))?;
     }
 
     Ok(())
+}
+
+/// Returns true if a path is contained by the include paths
+fn path_is_below_includes(path: &Path, include: Option<&Vec<PathBuf>>) -> bool {
+    if include.is_none() {
+        return true;
+    }
+
+    for ipath in include.unwrap() {
+        if path.starts_with(ipath) {
+            return true;
+        }
+    }
+
+    false
 }

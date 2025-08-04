@@ -385,14 +385,9 @@ impl SerializedTreeStreamer {
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
     ) -> Result<Self> {
-        let mut stack = Vec::new();
-        if utils::filter_path(&base_path, include.as_ref(), exclude.as_ref()) {
-            stack.push((base_path, root_id.clone()));
-        }
-
         Ok(Self {
             repo,
-            stack,
+            stack: vec![(base_path, root_id.clone())],
             include,
             exclude,
         })
@@ -403,9 +398,15 @@ impl Iterator for SerializedTreeStreamer {
     type Item = Result<(PathBuf, Tree)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (current_path, tree_id) = match self.stack.pop() {
-            None => return None, // Stack is empty, no more trees to stream
-            Some((path, id)) => (path, id),
+        let (current_path, tree_id) = loop {
+            match self.stack.pop() {
+                None => return None,
+                Some((path, id)) => {
+                    if utils::filter_path(&path, self.include.as_ref(), self.exclude.as_ref()) {
+                        break (path, id);
+                    }
+                }
+            }
         };
 
         let res = (|| {
@@ -420,8 +421,8 @@ impl Iterator for SerializedTreeStreamer {
             let mut children = Vec::new();
             for node in tree.nodes.iter() {
                 if let Some(subtree_id) = &node.tree {
-                    // Check if the node is a directory (has a subtree ID) and apply filter
                     let child_path = current_path.join(&node.name);
+                    // Filter children before pushing to the stack
                     if utils::filter_path(&child_path, self.include.as_ref(), self.exclude.as_ref())
                     {
                         children.push((child_path, subtree_id.clone()));

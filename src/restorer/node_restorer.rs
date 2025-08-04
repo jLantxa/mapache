@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use {
-    anyhow::{Context, Result, bail},
+    anyhow::{Context, Result, anyhow, bail},
     filetime::{FileTime, set_file_times},
     std::{
         fs::{self, OpenOptions},
@@ -251,13 +251,20 @@ pub(crate) fn restore_node_to_path(
 }
 
 /// Restores the metadata of a node to the specified destination path.
+/// This function attempts to restore all metadata fields with a best-effort approach.
+/// It will collect and return an error with a list of all failures, rather than
+/// failing on the first one.
 fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
+    let mut errors = Vec::new();
+
     // Set file times
-    restore_times(
+    if let Err(e) = restore_times(
         dst_path,
         node.metadata.accessed_time.as_ref(),
         node.metadata.modified_time.as_ref(),
-    )?;
+    ) {
+        errors.push(e);
+    }
 
     // Unix-specific metadata (mode, uid, gid)
     #[cfg(unix)]
@@ -267,12 +274,8 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
             && let Some(mode) = node.metadata.mode
         {
             let permissions = Permissions::from_mode(mode);
-            if let Err(e) = std::fs::set_permissions(dst_path, permissions) {
-                bail!(
-                    "Could not set permissions for {}: {}. This may not be supported for all node types (e.g. symlinks).",
-                    dst_path.display(),
-                    e.to_string()
-                );
+            if std::fs::set_permissions(dst_path, permissions).is_err() {
+                errors.push(anyhow!("Could not set permissions."));
             }
         }
 
@@ -281,16 +284,21 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
             let uid = node.metadata.owner_uid;
             let gid = node.metadata.owner_gid;
 
+            // Restoring uid and gid is very likely to fail unless the user is root.
+            // Not returning an error for this.
             if uid.is_some() || gid.is_some() {
-                if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
-                    bail!(
-                        "Could not set owner/group for {}: {}. This operation often requires elevated privileges (e.g., root) and may not be supported for all node types (e.g. symlinks).",
-                        dst_path.display(),
-                        e.to_string()
-                    );
-                }
+                let _ = std::os::unix::fs::chown(dst_path, uid, gid);
             }
         }
+    }
+
+    if !errors.is_empty() {
+        let mut final_error_message =
+            format!("Failed to restore metadata for {}:\n", dst_path.display());
+        for err in errors {
+            final_error_message.push_str(&format!("  - {err}\n"));
+        }
+        bail!("{final_error_message}");
     }
 
     Ok(())
@@ -306,8 +314,7 @@ pub fn restore_times(
         let ft_mtime = FileTime::from(*modified_time);
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
-        set_file_times(dst_path, ft_atime, ft_mtime)
-            .with_context(|| format!("Could not set file times for {}", dst_path.display()))?;
+        set_file_times(dst_path, ft_atime, ft_mtime).with_context(|| "Could not set file times")?;
     }
 
     Ok(())

@@ -1,6 +1,7 @@
 all:
 	@make debug
 	@make release
+	@make docker-build
 	@make fmt
 	@make doc
 	@make test
@@ -11,6 +12,9 @@ debug:
 
 release:
 	@cargo build --release --all --all-targets
+
+docker-build:
+	@./build-linux.sh
 
 doc:
 	@cargo doc --no-deps --document-private-items

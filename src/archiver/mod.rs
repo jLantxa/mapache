@@ -285,6 +285,7 @@ impl Archiver {
                 tree: tree_id,
                 root: archiver.snapshot_options.snapshot_root_path,
                 paths: archiver.snapshot_options.absolute_source_paths,
+                exclude: archiver.snapshot_options.exclude_paths,
                 hostname,
                 username,
                 tags: archiver.snapshot_options.tags,

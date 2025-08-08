@@ -46,6 +46,10 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<PathBuf>,
 
+    /// Excluded paths
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<PathBuf>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
 

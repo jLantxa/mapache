@@ -1,7 +1,6 @@
 all:
 	@make debug
 	@make release
-	@make docker-build
 	@make fmt
 	@make doc
 	@make test

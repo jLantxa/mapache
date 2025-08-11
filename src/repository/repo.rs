@@ -829,6 +829,10 @@ impl Repository {
 
         Ok(locks)
     }
+
+    pub fn pack_size(&self) -> u64 {
+        self.max_packer_size
+    }
 }
 
 impl Drop for Repository {

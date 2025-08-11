@@ -110,8 +110,9 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     }
 
     // Find small packs to repack
+    let current_pack_size = repo.pack_size();
     for (pack_id, size) in kept_pack_size {
-        if (size as f32 / DEFAULT_PACK_SIZE as f32) < DEFAULT_MIN_PACK_SIZE_FACTOR {
+        if (size as f32 / current_pack_size as f32) < DEFAULT_MIN_PACK_SIZE_FACTOR {
             plan.small_packs.insert(pack_id);
         }
     }

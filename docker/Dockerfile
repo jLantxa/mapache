@@ -17,9 +17,8 @@
 FROM fedora:latest AS builder
 LABEL "Author"="Leuqar"
 
-RUN dnf update -y
-
-RUN dnf install -y \
+RUN dnf update -y && \
+    dnf install -y \
     cargo \
     git \
     vim \
@@ -27,14 +26,19 @@ RUN dnf install -y \
     fuse3-devel \
     perl
 
-
-RUN git clone https://github.com/jLantxa/mapache.git
 WORKDIR /mapache
-RUN cargo build --release
 
+ARG CACHE_BREAKER
+ARG GIT_REF="main"
+
+RUN git clone https://github.com/jLantxa/mapache.git . && \
+    cd /mapache && \
+    git checkout $GIT_REF && \
+    ls -l
+
+RUN cargo build --release
 RUN cargo test
 
-FROM scratch
 FROM alpine:latest
 LABEL "Author"="Leuqar"
 

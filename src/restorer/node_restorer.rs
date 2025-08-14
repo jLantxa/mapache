@@ -33,7 +33,7 @@ use anyhow::anyhow;
 use crate::{
     fs::node::{Node, NodeType},
     repository::repo::Repository,
-    ui::{self, restore_progress::RestoreProgressReporter},
+    ui::restore_progress::RestoreProgressReporter,
 };
 
 #[cfg(unix)]
@@ -132,7 +132,10 @@ pub(crate) fn restore_node_to_path(
 
             // Show a warning if the symlink metadata is missing and return.
             if symlink_info.is_none() {
-                ui::cli::warning!("Symlink {} does not have a target path", dst_path.display());
+                progress_reporter.warning(&format!(
+                    "Symlink {} does not have a target path",
+                    dst_path.display()
+                ));
                 return Ok(());
             }
             let symlink_info = symlink_info.unwrap();
@@ -142,12 +145,12 @@ pub(crate) fn restore_node_to_path(
                 if !dry_run
                     && let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, dst_path)
                 {
-                    ui::cli::warning!(
+                    progress_reporter.warning(&format!(
                         "Could not create symlink {} pointing to {} : {}",
                         dst_path.display(),
                         symlink_info.target_path.display(),
-                        e.to_string()
-                    );
+                        e
+                    ));
                 }
             }
             #[cfg(windows)]
@@ -162,12 +165,12 @@ pub(crate) fn restore_node_to_path(
                                 &symlink_info.target_path,
                             )
                         {
-                            ui::cli::warning!(
+                            progress_reporter.warning(&format!(
                                 "Could not create symlink {} pointing to {} : {}",
                                 dst_path.display(),
                                 symlink_info.target_path.display(),
-                                e.to_string()
-                            );
+                                e
+                            ));
                         }
                     }
                     // Everything else (not a directory)
@@ -178,17 +181,18 @@ pub(crate) fn restore_node_to_path(
                                 &symlink_info.target_path,
                             )
                         {
-                            ui::cli::warning!(
+                            progress_reporter.warning(&format!(
                                 "Could not create symlink {} pointing to '{}' : {}",
                                 dst_path.display(),
                                 symlink_info.target_path.display(),
-                                e.to_string()
-                            );
+                                e
+                            ));
                         }
                     }
                     // No type info. Show warning.
                     None => {
-                        ui::cli::warning!("Symlink {} has no type info", dst_path.display());
+                        progress_reporter
+                            .warning(&format!("Symlink {} has no type info", dst_path.display()));
                     }
                 }
             }
@@ -199,54 +203,54 @@ pub(crate) fn restore_node_to_path(
 
         NodeType::BlockDevice => {
             #[cfg(unix)]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "Restoration of block device {} not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "Block device restoration not supported on this operating system: {}",
                 dst_path.display()
-            );
+            ));
         }
 
         NodeType::CharDevice => {
             #[cfg(unix)]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "Restoration of character device {} not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "Character device restoration not supported on this operating system: {}",
                 dst_path.display()
-            );
+            ));
         }
 
         NodeType::Fifo => {
             #[cfg(unix)]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "Restoration of FIFO (named pipe) {} not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "FIFO restoration not supported on this operating system: {}",
                 dst_path.display()
-            );
+            ));
         }
 
         NodeType::Socket => {
             #[cfg(unix)]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "Restoration of socket {} not supported yet.",
                 dst_path.display()
-            );
+            ));
             #[cfg(not(unix))]
-            ui::cli::warning!(
+            progress_reporter.warning(&format!(
                 "Socket restoration not supported on this operating system: {}",
                 dst_path.display()
-            );
+            ));
         }
     }
 

@@ -149,11 +149,11 @@ pub fn restore(
             &restore_path,
             opts.dry_run,
         ) {
-            let error_msg = format!("Failed to restore item {}: {}", restore_path.display(), e);
-
+            let error_msg = e.to_string();
             if opts.quit_on_error {
                 bail!(error_msg);
             }
+
             progress_reporter.error(&error_msg);
         }
 

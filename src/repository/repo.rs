@@ -21,7 +21,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
 use parking_lot::{Mutex, RwLock};
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
@@ -100,8 +99,6 @@ impl Repository {
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<()> {
-        let timestamp = Utc::now();
-
         let pass = match password {
             Some(p) => p,
             None => ui::cli::request_password_with_confirmation(
@@ -148,8 +145,6 @@ impl Repository {
             }
         }
 
-        let repo_id = ID::new_random();
-
         // Init repository structure
         let objects_path = PathBuf::from(OBJECTS_DIR);
         let snapshot_path = PathBuf::from(SNAPSHOTS_DIR);
@@ -157,16 +152,12 @@ impl Repository {
         let locks_path = PathBuf::from(LOCKS_DIR);
 
         // Save new manifest
-        let manifest = Manifest {
-            version: THIS_REPOSITORY_VERSION,
-            id: repo_id.clone(),
-            created_time: timestamp,
-        };
+        let manifest = Manifest::new(THIS_REPOSITORY_VERSION);
 
         let manifest_path = Path::new(MANIFEST_PATH);
-        let manifest = serde_json::to_string_pretty(&manifest)?;
-        let manifest = secure_storage.encode(manifest.as_bytes())?;
-        backend.write(manifest_path, &manifest)?;
+        let manifest_json = serde_json::to_string_pretty(&manifest)?;
+        let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
+        backend.write(manifest_path, &manifest_json)?;
 
         backend.create_dir(&objects_path)?;
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
@@ -180,7 +171,7 @@ impl Repository {
 
         ui::cli::log!(
             "Created repo with id {}",
-            repo_id.to_short_hex(SHORT_REPO_ID_LEN)
+            manifest.id().to_short_hex(SHORT_REPO_ID_LEN)
         );
 
         Ok(())
@@ -261,7 +252,7 @@ impl Repository {
             .with_context(|| "Could not decode the manifest file")?;
         let manifest: Manifest = serde_json::from_slice(&manifest)?;
 
-        let version = manifest.version;
+        let version = manifest.version();
         if version > THIS_REPOSITORY_VERSION {
             bail!("Invalid repository version \'{}\'", version);
         }

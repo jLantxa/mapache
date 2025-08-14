@@ -99,11 +99,7 @@ where
 
 /// Converts a byte slice to its hexadecimal string representation.
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        s.push_str(&format!("{byte:02x}"));
-    }
-    s
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Pretty prints a `SystemTime` into a human-readable string,
@@ -255,10 +251,11 @@ pub fn filter_path(
     exclude: Option<&Vec<PathBuf>>,
 ) -> bool {
     if let Some(exclude_paths) = exclude {
-        for ex_path in exclude_paths {
-            if path.starts_with(ex_path) {
-                return false;
-            }
+        if exclude_paths
+            .iter()
+            .any(|ex_path| path.starts_with(ex_path))
+        {
+            return false;
         }
     }
 
@@ -498,17 +495,12 @@ pub fn mode_to_permissions_string(mode: u32) -> String {
 
 /// Returns the hostname and username
 pub fn get_system_info() -> (Option<String>, Option<String>) {
-    let hostname = match hostname::get() {
-        Ok(hn_os_string) => hn_os_string.into_string().ok(),
-        Err(_) => None,
-    };
-
+    let hostname = hostname::get().ok().and_then(|hn| hn.into_string().ok());
     let username = if cfg!(target_os = "windows") {
         std::env::var("USERNAME").ok()
     } else {
         std::env::var("USER").ok()
     };
-
     (hostname, username)
 }
 

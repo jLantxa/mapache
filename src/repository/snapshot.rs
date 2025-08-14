@@ -181,17 +181,17 @@ impl SnapshotStreamer {
 
     /// Consumes the iterator and returns the Snapshot with the latest ID.
     pub fn latest(&mut self) -> Option<(ID, Snapshot)> {
-        let (mut latest_id, mut latest_sn) = self.next()?;
+        self.snapshot_ids.sort_by_key(|id| {
+            // Load each snapshot just to get its timestamp
+            self.repo.load_snapshot(id).ok().map(|s| s.timestamp)
+        });
 
-        for (mut id, mut snapshot) in self.by_ref() {
-            if snapshot.timestamp > latest_sn.timestamp {
-                std::mem::swap(&mut id, &mut latest_id);
-                std::mem::swap(&mut snapshot, &mut latest_sn);
-            }
-        }
+        // Now the last ID in the sorted vector is the latest one.
+        // Pop it and load the snapshot one last time.
+        let latest_id = self.snapshot_ids.pop()?;
+        let latest_snapshot = self.repo.load_snapshot(&latest_id).ok()?;
 
-        self.snapshot_ids.clear();
-        Some((latest_id, latest_sn))
+        Some((latest_id, latest_snapshot))
     }
 }
 

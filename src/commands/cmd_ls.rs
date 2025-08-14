@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result};
 use clap::Args;
 use colored::Colorize;
 
@@ -27,6 +27,7 @@ use crate::{
         node::{Metadata, Node, NodeType},
         tree::{Tree, find_serialized_node},
     },
+    global::ID,
     repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},
@@ -68,104 +69,93 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let lock_handle_clone = lock_handle.clone();
     let _cleanup_handler = CleanupHandler::new(move || {
-        let _ = lock_handle_clone.write().unlock();
+        lock_handle_clone.write().unlock();
     })?;
 
-    let (_snapshot_id, snapshot) = {
-        match find_use_snapshot(repo.clone(), &args.snapshot) {
-            Ok(Some((id, snap))) => (id, snap),
-            Ok(None) | Err(_) => bail!("Snapshot not found"),
-        }
+    let (_snapshot_id, snapshot) =
+        find_use_snapshot(repo.clone(), &args.snapshot)?.with_context(|| "Snapshot not found")?;
+
+    let node = if let Some(p) = &args.path {
+        find_serialized_node(repo.as_ref(), &snapshot.tree, p)?
+            .with_context(|| format!("'{}' does not exist in snapshot", p.display()))?
+    } else {
+        Node::new_root(&snapshot.tree)
     };
 
-    let node: Node = match &args.path {
-        Some(p) => match find_serialized_node(repo.as_ref(), &snapshot.tree, p)? {
-            Some(n) => n,
-            None => bail!("{} does not exist in snapshot", p.display()),
-        },
-        // Create a dummy node for the snapshot root, as this tree has no node referencing it.
-        None => Node {
-            name: String::from("/"),
-            node_type: NodeType::Directory,
-            metadata: Metadata::default(),
-            blobs: None,
-            tree: Some(snapshot.tree.clone()),
-            symlink_info: None,
-        },
-    };
+    ls(&args.path.clone().unwrap_or_default(), &node, &repo, args)?;
 
-    ls(
-        args.path.clone().unwrap_or_default(),
-        node,
-        repo.as_ref(),
-        args,
-    )
+    Ok(())
 }
 
 /// List the contents of a node.
-fn ls(path: PathBuf, node: Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+fn ls(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
     if !node.is_dir() {
-        ui::cli::log!("{}", node_to_string(&node, args.long, args.human_readable));
-    } else {
+        ui::cli::log!("{}", node_to_string(node, args.long, args.human_readable));
+        return Ok(());
+    }
+
+    if args.recursive {
+        ui::cli::log!("{}:", path.display());
+    }
+
+    ls_recursive(path, node, repo, args)
+}
+
+/// List a snapshot tree.
+fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+    let mut stack: Vec<(PathBuf, Node)> = Vec::new();
+
+    if node.is_dir() && args.recursive {
+        stack.push((path.to_path_buf(), node.clone()));
+    } else if node.is_dir() {
+        let mut tree = Tree::load_from_repo(repo, node.tree.as_ref().unwrap())?;
+        tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        print_tree(&tree, args);
+        return Ok(());
+    }
+
+    while let Some((parent_path, node)) = stack.pop() {
+        let tree_id = node.tree.as_ref().unwrap();
+        let current_path = parent_path.join(&node.name);
+
+        let mut tree = Tree::load_from_repo(repo, tree_id)?;
+
         if args.recursive {
-            ui::cli::log!("{}:", path.display());
+            ui::cli::log!();
+            ui::cli::log!("{}:", current_path.display());
         }
 
-        let tree_id = node.tree;
-        if let Some(id) = tree_id {
-            let tree = Tree::load_from_repo(repo, &id)?;
-            ls_tree(path, tree, repo, args)?;
+        tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        print_tree(&tree, args);
+
+        for node in tree.nodes.into_iter().rev() {
+            if node.is_dir() {
+                stack.push((current_path.clone(), node));
+            }
         }
     }
 
     Ok(())
 }
 
-/// List a snapshot tree.
-fn ls_tree(
-    path: PathBuf, // 'path' here is the initial path
-    mut tree: Tree,
-    repo: &Repository,
-    args: &CmdArgs,
-) -> Result<()> {
-    tree.nodes.sort_by_key(|node| node.name.to_lowercase());
+/// Helper function to print a tree's nodes
+fn print_tree(tree: &Tree, args: &CmdArgs) {
     for node in &tree.nodes {
         ui::cli::log!("{}", node_to_string(node, args.long, args.human_readable))
     }
+}
 
-    if args.recursive {
-        let mut stack: Vec<(PathBuf, Node)> = Vec::new();
-        for node in tree.nodes.into_iter().rev() {
-            if node.tree.is_some() {
-                stack.push((path.clone(), node));
-            }
-        }
-
-        while let Some((parent_path, node)) = stack.pop() {
-            if let Some(tree_id) = node.tree {
-                let current_path = parent_path.join(&node.name);
-
-                let mut tree = Tree::load_from_repo(repo, &tree_id)?;
-                tree.nodes.sort_by_key(|node| node.name.to_lowercase());
-
-                ui::cli::log!();
-
-                if args.recursive {
-                    ui::cli::log!("{}:", current_path.display());
-                }
-                for node in &tree.nodes {
-                    ui::cli::log!("{}", node_to_string(node, args.long, args.human_readable))
-                }
-                for node in tree.nodes.into_iter().rev() {
-                    if node.tree.is_some() {
-                        stack.push((current_path.clone(), node));
-                    }
-                }
-            }
+impl Node {
+    pub fn new_root(tree_id: &ID) -> Self {
+        Self {
+            name: String::new(),
+            node_type: NodeType::Directory,
+            metadata: Metadata::default(),
+            blobs: None,
+            tree: Some(tree_id.clone()),
+            symlink_info: None,
         }
     }
-
-    Ok(())
 }
 
 /// Prints the relevant metadata of a node as a single line, similar to the Unix ls command.

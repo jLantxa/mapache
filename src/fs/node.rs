@@ -159,29 +159,27 @@ impl Metadata {
     /// Returns `true` iff any relevant metadata field differs.
     #[inline]
     pub fn has_changed(&self, other: &Self) -> bool {
-        self.modified_time != other.modified_time
+        self.inode != other.inode
+            || self.modified_time != other.modified_time
             || self.size != other.size
             || self.mode != other.mode
             || self.owner_uid != other.owner_uid
             || self.owner_gid != other.owner_gid
-            || self.inode != other.inode
     }
 }
 
 impl Node {
     /// Build a `Node` from any path on disk.
     pub fn from_path(path: &Path) -> Result<Self> {
-        // symlink_metadata does not follow symlinks
-        // Failing to read these metadata could also mean that the file does not
-        // exist, so we can exit early.
         let meta = std::fs::symlink_metadata(path)
-            .with_context(|| format!("Cannot stat {}", path.display()))?;
+            .with_context(|| format!("Cannot stat '{}'", path.display()))?;
         let node_type = get_node_type(&meta)?;
 
         let name = path
             .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| String::from("/")); // Handle root path gracefully
 
         let mut node = Self {
             name,
@@ -194,12 +192,12 @@ impl Node {
 
         if node.is_symlink() {
             let target_path = std::fs::read_link(path)
-                .with_context(|| format!("Cannot read symlink target for {}", path.display()))?;
+                .with_context(|| format!("Cannot read symlink target for '{}'", path.display()))?;
 
-            let target_type = match target_path.symlink_metadata() {
-                Ok(meta) => Some(get_node_type(&meta)?),
-                Err(_) => None,
-            };
+            let target_type = target_path
+                .symlink_metadata()
+                .ok()
+                .and_then(|m| get_node_type(&m).ok());
 
             let symlink_info = SymlinkInfo {
                 target_path,

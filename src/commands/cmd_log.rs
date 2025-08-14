@@ -60,7 +60,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let lock_handle_clone = lock_handle.clone();
     let _cleanup_handler = CleanupHandler::new(move || {
-        let _ = lock_handle_clone.write().unlock();
+        lock_handle_clone.write().unlock();
     })?;
 
     let mut snapshots_sorted: Vec<(ID, Snapshot)> = match &args.snapshot {
@@ -78,7 +78,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         let tags = parse_tags(Some(tags_str));
         snapshots_sorted.retain(|(_id, sn)| sn.has_tags(&tags));
     }
-    snapshots_sorted.sort_by_key(|(_id, snapshot)| snapshot.timestamp);
+    snapshots_sorted.sort_unstable_by_key(|(_id, snapshot)| snapshot.timestamp);
 
     if snapshots_sorted.is_empty() {
         ui::cli::log!("No snapshots found");

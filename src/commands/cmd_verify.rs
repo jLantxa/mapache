@@ -82,7 +82,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let lock_handle_clone = lock_handle.clone();
     let _cleanup_handler = CleanupHandler::new(move || {
-        let _ = lock_handle_clone.write().unlock();
+        lock_handle_clone.write().unlock();
     })?;
 
     let start = Instant::now();

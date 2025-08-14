@@ -22,7 +22,6 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
 use chrono::{DateTime, Local};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -151,16 +150,18 @@ impl LockHandle {
         });
     }
 
-    pub fn unlock(&mut self) -> Result<()> {
+    pub fn unlock(&self) {
+        // Changed to &self as it's not strictly a mutable operation
         self.alive_flag.store(false, Ordering::SeqCst);
-        self.repo
-            .delete_file(FileType::Lock, self.lock.lock().id())?;
-        Ok(())
+        if let Err(e) = self.repo.delete_file(FileType::Lock, self.lock.lock().id()) {
+            // Log the error instead of returning it.
+            ui::cli::warning!("Failed to delete lock file: {e}");
+        }
     }
 }
 
 impl Drop for LockHandle {
     fn drop(&mut self) {
-        let _ = self.unlock();
+        self.unlock();
     }
 }

@@ -323,25 +323,32 @@ impl Index {
     }
 
     fn remove_pack(&mut self, target_pack_id: &ID) {
-        let mut blobs_to_remove = Vec::new();
+        if let Some(pack_index) = self.pack_ids.get_index(target_pack_id) {
+            // Collect all blobs associated with this pack index
+            let blobs_to_remove: Vec<ID> = self
+                .data_ids
+                .iter()
+                .filter(|(_, loc)| loc.pack_array_index == *pack_index as u32)
+                .map(|(id, _)| id.clone())
+                .collect();
+            let tree_blobs_to_remove: Vec<ID> = self
+                .tree_ids
+                .iter()
+                .filter(|(_, loc)| loc.pack_array_index == *pack_index as u32)
+                .map(|(id, _)| id.clone())
+                .collect();
 
-        for (blob_id, blob_location) in self.data_ids.iter().chain(self.tree_ids.iter()) {
-            if let Some(pack_id) = self
-                .pack_ids
-                .get_value(blob_location.pack_array_index as usize)
-            {
-                if target_pack_id == pack_id {
-                    blobs_to_remove.push(blob_id.clone());
-                }
+            // Now remove them
+            for blob_id in blobs_to_remove {
+                self.data_ids.remove(&blob_id);
             }
-        }
+            for blob_id in tree_blobs_to_remove {
+                self.tree_ids.remove(&blob_id);
+            }
 
-        // Clean up
-        for blob_id in blobs_to_remove.into_iter() {
-            self.data_ids.remove(&blob_id);
-            self.tree_ids.remove(&blob_id);
+            // The IndexSet will handle the re-indexing of `pack_array_index` for other packs.
+            self.pack_ids.remove(target_pack_id);
         }
-        self.pack_ids.remove(target_pack_id);
     }
 }
 
@@ -410,31 +417,35 @@ impl MasterIndex {
         &mut self,
         repo: &Repository,
         pack_id: &ID,
-        packed_blob_descriptors: Vec<PackedBlobDescriptor>, // Take ownership as it's consumed
+        packed_blob_descriptors: Vec<PackedBlobDescriptor>,
     ) -> Result<(u64, u64)> {
         // Remove processed blobs from the pending set
         for blob in &packed_blob_descriptors {
             self.pending_blobs.remove(&blob.id);
         }
 
-        // Add the pack's blobs to all currently pending indices.
-        for idx in &mut self.indices {
-            if idx.is_pending() {
-                idx.add_pack(pack_id, &packed_blob_descriptors);
+        let pending_index_exists = self.indices.iter().any(|idx| idx.is_pending());
 
-                return match idx.is_full() {
-                    true => idx.finalize_and_save(repo),
-                    false => Ok((0, 0)), // Nothing was added to the repository
-                };
-            }
+        if !pending_index_exists {
+            let new_idx = Index::new();
+            self.indices.push(new_idx);
         }
 
-        // There were no pending indices. Create a new empty pending index and add the pack.
-        let mut new_pending_index = Index::new();
-        new_pending_index.add_pack(pack_id, &packed_blob_descriptors);
-        self.indices.push(new_pending_index);
+        let pending_index = self
+            .indices
+            .iter_mut()
+            .find(|idx| idx.is_pending())
+            .expect("A pending index must exist at this point.");
 
-        Ok((0, 0)) // Nothing was added to the repository
+        // Add the pack's blobs to the pending index.
+        pending_index.add_pack(pack_id, &packed_blob_descriptors);
+
+        // Check if the pending index is now full and save it if it is.
+        if pending_index.is_full() {
+            pending_index.finalize_and_save(repo)
+        } else {
+            Ok((0, 0))
+        }
     }
 
     /// Saves all pending indices managed by the `MasterIndex` to the repository.

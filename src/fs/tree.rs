@@ -63,7 +63,7 @@ impl Tree {
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_to_repo(&mut self, repo: &Repository) -> Result<(ID, (u64, u64))> {
         // Sort all nodes by name before serializing
-        self.nodes.sort_by_key(|node| node.name.clone());
+        self.nodes.sort_unstable_by_key(|node| node.name.clone());
 
         let tree_json = serde_json::to_string(self)?.as_bytes().to_vec();
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
@@ -136,8 +136,8 @@ impl FSNodeStreamer {
             .collect();
 
         // Sort paths in reverse order
-        paths.sort_by(|first, second| second.cmp(first));
-        intermediate_paths.sort_by(|(first, _), (second, _)| second.cmp(first));
+        paths.sort_unstable_by(|first, second| second.cmp(first));
+        intermediate_paths.sort_unstable_by(|(first, _), (second, _)| second.cmp(first));
 
         Ok(Self {
             stack: paths,
@@ -153,7 +153,8 @@ impl FSNodeStreamer {
                 let mut children: Vec<PathBuf> = read_dir
                     .map(|res| res.map(|e| e.path()))
                     .collect::<Result<_, _>>()?;
-                children.sort_by(|first, second| first.file_name().cmp(&second.file_name()));
+                children
+                    .sort_unstable_by(|first, second| first.file_name().cmp(&second.file_name()));
                 Ok(children)
             }
             Err(e) => {
@@ -279,7 +280,7 @@ impl SerializedNodeStreamer {
                 .with_context(|| format!("Failed to load root tree with ID {id}"))?;
 
             tree.nodes
-                .sort_by(|first, second| first.name.cmp(&second.name));
+                .sort_unstable_by(|first, second| first.name.cmp(&second.name));
             for node in tree.nodes.into_iter().rev() {
                 stack.push((
                     base_path.clone(),
@@ -340,7 +341,7 @@ impl Iterator for SerializedNodeStreamer {
                 stream_node.num_children = filtered_children.len();
 
                 // Push filtered children for the next iteration, in reverse lexicographical order
-                filtered_children.sort_by(|first, second| first.name.cmp(&second.name));
+                filtered_children.sort_unstable_by(|first, second| first.name.cmp(&second.name));
                 for subnode in filtered_children.into_iter().rev() {
                     self.stack.push((
                         current_path.clone(),
@@ -431,7 +432,7 @@ impl Iterator for SerializedTreeStreamer {
             }
 
             // Push children to stack in reverse lexicographical order
-            children.sort_by(|(path1, _), (path2, _)| path1.cmp(path2));
+            children.sort_unstable_by(|(path1, _), (path2, _)| path1.cmp(path2));
             for (child_path, child_id) in children.into_iter().rev() {
                 self.stack.push((child_path, child_id));
             }

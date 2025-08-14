@@ -153,4 +153,11 @@ impl RestoreProgressReporter {
         self.error_counter.fetch_add(1, Ordering::SeqCst);
         let _ = self.mp.println(format!("{} {msg}", "Error:".bold().red()));
     }
+
+    pub fn warning(&self, msg: &str) {
+        self.error_counter.fetch_add(1, Ordering::SeqCst);
+        let _ = self
+            .mp
+            .println(format!("{} {msg}", "Warning:".bold().yellow()));
+    }
 }

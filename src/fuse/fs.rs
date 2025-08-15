@@ -85,7 +85,8 @@ impl Filesystem for MapacheFS {
         if let Err(e) = &snapshot_streamer {
             ui::cli::error!("Failed to read snapshots: {}", e.to_string());
         }
-        let snapshots: Vec<(ID, Snapshot)> = snapshot_streamer.unwrap().collect();
+        let mut snapshots: Vec<(ID, Snapshot)> = snapshot_streamer.unwrap().collect();
+        snapshots.sort_unstable_by_key(|(_, snapshot)| snapshot.timestamp);
 
         // snapshots
         let snapshots_ino = self.stash.add_dir(FUSE_ROOT_ID, String::from("snapshots"));

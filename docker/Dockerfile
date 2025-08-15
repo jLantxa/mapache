@@ -17,14 +17,20 @@
 FROM fedora:latest AS builder
 LABEL "Author"="Leuqar"
 
-RUN dnf update -y && \
+RUN dnf clean all && \
+    dnf update -y && \
     dnf install -y \
-    cargo \
     git \
     vim \
+    cargo \
+    perl \
     openssl-devel \
-    fuse3-devel \
-    perl
+    fuse3-devel
+
+# RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# ENV PATH="/root/.cargo/bin:${PATH}"
+
+# RUN rustup target add x86_64-pc-windows-gnu
 
 WORKDIR /mapache
 
@@ -36,12 +42,15 @@ RUN git clone https://github.com/jLantxa/mapache.git . && \
     git checkout $GIT_REF && \
     ls -l
 
-RUN cargo build --release
 RUN cargo test
+RUN cargo build --release
+
 
 FROM alpine:latest
 LABEL "Author"="Leuqar"
 
-COPY --from=builder /mapache/target/release/mapache /usr/local/bin/mapache
+COPY --from=builder \
+    /mapache/target/release/mapache \
+    /usr/local/bin/mapache_linux_x64
 
 CMD ["/bin/true"]

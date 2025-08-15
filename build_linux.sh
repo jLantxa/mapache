@@ -2,7 +2,6 @@
 
 IMAGE_NAME="mapache-builder"
 CONTAINER_NAME="mapache-extract-container"
-EXECUTABLE_NAME="mapache_linux_x64"
 BUILD_PATH="docker/build"
 REF=${1:-"main"}
 
@@ -17,7 +16,7 @@ docker create --name $CONTAINER_NAME $IMAGE_NAME
 echo "Copying executable to host..."
 mkdir -p $BUILD_PATH
 chown -R $(whoami) $BUILD_PATH
-docker cp $CONTAINER_NAME:/usr/local/bin/mapache $BUILD_PATH/$EXECUTABLE_NAME
+docker cp $CONTAINER_NAME:/usr/local/bin/mapache_linux_x64 $BUILD_PATH/
 
 echo "Cleaning up container..."
 docker rm $CONTAINER_NAME

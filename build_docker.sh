@@ -17,6 +17,7 @@ echo "Copying executable to host..."
 mkdir -p $BUILD_PATH
 chown -R $(whoami) $BUILD_PATH
 docker cp $CONTAINER_NAME:/usr/local/bin/mapache_linux_x64 $BUILD_PATH/
+docker cp $CONTAINER_NAME:/usr/local/bin/mapache_win_x64.exe $BUILD_PATH/
 
 echo "Cleaning up container..."
 docker rm $CONTAINER_NAME

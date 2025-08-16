@@ -20,17 +20,15 @@ LABEL "Author"="Leuqar"
 RUN dnf clean all && \
     dnf update -y && \
     dnf install -y \
-    git \
-    vim \
+    git vim \
     cargo \
-    perl \
-    openssl-devel \
-    fuse3-devel
+    perl openssl-devel fuse3-devel \
+    mingw64-gcc mingw64-binutils mingw64-zlib mingw64-libssh2
 
-# RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-# ENV PATH="/root/.cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
-# RUN rustup target add x86_64-pc-windows-gnu
+RUN rustup target add x86_64-pc-windows-gnu
 
 WORKDIR /mapache
 
@@ -44,6 +42,7 @@ RUN git clone https://github.com/jLantxa/mapache.git . && \
 
 RUN cargo test
 RUN cargo build --release
+RUN cargo build --release --target x86_64-pc-windows-gnu
 
 
 FROM alpine:latest
@@ -52,5 +51,9 @@ LABEL "Author"="Leuqar"
 COPY --from=builder \
     /mapache/target/release/mapache \
     /usr/local/bin/mapache_linux_x64
+
+COPY --from=builder \
+    /mapache/target/x86_64-pc-windows-gnu/release/mapache.exe \
+    /usr/local/bin/mapache_win_x64.exe
 
 CMD ["/bin/true"]

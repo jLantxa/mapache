@@ -1,19 +1,15 @@
-all:
-	@make debug
-	@make release
-	@make fmt
-	@make doc
-	@make test
-	@make lint
+REF ?= main
 
-debug:
+all: fmt debug doc test lint
+
+debug: fmt lint doc
 	@cargo build --all --all-targets
 
-release:
+release: fmt lint doc
 	@cargo build --release --all --all-targets
 
-docker-build:
-	@./build-linux.sh
+docker-release:
+	@./build_docker.sh $(REF)
 
 doc:
 	@cargo doc --no-deps --document-private-items
@@ -29,3 +25,4 @@ lint:
 
 clean:
 	@cargo clean
+	rm -r build

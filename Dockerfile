@@ -37,8 +37,7 @@ ARG GIT_REF="main"
 
 RUN git clone https://github.com/jLantxa/mapache.git . && \
     cd /mapache && \
-    git checkout $GIT_REF && \
-    ls -l
+    git checkout $GIT_REF
 
 RUN cargo test
 RUN cargo build --release

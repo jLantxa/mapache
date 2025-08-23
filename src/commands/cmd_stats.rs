@@ -199,7 +199,27 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
     let mut total_raw_data_size: u64 = 0;
     let mut total_encoded_data_size: u64 = 0;
     let mut visited_blobs = BTreeSet::new();
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_draw_target(default_bar_draw_target());
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(Duration::from_millis(
+        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
+    ));
+
     for (_id, snapshot) in snapshot_streamer {
+        spinner.inc(1);
+        spinner.set_message(format!(
+            "Analyzing snapshots: {} / {}",
+            spinner.position(),
+            num_snapshots
+        ));
+
         total_restore_size += snapshot.size();
 
         let tree_id = snapshot.tree.clone();
@@ -237,6 +257,8 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
             }
         }
     }
+
+    spinner.finish_and_clear();
 
     ui::cli::log!(
         "{}",

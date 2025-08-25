@@ -158,14 +158,19 @@ pub struct SnapshotSummary {
 pub struct SnapshotStreamer {
     snapshot_ids: Vec<ID>,
     repo: Arc<Repository>,
+    num_snapshots: usize,
 }
 
 impl SnapshotStreamer {
     /// Creates a new SnapshotStreamer. It needs a repo to load snapshots.
     pub fn new(repo: Arc<Repository>) -> Result<Self> {
+        let snapshot_ids = repo.list_snapshot_ids()?;
+        let num_snapshots = snapshot_ids.len();
+
         Ok(Self {
-            snapshot_ids: repo.list_snapshot_ids()?,
+            snapshot_ids,
             repo,
+            num_snapshots,
         })
     }
 
@@ -174,8 +179,13 @@ impl SnapshotStreamer {
         self.snapshot_ids.is_empty()
     }
 
-    /// Returns the number of Snapshot IDs remaining.
+    /// Returns the total number of Snapshots without consuming the iterator
     pub fn len(&self) -> usize {
+        self.num_snapshots
+    }
+
+    /// Returns the number of Snapshot IDs remaining.
+    pub fn remaining(&self) -> usize {
         self.snapshot_ids.len()
     }
 

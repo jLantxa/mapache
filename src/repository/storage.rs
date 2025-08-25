@@ -183,7 +183,7 @@ impl Drop for SecureStorage {
 mod tests {
     use zstd::DEFAULT_COMPRESSION_LEVEL;
 
-    use crate::{repository::keys::generate_new_master_key, ui};
+    use crate::repository::keys::generate_new_master_key;
 
     use super::*;
 
@@ -199,7 +199,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_compression_and_decompression() {
         let original_data = TEXT;
 
-        let compression_levels = [0, 10, 22];
+        let compression_levels = [0, 3, 10, 15, 22];
 
         for &compression_level in &compression_levels {
             let compressed_data =
@@ -209,10 +209,9 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
             assert_eq!(*original_data, *decompressed_data);
 
             let ratio = original_data.len() as f64 / compressed_data.len() as f64;
-            ui::cli::log!(
+            println!(
                 "Compression level {}: Ratio = {:.2}",
-                compression_level,
-                ratio
+                compression_level, ratio
             );
         }
     }

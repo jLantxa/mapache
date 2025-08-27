@@ -15,7 +15,7 @@ chrono = { version = "0.4.41", features = ["serde"] }
 clap = { version = "4.5.45", features = ["derive", "wrap_help"] }
 colored = "3.0.0"
 crossbeam-channel = "0.5.15"
-dialoguer = "0.11.0"
+dialoguer = "0.12.0"
 fastcdc = "3.2.1"
 filetime = "0.2.26"
 hostname = "0.4.1"

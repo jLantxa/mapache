@@ -33,7 +33,7 @@ WIN_FILENAME="mapache_"$REF"_win_x64.exe"
 WIN_PKGNAME="mapache_"$REF"_win_x64"
 docker cp $CONTAINER_NAME:/usr/local/bin/mapache_linux_x64 $BUILD_PATH/$LINUX_FILENAME
 docker cp $CONTAINER_NAME:/usr/local/bin/mapache_win_x64.exe $BUILD_PATH/$WIN_FILENAME
-zip -rj $BUILD_PATH/$LINUX_FILENAME.zip $BUILD_PATH/$LINUX_FILENAME
+tar -cJf $BUILD_PATH/$LINUX_FILENAME.tar.xz -C $BUILD_PATH $LINUX_FILENAME
 zip -rj $BUILD_PATH/$WIN_PKGNAME.zip $BUILD_PATH/$WIN_FILENAME
 
 echo "Cleaning up container..."

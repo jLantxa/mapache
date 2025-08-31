@@ -58,8 +58,8 @@ pub struct SnapshotProgressReporter {
 
     #[allow(dead_code)]
     mp: MultiProgress,
-    companion_bar: ProgressBar,
     progress_bar: ProgressBar,
+    companion_bar: ProgressBar,
     file_spinners: Vec<ProgressBar>,
 
     verbosity: u32,
@@ -86,7 +86,7 @@ impl SnapshotProgressReporter {
         let processed_bytes_arc_clone = processed_bytes_arc.clone();
         progress_bar.set_style(
             ProgressStyle::default_bar()
-                .template("[{bar:20.cyan/white}]  [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
+                .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
                 .expect("The snapshot progress bar should have been created")
                 .progress_chars("=> ")
                 .with_key(
@@ -198,6 +198,8 @@ impl SnapshotProgressReporter {
         if diff != NodeDiff::Deleted {
             self.processing_items.write().push_back(path.clone());
             self.update_processing_items();
+            self.progress_bar.tick();
+            self.companion_bar.tick();
         }
 
         if self.verbosity >= 3 {
@@ -219,6 +221,8 @@ impl SnapshotProgressReporter {
             self.processing_items.write().remove(i);
             self.processed_items_count.fetch_add(1, Ordering::Relaxed);
         }
+        self.progress_bar.tick();
+        self.companion_bar.tick();
     }
 
     pub fn processed_bytes(&self, bytes: u64) {

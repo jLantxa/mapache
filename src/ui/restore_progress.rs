@@ -45,6 +45,7 @@ pub struct RestoreProgressReporter {
     #[allow(dead_code)]
     mp: MultiProgress,
     progress_bar: ProgressBar,
+    companion_bar: ProgressBar,
     file_spinners: Vec<ProgressBar>,
 }
 
@@ -55,13 +56,14 @@ impl RestoreProgressReporter {
 
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
         let progress_bar = mp.add(ProgressBar::new(num_expected_bytes));
+        let companion_bar = mp.add(ProgressBar::no_length());
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
         let error_counter_arc_clone = error_counter_arc.clone();
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template(
-                    "[{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_formated}]  [{processed_items_formated}]  [ETA: {custom_eta}]  {errors} errors"
+                    "[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_formated}]  [ETA: {custom_eta}]"
                 )
                 .unwrap()
                 .progress_chars("=> ")
@@ -69,11 +71,6 @@ impl RestoreProgressReporter {
                     let elapsed = state.elapsed();
                     let custom_elapsed= utils::pretty_print_duration(elapsed);
                     let _ = w.write_str(&custom_elapsed);
-                })
-                .with_key("processed_items_formated", move |_state:&ProgressState, w: &mut dyn std::fmt::Write| {
-                    let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
-                    let s = format!("{item_count} / {num_expected_items} items");
-                    let _ = w.write_str(&s);
                 })
                 .with_key("processed_bytes_formated", move |state:&ProgressState, w: &mut dyn std::fmt::Write|{
                     let s = format!("{} / {}", utils::format_size(state.pos(), 3), utils::format_size(state.len().unwrap(), 3));
@@ -84,9 +81,28 @@ impl RestoreProgressReporter {
                     let custom_eta= utils::pretty_print_duration(eta);
                     let _ = w.write_str(&custom_eta);
                 })
-                .with_key("errors", move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let _ = w.write_str(&error_counter_arc_clone.load(Ordering::SeqCst).to_string());
-                })
+        );
+
+        companion_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("[{processed_items_fmt}]  [{errors} errors]")
+                .expect("The snapshot progress bar should have been created")
+                .progress_chars("=> ")
+                .with_key(
+                    "processed_items_fmt",
+                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
+                        let s = format!("{item_count} / {num_expected_items} items");
+                        let _ = w.write_str(&s);
+                    },
+                )
+                .with_key(
+                    "errors",
+                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let errors = error_counter_arc_clone.load(Ordering::SeqCst);
+                        let _ = w.write_str(&errors.to_string());
+                    },
+                ),
         );
 
         let mut file_spinners = Vec::with_capacity(num_display_items);
@@ -110,6 +126,7 @@ impl RestoreProgressReporter {
             error_counter: error_counter_arc,
             mp,
             progress_bar,
+            companion_bar,
             file_spinners,
         }
     }
@@ -125,6 +142,7 @@ impl RestoreProgressReporter {
 
     pub fn finalize(&self) {
         self.progress_bar.finish_and_clear();
+        self.companion_bar.finish_and_clear();
         for spinner in self.file_spinners.iter() {
             spinner.finish_and_clear();
         }
@@ -134,7 +152,8 @@ impl RestoreProgressReporter {
     pub fn processing_file(&self, path: PathBuf) {
         self.processing_items.write().push_back(path);
         self.update_processing_items();
-        self.progress_bar.inc(1);
+        self.progress_bar.tick();
+        self.companion_bar.inc(1);
     }
 
     pub fn processed_file(&self, path: &Path) {
@@ -143,10 +162,13 @@ impl RestoreProgressReporter {
             self.processing_items.write().remove(i);
             self.processed_items_count.fetch_add(1, Ordering::Relaxed);
         }
+        self.progress_bar.tick();
+        self.companion_bar.tick();
     }
 
     pub fn processed_bytes(&self, bytes: u64) {
         self.progress_bar.inc(bytes);
+        self.companion_bar.tick();
     }
 
     pub fn error(&self, msg: &str) {

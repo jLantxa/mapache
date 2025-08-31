@@ -1,6 +1,8 @@
 # Changelog
 
 ## Latest
+- Added percentage indicator to snapshot and restore.
+- Remove mountpoint if cmd_mount -c created it.
 
 ## v0.1.0-alpha.4
 - Added a progress spinner to log stats progress while analyzing snapshots.

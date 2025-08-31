@@ -50,10 +50,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Check that mountpoint exists and is a directory, or create it if requested
     let actual_mountpoint = args.mountpoint.clone();
 
+    // The mountpoint was created by us and should be deleted when we finish.
+    let mut created_mountpoint = false;
+
     if !fs::path_exists(&actual_mountpoint) {
         if args.create_mountpoint {
             std::fs::create_dir_all(&actual_mountpoint)
                 .with_context(|| "Could not create mount point")?;
+            created_mountpoint = true;
         } else {
             bail!("Mountpoint doesn't exist");
         }
@@ -85,6 +89,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let _cleanup_handler = CleanupHandler::new(move || {
         let _ = MapacheFS::unmount(&mpoint);
         lock_handle_clone.write().unlock();
+
+        if created_mountpoint {
+            // Remove the mountpoint if it was created by us
+            let _ = std::fs::remove_dir(&mpoint);
+        }
     })?;
 
     ui::cli::log!("Mounting repository in {}", cannonical_mountpoint.display());

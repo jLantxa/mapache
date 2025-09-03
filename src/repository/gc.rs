@@ -196,7 +196,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:25.cyan/white}] Deleting unused packs: {pos}/{len}")
+                .template("[{bar:20.cyan/white}] Deleting unused packs: {pos}/{len}")
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -222,12 +222,16 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:25.cyan/white}] Finding blobs to repack: {pos}/{len}")
+                .template("[{bar:20.cyan/white}] Finding blobs to repack ({pos} / {len})")
                 .unwrap()
                 .progress_chars("=> "),
         );
+        repack_bar.tick();
+
         let mut repack_blob_info = HashMap::new();
         for referenced_blob_id in &self.referenced_blobs {
+            repack_bar.inc(1);
+
             if let Some((pack_id, blob_type, offset, length, raw_length)) =
                 self.repo.index().read().get(referenced_blob_id)
             {
@@ -238,7 +242,6 @@ impl Plan {
                     );
                 }
             }
-            repack_bar.inc(1);
         }
         repack_bar.finish_and_clear();
 
@@ -257,10 +260,11 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:25.cyan/white}] Repacking blobs: {pos}/{len}")
+                .template("[{bar:20.cyan/white}] Repacking blobs: ({pos} / {len})")
                 .unwrap()
                 .progress_chars("=> "),
         );
+        repack_bar.tick();
 
         let added_size = AtomicU64::new(0);
 
@@ -317,7 +321,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:25.cyan/white}] Deleting old index files: {pos}/{len}")
+                .template("[{bar:20.cyan/white}] Deleting old index files: {pos}/{len}")
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -346,7 +350,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:25.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
+                .template("[{bar:20.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
                 .unwrap()
                 .progress_chars("=> "),
         );

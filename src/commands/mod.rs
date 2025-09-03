@@ -22,7 +22,10 @@ use clap::{ArgGroup, Parser, Subcommand};
 use crate::{
     global::{
         FileType, ID,
-        defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, DEFAULT_MAX_PACK_SIZE_MIB},
+        defaults::{
+            DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
+            MIN_CONFIGURABLE_PACK_SIZE_MIB,
+        },
     },
     repository::{
         repo::Repository,
@@ -89,10 +92,9 @@ pub enum Command {
 
 fn pack_size_parser(s: &str) -> Result<f32> {
     let val = s.parse::<f32>()?;
-    if val <= 0.0 || val >= (4.0 * 1024.0) {
+    if !(MIN_CONFIGURABLE_PACK_SIZE_MIB..=MAX_CONFIGURABLE_PACK_SIZE_MIB).contains(&val) {
         bail!(
-            "The pack size must be between 0 and {} MiB",
-            DEFAULT_MAX_PACK_SIZE_MIB
+            "The pack size must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} MiB and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB",
         );
     }
 

@@ -27,14 +27,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::StorageBackend,
-    repository::{repo::KEYS_DIR, storage::SecureStorage},
+    repository::{
+        repo::{Auth, KEYS_DIR},
+        storage::SecureStorage,
+    },
     ui,
 };
 
 /// A metadata structure that contains information about a repository key
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct KeyFile {
     pub created: DateTime<Utc>,
+    pub username: String,
     pub encrypted_key: String,
     pub salt: String,
 }
@@ -49,7 +53,7 @@ pub fn generate_new_master_key() -> Vec<u8> {
 }
 
 /// Generates a new KeyFile for the master key with a new password
-pub fn generate_key_file(password: &str, master_key: Vec<u8>) -> Result<KeyFile> {
+pub fn generate_key_file(username: &str, password: &str, master_key: Vec<u8>) -> Result<KeyFile> {
     let create_time = Utc::now();
 
     const SALT_LENGTH: usize = 32;
@@ -60,6 +64,7 @@ pub fn generate_key_file(password: &str, master_key: Vec<u8>) -> Result<KeyFile>
 
     let key_file = KeyFile {
         created: create_time,
+        username: username.to_string(),
         encrypted_key: base64::engine::general_purpose::STANDARD.encode(encrypted_key),
         salt: base64::engine::general_purpose::STANDARD.encode(salt),
     };
@@ -69,7 +74,7 @@ pub fn generate_key_file(password: &str, master_key: Vec<u8>) -> Result<KeyFile>
 
 /// Retrieve the master key from all available keys in a folder
 pub fn retrieve_master_key(
-    password: &str,
+    auth: &Auth,
     keyfile_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
 ) -> Result<Vec<u8>> {
@@ -80,7 +85,7 @@ pub fn retrieve_master_key(
             let keyfile: KeyFile = serde_json::from_slice(&keyfile)
                 .with_context(|| format!("KeyFile at {path:?} is invalid"))?;
 
-            decode_master_key(password, keyfile)
+            decode_master_key(&auth.password, keyfile)
         }
         None => {
             let keys_path = Path::new(KEYS_DIR);
@@ -108,7 +113,12 @@ pub fn retrieve_master_key(
                     }
                 };
 
-                if let Ok(master_key) = decode_master_key(password, keyfile) {
+                // Discard this key if it belongs to a different user
+                if keyfile.username != auth.username {
+                    continue;
+                }
+
+                if let Ok(master_key) = decode_master_key(&auth.password, keyfile) {
                     return Ok(master_key);
                 }
             }

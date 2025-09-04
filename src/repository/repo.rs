@@ -57,6 +57,13 @@ pub(crate) const LOCKS_DIR: &str = "locks";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 
+/// Authentication credentials of a user
+#[derive(Debug)]
+pub struct Auth {
+    pub username: String,
+    pub password: String,
+}
+
 #[derive(Debug)]
 pub struct RepoConfig {
     pub pack_size: u64,
@@ -95,17 +102,16 @@ pub struct Repository {
 impl Repository {
     /// Create and initialize a new repository
     pub fn init(
-        password: Option<String>,
+        auth: Option<&Auth>,
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<()> {
-        let pass = match password {
-            Some(p) => p,
-            None => ui::cli::request_password_with_confirmation(
-                "Enter new password for repository",
-                "Confirm password",
-                "Passwords don't match",
-            ),
+        let (username, password) = match auth {
+            Some(Auth { username, password }) => (username.to_string(), password.to_string()),
+            None => {
+                let a = ui::cli::request_new_auth();
+                (a.username, a.password)
+            }
         };
 
         // Create the repository root
@@ -122,7 +128,7 @@ impl Repository {
 
         // Create new key
         let master_key = generate_new_master_key();
-        let keyfile = generate_key_file(&pass, master_key.clone())
+        let keyfile = generate_key_file(&username, &password, master_key.clone())
             .with_context(|| "Could not generate key")?;
         let secure_storage = Arc::new(
             SecureStorage::build()
@@ -181,14 +187,13 @@ impl Repository {
     /// This function prompts for a password to retrieve a master key.
     #[allow(clippy::type_complexity)]
     pub fn try_open_with_lock(
-        password: Option<String>,
+        auth: Option<&Auth>,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
         exclusive_lock: bool,
     ) -> Result<(Arc<Repository>, Arc<SecureStorage>, Arc<RwLock<LockHandle>>)> {
-        let (repo, secure_storage) =
-            Self::try_open_unlocked(password, key_file_path, backend, config)?;
+        let (repo, secure_storage) = Self::try_open_unlocked(auth, key_file_path, backend, config)?;
         let lock = repo.acquire_lock(exclusive_lock)?;
         let lock_handle = Arc::new(RwLock::new(LockHandle::new(repo.clone(), lock)));
 
@@ -199,7 +204,7 @@ impl Repository {
     /// This function prompts for a password to retrieve a master key.
     #[allow(clippy::type_complexity)]
     pub fn try_open_unlocked(
-        mut password: Option<String>,
+        mut auth: Option<&Auth>,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
@@ -212,15 +217,15 @@ impl Repository {
         let mut password_try_count = 0;
 
         let master_key = {
-            if let Some(p) = password.take() {
-                retrieve_master_key(&p, key_file_path, backend.clone())
+            if let Some(a) = auth.take() {
+                retrieve_master_key(a, key_file_path, backend.clone())
                     .with_context(|| "Incorrect password.")?
             } else {
                 loop {
-                    let pass_from_console = ui::cli::request_password("Enter repository password");
+                    let auth_from_console = ui::cli::request_auth();
 
                     if let Ok(key) =
-                        retrieve_master_key(&pass_from_console, key_file_path, backend.clone())
+                        retrieve_master_key(&auth_from_console, key_file_path, backend.clone())
                     {
                         break key;
                     } else {
@@ -838,7 +843,7 @@ mod tests {
     use base64::{Engine, engine::general_purpose};
     use tempfile::tempdir;
 
-    use crate::{backend::localfs::LocalFS, utils};
+    use crate::backend::localfs::LocalFS;
 
     use super::*;
 
@@ -848,11 +853,14 @@ mod tests {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
-        let password = Some(String::from("mapachito"));
+        let auth = Some(Auth {
+            username: String::from("mapachito"),
+            password: String::from("password"),
+        });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        Repository::init(password.clone(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(password, None, backend, RepoConfig::default(), false)?;
+        Repository::init(auth.as_ref(), None, backend.to_owned())?;
+        Repository::try_open_with_lock(auth.as_ref(), None, backend, RepoConfig::default(), false)?;
 
         Ok(())
     }
@@ -868,11 +876,14 @@ mod tests {
         // Write password to file
         std::fs::write(&password_file_path, "mapachito")?;
 
-        let password = utils::get_password_from_file(&Some(password_file_path))?;
+        let auth = Some(Auth {
+            username: String::from("mapachito"),
+            password: String::from("password"),
+        });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        Repository::init(password.clone(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(password, None, backend, RepoConfig::default(), false)?;
+        Repository::init(auth.as_ref(), None, backend.to_owned())?;
+        Repository::try_open_with_lock(auth.as_ref(), None, backend, RepoConfig::default(), false)?;
 
         Ok(())
     }
@@ -881,12 +892,12 @@ mod tests {
     #[test]
     fn test_generate_key_file() -> Result<()> {
         let master_key = generate_new_master_key();
-        let keyfile = generate_key_file("mapachito", master_key.clone())?;
+        let keyfile = generate_key_file("mapachito", "password", master_key.clone())?;
 
         let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
 
-        let intermediate_key = SecureStorage::derive_key("mapachito", &salt);
+        let intermediate_key = SecureStorage::derive_key("password", &salt);
         let decrypted_key = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)?;
 
         assert_eq!(master_key, decrypted_key.as_slice());

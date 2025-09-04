@@ -14,26 +14,40 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use dialoguer::Password;
+use dialoguer::{Input, Password};
 
 /// Requests a password with a prompt without confirmation.
-#[inline]
 pub(crate) fn request_password(promt: &str) -> String {
     Password::new().with_prompt(promt).interact().unwrap()
 }
 
-/// Requests a password with a prompt and confirmation.
-#[inline]
-pub(crate) fn request_password_with_confirmation(
-    prompt: &str,
-    confirmation_prompt: &str,
-    mismatch_err_prompt: &str,
-) -> String {
-    Password::new()
-        .with_prompt(prompt)
-        .with_confirmation(confirmation_prompt, mismatch_err_prompt)
+/// Requests new authentication data (username and password) with confirmation
+pub(crate) fn request_new_auth() -> Auth {
+    let username = Input::new()
+        .with_prompt("Enter new username")
         .interact()
-        .unwrap()
+        .unwrap();
+    let password = Password::new()
+        .with_prompt("Enter new password")
+        .with_confirmation("Confirm password", "Passwords don't match")
+        .interact()
+        .unwrap();
+
+    Auth { username, password }
+}
+
+/// Requests authentication data (username and password)
+pub(crate) fn request_auth() -> Auth {
+    let username = Input::new()
+        .with_prompt("Enter username")
+        .interact()
+        .unwrap();
+    let password = Password::new()
+        .with_prompt("Enter password")
+        .interact()
+        .unwrap();
+
+    Auth { username, password }
 }
 
 #[macro_export]
@@ -102,5 +116,7 @@ macro_rules! verbose_2 {
        $crate::ui::cli::log_with_level!(3, $($arg)*)
     };
 }
+
+use crate::repository::repo::Auth;
 
 pub use {error, log, log_always, log_with_level, verbose_1, verbose_2, warning};

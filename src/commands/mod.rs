@@ -40,6 +40,7 @@ pub mod cmd_clean;
 pub mod cmd_diff;
 pub mod cmd_forget;
 pub mod cmd_init;
+pub mod cmd_key;
 pub mod cmd_log;
 pub mod cmd_ls;
 pub mod cmd_restore;
@@ -79,6 +80,7 @@ pub enum Command {
     Diff(cmd_diff::CmdArgs),
     Forget(cmd_forget::CmdArgs),
     Init(cmd_init::CmdArgs),
+    Key(cmd_key::CmdArgs),
     Log(cmd_log::CmdArgs),
     Ls(cmd_ls::CmdArgs),
     #[cfg(unix)]
@@ -213,6 +215,7 @@ pub fn run(args: &Cli) -> Result<()> {
         Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, cmd_args),
         Command::Amend(cmd_args) => cmd_amend::run(&args.global_args, cmd_args),
         Command::Clean(cmd_args) => cmd_clean::run(&args.global_args, cmd_args),
+        Command::Key(cmd_args) => cmd_key::run(&args.global_args, cmd_args),
         Command::Log(cmd_args) => cmd_log::run(&args.global_args, cmd_args),
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),
         Command::Diff(cmd_args) => cmd_diff::run(&args.global_args, cmd_args),

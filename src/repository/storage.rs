@@ -183,7 +183,7 @@ impl Drop for SecureStorage {
 mod tests {
     use zstd::DEFAULT_COMPRESSION_LEVEL;
 
-    use crate::repository::keys::generate_new_master_key;
+    use crate::repository::keys::KeyManager;
 
     use super::*;
 
@@ -233,7 +233,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_deterministic_encryption() -> Result<()> {
-        let key = generate_new_master_key();
+        let key = KeyManager::generate_new_master_key();
         let secure_storage = SecureStorage::build()
             .with_compression(DEFAULT_COMPRESSION_LEVEL)
             .with_key(key);

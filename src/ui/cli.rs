@@ -21,6 +21,15 @@ pub(crate) fn request_password(promt: &str) -> String {
     Password::new().with_prompt(promt).interact().unwrap()
 }
 
+/// Requests a password with a prompt with confirmation.
+pub(crate) fn request_new_password(promt: &str, confirmation: &str) -> String {
+    Password::new()
+        .with_prompt(promt)
+        .with_confirmation(confirmation, "Passwords don't match")
+        .interact()
+        .unwrap()
+}
+
 /// Requests new authentication data (username and password) with confirmation
 pub(crate) fn request_new_auth() -> Auth {
     let username = Input::new()

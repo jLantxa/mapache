@@ -31,7 +31,7 @@ use crate::{
         defaults::{DEFAULT_PACK_SIZE, SHORT_REPO_ID_LEN},
     },
     repository::{
-        keys::{generate_key_file, generate_new_master_key, retrieve_master_key},
+        keys::KeyManager,
         lock::{Lock, LockHandle},
         packer::{PackSaver, Packer},
         storage::SecureStorage,
@@ -106,12 +106,9 @@ impl Repository {
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<()> {
-        let (username, password) = match auth {
-            Some(Auth { username, password }) => (username.to_string(), password.to_string()),
-            None => {
-                let a = ui::cli::request_new_auth();
-                (a.username, a.password)
-            }
+        let auth = match auth {
+            Some(a) => a,
+            None => &ui::cli::request_new_auth(),
         };
 
         // Create the repository root
@@ -127,8 +124,8 @@ impl Repository {
         backend.create_dir(&keys_path)?;
 
         // Create new key
-        let master_key = generate_new_master_key();
-        let keyfile = generate_key_file(&username, &password, master_key.clone())
+        let master_key = KeyManager::generate_new_master_key();
+        let keyfile = KeyManager::generate_key_file(auth, master_key.clone())
             .with_context(|| "Could not generate key")?;
         let secure_storage = Arc::new(
             SecureStorage::build()
@@ -213,19 +210,22 @@ impl Repository {
             bail!("Could not open a repository. The path does not exist.");
         }
 
+        let key_manager = KeyManager::new(backend.clone());
+
         const MAX_PASSWORD_RETRIES: u32 = 3;
         let mut password_try_count = 0;
 
-        let master_key = {
+        let (_key_id, master_key) = {
             if let Some(a) = auth.take() {
-                retrieve_master_key(a, key_file_path, backend.clone())
+                key_manager
+                    .retrieve_master_key(a, key_file_path)
                     .with_context(|| "Incorrect password.")?
             } else {
                 loop {
                     let auth_from_console = ui::cli::request_auth();
 
                     if let Ok(key) =
-                        retrieve_master_key(&auth_from_console, key_file_path, backend.clone())
+                        key_manager.retrieve_master_key(&auth_from_console, key_file_path)
                     {
                         break key;
                     } else {
@@ -891,8 +891,12 @@ mod tests {
     /// Test generation of master keys
     #[test]
     fn test_generate_key_file() -> Result<()> {
-        let master_key = generate_new_master_key();
-        let keyfile = generate_key_file("mapachito", "password", master_key.clone())?;
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let master_key = KeyManager::generate_new_master_key();
+        let keyfile = KeyManager::generate_key_file(&auth, master_key.clone())?;
 
         let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;

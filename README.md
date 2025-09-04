@@ -78,7 +78,7 @@ The goal of this milestone is to add convenience and quality of life features. T
 - [x] `verify` command to verify the integrity of the data stored in the repository.
 - [x] `stats` command to display stats about the repository and its contents.
 - [x] Repository locks.
-- [ ] Key managment.
+- [x] Key managment.
 - [x] FUSE mount.
 
 `mapache` is in an alpha state. Alpha pre-releases of v0.1.0 will be released to validate the concept and architecture of the client while implementing the core features.

@@ -23,7 +23,7 @@ mod tests {
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, cmd_init::CmdArgs},
         global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
-        repository::{repo::RepoConfig, repo::Repository},
+        repository::repo::{Auth, RepoConfig, Repository},
     };
 
     use anyhow::{Context, Result};
@@ -33,16 +33,22 @@ mod tests {
     fn test_init() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
-        let password = "mapachito";
-        let password_path = tmp_path.join("password");
-        std::fs::write(&password_path, password)?;
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
 
         let repo = String::from("repo");
         let repo_path = tmp_path.join(&repo);
 
         let global = GlobalArgs {
             repo: repo_path.to_string_lossy().to_string(),
-            password_file: Some(password_path),
+            auth_file: Some(auth_file_path),
             key: None,
             quiet: true,
             verbosity: None,
@@ -71,14 +77,8 @@ mod tests {
 
         // Try to open repo
         let backend = Arc::new(LocalFS::new(repo_path));
-        Repository::try_open_with_lock(
-            Some(password.to_string()),
-            None,
-            backend,
-            RepoConfig::default(),
-            false,
-        )
-        .with_context(|| "Failed to open repository")?;
+        Repository::try_open_with_lock(Some(&auth), None, backend, RepoConfig::default(), false)
+            .with_context(|| "Failed to open repository")?;
 
         Ok(())
     }
@@ -87,9 +87,15 @@ mod tests {
     fn test_init_and_open_with_ext_keyfile() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
-        let password = "mapachito";
-        let password_path = tmp_path.join("password");
-        std::fs::write(&password_path, password)?;
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
 
         let repo = String::from("repo");
         let repo_path = tmp_path.join(&repo);
@@ -97,7 +103,7 @@ mod tests {
 
         let global = GlobalArgs {
             repo: repo_path.to_string_lossy().to_string(),
-            password_file: Some(password_path),
+            auth_file: Some(auth_file_path),
             key: Some(keyfile_path.clone()),
             quiet: true,
             verbosity: None,
@@ -128,7 +134,7 @@ mod tests {
         // Try to open repo
         let backend = Arc::new(LocalFS::new(repo_path));
         Repository::try_open_with_lock(
-            Some(password.to_string()),
+            Some(&auth),
             Some(&keyfile_path),
             backend,
             RepoConfig::default(),

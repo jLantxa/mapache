@@ -116,9 +116,9 @@ pub struct GlobalArgs {
     #[clap(long, value_parser)]
     pub ssh_privatekey: Option<PathBuf>,
 
-    /// Path to a file to read the repository password
-    #[clap(short = 'p', long, value_parser)]
-    pub password_file: Option<PathBuf>,
+    /// Path to a file to read the repository authentication credentials
+    #[clap(long, long, value_parser)]
+    pub auth_file: Option<PathBuf>,
 
     /// Pack target size in MiB
     #[clap(long = "pack-size", value_parser = pack_size_parser, default_value_t = DEFAULT_DEFAULT_PACK_SIZE_MIB)]

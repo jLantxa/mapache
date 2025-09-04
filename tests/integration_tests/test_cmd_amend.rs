@@ -25,7 +25,7 @@ mod tests {
         commands::{self, GlobalArgs, UseSnapshot, cmd_amend, cmd_restore, cmd_snapshot},
         global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
         repository::{
-            repo::{RepoConfig, Repository},
+            repo::{Auth, RepoConfig, Repository},
             snapshot::SnapshotStreamer,
         },
         restorer::Resolution,
@@ -42,9 +42,15 @@ mod tests {
     fn test_amend_exclude() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
-        let password = "mapachito";
-        let password_path = tmp_path.join("password");
-        std::fs::write(&password_path, password)?;
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
 
         let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
         let backup_data_tmp_path = tmp_path.join("backup");
@@ -55,7 +61,7 @@ mod tests {
 
         let global = GlobalArgs {
             repo: repo_path.to_string_lossy().to_string(),
-            password_file: Some(password_path),
+            auth_file: Some(auth_file_path),
             key: None,
             quiet: true,
             verbosity: None,
@@ -66,7 +72,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(password, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone())?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -171,9 +177,15 @@ mod tests {
     fn test_amend_tags_and_description() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
-        let password = "mapachito";
-        let password_path = tmp_path.join("password");
-        std::fs::write(&password_path, password)?;
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
 
         let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
         let backup_data_tmp_path = tmp_path.join("backup");
@@ -184,7 +196,7 @@ mod tests {
 
         let global = GlobalArgs {
             repo: repo_path.to_string_lossy().to_string(),
-            password_file: Some(password_path),
+            auth_file: Some(auth_file_path),
             key: None,
             quiet: true,
             verbosity: None,
@@ -195,9 +207,9 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(password, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone())?;
         let (repo, _, test_repo_lock_handle) = Repository::try_open_with_lock(
-            Some(password.to_string()),
+            Some(&auth),
             None,
             backend,
             RepoConfig::default(),

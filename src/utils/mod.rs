@@ -27,7 +27,7 @@ use anyhow::{Context, Result, anyhow};
 use blake3::Hasher;
 use chrono::{DateTime, Duration, Local};
 
-use crate::global::Hash256;
+use crate::{global::Hash256, repository::repo::Auth};
 
 // --- Constants ---
 
@@ -46,15 +46,34 @@ pub mod size {
 
 // --- Password ---
 
-pub fn get_password_from_file(password_file_path: &Option<PathBuf>) -> Result<Option<String>> {
-    password_file_path
-        .as_ref()
-        .map(|path| {
-            std::fs::read_to_string(path).with_context(|| {
+pub fn get_auth_from_file(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
+    match password_file_path {
+        None => Ok(None),
+        Some(path) => {
+            let text = std::fs::read_to_string(path).with_context(|| {
                 format!("Could not read repository password from {}", path.display())
-            })
-        })
-        .transpose() // Converts Option<Result<T, E>> to Result<Option<T>, E>
+            })?;
+
+            // Procesa el texto para obtener el username y la password
+            let mut lines = text.lines();
+            let username = lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("File {} is empty", path.display()))?
+                .to_string();
+
+            let password = lines
+                .next()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "File {} is missing the password on the second line",
+                        path.display()
+                    )
+                })?
+                .to_string();
+
+            Ok(Some(Auth { username, password }))
+        }
+    }
 }
 
 // --- Hashing ---

@@ -35,14 +35,15 @@ pub struct CmdArgs {
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let pass = utils::get_password_from_file(&global_args.password_file)?;
+    let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args, false)?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
 
-    let (repo, _) = Repository::try_open_unlocked(pass, global_args.key.as_ref(), backend, config)?;
+    let (repo, _) =
+        Repository::try_open_unlocked(auth.as_ref(), global_args.key.as_ref(), backend, config)?;
 
     let locks = repo.get_locks()?;
     let mut num_deleted_locks = 0;

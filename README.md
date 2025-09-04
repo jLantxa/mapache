@@ -69,9 +69,9 @@ The second milestone consists of adding features related to repository maintenan
 
 After that, the plan is to expand the functionality with new options, features, optimizations, and ergonomics.
 
-### 3. `Smooth mapache`
+### 3. `Smooth mapache` (current)
 
-The goal of this milestone is to add convenience and quality of like feature. Things that are not strictly necessary but make mapache nicer to use. The real goal is to work towards a stable repository format that allows me to add features in the future without making previous versions incompatible. This includes:
+The goal of this milestone is to add convenience and quality of life features. Things that are not strictly necessary but make mapache nicer to use. The real goal is to work towards a stable repository format that allows me to add features in the future without making previous versions incompatible. This includes:
 
 - [x] `amend` command to remove files from existing snapshots and modify metadata.
 - [x] `diff` command to show differences between snapshots.
@@ -80,6 +80,14 @@ The goal of this milestone is to add convenience and quality of like feature. Th
 - [x] Repository locks.
 - [ ] Key managment.
 - [x] FUSE mount.
+
+`mapache` is in an alpha state. Alpha pre-releases of v0.1.0 will be released to validate the concept and architecture of the client while implementing the core features.
+
+### 4. `Stable mapache`
+
+The goal of the milestone is to release the first stable version of mapache.
+`mapache` is in a beta state. Beta pre-releases of v0.1.0 will be released during this period and testing will focus on detecting bugs.
+The goal is to have v0.1.0 released by December 1st 2025 and have a break (and focus on Advent of Code?).
 
 ## Getting started
 
@@ -104,20 +112,20 @@ mapache backup tool
 Usage: mapache [OPTIONS] --repo <REPO> <COMMAND>
 
 Commands:
-  init      Initialize a new repository
-  snapshot  Create a new snapshot
-  restore   Restore a snapshot in a target path
-  log       Show all snapshots present in the repository
-  forget    Remove snapshots from the repository
-  clean     Clean up the repository
   amend     Amend an existing snapshot
-  ls        List nodes in the repository
-  diff      Show differences between snapshots
-  mount     Mount the repository as a file system
   cat       Print repository objects
-  verify    Verify the integrity of the data stored in the repository
+  clean     Clean up the repository
+  diff      Show differences between snapshots
+  forget    Remove snapshots from the repository
+  init      Initialize a new repository
+  log       Show all snapshots present in the repository
+  ls        List nodes in the repository
+  mount     Mount the repository as a file system
+  restore   Restore a snapshot in a target path
+  snapshot  Create a new snapshot
   stats     Display stats about the repository and its contents
-  unlock    Removes existing locks
+  unlock    Remove existing locks
+  verify    Verify the integrity of the data stored in the repository
   help      Print this message or the help of the given subcommand(s)
 
 Options:

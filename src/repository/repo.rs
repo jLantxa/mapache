@@ -231,7 +231,7 @@ impl Repository {
                     } else {
                         password_try_count += 1;
                         if password_try_count < MAX_PASSWORD_RETRIES {
-                            ui::cli::log!("Incorrect password. Try again.");
+                            ui::cli::log!("Incorrect username or password. Try again.");
                             continue;
                         } else {
                             bail!("Wrong password or no KeyFile found.");

@@ -149,16 +149,18 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!();
     }
 
-    let mut snapshot_counter = 0;
+    let num_snapshots = snapshot_streamer.len();
     let mut ok_counter = 0;
     let mut error_counter = 0;
-    for (snapshot_id, _snapshot) in snapshot_streamer {
+    for (i, (snapshot_id, _snapshot)) in snapshot_streamer.enumerate() {
         ui::cli::log!(
-            "Verifying snapshot {}",
+            "Verifying snapshot {}  ({} / {})",
             snapshot_id
                 .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
                 .bold()
-                .yellow()
+                .yellow(),
+            i + 1,
+            num_snapshots
         );
 
         let res = if args.simulate_restore {
@@ -182,14 +184,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 error_counter += 1
             }
         }
-
-        snapshot_counter += 1;
     }
 
     ui::cli::log!();
     ui::cli::log!(
         "{} verified",
-        utils::format_count(snapshot_counter, "snapshot", "snapshots"),
+        utils::format_count(num_snapshots, "snapshot", "snapshots"),
     );
     if ok_counter > 0 {
         ui::cli::log!("{} {}", ok_counter, "[OK]".bold().green());
@@ -232,7 +232,7 @@ pub fn verify_snapshot(
     let bar = mp.add(ProgressBar::new(snapshot.size()));
     bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{custom_elapsed}] [{bar:20.cyan/white}] {processed_bytes_formated}  [ETA: {custom_eta}]")
+            .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  {processed_bytes_formated}  [ETA: {custom_eta}]")
             .unwrap()
             .progress_chars("=> ")
             .with_key(

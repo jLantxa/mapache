@@ -25,7 +25,7 @@ use std::{
     time::SystemTime,
 };
 
-use crate::{backend::sftp::SftpBackend, commands::GlobalArgs};
+use crate::backend::sftp::SftpBackend;
 use anyhow::{Result, anyhow, bail};
 use dry::DryBackend;
 use localfs::LocalFS;
@@ -98,18 +98,22 @@ pub trait StorageBackend: Send + Sync {
     fn lstat(&self, path: &Path) -> Result<FileAttr>;
 }
 
-pub fn new_backend_with_prompt(
-    global_args: &GlobalArgs,
-    dry_backend: bool,
-) -> Result<Arc<dyn StorageBackend>> {
-    let backend_url = BackendUrl::from(&global_args.repo)?;
+pub struct BackendOptions {
+    pub repo_path: String,
+    pub ssh_pubkey: Option<PathBuf>,
+    pub ssh_privatekey: Option<PathBuf>,
+    pub dry_backend: bool,
+}
+
+pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBackend>> {
+    let backend_url = BackendUrl::from(&opts.repo_path)?;
 
     let backend: Arc<dyn StorageBackend> = match backend_url {
         BackendUrl::Local(repo_path) => Arc::new(LocalFS::new(repo_path)),
         BackendUrl::Sftp(username, host, port, repo_path) => {
-            let auth_method = if let Some(private_key) = &global_args.ssh_privatekey {
+            let auth_method = if let Some(private_key) = &opts.ssh_privatekey {
                 sftp::AuthMethod::PubKey {
-                    pubkey: global_args.ssh_pubkey.clone(),
+                    pubkey: opts.ssh_pubkey,
                     private_key: private_key.to_path_buf(),
                     passphrase: None,
                 }
@@ -129,7 +133,7 @@ pub fn new_backend_with_prompt(
         }
     };
 
-    let backend = match dry_backend {
+    let backend = match opts.dry_backend {
         true => Arc::new(DryBackend::new(backend.clone())),
         false => backend,
     };

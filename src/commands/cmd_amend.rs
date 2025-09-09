@@ -22,6 +22,7 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
+use crate::backend::BackendOptions;
 use crate::{
     archiver::tree_serializer::{self, init_pending_trees},
     backend::new_backend_with_prompt,
@@ -80,7 +81,12 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let backend = new_backend_with_prompt(global_args, false)?;
+    let backend = new_backend_with_prompt(BackendOptions {
+        repo_path: global_args.repo.clone(),
+        ssh_pubkey: global_args.ssh_pubkey.clone(),
+        ssh_privatekey: global_args.ssh_privatekey.clone(),
+        dry_backend: false,
+    })?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,

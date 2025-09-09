@@ -21,7 +21,7 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    backend::new_backend_with_prompt,
+    backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::{
         node::{Metadata, Node, NodeType},
@@ -59,7 +59,12 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let backend = new_backend_with_prompt(global_args, false)?;
+    let backend = new_backend_with_prompt(BackendOptions {
+        repo_path: global_args.repo.clone(),
+        ssh_pubkey: global_args.ssh_pubkey.clone(),
+        ssh_privatekey: global_args.ssh_privatekey.clone(),
+        dry_backend: false,
+    })?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,

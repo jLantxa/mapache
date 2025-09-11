@@ -39,7 +39,7 @@ use crate::{
 };
 
 #[derive(Args, Debug, Clone)]
-pub struct NewArgs {
+pub struct AddArgs {
     /// Optional path to save the new Keyfile
     #[clap(long = "path", value_parser)]
     output_keyfile_path: Option<PathBuf>,
@@ -56,9 +56,16 @@ pub struct PasswordChangeArgs {}
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum KeySubcommand {
+    /// List all existing keys
     List,
-    New(NewArgs),
+
+    /// Add a new key
+    Add(AddArgs),
+
+    /// Delete a key
     Delete(DeleteArgs),
+
+    /// Change the password for a user's key
     ChangePassword(PasswordChangeArgs),
 }
 
@@ -73,7 +80,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     println!();
     match &args.subcommand {
         KeySubcommand::List => run_list(global_args),
-        KeySubcommand::New(args) => run_new(global_args, args),
+        KeySubcommand::Add(args) => run_add(global_args, args),
         KeySubcommand::Delete(args) => run_delete(global_args, args),
         KeySubcommand::ChangePassword(args) => run_password_change(global_args, args),
     }
@@ -108,7 +115,7 @@ fn run_list(global_args: &GlobalArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_new(global_args: &GlobalArgs, args: &NewArgs) -> Result<()> {
+fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
     let auth = request_auth();
     let backend = new_backend_with_prompt(BackendOptions {
         repo_path: global_args.repo.clone(),

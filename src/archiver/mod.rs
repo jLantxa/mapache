@@ -154,7 +154,7 @@ impl Archiver {
 
                     s.spawn(move |_| {
                         let stripped_path = path.strip_prefix(&inner_snapshot_root_path_clone).unwrap().to_path_buf();
-                        inner_progress_reporter_clone.processing_file(
+                        inner_progress_reporter_clone.processing_node(
                             stripped_path, diff
                         );
 
@@ -208,7 +208,7 @@ impl Archiver {
             while let Ok(item) = process_item_rx.recv() {
                 // Notify reporter
                 let (item_path, _) = &item;
-                serializer_progress_reporter_clone.processed_file(
+                serializer_progress_reporter_clone.processed_node(
                     item_path
                         .strip_prefix(serializer_snapshot_root_path_clone.clone())
                         .unwrap(),

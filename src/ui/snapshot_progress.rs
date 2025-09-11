@@ -194,7 +194,7 @@ impl SnapshotProgressReporter {
         let _ = self.mp.clear();
     }
 
-    pub fn processing_file(&self, path: PathBuf, diff: NodeDiff) {
+    pub fn processing_node(&self, path: PathBuf, diff: NodeDiff) {
         if diff != NodeDiff::Deleted {
             self.processing_items.write().push_back(path.clone());
             self.update_processing_items();
@@ -215,7 +215,7 @@ impl SnapshotProgressReporter {
         }
     }
 
-    pub fn processed_file(&self, path: &Path) {
+    pub fn processed_node(&self, path: &Path) {
         let idx = self.processing_items.read().iter().position(|p| p.eq(path));
         if let Some(i) = idx {
             self.processing_items.write().remove(i);

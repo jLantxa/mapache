@@ -156,7 +156,7 @@ impl BackendUrl {
 
         let parsed_url = Url::from_str(url_str)?;
 
-        match parsed_url.scheme.as_str() {
+        match parsed_url.scheme.as_ref() {
             "sftp" => {
                 let user = parsed_url.username.to_string();
 
@@ -180,7 +180,7 @@ impl BackendUrl {
             _ => {
                 bail!(
                     "Unsupported URL scheme: '{}' for URL '{}'",
-                    parsed_url.scheme,
+                    parsed_url.scheme.as_str(),
                     url_str
                 );
             }

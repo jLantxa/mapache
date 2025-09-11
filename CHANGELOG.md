@@ -4,9 +4,12 @@
 ### Enhancements
 - Added percentage indicator to snapshot and restore.
 - Improved progress reporting during snapshot verification.
-- Remove mountpoint if cmd_mount -c created it.
+- Remove mountpoint if `cmd_mount -c` created it.
 - Added username to authentication. Accessing the repository now requires a username and password.
 - Added key command to manage Keyfiles. Keys can be created, modified and deleted.
+
+### Changes
+- `--resolution` option in `cmd_restore` is now called `--strategy`
 
 ### Fixes
 - Report skipped nodes when restoring (increment processed items and bytes counters).
@@ -27,8 +30,6 @@
 
 ## v0.1.0-alpha.1
 This is the first pre-release version of mapache.
-
-**This is an early development alpha release. It should be OK to play with it, but don't use mapache at this stage as your main or sole backup tool, especially if you need high reliability, at least without having tested it for a while.**
 
 The repository format cannot be considered stable and final yet. mapache has a considerable number of features now, but I need to shift the focus on stability and testing. Some planned features are missing and should be implemented in the coming pre-release versions. The real challenge is deciding when to declare a repository format as stable and what kind of promises can be made about backwards compatibility in the future.
 

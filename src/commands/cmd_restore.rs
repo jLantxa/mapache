@@ -34,7 +34,7 @@ use crate::{
         repo::{RepoConfig, Repository},
         verify::verify_snapshot_links,
     },
-    restorer::{self, Resolution, RestoreOptions},
+    restorer::{self, RestoreOptions, Strategy},
     ui::{
         self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target,
         restore_progress::RestoreProgressReporter,
@@ -42,13 +42,13 @@ use crate::{
     utils::{self, format_size, size},
 };
 
-impl std::fmt::Display for Resolution {
+impl std::fmt::Display for Strategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Resolution::Repo => write!(f, "repo"),
-            Resolution::Local => write!(f, "local"),
-            Resolution::Newer => write!(f, "newer"),
-            Resolution::Fail => write!(f, "fail"),
+            Strategy::Overwrite => write!(f, "overwrite"),
+            Strategy::Skip => write!(f, "skip"),
+            Strategy::Newer => write!(f, "newer"),
+            Strategy::Fail => write!(f, "fail"),
         }
     }
 }
@@ -56,8 +56,8 @@ impl std::fmt::Display for Resolution {
 #[derive(Args, Debug)]
 #[clap(
     about = "Restore a snapshot in a target path",
-    long_about = "Restore a snapshot in a target path. Running this command in\
-    --dry-run mode simulates the restoration of a snapshot, and can be used to\
+    long_about = "Restore a snapshot in a target path. Running this command in \
+    --dry-run mode simulates the restoration of a snapshot, and can be used to \
     detect errors before running the actual restore."
 )]
 pub struct CmdArgs {
@@ -84,11 +84,11 @@ pub struct CmdArgs {
     /// Method for conflict resolution in case a file or directory already exists in the target location.
     ///
     /// fail: Terminates the command with an error.
-    /// local: Skips restoring and keeps the local item.
-    /// repo: Overwrites the item in the target location with the node from the snapshot.
+    /// skip: Skips restoring and keeps the local item.
+    /// overwrite: Overwrites the item in the target location with the node from the snapshot.
     /// newer: Keeps the item with the more recent modified time.
-    #[clap(long, default_value_t=Resolution::Fail)]
-    pub resolution: Resolution,
+    #[clap(long = "strategy", default_value_t=Strategy::Fail)]
+    pub strategy: Strategy,
 
     /// Delete files in the target directory that are not present in the snapshot.
     /// Use with caution.
@@ -228,7 +228,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         args.exclude.clone(),
         RestoreOptions {
             dry_run: args.dry_run,
-            resolution: args.resolution.clone(),
+            strategy: args.strategy.clone(),
             quit_on_error: args.quit_on_error,
             strip_prefix: common_prefix,
         },

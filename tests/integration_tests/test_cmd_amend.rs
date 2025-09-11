@@ -28,7 +28,7 @@ mod tests {
             repo::{Auth, RepoConfig, Repository},
             snapshot::SnapshotStreamer,
         },
-        restorer::Resolution,
+        restorer::Strategy,
     };
 
     use tempfile::tempdir;
@@ -122,7 +122,7 @@ mod tests {
             include: None,
             exclude: None,
             strip_prefix: false,
-            resolution: Resolution::Local,
+            strategy: Strategy::Skip,
             no_verify: false,
             quit_on_error: true,
             delete: false,

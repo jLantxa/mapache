@@ -24,7 +24,7 @@ mod tests {
         commands::{self, GlobalArgs, UseSnapshot, cmd_clean, cmd_restore, cmd_snapshot},
         global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
         repository::repo::Auth,
-        restorer::Resolution,
+        restorer::Strategy,
     };
 
     use tempfile::tempdir;
@@ -146,7 +146,7 @@ mod tests {
             include: None,
             exclude: None,
             strip_prefix: false,
-            resolution: Resolution::Local,
+            strategy: Strategy::Skip,
             no_verify: false,
             quit_on_error: true,
             delete: false,

@@ -18,7 +18,6 @@ pub mod node_restorer;
 pub mod sync;
 
 use std::{
-    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -30,19 +29,18 @@ use crate::{
     fs::{self, tree::SerializedNodeStreamer},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::restore_progress::RestoreProgressReporter,
-    utils,
 };
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
-pub enum Resolution {
+pub enum Strategy {
     Fail,
-    Repo,
-    Local,
+    Overwrite,
+    Skip,
     Newer,
 }
 
 pub struct RestoreOptions {
-    pub resolution: Resolution,
+    pub strategy: Strategy,
     pub strip_prefix: Option<PathBuf>,
     pub dry_run: bool,
     pub quit_on_error: bool,
@@ -62,54 +60,39 @@ pub fn restore(
     let node_streamer =
         SerializedNodeStreamer::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)?;
 
-    // Exclude prefix components
-    let strip_excludes = if let Some(ref prefix) = opts.strip_prefix {
-        let (_, inter) = utils::get_intermediate_paths(&PathBuf::new(), &[prefix.to_path_buf()]);
-        inter.into_keys().collect()
-    } else {
-        BTreeSet::new()
-    };
-
     // Stack directories to restore file times later
-    // Modifying the metadata of a node changes the file times of the parent directory.
-    // Since the SerializedNodeStreamer emits paths in lexicographical order, we can
-    // pop them in reverse order from the stack.
     let mut dir_stack = Vec::new();
 
     for node_res in node_streamer {
         let (mut path, stream_node) = node_res?;
+        let node = &stream_node.node;
 
         if let Some(prefix) = &opts.strip_prefix {
-            if strip_excludes.contains(&path) {
-                continue;
-            }
-
-            path = path
-                .strip_prefix(prefix)
-                .with_context(|| "Failed to strip prefix from restore path")?
-                .to_path_buf();
-
-            if path.to_str().unwrap() == "" {
-                continue;
-            }
+            path = match path.strip_prefix(prefix) {
+                Ok(stripped_path) => {
+                    if stripped_path.as_os_str().is_empty() {
+                        continue;
+                    }
+                    stripped_path.to_path_buf()
+                }
+                Err(_) => {
+                    continue;
+                }
+            };
         }
 
         let restore_path = target_path.join(&path);
-        let node = &stream_node.node;
-
         progress_reporter.processing_node(path.clone());
 
+        let mut should_restore = true;
+
         if fs::path_exists(&restore_path) {
-            match opts.resolution {
-                Resolution::Repo => (),
-                Resolution::Local => {
-                    progress_reporter.processed_item(&path);
-                    if node.is_file() {
-                        progress_reporter.processed_bytes(node.metadata.size);
-                    }
-                    continue;
+            match opts.strategy {
+                Strategy::Overwrite => (),
+                Strategy::Skip => {
+                    should_restore = false;
                 }
-                Resolution::Newer => {
+                Strategy::Newer => {
                     let local_metadata =
                         std::fs::symlink_metadata(&restore_path).with_context(|| {
                             format!(
@@ -118,27 +101,31 @@ pub fn restore(
                             )
                         })?;
 
-                    let local_mtime = local_metadata.modified().with_context(|| {
-                        format!(
-                            "Failed to get modified time for local file {}",
-                            restore_path.display()
-                        )
-                    })?;
+                    if let Some(repo_mtime) = node.metadata.modified_time {
+                        let local_mtime = local_metadata.modified().with_context(|| {
+                            format!(
+                                "Failed to get modified time for local file {}",
+                                restore_path.display()
+                            )
+                        })?;
 
-                    if let Some(repo_mtime) = stream_node.node.metadata.modified_time {
                         if local_mtime >= repo_mtime {
-                            progress_reporter.processed_item(&path);
-                            if node.is_file() {
-                                progress_reporter.processed_bytes(stream_node.node.metadata.size);
-                            }
-                            continue;
+                            should_restore = false;
                         }
                     }
                 }
-                Resolution::Fail => {
+                Strategy::Fail => {
                     bail!("Target {} exists already", restore_path.display());
                 }
             }
+        }
+
+        if !should_restore {
+            progress_reporter.processed_item(&path);
+            if node.is_file() {
+                progress_reporter.processed_bytes(node.metadata.size);
+            }
+            continue;
         }
 
         if node.is_dir() {
@@ -148,7 +135,6 @@ pub fn restore(
             dir_stack.push((path, atime, mtime));
         }
 
-        // Attempt to restore the node
         if let Err(e) = node_restorer::restore_node_to_path(
             repo.as_ref(),
             progress_reporter.clone(),
@@ -160,14 +146,12 @@ pub fn restore(
             if opts.quit_on_error {
                 bail!(error_msg);
             }
-
             progress_reporter.error(&error_msg);
         }
 
         progress_reporter.processed_item(&path);
     }
 
-    // Second pass for the directory file times
     if !opts.dry_run {
         while let Some((path, atime, mtime)) = dir_stack.pop() {
             node_restorer::restore_times(&path, atime.as_ref(), mtime.as_ref())?;

@@ -6,7 +6,8 @@
 - Improved progress reporting during snapshot verification.
 - Remove mountpoint if `cmd_mount -c` created it.
 - Added username to authentication. Accessing the repository now requires a username and password.
-- Added key command to manage Keyfiles. Keys can be created, modified and deleted.
+- Added a key command to manage Keyfiles. Keys can be created, modified and deleted.
+- Added a sync command to synchronize a repository in a different backend.
 
 ### Changes
 - `--resolution` option in `cmd_restore` is now called `--strategy`

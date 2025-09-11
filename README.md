@@ -127,6 +127,7 @@ Commands:
   restore   Restore a snapshot in a target path
   snapshot  Create a new snapshot
   stats     Display stats about the repository and its contents
+  sync      Synchronize a repository in a different location
   unlock    Remove existing locks
   verify    Verify the integrity of the data stored in the repository
   help      Print this message or the help of the given subcommand(s)

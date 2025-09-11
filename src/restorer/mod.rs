@@ -95,12 +95,18 @@ pub fn restore(
         }
 
         let restore_path = target_path.join(&path);
+        let node = &stream_node.node;
+
+        progress_reporter.processing_node(path.clone());
 
         if fs::path_exists(&restore_path) {
             match opts.resolution {
                 Resolution::Repo => (),
                 Resolution::Local => {
-                    progress_reporter.processed_file(&path);
+                    progress_reporter.processed_item(&path);
+                    if node.is_file() {
+                        progress_reporter.processed_bytes(node.metadata.size);
+                    }
                     continue;
                 }
                 Resolution::Newer => {
@@ -121,7 +127,10 @@ pub fn restore(
 
                     if let Some(repo_mtime) = stream_node.node.metadata.modified_time {
                         if local_mtime >= repo_mtime {
-                            progress_reporter.processed_file(&path);
+                            progress_reporter.processed_item(&path);
+                            if node.is_file() {
+                                progress_reporter.processed_bytes(stream_node.node.metadata.size);
+                            }
                             continue;
                         }
                     }
@@ -132,20 +141,18 @@ pub fn restore(
             }
         }
 
-        if stream_node.node.is_dir() {
+        if node.is_dir() {
             let path = restore_path.clone();
-            let atime = stream_node.node.metadata.accessed_time;
-            let mtime = stream_node.node.metadata.modified_time;
+            let atime = node.metadata.accessed_time;
+            let mtime = node.metadata.modified_time;
             dir_stack.push((path, atime, mtime));
         }
-
-        progress_reporter.processing_file(path.clone());
 
         // Attempt to restore the node
         if let Err(e) = node_restorer::restore_node_to_path(
             repo.as_ref(),
             progress_reporter.clone(),
-            &stream_node.node,
+            node,
             &restore_path,
             opts.dry_run,
         ) {
@@ -157,7 +164,7 @@ pub fn restore(
             progress_reporter.error(&error_msg);
         }
 
-        progress_reporter.processed_file(&path);
+        progress_reporter.processed_item(&path);
     }
 
     // Second pass for the directory file times

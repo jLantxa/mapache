@@ -1,11 +1,15 @@
 # Changelog
 
 ## Latest
+### Enhancements
 - Added percentage indicator to snapshot and restore.
 - Improved progress reporting during snapshot verification.
 - Remove mountpoint if cmd_mount -c created it.
 - Added username to authentication. Accessing the repository now requires a username and password.
 - Added key command to manage Keyfiles. Keys can be created, modified and deleted.
+
+### Fixes
+- Report skipped nodes when restoring (increment processed items and bytes counters).
 
 ## v0.1.0-alpha.4
 - Added a progress spinner to log stats progress while analyzing snapshots.

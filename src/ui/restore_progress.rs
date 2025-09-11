@@ -149,21 +149,21 @@ impl RestoreProgressReporter {
         let _ = self.mp.clear();
     }
 
-    pub fn processing_file(&self, path: PathBuf) {
+    pub fn processing_node(&self, path: PathBuf) {
         self.processing_items.write().push_back(path);
         self.update_processing_items();
         self.progress_bar.tick();
-        self.companion_bar.inc(1);
     }
 
-    pub fn processed_file(&self, path: &Path) {
+    pub fn processed_item(&self, path: &Path) {
+        self.progress_bar.tick();
+        self.companion_bar.inc(1);
+
         let idx = self.processing_items.read().iter().position(|p| *p == path);
         if let Some(i) = idx {
             self.processing_items.write().remove(i);
             self.processed_items_count.fetch_add(1, Ordering::Relaxed);
         }
-        self.progress_bar.tick();
-        self.companion_bar.tick();
     }
 
     pub fn processed_bytes(&self, bytes: u64) {

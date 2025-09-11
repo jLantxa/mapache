@@ -158,7 +158,7 @@ pub(crate) fn restore_node_to_path(
                         Some(NodeType::Directory) => {
                             std::os::windows::fs::symlink_dir(dst_path, &symlink_info.target_path)
                                 .with_context(|| {
-                                    format!("Could not create directory symlink {:?}", dst_path)
+                                    format!("Could not create directory symlink {dst_path:?}")
                                 })?;
                         }
 
@@ -166,7 +166,7 @@ pub(crate) fn restore_node_to_path(
                         Some(_) => {
                             std::os::windows::fs::symlink_file(dst_path, &symlink_info.target_path)
                                 .with_context(|| {
-                                    format!("Could not create file symlink {:?}", dst_path)
+                                    format!("Could not create file symlink {dst_path:?}")
                                 })?;
                         }
                         // No type info. Show warning.

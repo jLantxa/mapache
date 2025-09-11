@@ -28,6 +28,7 @@ mod test_cmd_clean;
 mod test_cmd_init;
 mod test_cmd_restore;
 mod test_cmd_snapshot;
+mod test_cmd_sync;
 
 const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
 

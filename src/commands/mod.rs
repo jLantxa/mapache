@@ -46,6 +46,7 @@ pub mod cmd_ls;
 pub mod cmd_restore;
 pub mod cmd_snapshot;
 pub mod cmd_stats;
+pub mod cmd_sync;
 pub mod cmd_unlock;
 pub mod cmd_verify;
 
@@ -88,6 +89,7 @@ pub enum Command {
     Restore(cmd_restore::CmdArgs),
     Snapshot(cmd_snapshot::CmdArgs),
     Stats(cmd_stats::CmdArgs),
+    Sync(cmd_sync::CmdArgs),
     Unlock(cmd_unlock::CmdArgs),
     Verify(cmd_verify::CmdArgs),
 }
@@ -209,22 +211,22 @@ pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 
 pub fn run(args: &Cli) -> Result<()> {
     match &args.command {
-        Command::Init(cmd_args) => cmd_init::run(&args.global_args, cmd_args),
-        Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, cmd_args),
-        Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, cmd_args),
-        Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, cmd_args),
         Command::Amend(cmd_args) => cmd_amend::run(&args.global_args, cmd_args),
+        Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, cmd_args),
         Command::Clean(cmd_args) => cmd_clean::run(&args.global_args, cmd_args),
+        Command::Diff(cmd_args) => cmd_diff::run(&args.global_args, cmd_args),
+        Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, cmd_args),
+        Command::Init(cmd_args) => cmd_init::run(&args.global_args, cmd_args),
         Command::Key(cmd_args) => cmd_key::run(&args.global_args, cmd_args),
         Command::Log(cmd_args) => cmd_log::run(&args.global_args, cmd_args),
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),
-        Command::Diff(cmd_args) => cmd_diff::run(&args.global_args, cmd_args),
-        Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, cmd_args),
-        Command::Verify(cmd_args) => cmd_verify::run(&args.global_args, cmd_args),
-        Command::Stats(cmd_args) => cmd_stats::run(&args.global_args, cmd_args),
-        Command::Unlock(cmd_args) => cmd_unlock::run(&args.global_args, cmd_args),
-
         #[cfg(unix)]
         Command::Mount(cmd_args) => cmd_mount::run(&args.global_args, cmd_args),
+        Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, cmd_args),
+        Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, cmd_args),
+        Command::Stats(cmd_args) => cmd_stats::run(&args.global_args, cmd_args),
+        Command::Sync(cmd_args) => cmd_sync::run(&args.global_args, cmd_args),
+        Command::Unlock(cmd_args) => cmd_unlock::run(&args.global_args, cmd_args),
+        Command::Verify(cmd_args) => cmd_verify::run(&args.global_args, cmd_args),
     }
 }

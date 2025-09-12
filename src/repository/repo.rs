@@ -901,7 +901,7 @@ mod tests {
         let salt = general_purpose::STANDARD.decode(keyfile.salt)?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key)?;
 
-        let intermediate_key = SecureStorage::derive_key("password", &salt);
+        let intermediate_key = SecureStorage::derive_key::<32>("password", &salt)?;
         let decrypted_key = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)?;
 
         assert_eq!(master_key, decrypted_key.as_slice());

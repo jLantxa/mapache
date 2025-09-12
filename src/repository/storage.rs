@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use aes_gcm_siv::{Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
 use rand::TryRngCore;
 use rand::rngs::OsRng;
@@ -151,15 +151,15 @@ impl SecureStorage {
     }
 
     /// Derive a key from a password and a salt
-    pub fn derive_key(password: &str, salt: &[u8]) -> [u8; 32] {
-        let mut output_key_material = [0u8; 32];
-        let _ = Argon2::default().hash_password_into(
-            password.as_bytes(),
-            salt,
-            &mut output_key_material,
-        );
+    pub fn derive_key<const KEY_LEN: usize>(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
+        let argon2 = Argon2::default();
 
-        output_key_material
+        let mut key = [0u8; KEY_LEN];
+        argon2
+            .hash_password_into(password.as_bytes(), salt, &mut key)
+            .map_err(|e| anyhow!("Failed to derive password: {e}"))?;
+
+        Ok(key)
     }
 
     /// Generate a random salt of a given length
@@ -229,6 +229,23 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
         let salt = SecureStorage::generate_salt::<32>();
         assert_eq!(salt.len(), 32);
+    }
+
+    #[test]
+    fn test_derive_key() -> Result<()> {
+        let password = "mapachito";
+        let salt = b"0123456789abcdef0123456789abcdef";
+        let key16a = SecureStorage::derive_key::<16>(password, salt)?;
+        let key16b = SecureStorage::derive_key::<16>(password, salt)?;
+        let key32a = SecureStorage::derive_key::<32>(password, salt)?;
+        let key32b = SecureStorage::derive_key::<32>(password, salt)?;
+
+        assert_eq!(key16a.len(), 16);
+        assert_eq!(key16a, key16b);
+        assert_eq!(key32a.len(), 32);
+        assert_eq!(key32a, key32b);
+
+        Ok(())
     }
 
     #[test]

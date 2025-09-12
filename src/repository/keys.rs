@@ -69,7 +69,7 @@ impl KeyManager {
         let encrypted_key =
             base64::engine::general_purpose::STANDARD.decode(keyfile.encrypted_key.clone())?;
 
-        let intermediate_key = SecureStorage::derive_key(password, &salt);
+        let intermediate_key = SecureStorage::derive_key::<32>(password, &salt)?;
         SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)
             .with_context(|| "Could not retrieve master key from this keyfile")
     }
@@ -80,7 +80,7 @@ impl KeyManager {
 
         const SALT_LENGTH: usize = 32;
         let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
-        let intermediate_key = SecureStorage::derive_key(&auth.password, &salt);
+        let intermediate_key = SecureStorage::derive_key::<32>(&auth.password, &salt)?;
 
         let encrypted_key = SecureStorage::encrypt_with_key(&intermediate_key, &master_key)?;
 

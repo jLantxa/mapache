@@ -35,11 +35,13 @@ zstd = "0.13.3"
 libc = "0.2.175"
 
 
+
 [target.'cfg(unix)'.dependencies]
 fuser = "0.16.0"
 
 
 [dev-dependencies]
+rstest = "0.26.1"
 tar = "0.4.44"
 tempfile = "3.22.0"
 xz2 = "0.1.7"

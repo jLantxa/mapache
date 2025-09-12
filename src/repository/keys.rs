@@ -20,6 +20,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use argon2;
 use base64::Engine;
 use chrono::{DateTime, Local};
 use rand::{TryRngCore, rngs::OsRng};
@@ -36,13 +37,47 @@ use crate::{
     ui,
 };
 
+mod argon2_defaults {
+
+    pub(crate) const fn default_m() -> u32 {
+        argon2::Params::DEFAULT_M_COST
+    }
+
+    pub(crate) const fn default_t() -> u32 {
+        argon2::Params::DEFAULT_T_COST
+    }
+
+    pub(crate) const fn default_p() -> u32 {
+        argon2::Params::DEFAULT_P_COST
+    }
+}
+
 /// A metadata structure that contains information about a repository key
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KeyFile {
     pub created: DateTime<Local>,
     pub username: String,
-    pub encrypted_key: String,
+
+    #[serde(default = "argon2_defaults::default_m")]
+    pub m: u32, // Argon2 memory size
+    #[serde(default = "argon2_defaults::default_t")]
+    pub t: u32, // Argon2 iterations
+    #[serde(default = "argon2_defaults::default_p")]
+    pub p: u32, // Argon2 parallelism
+
     pub salt: String,
+    pub encrypted_key: String,
+}
+
+impl KeyFile {
+    pub fn argon2_params(&self) -> argon2::Params {
+        argon2::ParamsBuilder::new()
+            .m_cost(self.m)
+            .t_cost(self.t)
+            .p_cost(self.p)
+            .build()
+            .expect("Parameters should be valid")
+    }
 }
 
 pub struct KeyManager {
@@ -69,7 +104,8 @@ impl KeyManager {
         let encrypted_key =
             base64::engine::general_purpose::STANDARD.decode(keyfile.encrypted_key.clone())?;
 
-        let intermediate_key = SecureStorage::derive_key::<32>(password, &salt)?;
+        let intermediate_key =
+            SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params())?;
         SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)
             .with_context(|| "Could not retrieve master key from this keyfile")
     }
@@ -78,15 +114,21 @@ impl KeyManager {
     pub fn generate_key_file(auth: &Auth, master_key: Vec<u8>) -> Result<KeyFile> {
         let create_time = Local::now();
 
+        let argon2_params = argon2::Params::default();
+
         const SALT_LENGTH: usize = 32;
         let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
-        let intermediate_key = SecureStorage::derive_key::<32>(&auth.password, &salt)?;
+        let intermediate_key =
+            SecureStorage::derive_key::<32>(&auth.password, &salt, argon2_params.clone())?;
 
         let encrypted_key = SecureStorage::encrypt_with_key(&intermediate_key, &master_key)?;
 
         let key_file = KeyFile {
             created: create_time,
             username: auth.username.clone(),
+            m: argon2_params.m_cost(),
+            t: argon2_params.t_cost(),
+            p: argon2_params.p_cost(),
             encrypted_key: base64::engine::general_purpose::STANDARD.encode(encrypted_key),
             salt: base64::engine::general_purpose::STANDARD.encode(salt),
         };

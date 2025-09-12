@@ -151,8 +151,12 @@ impl SecureStorage {
     }
 
     /// Derive a key from a password and a salt
-    pub fn derive_key<const KEY_LEN: usize>(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
-        let argon2 = Argon2::default();
+    pub fn derive_key<const KEY_LEN: usize>(
+        password: &str,
+        salt: &[u8],
+        params: argon2::Params,
+    ) -> Result<[u8; KEY_LEN]> {
+        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
         let mut key = [0u8; KEY_LEN];
         argon2
@@ -181,6 +185,8 @@ impl Drop for SecureStorage {
 
 #[cfg(test)]
 mod tests {
+
+    use rstest::rstest;
     use zstd::DEFAULT_COMPRESSION_LEVEL;
 
     use crate::repository::keys::KeyManager;
@@ -195,25 +201,18 @@ voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint obca
 cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 "#;
 
-    #[test]
-    fn test_compression_and_decompression() {
+    #[rstest]
+    #[case(0)]
+    #[case(3)]
+    #[case(10)]
+    #[case(15)]
+    #[case(22)]
+    fn test_compression_and_decompression(#[case] level: i32) {
         let original_data = TEXT;
+        let compressed_data = SecureStorage::compress(original_data, level).unwrap();
+        let decompressed_data = SecureStorage::decompress(&compressed_data).unwrap();
 
-        let compression_levels = [0, 3, 10, 15, 22];
-
-        for &compression_level in &compression_levels {
-            let compressed_data =
-                SecureStorage::compress(original_data, compression_level).unwrap();
-            let decompressed_data = SecureStorage::decompress(&compressed_data).unwrap();
-
-            assert_eq!(*original_data, *decompressed_data);
-
-            let ratio = original_data.len() as f64 / compressed_data.len() as f64;
-            println!(
-                "Compression level {}: Ratio = {:.2}",
-                compression_level, ratio
-            );
-        }
+        assert_eq!(*original_data, *decompressed_data);
     }
 
     #[test]
@@ -235,10 +234,10 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_derive_key() -> Result<()> {
         let password = "mapachito";
         let salt = b"0123456789abcdef0123456789abcdef";
-        let key16a = SecureStorage::derive_key::<16>(password, salt)?;
-        let key16b = SecureStorage::derive_key::<16>(password, salt)?;
-        let key32a = SecureStorage::derive_key::<32>(password, salt)?;
-        let key32b = SecureStorage::derive_key::<32>(password, salt)?;
+        let key16a = SecureStorage::derive_key::<16>(password, salt, argon2::Params::default())?;
+        let key16b = SecureStorage::derive_key::<16>(password, salt, argon2::Params::default())?;
+        let key32a = SecureStorage::derive_key::<32>(password, salt, argon2::Params::default())?;
+        let key32b = SecureStorage::derive_key::<32>(password, salt, argon2::Params::default())?;
 
         assert_eq!(key16a.len(), 16);
         assert_eq!(key16a, key16b);

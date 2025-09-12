@@ -36,7 +36,7 @@ libc = "0.2.175"
 
 
 [target.'cfg(unix)'.dependencies]
-fuser = "0.15.1"
+fuser = "0.16.0"
 
 
 [dev-dependencies]

@@ -30,7 +30,7 @@ use crate::{
     archiver::{Archiver, SnapshotOptions},
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
-    fs::tree::FSNodeStreamer,
+    fs::{self, tree::FSNodeStreamer},
     global::{self, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
@@ -150,7 +150,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Use a BTreeSet to remove duplicate paths and sort them alphabetically.
     let mut absolute_source_paths = BTreeSet::new();
     for path in &source_paths {
-        match std::fs::canonicalize(path) {
+        match fs::get_absolute_normalized_path(path) {
             Ok(absolute_path) => {
                 let _ = absolute_source_paths.insert(absolute_path);
             }

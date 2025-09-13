@@ -21,7 +21,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::backend::FileAttr;
+use crate::{backend::FileAttr, fs};
 
 use super::StorageBackend;
 
@@ -41,7 +41,7 @@ impl LocalFS {
     }
 
     fn exists_exact(&self, path: &Path) -> bool {
-        std::fs::exists(path).unwrap_or_default()
+        fs::path_exists(path)
     }
 }
 

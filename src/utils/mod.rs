@@ -515,7 +515,7 @@ pub fn mode_to_permissions_string(mode: u32) -> String {
 /// Returns the hostname and username
 pub fn get_system_info() -> (Option<String>, Option<String>) {
     let hostname = hostname::get().ok().and_then(|hn| hn.into_string().ok());
-    let username = if cfg!(target_os = "windows") {
+    let username = if cfg!(windows) {
         std::env::var("USERNAME").ok()
     } else {
         std::env::var("USER").ok()

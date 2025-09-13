@@ -57,7 +57,7 @@ pub fn get_absolute_normalized_path(path: &Path) -> Result<PathBuf> {
             // This is a special case that must be handled separately to maintain correct paths.
             #[allow(unused_variables)]
             Component::Prefix(prefix) => {
-                #[cfg(target_os = "windows")]
+                #[cfg(windows)]
                 components.push(Component::Prefix(prefix));
             }
 

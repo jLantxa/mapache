@@ -158,21 +158,21 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     }
 
-    // Cannonicalize the exclude paths and filter the source paths using the excludes
-    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &args.exclude {
-        let mut canonicalized_vec = Vec::new();
+    // Normalize the exclude paths and filter the source paths using the excludes
+    let normalized_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &args.exclude {
+        let mut normalized_vec = Vec::new();
         for path in exclude_paths {
-            match std::fs::canonicalize(path) {
-                Ok(absolute_path) => canonicalized_vec.push(absolute_path),
+            match fs::get_absolute_normalized_path(path) {
+                Ok(normalized_path) => normalized_vec.push(normalized_path),
                 Err(e) => bail!("{:?}: {}", path, e.to_string()),
-            }
+            };
         }
-        Some(canonicalized_vec)
+        Some(normalized_vec)
     } else {
         None
     };
 
-    absolute_source_paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
+    absolute_source_paths.retain(|p| utils::filter_path(p, None, normalized_excludes.as_ref()));
     let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
 
     // Extract the snapshot root path
@@ -222,7 +222,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut total_bytes = 0;
     let scan_streamer = FSNodeStreamer::from_paths(
         absolute_source_paths.clone(),
-        cannonical_excludes.clone().unwrap_or_default(),
+        normalized_excludes.clone().unwrap_or_default(),
     )?;
     for (_path, stream_node) in scan_streamer.flatten() {
         let node = stream_node.node;
@@ -265,7 +265,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         SnapshotOptions {
             absolute_source_paths,
             snapshot_root_path,
-            exclude_paths: cannonical_excludes.unwrap_or_default(),
+            exclude_paths: normalized_excludes.unwrap_or_default(),
             parent_snapshot: parent_snapshot_tuple,
             tags,
             description: args.description.clone(),

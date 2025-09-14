@@ -81,6 +81,11 @@ pub fn restore(
             };
         }
 
+        // Create the restore target directory
+        if !opts.dry_run {
+            std::fs::create_dir_all(target_path)?;
+        }
+
         let restore_path = target_path.join(&path);
         progress_reporter.processing_node(path.clone());
 

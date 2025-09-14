@@ -17,14 +17,14 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
+#[cfg(unix)]
+use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+
+use std::{fs::OpenOptions, io::Write, path::Path};
+
 use {
     anyhow::{Context, Result, bail},
     filetime::{FileTime, set_file_times},
-    std::{
-        fs::{self, OpenOptions},
-        io::Write,
-        path::Path,
-    },
 };
 
 #[cfg(unix)]
@@ -35,9 +35,6 @@ use crate::{
     repository::repo::Repository,
     ui::restore_progress::RestoreProgressReporter,
 };
-
-#[cfg(unix)]
-use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
 /// Restores a node to the specified destination path.
 /// This function does not restore file times for directory nodes. This must be
@@ -58,7 +55,7 @@ pub(crate) fn restore_node_to_path(
 
             let dst_file = if !dry_run {
                 if let Some(parent) = dst_path.parent() {
-                    fs::create_dir_all(parent).with_context(|| {
+                    std::fs::create_dir_all(parent).with_context(|| {
                         format!(
                             "Could not create parent directories for file {}",
                             dst_path.display()
@@ -140,17 +137,19 @@ pub(crate) fn restore_node_to_path(
             }
             let symlink_info = symlink_info.unwrap();
 
+            // Create all parent directories before the symlink
+            if !dry_run && let Some(parent) = dst_path.parent() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Could not create parent directories for symlink {dst_path:?}"
+                    )
+                })?;
+            }
+
             #[cfg(unix)]
             {
-                if !dry_run
-                    && let Err(e) = std::os::unix::fs::symlink(&symlink_info.target_path, dst_path)
-                {
-                    progress_reporter.warning(&format!(
-                        "Could not create symlink {} pointing to {} : {}",
-                        dst_path.display(),
-                        symlink_info.target_path.display(),
-                        e
-                    ));
+                if !dry_run {
+                    let _ = std::os::unix::fs::symlink(symlink_info.target_path.clone(), dst_path);
                 }
             }
             #[cfg(windows)]
@@ -159,34 +158,20 @@ pub(crate) fn restore_node_to_path(
                 match symlink_info.target_type {
                     // Directory symlink
                     Some(NodeType::Directory) => {
-                        if !dry_run
-                            && let Err(e) = std::os::windows::fs::symlink_dir(
+                        if !dry_run {
+                            let _ = std::os::windows::fs::symlink_dir(
                                 dst_path,
                                 &symlink_info.target_path,
-                            )
-                        {
-                            progress_reporter.warning(&format!(
-                                "Could not create symlink {} pointing to {} : {}",
-                                dst_path.display(),
-                                symlink_info.target_path.display(),
-                                e
-                            ));
+                            );
                         }
                     }
                     // Everything else (not a directory)
                     Some(_) => {
-                        if !dry_run
-                            && let Err(e) = std::os::windows::fs::symlink_file(
+                        if !dry_run {
+                            let _ = std::os::windows::fs::symlink_file(
                                 dst_path,
                                 &symlink_info.target_path,
-                            )
-                        {
-                            progress_reporter.warning(&format!(
-                                "Could not create symlink {} pointing to '{}' : {}",
-                                dst_path.display(),
-                                symlink_info.target_path.display(),
-                                e
-                            ));
+                            );
                         }
                     }
                     // No type info. Show warning.
@@ -197,8 +182,7 @@ pub(crate) fn restore_node_to_path(
                 }
             }
 
-            // TODO:
-            // Restoring symlink metadata is a bit special, so let's skip it for now.
+            // TODO: Restoring symlink metadata is a bit special, so let's skip it for now.
         }
 
         NodeType::BlockDevice => {

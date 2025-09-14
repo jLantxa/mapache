@@ -28,7 +28,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
-    fs::tree::SerializedNodeStreamer,
+    fs::{get_absolute_normalized_path, tree::SerializedNodeStreamer},
     global::defaults::SHORT_SNAPSHOT_ID_LEN,
     repository::{
         repo::{RepoConfig, Repository},
@@ -218,12 +218,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         NUM_SHOWN_PROCESSING_ITEMS,
     ));
 
+    let abs_normalized_target = get_absolute_normalized_path(&args.target)?;
+
     let start = Instant::now();
 
     restorer::restore(
         repo.clone(),
         &snapshot,
-        &args.target,
+        &abs_normalized_target,
         args.include.clone(),
         args.exclude.clone(),
         RestoreOptions {
@@ -244,7 +246,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         // Delete local nodes not present in the snapshot tree
         restorer::sync::delete_nodes(
             repo,
-            args.target.clone(),
+            abs_normalized_target.clone(),
             &snapshot.tree,
             args.include.clone(),
             args.exclude.clone(),

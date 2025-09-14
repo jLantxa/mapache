@@ -135,49 +135,47 @@ pub(crate) fn restore_node_to_path(
                 ));
                 return Ok(());
             }
-            let symlink_info = symlink_info.unwrap();
+            let symlink_info = symlink_info.expect("Symlink info should exist");
 
-            // Create all parent directories before the symlink
-            if !dry_run && let Some(parent) = dst_path.parent() {
-                std::fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "Could not create parent directories for symlink {dst_path:?}"
-                    )
-                })?;
-            }
-
-            #[cfg(unix)]
-            {
-                if !dry_run {
-                    let _ = std::os::unix::fs::symlink(symlink_info.target_path.clone(), dst_path);
+            if !dry_run {
+                // Create all parent directories before the symlink
+                if let Some(parent) = dst_path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("Could not create parent directories for symlink {dst_path:?}")
+                    })?;
                 }
-            }
-            #[cfg(windows)]
-            {
-                // Windows distinguishes symlinks to files and symlinks to dirs
-                match symlink_info.target_type {
-                    // Directory symlink
-                    Some(NodeType::Directory) => {
-                        if !dry_run {
-                            let _ = std::os::windows::fs::symlink_dir(
-                                dst_path,
-                                &symlink_info.target_path,
-                            );
+
+                #[cfg(unix)]
+                {
+                    std::os::unix::fs::symlink(symlink_info.target_path.clone(), dst_path)
+                        .with_context(|| format!("Could not create symlink {dst_path:?}"))?;
+                }
+                #[cfg(windows)]
+                {
+                    // Windows distinguishes symlinks to files and symlinks to dirs
+                    match symlink_info.target_type {
+                        // Directory symlink
+                        Some(NodeType::Directory) => {
+                            std::os::windows::fs::symlink_dir(dst_path, &symlink_info.target_path)
+                                .with_context(|| {
+                                    format!("Could not create directory symlink {:?}", dst_path)
+                                })?;
                         }
-                    }
-                    // Everything else (not a directory)
-                    Some(_) => {
-                        if !dry_run {
-                            let _ = std::os::windows::fs::symlink_file(
-                                dst_path,
-                                &symlink_info.target_path,
-                            );
+
+                        // Everything else (not a directory)
+                        Some(_) => {
+                            std::os::windows::fs::symlink_file(dst_path, &symlink_info.target_path)
+                                .with_context(|| {
+                                    format!("Could not create file symlink {:?}", dst_path)
+                                })?;
                         }
-                    }
-                    // No type info. Show warning.
-                    None => {
-                        progress_reporter
-                            .warning(&format!("Symlink {} has no type info", dst_path.display()));
+                        // No type info. Show warning.
+                        None => {
+                            progress_reporter.warning(&format!(
+                                "Symlink {} has no type info",
+                                dst_path.display()
+                            ));
+                        }
                     }
                 }
             }

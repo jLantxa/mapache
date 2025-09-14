@@ -46,6 +46,8 @@ The development of `mapache` is guided by the following core principles:
 
 `mapache` is still in early development going through milestones.
 
+<img src="doc/res/v0.1.0_roadmap.drawio.svg" alt="v0.1.0 roadmap"/>
+
 ### 1. `Snapshots` *(complete)*
 
 The first `Snapshots` milestone consists of implementing the core architecture and a minimal set of functional features. This includes:
@@ -118,6 +120,7 @@ Commands:
   diff      Show differences between snapshots
   forget    Remove snapshots from the repository
   init      Initialize a new repository
+  key       Create and manage keys
   log       Show all snapshots present in the repository
   ls        List nodes in the repository
   mount     Mount the repository as a file system
@@ -132,7 +135,7 @@ Options:
   -r, --repo <REPO>                      Repository path
       --ssh-pubkey <SSH_PUBKEY>          SSH public key
       --ssh-privatekey <SSH_PRIVATEKEY>  SSH private key
-  -p, --password-file <PASSWORD_FILE>    Path to a file to read the repository password
+      --auth-file <AUTH_FILE>            Path to a file to read the repository authentication credentials
       --pack-size <PACK_SIZE_MIB>        Pack target size in MiB [default: 16]
   -k, --key-file <KEY>                   Path to a KeyFile
       --quiet                            Disable logging (verbosity = 0)

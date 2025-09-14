@@ -13,6 +13,11 @@
 
 ### Fixes
 - Report skipped nodes when restoring (increment processed items and bytes counters).
+- Don't follow symlinks when normalizing source paths.
+- Create parent directories before restoring symlinks
+
+### Fixes
+- Report skipped nodes when restoring (increment processed items and bytes counters).
 
 ## v0.1.0-alpha.4
 - Added a progress spinner to log stats progress while analyzing snapshots.

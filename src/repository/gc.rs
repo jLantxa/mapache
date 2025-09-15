@@ -196,7 +196,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:20.cyan/white}] Deleting unused packs: {pos}/{len}")
+                .template("[{percent} %] [{bar:20.cyan/white}] Deleting unused packs: {pos}/{len}")
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -222,7 +222,9 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:20.cyan/white}] Finding blobs to repack ({pos} / {len})")
+                .template(
+                    "[{percent} %] [{bar:20.cyan/white}] Finding blobs to repack ({pos} / {len})",
+                )
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -260,7 +262,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:20.cyan/white}] Repacking blobs: ({pos} / {len})")
+                .template("[{percent} %] [{bar:20.cyan/white}] Repacking blobs: ({pos} / {len})")
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -321,7 +323,9 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:20.cyan/white}] Deleting old index files: {pos}/{len}")
+                .template(
+                    "[{percent} %] [{bar:20.cyan/white}] Deleting old index files: {pos}/{len}",
+                )
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -350,7 +354,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{bar:20.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
+                .template("[{percent} %]  [{bar:20.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
                 .unwrap()
                 .progress_chars("=> "),
         );

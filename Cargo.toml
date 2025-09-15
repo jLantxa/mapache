@@ -1,6 +1,6 @@
 [package]
 name = "mapache"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 edition = "2024"
 rust-version = "1.88.0"
 
@@ -33,7 +33,6 @@ signal-hook-registry = "1.4.6"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 zstd = "0.13.3"
 libc = "0.2.175"
-
 
 
 [target.'cfg(unix)'.dependencies]

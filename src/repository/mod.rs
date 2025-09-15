@@ -23,5 +23,4 @@ pub mod packer;
 pub mod repo;
 pub mod snapshot;
 pub mod storage;
-pub mod sync;
 pub mod verify;

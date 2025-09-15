@@ -22,12 +22,12 @@ mod tests {
     use anyhow::{Context, Result};
     use mapache::{
         backend::{StorageBackend, localfs::LocalFS},
-        commands::{self, GlobalArgs, UseSnapshot, cmd_snapshot, cmd_sync},
-        global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
-        repository::{
-            repo::Auth,
-            sync::{self, BackendNode},
+        commands::{
+            self, GlobalArgs, UseSnapshot, cmd_snapshot,
+            cmd_sync::{self, BackendNode},
         },
+        global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
+        repository::repo::Auth,
     };
 
     use tempfile::tempdir;
@@ -105,8 +105,8 @@ mod tests {
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path));
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
-        let mut src_nodes = sync::read_backend_dir(src_backend.as_ref(), &PathBuf::new())?;
-        let mut dst_nodes = sync::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())?;
+        let mut src_nodes = cmd_sync::read_backend_dir(src_backend.as_ref(), &PathBuf::new())?;
+        let mut dst_nodes = cmd_sync::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())?;
         src_nodes.sort_unstable_by(forward_cmp);
         dst_nodes.sort_unstable_by(forward_cmp);
 
@@ -202,8 +202,8 @@ mod tests {
         cmd_sync::run(&global, &sync_args).with_context(|| "Failed to run cmd_sync")?;
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
-        let mut src_nodes = sync::read_backend_dir(src_backend.as_ref(), &PathBuf::new())?;
-        let mut dst_nodes = sync::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())?;
+        let mut src_nodes = cmd_sync::read_backend_dir(src_backend.as_ref(), &PathBuf::new())?;
+        let mut dst_nodes = cmd_sync::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())?;
         src_nodes.sort_unstable_by(forward_cmp);
         dst_nodes.sort_unstable_by(forward_cmp);
 

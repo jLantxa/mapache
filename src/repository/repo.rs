@@ -735,6 +735,9 @@ impl Repository {
 
     /// Try to acquire a lock
     fn acquire_lock(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
+        // Make sure the locks directory exists
+        self.backend.create_dir_all(&PathBuf::from(LOCKS_DIR))?;
+
         let locks = self.get_locks()?;
 
         for lock in locks {

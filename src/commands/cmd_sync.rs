@@ -98,7 +98,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     sync_repository(src_backend.as_ref(), dst_backend.as_ref(), args.delete)?;
 
     ui::cli::log!(
-        "\nFinished in {}",
+        "Finished in {}",
         utils::pretty_print_duration(start.elapsed())
     );
 
@@ -228,6 +228,9 @@ fn sync_repository(
 
         delete_progress_bar.finish_and_clear();
     }
+
+    // Create locks folder (ignored by read_backend_dir)
+    dst_backend.create_dir_all(&PathBuf::from(LOCKS_DIR))?;
 
     Ok(())
 }

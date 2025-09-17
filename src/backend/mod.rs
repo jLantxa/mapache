@@ -105,6 +105,7 @@ pub struct BackendOptions {
     pub dry_backend: bool,
 }
 
+/// Open a new backend and prompt for authentication credentials.
 pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBackend>> {
     let backend_url = BackendUrl::from(&opts.repo_path)?;
 
@@ -141,6 +142,7 @@ pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBa
     Ok(backend)
 }
 
+/// The URL to a backend. This could be a path to a directory, an SSH URL, or others.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendUrl {
     Local(PathBuf),
@@ -186,6 +188,41 @@ impl BackendUrl {
             }
         }
     }
+}
+
+/// A directory or file in a backend with its path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendNode {
+    File(PathBuf),
+    Dir(PathBuf),
+}
+
+impl BackendNode {
+    /// Returns the path to the node.
+    pub fn path(&self) -> &Path {
+        match self {
+            BackendNode::File(path) => path,
+            BackendNode::Dir(path) => path,
+        }
+    }
+}
+
+/// Recursively list all files and directories in a backend.
+pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec<BackendNode>> {
+    let mut nodes = Vec::new();
+
+    let root_nodes = backend.read_dir(path)?;
+    for sub_path in root_nodes {
+        if backend.is_file(&sub_path) {
+            nodes.push(BackendNode::File(sub_path.to_path_buf()));
+        } else if backend.is_dir(&sub_path) {
+            nodes.push(BackendNode::Dir(sub_path.to_path_buf()));
+            let mut sub_nodes = read_backend_dir(backend, &sub_path)?;
+            nodes.append(&mut sub_nodes);
+        }
+    }
+
+    Ok(nodes)
 }
 
 #[cfg(test)]

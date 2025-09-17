@@ -14,17 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{path::PathBuf, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
-    backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
+    backend::{self, BackendNode, BackendOptions, StorageBackend},
     commands::cleanup::CleanupHandler,
     repository::repo::{LOCKS_DIR, RepoConfig, Repository},
     ui::{self, default_bar_draw_target},
@@ -46,24 +43,9 @@ pub struct CmdArgs {
     pub delete: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum BackendNode {
-    File(PathBuf),
-    Dir(PathBuf),
-}
-
-impl BackendNode {
-    pub fn path(&self) -> &Path {
-        match self {
-            BackendNode::File(path) => path,
-            BackendNode::Dir(path) => path,
-        }
-    }
-}
-
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let src_backend = new_backend_with_prompt(BackendOptions {
+    let src_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: global_args.repo.clone(),
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
@@ -78,7 +60,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         true,
     )?;
 
-    let dst_backend = new_backend_with_prompt(BackendOptions {
+    let dst_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.target.clone(),
         ssh_pubkey: None,
         ssh_privatekey: None,
@@ -95,7 +77,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     ui::cli::log!("\nSynchronizing repository...");
 
-    sync_repository(src_backend.as_ref(), dst_backend.as_ref(), args.delete)?;
+    sync_backends(src_backend.as_ref(), dst_backend.as_ref(), args.delete)?;
 
     ui::cli::log!(
         "Finished in {}",
@@ -106,16 +88,21 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 /// Synchronize a repository to a destination backend.
-fn sync_repository(
+fn sync_backends(
     src_backend: &dyn StorageBackend,
     dst_backend: &dyn StorageBackend,
     delete: bool,
 ) -> Result<()> {
-    let mut src_nodes = read_backend_dir(src_backend, &PathBuf::new())?;
-    let mut dst_nodes = read_backend_dir(dst_backend, &PathBuf::new())?;
-
     let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
     let reverse_cmp = |n0: &BackendNode, n1: &BackendNode| n1.path().cmp(n0.path());
+
+    let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new())?;
+    let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new())?;
+
+    // Ignore 'locks' directory.
+    // The sync command will acquire a lock, but the locks must not be synchronized.
+    src_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
+    dst_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
 
     src_nodes.sort_unstable_by(forward_cmp);
     dst_nodes.sort_unstable_by(forward_cmp);
@@ -186,9 +173,8 @@ fn sync_repository(
     for node in to_copy {
         // Copy files from src to dst.
 
-        // TODO:
-        // For better performance, we should implement buffered I/O in the backend
-        // and transfer the files in small chunks.
+        // TODO: For better performance, we should implement buffered I/O in the
+        // backend and transfer the files in small chunks.
 
         match node {
             BackendNode::Dir(path) => dst_backend.create_dir_all(&path)?,
@@ -233,33 +219,4 @@ fn sync_repository(
     dst_backend.create_dir_all(&PathBuf::from(LOCKS_DIR))?;
 
     Ok(())
-}
-
-/// Recursively list all files and directories in a backend
-pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec<BackendNode>> {
-    let mut nodes = Vec::new();
-
-    let root_nodes = backend.read_dir(path)?;
-    for sub_path in root_nodes {
-        // Ignore 'locks' directory.
-        // The sync command will acquire a lock, but the locks must not be synchronized.
-        if sub_path
-            .file_name()
-            .map(|name| name == LOCKS_DIR)
-            .unwrap_or(false)
-            && backend.is_dir(&sub_path)
-        {
-            continue;
-        }
-
-        if backend.is_file(&sub_path) {
-            nodes.push(BackendNode::File(sub_path.to_path_buf()));
-        } else if backend.is_dir(&sub_path) {
-            nodes.push(BackendNode::Dir(sub_path.to_path_buf()));
-            let mut sub_nodes = read_backend_dir(backend, &sub_path)?;
-            nodes.append(&mut sub_nodes);
-        }
-    }
-
-    Ok(nodes)
 }

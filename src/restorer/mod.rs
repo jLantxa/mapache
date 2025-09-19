@@ -60,6 +60,11 @@ pub fn restore(
     let node_streamer =
         SerializedNodeStreamer::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)?;
 
+    // Create the restore target directory
+    if !opts.dry_run {
+        std::fs::create_dir_all(target_path)?;
+    }
+
     // Stack directories to restore file times later
     let mut dir_stack = Vec::new();
 
@@ -81,16 +86,10 @@ pub fn restore(
             };
         }
 
-        // Create the restore target directory
-        if !opts.dry_run {
-            std::fs::create_dir_all(target_path)?;
-        }
-
         let restore_path = target_path.join(&path);
         progress_reporter.processing_node(path.clone());
 
         let mut should_restore = true;
-
         if fs::path_exists(&restore_path) {
             match opts.strategy {
                 Strategy::Overwrite => (),

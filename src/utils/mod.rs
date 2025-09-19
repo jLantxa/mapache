@@ -269,14 +269,13 @@ pub fn filter_path(
     include: Option<&Vec<PathBuf>>,
     exclude: Option<&Vec<PathBuf>>,
 ) -> bool {
-    if let Some(exclude_paths) = exclude {
-        if exclude_paths
+    if let Some(exclude_paths) = exclude
+        && exclude_paths
             .iter()
             .any(|ex_path| path.starts_with(ex_path))
         {
             return false;
         }
-    }
 
     if let Some(include_paths) = include {
         let is_included = include_paths

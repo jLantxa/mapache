@@ -275,11 +275,10 @@ impl SftpBackend {
             }
         }
 
-        if let Some(parent) = path.parent() {
-            if parent != Path::new("") {
+        if let Some(parent) = path.parent()
+            && parent != Path::new("") {
                 self.create_dir_all_internal(parent, sftp)?;
             }
-        }
 
         sftp.mkdir(path, 0o755)
             .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))

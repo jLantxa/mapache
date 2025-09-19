@@ -434,11 +434,10 @@ impl Repository {
             .with_context(|| "Could not read snapshots")?;
 
         for path in paths {
-            if self.backend.is_file(&path) {
-                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+            if self.backend.is_file(&path)
+                && let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
                     ids.push(ID::from_hex(file_name)?);
                 }
-            }
         }
 
         Ok(ids)

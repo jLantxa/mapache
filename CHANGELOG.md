@@ -1,6 +1,8 @@
 # Changelog
 
 ## Latest
+### Fixes
+- Create restore target only once.
 
 ## v0.1.0-alpha.5
 ### Enhancements

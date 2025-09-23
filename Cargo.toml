@@ -7,12 +7,12 @@ rust-version = "1.88.0"
 
 [dependencies]
 aes-gcm-siv = "0.11.1"
-anyhow = "1.0.99"
+anyhow = "1.0.100"
 argon2 = "0.5.3"
 base64 = "0.22.1"
 blake3 = "1.8.2"
 chrono = { version = "0.4.42", features = ["serde"] }
-clap = { version = "4.5.47", features = ["derive", "wrap_help"] }
+clap = { version = "4.5.48", features = ["derive", "wrap_help"] }
 colored = "3.0.0"
 crossbeam-channel = "0.5.15"
 dialoguer = "0.12.0"
@@ -26,13 +26,13 @@ parking_lot = "0.12.4"
 rand = "0.9.2"
 rayon = "1.11.0"
 secrecy = "0.10.3"
-serde = { version = "1.0.224", features = ["derive"] }
+serde = { version = "1.0.226", features = ["derive"] }
 serde_json = "1.0.145"
 signal-hook = "0.3.18"
 signal-hook-registry = "1.4.6"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 zstd = "0.13.3"
-libc = "0.2.175"
+libc = "0.2.176"
 
 
 [target.'cfg(unix)'.dependencies]
@@ -42,5 +42,5 @@ fuser = "0.16.0"
 [dev-dependencies]
 rstest = "0.26.1"
 tar = "0.4.44"
-tempfile = "3.22.0"
+tempfile = "3.23.0"
 xz2 = "0.1.7"

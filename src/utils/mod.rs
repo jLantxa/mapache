@@ -1,4 +1,4 @@
-// mapache is an incremental backup tool
+// mapache is a secure, de-duplicating, incremental backup tool.
 // Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
@@ -273,9 +273,9 @@ pub fn filter_path(
         && exclude_paths
             .iter()
             .any(|ex_path| path.starts_with(ex_path))
-        {
-            return false;
-        }
+    {
+        return false;
+    }
 
     if let Some(include_paths) = include {
         let is_included = include_paths

@@ -164,7 +164,7 @@ impl BackendUrl {
 
                 let host = parsed_url
                     .host
-                    .ok_or_else(|| anyhow!("SFTP URL '{}' requires a host", url_str))?
+                    .ok_or_else(|| anyhow!("SFTP URL '{url_str}' requires a host"))?
                     .to_string();
 
                 let port = parsed_url.port.unwrap_or(22);

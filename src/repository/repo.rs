@@ -259,7 +259,7 @@ impl Repository {
 
         let version = manifest.version();
         if version > THIS_REPOSITORY_VERSION {
-            bail!("Invalid repository version \'{}\'", version);
+            bail!("Invalid repository version \'{version}\'");
         }
 
         let repo = Repository::open(backend, secure_storage.clone(), config)?;
@@ -355,7 +355,7 @@ impl Repository {
             Some((pack_id, _blob_type, offset, length, _raw_length)) => {
                 self.load_from_pack(&pack_id, offset, length)
             }
-            None => bail!("Could not find blob {:?} in index", id),
+            None => bail!("Could not find blob {id:?} in index"),
         }
     }
 
@@ -407,7 +407,7 @@ impl Repository {
         let snapshot_path = self.snapshot_path.join(id.to_hex());
 
         if !self.backend.exists(&snapshot_path) {
-            bail!("Snapshot {} doesn't exist", id)
+            bail!("Snapshot {id} doesn't exist")
         }
 
         self.backend
@@ -435,9 +435,10 @@ impl Repository {
 
         for path in paths {
             if self.backend.is_file(&path)
-                && let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
-                    ids.push(ID::from_hex(file_name)?);
-                }
+                && let Some(file_name) = path.file_name().and_then(|s| s.to_str())
+            {
+                ids.push(ID::from_hex(file_name)?);
+            }
         }
 
         Ok(ids)
@@ -509,7 +510,7 @@ impl Repository {
         for file_path in type_files {
             let filename = match file_path.file_name() {
                 Some(os_str) => os_str.to_string_lossy().into_owned(),
-                None => bail!("Failed to list file for type {}", file_type),
+                None => bail!("Failed to list file for type {file_type}"),
             };
 
             if !filename.starts_with(prefix) {
@@ -519,16 +520,12 @@ impl Repository {
             if matches.is_empty() {
                 matches.push((filename, file_path));
             } else {
-                bail!("Prefix {} is ambiguous", prefix);
+                bail!("Prefix {prefix} is ambiguous");
             }
         }
 
         if matches.is_empty() {
-            bail!(
-                "File type {} with prefix {} doesn't exist",
-                file_type,
-                prefix
-            );
+            bail!("File type {file_type} with prefix {prefix} doesn't exist");
         }
 
         let (filename, filepath) = matches.pop().unwrap();

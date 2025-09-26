@@ -122,7 +122,7 @@ impl ID {
             ));
         }
 
-        if hex_len % 2 != 0 {
+        if !hex_len.is_multiple_of(2) {
             bail!("Hex string has an odd length");
         }
 

@@ -172,7 +172,7 @@ impl Packer {
         // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
         let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len());
 
-        if descriptors.len() % HEADER_BLOB_MULTIPLE > 0 {
+        if !descriptors.len().is_multiple_of(HEADER_BLOB_MULTIPLE) {
             let num_padding_blobs =
                 HEADER_BLOB_MULTIPLE - (descriptors.len() % HEADER_BLOB_MULTIPLE);
             for _ in 0..num_padding_blobs {
@@ -263,9 +263,7 @@ impl Packer {
         let header_blob_info_actual_len = header_len;
         if header_blob_info_actual_len % HEADER_BLOB_LEN != 0 {
             bail!(
-                "Pack header is invalid: header blob info length ({}) is not a multiple of expected blob descriptor size ({}).",
-                header_blob_info_actual_len,
-                HEADER_BLOB_LEN
+                "Pack header is invalid: header blob info length ({header_blob_info_actual_len}) is not a multiple of expected blob descriptor size ({HEADER_BLOB_LEN})."
             );
         }
 

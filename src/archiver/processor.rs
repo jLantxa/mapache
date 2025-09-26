@@ -193,7 +193,7 @@ fn chunk_and_save_blobs(
                 pr.written_data_bytes(raw_data_size, encoded_data_size);
                 pr.written_meta_bytes(raw_meta_size, encoded_meta_size);
             }
-            Err(e) => bail!("Failed to save blob to repository: {:?}", e),
+            Err(e) => bail!("Failed to save blob to repository: {e:?}"),
         }
     }
 

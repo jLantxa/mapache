@@ -136,7 +136,7 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
                     bail!("N must be greater than 0")
                 }
             }
-            Err(_) => bail!("{} is not a number", s),
+            Err(_) => bail!("{s} is not a number"),
         }
     }
 }

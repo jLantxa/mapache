@@ -271,12 +271,12 @@ impl KeyManager {
             if matches.is_empty() {
                 matches.push((filename, file_path));
             } else {
-                bail!("Prefix {} is ambiguous", prefix);
+                bail!("Prefix {prefix} is ambiguous");
             }
         }
 
         if matches.is_empty() {
-            bail!("Keyfile with prefix {} doesn't exist", prefix);
+            bail!("Keyfile with prefix {prefix} doesn't exist");
         }
 
         let (filename, filepath) = matches.pop().unwrap();

@@ -269,7 +269,7 @@ fn get_node_type(meta: &FsMetadata) -> Result<NodeType> {
             } else if file_type.is_socket() {
                 NodeType::Socket
             } else {
-                bail!("Unsupported file type {:?}", file_type)
+                bail!("Unsupported file type {file_type:?}")
             }
         }
         #[cfg(not(unix))]

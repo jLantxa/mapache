@@ -183,7 +183,7 @@ pub(crate) fn find_use_snapshot(
             let (id, _path) = repo.find(FileType::Snapshot, prefix)?;
             match &repo.load_snapshot(&id) {
                 Ok(snap) => Ok(Some((id, snap.clone()))),
-                Err(_) => bail!("Snapshot {:?} not found", id),
+                Err(_) => bail!("Snapshot {id:?} not found"),
             }
         }
     }

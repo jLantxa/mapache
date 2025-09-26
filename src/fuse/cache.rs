@@ -78,12 +78,12 @@ impl TreeCache {
         }
 
         // Cache miss: possibly evict
-        if self.trees.len() >= self.capacity {
-            if let Some((_lru_timestamp, lru_id)) = self.order_map.pop_first() {
-                self.trees
-                    .remove(&lru_id)
-                    .expect("LRU ID not found in trees map during eviction");
-            }
+        if self.trees.len() >= self.capacity
+            && let Some((_lru_timestamp, lru_id)) = self.order_map.pop_first()
+        {
+            self.trees
+                .remove(&lru_id)
+                .expect("LRU ID not found in trees map during eviction");
         }
 
         // Load from repository

@@ -45,7 +45,7 @@ pub fn verify_blob(repo: &Repository, id: &ID) -> Result<(u64, u64)> {
 
             Ok((raw_length as u64, length as u64))
         }
-        None => bail!("Could not find blob {:?} in index", id),
+        None => bail!("Could not find blob {id:?} in index"),
     }
 }
 
@@ -120,9 +120,10 @@ pub fn verify_snapshot_links(repo: Arc<Repository>, snapshot_id: &ID) -> Result<
             }
             NodeType::Directory => {
                 if let Some(tree_id) = node.tree
-                    && repo.index().read().get(&tree_id).is_none() {
-                        error_counter += 1;
-                    }
+                    && repo.index().read().get(&tree_id).is_none()
+                {
+                    error_counter += 1;
+                }
             }
             NodeType::Symlink
             | NodeType::BlockDevice
@@ -133,7 +134,7 @@ pub fn verify_snapshot_links(repo: Arc<Repository>, snapshot_id: &ID) -> Result<
     }
 
     if error_counter > 0 {
-        bail!("Snapshot has {} corrupt blobs", error_counter);
+        bail!("Snapshot has {error_counter} corrupt blobs");
     }
 
     Ok(())

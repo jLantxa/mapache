@@ -68,10 +68,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let cannonical_mountpoint = fs::get_absolute_normalized_path(&actual_mountpoint)?;
 
     // Don't allow mounting on the repo path
-    if let BackendUrl::Local(repo_path) = BackendUrl::from(&global_args.repo)? {
-        if cannonical_mountpoint == fs::get_absolute_normalized_path(&repo_path)? {
-            bail!("Cannot mount the repository on itself");
-        }
+    if let BackendUrl::Local(repo_path) = BackendUrl::from(&global_args.repo)?
+        && cannonical_mountpoint == fs::get_absolute_normalized_path(&repo_path)?
+    {
+        bail!("Cannot mount the repository on itself");
     }
 
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;

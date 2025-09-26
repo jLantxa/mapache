@@ -99,12 +99,7 @@ impl SftpConnection {
                     private_key,
                     passphrase.as_deref(),
                 )
-                .map_err(|e| {
-                    anyhow!(format!(
-                        "Failed to authenticate with pubkey: {}",
-                        e.to_string()
-                    ))
-                }),
+                .map_err(|e| anyhow!(format!("Failed to authenticate with pubkey: {e}"))),
         }
     }
 }
@@ -248,8 +243,7 @@ impl SftpBackend {
         if let Ok(stats) = stats {
             if !stats.is_dir() {
                 bail!(format!(
-                    "Failed to create directory {:?}' in sftp backend. Path exists, but it is not a directory.",
-                    path
+                    "Failed to create directory {path:?}' in sftp backend. Path exists, but it is not a directory."
                 ))
             } else {
                 Ok(())
@@ -269,16 +263,16 @@ impl SftpBackend {
                 return Ok(());
             } else {
                 return Err(anyhow::anyhow!(
-                    "Path {:?} exists but is not a directory",
-                    path
+                    "Path {path:?} exists but is not a directory"
                 ));
             }
         }
 
         if let Some(parent) = path.parent()
-            && parent != Path::new("") {
-                self.create_dir_all_internal(parent, sftp)?;
-            }
+            && parent != Path::new("")
+        {
+            self.create_dir_all_internal(parent, sftp)?;
+        }
 
         sftp.mkdir(path, 0o755)
             .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))

@@ -154,7 +154,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(absolute_path) => {
                 let _ = absolute_source_paths.insert(absolute_path);
             }
-            Err(e) => bail!("{:?}: {}", path, e.to_string()),
+            Err(e) => bail!("{path:?}: {e}"),
         }
     }
 
@@ -164,7 +164,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         for path in exclude_paths {
             match fs::get_absolute_normalized_path(path) {
                 Ok(normalized_path) => normalized_vec.push(normalized_path),
-                Err(e) => bail!("{:?}: {}", path, e.to_string()),
+                Err(e) => bail!("{path:?}: {e}"),
             };
         }
         Some(normalized_vec)

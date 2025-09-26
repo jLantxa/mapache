@@ -422,9 +422,7 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
         } else {
             if current_num_str.is_empty() {
                 return Err(anyhow!(
-                    "Invalid duration format: unit '{}' without preceding number in \"{}\"",
-                    c,
-                    s
+                    "Invalid duration format: unit '{c}' without preceding number in \"{s}\""
                 ));
             }
 
@@ -439,7 +437,7 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
                 'd' => total_duration += Duration::days(num),
                 'w' => total_duration += Duration::weeks(num),
                 'y' => total_duration += Duration::days(num * 365),
-                _ => return Err(anyhow!("Invalid duration unit: '{}' in \"{}\"", c, s)),
+                _ => return Err(anyhow!("Invalid duration unit: '{c}' in \"{s}\"")),
             }
             current_num_str.clear();
         }
@@ -447,9 +445,7 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
 
     if !current_num_str.is_empty() {
         return Err(anyhow!(
-            "Invalid duration format: trailing number '{}' without unit in \"{}\"",
-            current_num_str,
-            s
+            "Invalid duration format: trailing number '{current_num_str}' without unit in \"{s}\""
         ));
     }
 

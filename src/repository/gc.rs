@@ -236,12 +236,13 @@ impl Plan {
 
             if let Some((pack_id, blob_type, offset, length, raw_length)) =
                 self.repo.index().read().get(referenced_blob_id)
-                && self.obsolete_packs.contains(&pack_id) {
-                    repack_blob_info.insert(
-                        referenced_blob_id,
-                        (pack_id, blob_type, offset, raw_length, length),
-                    );
-                }
+                && self.obsolete_packs.contains(&pack_id)
+            {
+                repack_blob_info.insert(
+                    referenced_blob_id,
+                    (pack_id, blob_type, offset, raw_length, length),
+                );
+            }
         }
         repack_bar.finish_and_clear();
 
@@ -299,7 +300,7 @@ impl Plan {
         ui::cli::log!("Repacked {} blobs", repack_bar.position());
 
         if let Err(e) = process_result {
-            bail!("An error occurred during repacking: {}", e);
+            bail!("An error occurred during repacking: {e}");
         }
 
         Ok(added_size.load(Ordering::Relaxed))

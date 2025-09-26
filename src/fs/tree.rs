@@ -158,7 +158,7 @@ impl FSNodeStreamer {
                 Ok(children)
             }
             Err(e) => {
-                bail!("Cannot read {:?}: {}", dir, e.to_string())
+                bail!("Cannot read {dir:?}: {e}")
             }
         }
     }
@@ -628,9 +628,7 @@ pub fn find_serialized_node(
             } else {
                 current_tree_id = node.tree.ok_or_else(|| {
                     anyhow!(
-                        "Path component '{}' is not a directory in tree {}",
-                        component,
-                        current_tree_id
+                        "Path component '{component}' is not a directory in tree {current_tree_id}"
                     )
                 })?;
             }

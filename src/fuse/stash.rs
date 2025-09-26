@@ -516,7 +516,7 @@ impl Stash {
 
             let blob = match self.blob_cache.load(blob_id) {
                 Ok(data) => data,
-                Err(e) => bail!("Failed to cache blob {blob_id}: {}", e),
+                Err(e) => bail!("Failed to cache blob {blob_id}: {e}"),
             };
 
             // Ensure the slice is within bounds (defensive check)

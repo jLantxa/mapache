@@ -1,8 +1,11 @@
 # Changelog
 
 ## Latest
+
+## v0.1.0-beta.1
 ### Fixes
 - Create restore target only once.
+- Don't fail if directory was already restored.
 
 ## v0.1.0-alpha.5
 ### Enhancements

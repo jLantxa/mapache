@@ -18,6 +18,7 @@ pub mod node_restorer;
 pub mod sync;
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -65,8 +66,8 @@ pub fn restore(
         std::fs::create_dir_all(target_path)?;
     }
 
-    // Stack directories to restore file times later
-    let mut dir_stack = Vec::new();
+    // Directories to restore file times later
+    let mut restored_dir_times = HashMap::new();
 
     for node_res in node_streamer {
         let (mut path, stream_node) = node_res?;
@@ -119,7 +120,9 @@ pub fn restore(
                     }
                 }
                 Strategy::Fail => {
-                    bail!("Target {} exists already", restore_path.display());
+                    if !node.is_dir() || !restored_dir_times.contains_key(&path) {
+                        bail!("Target {} exists already", restore_path.display());
+                    }
                 }
             }
         }
@@ -136,7 +139,7 @@ pub fn restore(
             let path = restore_path.clone();
             let atime = node.metadata.accessed_time;
             let mtime = node.metadata.modified_time;
-            dir_stack.push((path, atime, mtime));
+            restored_dir_times.insert(path, (atime, mtime));
         }
 
         if let Err(e) = node_restorer::restore_node_to_path(
@@ -157,7 +160,7 @@ pub fn restore(
     }
 
     if !opts.dry_run {
-        while let Some((path, atime, mtime)) = dir_stack.pop() {
+        for (path, (atime, mtime)) in restored_dir_times.into_iter() {
             node_restorer::restore_times(&path, atime.as_ref(), mtime.as_ref())?;
         }
     }

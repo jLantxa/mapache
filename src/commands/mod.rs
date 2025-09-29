@@ -50,7 +50,7 @@ pub mod cmd_sync;
 pub mod cmd_unlock;
 pub mod cmd_verify;
 
-#[cfg(unix)]
+#[cfg(all(feature = "fuse", unix))]
 pub mod cmd_mount;
 
 // CLI arguments
@@ -81,7 +81,7 @@ pub enum Command {
     Key(cmd_key::CmdArgs),
     Log(cmd_log::CmdArgs),
     Ls(cmd_ls::CmdArgs),
-    #[cfg(unix)]
+    #[cfg(all(feature = "fuse", unix))]
     Mount(cmd_mount::CmdArgs),
     Restore(cmd_restore::CmdArgs),
     Snapshot(cmd_snapshot::CmdArgs),
@@ -217,7 +217,7 @@ pub fn run(args: &Cli) -> Result<()> {
         Command::Key(cmd_args) => cmd_key::run(&args.global_args, cmd_args),
         Command::Log(cmd_args) => cmd_log::run(&args.global_args, cmd_args),
         Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),
-        #[cfg(unix)]
+        #[cfg(all(feature = "fuse", unix))]
         Command::Mount(cmd_args) => cmd_mount::run(&args.global_args, cmd_args),
         Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, cmd_args),
         Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, cmd_args),

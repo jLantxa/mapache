@@ -24,5 +24,5 @@ pub mod restorer;
 pub mod ui;
 pub mod utils;
 
-#[cfg(unix)]
+#[cfg(all(feature = "fuse", unix))]
 pub mod fuse;

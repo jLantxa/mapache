@@ -36,7 +36,7 @@ libc = "0.2.176"
 
 
 [target.'cfg(unix)'.dependencies]
-fuser = "0.16.0"
+fuser = {version = "0.16.0", optional = true}
 
 
 [dev-dependencies]
@@ -44,3 +44,8 @@ rstest = "0.26.1"
 tar = "0.4.44"
 tempfile = "3.23.0"
 xz2 = "0.1.7"
+
+
+[features]
+default = ["fuse"]
+fuse = ["fuser"] #FUSE for mount command

@@ -53,9 +53,6 @@ pub mod cmd_verify;
 #[cfg(unix)]
 pub mod cmd_mount;
 
-#[cfg(test)]
-pub mod test_cmd_forget;
-
 // CLI arguments
 #[derive(Parser, Debug)]
 #[clap(

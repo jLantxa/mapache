@@ -93,6 +93,10 @@ pub struct CmdArgs {
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    if args.paths.is_empty() {
+        bail!("No source paths provided.");
+    };
+
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(BackendOptions {
         repo_path: global_args.repo.clone(),
@@ -176,9 +180,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
 
     // Extract the snapshot root path
-    if absolute_source_paths.is_empty() {
-        ui::cli::warning!("No source paths provided. Creating empty snapshot.");
-    };
     let snapshot_root_path = utils::calculate_lcp(&absolute_source_paths, false);
 
     ui::cli::log!();

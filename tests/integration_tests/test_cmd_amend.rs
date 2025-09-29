@@ -219,7 +219,7 @@ mod tests {
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: Vec::new(),
+            paths: vec![backup_data_tmp_path.join("0")],
             as_root: false,
             exclude: None,
             tags_str: "tag0,tag1".to_string(),

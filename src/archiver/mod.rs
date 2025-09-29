@@ -297,6 +297,3 @@ impl Archiver {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {}

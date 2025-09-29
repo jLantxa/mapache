@@ -17,9 +17,13 @@
 #![cfg(test)]
 
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        time::{Duration, SystemTime},
+    };
 
     use anyhow::{Context, Result};
+    use filetime::{FileTime, set_file_times};
     use mapache::{
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
@@ -608,6 +612,131 @@ mod tests {
                 .join("extra10.txt")
                 .exists() // Not deleted as it is outside the includes
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_restore_with_conflict_resolution() -> Result<()> {
+        let tmp_dir = tempdir()?;
+        let tmp_path = tmp_dir.path();
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
+
+        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
+        let backup_data_tmp_path = tmp_path.join("backup");
+        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
+
+        let repo = String::from("repo");
+        let repo_path = tmp_path.join(&repo);
+
+        let global = GlobalArgs {
+            repo: repo_path.to_string_lossy().to_string(),
+            auth_file: Some(auth_file_path),
+            key: None,
+            quiet: true,
+            verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
+            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+        };
+        set_global_opts_with_args(&global);
+
+        // Init repo and create Snapshot 1
+        init_repo(&auth, repo_path.clone())?;
+
+        let snapshot_args = cmd_snapshot::CmdArgs {
+            paths: vec![backup_data_tmp_path.join("0")],
+            as_root: false,
+            exclude: None,
+            tags_str: String::from("S1"),
+            description: None,
+            rescan: false,
+            parent: UseSnapshot::Latest,
+            read_concurrency: 1,
+            write_concurrency: 1,
+            dry_run: false,
+        };
+        commands::cmd_snapshot::run(&global, &snapshot_args)
+            .with_context(|| "Failed to run cmd_snapshot S1")?;
+
+        let restore_path = tmp_path.join("restore_conflicts");
+        let restore_args_initial = cmd_restore::CmdArgs {
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Skip, // Strategy doesn't matter for initial restore
+            no_verify: true,
+            quit_on_error: false,
+            delete: false,
+        };
+        commands::cmd_restore::run(&global, &restore_args_initial)
+            .with_context(|| "Failed to run initial cmd_restore")?;
+
+        let file_to_overwrite = restore_path.join("0").join("file0.txt");
+        let file_to_skip = restore_path.join("0").join("00").join("file00.txt");
+        let original_content =
+            std::fs::read_to_string(backup_data_tmp_path.join("0").join("file0.txt"))?;
+
+        // Change content and metadata for both local files
+        let new_content_overwrite = "Conflict content for Overwrite test";
+        std::fs::write(&file_to_overwrite, new_content_overwrite)?;
+
+        let new_content_skip = "Conflict content for Skip test";
+        std::fs::write(&file_to_skip, new_content_skip)?;
+
+        let filetime = FileTime::from(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000));
+        set_file_times(&file_to_overwrite, filetime, filetime)?;
+        set_file_times(&file_to_skip, filetime, filetime)?;
+
+        let restore_args_overwrite = cmd_restore::CmdArgs {
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: Some(vec![PathBuf::from("0/file0.txt")]),
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Overwrite,
+            no_verify: true,
+            quit_on_error: false,
+            delete: false,
+        };
+        commands::cmd_restore::run(&global, &restore_args_overwrite)
+            .with_context(|| "Failed to run cmd_restore Overwrite")?;
+
+        // Verify that the file was overwritten
+        assert_eq!(
+            std::fs::read_to_string(&file_to_overwrite)?,
+            original_content
+        );
+
+        let restore_args_skip = cmd_restore::CmdArgs {
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: Some(vec![PathBuf::from("0/00/file00.txt")]),
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Skip,
+            no_verify: true,
+            quit_on_error: false,
+            delete: false,
+        };
+        commands::cmd_restore::run(&global, &restore_args_skip)
+            .with_context(|| "Failed to run cmd_restore Skip")?;
+
+        // Verify that the local change was kept (skipped)
+        assert_eq!(std::fs::read_to_string(&file_to_skip)?, new_content_skip);
 
         Ok(())
     }

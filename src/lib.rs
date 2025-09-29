@@ -25,4 +25,4 @@ pub mod ui;
 pub mod utils;
 
 #[cfg(all(feature = "fuse", unix))]
-pub mod fuse;
+pub(crate) mod fuse;

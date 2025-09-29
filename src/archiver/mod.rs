@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod processor;
-pub mod tree_serializer;
+pub(crate) mod processor;
+pub(crate) mod tree_serializer;
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 

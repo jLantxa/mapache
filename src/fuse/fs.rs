@@ -23,7 +23,6 @@ use fuser::{
     FUSE_ROOT_ID, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyData, ReplyDirectory,
     ReplyEntry, ReplyOpen, Request,
 };
-use libc;
 
 use crate::{
     fuse::stash::{Stash, TTL},

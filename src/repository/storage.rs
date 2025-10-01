@@ -41,7 +41,7 @@ impl SecureStorage {
     pub fn build() -> Self {
         Self {
             key: Default::default(),
-            compression_level: Default::default(),
+            compression_level: -1,
         }
     }
 
@@ -185,13 +185,12 @@ impl Drop for SecureStorage {
 
 #[cfg(test)]
 mod tests {
-
     use rstest::rstest;
     use zstd::DEFAULT_COMPRESSION_LEVEL;
 
-    use crate::repository::keys::KeyManager;
-
     use super::*;
+
+    const TEST_KEY: [u8; 32] = *b"0123456789abcdef0123456789abcdef";
 
     const TEXT: &[u8; 431] = br#"
 Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt
@@ -249,7 +248,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_deterministic_encryption() -> Result<()> {
-        let key = KeyManager::generate_new_master_key();
+        let key = TEST_KEY.to_vec();
         let secure_storage = SecureStorage::build()
             .with_compression(DEFAULT_COMPRESSION_LEVEL)
             .with_key(key);
@@ -257,6 +256,104 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         let decoded_plaintext = secure_storage.decode(&ciphertext)?;
 
         assert_eq!(TEXT, decoded_plaintext.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_encryption_decryption_with_key() -> Result<()> {
+        let key = TEST_KEY.as_slice();
+        let original_data = TEXT.as_slice();
+
+        let encrypted_data = SecureStorage::encrypt_with_key(key, original_data)?;
+        let decrypted_data = SecureStorage::decrypt_with_key(key, &encrypted_data)?;
+
+        // Encrypted data must be longer than the original data (nonce + authentication tag)
+        assert!(encrypted_data.len() > original_data.len());
+
+        // Encrypted data must start with the nonce
+        assert_eq!(
+            encrypted_data.len() - original_data.len(),
+            AES_GCM_NONCE_LEN + 16 /* Nonce + GCM-SIV tag */
+        );
+
+        assert_eq!(original_data, decrypted_data.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_encryption_decryption_no_key() -> Result<()> {
+        let secure_storage = SecureStorage::build();
+        let original_data = TEXT.as_slice();
+
+        let encrypted_data = secure_storage.encrypt(original_data)?;
+        let decrypted_data = secure_storage.decrypt(&encrypted_data)?;
+
+        // No key means no encryption, so data should be unchanged
+        assert_eq!(original_data, encrypted_data.as_slice());
+        assert_eq!(original_data, decrypted_data.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_decode_with_key_no_compression() -> Result<()> {
+        let key = TEST_KEY.to_vec();
+        let secure_storage = SecureStorage::build().with_key(key);
+
+        let encoded_data = secure_storage.encode(TEXT)?;
+        let decoded_data = secure_storage.decode(&encoded_data)?;
+
+        println!("{}, {}", encoded_data.len(), TEXT.len());
+
+        // Data should not be smaller than the original due to encryption, but not compressed
+        assert!(encoded_data.len() >= TEXT.len());
+        assert_eq!(TEXT.as_slice(), decoded_data.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_decode_no_key_with_compression() -> Result<()> {
+        let secure_storage = SecureStorage::build().with_compression(DEFAULT_COMPRESSION_LEVEL);
+
+        let encoded_data = secure_storage.encode(TEXT)?;
+        let decoded_data = secure_storage.decode(&encoded_data)?;
+
+        // Data should be smaller than original due to compression, and not encrypted
+        assert!(encoded_data.len() < TEXT.len());
+        assert_eq!(TEXT.as_slice(), decoded_data.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrypt_invalid_data_length() {
+        let key = TEST_KEY.as_slice();
+        let too_short_data = [0u8; AES_GCM_NONCE_LEN - 1]; // Shorter than nonce length
+
+        let result = SecureStorage::decrypt_with_key(key, &too_short_data);
+
+        // Should fail because the cyphertext is shorter than the nonce
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_tampered_data() -> Result<()> {
+        let key = TEST_KEY.as_slice();
+        let original_data = TEXT.as_slice();
+
+        let mut encrypted_data = SecureStorage::encrypt_with_key(key, original_data)?;
+
+        // Tamper with one byte of the ciphertext
+        let tamper_index = encrypted_data.len() / 2;
+        encrypted_data[tamper_index] = encrypted_data[tamper_index].wrapping_add(7);
+
+        let result = SecureStorage::decrypt_with_key(key, &encrypted_data);
+
+        // Decryption should fail due to failed authentication check (tampering)
+        assert!(result.is_err());
 
         Ok(())
     }

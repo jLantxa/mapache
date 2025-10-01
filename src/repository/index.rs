@@ -592,3 +592,76 @@ pub struct IndexFileBlob {
     pub length: u32,
     pub raw_length: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A simple deterministic ID generator for testing
+    fn mock_id(s: &str) -> ID {
+        ID::from_content(s.as_bytes())
+    }
+
+    // Mock PackedBlobDescriptor
+    fn mock_blob_desc(
+        s: &str,
+        blob_type: BlobType,
+        offset: u32,
+        length: u32,
+    ) -> PackedBlobDescriptor {
+        PackedBlobDescriptor {
+            id: mock_id(s),
+            blob_type,
+            offset,
+            length,
+            raw_length: length * 2, // Example raw length
+        }
+    }
+
+    #[test]
+    fn test_index_add_and_get() {
+        let mut index = Index::new();
+        let pack_id_a = mock_id("pack_A");
+        let pack_id_b = mock_id("pack_B");
+
+        let data_blob = mock_blob_desc("data1", BlobType::Data, 100, 50);
+        let tree_blob = mock_blob_desc("tree1", BlobType::Tree, 200, 30);
+        let padding_blob = mock_blob_desc("pad1", BlobType::Padding, 300, 10);
+
+        // Add packs
+        index.add_pack(&pack_id_a, &[data_blob.clone(), padding_blob.clone()]);
+        index.add_pack(&pack_id_b, &[tree_blob.clone()]);
+
+        assert_eq!(index.num_blobs(), 2, "Should count Data and Tree blobs");
+        assert_eq!(index.num_packs(), 2, "Should count two unique packs");
+        assert!(index.is_pending(), "New index should be pending");
+        assert!(index.contains(&data_blob.id));
+        assert!(index.contains(&tree_blob.id));
+        assert!(
+            !index.contains(&padding_blob.id),
+            "Should not contain padding blob"
+        );
+
+        // Test get for Data blob
+        let (p_id, b_type, offset, length, raw_len) = index.get(&data_blob.id).unwrap();
+        assert_eq!(p_id, pack_id_a);
+        assert_eq!(b_type, BlobType::Data);
+        assert_eq!(offset, 100);
+        assert_eq!(length, 50);
+        assert_eq!(raw_len, 100);
+
+        // Test get for Tree blob
+        let (p_id, b_type, offset, length, raw_len) = index.get(&tree_blob.id).unwrap();
+        assert_eq!(p_id, pack_id_b);
+        assert_eq!(b_type, BlobType::Tree);
+        assert_eq!(offset, 200);
+        assert_eq!(length, 30);
+        assert_eq!(raw_len, 60);
+
+        // Test iterator
+        let ids: BTreeSet<ID> = index.iter_ids().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&data_blob.id));
+        assert!(ids.contains(&tree_blob.id));
+    }
+}

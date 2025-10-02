@@ -1,6 +1,16 @@
 # Changelog
 
 ## Latest
+### Changes
+- Don't emit a warning for the first snapshot.
+- Made FUSE a feature. The `mount` command can be disabled during compilation on those systems that don't support it.
+
+### Fixes
+- Fail if no source paths are provided as arguments for `cmd_snapshots`.
+- Append ID to snapshot folder in by_date directory in the FUSE mount to distinguish snapshots with close timestamps.
+
+### Others
+- Added many new tests, which helped find some bugs.
 
 ## v0.1.0-beta.1
 ### Fixes

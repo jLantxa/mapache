@@ -101,7 +101,11 @@ impl Filesystem for MapacheFS {
         // by_date
         let by_date_ino = self.stash.add_dir(snapshots_ino, String::from("by_date"));
         for (id, snapshot) in &snapshots {
-            let name = utils::pretty_print_timestamp(&snapshot.timestamp);
+            let name = format!(
+                "{} - {}",
+                utils::pretty_print_timestamp(&snapshot.timestamp),
+                id.to_short_hex(4)
+            );
             let target = format!("../ids/{}", id.to_hex());
             self.stash.add_symlink(by_date_ino, name.clone(), target);
         }
@@ -109,13 +113,17 @@ impl Filesystem for MapacheFS {
         // Links to the latest snapshot
         if !snapshots.is_empty() {
             let (latest_id, latest_snapshot) = snapshots.last().unwrap().clone();
+
             self.stash
                 .add_symlink(ids_ino, String::from("latest"), latest_id.to_hex());
-            self.stash.add_symlink(
-                by_date_ino,
-                String::from("latest"),
+
+            let by_date_name = format!(
+                "{} - {}",
                 utils::pretty_print_timestamp(&latest_snapshot.timestamp),
+                latest_id.to_short_hex(4)
             );
+            self.stash
+                .add_symlink(by_date_ino, String::from("latest"), by_date_name);
         }
 
         Ok(())

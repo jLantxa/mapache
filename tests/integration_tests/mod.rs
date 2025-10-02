@@ -30,6 +30,9 @@ mod test_cmd_restore;
 mod test_cmd_snapshot;
 mod test_cmd_sync;
 
+#[cfg(all(feature = "fuse", unix))]
+mod test_cmd_mount;
+
 const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
 
 fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {

@@ -4,6 +4,8 @@
 ### Changes
 - Don't emit a warning for the first snapshot.
 - Made FUSE a feature. The `mount` command can be disabled during compilation on those systems that don't support it.
+- `clean` will now de-duplicate blobs existing in different packs.
+- Minor optimizations to the index and garbage collector
 
 ### Fixes
 - Fail if no source paths are provided as arguments for `cmd_snapshots`.

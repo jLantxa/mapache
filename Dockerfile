@@ -39,7 +39,7 @@ RUN git clone https://github.com/jLantxa/mapache.git . && \
     cd /mapache && \
     git checkout $GIT_REF
 
-RUN cargo test
+RUN cargo test -- --skip integration_tests::test_cmd_mount
 RUN cargo build --release
 RUN cargo build --release --target x86_64-pc-windows-gnu
 

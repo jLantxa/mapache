@@ -44,14 +44,14 @@ use crate::{
 /// object is consumed and cannot be used again. This is an intended safety measure.
 pub struct Plan {
     pub repo: Arc<Repository>,
-    pub total_packs: usize, // Total number of blobs in the repository
+    pub total_packs: usize, // Total number of packs in the repository
     pub referenced_blobs: HashSet<ID>, // Blobs referenced by existing snapshots
     pub referenced_packs: HashSet<ID>, // Packs referenced by the referenced blobs
-    pub obsolete_packs: BTreeSet<ID>, // Packs containing non-referenced blobs
-    pub small_packs: BTreeSet<ID>, // Small packs marked to be repacked (to merge)
+    pub obsolete_packs: BTreeSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
+    pub small_packs: BTreeSet<ID>,    // Small packs marked to be repacked (to merge)
     pub tolerated_packs: BTreeSet<ID>, // Packs containing garbage, but keep due to tolerance
-    pub unused_packs: BTreeSet<ID>, // Packs not referenced by any snapshot or index
-    pub index_ids: BTreeSet<ID>, // Current index IDs
+    pub unused_packs: BTreeSet<ID>,   // Packs not referenced by any snapshot or index
+    pub index_ids: BTreeSet<ID>,      // Current index IDs
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
@@ -158,12 +158,8 @@ impl Plan {
         let mut deleted_size = 0;
         let mut added_size = 0;
 
-        // Append small packs to the obsolete pack list. Do this only if there are
-        // at least 2 packs that can be merged.
-        // Small packs will not always be merged with other packs. If all other packs
-        // are full merging will result in a new pack with the leftovers. If two small
-        // packs contain different types of blobs (data and tree), they will be repacked
-        // in separate pack files.
+        // Append small packs to the obsolete pack list. These will be repacked and deleted,
+        // which helps consolidate storage and eliminates duplicates that might be in them.
         if self.small_packs.len() > 1 {
             self.obsolete_packs.append(&mut self.small_packs);
         }
@@ -196,7 +192,9 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] Deleting unused packs: {pos}/{len}")
+                .template(
+                    "[{percent} %] [{bar:20.cyan/white}] Deleting unused packs: {pos} / {len}",
+                )
                 .unwrap()
                 .progress_chars("=> "),
         );
@@ -212,44 +210,59 @@ impl Plan {
         Ok(deleted_size)
     }
 
-    /// Repack referenced blobs from obsolete packs to new packs
+    /// Repack referenced blobs from obsolete packs to new packs.
+    /// This process inherently removes duplicates by using the MasterIndex merge logic.
     fn repack(&mut self) -> Result<u64> {
-        // Collect information about the blobs to repack. Since we will rewrite the index, we will
-        // lose this information.
+        // Collect information about ALL referenced blobs in obsolete packs.
+        // We use iter_ids to find every single record (including duplicates)
+        // that points into a pack scheduled for deletion.
         let repack_bar = ProgressBar::with_draw_target(
             Some(self.referenced_blobs.len() as u64),
             default_bar_draw_target(),
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template(
-                    "[{percent} %] [{bar:20.cyan/white}] Finding blobs to repack ({pos} / {len})",
-                )
+                .template("[{percent} %] [{bar:20.cyan/white}] Finding blobs to repack ({pos})")
                 .unwrap()
                 .progress_chars("=> "),
         );
         repack_bar.tick();
 
-        let mut repack_blob_info = HashMap::new();
-        for referenced_blob_id in &self.referenced_blobs {
+        // Key: Blob ID. Value: Tuple of (Pack ID, BlobType, Offset, Raw Length, Encoded Length)
+        // HashMap ensures we only get one repack instruction per unique referenced blob ID.
+        let mut repack_blob_info = HashMap::<ID, (ID, global::BlobType, u32, u32, u32)>::new();
+
+        for (referenced_blob_id, locator) in self.repo.index().read().iter_ids() {
             repack_bar.inc(1);
 
-            if let Some((pack_id, blob_type, offset, length, raw_length)) =
-                self.repo.index().read().get(referenced_blob_id)
-                && self.obsolete_packs.contains(&pack_id)
+            if self.referenced_blobs.contains(referenced_blob_id)
+                && self.obsolete_packs.contains(&locator.pack_id)
             {
+                // We need the BlobType. We use the canonical MasterIndex::get to get the BlobType
+                // for the referenced ID, or assume Data if the canonical index entry is missing (should not happen).
+                let (_, blob_type, _, _, _) = self.repo.index().read().get(referenced_blob_id).unwrap_or_else(|| {
+                    ui::cli::warning!("Referenced blob {} not found by canonical get. Assuming Data type for repack.", referenced_blob_id);
+                    (ID::default(), global::BlobType::Data, 0, 0, 0)
+                });
+
+                // HashMap insertion here automatically deduplicates the *repack instruction* by Blob ID.
                 repack_blob_info.insert(
-                    referenced_blob_id,
-                    (pack_id, blob_type, offset, raw_length, length),
+                    referenced_blob_id.clone(),
+                    (
+                        locator.pack_id,
+                        blob_type,
+                        locator.offset,
+                        locator.raw_length,
+                        locator.length,
+                    ),
                 );
             }
         }
         repack_bar.finish_and_clear();
 
-        // Rewrite index (remove obsolete packs) and repack.
-        // We read the blobs we need to repack and pass them to the repository.
-        // Since they are no longer in the index, this is like doing a backup of those blobs,
-        // without creating the snapshot.
+        // Index cleanup must happen before repacking to clear the old references,
+        // otherwise the repacked blobs will be considered duplicates and the save will fail.
+        // This is where the old, duplicate index entries are logically removed.
         self.repo
             .index()
             .write()
@@ -274,22 +287,25 @@ impl Plan {
             .num_threads(REPACK_CONCURRENCY)
             .build()
             .expect("Failed to build thread pool");
+
         let process_result: Result<()> = pool.install(|| {
             repack_blob_info.into_par_iter().try_for_each(
                 |(blob_id, (pack_id, blob_type, offset, _raw_length, length))| {
-                    // Reencoding the blob to repack it might seem unnecessary, and it is,
-                    // but this can serve as a validation mechanism and I also don't want
-                    // to leave any option to code paths that lead to any unencrypted repacked blob.
+                    // Read and decode the original data from the obsolete pack.
                     let data = self.repo.read_from_file_and_decode(
                         FileType::Pack,
                         &pack_id,
                         offset as u64,
                         length as u64,
                     )?;
-                    let (_id, (_raw_length, _encoded_length), (_raw_meta, encoded_meta)) = self
+
+                    // Re-encode and save the blob. SaveID::WithID ensures the same blob_id is used,
+                    // and its new location is recorded in the MasterIndex.
+                    let (_id, (_raw_length, encoded_length), (_raw_meta, encoded_meta)) = self
                         .repo
                         .encode_and_save_blob(blob_type, data, SaveID::WithID(blob_id.clone()))?;
-                    added_size.fetch_add(length as u64 + encoded_meta, Ordering::AcqRel);
+
+                    added_size.fetch_add(encoded_length + encoded_meta, Ordering::AcqRel);
 
                     repack_bar.inc(1);
                     Ok(())
@@ -297,7 +313,7 @@ impl Plan {
             )
         });
         repack_bar.finish_and_clear();
-        ui::cli::log!("Repacked {} blobs", repack_bar.position());
+        ui::cli::log!("Repacked {} unique blobs", repack_bar.position());
 
         if let Err(e) = process_result {
             bail!("An error occurred during repacking: {e}");
@@ -312,8 +328,8 @@ impl Plan {
     fn delete_old_indices(&mut self) -> Result<u64> {
         // Delete obsolete index files
         // Make sure that the new index files don't overlap the files to delete.
-        // This can happen if an index did not change while repacking.
-        let new_index_ids = self.repo.index().read().ids();
+        let binding = self.repo.index();
+        let new_index_ids = binding.read().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
 
         let index_delete_bar = ProgressBar::with_draw_target(

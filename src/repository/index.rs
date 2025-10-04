@@ -237,46 +237,49 @@ impl Index {
             return Ok((0, 0));
         }
 
-        let mut packs_with_blobs: HashMap<usize, Vec<IndexFileBlob>> = HashMap::new();
-        for (blob_id, location) in &self.data_ids {
-            let entry = packs_with_blobs
-                .entry(location.pack_array_index as usize)
-                .or_default();
-            entry.push(IndexFileBlob {
-                id: blob_id.clone(),
-                blob_type: BlobType::Data,
-                offset: location.offset,
-                length: location.length,
-                raw_length: location.raw_length,
-            });
-        }
-        for (blob_id, location) in &self.tree_ids {
-            let entry = packs_with_blobs
-                .entry(location.pack_array_index as usize)
-                .or_default();
-            entry.push(IndexFileBlob {
-                id: blob_id.clone(),
-                blob_type: BlobType::Tree,
-                offset: location.offset,
-                length: location.length,
-                raw_length: location.raw_length,
-            });
+        let mut packs_with_blobs: HashMap<usize, (ID, Vec<IndexFileBlob>)> = HashMap::new();
+
+        for (idx, pack_id) in self.pack_ids.iter().enumerate() {
+            packs_with_blobs.insert(idx, (pack_id.clone(), Vec::new()));
         }
 
-        let mut index_file = IndexFile::default();
+        // Populate Blobs in a single pass over data_ids and tree_ids
+        let mut process_blobs = |blob_map: &HashMap<ID, BlobLocation>, blob_type: BlobType| {
+            for (blob_id, location) in blob_map {
+                let (_pack_id, blobs) = packs_with_blobs
+                    .get_mut(&(location.pack_array_index as usize))
+                    .expect("Pack index must exist in packs_with_blobs map");
 
-        // Iterate through packs in the order they were inserted into `pack_ids`.
-        // This ensures a consistent ordering of packs in the generated index files.
+                blobs.push(IndexFileBlob {
+                    id: blob_id.clone(),
+                    blob_type,
+                    offset: location.offset,
+                    length: location.length,
+                    raw_length: location.raw_length,
+                });
+            }
+        };
+
+        process_blobs(&self.data_ids, BlobType::Data);
+        process_blobs(&self.tree_ids, BlobType::Tree);
+
+        let mut index_file = IndexFile {
+            packs: Vec::with_capacity(self.pack_ids.len()),
+        };
+
         for (pack_index, pack_id) in self.pack_ids.iter().enumerate() {
-            if let Some(blobs) = packs_with_blobs.remove(&pack_index) {
-                let index_pack_file = IndexFilePack {
-                    id: pack_id.clone(),
-                    blobs,
-                };
-                index_file.packs.push(index_pack_file);
+            if let Some((_original_pack_id, blobs)) = packs_with_blobs.remove(&pack_index) {
+                // Check if any blobs were actually added to this pack's vector
+                if !blobs.is_empty() {
+                    index_file.packs.push(IndexFilePack {
+                        id: pack_id.clone(),
+                        blobs,
+                    });
+                }
             }
         }
 
+        // Save to Repository
         let (id, raw_size, encoded_size) = repo.save_file(
             global::FileType::Index,
             serde_json::to_string(&index_file)?.as_bytes(),
@@ -302,15 +305,15 @@ impl Index {
     }
 
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
+        let pack_ids = &self.pack_ids;
         self.data_ids
             .iter()
             .chain(self.tree_ids.iter())
-            .map(|(id, loc)| {
+            .map(move |(id, loc)| {
                 (
                     id,
                     BlobLocator {
-                        pack_id: self
-                            .pack_ids
+                        pack_id: pack_ids
                             .get_value(loc.pack_array_index as usize)
                             .unwrap()
                             .clone(),
@@ -324,29 +327,13 @@ impl Index {
 
     fn remove_pack(&mut self, target_pack_id: &ID) {
         if let Some(pack_index) = self.pack_ids.get_index(target_pack_id) {
-            // Collect all blobs associated with this pack index
-            let blobs_to_remove: Vec<ID> = self
-                .data_ids
-                .iter()
-                .filter(|(_, loc)| loc.pack_array_index == *pack_index as u32)
-                .map(|(id, _)| id.clone())
-                .collect();
-            let tree_blobs_to_remove: Vec<ID> = self
-                .tree_ids
-                .iter()
-                .filter(|(_, loc)| loc.pack_array_index == *pack_index as u32)
-                .map(|(id, _)| id.clone())
-                .collect();
+            let pack_index_u32 = *pack_index as u32;
 
-            // Now remove them
-            for blob_id in blobs_to_remove {
-                self.data_ids.remove(&blob_id);
-            }
-            for blob_id in tree_blobs_to_remove {
-                self.tree_ids.remove(&blob_id);
-            }
+            self.data_ids
+                .retain(|_, loc| loc.pack_array_index != pack_index_u32);
+            self.tree_ids
+                .retain(|_, loc| loc.pack_array_index != pack_index_u32);
 
-            // The IndexSet will handle the re-indexing of `pack_array_index` for other packs.
             self.pack_ids.remove(target_pack_id);
         }
     }
@@ -381,11 +368,11 @@ impl MasterIndex {
     /// Returns `true` if the object ID is known either in a finalized index
     /// or is currently a pending blob.
     pub fn contains(&self, id: &ID) -> bool {
-        // Check finalized indices first
-        self.indices
-            .iter()
-            .any(|idx| !idx.is_pending && idx.contains(id))
-            || self.pending_blobs.contains(id) // Then check pending blobs
+        if self.pending_blobs.contains(id) {
+            return true;
+        }
+
+        self.indices.iter().rev().any(|idx| idx.contains(id))
     }
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
@@ -393,6 +380,7 @@ impl MasterIndex {
     pub fn get(&self, id: &ID) -> Option<(ID, BlobType, u32, u32, u32)> {
         self.indices
             .iter()
+            .rev()
             .find_map(|idx| if !idx.is_pending { idx.get(id) } else { None })
     }
 
@@ -419,7 +407,6 @@ impl MasterIndex {
         pack_id: &ID,
         packed_blob_descriptors: Vec<PackedBlobDescriptor>,
     ) -> Result<(u64, u64)> {
-        // Remove processed blobs from the pending set
         for blob in &packed_blob_descriptors {
             self.pending_blobs.remove(&blob.id);
         }
@@ -468,12 +455,10 @@ impl MasterIndex {
     }
 
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
-        // We start with an "empty" chain or the first iterator
         let mut chained_iterator: Box<dyn Iterator<Item = (&ID, BlobLocator)>> =
             Box::new(std::iter::empty());
 
         for index in &self.indices {
-            // Chain each index's iterator to the accumulating chained_iterator
             chained_iterator = Box::new(chained_iterator.chain(index.iter_ids()));
         }
         chained_iterator
@@ -481,67 +466,63 @@ impl MasterIndex {
 
     /// Returns the IDs of all finalized (serialized) indices
     pub fn ids(&self) -> BTreeSet<ID> {
-        let mut ids = BTreeSet::new();
-        for idx in &self.indices {
-            if idx.is_pending() {
-                continue;
-            }
-            if let Some(id) = idx.id() {
-                ids.insert(id);
-            }
-        }
-        ids
+        self.indices
+            .iter()
+            .filter_map(|idx| if !idx.is_pending() { idx.id() } else { None })
+            .collect()
     }
 
-    /// Removes obsolete packs from all indices
     pub fn cleanup(&mut self, obsolete_packs: Option<&BTreeSet<ID>>) {
         if let Some(packs_to_remove) = obsolete_packs {
             for idx in &mut self.indices {
+                // IMPORTANT: Mark index as pending so it can be overwritten/merged.
                 idx.set_pending();
                 for pack_id in packs_to_remove {
                     idx.remove_pack(pack_id);
                 }
             }
         }
+
         self.merge_index();
     }
 
     /// Merges all current indices into a new collection of full indices.
-    /// This function can be used to defragment the current master index into
-    /// a small set of full index files then it becomes fragmented into many
-    /// small files.
     fn merge_index(&mut self) {
         let mut new_indices = Vec::new();
         let mut pack_ids = BTreeSet::new();
 
         let mut current_index = Index::new();
-        for idx in &mut self.indices {
+        // Use drain to take ownership and remove elements from the original vector
+        for idx in self.indices.drain(..) {
             for pack_id in idx.pack_ids.iter() {
                 if pack_ids.contains(pack_id) {
                     continue;
                 }
 
                 if current_index.is_full() {
-                    // Important: The index is not saved yet, so it must not be finalized
+                    current_index.set_pending();
                     new_indices.push(current_index);
                     current_index = Index::new();
                 }
 
-                pack_ids.insert(pack_id);
+                pack_ids.insert(pack_id.clone());
                 let mut packed_blob_descriptors = Vec::new();
 
                 let mut process_blobs =
                     |blob_map: &HashMap<ID, BlobLocation>, blob_type: BlobType| {
-                        for (blob_id, _) in blob_map.iter() {
-                            let (blob_pack_id, _, offset, length, raw_length) =
-                                idx.get(blob_id).unwrap();
-                            if blob_pack_id == *pack_id {
+                        for (blob_id, loc) in blob_map.iter() {
+                            let blob_pack_id = idx
+                                .pack_ids
+                                .get_value(loc.pack_array_index as usize)
+                                .unwrap();
+
+                            if blob_pack_id == pack_id {
                                 let blob_descriptor = PackedBlobDescriptor {
                                     id: blob_id.clone(),
-                                    blob_type: blob_type.clone(),
-                                    offset,
-                                    length,
-                                    raw_length,
+                                    blob_type,
+                                    offset: loc.offset,
+                                    length: loc.length,
+                                    raw_length: loc.raw_length,
                                 };
                                 packed_blob_descriptors.push(blob_descriptor);
                             }
@@ -555,16 +536,15 @@ impl MasterIndex {
         }
 
         if !current_index.is_empty() {
+            current_index.set_pending();
             new_indices.push(current_index);
         }
 
-        self.indices.clear();
         self.indices = new_indices;
     }
 }
 
 /// Represents the on-disk format for an index file.
-/// This structure is used for serialization and deserialization of index data.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndexFile {

@@ -153,10 +153,10 @@ impl LockHandle {
     pub fn unlock(&self) {
         // Changed to &self as it's not strictly a mutable operation
         self.alive_flag.store(false, Ordering::SeqCst);
-        if let Err(e) = self.repo.delete_file(FileType::Lock, self.lock.lock().id()) {
-            // Log the error instead of returning it.
-            ui::cli::warning!("Failed to delete lock file: {e}");
-        }
+
+        // If the lock does not exist or it was "created" by a dry backend,
+        // this will fail, but it's OK anyway.
+        let _ = self.repo.delete_file(FileType::Lock, self.lock.lock().id());
     }
 }
 

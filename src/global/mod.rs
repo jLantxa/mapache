@@ -185,7 +185,7 @@ impl<'de> Deserialize<'de> for ID {
 }
 
 /// Type of objects that can be stored in a repository.
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, FromPrimitive)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, FromPrimitive)]
 #[repr(u8)]
 pub enum BlobType {
     Data = 0x00,

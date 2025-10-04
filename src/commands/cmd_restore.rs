@@ -16,7 +16,7 @@
 
 use std::{
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -238,9 +238,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )?;
 
     progress_reporter.finalize();
-    let error_count = progress_reporter
-        .error_counter
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let error_count = progress_reporter.error_counter.load(Ordering::Relaxed);
 
     if args.delete {
         // Delete local nodes not present in the snapshot tree

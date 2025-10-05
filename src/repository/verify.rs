@@ -51,6 +51,7 @@ pub fn verify_blob(repo: &Repository, id: &ID) -> Result<(u64, u64)> {
     }
 }
 
+// No significant changes needed here, it's already concise.
 pub fn verify_data(id: &ID, data: &[u8], expected_len: Option<u32>) -> Result<u64> {
     let checksum = utils::calculate_hash(data);
     if checksum != id.0[..] {
@@ -81,10 +82,15 @@ pub fn verify_pack(
 
     let pack_header = Packer::parse_pack_header(repo, backend, secure_storage, id)?;
     let mut num_dangling_blobs = 0;
+
+    let index = repo.index();
+    let index_guard = index.read();
+
     for blob_descriptor in pack_header {
         if !visited_blobs.contains(&blob_descriptor.id) {
             // Only verify blobs referenced by the master index
-            if repo.index().read().contains(&blob_descriptor.id) {
+            if index_guard.contains(&blob_descriptor.id) {
+                // The blob ID is verified inside verify_blob
                 verify_blob(repo, &blob_descriptor.id)?;
                 visited_blobs.insert(blob_descriptor.id);
             } else {
@@ -103,9 +109,13 @@ pub fn verify_pack(
 /// or be corrupted.
 pub fn verify_snapshot_links(repo: Arc<Repository>, snapshot_id: &ID) -> Result<()> {
     let snapshot = repo.load_snapshot(snapshot_id)?;
-    let tree_id = snapshot.tree.clone();
+    let tree_id = snapshot.tree;
+
     let streamer =
         SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
+
+    let index = repo.index();
+    let index_guard = index.read();
 
     let mut error_counter = 0;
     for (_path, stream_node) in streamer.flatten() {
@@ -113,18 +123,18 @@ pub fn verify_snapshot_links(repo: Arc<Repository>, snapshot_id: &ID) -> Result<
         match node.node_type {
             NodeType::File => {
                 if let Some(blobs) = node.blobs {
-                    for blob_id in blobs {
-                        if repo.index().read().get(&blob_id).is_none() {
+                    for blob_id in &blobs {
+                        if index_guard.get(blob_id).is_none() {
                             error_counter += 1;
                         }
                     }
                 }
             }
             NodeType::Directory => {
-                if let Some(tree_id) = node.tree
-                    && repo.index().read().get(&tree_id).is_none()
-                {
-                    error_counter += 1;
+                if let Some(tree_id) = &node.tree {
+                    if index_guard.get(tree_id).is_none() {
+                        error_counter += 1;
+                    }
                 }
             }
             NodeType::Symlink

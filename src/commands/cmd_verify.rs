@@ -25,6 +25,8 @@ use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use parking_lot::Mutex;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
@@ -67,20 +69,22 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let backend = new_backend_with_prompt(BackendOptions {
+
+    let backend_options = BackendOptions {
         repo_path: global_args.repo.clone(),
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-    })?;
+    };
+    let backend_arc = new_backend_with_prompt(backend_options)?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
     };
-    let (repo, secure_storage, lock_handle) = Repository::try_open_with_lock(
+    let (repo_arc, secure_storage, lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
-        backend.clone(),
+        backend_arc.clone(),
         config,
         false,
     )?;
@@ -92,54 +96,70 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
+    let snapshot_streamer = SnapshotStreamer::new(repo_arc.clone())?;
+
     let mut visited_blobs = BTreeSet::new();
 
     if args.all_packs {
-        let packs = repo.list_objects()?;
+        let packs = repo_arc.list_objects()?;
+
+        let style = ProgressStyle::default_bar()
+            .template(
+                "[{custom_elapsed}] [{bar:20.cyan/white}] Reading packs: {pos} / {len}  [ETA: {custom_eta}]",
+            )
+            .unwrap()
+            .progress_chars("=> ")
+            .with_key(
+                "custom_elapsed",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed = utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                },
+            )
+            .with_key(
+                "custom_eta",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let eta = state.eta();
+                    let custom_eta = utils::pretty_print_duration(eta);
+                    let _ = w.write_str(&custom_eta);
+                },
+            );
 
         let bar = ProgressBar::new(packs.len() as u64);
         bar.set_draw_target(default_bar_draw_target());
-        bar.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "[{custom_elapsed}] [{bar:20.cyan/white}] Reading packs: {pos} / {len}  [ETA: {custom_eta}]",
-                )
-                .unwrap()
-                .progress_chars("=> ")
-                .with_key(
-                    "custom_elapsed",
-                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let elapsed = state.elapsed();
-                        let custom_elapsed = utils::pretty_print_duration(elapsed);
-                        let _ = w.write_str(&custom_elapsed);
-                    },
-                )
-                .with_key(
-                    "custom_eta",
-                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let eta = state.eta();
-                        let custom_eta = utils::pretty_print_duration(eta);
-                        let _ = w.write_str(&custom_eta);
-                    },
-                ),
-        );
+        bar.set_style(style);
 
-        let mut num_dangling_blobs = 0;
-        for pack_id in &packs {
-            let verify_res = verify_pack(
-                repo.as_ref(),
-                backend.as_ref(),
-                secure_storage.as_ref(),
-                pack_id,
-                &mut visited_blobs,
-            );
+        let visited_blobs_mutex = Mutex::new(visited_blobs);
+        let repo_ref = repo_arc.clone();
+        let backend_ref = backend_arc.clone();
+        let secure_storage_ref = secure_storage.clone();
 
-            if let Ok(dangling_blobs) = verify_res {
-                num_dangling_blobs += dangling_blobs;
-            }
-            bar.inc(1);
-        }
+        let num_dangling_blobs: usize = packs
+            .par_iter()
+            .map(|pack_id| {
+                let mut visited_guard = visited_blobs_mutex.lock();
+
+                let verify_res = verify_pack(
+                    repo_ref.as_ref(),
+                    backend_ref.as_ref(),
+                    secure_storage_ref.as_ref(),
+                    pack_id,
+                    &mut *visited_guard,
+                );
+
+                drop(visited_guard); // Release lock early
+
+                bar.inc(1);
+
+                verify_res.unwrap_or_else(|e| {
+                    ui::cli::error!("Error verifying pack {}: {}", pack_id.to_short_hex(8), e);
+                    0 // Return 0 dangling on error
+                })
+            })
+            .sum();
+
+        visited_blobs = visited_blobs_mutex.into_inner();
 
         bar.finish_and_clear();
         ui::cli::log!(
@@ -157,6 +177,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let num_snapshots = snapshot_streamer.len();
     let mut ok_counter = 0;
     let mut error_counter = 0;
+
     for (i, (snapshot_id, _snapshot)) in snapshot_streamer.enumerate() {
         ui::cli::log!(
             "Verifying snapshot {}  ({} / {})",
@@ -170,13 +191,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         let res = if args.simulate_restore {
             verify_snapshot(
-                repo.clone(),
-                backend.clone(),
+                repo_arc.clone(),
+                backend_arc.clone(),
                 &snapshot_id,
                 &mut visited_blobs,
             )
         } else {
-            verify_snapshot_links(repo.clone(), &snapshot_id)
+            verify_snapshot_links(repo_arc.clone(), &snapshot_id)
         };
 
         match res {
@@ -235,39 +256,40 @@ pub fn verify_snapshot(
 
     let mp = MultiProgress::with_draw_target(default_bar_draw_target());
     let bar = mp.add(ProgressBar::new(snapshot.size()));
-    bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  {processed_bytes_formated}  [ETA: {custom_eta}]")
-            .unwrap()
-            .progress_chars("=> ")
-            .with_key(
-                "custom_elapsed",
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let elapsed = state.elapsed();
-                    let custom_elapsed = utils::pretty_print_duration(elapsed);
-                    let _ = w.write_str(&custom_elapsed);
-                },
-            )
-            .with_key(
-                "processed_bytes_formated",
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let s = format!(
-                        "{} / {}",
-                        utils::format_size(state.pos(), 3),
-                        utils::format_size(state.len().unwrap(), 3)
-                    );
-                    let _ = w.write_str(&s);
-                },
-            )
-            .with_key(
-                "custom_eta",
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let eta = state.eta();
-                    let custom_eta = utils::pretty_print_duration(eta);
-                    let _ = w.write_str(&custom_eta);
-                },
-            )
-    );
+    let bar_style = ProgressStyle::default_bar()
+        .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  {processed_bytes_formated}  [ETA: {custom_eta}]")
+        .unwrap()
+        .progress_chars("=> ")
+        .with_key(
+            "custom_elapsed",
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let elapsed = state.elapsed();
+                let custom_elapsed = utils::pretty_print_duration(elapsed);
+                let _ = w.write_str(&custom_elapsed);
+            },
+        )
+        .with_key(
+            "processed_bytes_formated",
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let s = format!(
+                    "{} / {}",
+                    utils::format_size(state.pos(), 3),
+                    utils::format_size(state.len().unwrap(), 3)
+                );
+                let _ = w.write_str(&s);
+            },
+        )
+        .with_key(
+            "custom_eta",
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let eta = state.eta();
+                let custom_eta = utils::pretty_print_duration(eta);
+                let _ = w.write_str(&custom_eta);
+            },
+        );
+
+    bar.set_style(bar_style);
+
     let spinner = mp.add(ProgressBar::new_spinner());
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -280,6 +302,10 @@ pub fn verify_snapshot(
     ));
 
     bar.set_position(0);
+
+    let index = repo.index();
+    let index_guard = index.read();
+
     for (path, stream_node) in streamer.flatten() {
         spinner.set_message(utils::abbreviate_path(&path, MAX_PATH_DISPLAY_LEN));
 
@@ -289,17 +315,18 @@ pub fn verify_snapshot(
                 if let Some(blobs) = node.blobs {
                     for blob in blobs {
                         if !visited_blobs.contains(&blob) {
-                            visited_blobs.insert(blob.clone());
                             match verify_blob(repo.as_ref(), &blob) {
-                                Ok((raw_length, _encoded_length)) => bar.inc(raw_length),
+                                Ok((raw_length, _encoded_length)) => {
+                                    visited_blobs.insert(blob);
+                                    bar.inc(raw_length);
+                                }
                                 Err(_) => {
+                                    let _ = mp.clear();
                                     bail!("Snapshot has corrupt blobs");
                                 }
                             }
                         } else {
-                            let (_, _, _, raw_length, _) = repo
-                                .index()
-                                .read()
+                            let (_, _, _, raw_length, _) = index_guard
                                 .get(&blob)
                                 .expect("We visited this blob, so it should be indexed");
                             bar.inc(raw_length as u64);

@@ -322,7 +322,7 @@ impl Repository {
         };
 
         let mut index_wlock = self.index.write();
-        let blob_exists = index_wlock.contains(&id) || !index_wlock.add_pending_blob(id.clone());
+        let blob_exists = index_wlock.contains(&id) || !index_wlock.add_pending_blob(id);
         drop(index_wlock);
 
         // If the blob was already pending, return early, as we are finished here.
@@ -336,7 +336,7 @@ impl Repository {
 
         packer
             .write()
-            .add_blob(id.clone(), blob_type, data, raw_length, encoded_length);
+            .add_blob(id, blob_type, data, raw_length, encoded_length);
 
         // Flush if the packer is considered full
         let packer_meta_size = if packer.read().size() > self.max_packer_size {
@@ -350,7 +350,8 @@ impl Repository {
 
     /// Loads a blob from the repository.
     pub fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
-        let blob_entry = self.index.read().get(id);
+        let index = self.index.read();
+        let blob_entry = index.get(id);
         match blob_entry {
             Some((pack_id, _blob_type, offset, length, _raw_length)) => {
                 self.load_from_pack(&pack_id, offset, length)
@@ -669,8 +670,7 @@ impl Repository {
             None => Ok((0, 0)),
             Some(flushed_pack) => {
                 if let Some(pack_saver) = self.pack_saver.write().as_ref() {
-                    pack_saver
-                        .save_pack(flushed_pack.data, SaveID::WithID(flushed_pack.id.clone()))?;
+                    pack_saver.save_pack(flushed_pack.data, SaveID::WithID(flushed_pack.id))?;
                 } else {
                     bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
                 }

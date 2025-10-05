@@ -162,7 +162,7 @@ impl Node {
             node_type: NodeType::Directory,
             metadata: Metadata::default(),
             blobs: None,
-            tree: Some(tree_id.clone()),
+            tree: Some(*tree_id),
             symlink_info: None,
         }
     }

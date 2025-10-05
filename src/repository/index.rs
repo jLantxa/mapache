@@ -110,7 +110,7 @@ impl Index {
     /// Returns the id of this index
     #[inline]
     pub fn id(&self) -> Option<ID> {
-        self.id.clone()
+        self.id
     }
 
     /// Sets the index ID
@@ -140,7 +140,7 @@ impl Index {
         index.is_pending = false;
 
         for pack in index_file.packs {
-            let pack_index = index.pack_ids.insert(pack.id.clone());
+            let pack_index = index.pack_ids.insert(pack.id);
             for blob in pack.blobs {
                 let map = match blob.blob_type {
                     BlobType::Data => &mut index.data_ids,
@@ -170,7 +170,7 @@ impl Index {
 
     /// Retrieves the pack ID, offset, and length for a given blob ID, if it exists.
     /// Returns `None` if the blob ID is not found.
-    pub fn get(&self, id: &ID) -> Option<(ID, BlobType, u32, u32, u32)> {
+    pub fn get(&self, id: &ID) -> Option<(&ID, BlobType, u32, u32, u32)> {
         self.data_ids
             .get(id)
             .map(|location| {
@@ -179,7 +179,7 @@ impl Index {
                     .get_value(location.pack_array_index as usize)
                     .expect("pack_index should always be valid for an existing blob");
                 (
-                    pack_id.clone(),
+                    pack_id,
                     BlobType::Data,
                     location.offset,
                     location.length,
@@ -193,7 +193,7 @@ impl Index {
                         .get_value(location.pack_array_index as usize)
                         .expect("pack_index should always be valid for an existing blob");
                     (
-                        pack_id.clone(),
+                        pack_id,
                         BlobType::Tree,
                         location.offset,
                         location.length,
@@ -207,7 +207,7 @@ impl Index {
     /// This method is optimized for adding multiple blobs from the same pack,
     /// as it only needs to look up the pack ID once.
     pub fn add_pack(&mut self, pack_id: &ID, packed_blob_descriptors: &[PackedBlobDescriptor]) {
-        let pack_index = self.pack_ids.insert(pack_id.clone());
+        let pack_index = self.pack_ids.insert(*pack_id);
         for blob in packed_blob_descriptors {
             let map = match blob.blob_type {
                 BlobType::Data => &mut self.data_ids,
@@ -216,7 +216,7 @@ impl Index {
             };
 
             map.insert(
-                blob.id.clone(),
+                blob.id,
                 BlobLocation {
                     pack_array_index: pack_index as u32,
                     offset: blob.offset,
@@ -240,7 +240,7 @@ impl Index {
         let mut packs_with_blobs: HashMap<usize, (ID, Vec<IndexFileBlob>)> = HashMap::new();
 
         for (idx, pack_id) in self.pack_ids.iter().enumerate() {
-            packs_with_blobs.insert(idx, (pack_id.clone(), Vec::new()));
+            packs_with_blobs.insert(idx, (*pack_id, Vec::new()));
         }
 
         // Populate Blobs in a single pass over data_ids and tree_ids
@@ -251,7 +251,7 @@ impl Index {
                     .expect("Pack index must exist in packs_with_blobs map");
 
                 blobs.push(IndexFileBlob {
-                    id: blob_id.clone(),
+                    id: *blob_id,
                     blob_type,
                     offset: location.offset,
                     length: location.length,
@@ -272,7 +272,7 @@ impl Index {
                 // Check if any blobs were actually added to this pack's vector
                 if !blobs.is_empty() {
                     index_file.packs.push(IndexFilePack {
-                        id: pack_id.clone(),
+                        id: *pack_id,
                         blobs,
                     });
                 }
@@ -377,7 +377,7 @@ impl MasterIndex {
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
-    pub fn get(&self, id: &ID) -> Option<(ID, BlobType, u32, u32, u32)> {
+    pub fn get(&self, id: &ID) -> Option<(&ID, BlobType, u32, u32, u32)> {
         self.indices
             .iter()
             .rev()
@@ -489,13 +489,47 @@ impl MasterIndex {
     /// Merges all current indices into a new collection of full indices.
     fn merge_index(&mut self) {
         let mut new_indices = Vec::new();
-        let mut pack_ids = BTreeSet::new();
+        let mut processed_pack_ids = BTreeSet::new();
+
+        // Temporarily take ownership of the indices vector
+        let old_indices: Vec<Index> = std::mem::take(&mut self.indices);
 
         let mut current_index = Index::new();
-        // Use drain to take ownership and remove elements from the original vector
-        for idx in self.indices.drain(..) {
-            for pack_id in idx.pack_ids.iter() {
-                if pack_ids.contains(pack_id) {
+
+        // Iterate over all old indices (newest to oldest is often preferred, but
+        // iterating in order is fine for merging, as the check below handles
+        // duplicates based on a global BTreeSet).
+        for idx in old_indices {
+            let mut packs_to_merge: HashMap<&ID, Vec<PackedBlobDescriptor>> = HashMap::new();
+
+            // Helper closure to avoid code duplication
+            let mut collect_blobs = |blob_map: &HashMap<ID, BlobLocation>, blob_type: BlobType| {
+                for (blob_id, loc) in blob_map.iter() {
+                    // Resolve the Pack ID reference using the index
+                    let pack_id_ref = idx
+                        .pack_ids
+                        .get_value(loc.pack_array_index as usize)
+                        .expect("pack_index should always be valid for an existing blob");
+
+                    let descriptor = PackedBlobDescriptor {
+                        id: blob_id.clone(),
+                        blob_type,
+                        offset: loc.offset,
+                        length: loc.length,
+                        raw_length: loc.raw_length,
+                    };
+
+                    packs_to_merge
+                        .entry(pack_id_ref)
+                        .or_default()
+                        .push(descriptor);
+                }
+            };
+
+            collect_blobs(&idx.data_ids, BlobType::Data);
+            collect_blobs(&idx.tree_ids, BlobType::Tree);
+            for (pack_id_ref, packed_blob_descriptors) in packs_to_merge {
+                if processed_pack_ids.contains(pack_id_ref) {
                     continue;
                 }
 
@@ -505,33 +539,10 @@ impl MasterIndex {
                     current_index = Index::new();
                 }
 
-                pack_ids.insert(pack_id.clone());
-                let mut packed_blob_descriptors = Vec::new();
+                let pack_id = pack_id_ref.clone();
+                processed_pack_ids.insert(pack_id);
 
-                let mut process_blobs =
-                    |blob_map: &HashMap<ID, BlobLocation>, blob_type: BlobType| {
-                        for (blob_id, loc) in blob_map.iter() {
-                            let blob_pack_id = idx
-                                .pack_ids
-                                .get_value(loc.pack_array_index as usize)
-                                .unwrap();
-
-                            if blob_pack_id == pack_id {
-                                let blob_descriptor = PackedBlobDescriptor {
-                                    id: blob_id.clone(),
-                                    blob_type,
-                                    offset: loc.offset,
-                                    length: loc.length,
-                                    raw_length: loc.raw_length,
-                                };
-                                packed_blob_descriptors.push(blob_descriptor);
-                            }
-                        }
-                    };
-
-                process_blobs(&idx.data_ids, BlobType::Data);
-                process_blobs(&idx.tree_ids, BlobType::Tree);
-                current_index.add_pack(pack_id, &packed_blob_descriptors);
+                current_index.add_pack(pack_id_ref, &packed_blob_descriptors);
             }
         }
 
@@ -540,6 +551,7 @@ impl MasterIndex {
             new_indices.push(current_index);
         }
 
+        // Assign the new, merged indices back
         self.indices = new_indices;
     }
 }
@@ -624,7 +636,7 @@ mod tests {
 
         // Test get for Data blob
         let (p_id, b_type, offset, length, raw_len) = index.get(&data_blob.id).unwrap();
-        assert_eq!(p_id, pack_id_a);
+        assert_eq!(*p_id, pack_id_a);
         assert_eq!(b_type, BlobType::Data);
         assert_eq!(offset, 100);
         assert_eq!(length, 50);
@@ -632,14 +644,14 @@ mod tests {
 
         // Test get for Tree blob
         let (p_id, b_type, offset, length, raw_len) = index.get(&tree_blob.id).unwrap();
-        assert_eq!(p_id, pack_id_b);
+        assert_eq!(*p_id, pack_id_b);
         assert_eq!(b_type, BlobType::Tree);
         assert_eq!(offset, 200);
         assert_eq!(length, 30);
         assert_eq!(raw_len, 60);
 
         // Test iterator
-        let ids: BTreeSet<ID> = index.iter_ids().map(|(id, _)| id.clone()).collect();
+        let ids: BTreeSet<&ID> = index.iter_ids().map(|(id, _)| id).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&data_blob.id));
         assert!(ids.contains(&tree_blob.id));

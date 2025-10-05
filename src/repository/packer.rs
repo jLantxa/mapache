@@ -351,7 +351,7 @@ impl PackSaver {
         };
 
         self.tx
-            .send((packer_data, pack_id.clone()))
+            .send((packer_data, pack_id))
             .with_context(|| "Failed to send pack data to PackSaver channel")?;
 
         Ok(pack_id)

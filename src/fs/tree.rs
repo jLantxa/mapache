@@ -388,7 +388,7 @@ impl SerializedTreeStreamer {
     ) -> Result<Self> {
         Ok(Self {
             repo,
-            stack: vec![(base_path, root_id.clone())],
+            stack: vec![(base_path, *root_id)],
             include,
             exclude,
         })
@@ -426,7 +426,7 @@ impl Iterator for SerializedTreeStreamer {
                     // Filter children before pushing to the stack
                     if utils::filter_path(&child_path, self.include.as_ref(), self.exclude.as_ref())
                     {
-                        children.push((child_path, subtree_id.clone()));
+                        children.push((child_path, subtree_id));
                     }
                 }
             }
@@ -434,7 +434,7 @@ impl Iterator for SerializedTreeStreamer {
             // Push children to stack in reverse lexicographical order
             children.sort_unstable_by(|(path1, _), (path2, _)| path1.cmp(path2));
             for (child_path, child_id) in children.into_iter().rev() {
-                self.stack.push((child_path, child_id));
+                self.stack.push((child_path, *child_id));
             }
 
             Ok((current_path, tree))
@@ -613,7 +613,7 @@ pub fn find_serialized_node(
         .map(|c| c.as_os_str().to_str().unwrap_or_default())
         .collect();
 
-    let mut current_tree_id: ID = base_tree_id.clone();
+    let mut current_tree_id: ID = *base_tree_id;
 
     for (i, component) in components.iter().enumerate() {
         let tree = Tree::load_from_repo(repo, &current_tree_id).with_context(|| {

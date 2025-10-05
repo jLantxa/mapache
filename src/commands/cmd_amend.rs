@@ -151,7 +151,7 @@ fn amend(
 ) -> Result<()> {
     let (mut raw, mut encoded) = (0, 0);
 
-    snapshot.summary.amends = Some(origin_snapshot_id.clone());
+    snapshot.summary.amends = Some(*origin_snapshot_id);
 
     if args.description.is_some() {
         snapshot.description = args.description.clone();

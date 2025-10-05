@@ -185,7 +185,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         for (id, _snapshot) in &snapshots_sorted {
             if !forget_ids.contains(id) {
-                ids_to_keep.insert(id.clone());
+                ids_to_keep.insert(*id);
             }
         }
     } else {
@@ -302,7 +302,7 @@ pub fn apply_retention_rules(
                 for (id, snapshot) in snapshots_sorted.iter().rev() {
                     // Iterate in reverse for efficiency for "keep within"
                     if snapshot.timestamp >= cutoff_time {
-                        snapshots_to_keep.insert(id.clone());
+                        snapshots_to_keep.insert(*id);
                     } else {
                         // Snapshots are sorted, so we can stop once we hit an older one
                         break;
@@ -313,7 +313,7 @@ pub fn apply_retention_rules(
                 let mut kept_years: BTreeMap<i32, ID> = BTreeMap::new(); // Year -> latest snapshot ID for that year
                 for (id, snapshot) in snapshots_sorted.iter().rev() {
                     let year = snapshot.timestamp.year();
-                    kept_years.entry(year).or_insert(id.clone());
+                    kept_years.entry(year).or_insert(*id);
                 }
                 for (i, (_, id)) in kept_years.iter().rev().enumerate() {
                     // Iterate years in reverse
@@ -321,7 +321,7 @@ pub fn apply_retention_rules(
                         break;
                     }
 
-                    snapshots_to_keep.insert(id.clone());
+                    snapshots_to_keep.insert(*id);
                 }
             }
             RetentionRule::KeepMonthly(n) => {
@@ -329,7 +329,7 @@ pub fn apply_retention_rules(
                 for (id, snapshot) in snapshots_sorted.iter().rev() {
                     let year = snapshot.timestamp.year();
                     let month = snapshot.timestamp.month();
-                    kept_months.entry((year, month)).or_insert(id.clone());
+                    kept_months.entry((year, month)).or_insert(*id);
                 }
                 for (i, (_, id)) in kept_months.iter().rev().enumerate() {
                     // Iterate months in reverse
@@ -337,7 +337,7 @@ pub fn apply_retention_rules(
                         break;
                     }
 
-                    snapshots_to_keep.insert(id.clone());
+                    snapshots_to_keep.insert(*id);
                 }
             }
             RetentionRule::KeepWeekly(n) => {
@@ -346,14 +346,14 @@ pub fn apply_retention_rules(
                     let iso_week = snapshot.timestamp.iso_week();
                     let year = iso_week.year();
                     let week = iso_week.week();
-                    kept_weeks.entry((year, week)).or_insert(id.clone());
+                    kept_weeks.entry((year, week)).or_insert(*id);
                 }
                 for (i, (_, id)) in kept_weeks.iter().rev().enumerate() {
                     if i >= *n {
                         break;
                     }
 
-                    snapshots_to_keep.insert(id.clone());
+                    snapshots_to_keep.insert(*id);
                 }
             }
             RetentionRule::KeepDaily(n) => {
@@ -362,20 +362,20 @@ pub fn apply_retention_rules(
                     let year = snapshot.timestamp.year();
                     let month = snapshot.timestamp.month();
                     let day = snapshot.timestamp.day();
-                    kept_days.entry((year, month, day)).or_insert(id.clone());
+                    kept_days.entry((year, month, day)).or_insert(*id);
                 }
                 for (i, (_, id)) in kept_days.iter().rev().enumerate() {
                     if i >= *n {
                         break;
                     }
 
-                    snapshots_to_keep.insert(id.clone());
+                    snapshots_to_keep.insert(*id);
                 }
             }
             RetentionRule::KeepTags(tags) => {
                 for (id, snapshot) in snapshots_sorted.iter() {
                     if snapshot.has_tags(tags) {
-                        snapshots_to_keep.insert(id.clone());
+                        snapshots_to_keep.insert(*id);
                     }
                 }
             }
@@ -423,7 +423,7 @@ mod tests {
     fn create_snapshot(id_val: u32, timestamp: DateTime<Local>, tags: &[&str]) -> (ID, Snapshot) {
         let snapshot_id = create_id(id_val);
         (
-            snapshot_id.clone(),
+            snapshot_id,
             Snapshot {
                 timestamp,
                 parent: None,

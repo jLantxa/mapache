@@ -72,7 +72,7 @@ impl TreeCache {
 
             let (tree, timestamp) = self.trees.get_mut(id).unwrap();
             *timestamp = current_timestamp;
-            self.order_map.insert(current_timestamp, id.clone());
+            self.order_map.insert(current_timestamp, *id);
 
             return Ok(tree);
         }
@@ -94,8 +94,8 @@ impl TreeCache {
         let tree: Tree = serde_json::from_slice(&tree_blob)
             .unwrap_or_else(|_| panic!("Failed to serialize tree {}", id.to_hex()));
 
-        self.trees.insert(id.clone(), (tree, current_timestamp));
-        self.order_map.insert(current_timestamp, id.clone());
+        self.trees.insert(*id, (tree, current_timestamp));
+        self.order_map.insert(current_timestamp, *id);
 
         Ok(&self.trees.get(id).unwrap().0)
     }
@@ -170,7 +170,7 @@ impl BlobCache {
 
             let (data, timestamp) = self.blobs.get_mut(id).unwrap();
             *timestamp = current_timestamp;
-            self.order_map.insert(current_timestamp, id.clone());
+            self.order_map.insert(current_timestamp, *id);
 
             return Ok(data);
         }
@@ -198,8 +198,8 @@ impl BlobCache {
             .unwrap_or_else(|_| panic!("Failed to load blob {}", id.to_hex()));
 
         self.size += blob.len() as u64;
-        self.blobs.insert(id.clone(), (blob, current_timestamp));
-        self.order_map.insert(current_timestamp, id.clone());
+        self.blobs.insert(*id, (blob, current_timestamp));
+        self.order_map.insert(current_timestamp, *id);
 
         Ok(&self.blobs.get(id).unwrap().0)
     }

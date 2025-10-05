@@ -32,7 +32,7 @@ use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterato
 use crate::{
     fs::tree::SerializedNodeStreamer,
     global::{
-        self, FileType, ID, SaveID,
+        self, DEFAULT_ID, FileType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
     },
     repository::{repo::Repository, snapshot::SnapshotStreamer},
@@ -94,7 +94,7 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     ));
     for (id, locator) in repo.index().read().iter_ids() {
         kept_pack_size
-            .entry(locator.pack_id.clone())
+            .entry(locator.pack_id)
             .and_modify(|size| {
                 *size += locator.length as u64;
             })
@@ -242,12 +242,12 @@ impl Plan {
                 // for the referenced ID, or assume Data if the canonical index entry is missing (should not happen).
                 let (_, blob_type, _, _, _) = self.repo.index().read().get(referenced_blob_id).unwrap_or_else(|| {
                     ui::cli::warning!("Referenced blob {} not found by canonical get. Assuming Data type for repack.", referenced_blob_id);
-                    (ID::default(), global::BlobType::Data, 0, 0, 0)
+                    (&DEFAULT_ID, global::BlobType::Data, 0, 0, 0)
                 });
 
                 // HashMap insertion here automatically deduplicates the *repack instruction* by Blob ID.
                 repack_blob_info.insert(
-                    referenced_blob_id.clone(),
+                    *referenced_blob_id,
                     (
                         locator.pack_id,
                         blob_type,
@@ -303,7 +303,7 @@ impl Plan {
                     // and its new location is recorded in the MasterIndex.
                     let (_id, (_raw_length, encoded_length), (_raw_meta, encoded_meta)) = self
                         .repo
-                        .encode_and_save_blob(blob_type, data, SaveID::WithID(blob_id.clone()))?;
+                        .encode_and_save_blob(blob_type, data, SaveID::WithID(blob_id))?;
 
                     added_size.fetch_add(encoded_length + encoded_meta, Ordering::AcqRel);
 
@@ -392,8 +392,8 @@ impl Plan {
 
 /// Returns all blobs and packs referenced by all existing snapshots in the repository.
 fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>, HashSet<ID>)> {
-    let mut referenced_blobs = HashSet::new();
-    let mut referenced_packs = HashSet::new();
+    let mut referenced_blobs: HashSet<ID> = HashSet::new();
+    let mut referenced_packs: HashSet<ID> = HashSet::new();
     let index = repo.index();
 
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
@@ -414,13 +414,13 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
         let tree_id = snapshot.tree.clone();
 
         // Tree blob of the snapshot
-        if referenced_blobs.insert(tree_id.clone()) {
+        if referenced_blobs.insert(tree_id) {
             spinner.set_position(referenced_blobs.len() as u64);
         }
 
         match index.read().get(&tree_id) {
             Some((pack_id, _, _, _, _)) => {
-                referenced_packs.insert(pack_id);
+                referenced_packs.insert(*pack_id);
             }
             None => {
                 ui::cli::warning!(
@@ -450,7 +450,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
 
                         match index.read().get(tree) {
                             Some((pack_id, _, _, _, _)) => {
-                                referenced_packs.insert(pack_id);
+                                referenced_packs.insert(*pack_id);
                             }
                             None => {
                                 missing_tree_blobs += 1;
@@ -461,13 +461,13 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
                     // Data blobs
                     if let Some(blobs) = &node.blobs {
                         for blob_id in blobs {
-                            if referenced_blobs.insert(blob_id.clone()) {
+                            if referenced_blobs.insert(*blob_id) {
                                 spinner.set_position(referenced_blobs.len() as u64);
                             }
 
                             match index.read().get(blob_id) {
                                 Some((pack_id, _, _, _, _)) => {
-                                    referenced_packs.insert(pack_id);
+                                    referenced_packs.insert(*pack_id);
                                 }
                                 None => {
                                     missing_data_blobs += 1;

@@ -28,7 +28,9 @@ use crate::{
 
 /// Verify the checksum and contents of a blob with a known ID in the repository.
 pub fn verify_blob(repo: &Repository, id: &ID) -> Result<(u64, u64)> {
-    let blob_entry = repo.index().read().get(id);
+    let index = repo.index();
+    let index_guard = index.read();
+    let blob_entry = index_guard.get(id);
     match blob_entry {
         Some((pack_id, _blob_type, offset, length, raw_length)) => {
             // The ID of a blob is the hash of its plaintext content.
@@ -84,7 +86,7 @@ pub fn verify_pack(
             // Only verify blobs referenced by the master index
             if repo.index().read().contains(&blob_descriptor.id) {
                 verify_blob(repo, &blob_descriptor.id)?;
-                visited_blobs.insert(blob_descriptor.id.clone());
+                visited_blobs.insert(blob_descriptor.id);
             } else {
                 num_dangling_blobs += 1;
             }

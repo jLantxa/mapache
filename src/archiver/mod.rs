@@ -278,10 +278,7 @@ impl Archiver {
         match root_tree_id {
             Some(tree_id) => Ok(Snapshot {
                 timestamp: Local::now(),
-                parent: archiver
-                    .snapshot_options
-                    .parent_snapshot
-                    .map(|(id, _)| id.clone()),
+                parent: archiver.snapshot_options.parent_snapshot.map(|(id, _)| id),
                 tree: tree_id,
                 root: archiver.snapshot_options.snapshot_root_path,
                 paths: archiver.snapshot_options.absolute_source_paths,

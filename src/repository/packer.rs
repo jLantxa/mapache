@@ -367,39 +367,66 @@ impl PackSaver {
 
 #[cfg(test)]
 mod tests {
+    use crate::repository::keys::KeyManager;
+
     use super::*;
+
+    fn add_blob(packer: &mut Packer, data: &[u8], secure_storage: &SecureStorage) -> Result<()> {
+        let raw_size = data.len() as u64;
+        let encoded_data = secure_storage.encode(&data)?;
+        let encoded_size = encoded_data.len() as u64;
+
+        packer.add_blob(
+            ID::from_content(&encoded_data),
+            BlobType::Data,
+            encoded_data,
+            raw_size,
+            encoded_size,
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn test_pack_flush() -> Result<()> {
         let mut packer = Packer::new();
 
-        let blob1: Vec<u8> = b"mapache".to_vec(); // 7 bytes
-        packer.add_blob(ID::from_content(&blob1), BlobType::Data, blob1, 7, 7);
+        let key = KeyManager::generate_new_master_key();
+        let secure_storage = SecureStorage::build()
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_key(key);
 
-        let blob2: Vec<u8> = b"backup".to_vec(); // 6 bytes
-        packer.add_blob(ID::from_content(&blob2), BlobType::Data, blob2, 6, 6);
+        let blobs = vec![b"mapache".to_vec(), b"backup".to_vec(), b"rust".to_vec()];
 
-        let blob3: Vec<u8> = b"rust".to_vec(); // 4 bytes
-        packer.add_blob(ID::from_content(&blob3), BlobType::Data, blob3, 4, 4);
+        add_blob(&mut packer, &blobs[0], &secure_storage)?;
+        add_blob(&mut packer, &blobs[1], &secure_storage)?;
+        add_blob(&mut packer, &blobs[2], &secure_storage)?;
 
-        assert_eq!(packer.size(), (7 + 6 + 4));
+        assert_eq!(packer.size(), 128);
         assert!(!packer.is_empty());
-
-        // We cannot test with encryption enabled because the NONCE is randomized every time.
-        let secure_storage = SecureStorage::build();
 
         let flushed_pack = packer
             .flush(&secure_storage)
             .expect("Failed to flush packer")
             .expect("Flushed pack data must be Some");
 
-        assert_eq!(flushed_pack.data.len(), 2654);
-        // Due to obfuscation we cannot make assumptions about the hash
+        assert_eq!(flushed_pack.data.len(), 2793);
 
         let header_descriptors = Packer::parse_header(&secure_storage, &flushed_pack.data)?;
         assert_eq!(flushed_pack.descriptors.len(), 64);
         assert_eq!(header_descriptors.len(), 3);
         assert_ne!(flushed_pack.descriptors, header_descriptors);
+
+        // Due to obfuscation we cannot make assumptions about the hash, but we
+        // can decode the content of every blob.
+        for (i, descriptor) in header_descriptors.iter().enumerate() {
+            let offset = descriptor.offset as usize;
+            let len = descriptor.length as usize;
+            let data = &flushed_pack.data[offset..(offset + len)];
+            let decoded_data = secure_storage.decode(data)?;
+
+            assert_eq!(blobs[i], decoded_data);
+        }
 
         Ok(())
     }

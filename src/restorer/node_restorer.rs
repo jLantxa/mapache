@@ -51,7 +51,7 @@ pub(crate) fn restore_node_to_path(
             let blocks = node
                 .blobs
                 .as_ref()
-                .expect("File Node must have contents (even if empty)");
+                .with_context(|| "File Node must have contents (even if empty)")?;
 
             let dst_file = if !dry_run {
                 if let Some(parent) = dst_path.parent() {
@@ -63,15 +63,14 @@ pub(crate) fn restore_node_to_path(
                     })?;
                 }
 
-                match OpenOptions::new()
+                let file = OpenOptions::new()
                     .create(true)
                     .write(true)
                     .truncate(true)
                     .open(dst_path)
-                {
-                    Ok(file) => Some(file),
-                    Err(e) => bail!("Could not create file {}: {}", dst_path.display(), e),
-                }
+                    .with_context(|| format!("Could not create file {}", dst_path.display()))?;
+
+                Some(file)
             } else {
                 None
             };
@@ -108,7 +107,7 @@ pub(crate) fn restore_node_to_path(
 
             // Restore metadata after content is written
             if !dry_run {
-                restore_node_metadata(node, dst_path)?;
+                restore_node_metadata(node, dst_path, progress_reporter.as_ref())?;
             }
         }
 
@@ -147,16 +146,15 @@ pub(crate) fn restore_node_to_path(
 
                 #[cfg(unix)]
                 {
-                    std::os::unix::fs::symlink(symlink_info.target_path.clone(), dst_path)
+                    std::os::unix::fs::symlink(&symlink_info.target_path, dst_path)
                         .with_context(|| format!("Could not create symlink {dst_path:?}"))?;
                 }
                 #[cfg(windows)]
                 {
-                    // Windows distinguishes symlinks to files and symlinks to dirs
                     match symlink_info.target_type {
                         // Directory symlink
                         Some(NodeType::Directory) => {
-                            std::os::windows::fs::symlink_dir(dst_path, &symlink_info.target_path)
+                            std::os::windows::fs::symlink_dir(&symlink_info.target_path, dst_path)
                                 .with_context(|| {
                                     format!("Could not create directory symlink {dst_path:?}")
                                 })?;
@@ -164,7 +162,7 @@ pub(crate) fn restore_node_to_path(
 
                         // Everything else (not a directory)
                         Some(_) => {
-                            std::os::windows::fs::symlink_file(dst_path, &symlink_info.target_path)
+                            std::os::windows::fs::symlink_file(&symlink_info.target_path, dst_path)
                                 .with_context(|| {
                                     format!("Could not create file symlink {dst_path:?}")
                                 })?;
@@ -243,7 +241,12 @@ pub(crate) fn restore_node_to_path(
 /// This function attempts to restore all metadata fields with a best-effort approach.
 /// It will collect and return an error with a list of all failures, rather than
 /// failing on the first one.
-fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
+#[allow(unused_variables)]
+fn restore_node_metadata(
+    node: &Node,
+    dst_path: &Path,
+    progress_reporter: &RestoreProgressReporter,
+) -> Result<()> {
     let mut errors = Vec::new();
 
     // Set file times
@@ -264,7 +267,7 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
         {
             let permissions = Permissions::from_mode(mode);
             if std::fs::set_permissions(dst_path, permissions).is_err() {
-                errors.push(anyhow!("Could not set permissions."));
+                errors.push(anyhow!("Could not set permissions (mode: {:o}).", mode));
             }
         }
 
@@ -274,9 +277,16 @@ fn restore_node_metadata(node: &Node, dst_path: &Path) -> Result<()> {
             let gid = node.metadata.owner_gid;
 
             // Restoring uid and gid is very likely to fail unless the user is root.
-            // Not returning an error for this.
             if uid.is_some() || gid.is_some() {
-                let _ = std::os::unix::fs::chown(dst_path, uid, gid);
+                if let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
+                    progress_reporter.warning(&format!(
+                        "Could not set ownership (uid: {:?}, gid: {:?}) for {}: {}",
+                        uid,
+                        gid,
+                        dst_path.display(),
+                        e
+                    ));
+                }
             }
         }
     }
@@ -326,24 +336,32 @@ mod tests {
         use tempfile::tempdir;
 
         let temp_dir = tempdir()?;
-        let temp_path = temp_dir.path();
+        let file_path = temp_dir.path().join("file.txt");
 
-        let file_path = temp_path.join("file.txt");
         std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
-        let node = Node::from_path(&file_path)?;
+        let mut node = Node::from_path(&file_path)?;
 
         // Change mtime to 1 day before now
         let prev_mtime: SystemTime = (Local::now() - Duration::days(1)).into();
+
+        // Manually set the file's current mtime to the past
         let ft_mtime = FileTime::from(prev_mtime);
         let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
-
         set_file_times(&file_path, ft_atime, ft_mtime)
             .with_context(|| format!("Could not set modified time for {}", file_path.display()))?;
 
-        restore_node_metadata(&node, &file_path)?;
+        // Create a dummy node with the original metadata to restore from
+        let original_metadata = node.metadata.clone();
+        let original_mtime = original_metadata.modified_time.unwrap();
+        node.metadata = original_metadata;
 
+        // Now restore the metadata from the node
+        let reporter = RestoreProgressReporter::new(0, 0, 0);
+        restore_node_metadata(&node, &file_path, &reporter)?;
+
+        // Check if the mtime was restored back to the node's original mtime
         assert_eq!(
-            node.metadata.modified_time.unwrap(),
+            original_mtime,
             file_path.symlink_metadata().unwrap().modified().unwrap()
         );
 

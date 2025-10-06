@@ -167,7 +167,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_expected_items = 0;
     let scan_node_streamer = SerializedNodeStreamer::new(
         repo.clone(),
-        Some(snapshot.tree.clone()),
+        Some(snapshot.tree),
         PathBuf::new(),
         args.include.clone(),
         args.exclude.clone(),

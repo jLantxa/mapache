@@ -36,7 +36,7 @@ pub fn verify_blob(repo: &Repository, id: &ID) -> Result<(u64, u64)> {
             // The ID of a blob is the hash of its plaintext content.
             let blob_data = repo.read_from_file_and_decode(
                 FileType::Pack,
-                &pack_id,
+                pack_id,
                 offset as u64,
                 length as u64,
             )?;
@@ -131,11 +131,10 @@ pub fn verify_snapshot_links(repo: Arc<Repository>, snapshot_id: &ID) -> Result<
                 }
             }
             NodeType::Directory => {
-                if let Some(tree_id) = &node.tree {
-                    if index_guard.get(tree_id).is_none() {
+                if let Some(tree_id) = &node.tree
+                    && index_guard.get(tree_id).is_none() {
                         error_counter += 1;
                     }
-                }
             }
             NodeType::Symlink
             | NodeType::BlockDevice

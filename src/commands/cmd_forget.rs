@@ -294,7 +294,7 @@ pub fn apply_retention_rules(
             RetentionRule::KeepLast(n) => {
                 let num_to_keep = *n;
                 for i in (0..snapshots_sorted.len()).rev().take(num_to_keep) {
-                    snapshots_to_keep.insert(snapshots_sorted[i].0.clone());
+                    snapshots_to_keep.insert(snapshots_sorted[i].0);
                 }
             }
             RetentionRule::KeepWithin(duration) => {

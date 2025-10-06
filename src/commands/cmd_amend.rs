@@ -245,7 +245,7 @@ fn rewrite_snapshot_tree(
 
     let node_streamer = SerializedNodeStreamer::new(
         repo.clone(),
-        Some(snapshot.tree.clone()),
+        Some(snapshot.tree),
         snapshot.root.clone(),
         None,
         cannonical_excludes.clone(),

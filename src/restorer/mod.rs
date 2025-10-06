@@ -57,7 +57,7 @@ pub fn restore(
     opts: RestoreOptions,
     progress_reporter: Arc<RestoreProgressReporter>,
 ) -> Result<()> {
-    let tree = snapshot.tree.clone();
+    let tree = snapshot.tree;
     let node_streamer =
         SerializedNodeStreamer::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)?;
 

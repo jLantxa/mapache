@@ -95,7 +95,7 @@ impl Filesystem for MapacheFS {
 
         for (id, snapshot) in &snapshots {
             self.stash
-                .add_snapshot_dir(ids_ino, id.to_hex(), snapshot.tree.clone());
+                .add_snapshot_dir(ids_ino, id.to_hex(), snapshot.tree);
         }
 
         // by_date

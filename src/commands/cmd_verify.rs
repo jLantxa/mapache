@@ -145,7 +145,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     backend_ref.as_ref(),
                     secure_storage_ref.as_ref(),
                     pack_id,
-                    &mut *visited_guard,
+                    &mut visited_guard,
                 );
 
                 drop(visited_guard); // Release lock early
@@ -250,7 +250,7 @@ pub fn verify_snapshot(
     }
 
     let snapshot = repo.load_snapshot(snapshot_id)?;
-    let tree_id = snapshot.tree.clone();
+    let tree_id = snapshot.tree;
     let streamer =
         SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 

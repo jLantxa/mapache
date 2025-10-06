@@ -87,14 +87,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let source_node_streamer = SerializedNodeStreamer::new(
         repo.clone(),
-        Some(source_snapshot.tree.clone()),
+        Some(source_snapshot.tree),
         PathBuf::new(),
         args.include.clone(),
         args.exclude.clone(),
     )?;
     let target_node_streamer = SerializedNodeStreamer::new(
         repo.clone(),
-        Some(target_snapshot.tree.clone()),
+        Some(target_snapshot.tree),
         PathBuf::new(),
         args.include.clone(),
         args.exclude.clone(),

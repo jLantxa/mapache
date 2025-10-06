@@ -354,7 +354,7 @@ impl Repository {
         let blob_entry = index.get(id);
         match blob_entry {
             Some((pack_id, _blob_type, offset, length, _raw_length)) => {
-                self.load_from_pack(&pack_id, offset, length)
+                self.load_from_pack(pack_id, offset, length)
             }
             None => bail!("Could not find blob {id:?} in index"),
         }

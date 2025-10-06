@@ -313,10 +313,9 @@ impl Index {
                 (
                     id,
                     BlobLocator {
-                        pack_id: pack_ids
+                        pack_id: *pack_ids
                             .get_value(loc.pack_array_index as usize)
-                            .unwrap()
-                            .clone(),
+                            .unwrap(),
                         offset: loc.offset,
                         length: loc.length,
                         raw_length: loc.raw_length,
@@ -512,7 +511,7 @@ impl MasterIndex {
                         .expect("pack_index should always be valid for an existing blob");
 
                     let descriptor = PackedBlobDescriptor {
-                        id: blob_id.clone(),
+                        id: *blob_id,
                         blob_type,
                         offset: loc.offset,
                         length: loc.length,
@@ -539,7 +538,7 @@ impl MasterIndex {
                     current_index = Index::new();
                 }
 
-                let pack_id = pack_id_ref.clone();
+                let pack_id = *pack_id_ref;
                 processed_pack_ids.insert(pack_id);
 
                 current_index.add_pack(pack_id_ref, &packed_blob_descriptors);

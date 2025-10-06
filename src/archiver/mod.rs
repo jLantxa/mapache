@@ -78,7 +78,7 @@ impl Archiver {
             .snapshot_options
             .parent_snapshot
             .as_ref()
-            .map(|(_id, snapshot)| snapshot.tree.clone());
+            .map(|(_id, snapshot)| snapshot.tree);
 
         // Create streamers
         let fs_streamer = match FSNodeStreamer::from_paths(

@@ -411,7 +411,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
     ));
 
     for (_snapshot_id, snapshot) in snapshot_streamer {
-        let tree_id = snapshot.tree.clone();
+        let tree_id = snapshot.tree;
 
         // Tree blob of the snapshot
         if referenced_blobs.insert(tree_id) {
@@ -444,7 +444,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
 
                     // Tree blobs
                     if let Some(tree) = &node.tree {
-                        if referenced_blobs.insert(tree.clone()) {
+                        if referenced_blobs.insert(*tree) {
                             spinner.set_position(referenced_blobs.len() as u64);
                         }
 

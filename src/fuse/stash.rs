@@ -225,7 +225,7 @@ impl Stash {
                 let file_attr = node_to_fileattr(ino, parent_create_time, node);
 
                 let fs_node = FsNode::TreeNode {
-                    tree_id: node.tree.clone(),
+                    tree_id: node.tree,
                     blobs: node.blobs.clone(),
                     symlink_target: node
                         .symlink_info
@@ -408,7 +408,7 @@ impl Stash {
                         let new_ino = self.next_ino();
                         let file_attr = node_to_fileattr(new_ino, parent_create_time, node);
                         let fs_node = FsNode::TreeNode {
-                            tree_id: node.tree.clone(),
+                            tree_id: node.tree,
                             blobs: node.blobs.clone(),
                             symlink_target: node
                                 .symlink_info

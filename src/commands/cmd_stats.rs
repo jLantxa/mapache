@@ -227,7 +227,7 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
 
         total_restore_size += snapshot.size();
 
-        let tree_id = snapshot.tree.clone();
+        let tree_id = snapshot.tree;
         let streamer =
             SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 

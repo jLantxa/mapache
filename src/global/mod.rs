@@ -67,7 +67,7 @@ pub fn global_opts() -> RwLockReadGuard<'static, Option<GlobalOpts>> {
 #[derive(Hash, Default, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ID(pub(crate) Hash256);
 
-pub(crate) static DEFAULT_ID: LazyLock<ID> = LazyLock::new(|| ID::default());
+pub(crate) static DEFAULT_ID: LazyLock<ID> = LazyLock::new(ID::default);
 
 impl ID {
     /// Creates a new, random ID.

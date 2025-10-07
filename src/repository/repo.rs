@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeSet,
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -591,8 +591,8 @@ impl Repository {
     }
 
     /// Lists all packs in the repository.
-    pub fn list_objects(&self) -> Result<BTreeSet<ID>> {
-        let mut list = BTreeSet::new();
+    pub fn list_objects(&self) -> Result<HashSet<ID>> {
+        let mut list = HashSet::new();
 
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
         for n in 0..num_folders {

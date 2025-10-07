@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc,
@@ -47,18 +47,18 @@ pub struct Plan {
     pub total_packs: usize, // Total number of packs in the repository
     pub referenced_blobs: HashSet<ID>, // Blobs referenced by existing snapshots
     pub referenced_packs: HashSet<ID>, // Packs referenced by the referenced blobs
-    pub obsolete_packs: BTreeSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
-    pub small_packs: BTreeSet<ID>,    // Small packs marked to be repacked (to merge)
-    pub tolerated_packs: BTreeSet<ID>, // Packs containing garbage, but keep due to tolerance
-    pub unused_packs: BTreeSet<ID>,   // Packs not referenced by any snapshot or index
-    pub index_ids: BTreeSet<ID>,      // Current index IDs
+    pub obsolete_packs: HashSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
+    pub small_packs: HashSet<ID>,    // Small packs marked to be repacked (to merge)
+    pub tolerated_packs: HashSet<ID>, // Packs containing garbage, but keep due to tolerance
+    pub unused_packs: HashSet<ID>,   // Packs not referenced by any snapshot or index
+    pub index_ids: HashSet<ID>,      // Current index IDs
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
 pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 
-    let mut keep_packs: BTreeSet<ID> = repo.list_objects()?;
+    let mut keep_packs: HashSet<ID> = repo.list_objects()?;
     let mut unused_packs = keep_packs.clone();
 
     keep_packs.retain(|id| referenced_packs.contains(id));
@@ -69,11 +69,11 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
         total_packs: keep_packs.len(),
         referenced_blobs,
         referenced_packs,
-        obsolete_packs: BTreeSet::new(),
-        tolerated_packs: BTreeSet::new(),
+        obsolete_packs: HashSet::new(),
+        tolerated_packs: HashSet::new(),
         unused_packs,
         index_ids: repo.index().read().ids(),
-        small_packs: BTreeSet::new(),
+        small_packs: HashSet::new(),
     };
 
     // Count garbage bytes in each pack
@@ -161,7 +161,7 @@ impl Plan {
         // Append small packs to the obsolete pack list. These will be repacked and deleted,
         // which helps consolidate storage and eliminates duplicates that might be in them.
         if self.small_packs.len() > 1 {
-            self.obsolete_packs.append(&mut self.small_packs);
+            self.obsolete_packs.extend(self.small_packs.drain());
         }
 
         deleted_size += self.delete_unused_packs()?;

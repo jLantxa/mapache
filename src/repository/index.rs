@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     time::Instant,
 };
 
@@ -464,14 +464,14 @@ impl MasterIndex {
     }
 
     /// Returns the IDs of all finalized (serialized) indices
-    pub fn ids(&self) -> BTreeSet<ID> {
+    pub fn ids(&self) -> HashSet<ID> {
         self.indices
             .iter()
             .filter_map(|idx| if !idx.is_pending() { idx.id() } else { None })
             .collect()
     }
 
-    pub fn cleanup(&mut self, obsolete_packs: Option<&BTreeSet<ID>>) {
+    pub fn cleanup(&mut self, obsolete_packs: Option<&HashSet<ID>>) {
         if let Some(packs_to_remove) = obsolete_packs {
             for idx in &mut self.indices {
                 // IMPORTANT: Mark index as pending so it can be overwritten/merged.
@@ -488,16 +488,13 @@ impl MasterIndex {
     /// Merges all current indices into a new collection of full indices.
     fn merge_index(&mut self) {
         let mut new_indices = Vec::new();
-        let mut processed_pack_ids = BTreeSet::new();
+        let mut processed_pack_ids = HashSet::new();
 
         // Temporarily take ownership of the indices vector
         let old_indices: Vec<Index> = std::mem::take(&mut self.indices);
 
         let mut current_index = Index::new();
 
-        // Iterate over all old indices (newest to oldest is often preferred, but
-        // iterating in order is fine for merging, as the check below handles
-        // duplicates based on a global BTreeSet).
         for idx in old_indices {
             let mut packs_to_merge: HashMap<&ID, Vec<PackedBlobDescriptor>> = HashMap::new();
 
@@ -650,7 +647,7 @@ mod tests {
         assert_eq!(raw_len, 60);
 
         // Test iterator
-        let ids: BTreeSet<&ID> = index.iter_ids().map(|(id, _)| id).collect();
+        let ids: HashSet<&ID> = index.iter_ids().map(|(id, _)| id).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&data_blob.id));
         assert!(ids.contains(&tree_blob.id));

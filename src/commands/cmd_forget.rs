@@ -285,104 +285,97 @@ pub fn apply_retention_rules(
 ) -> HashSet<ID> {
     let mut snapshots_to_keep: HashSet<ID> = HashSet::new();
 
-    // The policies should be applied in a way that later policies don't override earlier ones
-    // if a snapshot was already marked for keeping.
-    // For simplicity, we'll collect all IDs to keep and then take the union.
-
+    // Policies are applied sequentially, and the results are unioned.
     for rule in rules {
-        match rule {
+        let new_ids_to_keep = match rule {
             RetentionRule::KeepLast(n) => {
-                let num_to_keep = *n;
-                for i in (0..snapshots_sorted.len()).rev().take(num_to_keep) {
-                    snapshots_to_keep.insert(snapshots_sorted[i].0);
-                }
+                // Keep the N most recent snapshots, leveraging the reverse iterator on the sorted list.
+                snapshots_sorted
+                    .iter()
+                    .rev()
+                    .take(*n)
+                    .map(|(id, _)| *id)
+                    .collect()
             }
             RetentionRule::KeepWithin(duration) => {
+                // Keep all snapshots newer than the cutoff time.
                 let cutoff_time = now - *duration;
-                for (id, snapshot) in snapshots_sorted.iter().rev() {
-                    // Iterate in reverse for efficiency for "keep within"
-                    if snapshot.timestamp >= cutoff_time {
-                        snapshots_to_keep.insert(*id);
-                    } else {
-                        // Snapshots are sorted, so we can stop once we hit an older one
-                        break;
-                    }
-                }
+                snapshots_sorted
+                    .iter()
+                    .filter(|(_id, snapshot)| snapshot.timestamp >= cutoff_time)
+                    .map(|(id, _)| *id)
+                    .collect()
             }
-            RetentionRule::KeepYearly(n) => {
-                let mut kept_years: BTreeMap<i32, ID> = BTreeMap::new(); // Year -> latest snapshot ID for that year
-                for (id, snapshot) in snapshots_sorted.iter().rev() {
-                    let year = snapshot.timestamp.year();
-                    kept_years.entry(year).or_insert(*id);
-                }
-                for (i, (_, id)) in kept_years.iter().rev().enumerate() {
-                    // Iterate years in reverse
-                    if i >= *n {
-                        break;
-                    }
 
-                    snapshots_to_keep.insert(*id);
-                }
-            }
-            RetentionRule::KeepMonthly(n) => {
-                let mut kept_months: BTreeMap<(i32, u32), ID> = BTreeMap::new(); // (Year, Month) -> latest snapshot ID for that month
-                for (id, snapshot) in snapshots_sorted.iter().rev() {
-                    let year = snapshot.timestamp.year();
-                    let month = snapshot.timestamp.month();
-                    kept_months.entry((year, month)).or_insert(*id);
-                }
-                for (i, (_, id)) in kept_months.iter().rev().enumerate() {
-                    // Iterate months in reverse
-                    if i >= *n {
-                        break;
-                    }
+            RetentionRule::KeepYearly(n) => keep_latest_per_period(
+                snapshots_sorted,
+                *n,
+                |s| s.timestamp.year(), // Key: Year (i32)
+            ),
+            RetentionRule::KeepMonthly(n) => keep_latest_per_period(
+                snapshots_sorted,
+                *n,
+                |s| (s.timestamp.year(), s.timestamp.month()), // Key: (Year, Month)
+            ),
+            RetentionRule::KeepWeekly(n) => keep_latest_per_period(
+                snapshots_sorted,
+                *n,
+                |s| (s.timestamp.iso_week().year(), s.timestamp.iso_week().week()), // Key: (ISO Year, ISO Week Number)
+            ),
+            RetentionRule::KeepDaily(n) => keep_latest_per_period(
+                snapshots_sorted,
+                *n,
+                |s| (s.timestamp.year(), s.timestamp.month(), s.timestamp.day()), // Key: (Year, Month, Day)
+            ),
 
-                    snapshots_to_keep.insert(*id);
-                }
-            }
-            RetentionRule::KeepWeekly(n) => {
-                let mut kept_weeks: BTreeMap<(i32, u32), ID> = BTreeMap::new(); // (Year, ISO Week Number) -> latest snapshot ID
-                for (id, snapshot) in snapshots_sorted.iter().rev() {
-                    let iso_week = snapshot.timestamp.iso_week();
-                    let year = iso_week.year();
-                    let week = iso_week.week();
-                    kept_weeks.entry((year, week)).or_insert(*id);
-                }
-                for (i, (_, id)) in kept_weeks.iter().rev().enumerate() {
-                    if i >= *n {
-                        break;
-                    }
-
-                    snapshots_to_keep.insert(*id);
-                }
-            }
-            RetentionRule::KeepDaily(n) => {
-                let mut kept_days: BTreeMap<(i32, u32, u32), ID> = BTreeMap::new(); // (Year, Month, Day) -> latest snapshot ID for that day
-                for (id, snapshot) in snapshots_sorted.iter().rev() {
-                    let year = snapshot.timestamp.year();
-                    let month = snapshot.timestamp.month();
-                    let day = snapshot.timestamp.day();
-                    kept_days.entry((year, month, day)).or_insert(*id);
-                }
-                for (i, (_, id)) in kept_days.iter().rev().enumerate() {
-                    if i >= *n {
-                        break;
-                    }
-
-                    snapshots_to_keep.insert(*id);
-                }
-            }
             RetentionRule::KeepTags(tags) => {
-                for (id, snapshot) in snapshots_sorted.iter() {
-                    if snapshot.has_tags(tags) {
-                        snapshots_to_keep.insert(*id);
-                    }
-                }
+                // Keep all snapshots that match the required tags.
+                snapshots_sorted
+                    .iter()
+                    .filter(|(_id, snapshot)| snapshot.has_tags(tags))
+                    .map(|(id, _)| *id)
+                    .collect()
             }
-        }
+        };
+
+        // Combine the results: if any rule dictates a snapshot must be kept, it is kept.
+        snapshots_to_keep.extend(new_ids_to_keep);
     }
 
     snapshots_to_keep
+}
+
+/// Generic helper function to abstract the common logic for period-based retention.
+///
+/// It finds the latest snapshot for each unique period (defined by `key_extractor`)
+/// and then keeps the latest `n` of those periods.
+fn keep_latest_per_period<K, F>(
+    snapshots_sorted: &[(ID, Snapshot)],
+    n: usize,
+    key_extractor: F,
+) -> HashSet<ID>
+where
+    K: Ord,
+    F: Fn(&Snapshot) -> K,
+{
+    let mut kept_periods: BTreeMap<K, ID> = BTreeMap::new();
+
+    for (id, snapshot) in snapshots_sorted.iter().rev() {
+        let key = key_extractor(snapshot);
+        kept_periods.entry(key).or_insert(*id);
+    }
+
+    let mut ids_to_keep: HashSet<ID> = HashSet::new();
+
+    // Keep the N latest periods.
+    for (i, (_, id)) in kept_periods.iter().rev().enumerate() {
+        if i >= n {
+            break;
+        }
+        ids_to_keep.insert(*id);
+    }
+
+    ids_to_keep
 }
 
 #[cfg(test)]

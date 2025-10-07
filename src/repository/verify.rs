@@ -132,9 +132,10 @@ pub fn verify_snapshot_links(repo: Arc<Repository>, snapshot_id: &ID) -> Result<
             }
             NodeType::Directory => {
                 if let Some(tree_id) = &node.tree
-                    && index_guard.get(tree_id).is_none() {
-                        error_counter += 1;
-                    }
+                    && index_guard.get(tree_id).is_none()
+                {
+                    error_counter += 1;
+                }
             }
             NodeType::Symlink
             | NodeType::BlockDevice

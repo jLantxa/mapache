@@ -313,9 +313,7 @@ impl Index {
                 (
                     id,
                     BlobLocator {
-                        pack_id: *pack_ids
-                            .get_value(loc.pack_array_index as usize)
-                            .unwrap(),
+                        pack_id: *pack_ids.get_value(loc.pack_array_index as usize).unwrap(),
                         offset: loc.offset,
                         length: loc.length,
                         raw_length: loc.raw_length,

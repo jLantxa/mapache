@@ -32,16 +32,16 @@ use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
-    global::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    global::{
+        FileType, ID,
+        defaults::{MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SHORT_SNAPSHOT_ID_LEN},
+    },
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStreamer,
         verify::{verify_blob, verify_pack, verify_snapshot_links},
     },
-    ui::{
-        self, MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
-        default_bar_draw_target,
-    },
+    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, size},
 };
 

@@ -29,10 +29,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
 use crate::{
-    ui::{
-        EMPTY_PATHBUF, MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
-        default_bar_draw_target,
-    },
+    global::defaults::MAX_PATH_DISPLAY_LEN,
+    ui::{EMPTY_PATHBUF, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
 

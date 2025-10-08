@@ -27,13 +27,13 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    global::defaults::{DEFAULT_GC_TOLERANCE, SHORT_REPO_ID_LEN},
+    global::defaults::{DEFAULT_GC_TOLERANCE, PROGRESS_REFRESH_RATE_HZ, SHORT_REPO_ID_LEN},
     repository::{
         gc::{self},
         repo::{RepoConfig, Repository},
         verify::verify_snapshot_links,
     },
-    ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, size},
 };
 

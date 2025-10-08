@@ -29,14 +29,14 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::{get_absolute_normalized_path, tree::SerializedNodeStreamer},
-    global::defaults::SHORT_SNAPSHOT_ID_LEN,
+    global::defaults::{PROGRESS_REFRESH_RATE_HZ, SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         verify::verify_snapshot_links,
     },
     restorer::{self, RestoreOptions, Strategy},
     ui::{
-        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target,
+        self, SPINNER_TICK_CHARS, default_bar_draw_target,
         restore_progress::RestoreProgressReporter,
     },
     utils::{self, format_size, size},

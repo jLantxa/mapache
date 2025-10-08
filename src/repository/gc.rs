@@ -33,10 +33,10 @@ use crate::{
     fs::tree::SerializedNodeStreamer,
     global::{
         self, DEFAULT_ID, FileType, ID, SaveID,
-        defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
+        defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE, PROGRESS_REFRESH_RATE_HZ},
     },
     repository::{repo::Repository, snapshot::SnapshotStreamer},
-    ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
 };
 
 /// The cleanup plan. This struct contains lists of items that are valid, unused or need some work.

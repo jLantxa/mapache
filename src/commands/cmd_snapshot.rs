@@ -31,13 +31,16 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
     fs::{self, tree::FSNodeStreamer},
-    global::{self, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    global::{
+        self, ID,
+        defaults::{PROGRESS_REFRESH_RATE_HZ, SHORT_SNAPSHOT_ID_LEN},
+    },
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{SnapshotSummary, SnapshotTuple},
     },
     ui::{
-        self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target,
+        self, SPINNER_TICK_CHARS, default_bar_draw_target,
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },

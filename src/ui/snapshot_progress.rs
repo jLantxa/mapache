@@ -30,12 +30,9 @@ use parking_lot::RwLock;
 
 use crate::{
     fs::tree::NodeDiff,
-    global::global_opts,
+    global::{defaults::MAX_PATH_DISPLAY_LEN, global_opts},
     repository::snapshot::{DiffCounts, SnapshotSummary},
-    ui::{
-        EMPTY_PATHBUF, MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS,
-        default_bar_draw_target,
-    },
+    ui::{EMPTY_PATHBUF, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
 

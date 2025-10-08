@@ -20,7 +20,7 @@ use colored::Colorize;
 use indicatif::ProgressDrawTarget;
 
 use crate::{
-    global::{self, ID, global_opts},
+    global::{self, ID, defaults::PROGRESS_REFRESH_RATE_HZ, global_opts},
     repository::snapshot::Snapshot,
     ui::{
         self,
@@ -34,11 +34,7 @@ pub mod restore_progress;
 pub mod snapshot_progress;
 pub mod table;
 
-// Progress UI parameters
-pub(crate) const PROGRESS_REFRESH_RATE_HZ: u8 = 30;
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
-pub(crate) const MAX_PATH_DISPLAY_LEN: usize = 100;
 pub(crate) static EMPTY_PATHBUF: LazyLock<PathBuf> = LazyLock::new(PathBuf::new);
 
 pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {

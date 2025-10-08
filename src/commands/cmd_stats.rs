@@ -24,12 +24,12 @@ use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
-    global::FileType,
+    global::{FileType, defaults::PROGRESS_REFRESH_RATE_HZ},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStreamer,
     },
-    ui::{self, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, size},
 };
 

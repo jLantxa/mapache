@@ -20,7 +20,7 @@ use crate::utils::size;
 
 // -- Concurrency --
 pub(crate) const DEFAULT_READ_CONCURRENCY: usize = 4;
-pub(crate) const DEFAULT_WRITE_CONCURRENCY: usize = 5;
+pub(crate) const DEFAULT_WRITE_CONCURRENCY: usize = 4;
 
 // -- Index --
 pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -56,3 +56,7 @@ pub(crate) const DEFAULT_GC_TOLERANCE: f32 = 0.0; // [0 - 1]
 
 /// Repack files smaller than this factor of the max pack size
 pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
+
+// -- UI --
+pub(crate) const PROGRESS_REFRESH_RATE_HZ: u8 = 10;
+pub(crate) const MAX_PATH_DISPLAY_LEN: usize = 100;

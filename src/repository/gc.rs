@@ -21,7 +21,6 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
 use anyhow::{Result, bail};
@@ -32,8 +31,8 @@ use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterato
 use crate::{
     fs::tree::SerializedNodeStreamer,
     global::{
-        self, DEFAULT_ID, FileType, ID, SaveID,
-        defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE, PROGRESS_REFRESH_RATE_HZ},
+        self, DEFAULT_ID, FileType, GlobalOpts, ID, SaveID,
+        defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
     },
     repository::{repo::Repository, snapshot::SnapshotStreamer},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
@@ -89,9 +88,7 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
     for (id, locator) in repo.index().read().iter_ids() {
         kept_pack_size
             .entry(locator.pack_id)
@@ -134,9 +131,7 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
         if (garbage_bytes as f32 / DEFAULT_PACK_SIZE as f32) > tolerance {
             keep_packs.remove(&pack_id);
@@ -406,9 +401,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     for (_snapshot_id, snapshot) in snapshot_streamer {
         let tree_id = snapshot.tree;

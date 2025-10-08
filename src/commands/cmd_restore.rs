@@ -17,7 +17,7 @@
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use anyhow::{Result, bail};
@@ -29,7 +29,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::{get_absolute_normalized_path, tree::SerializedNodeStreamer},
-    global::defaults::{PROGRESS_REFRESH_RATE_HZ, SHORT_SNAPSHOT_ID_LEN},
+    global::{GlobalOpts, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         verify::verify_snapshot_links,
@@ -180,9 +180,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+
     for (_path, stream_node) in scan_node_streamer.flatten() {
         let node = stream_node.node;
         num_expected_items += 1;

@@ -14,12 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{
-    collections::BTreeSet,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::{Result, bail};
 use clap::Args;
@@ -33,8 +28,8 @@ use crate::{
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
     global::{
-        FileType, ID,
-        defaults::{MAX_PATH_DISPLAY_LEN, PROGRESS_REFRESH_RATE_HZ, SHORT_SNAPSHOT_ID_LEN},
+        FileType, GlobalOpts, ID,
+        defaults::{MAX_PATH_DISPLAY_LEN, SHORT_SNAPSHOT_ID_LEN},
     },
     repository::{
         repo::{RepoConfig, Repository},
@@ -297,9 +292,7 @@ pub fn verify_snapshot(
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     bar.set_position(0);
 

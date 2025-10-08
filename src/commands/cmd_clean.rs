@@ -14,10 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
@@ -27,7 +24,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    global::defaults::{DEFAULT_GC_TOLERANCE, PROGRESS_REFRESH_RATE_HZ, SHORT_REPO_ID_LEN},
+    global::{
+        GlobalOpts,
+        defaults::{DEFAULT_GC_TOLERANCE, SHORT_REPO_ID_LEN},
+    },
     repository::{
         gc::{self},
         repo::{RepoConfig, Repository},
@@ -166,9 +166,7 @@ fn verify_snapshots(repo: Arc<Repository>) -> Result<()> {
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     for id in repo.list_snapshot_ids()? {
         spinner.set_message(format!("{}", id.to_short_hex(SHORT_REPO_ID_LEN).yellow()));

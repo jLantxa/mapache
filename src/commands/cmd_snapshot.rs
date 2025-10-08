@@ -14,12 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{
-    collections::BTreeSet,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
@@ -31,10 +26,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
     fs::{self, tree::FSNodeStreamer},
-    global::{
-        self, ID,
-        defaults::{PROGRESS_REFRESH_RATE_HZ, SHORT_SNAPSHOT_ID_LEN},
-    },
+    global::{self, GlobalOpts, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{SnapshotSummary, SnapshotTuple},
@@ -219,9 +211,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     // Scan the filesystem to collect stats about the targets
     let mut num_files = 0;

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use clap::{Args, ValueEnum};
@@ -24,7 +24,7 @@ use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
-    global::{FileType, defaults::PROGRESS_REFRESH_RATE_HZ},
+    global::{FileType, GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStreamer,
@@ -95,9 +95,7 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     // Pack info
     let all_pack_files = repo.list_files(FileType::Pack)?;
@@ -213,9 +211,7 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(Duration::from_millis(
-        (1000.0_f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-    ));
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     for (_id, snapshot) in snapshot_streamer {
         spinner.inc(1);

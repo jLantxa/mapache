@@ -20,7 +20,7 @@ use colored::Colorize;
 use indicatif::ProgressDrawTarget;
 
 use crate::{
-    global::{self, ID, defaults::PROGRESS_REFRESH_RATE_HZ, global_opts},
+    global::{self, GlobalOpts, ID},
     repository::snapshot::Snapshot,
     ui::{
         self,
@@ -38,9 +38,11 @@ pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 pub(crate) static EMPTY_PATHBUF: LazyLock<PathBuf> = LazyLock::new(PathBuf::new);
 
 pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {
-    let verbosity = global_opts().as_ref().unwrap().verbosity;
+    let verbosity = GlobalOpts::verbosity();
+    let refresh_interval = GlobalOpts::progress_refresh_interval();
+
     if verbosity > 0 {
-        ProgressDrawTarget::stderr_with_hz(PROGRESS_REFRESH_RATE_HZ)
+        ProgressDrawTarget::stderr_with_hz((1.0 / refresh_interval.as_secs_f64()) as u8)
     } else {
         ProgressDrawTarget::hidden()
     }

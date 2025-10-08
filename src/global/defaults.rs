@@ -58,5 +58,5 @@ pub(crate) const DEFAULT_GC_TOLERANCE: f32 = 0.0; // [0 - 1]
 pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
 
 // -- UI --
-pub(crate) const PROGRESS_REFRESH_RATE_HZ: u8 = 10;
+pub(crate) const DEFAULT_PROGRESS_REFRESH_RATE_HZ: f32 = 10.0;
 pub(crate) const MAX_PATH_DISPLAY_LEN: usize = 100;

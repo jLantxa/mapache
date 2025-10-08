@@ -356,7 +356,7 @@ mod tests {
         node.metadata = original_metadata;
 
         // Now restore the metadata from the node
-        let reporter = RestoreProgressReporter::new(0, 0, 0);
+        let reporter = RestoreProgressReporter::new(0, 0, 1);
         restore_node_metadata(&node, &file_path, &reporter)?;
 
         // Check if the mtime was restored back to the node's original mtime

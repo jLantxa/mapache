@@ -21,7 +21,6 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
 use colored::Colorize;
@@ -29,8 +28,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
 use crate::{
-    global::defaults::MAX_PATH_DISPLAY_LEN,
-    ui::{EMPTY_PATHBUF, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    global::{GlobalOpts, defaults::MAX_PATH_DISPLAY_LEN},
+    ui::{EMPTY_PATHBUF, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
 
@@ -112,9 +111,7 @@ impl RestoreProgressReporter {
                     .unwrap()
                     .tick_chars(SPINNER_TICK_CHARS),
             );
-            file_spinner.enable_steady_tick(Duration::from_millis(
-                (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-            ));
+            file_spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
             file_spinners.push(file_spinner);
         }
 

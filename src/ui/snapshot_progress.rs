@@ -21,7 +21,6 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
 use colored::Colorize;
@@ -30,9 +29,9 @@ use parking_lot::RwLock;
 
 use crate::{
     fs::tree::NodeDiff,
-    global::{defaults::MAX_PATH_DISPLAY_LEN, global_opts},
+    global::{GlobalOpts, defaults::MAX_PATH_DISPLAY_LEN},
     repository::snapshot::{DiffCounts, SnapshotSummary},
-    ui::{EMPTY_PATHBUF, PROGRESS_REFRESH_RATE_HZ, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{EMPTY_PATHBUF, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
 
@@ -149,9 +148,7 @@ impl SnapshotProgressReporter {
                     .unwrap()
                     .tick_chars(SPINNER_TICK_CHARS),
             );
-            file_spinner.enable_steady_tick(Duration::from_millis(
-                (1000.0f32 / PROGRESS_REFRESH_RATE_HZ as f32) as u64,
-            ));
+            file_spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
             file_spinners.push(file_spinner);
         }
 
@@ -168,7 +165,7 @@ impl SnapshotProgressReporter {
             companion_bar,
             progress_bar,
             file_spinners,
-            verbosity: global_opts().as_ref().unwrap().verbosity,
+            verbosity: GlobalOpts::verbosity(),
             error_counter: error_counter_arc,
         }
     }

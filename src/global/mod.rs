@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod defaults;
+pub mod vars;
 
 use std::{sync::LazyLock, time::Duration};
 
@@ -26,7 +27,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     commands::GlobalArgs,
-    global::defaults::{DEFAULT_PROGRESS_REFRESH_RATE_HZ, DEFAULT_VERBOSITY},
+    global::{
+        defaults::{DEFAULT_PROGRESS_REFRESH_RATE_HZ, DEFAULT_VERBOSITY},
+        vars::{REFRESH_RATE_ENVVAR, get_envvar},
+    },
     utils,
 };
 
@@ -42,12 +46,10 @@ pub struct GlobalOpts {
 // value from the GLOBAL_OPTS, acquiring a lock.
 impl GlobalOpts {
     fn get_refresh_interval() -> Duration {
-        const REFRESH_RATE_ENVVAR: &str = "MAPACHE_REFRESH_RATE";
-
-        let var_hz = std::env::var(REFRESH_RATE_ENVVAR);
+        let var_hz = get_envvar(REFRESH_RATE_ENVVAR);
 
         let refresh_rate_hz = match var_hz {
-            Ok(val) => match val.parse::<f32>() {
+            Some(val) => match val.parse::<f32>() {
                 Ok(hz) => {
                     if hz > 0.0 && hz <= 60.0 {
                         hz
@@ -57,7 +59,7 @@ impl GlobalOpts {
                 }
                 Err(_) => DEFAULT_PROGRESS_REFRESH_RATE_HZ,
             },
-            Err(_) => DEFAULT_PROGRESS_REFRESH_RATE_HZ,
+            None => DEFAULT_PROGRESS_REFRESH_RATE_HZ,
         };
 
         calculate_refresh_interval(refresh_rate_hz)

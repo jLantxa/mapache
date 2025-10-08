@@ -25,7 +25,6 @@ use base64::Engine;
 use chrono::{DateTime, Local};
 use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
-use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
     backend::StorageBackend,
@@ -106,7 +105,11 @@ impl KeyManager {
 
         let intermediate_key =
             SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params())?;
-        SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)
+        let ss = SecureStorage::build()
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_key(&intermediate_key);
+
+        ss.decrypt(&encrypted_key)
             .with_context(|| "Could not retrieve master key from this keyfile")
     }
 
@@ -121,7 +124,11 @@ impl KeyManager {
         let intermediate_key =
             SecureStorage::derive_key::<32>(&auth.password, &salt, argon2_params.clone())?;
 
-        let encrypted_key = SecureStorage::encrypt_with_key(&intermediate_key, &master_key)?;
+        let ss = SecureStorage::build()
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_key(&intermediate_key);
+
+        let encrypted_key = ss.encrypt(&master_key)?;
 
         let key_file = KeyFile {
             created: create_time,
@@ -144,8 +151,10 @@ impl KeyManager {
     ) -> Result<(Option<ID>, Vec<u8>)> {
         match keyfile_path {
             Some(path) => {
+                let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+
                 let keyfile = std::fs::read(path)?;
-                let keyfile = SecureStorage::decompress(&keyfile)?;
+                let keyfile = ss.decompress(&keyfile)?;
                 let keyfile: KeyFile = serde_json::from_slice(&keyfile)
                     .with_context(|| format!("KeyFile at {path:?} is invalid"))?;
 
@@ -179,8 +188,10 @@ impl KeyManager {
             return Ok(None);
         }
 
+        let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+
         let keyfile = self.backend.read(&path)?;
-        let keyfile = SecureStorage::decompress(&keyfile)?;
+        let keyfile = ss.decompress(&keyfile)?;
         let keyfile: KeyFile = serde_json::from_slice(&keyfile)?;
         Ok(Some(keyfile))
     }
@@ -224,9 +235,10 @@ impl KeyManager {
 
     /// Save a KeyFile
     pub fn save_keyfile(&self, keyfile: &KeyFile) -> Result<ID> {
+        let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+
         let keyfile_json = serde_json::to_string(keyfile)?;
-        let keyfile_json =
-            SecureStorage::compress(keyfile_json.as_bytes(), DEFAULT_COMPRESSION_LEVEL)?;
+        let keyfile_json = ss.compress(keyfile_json.as_bytes())?;
         let id = ID::from_content(&keyfile_json);
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
         self.backend.write(&path, &keyfile_json)?;
@@ -306,12 +318,14 @@ impl Iterator for KeyFileStreamer {
                 continue;
             }
 
+            let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+
             let keyfile_data = match self.backend.read(&path) {
                 Ok(data) => data,
                 Err(e) => return Some(Err(e)),
             };
 
-            let keyfile_decompressed = match SecureStorage::decompress(&keyfile_data) {
+            let keyfile_decompressed = match ss.decompress(&keyfile_data) {
                 Ok(data) => data,
                 Err(e) => return Some(Err(e)),
             };

@@ -278,15 +278,16 @@ fn restore_node_metadata(
 
             // Restoring uid and gid is very likely to fail unless the user is root.
             if (uid.is_some() || gid.is_some())
-                && let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid) {
-                    progress_reporter.warning(&format!(
-                        "Could not set ownership (uid: {:?}, gid: {:?}) for {}: {}",
-                        uid,
-                        gid,
-                        dst_path.display(),
-                        e
-                    ));
-                }
+                && let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid)
+            {
+                progress_reporter.warning(&format!(
+                    "Could not set ownership (uid: {:?}, gid: {:?}) for {}: {}",
+                    uid,
+                    gid,
+                    dst_path.display(),
+                    e
+                ));
+            }
         }
     }
 

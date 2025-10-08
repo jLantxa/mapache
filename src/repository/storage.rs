@@ -14,16 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::io::Read;
+
 use aes_gcm_siv::{Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
-use rand::TryRngCore;
-use rand::rngs::OsRng;
-use secrecy::zeroize::Zeroize;
-use secrecy::{ExposeSecret, SecretBox};
-use std::io::{Read, Write};
-use zstd::stream::read::Decoder as ZstdDecoder;
-use zstd::stream::write::Encoder as ZstdEncoder;
+use rand::{TryRngCore, rngs::OsRng};
+use secrecy::{SecretBox, zeroize::Zeroize};
+use zstd::{Decoder as ZstdDecoder, bulk::Compressor as ZstdCompressor, zstd_safe::CParameter};
 
 use crate::global;
 
@@ -34,57 +32,66 @@ const ZSTD_WINDOW_LOG: u32 = global::defaults::AVG_CHUNK_SIZE.ilog2();
 pub struct SecureStorage {
     key: Option<SecretBox<Vec<u8>>>,
     compression_level: i32,
+    cipher: Option<Aes256GcmSiv>,
 }
 
 impl SecureStorage {
-    /// A new, default SecureStorage with no encryption and no compression
     pub fn build() -> Self {
         Self {
-            key: Default::default(),
-            compression_level: -1,
+            key: None,
+            compression_level: -1, // No compression by default (level -1)
+            cipher: None,
         }
     }
 
-    /// Builder method to set an encryption key
-    pub fn with_key(mut self, key: Vec<u8>) -> Self {
+    /// Set a 32-byte key and initialize the cipher (immutable afterward)
+    pub fn with_key(mut self, key: &[u8]) -> Self {
         assert_eq!(key.len(), 32);
-        self.key = Some(SecretBox::new(Box::new(key)));
+
+        let aes_key = AesKey::<Aes256GcmSiv>::from_slice(key);
+        self.cipher = Some(Aes256GcmSiv::new(aes_key));
+        self.key = Some(SecretBox::new(Box::new(key.to_vec())));
         self
     }
 
-    /// Builder method to set a compression level
+    /// Set compression level
     pub fn with_compression(mut self, level: i32) -> Self {
         self.compression_level = level;
         self
     }
 
+    /// compress → encrypt
     pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut processed_data = Self::compress(data, self.compression_level)?;
-        processed_data = self.encrypt(&processed_data)?;
-        Ok(processed_data)
+        let compressed = self.compress(data)?;
+        self.encrypt(&compressed)
     }
 
+    /// decrypt → decompress
     pub fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut processed_data = self.decrypt(data)?;
-        processed_data = Self::decompress(&processed_data)?;
-        Ok(processed_data)
+        let decrypted = self.decrypt(data)?;
+        self.decompress(&decrypted)
     }
 
-    /// Compress a stream of bytes
-    pub fn compress(data: &[u8], compression_level: i32) -> Result<Vec<u8>> {
-        let mut compressed = Vec::with_capacity(data.len());
-        let mut encoder = ZstdEncoder::new(&mut compressed, compression_level)?;
+    pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut comp = ZstdCompressor::new(self.compression_level)
+            .map_err(|e| anyhow!("zstd compressor init failed: {e}"))?;
 
-        encoder.set_parameter(zstd::zstd_safe::CParameter::WindowLog(ZSTD_WINDOW_LOG))?;
-        encoder.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(false))?;
+        // Set parameters
+        let _ = comp.set_parameter(CParameter::WindowLog(ZSTD_WINDOW_LOG));
+        let _ = comp.set_parameter(CParameter::ChecksumFlag(false));
 
-        encoder.write_all(data)?;
-        encoder.finish()?;
-        Ok(compressed)
+        let bound = zstd::zstd_safe::compress_bound(data.len());
+        let mut out = Vec::with_capacity(bound);
+
+        let n = comp
+            .compress_to_buffer(data, &mut out)
+            .map_err(|e| anyhow!("zstd compress failed: {e}"))?;
+
+        unsafe { out.set_len(n) };
+        Ok(out)
     }
 
-    /// Decompress a stream of bytes
-    pub fn decompress(data: &[u8]) -> Result<Vec<u8>> {
+    pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
         let mut decoder = ZstdDecoder::new(data)?;
         decoder.window_log_max(ZSTD_WINDOW_LOG)?;
 
@@ -93,92 +100,65 @@ impl SecureStorage {
         Ok(decompressed)
     }
 
-    /// Encrypt data using AES-GCM
-    pub fn encrypt_with_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        let key = AesKey::<Aes256GcmSiv>::from_slice(key);
-        let cipher = Aes256GcmSiv::new(key);
+    pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let Some(cipher) = &self.cipher else {
+            return Ok(data.to_vec());
+        };
 
-        // Generate a random nonce for each encryption
-        let mut nonce = vec![0u8; AES_GCM_NONCE_LEN];
-        if let Err(e) = OsRng.try_fill_bytes(&mut nonce) {
-            panic!("Error: {e}");
-        }
+        let mut nonce = [0u8; AES_GCM_NONCE_LEN];
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|e| anyhow!("rng failed: {e}"))?;
 
+        let mut out = Vec::with_capacity(AES_GCM_NONCE_LEN + data.len() + 16);
+        out.extend_from_slice(&nonce);
         match cipher.encrypt(Nonce::from_slice(&nonce), data) {
-            Ok(mut ciphertext) => {
-                // Return nonce + ciphertext
-
-                let mut out = Vec::with_capacity(AES_GCM_NONCE_LEN + ciphertext.len());
-                out.append(&mut nonce);
-                out.append(&mut ciphertext);
+            Ok(mut ct) => {
+                out.append(&mut ct);
                 Ok(out)
             }
-            Err(_) => bail!("Encryption failed"),
-        }
-    }
-
-    pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        match &self.key {
-            Some(key_secret) => Self::encrypt_with_key(key_secret.expose_secret(), data),
-            None => Ok(data.to_vec()),
-        }
-    }
-
-    /// Decrypt data using AES-GCM
-    pub fn decrypt_with_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        let key = AesKey::<Aes256GcmSiv>::from_slice(key);
-        let cipher = Aes256GcmSiv::new(key);
-
-        if data.len() < AES_GCM_NONCE_LEN {
-            bail!("Decryption failed: invalid data");
-        }
-
-        // Extract the nonce from the first 12 bytes of the data
-        let (nonce, ciphertext) = data.split_at(AES_GCM_NONCE_LEN);
-        let nonce = Nonce::from_slice(nonce);
-
-        match cipher.decrypt(nonce, ciphertext) {
-            Ok(plaintext) => Ok(plaintext),
-            Err(_) => bail!("Decryption failed"),
+            Err(_) => bail!("encryption failed"),
         }
     }
 
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        match &self.key {
-            Some(key_secret) => Self::decrypt_with_key(key_secret.expose_secret(), data),
-            None => Ok(data.to_vec()),
+        let Some(cipher) = &self.cipher else {
+            return Ok(data.to_vec());
+        };
+        if data.len() < AES_GCM_NONCE_LEN {
+            bail!("invalid ciphertext");
+        }
+        let (nonce, ciphertext) = data.split_at(AES_GCM_NONCE_LEN);
+        match cipher.decrypt(Nonce::from_slice(nonce), ciphertext) {
+            Ok(pt) => Ok(pt),
+            Err(_) => bail!("decryption failed"),
         }
     }
 
-    /// Derive a key from a password and a salt
+    /// Derive a key from a password and salt (Argon2id)
     pub fn derive_key<const KEY_LEN: usize>(
         password: &str,
         salt: &[u8],
         params: argon2::Params,
     ) -> Result<[u8; KEY_LEN]> {
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-
         let mut key = [0u8; KEY_LEN];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut key)
-            .map_err(|e| anyhow!("Failed to derive password: {e}"))?;
-
+            .map_err(|e| anyhow!("argon2 derive failed: {e}"))?;
         Ok(key)
     }
 
-    /// Generate a random salt of a given length
+    /// Generate a cryptographically random salt
     pub fn generate_salt<const LENGTH: usize>() -> [u8; LENGTH] {
         let mut salt = [0u8; LENGTH];
-        if let Err(e) = OsRng.try_fill_bytes(&mut salt) {
-            panic!("Error: {e}");
-        }
+        OsRng.try_fill_bytes(&mut salt).expect("OS RNG failed");
         salt
     }
 }
 
 impl Drop for SecureStorage {
     fn drop(&mut self) {
-        // Zeroize the key on drop
         self.key.zeroize();
     }
 }
@@ -207,9 +187,11 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[case(15)]
     #[case(22)]
     fn test_compression_and_decompression(#[case] level: i32) {
+        let ss = SecureStorage::build().with_compression(level);
+
         let original_data = TEXT;
-        let compressed_data = SecureStorage::compress(original_data, level).unwrap();
-        let decompressed_data = SecureStorage::decompress(&compressed_data).unwrap();
+        let compressed_data = ss.compress(original_data).unwrap();
+        let decompressed_data = ss.decompress(&compressed_data).unwrap();
 
         assert_eq!(*original_data, *decompressed_data);
     }
@@ -247,48 +229,45 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     }
 
     #[test]
-    fn test_deterministic_encryption() -> Result<()> {
-        let key = TEST_KEY.to_vec();
-        let secure_storage = SecureStorage::build()
+    fn test_encode_decode_with_compression_and_key() -> Result<()> {
+        let key = TEST_KEY;
+        let ss = SecureStorage::build()
             .with_compression(DEFAULT_COMPRESSION_LEVEL)
-            .with_key(key);
-        let ciphertext = secure_storage.encode(TEXT)?;
-        let decoded_plaintext = secure_storage.decode(&ciphertext)?;
+            .with_key(&key);
+
+        let ciphertext = ss.encode(TEXT)?;
+        let decoded_plaintext = ss.decode(&ciphertext)?;
 
         assert_eq!(TEXT, decoded_plaintext.as_slice());
-
         Ok(())
     }
 
     #[test]
     fn test_encryption_decryption_with_key() -> Result<()> {
-        let key = TEST_KEY.as_slice();
+        // No compression: length checks are stable (nonce + tag overhead)
+        let key = TEST_KEY;
+        let ss = SecureStorage::build().with_key(&key);
+
         let original_data = TEXT.as_slice();
+        let encrypted_data = ss.encrypt(original_data)?;
+        let decrypted_data = ss.decrypt(&encrypted_data)?;
 
-        let encrypted_data = SecureStorage::encrypt_with_key(key, original_data)?;
-        let decrypted_data = SecureStorage::decrypt_with_key(key, &encrypted_data)?;
-
-        // Encrypted data must be longer than the original data (nonce + authentication tag)
         assert!(encrypted_data.len() > original_data.len());
-
-        // Encrypted data must start with the nonce
         assert_eq!(
             encrypted_data.len() - original_data.len(),
-            AES_GCM_NONCE_LEN + 16 /* Nonce + GCM-SIV tag */
+            AES_GCM_NONCE_LEN + 16
         );
-
         assert_eq!(original_data, decrypted_data.as_slice());
-
         Ok(())
     }
 
     #[test]
     fn test_encryption_decryption_no_key() -> Result<()> {
-        let secure_storage = SecureStorage::build();
+        let ss = SecureStorage::build(); // no key, default compression
         let original_data = TEXT.as_slice();
 
-        let encrypted_data = secure_storage.encrypt(original_data)?;
-        let decrypted_data = secure_storage.decrypt(&encrypted_data)?;
+        let encrypted_data = ss.encrypt(original_data)?;
+        let decrypted_data = ss.decrypt(&encrypted_data)?;
 
         // No key means no encryption, so data should be unchanged
         assert_eq!(original_data, encrypted_data.as_slice());
@@ -299,27 +278,23 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_encode_decode_with_key_no_compression() -> Result<()> {
-        let key = TEST_KEY.to_vec();
-        let secure_storage = SecureStorage::build().with_key(key);
+        let key = TEST_KEY;
+        let ss = SecureStorage::build().with_key(&key);
 
-        let encoded_data = secure_storage.encode(TEXT)?;
-        let decoded_data = secure_storage.decode(&encoded_data)?;
+        let encoded_data = ss.encode(TEXT)?;
+        let decoded_data = ss.decode(&encoded_data)?;
 
-        println!("{}, {}", encoded_data.len(), TEXT.len());
-
-        // Data should not be smaller than the original due to encryption, but not compressed
         assert!(encoded_data.len() >= TEXT.len());
         assert_eq!(TEXT.as_slice(), decoded_data.as_slice());
-
         Ok(())
     }
 
     #[test]
     fn test_encode_decode_no_key_with_compression() -> Result<()> {
-        let secure_storage = SecureStorage::build().with_compression(DEFAULT_COMPRESSION_LEVEL);
+        let ss = SecureStorage::build().with_compression(DEFAULT_COMPRESSION_LEVEL);
 
-        let encoded_data = secure_storage.encode(TEXT)?;
-        let decoded_data = secure_storage.decode(&encoded_data)?;
+        let encoded_data = ss.encode(TEXT)?;
+        let decoded_data = ss.decode(&encoded_data)?;
 
         // Data should be smaller than original due to compression, and not encrypted
         assert!(encoded_data.len() < TEXT.len());
@@ -330,31 +305,30 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_decrypt_invalid_data_length() {
-        let key = TEST_KEY.as_slice();
-        let too_short_data = [0u8; AES_GCM_NONCE_LEN - 1]; // Shorter than nonce length
+        let key = TEST_KEY;
+        let ss = SecureStorage::build().with_key(&key);
 
-        let result = SecureStorage::decrypt_with_key(key, &too_short_data);
+        // Shorter than nonce length
+        let too_short_data = [0u8; AES_GCM_NONCE_LEN - 1];
 
-        // Should fail because the cyphertext is shorter than the nonce
+        let result = ss.decrypt(&too_short_data);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_decrypt_tampered_data() -> Result<()> {
-        let key = TEST_KEY.as_slice();
+        let key = TEST_KEY;
+        let ss = SecureStorage::build().with_key(&key);
+
         let original_data = TEXT.as_slice();
+        let mut encrypted_data = ss.encrypt(original_data)?;
 
-        let mut encrypted_data = SecureStorage::encrypt_with_key(key, original_data)?;
-
-        // Tamper with one byte of the ciphertext
-        let tamper_index = encrypted_data.len() / 2;
+        // Tamper with one byte of the ciphertext (not in the nonce prefix)
+        let tamper_index = AES_GCM_NONCE_LEN + (encrypted_data.len() - AES_GCM_NONCE_LEN) / 2;
         encrypted_data[tamper_index] = encrypted_data[tamper_index].wrapping_add(7);
 
-        let result = SecureStorage::decrypt_with_key(key, &encrypted_data);
-
-        // Decryption should fail due to failed authentication check (tampering)
+        let result = ss.decrypt(&encrypted_data);
         assert!(result.is_err());
-
         Ok(())
     }
 }

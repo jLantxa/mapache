@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use colored::Colorize;
-use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
@@ -132,9 +131,10 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
     let new_key_file = KeyManager::generate_key_file(&new_auth, master_key)
         .with_context(|| "Could not generate key")?;
 
+    let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+
     let new_keyfile_json = serde_json::to_string_pretty(&new_key_file)?;
-    let new_keyfile_json =
-        SecureStorage::compress(new_keyfile_json.as_bytes(), DEFAULT_COMPRESSION_LEVEL)?;
+    let new_keyfile_json = ss.compress(new_keyfile_json.as_bytes())?;
     let new_keyfile_id = ID::from_content(&new_keyfile_json);
 
     match &args.output_keyfile_path {

@@ -394,7 +394,7 @@ mod tests {
         let key = KeyManager::generate_new_master_key();
         let secure_storage = SecureStorage::build()
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
-            .with_key(key);
+            .with_key(&key);
 
         let blobs = vec![b"mapache".to_vec(), b"backup".to_vec(), b"rust".to_vec()];
 
@@ -410,7 +410,7 @@ mod tests {
             .expect("Failed to flush packer")
             .expect("Flushed pack data must be Some");
 
-        assert_eq!(flushed_pack.data.len(), 2793);
+        assert_eq!(flushed_pack.data.len(), 2794);
 
         let header_descriptors = Packer::parse_header(&secure_storage, &flushed_pack.data)?;
         assert_eq!(flushed_pack.descriptors.len(), 64);

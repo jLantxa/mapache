@@ -130,12 +130,11 @@ impl Repository {
         let secure_storage = Arc::new(
             SecureStorage::build()
                 .with_compression(DEFAULT_COMPRESSION_LEVEL)
-                .with_key(master_key),
+                .with_key(&master_key),
         );
 
         let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
-        let keyfile_json =
-            SecureStorage::compress(keyfile_json.as_bytes(), DEFAULT_COMPRESSION_LEVEL)?;
+        let keyfile_json = secure_storage.compress(keyfile_json.as_bytes())?;
         let keyfile_id = ID::from_content(&keyfile_json);
         match keyfile_path {
             Some(p) => {
@@ -244,7 +243,7 @@ impl Repository {
         let secure_storage = Arc::new(
             SecureStorage::build()
                 .with_compression(DEFAULT_COMPRESSION_LEVEL)
-                .with_key(master_key),
+                .with_key(&master_key),
         );
 
         let manifest_path = Path::new(MANIFEST_PATH);
@@ -485,7 +484,7 @@ impl Repository {
     pub fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
         let key_path = self.keys_path.join(id.to_hex());
         let key = self.backend.read(&key_path)?;
-        let key = SecureStorage::decompress(&key)?;
+        let key = self.secure_storage.decompress(&key)?;
         let key = serde_json::from_slice(&key)?;
         Ok(key)
     }
@@ -902,7 +901,11 @@ mod tests {
 
         let intermediate_key =
             SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params())?;
-        let decrypted_key = SecureStorage::decrypt_with_key(&intermediate_key, &encrypted_key)?;
+        let ss = SecureStorage::build()
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_key(&intermediate_key);
+
+        let decrypted_key = ss.decrypt(&encrypted_key)?;
 
         assert_eq!(master_key, decrypted_key.as_slice());
 

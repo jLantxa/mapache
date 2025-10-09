@@ -730,23 +730,40 @@ impl Repository {
 
     /// Try to acquire a lock
     fn acquire_lock(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
-        // Make sure the locks directory exists
+        // Ensure the locks directory exists
         self.backend.create_dir_all(&PathBuf::from(LOCKS_DIR))?;
 
-        let locks = self.get_locks()?;
+        // Create and save the new lock immediately
+        let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
+        let new_lock_id = *new_lock.lock().id();
+        self.write_lock(&new_lock)
+            .with_context(|| "Failed to write new lock file")?;
 
-        for lock in locks {
-            if exclusive {
-                bail!("Cannot acquire exclusive lock. Other locks exist.");
-            } else if lock.is_exclusive() {
-                bail!("Cannot acquire non-exclusive lock. An exclusive lock exist.");
+        // Check for conflicts with other unexpired locks
+        let all_locks = self.get_locks()?;
+        for lock in all_locks {
+            // Skip the lock we just wrote
+            if lock.id() == &new_lock_id {
+                continue;
+            }
+
+            // Clean up expired locks from other processes
+            if lock.is_expired() {
+                let _ = self.delete_file(FileType::Lock, lock.id());
+                continue;
+            }
+
+            if exclusive || lock.is_exclusive() {
+                // A race condition occurred, or a conflict was already present.
+                // The NEWLY written lock must be cleaned up and the attempt must fail.
+                let _ = self.delete_file(FileType::Lock, &new_lock_id);
+
+                bail!(
+                    "Failed to acquire lock: Conflict detected with existing lock (ID: {}).",
+                    lock.id().to_short_hex(8)
+                );
             }
         }
-
-        // Can acquire lock
-        let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
-        self.write_lock(&new_lock)
-            .with_context(|| "Failed to write lock")?;
 
         Ok(new_lock)
     }

@@ -88,6 +88,21 @@ impl Lock {
         }
     }
 
+    /// A constructor only visible for tests. Allows setting a custom timestamp.
+    #[cfg(test)]
+    pub fn new_for_test(exclusive: bool, timestamp: DateTime<Local>) -> Self {
+        let (hostname, username) = utils::get_system_info();
+
+        Self {
+            id: ID::new_random(),
+            timestamp,
+            exclusive,
+            hostname: hostname.unwrap_or_default(),
+            username: username.unwrap_or_default(),
+            pid: std::process::id(),
+        }
+    }
+
     pub fn refresh(&mut self) {
         self.timestamp = Local::now();
     }

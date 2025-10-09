@@ -760,7 +760,7 @@ impl Repository {
 
                 bail!(
                     "Failed to acquire lock: Conflict detected with existing lock (ID: {}).",
-                    lock.id().to_short_hex(8)
+                    lock.id().to_short_hex(4)
                 );
             }
         }
@@ -855,10 +855,17 @@ impl Drop for Repository {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use base64::{Engine, engine::general_purpose};
+    use chrono::Local;
+    use rstest::rstest;
     use tempfile::tempdir;
 
-    use crate::backend::localfs::LocalFS;
+    use crate::{
+        backend::localfs::LocalFS, global::set_global_opts_with_args,
+        repository::lock::LOCK_EXPIRE_TIMEOUT,
+    };
 
     use super::*;
 
@@ -925,6 +932,151 @@ mod tests {
         let decrypted_key = ss.decrypt(&encrypted_key)?;
 
         assert_eq!(master_key, decrypted_key.as_slice());
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(false, false)]
+    #[case(false, true)]
+    #[case(true, false)]
+    #[case(true, true)]
+    fn test_acquire_lock_with_non_exclusive_lock(
+        #[case] own_lock_exclusive: bool,
+        #[case] other_lock_exclusive: bool,
+    ) -> Result<()> {
+        use crate::{
+            commands::{self, GlobalArgs, cmd_init::CmdArgs},
+            global::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
+        };
+
+        let tmp_dir = tempdir()?;
+        let tmp_path = tmp_dir.path();
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
+
+        let repo = String::from("repo");
+        let repo_path = tmp_path.join(&repo);
+
+        let global = GlobalArgs {
+            repo: repo_path.to_string_lossy().to_string(),
+            auth_file: Some(auth_file_path),
+            key: None,
+            quiet: true,
+            verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
+            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+        };
+        let args = CmdArgs {};
+        set_global_opts_with_args(&global);
+
+        // Init repo
+        commands::cmd_init::run(&global, &args).with_context(|| "Failed to run cmd_init")?;
+
+        let backend = Arc::new(LocalFS::new(repo_path));
+
+        let (r0, _ss0) = Repository::try_open_unlocked(
+            Some(&auth),
+            None,
+            backend.clone(),
+            RepoConfig::default(),
+        )?;
+
+        let other_lock = Arc::new(Mutex::new(Lock::new(other_lock_exclusive)));
+        r0.write_lock(&other_lock)?;
+
+        let own_repo_open_result = Repository::try_open_with_lock(
+            Some(&auth),
+            None,
+            backend.clone(),
+            RepoConfig::default(),
+            own_lock_exclusive,
+        );
+
+        match (
+            own_repo_open_result.is_err(),
+            own_lock_exclusive,
+            other_lock_exclusive,
+        ) {
+            (true, true, true)
+            | (true, true, false)
+            | (true, false, true)
+            | (false, false, false) => Ok(()),
+            (true, false, false) => bail!("Should not fail to acquire lock"),
+            (false, true, true) | (false, true, false) | (false, false, true) => {
+                bail!("Should fail to acquire lock")
+            }
+        }
+    }
+
+    #[test]
+    fn test_acquire_lock_deletes_other_expired_lock() -> Result<()> {
+        use crate::{
+            commands::{self, GlobalArgs, cmd_init::CmdArgs},
+            global::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
+        };
+
+        let tmp_dir = tempdir()?;
+        let tmp_path = tmp_dir.path();
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
+
+        let repo = String::from("repo");
+        let repo_path = tmp_path.join(&repo);
+
+        let global = GlobalArgs {
+            repo: repo_path.to_string_lossy().to_string(),
+            auth_file: Some(auth_file_path),
+            key: None,
+            quiet: true,
+            verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
+            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+        };
+        let args = CmdArgs {};
+        set_global_opts_with_args(&global);
+
+        // Init repo
+        commands::cmd_init::run(&global, &args).with_context(|| "Failed to run cmd_init")?;
+
+        let backend = Arc::new(LocalFS::new(repo_path));
+
+        let (r0, _ss0) = Repository::try_open_unlocked(
+            Some(&auth),
+            None,
+            backend.clone(),
+            RepoConfig::default(),
+        )?;
+
+        let other_lock = Arc::new(Mutex::new(Lock::new_for_test(
+            true,
+            Local::now() - LOCK_EXPIRE_TIMEOUT,
+        )));
+        r0.write_lock(&other_lock)?;
+
+        Repository::try_open_with_lock(
+            Some(&auth),
+            None,
+            backend.clone(),
+            RepoConfig::default(),
+            true,
+        )?; // The other expired lock should have been deleted
 
         Ok(())
     }

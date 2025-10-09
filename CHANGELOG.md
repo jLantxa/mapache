@@ -6,6 +6,9 @@
 - Made FUSE a feature. The `mount` command can be disabled during compilation on those systems that don't support it.
 - `clean` will now de-duplicate blobs existing in different packs.
 - Minor optimizations to the index and garbage collector
+- Minor optimizations to the SecureStorage and archiver pipeline.
+- UI refresh rate is now configurable using the $MAPACHE_REFRESH_RATE environment variable and set to 10 Hz by default.
+- Delete expired logs when acquiring a new lock. Implemented try-and-check to detect conflicts.
 
 ### Fixes
 - Fail if no source paths are provided as arguments for `cmd_snapshots`.

@@ -20,7 +20,6 @@ use aes_gcm_siv::{Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
 use rand::{TryRngCore, rngs::OsRng};
-use secrecy::{SecretBox, zeroize::Zeroize};
 use zstd::{Decoder as ZstdDecoder, bulk::Compressor as ZstdCompressor, zstd_safe::CParameter};
 
 use crate::global;
@@ -30,7 +29,6 @@ const ZSTD_WINDOW_LOG: u32 = global::defaults::AVG_CHUNK_SIZE.ilog2();
 
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
-    key: Option<SecretBox<Vec<u8>>>,
     compression_level: i32,
     cipher: Option<Aes256GcmSiv>,
 }
@@ -38,7 +36,6 @@ pub struct SecureStorage {
 impl SecureStorage {
     pub fn build() -> Self {
         Self {
-            key: None,
             compression_level: -1, // No compression by default (level -1)
             cipher: None,
         }
@@ -50,7 +47,6 @@ impl SecureStorage {
 
         let aes_key = AesKey::<Aes256GcmSiv>::from_slice(key);
         self.cipher = Some(Aes256GcmSiv::new(aes_key));
-        self.key = Some(SecretBox::new(Box::new(key.to_vec())));
         self
     }
 
@@ -154,12 +150,6 @@ impl SecureStorage {
         let mut salt = [0u8; LENGTH];
         OsRng.try_fill_bytes(&mut salt).expect("OS RNG failed");
         salt
-    }
-}
-
-impl Drop for SecureStorage {
-    fn drop(&mut self) {
-        self.key.zeroize();
     }
 }
 

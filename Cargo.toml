@@ -32,7 +32,7 @@ signal-hook = "0.3.18"
 signal-hook-registry = "1.4.6"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 zstd = "0.13.3"
-libc = "0.2.176"
+libc = "0.2.177"
 
 
 [target.'cfg(unix)'.dependencies]

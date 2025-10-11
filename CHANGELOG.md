@@ -1,6 +1,8 @@
 # Changelog
 
 ## Latest
+
+# v0.1.0-beta.2
 ### Changes
 - Don't emit a warning for the first snapshot.
 - Made FUSE a feature. The `mount` command can be disabled during compilation on those systems that don't support it.

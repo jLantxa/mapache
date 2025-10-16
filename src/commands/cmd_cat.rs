@@ -23,7 +23,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::Tree,
-    global::{FileType, ID, ID_LENGTH},
+    global::FileType,
     repository::{
         lock::Lock,
         repo::{RepoConfig, Repository},
@@ -96,22 +96,27 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         }
         Object::Tree(prefix) => {
-            if prefix.len() != 2 * ID_LENGTH {
-                bail!("Tree search not supported with prefix. Use the whole ID string.");
-            }
-            let id = ID::from_hex(prefix)?;
-            let tree = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
+            let index = repo.index();
+            let index_guard = index.read();
+            let id = match index_guard.search_prefix(prefix)? {
+                Some(val) => val,
+                None => bail!("No tree blobs found with prefix {}", prefix),
+            };
+            let tree = repo
+                .load_blob(id)
+                .with_context(|| "Failed to load tree blob")?;
             let tree: Tree = serde_json::from_slice(&tree)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&tree)?);
             Ok(())
         }
         Object::Blob(prefix) => {
-            if prefix.len() != 2 * ID_LENGTH {
-                bail!("Blob search not supported with prefix. Use the whole ID string.");
-            }
-
-            let id = ID::from_hex(prefix)?;
-            let blob = repo.load_blob(&id).with_context(|| "Failed to load blob")?;
+            let index = repo.index();
+            let index_guard = index.read();
+            let id = match index_guard.search_prefix(prefix)? {
+                Some(val) => val,
+                None => bail!("No blobs found with prefix {}", prefix),
+            };
+            let blob = repo.load_blob(id).with_context(|| "Failed to load blob")?;
             ui::cli::log!("{}", String::from_utf8(blob)?);
             Ok(())
         }

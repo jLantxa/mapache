@@ -19,7 +19,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -547,6 +547,22 @@ impl MasterIndex {
 
         // Assign the new, merged indices back
         self.indices = new_indices;
+    }
+
+    pub fn search_prefix(&self, prefix: &str) -> Result<Option<&ID>> {
+        let ids = self.iter_ids();
+        let matched_ids: Vec<_> = ids
+            .filter(|(id, _)| id.to_hex().starts_with(prefix))
+            .collect();
+
+        if matched_ids.len() > 1 {
+            bail!("Prefix '{}' is ambiguous", prefix);
+        }
+
+        match matched_ids.first() {
+            None => Ok(None),
+            Some((blob_id, _)) => Ok(Some(blob_id)),
+        }
     }
 }
 

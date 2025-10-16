@@ -30,7 +30,6 @@ use crate::{
 
 use super::GlobalArgs;
 
-// TODO: Add options for the target backend SSH keys
 #[derive(Args, Debug)]
 #[clap(about = "Synchronize a repository in a different location")]
 pub struct CmdArgs {
@@ -41,6 +40,14 @@ pub struct CmdArgs {
     /// Delete unused files
     #[clap(long)]
     pub delete: bool,
+
+    /// SSH public key
+    #[clap(long = "dst-ssh-pubkey", value_parser)]
+    pub ssh_pubkey: Option<PathBuf>,
+
+    /// SSH private key
+    #[clap(long = "dst-ssh-privatekey", value_parser)]
+    pub ssh_privatekey: Option<PathBuf>,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -62,8 +69,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.target.clone(),
-        ssh_pubkey: None,
-        ssh_privatekey: None,
+        ssh_pubkey: args.ssh_pubkey.clone(),
+        ssh_privatekey: args.ssh_privatekey.clone(),
         dry_backend: false,
     })?;
     dst_backend.create()?; // Create the backend to create the directory if it doesn't exist.

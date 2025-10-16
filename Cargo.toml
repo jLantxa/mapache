@@ -10,7 +10,7 @@ argon2 = "0.5.3"
 base64 = "0.22.1"
 blake3 = "1.8.2"
 chrono = { version = "0.4.42", features = ["serde"] }
-clap = { version = "4.5.48", features = ["derive", "wrap_help"] }
+clap = { version = "4.5.49", features = ["derive", "wrap_help"] }
 colored = "3.0.0"
 crossbeam-channel = "0.5.15"
 dialoguer = "0.12.0"

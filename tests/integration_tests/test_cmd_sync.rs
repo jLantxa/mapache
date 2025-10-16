@@ -98,6 +98,8 @@ mod tests {
         let sync_args = cmd_sync::CmdArgs {
             target: dst_repo_path.to_string_lossy().to_string(),
             delete: false,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
         cmd_sync::run(&global, &sync_args).with_context(|| "Failed to run cmd_sync")?;
 
@@ -198,6 +200,8 @@ mod tests {
         let sync_args = cmd_sync::CmdArgs {
             target: dst_repo_path.to_string_lossy().to_string(),
             delete: true,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
         };
         cmd_sync::run(&global, &sync_args).with_context(|| "Failed to run cmd_sync")?;
 

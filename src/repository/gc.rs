@@ -323,8 +323,7 @@ impl Plan {
     fn delete_old_indices(&mut self) -> Result<u64> {
         // Delete obsolete index files
         // Make sure that the new index files don't overlap the files to delete.
-        let binding = self.repo.index();
-        let new_index_ids = binding.read().ids();
+        let new_index_ids = self.repo.index().read().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
 
         let index_delete_bar = ProgressBar::with_draw_target(

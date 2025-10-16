@@ -290,72 +290,76 @@ pub fn filter_path(
     true
 }
 
+/// Abbreviates a path to fit within `max_len`, keeping the first and last components.
+///
+/// Long paths are shortened by replacing middle components with `"..."`.
+/// Always preserves the root (if any) and the filename.
 pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
-    let origin_path_str = path.to_string_lossy().to_string();
-
-    if origin_path_str.is_empty() {
+    let path_str = path.to_string_lossy();
+    if path_str.is_empty() {
         return String::new();
-    } else if origin_path_str.len() <= max_len || path.components().count() <= 2 {
-        return origin_path_str;
     }
 
-    let filename = path
-        .file_name()
-        .expect("Path should have a filename")
-        .to_string_lossy()
-        .to_string();
+    // If it already fits, return as-is
+    if path_str.len() <= max_len {
+        return path_str.into_owned();
+    }
 
-    let mut components: Vec<Component> = path.components().collect();
-    components.pop(); // Remove the last component (filename) as it's handled separately
+    let mut components = path.components().peekable();
+    let first = match components.next() {
+        Some(Component::RootDir) => MAIN_SEPARATOR.to_string(),
+        Some(c) => c.as_os_str().to_string_lossy().into_owned(),
+        None => return String::new(),
+    };
 
+    let all_components: Vec<_> = components
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if all_components.is_empty() {
+        return first; // only one component
+    }
+
+    let last = all_components.last().unwrap();
+    let middle = &all_components[..all_components.len().saturating_sub(1)];
     let ellipsis = "...";
-    let ellipsis_len = ellipsis.len();
+    let sep_len = 1;
 
-    let mut abbreviated_parts = vec![
-        components
-            .first()
-            .expect("Path should have a root component")
-            .as_os_str()
-            .to_string_lossy()
-            .to_string(),
-        filename,
-    ];
-
-    let mut current_len = abbreviated_parts[0].len() + ellipsis_len + abbreviated_parts[1].len();
-    if abbreviated_parts.len() > 1 {
-        current_len += abbreviated_parts.len() - 1; // Account for initial separators
+    // Fast path: check if everything fits
+    let full_len = path_str.len();
+    if full_len <= max_len {
+        return path_str.into_owned();
     }
 
-    // Add components from the left until max_len is approached
-    for i in 1..components.len() {
-        let next_component_str = components[i].as_os_str().to_string_lossy().to_string();
-        if current_len + 1 + next_component_str.len() <= max_len {
-            abbreviated_parts.insert(i, next_component_str);
-            current_len += 1 + abbreviated_parts[i].len(); // +1 for the separator
+    // Compute available space
+    let mut result_len = first.len() + sep_len + ellipsis.len() + sep_len + last.len();
+    let mut middle_parts = Vec::new();
+
+    for comp in middle {
+        let comp_len = comp.len() + sep_len;
+        if result_len + comp_len <= max_len {
+            result_len += comp_len;
+            middle_parts.push(comp);
         } else {
             break;
         }
     }
 
-    // Reconstruct the path, inserting ellipsis if needed
-    let mut result = String::with_capacity(max_len);
-    if !abbreviated_parts.is_empty() {
-        result.push_str(&abbreviated_parts[0]);
+    // If everything fit, return original path
+    if middle_parts.len() == middle.len() {
+        return path_str.into_owned();
     }
 
-    for (i, part) in abbreviated_parts.iter().enumerate().skip(1) {
-        if i == abbreviated_parts.len() - 1 {
-            if abbreviated_parts.len() > 2 {
-                result.push(MAIN_SEPARATOR);
-                result.push_str(ellipsis);
-            }
-            result.push(MAIN_SEPARATOR);
-        } else {
-            result.push(MAIN_SEPARATOR);
-        }
-        result.push_str(part);
+    // Build the result efficiently
+    let mut result = String::with_capacity(max_len.min(full_len));
+    result.push_str(first.trim_end_matches(MAIN_SEPARATOR));
+    for comp in middle_parts {
+        result.push(MAIN_SEPARATOR);
+        result.push_str(comp);
     }
-
+    result.push(MAIN_SEPARATOR);
+    result.push_str(ellipsis);
+    result.push(MAIN_SEPARATOR);
+    result.push_str(last);
     result
 }
 
@@ -835,5 +839,48 @@ mod tests {
             Some(&vec![PathBuf::from("/a/b/c")]),
             Some(&vec![PathBuf::from("/x")])
         ))
+    }
+
+    #[test]
+    fn test_abbreviate_path() {
+        // Short paths (no abbreviation expected)
+        assert_eq!(abbreviate_path(Path::new("short/path"), 5), "short/path");
+        assert_eq!(abbreviate_path(Path::new("short/path"), 20), "short/path");
+        assert_eq!(abbreviate_path(Path::new("short/path"), 100), "short/path");
+
+        // Typical abbreviations
+        let path = Path::new("/home/user/some/path/to/a/file.txt");
+        assert_eq!(abbreviate_path(path, 20), "/home/.../file.txt");
+        assert_eq!(abbreviate_path(path, 30), "/home/user/some/.../file.txt");
+        assert_eq!(
+            abbreviate_path(path, 34),
+            "/home/user/some/path/to/a/file.txt"
+        );
+        assert_eq!(
+            abbreviate_path(path, 50),
+            "/home/user/some/path/to/a/file.txt"
+        );
+
+        // Long paths
+        let path = Path::new(
+            "/home/user/projects/backup_tool/src/core/commiter/engine/tasks/diff/handlers/filesystem/snapshots/metadata/permissions.rs",
+        );
+        assert_eq!(
+            abbreviate_path(path, 50),
+            "/home/user/projects/.../permissions.rs"
+        );
+        assert_eq!(
+            abbreviate_path(path, 80),
+            "/home/user/projects/backup_tool/src/core/commiter/engine/.../permissions.rs"
+        );
+        assert_eq!(
+            abbreviate_path(path, 100),
+            "/home/user/projects/backup_tool/src/core/commiter/engine/tasks/diff/handlers/.../permissions.rs"
+        );
+        assert_eq!(
+            abbreviate_path(path, 120),
+            "/home/user/projects/backup_tool/src/core/commiter/engine/tasks/diff/handlers/filesystem/snapshots/.../permissions.rs"
+        );
+        assert_eq!(abbreviate_path(path, 150), path.to_string_lossy());
     }
 }

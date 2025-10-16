@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use fastcdc::v2020::{Normalization, StreamCDC};
 
 use crate::{
@@ -163,10 +163,12 @@ fn chunk_and_save_blobs(
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
     let source = File::open(src_path)
-        .with_context(|| format!("Could not open file \'{}\'", src_path.display()))?;
-    let reader = BufReader::new(source);
+        .with_context(|| format!("Could not open file '{}'", src_path.display()))?;
+    let reader = BufReader::with_capacity(global::defaults::MIN_CHUNK_SIZE as usize, source);
 
-    let mut chunk_ids = Vec::new();
+    let file_size = reader.get_ref().metadata()?.len();
+    let estimated_num_chunks = (file_size / global::defaults::AVG_CHUNK_SIZE).max(1) as usize;
+    let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
 
     // The chunker parameters must remain stable across versions, otherwise
     // same contents will no longer produce same chunks and IDs.
@@ -180,21 +182,15 @@ fn chunk_and_save_blobs(
 
     for result in chunker {
         let chunk = result.with_context(|| "Failed to chunk file")?;
+        progress_reporter.processed_bytes(chunk.data.len() as u64);
 
-        let repo_clone = repo.clone();
-        let pr = progress_reporter.clone();
-        pr.processed_bytes(chunk.data.len() as u64);
+        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
+            .encode_and_save_blob(BlobType::Data, chunk.data, SaveID::CalculateID)
+            .with_context(|| format!("Failed to save blob from '{}'", src_path.display()))?;
 
-        let save_blob_res =
-            repo_clone.encode_and_save_blob(BlobType::Data, chunk.data, SaveID::CalculateID);
-        match save_blob_res {
-            Ok((id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size))) => {
-                chunk_ids.push(id);
-                pr.written_data_bytes(raw_data_size, encoded_data_size);
-                pr.written_meta_bytes(raw_meta_size, encoded_meta_size);
-            }
-            Err(e) => bail!("Failed to save blob to repository: {e:?}"),
-        }
+        chunk_ids.push(id);
+        progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
+        progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);
     }
 
     Ok(chunk_ids)

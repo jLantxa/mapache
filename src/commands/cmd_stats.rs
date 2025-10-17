@@ -238,24 +238,25 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
         for (_path, stream_node) in streamer.flatten() {
             let node = stream_node.node;
             if let NodeType::File = node.node_type
-                && let Some(blobs) = node.blobs {
-                    for blob_id in blobs {
-                        // Single op membership check
-                        if visited_blobs.insert(blob_id) {
-                            if let Some((_pack, _type, _off, encoded_len, raw_len)) =
-                                index_guard.get(&blob_id)
-                            {
-                                total_raw_data_size =
-                                    total_raw_data_size.saturating_add(raw_len as u64);
-                                total_encoded_data_size =
-                                    total_encoded_data_size.saturating_add(encoded_len as u64);
-                                num_referenced_blobs = num_referenced_blobs.saturating_add(1);
-                            } else {
-                                error_counter = error_counter.saturating_add(1);
-                            }
+                && let Some(blobs) = node.blobs
+            {
+                for blob_id in blobs {
+                    // Single op membership check
+                    if visited_blobs.insert(blob_id) {
+                        if let Some((_pack, _type, _off, encoded_len, raw_len)) =
+                            index_guard.get(&blob_id)
+                        {
+                            total_raw_data_size =
+                                total_raw_data_size.saturating_add(raw_len as u64);
+                            total_encoded_data_size =
+                                total_encoded_data_size.saturating_add(encoded_len as u64);
+                            num_referenced_blobs = num_referenced_blobs.saturating_add(1);
+                        } else {
+                            error_counter = error_counter.saturating_add(1);
                         }
                     }
                 }
+            }
         }
     }
 

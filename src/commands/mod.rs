@@ -90,6 +90,7 @@ pub enum Command {
 pub struct WithGlobal<T: clap::Args> {
     #[clap(flatten)]
     pub global: GlobalArgs,
+
     #[clap(flatten)]
     pub args: T,
 }

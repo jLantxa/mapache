@@ -36,6 +36,7 @@ use crate::{
     },
     repository::{repo::Repository, snapshot::SnapshotStreamer},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
+    utils,
 };
 
 /// The cleanup plan. This struct contains lists of items that are valid, unused or need some work.
@@ -152,6 +153,10 @@ impl Plan {
     pub fn execute(mut self) -> Result<i64> {
         let mut deleted_size = 0;
         let mut added_size = 0;
+
+        // Delete all expired locks first. This operation is independent of all others,
+        // as the expired locks are not useful anymore.
+        deleted_size += remove_expired_locks(&self.repo)?;
 
         // Append small packs to the obsolete pack list. These will be repacked and deleted,
         // which helps consolidate storage and eliminates duplicates that might be in them.
@@ -497,4 +502,25 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
     );
 
     Ok((referenced_blobs, referenced_packs))
+}
+
+/// Remove all expired locks from the repository
+fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
+    let locks = repo.get_locks()?;
+    let mut size_freed = 0;
+    let mut num_deleted_locks = 0;
+
+    for lock in locks {
+        if lock.is_expired() {
+            size_freed += repo.delete_file(FileType::Lock, lock.id())?;
+            num_deleted_locks += 1;
+        }
+    }
+
+    ui::cli::log!(
+        "Deleted {}",
+        utils::format_count(num_deleted_locks, "expired lock", "expired locks")
+    );
+
+    Ok(size_freed)
 }

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use clap::{Args, ValueEnum};
@@ -97,53 +97,56 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    // Pack info
-    let all_pack_files = repo.list_files(FileType::Pack)?;
-    let num_packs = all_pack_files.len();
-    let mut total_pack_size: u64 = 0;
-
-    for (i, pack_file_path) in all_pack_files.into_iter().enumerate() {
-        spinner.set_message(format!("pack {} / {}", 1 + i, num_packs));
-
-        // Add header size (raw + encoded) as meta
-        let stat = backend.lstat(&pack_file_path)?;
-        total_pack_size += stat.size.unwrap_or(0);
+    fn sum_sizes(
+        spinner: &ProgressBar,
+        backend: &dyn StorageBackend,
+        label: &str,
+        files: &[PathBuf],
+    ) -> Result<u64> {
+        let mut total = 0u64;
+        let len = files.len();
+        for (i, path) in files.iter().enumerate() {
+            spinner.set_message(format!("{label} {}/{}", i + 1, len));
+            if let Some(sz) = backend.lstat(path)?.size {
+                total = total.saturating_add(sz);
+            }
+        }
+        Ok(total)
     }
 
-    // Index
-    spinner.set_message("index");
-    let all_index_files = repo.list_files(FileType::Index)?;
-    let num_indices = all_index_files.len();
-    let mut total_index_size: u64 = 0;
-    for index_file_path in all_index_files {
-        total_index_size += backend.lstat(&index_file_path)?.size.unwrap_or(0);
-    }
+    // Packs
+    let packs = repo.list_files(FileType::Pack)?;
+    let num_packs = packs.len();
+    let total_pack_size = sum_sizes(&spinner, backend.as_ref(), "packs", &packs)?;
+
+    // Indices
+    let indices = repo.list_files(FileType::Index)?;
+    let num_indices = indices.len();
+    let total_index_size = sum_sizes(&spinner, backend.as_ref(), "index", &indices)?;
 
     // Snapshots
-    spinner.set_message("snapshots");
-    let all_snapshot_files = repo.list_files(FileType::Snapshot)?;
-    let num_snapshots = all_snapshot_files.len();
-    let mut total_snapshot_size: u64 = 0;
-    for snapshot_file_path in all_snapshot_files {
-        total_snapshot_size += backend.lstat(&snapshot_file_path)?.size.unwrap_or(0);
-    }
+    let snaps = repo.list_files(FileType::Snapshot)?;
+    let num_snapshots = snaps.len();
+    let total_snapshot_size = sum_sizes(&spinner, backend.as_ref(), "snapshots", &snaps)?;
 
     // Keys
-    spinner.set_message("keys");
-    let all_key_files = repo.list_files(FileType::Key)?;
-    let num_keys = all_key_files.len();
-    let mut total_key_size: u64 = 0;
-    for key_file_path in all_key_files {
-        total_key_size += backend.lstat(&key_file_path)?.size.unwrap_or(0);
-    }
+    let keys = repo.list_files(FileType::Key)?;
+    let num_keys = keys.len();
+    let total_key_size = sum_sizes(&spinner, backend.as_ref(), "keys", &keys)?;
 
-    // Manifest and Total size
+    // Manifest
     spinner.set_message("manifest");
-    let manifest_file = repo.list_files(FileType::Manifest)?;
-    let manifest_file = manifest_file.first().expect("There should be a manifest");
-    let manifest_size = backend.lstat(manifest_file)?.size.unwrap_or(0);
-    let total_size =
-        total_pack_size + total_index_size + total_snapshot_size + total_key_size + manifest_size;
+    let manifest_size = repo
+        .list_files(FileType::Manifest)?
+        .first()
+        .and_then(|f| backend.lstat(f).ok()?.size)
+        .unwrap_or(0);
+
+    let total_size = total_pack_size
+        .saturating_add(total_index_size)
+        .saturating_add(total_snapshot_size)
+        .saturating_add(total_key_size)
+        .saturating_add(manifest_size);
 
     spinner.finish_and_clear();
 
@@ -164,20 +167,20 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
         utils::format_size(total_index_size, 3)
     );
     ui::cli::log!();
-    ui::cli::log!("Snapshot:");
+    ui::cli::log!("Snapshots:");
     ui::cli::log!(
         "\t{}",
         utils::format_count(num_snapshots, "snapshot", "snapshots")
     );
     ui::cli::log!(
-        "\tTotal snapshot file size: {}",
+        "\tTotal snapshot size: {}",
         utils::format_size(total_snapshot_size, 3)
     );
     ui::cli::log!();
-    ui::cli::log!("Key:");
+    ui::cli::log!("Keys:");
     ui::cli::log!("\t{}", utils::format_count(num_keys, "key", "keys"));
     ui::cli::log!(
-        "\tTotal key file size: {}",
+        "\tTotal key size: {}",
         utils::format_size(total_key_size, 3)
     );
     ui::cli::log!();
@@ -192,16 +195,15 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
 }
 
 fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
-    let index = repo.index();
     let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
     let num_snapshots = snapshot_streamer.len();
 
-    let mut error_counter = 0;
-    let mut total_restore_size: u64 = 0;
-    let mut num_referenced_blobs = 0;
-    let mut total_raw_data_size: u64 = 0;
-    let mut total_encoded_data_size: u64 = 0;
-    let mut visited_blobs = BTreeSet::new();
+    let mut error_counter = 0usize;
+    let mut total_restore_size = 0u64;
+    let mut total_raw_data_size = 0u64;
+    let mut total_encoded_data_size = 0u64;
+    let mut num_referenced_blobs = 0u64;
+    let mut visited_blobs = HashSet::new();
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -213,49 +215,47 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    for (_id, snapshot) in snapshot_streamer {
-        spinner.inc(1);
+    // Hold index read-lock once
+    let index = repo.index();
+    let index_guard = index.read();
+
+    for (i, (_id, snapshot)) in snapshot_streamer.enumerate() {
         spinner.set_message(format!(
             "Analyzing snapshots: {} / {}",
-            spinner.position(),
+            i + 1,
             num_snapshots
         ));
+        total_restore_size = total_restore_size.saturating_add(snapshot.size());
 
-        total_restore_size += snapshot.size();
-
-        let tree_id = snapshot.tree;
-        let streamer =
-            SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
+        let streamer = SerializedNodeStreamer::new(
+            repo.clone(),
+            Some(snapshot.tree),
+            PathBuf::new(),
+            None,
+            None,
+        )?;
 
         for (_path, stream_node) in streamer.flatten() {
             let node = stream_node.node;
-            match node.node_type {
-                NodeType::File => {
-                    if let Some(blobs) = node.blobs {
-                        for blob_id in blobs {
-                            if !visited_blobs.contains(&blob_id) {
-                                match index.read().get(&blob_id) {
-                                    Some((_pack_id, _blob_type, _offset, encoded_len, raw_len)) => {
-                                        total_raw_data_size += raw_len as u64;
-                                        total_encoded_data_size += encoded_len as u64;
-                                        num_referenced_blobs += 1;
-                                    }
-                                    None => {
-                                        error_counter += 1;
-                                    }
-                                }
-                                visited_blobs.insert(blob_id);
+            if let NodeType::File = node.node_type
+                && let Some(blobs) = node.blobs {
+                    for blob_id in blobs {
+                        // Single op membership check
+                        if visited_blobs.insert(blob_id) {
+                            if let Some((_pack, _type, _off, encoded_len, raw_len)) =
+                                index_guard.get(&blob_id)
+                            {
+                                total_raw_data_size =
+                                    total_raw_data_size.saturating_add(raw_len as u64);
+                                total_encoded_data_size =
+                                    total_encoded_data_size.saturating_add(encoded_len as u64);
+                                num_referenced_blobs = num_referenced_blobs.saturating_add(1);
+                            } else {
+                                error_counter = error_counter.saturating_add(1);
                             }
                         }
                     }
                 }
-                NodeType::Directory
-                | NodeType::Symlink
-                | NodeType::BlockDevice
-                | NodeType::CharDevice
-                | NodeType::Fifo
-                | NodeType::Socket => (),
-            }
         }
     }
 
@@ -267,7 +267,11 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
     );
     ui::cli::log!(
         "\t{}",
-        utils::format_count(num_referenced_blobs, "referenced blob", "referenced blobs")
+        utils::format_count(
+            num_referenced_blobs as usize,
+            "referenced blob",
+            "referenced blobs"
+        )
     );
     ui::cli::log!(
         "\tRestore size:       {:>12}",
@@ -281,10 +285,13 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
         "\tTotal encoded size: {:>12}",
         utils::format_size(total_encoded_data_size, 3)
     );
-    ui::cli::log!(
-        "\tCompression ratio: {:.2}x",
+
+    let ratio = if total_encoded_data_size == 0 {
+        0.0
+    } else {
         total_raw_data_size as f32 / total_encoded_data_size as f32
-    );
+    };
+    ui::cli::log!("\tCompression ratio: {:.2}x", ratio);
 
     if error_counter > 0 {
         ui::cli::log!();

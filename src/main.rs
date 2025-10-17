@@ -14,22 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use mapache::{commands, global, ui};
-
 use anyhow::Result;
-use clap::Parser;
 use colored::Colorize;
 
-fn main() -> Result<()> {
-    let args = commands::Cli::parse();
-    global::set_global_opts_with_args(&args.global_args);
+use mapache::{commands, ui};
 
-    // Run the command
-    if let Err(e) = commands::run(&args) {
+fn main() -> Result<()> {
+    // Parse arguments and execute commands
+    if let Err(e) = commands::parse_and_run() {
         ui::cli::error!("{}", e.to_string());
         ui::cli::log!();
         ui::cli::log!("Finished with {}", "Error".bold().red());
-
         std::process::exit(1);
     }
 

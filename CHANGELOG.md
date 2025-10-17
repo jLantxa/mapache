@@ -5,6 +5,7 @@
 - Support ssh keys for dst backend in `cmd_sync`.
 - Minor optimizations to the Archiver.
 - `cat` command now accepts a prefix ID for blobs and trees.
+- Added `completion` command to generate autocompletion scripts.
 
 # v0.1.0-beta.2a
 ### Changes

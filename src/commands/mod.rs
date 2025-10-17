@@ -21,7 +21,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::{
     global::{
-        FileType, ID,
+        self, FileType, ID,
         defaults::{
             DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
             MIN_CONFIGURABLE_PACK_SIZE_MIB,
@@ -33,16 +33,19 @@ use crate::{
     },
 };
 
-pub(crate) mod cleanup;
+// Subcommands
 pub mod cmd_amend;
 pub mod cmd_cat;
 pub mod cmd_clean;
+mod cmd_completion;
 pub mod cmd_diff;
 pub mod cmd_forget;
 pub mod cmd_init;
 pub mod cmd_key;
 pub mod cmd_log;
 pub mod cmd_ls;
+#[cfg(all(feature = "fuse", unix))]
+pub mod cmd_mount;
 pub mod cmd_restore;
 pub mod cmd_snapshot;
 pub mod cmd_stats;
@@ -50,75 +53,65 @@ pub mod cmd_sync;
 pub mod cmd_unlock;
 pub mod cmd_verify;
 
-#[cfg(all(feature = "fuse", unix))]
-pub mod cmd_mount;
+pub(crate) mod cleanup;
 
-// CLI arguments
+/// mapache CLI definition
 #[derive(Parser, Debug)]
-#[clap(
-    version = env!("CARGO_PKG_VERSION"), // Version from crate metadata
-    about = "mapache backup tool",
-)]
+#[command(version, about = "mapache backup tool")]
 pub struct Cli {
-    // Subcommand
     #[command(subcommand)]
     pub command: Command,
-
-    // Global arguments
-    #[clap(flatten)]
-    pub global_args: GlobalArgs,
 }
 
-/// List of commands in ALPHABETICAL ORDER
+/// Top-level commands (flat list)
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    Amend(cmd_amend::CmdArgs),
-    Cat(cmd_cat::CmdArgs),
-    Clean(cmd_clean::CmdArgs),
-    Diff(cmd_diff::CmdArgs),
-    Forget(cmd_forget::CmdArgs),
-    Init(cmd_init::CmdArgs),
-    Key(cmd_key::CmdArgs),
-    Log(cmd_log::CmdArgs),
-    Ls(cmd_ls::CmdArgs),
+    Amend(WithGlobal<cmd_amend::CmdArgs>),
+    Cat(WithGlobal<cmd_cat::CmdArgs>),
+    Clean(WithGlobal<cmd_clean::CmdArgs>),
+    Completion(cmd_completion::CmdArgs),
+    Diff(WithGlobal<cmd_diff::CmdArgs>),
+    Forget(WithGlobal<cmd_forget::CmdArgs>),
+    Init(WithGlobal<cmd_init::CmdArgs>),
+    Key(WithGlobal<cmd_key::CmdArgs>),
+    Log(WithGlobal<cmd_log::CmdArgs>),
+    Ls(WithGlobal<cmd_ls::CmdArgs>),
     #[cfg(all(feature = "fuse", unix))]
-    Mount(cmd_mount::CmdArgs),
-    Restore(cmd_restore::CmdArgs),
-    Snapshot(cmd_snapshot::CmdArgs),
-    Stats(cmd_stats::CmdArgs),
-    Sync(cmd_sync::CmdArgs),
-    Unlock(cmd_unlock::CmdArgs),
-    Verify(cmd_verify::CmdArgs),
+    Mount(WithGlobal<cmd_mount::CmdArgs>),
+    Restore(WithGlobal<cmd_restore::CmdArgs>),
+    Snapshot(WithGlobal<cmd_snapshot::CmdArgs>),
+    Stats(WithGlobal<cmd_stats::CmdArgs>),
+    Sync(WithGlobal<cmd_sync::CmdArgs>),
+    Unlock(WithGlobal<cmd_unlock::CmdArgs>),
+    Verify(WithGlobal<cmd_verify::CmdArgs>),
 }
 
-fn pack_size_parser(s: &str) -> Result<f32> {
-    let val = s.parse::<f32>()?;
-    if !(MIN_CONFIGURABLE_PACK_SIZE_MIB..=MAX_CONFIGURABLE_PACK_SIZE_MIB).contains(&val) {
-        bail!(
-            "The pack size must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} MiB and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB",
-        );
-    }
-
-    Ok(val)
+#[derive(Parser, Debug)]
+pub struct WithGlobal<T: clap::Args> {
+    #[clap(flatten)]
+    pub global: GlobalArgs,
+    #[clap(flatten)]
+    pub args: T,
 }
 
+/// Global options
 #[derive(Parser, Debug)]
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 pub struct GlobalArgs {
     /// Repository path
-    #[clap(short = 'r', long = "repo", value_parser)]
+    #[clap(short, long)]
     pub repo: String,
 
     /// SSH public key
-    #[clap(long, value_parser)]
+    #[clap(long)]
     pub ssh_pubkey: Option<PathBuf>,
 
     /// SSH private key
-    #[clap(long, value_parser)]
+    #[clap(long)]
     pub ssh_privatekey: Option<PathBuf>,
 
-    /// Path to a file to read the repository authentication credentials
-    #[clap(long, long, value_parser)]
+    /// Path to a file to read repository authentication credentials
+    #[clap(long)]
     pub auth_file: Option<PathBuf>,
 
     /// Pack target size in MiB
@@ -126,16 +119,26 @@ pub struct GlobalArgs {
     pub pack_size_mib: f32,
 
     /// Path to a KeyFile
-    #[clap(short = 'k', long = "key-file", value_parser)]
+    #[clap(short = 'k', long = "key-file")]
     pub key: Option<PathBuf>,
 
     /// Disable logging (verbosity = 0)
-    #[clap(long, value_parser, group = "verbosity_group")]
+    #[clap(long, group = "verbosity_group")]
     pub quiet: bool,
 
     /// Set the verbosity level [0-3]
-    #[clap(short = 'v', long, value_parser, group = "verbosity_group")]
+    #[clap(short, long, group = "verbosity_group")]
     pub verbosity: Option<u32>,
+}
+
+fn pack_size_parser(s: &str) -> Result<f32> {
+    let val = s.parse::<f32>()?;
+    if !(MIN_CONFIGURABLE_PACK_SIZE_MIB..=MAX_CONFIGURABLE_PACK_SIZE_MIB).contains(&val) {
+        bail!(
+            "Pack size must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB"
+        );
+    }
+    Ok(val)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,11 +152,9 @@ impl FromStr for UseSnapshot {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "latest" => Ok(UseSnapshot::Latest),
-            _ if !s.is_empty() => Ok(UseSnapshot::SnapshotId(s.to_string())),
-            _ => Err(anyhow!(
-                "Invalid snapshot value: must be 'latest' or a snapshot ID"
-            )),
+            "latest" => Ok(Self::Latest),
+            _ if !s.is_empty() => Ok(Self::SnapshotId(s.to_string())),
+            _ => Err(anyhow!("Invalid snapshot: use 'latest' or a snapshot ID")),
         }
     }
 }
@@ -161,69 +162,75 @@ impl FromStr for UseSnapshot {
 impl std::fmt::Display for UseSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UseSnapshot::Latest => write!(f, "latest"),
-            UseSnapshot::SnapshotId(id) => write!(f, "{id}"),
+            Self::Latest => write!(f, "latest"),
+            Self::SnapshotId(id) => write!(f, "{id}"),
         }
     }
 }
 
-pub(crate) fn find_use_snapshot(
+fn find_use_snapshot(
     repo: Arc<Repository>,
     use_snapshot: &UseSnapshot,
 ) -> Result<Option<(ID, Snapshot)>> {
     match use_snapshot {
-        UseSnapshot::Latest => {
-            let mut snapshots = SnapshotStreamer::new(repo.clone())?;
-            Ok(snapshots.latest())
-        }
+        UseSnapshot::Latest => Ok(SnapshotStreamer::new(repo.clone())?.latest()),
         UseSnapshot::SnapshotId(prefix) => {
-            let (id, _path) = repo.find(FileType::Snapshot, prefix)?;
-            match &repo.load_snapshot(&id) {
-                Ok(snap) => Ok(Some((id, snap.clone()))),
-                Err(_) => bail!("Snapshot {id:?} not found"),
-            }
+            let (id, _) = repo.find(FileType::Snapshot, prefix)?;
+            let snap = repo.load_snapshot(&id)?;
+            Ok(Some((id, snap)))
         }
     }
 }
 
-/// A marker for an empty tag set
 pub(crate) const EMPTY_TAG_MARK: &str = "[]";
 
-pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
-    if s.is_none() {
-        return BTreeSet::new();
+fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
+    s.unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// CLI entry point
+pub fn parse_and_run() -> Result<()> {
+    let args = Cli::parse();
+
+    if let Some(global) = extract_global(&args.command) {
+        global::set_global_opts_with_args(global);
     }
 
-    let s = s.unwrap().trim();
-
-    if s.is_empty() {
-        BTreeSet::new()
-    } else {
-        s.split(",")
-            .map(|tag| tag.trim().to_string())
-            .filter(|tag| !tag.is_empty())
-            .collect()
+    match args.command {
+        Command::Completion(cmd) => cmd_completion::run(&cmd),
+        Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args),
+        Command::Cat(cmd) => cmd_cat::run(&cmd.global, &cmd.args),
+        Command::Clean(cmd) => cmd_clean::run(&cmd.global, &cmd.args),
+        Command::Diff(cmd) => cmd_diff::run(&cmd.global, &cmd.args),
+        Command::Forget(cmd) => cmd_forget::run(&cmd.global, &cmd.args),
+        Command::Init(cmd) => cmd_init::run(&cmd.global, &cmd.args),
+        Command::Key(cmd) => cmd_key::run(&cmd.global, &cmd.args),
+        Command::Log(cmd) => cmd_log::run(&cmd.global, &cmd.args),
+        Command::Ls(cmd) => cmd_ls::run(&cmd.global, &cmd.args),
+        #[cfg(all(feature = "fuse", unix))]
+        Command::Mount(cmd) => cmd_mount::run(&cmd.global, &cmd.args),
+        Command::Restore(cmd) => cmd_restore::run(&cmd.global, &cmd.args),
+        Command::Snapshot(cmd) => cmd_snapshot::run(&cmd.global, &cmd.args),
+        Command::Stats(cmd) => cmd_stats::run(&cmd.global, &cmd.args),
+        Command::Sync(cmd) => cmd_sync::run(&cmd.global, &cmd.args),
+        Command::Unlock(cmd) => cmd_unlock::run(&cmd.global, &cmd.args),
+        Command::Verify(cmd) => cmd_verify::run(&cmd.global, &cmd.args),
     }
 }
 
-pub fn run(args: &Cli) -> Result<()> {
-    match &args.command {
-        Command::Amend(cmd_args) => cmd_amend::run(&args.global_args, cmd_args),
-        Command::Cat(cmd_args) => cmd_cat::run(&args.global_args, cmd_args),
-        Command::Clean(cmd_args) => cmd_clean::run(&args.global_args, cmd_args),
-        Command::Diff(cmd_args) => cmd_diff::run(&args.global_args, cmd_args),
-        Command::Forget(cmd_args) => cmd_forget::run(&args.global_args, cmd_args),
-        Command::Init(cmd_args) => cmd_init::run(&args.global_args, cmd_args),
-        Command::Key(cmd_args) => cmd_key::run(&args.global_args, cmd_args),
-        Command::Log(cmd_args) => cmd_log::run(&args.global_args, cmd_args),
-        Command::Ls(cmd_args) => cmd_ls::run(&args.global_args, cmd_args),
-        #[cfg(all(feature = "fuse", unix))]
-        Command::Mount(cmd_args) => cmd_mount::run(&args.global_args, cmd_args),
-        Command::Restore(cmd_args) => cmd_restore::run(&args.global_args, cmd_args),
-        Command::Snapshot(cmd_args) => cmd_snapshot::run(&args.global_args, cmd_args),
-        Command::Stats(cmd_args) => cmd_stats::run(&args.global_args, cmd_args),
-        Command::Sync(cmd_args) => cmd_sync::run(&args.global_args, cmd_args),
-        Command::Unlock(cmd_args) => cmd_unlock::run(&args.global_args, cmd_args),
-        Command::Verify(cmd_args) => cmd_verify::run(&args.global_args, cmd_args),
+/// Returns Some(&GlobalArgs) if command has them
+fn extract_global(cmd: &Command) -> Option<&GlobalArgs> {
+    match cmd {
+        Command::Completion(_) => None,
+        _ => unsafe {
+            // All other variants are WithGlobal<T>, so this cast is safe
+            let ptr = cmd as *const Command as *const WithGlobal<()>;
+            Some(&(*ptr).global)
+        },
     }
 }

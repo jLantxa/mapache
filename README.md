@@ -89,6 +89,7 @@ The goal of this milestone is to add convenience and quality of life features. T
 
 The goal of the milestone is to release the first stable version of mapache.
 `mapache` is in a beta state. Beta pre-releases of v0.1.0 will be released during this period and testing will focus on detecting bugs.
+Adding features is not a priority for this milestone, and only smaller features will be added. Bigger features will be implemented in future versions.
 The goal is to have v0.1.0 released by December 1st 2025 and have a break (and focus on Advent of Code?).
 
 ## Getting started
@@ -111,36 +112,31 @@ If you run the executable, you will be greeted by something like this:
 ```
 mapache backup tool
 
-Usage: mapache [OPTIONS] --repo <REPO> <COMMAND>
+Usage: mapache <COMMAND>
 
 Commands:
-  amend     Amend an existing snapshot
-  cat       Print repository objects
-  clean     Clean up the repository
-  diff      Show differences between snapshots
-  forget    Remove snapshots from the repository
-  init      Initialize a new repository
-  key       Create and manage keys
-  log       Show all snapshots present in the repository
-  ls        List nodes in the repository
-  mount     Mount the repository as a file system
-  restore   Restore a snapshot in a target path
-  snapshot  Create a new snapshot
-  stats     Display stats about the repository and its contents
-  sync      Synchronize a repository in a different location
-  unlock    Remove existing locks
-  verify    Verify the integrity of the data stored in the repository
-  help      Print this message or the help of the given subcommand(s)
+  amend       Amend an existing snapshot
+  cat         Print repository objects
+  clean       Clean up the repository
+  completion  Generate autocompletion scripts
+  diff        Show differences between snapshots
+  forget      Remove snapshots from the repository
+  init        Initialize a new repository
+  key         Create and manage keys
+  log         Show all snapshots present in the repository
+  ls          List nodes in the repository
+  mount       Mount the repository as a file system
+  restore     Restore a snapshot in a target path
+  snapshot    Create a new snapshot
+  stats       Display stats about the repository and its contents
+  sync        Synchronize a repository in a different location
+  unlock      Remove existing locks
+  verify      Verify the integrity of the data stored in the repository
+  help        Print this message or the help of the given subcommand(s)
 
 Options:
-  -r, --repo <REPO>                      Repository path
-      --ssh-pubkey <SSH_PUBKEY>          SSH public key
-      --ssh-privatekey <SSH_PRIVATEKEY>  SSH private key
-      --auth-file <AUTH_FILE>            Path to a file to read the repository authentication credentials
-      --pack-size <PACK_SIZE_MIB>        Pack target size in MiB [default: 16]
-  -k, --key-file <KEY>                   Path to a KeyFile
-      --quiet                            Disable logging (verbosity = 0)
-  -v, --verbosity <VERBOSITY>            Set the verbosity level [0-3]
-  -h, --help                             Print help
-  -V, --version                          Print version
+  -h, --help     Print help
+  -V, --version  Print version
 ```
+
+You can use the `-h` or `--help` option to show help for every command.

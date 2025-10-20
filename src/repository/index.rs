@@ -323,15 +323,33 @@ impl Index {
     }
 
     fn remove_pack(&mut self, target_pack_id: &ID) {
-        if let Some(pack_index) = self.pack_ids.get_index(target_pack_id) {
-            let pack_index_u32 = *pack_index as u32;
+        if let Some(pack_index) = self.pack_ids.get_index(target_pack_id).cloned() {
+            let pack_index_u32 = pack_index as u32;
+            let old_pack_ids_len = self.pack_ids.len();
 
-            self.data_ids
-                .retain(|_, loc| loc.pack_array_index != pack_index_u32);
-            self.tree_ids
-                .retain(|_, loc| loc.pack_array_index != pack_index_u32);
+            let moved_pack_is_needed = pack_index < old_pack_ids_len - 1;
+            let old_pack_index_u32 = (old_pack_ids_len - 1) as u32;
 
             self.pack_ids.remove(target_pack_id);
+
+            let process_blobs = |blob_map: &mut HashMap<ID, BlobLocation>| {
+                blob_map.retain(|_, loc| {
+                    let current_pack_index_u32 = loc.pack_array_index;
+
+                    if current_pack_index_u32 == pack_index_u32 {
+                        return false;
+                    }
+
+                    if moved_pack_is_needed && current_pack_index_u32 == old_pack_index_u32 {
+                        loc.pack_array_index = pack_index_u32;
+                    }
+
+                    true
+                });
+            };
+
+            process_blobs(&mut self.data_ids);
+            process_blobs(&mut self.tree_ids);
         }
     }
 }

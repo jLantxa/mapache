@@ -100,7 +100,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let index_guard = index.read();
             let id = match index_guard.search_prefix(prefix)? {
                 Some(val) => val,
-                None => bail!("No tree blobs found with prefix {}", prefix),
+                None => bail!("No tree blobs found with prefix {prefix}"),
             };
             let tree = repo
                 .load_blob(id)
@@ -114,7 +114,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let index_guard = index.read();
             let id = match index_guard.search_prefix(prefix)? {
                 Some(val) => val,
-                None => bail!("No blobs found with prefix {}", prefix),
+                None => bail!("No blobs found with prefix {prefix}"),
             };
             let blob = repo.load_blob(id).with_context(|| "Failed to load blob")?;
             ui::cli::log!("{}", String::from_utf8(blob)?);

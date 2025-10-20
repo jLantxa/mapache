@@ -136,7 +136,8 @@ mod tests {
 
             assert_eq!(restored_meta.len(), backup_meta.len());
 
-            if !restored_path.is_symlink() {
+            #[cfg(unix)]
+            if restored_path.is_symlink() {
                 assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
             }
 
@@ -338,7 +339,9 @@ mod tests {
                 // We only test the size of files in this case
                 assert_eq!(restored_meta.len(), backup_meta.len());
             }
-            if !restored_path.is_symlink() {
+
+            #[cfg(unix)]
+            if restored_path.is_symlink() {
                 assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
             }
         }
@@ -467,6 +470,11 @@ mod tests {
             if restored_path.is_file() {
                 assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);
             }
+
+            #[cfg(unix)]
+            if restored_path.is_symlink() {
+                assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            }
         }
 
         Ok(())
@@ -569,7 +577,8 @@ mod tests {
 
             assert_eq!(restored_meta.len(), backup_meta.len());
 
-            if !restored_path.is_symlink() {
+            #[cfg(unix)]
+            if restored_path.is_symlink() {
                 assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
             }
 

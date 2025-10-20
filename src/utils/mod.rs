@@ -841,8 +841,11 @@ mod tests {
         ))
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_abbreviate_path() {
+    // This unit test only tests Unix-style paths and therefore should only be
+    // available on Unix-like systems.
+    fn test_abbreviate_path_unix() {
         // Short paths (no abbreviation expected)
         assert_eq!(abbreviate_path(Path::new("short/path"), 5), "short/path");
         assert_eq!(abbreviate_path(Path::new("short/path"), 20), "short/path");

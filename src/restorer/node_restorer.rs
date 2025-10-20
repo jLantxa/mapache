@@ -178,7 +178,20 @@ pub(crate) fn restore_node_to_path(
                 }
             }
 
-            // TODO: Restoring symlink metadata is a bit special, so let's skip it for now.
+            // Restore symlink metadata after creation
+            if !dry_run {
+                #[cfg(unix)]
+                {
+                    restore_symlink_metadata(node, dst_path, progress_reporter.as_ref())?;
+                }
+                #[cfg(not(unix))]
+                {
+                    progress_reporter.warning(&format!(
+                        "Symlink metadata restoration is not supported on this OS: {}",
+                        dst_path.display()
+                    ));
+                }
+            }
         }
 
         NodeType::BlockDevice => {
@@ -267,7 +280,7 @@ fn restore_node_metadata(
         {
             let permissions = Permissions::from_mode(mode);
             if std::fs::set_permissions(dst_path, permissions).is_err() {
-                errors.push(anyhow!("Could not set permissions (mode: {:o}).", mode));
+                errors.push(anyhow!("Could not set permissions (mode: {mode:o})."));
             }
         }
 
@@ -314,6 +327,66 @@ pub fn restore_times(
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
         set_file_times(dst_path, ft_atime, ft_mtime).with_context(|| "Could not set file times")?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restore_symlink_metadata(
+    node: &Node,
+    dst_path: &Path,
+    progress_reporter: &RestoreProgressReporter,
+) -> Result<()> {
+    let mut errors = Vec::new();
+
+    // Set file times using set_symlink_file_times
+    if let Some(mtime) = node.metadata.modified_time.as_ref() {
+        let ft_mtime = FileTime::from(*mtime);
+        let ft_atime = node
+            .metadata
+            .accessed_time
+            .map_or(ft_mtime, FileTime::from);
+
+        if let Err(e) = filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime) {
+            errors.push(anyhow!("Could not set file times for symlink: {e}"));
+        }
+    }
+
+    // Set permissions (mode)
+    if let Some(mode) = node.metadata.mode {
+        progress_reporter.warning(&format!(
+            "Skipping permission {mode} restoration for symlink {}",
+            dst_path.display()
+        ));
+    }
+
+    // Set owner (uid) and group (gid) using lchown
+    let uid = node.metadata.owner_uid;
+    let gid = node.metadata.owner_gid;
+
+    // lchown is needed to change the ownership of the symlink itself, not the target.
+    if (uid.is_some() || gid.is_some())
+        && let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid)
+    {
+        progress_reporter.warning(&format!(
+            "Could not set symlink ownership (uid: {:?}, gid: {:?}) for {}: {}",
+            uid,
+            gid,
+            dst_path.display(),
+            e
+        ));
+    }
+
+    if !errors.is_empty() {
+        let mut final_error_message = format!(
+            "Failed to restore symlink metadata for {}:\n",
+            dst_path.display()
+        );
+        for err in errors {
+            final_error_message.push_str(&format!("  - {err}\n"));
+        }
+        bail!("{final_error_message}");
     }
 
     Ok(())

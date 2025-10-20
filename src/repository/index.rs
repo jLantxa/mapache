@@ -556,7 +556,7 @@ impl MasterIndex {
             .collect();
 
         if matched_ids.len() > 1 {
-            bail!("Prefix '{}' is ambiguous", prefix);
+            bail!("Prefix '{prefix}' is ambiguous");
         }
 
         match matched_ids.first() {

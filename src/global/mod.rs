@@ -37,6 +37,7 @@ use crate::{
 pub const ID_LENGTH: usize = 32;
 pub type Hash256 = [u8; ID_LENGTH];
 
+#[derive(Debug)]
 pub struct GlobalOpts {
     pub verbosity: u32,
     pub progress_refresh_interval: Duration,

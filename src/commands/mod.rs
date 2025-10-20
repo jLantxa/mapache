@@ -224,14 +224,37 @@ pub fn parse_and_run() -> Result<()> {
     }
 }
 
+macro_rules! extract_global {
+    ($cmd:expr, { $($(#[$meta:meta])* $variant:ident),* $(,)? }) => {
+        match $cmd {
+            Command::Completion(_) => None,
+            $(
+                $(#[$meta])*
+                Command::$variant(inner) => Some(&inner.global),
+            )*
+        }
+    };
+}
+
 /// Returns Some(&GlobalArgs) if command has them
-fn extract_global(cmd: &Command) -> Option<&GlobalArgs> {
-    match cmd {
-        Command::Completion(_) => None,
-        _ => unsafe {
-            // All other variants are WithGlobal<T>, so this cast is safe
-            let ptr = cmd as *const Command as *const WithGlobal<()>;
-            Some(&(*ptr).global)
-        },
-    }
+fn extract_global(command: &Command) -> Option<&GlobalArgs> {
+    extract_global!(command, {
+        Amend,
+        Cat,
+        Clean,
+        Diff,
+        Forget,
+        Init,
+        Key,
+        Log,
+        Ls,
+        #[cfg(all(feature = "fuse", unix))]
+        Mount,
+        Restore,
+        Snapshot,
+        Stats,
+        Sync,
+        Unlock,
+        Verify,
+    })
 }

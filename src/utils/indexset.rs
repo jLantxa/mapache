@@ -50,15 +50,22 @@ where
     }
 
     pub fn remove(&mut self, item: &T) -> bool {
-        if let Some(_value_index) = self.map.remove(item) {
-            // TODO: Remove the value from the vector.
-            //
-            // This would require updating all values in the map since the vector
-            // was shifted after the item was removed. It is ok to leave it like
-            // this for now. The unremoved values are simply not used.
-            //
-            // self.values.remove(value_index);
-            //
+        if let Some(value_index) = self.map.remove(item) {
+            let last_index = self.values.len() - 1;
+
+            if value_index != last_index {
+                // Swap the element to be removed with the last element. The element at
+                // 'value_index' is now the *old* last element. Then, update the index in the map
+                // for the element that was moved.
+                // The new index for this element is 'value_index'.
+                self.values.swap_remove(value_index);
+                let moved_item = &self.values[value_index];
+                *self.map.get_mut(moved_item).unwrap() = value_index;
+            } else {
+                // The item to be removed is the last element.
+                // Just pop it, no other indices need updating.
+                self.values.pop();
+            }
 
             true
         } else {
@@ -232,5 +239,61 @@ mod tests {
         set.insert("first".to_string()); // duplicate
         assert!(!set.is_empty());
         assert_eq!(set.len(), 2); // Length should not change
+    }
+
+    #[test]
+    fn test_remove_non_existent() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string());
+        assert!(!set.remove(&"orange".to_string()));
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.get_value(0), Some(&"apple".to_string()));
+    }
+
+    #[test]
+    fn test_remove_last_item() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string()); // index 0
+        set.insert("banana".to_string()); // index 1
+
+        // Remove the last item (banana)
+        assert!(set.remove(&"banana".to_string()));
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.get_index(&"banana".to_string()), None);
+        assert_eq!(set.get_value(1), None);
+
+        // Check the remaining item
+        assert_eq!(set.get_index(&"apple".to_string()), Some(&0));
+        assert_eq!(set.get_value(0), Some(&"apple".to_string()));
+    }
+
+    #[test]
+    fn test_remove_middle_item() {
+        let mut set = IndexSet::new();
+        set.insert("apple".to_string()); // index 0
+        set.insert("banana".to_string()); // index 1 (to be removed)
+        set.insert("cherry".to_string()); // index 2 (will be moved to index 1)
+
+        // Remove the middle item (banana)
+        assert!(set.remove(&"banana".to_string()));
+        assert_eq!(set.len(), 2);
+
+        // banana is gone
+        assert_eq!(set.get_index(&"banana".to_string()), None);
+        assert_eq!(set.get_value(2), None);
+
+        // apple is unchanged
+        assert_eq!(set.get_index(&"apple".to_string()), Some(&0));
+        assert_eq!(set.get_value(0), Some(&"apple".to_string()));
+
+        // cherry's index must be updated to 1
+        assert_eq!(set.get_index(&"cherry".to_string()), Some(&1));
+        assert_eq!(set.get_value(1), Some(&"cherry".to_string()));
+
+        // Check iteration order (apple, cherry)
+        let mut iter = set.iter();
+        assert_eq!(iter.next(), Some(&"apple".to_string()));
+        assert_eq!(iter.next(), Some(&"cherry".to_string()));
+        assert_eq!(iter.next(), None);
     }
 }

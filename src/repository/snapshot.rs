@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{commands::EMPTY_TAG_MARK, fs::tree::NodeDiff, repository::repo::Repository};
 
-use crate::global::ID;
+use crate::mapache::ID;
 
 pub type SnapshotTuple = (ID, Snapshot);
 

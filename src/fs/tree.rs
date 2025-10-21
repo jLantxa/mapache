@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     fs::{self, node::Node},
-    global::{BlobType, ID, SaveID},
+    mapache::{BlobType, ID, SaveID},
     repository::repo::Repository,
     utils,
 };

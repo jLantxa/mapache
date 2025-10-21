@@ -17,7 +17,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::global::ID;
+use crate::mapache::ID;
 
 /// Repository manifest. This struct contains metadata about the repository itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]

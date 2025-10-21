@@ -22,10 +22,10 @@ use argon2::Argon2;
 use rand::{TryRngCore, rngs::OsRng};
 use zstd::{Decoder as ZstdDecoder, bulk::Compressor as ZstdCompressor, zstd_safe::CParameter};
 
-use crate::global;
+use crate::mapache;
 
 const AES_GCM_NONCE_LEN: usize = 12;
-const ZSTD_WINDOW_LOG: u32 = global::defaults::AVG_CHUNK_SIZE.ilog2();
+const ZSTD_WINDOW_LOG: u32 = mapache::defaults::AVG_CHUNK_SIZE.ilog2();
 
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {

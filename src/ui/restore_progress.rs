@@ -28,7 +28,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
 
 use crate::{
-    global::{GlobalOpts, defaults::MAX_PATH_DISPLAY_LEN},
+    mapache::{defaults::MAX_PATH_DISPLAY_LEN, global::GlobalOpts},
     ui::{EMPTY_PATHBUF, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };

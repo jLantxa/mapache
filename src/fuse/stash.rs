@@ -29,7 +29,7 @@ use crate::{
         cache::{BlobCache, TreeCache},
         fs::Inode,
     },
-    global::ID,
+    mapache::ID,
     repository::{manifest::Manifest, repo::Repository},
     utils::size,
 };

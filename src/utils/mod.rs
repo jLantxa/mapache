@@ -27,7 +27,7 @@ use anyhow::{Context, Result, anyhow};
 use blake3::Hasher;
 use chrono::{DateTime, Duration, Local};
 
-use crate::{global::Hash256, repository::repo::Auth};
+use crate::{mapache::Hash256, repository::repo::Auth};
 
 // --- Constants ---
 

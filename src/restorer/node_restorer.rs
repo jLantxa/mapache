@@ -343,10 +343,7 @@ fn restore_symlink_metadata(
     // Set file times using set_symlink_file_times
     if let Some(mtime) = node.metadata.modified_time.as_ref() {
         let ft_mtime = FileTime::from(*mtime);
-        let ft_atime = node
-            .metadata
-            .accessed_time
-            .map_or(ft_mtime, FileTime::from);
+        let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
 
         if let Err(e) = filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime) {
             errors.push(anyhow!("Could not set file times for symlink: {e}"));

@@ -23,7 +23,7 @@ use colored::Colorize;
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::GlobalArgs,
-    global::ID,
+    mapache::ID,
     repository::{
         keys::{KeyFileStreamer, KeyManager},
         repo::{Auth, KEYS_DIR},

@@ -26,7 +26,7 @@ mod tests {
             self, GlobalArgs, UseSnapshot, cmd_snapshot,
             cmd_sync::{self},
         },
-        global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
+        mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
         repository::repo::Auth,
     };
 

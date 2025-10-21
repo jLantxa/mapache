@@ -21,7 +21,7 @@ use colored::Colorize;
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{cleanup::CleanupHandler, parse_tags},
-    global::{FileType, ID},
+    mapache::{FileType, ID},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStreamer},

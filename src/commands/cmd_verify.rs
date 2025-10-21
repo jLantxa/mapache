@@ -27,9 +27,10 @@ use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
-    global::{
-        FileType, GlobalOpts, ID,
+    mapache::{
+        FileType, ID,
         defaults::{MAX_PATH_DISPLAY_LEN, SHORT_SNAPSHOT_ID_LEN},
+        global::GlobalOpts,
     },
     repository::{
         repo::{RepoConfig, Repository},

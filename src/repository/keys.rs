@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::StorageBackend,
-    global::{self, ID},
+    mapache::{self, ID},
     repository::{
         repo::{Auth, KEYS_DIR},
         storage::SecureStorage,
@@ -248,11 +248,11 @@ impl KeyManager {
 
     /// Find a KeyFile ID using a prefix
     pub fn find_id_with_prefix(&self, prefix: &str) -> Result<(ID, PathBuf)> {
-        if prefix.len() > 2 * global::ID_LENGTH {
+        if prefix.len() > 2 * mapache::ID_LENGTH {
             // A hex string has 2 characters per byte.
             bail!(
                 "Invalid prefix length. The prefix must not be longer than the ID ({} chars)",
-                2 * global::ID_LENGTH
+                2 * mapache::ID_LENGTH
             );
         } else if prefix.is_empty() {
             bail!("Prefix cannot be empty");
@@ -639,7 +639,7 @@ mod tests {
             "Empty prefix must fail."
         );
 
-        let too_long_prefix = "a".repeat(2 * global::ID_LENGTH + 1);
+        let too_long_prefix = "a".repeat(2 * mapache::ID_LENGTH + 1);
         assert!(
             key_manager.find_id_with_prefix(&too_long_prefix).is_err(),
             "Prefix longer than ID length must fail."

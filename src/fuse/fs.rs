@@ -26,7 +26,7 @@ use fuser::{
 
 use crate::{
     fuse::stash::{Stash, TTL},
-    global::ID,
+    mapache::ID,
     repository::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotStreamer},

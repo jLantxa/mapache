@@ -23,7 +23,7 @@ mod tests {
     use mapache::{
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         fs,
-        global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
+        mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
         repository::repo::Auth,
         restorer::Strategy,
     };

@@ -19,7 +19,7 @@ use clap::Args;
 
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
-    global::FileType,
+    mapache::FileType,
     repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},

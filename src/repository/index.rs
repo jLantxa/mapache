@@ -23,7 +23,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    global::{self, BlobType, ID},
+    mapache::{self, BlobType, ID},
     repository::repo::Repository,
     utils::indexset::IndexSet,
 };
@@ -128,8 +128,8 @@ impl Index {
     /// Returns true if the index contains enough blobs to be considered full
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.num_blobs() >= global::defaults::BLOBS_PER_INDEX_FILE
-            || self.create_time.elapsed() >= global::defaults::INDEX_FLUSH_TIMEOUT
+        self.num_blobs() >= mapache::defaults::BLOBS_PER_INDEX_FILE
+            || self.create_time.elapsed() >= mapache::defaults::INDEX_FLUSH_TIMEOUT
     }
 
     /// Creates an `Index` from a serialized `IndexFile`.
@@ -281,7 +281,7 @@ impl Index {
 
         // Save to Repository
         let (id, raw_size, encoded_size) = repo.save_file(
-            global::FileType::Index,
+            mapache::FileType::Index,
             serde_json::to_string(&index_file)?.as_bytes(),
         )?;
         self.id = Some(id);

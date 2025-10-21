@@ -30,9 +30,10 @@ use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterato
 
 use crate::{
     fs::tree::SerializedNodeStreamer,
-    global::{
-        self, DEFAULT_ID, FileType, GlobalOpts, ID, SaveID,
+    mapache::{
+        self, DEFAULT_ID, FileType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
+        global::GlobalOpts,
     },
     repository::{repo::Repository, snapshot::SnapshotStreamer},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
@@ -169,7 +170,7 @@ impl Plan {
         // No need to repack and rewrite the indices if there are no obsolete packs
         if !self.obsolete_packs.is_empty() {
             self.repo
-                .init_pack_saver(global::defaults::DEFAULT_WRITE_CONCURRENCY);
+                .init_pack_saver(mapache::defaults::DEFAULT_WRITE_CONCURRENCY);
 
             added_size += self.repack()?;
             let (_, encoded) = self.repo.flush()?;
@@ -230,7 +231,7 @@ impl Plan {
 
         // Key: Blob ID. Value: Tuple of (Pack ID, BlobType, Offset, Raw Length, Encoded Length)
         // HashMap ensures we only get one repack instruction per unique referenced blob ID.
-        let mut repack_blob_info = HashMap::<ID, (ID, global::BlobType, u32, u32, u32)>::new();
+        let mut repack_blob_info = HashMap::<ID, (ID, mapache::BlobType, u32, u32, u32)>::new();
 
         for (referenced_blob_id, locator) in self.repo.index().read().iter_ids() {
             repack_bar.inc(1);
@@ -242,7 +243,7 @@ impl Plan {
                 // for the referenced ID, or assume Data if the canonical index entry is missing (should not happen).
                 let (_, blob_type, _, _, _) = self.repo.index().read().get(referenced_blob_id).unwrap_or_else(|| {
                     ui::cli::warning!("Referenced blob {} not found by canonical get. Assuming Data type for repack.", referenced_blob_id);
-                    (&DEFAULT_ID, global::BlobType::Data, 0, 0, 0)
+                    (&DEFAULT_ID, mapache::BlobType::Data, 0, 0, 0)
                 });
 
                 // HashMap insertion here automatically deduplicates the *repack instruction* by Blob ID.

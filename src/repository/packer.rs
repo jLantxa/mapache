@@ -22,7 +22,7 @@ use rand::Rng;
 
 use crate::{
     backend::StorageBackend,
-    global::{BlobType, FileType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
+    mapache::{BlobType, FileType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
     repository::{repo::Repository, storage::SecureStorage},
     utils,
 };

@@ -18,7 +18,7 @@ pub mod archiver;
 pub mod backend;
 pub mod commands;
 pub mod fs;
-pub mod global;
+pub mod mapache;
 pub mod repository;
 pub mod restorer;
 pub mod ui;

@@ -24,8 +24,8 @@ use colored::Colorize;
 use crate::backend::{BackendOptions, new_backend_with_prompt};
 use crate::commands::cleanup::CleanupHandler;
 use crate::commands::parse_tags;
-use crate::global::defaults::DEFAULT_GC_TOLERANCE;
-use crate::global::{FileType, ID};
+use crate::mapache::defaults::DEFAULT_GC_TOLERANCE;
+use crate::mapache::{FileType, ID};
 use crate::repository::repo::{RepoConfig, Repository};
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
 use crate::ui::log_snapshots_compact;
@@ -386,7 +386,7 @@ mod tests {
 
     use crate::{
         commands::cmd_forget::{RetentionRule, apply_retention_rules},
-        global::ID,
+        mapache::ID,
         repository::snapshot::Snapshot,
     };
 

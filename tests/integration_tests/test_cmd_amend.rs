@@ -23,7 +23,7 @@ mod tests {
     use mapache::{
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, UseSnapshot, cmd_amend, cmd_restore, cmd_snapshot},
-        global::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, set_global_opts_with_args},
+        mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
         repository::{
             repo::{Auth, RepoConfig, Repository},
             snapshot::SnapshotStreamer,

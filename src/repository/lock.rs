@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    global::{FileType, ID},
+    mapache::{FileType, ID},
     repository::repo::Repository,
     ui, utils,
 };

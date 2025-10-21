@@ -29,7 +29,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::{get_absolute_normalized_path, tree::SerializedNodeStreamer},
-    global::{GlobalOpts, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
         verify::verify_snapshot_links,

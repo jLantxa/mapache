@@ -18,13 +18,15 @@ use std::{path::PathBuf, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
-use indicatif::{ProgressBar, ProgressStyle};
+use colored::Colorize;
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
 use crate::{
     backend::{self, BackendNode, BackendOptions, StorageBackend},
     commands::cleanup::CleanupHandler,
+    mapache::global::GlobalOpts,
     repository::repo::{LOCKS_DIR, RepoConfig, Repository},
-    ui::{self, default_bar_draw_target},
+    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
 
@@ -82,8 +84,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    ui::cli::log!("\nSynchronizing repository...");
-
     sync_backends(src_backend.as_ref(), dst_backend.as_ref(), args.delete)?;
 
     ui::cli::log!(
@@ -120,7 +120,15 @@ fn sync_backends(
     let mut to_copy: Vec<BackendNode> = Vec::new();
     let mut to_delete: Vec<BackendNode> = Vec::new();
 
-    ui::cli::log!("Calculating differences...");
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} Calculating differences")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+
     loop {
         match (src_iter.peek(), dst_iter.peek()) {
             (Some(src_node), Some(dst_node)) => {
@@ -157,23 +165,40 @@ fn sync_backends(
         }
     }
 
+    spinner.finish_and_clear();
+
     ui::cli::log!(
-        "{} to copy",
+        "{} {}",
+        "To copy:".cyan().bold(),
         utils::format_count(to_copy.len(), "item", "items")
     );
-    ui::cli::log!(
-        "{} to delete",
-        utils::format_count(to_delete.len(), "item", "items")
-    );
+    if delete {
+        ui::cli::log!(
+            "{} {}",
+            "To delete:".cyan().bold(),
+            utils::format_count(to_delete.len(), "item", "items")
+        );
+    }
     ui::cli::log!();
 
     let copy_progress_bar =
         ProgressBar::with_draw_target(Some(to_copy.len() as u64), default_bar_draw_target())
             .with_style(
                 ProgressStyle::default_bar()
-                    .template("[{percent} %] [{bar:20.cyan/white}] Copying files: {pos}/{len}")
+                    .template(
+                        "[{percent} %] [{bar:20.cyan/white}] Copying files: {pos}/{len} [ETA: {custom_eta}]",
+                    )
                     .unwrap()
-                    .progress_chars("=> "),
+                    .progress_chars("=> ")
+                    .with_key(
+                    "custom_eta",
+                        move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                            let eta = state.eta();
+                            let custom_eta = utils::pretty_print_duration(eta);
+                            let _ = w.write_str(&custom_eta);
+                        },
+                    )
+
             );
 
     // Copy nodes to dst

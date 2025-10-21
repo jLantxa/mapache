@@ -20,7 +20,7 @@ use colored::Colorize;
 use indicatif::ProgressDrawTarget;
 
 use crate::{
-    global::{self, GlobalOpts, ID},
+    mapache::{self, ID, global::GlobalOpts},
     repository::snapshot::Snapshot,
     ui::{
         self,
@@ -67,7 +67,7 @@ pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot)>) {
 
     for (id, snapshot) in snapshots {
         table.add_row(vec![
-            id.to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
+            id.to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN)
                 .bold()
                 .yellow()
                 .to_string(),

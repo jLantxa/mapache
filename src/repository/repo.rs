@@ -26,7 +26,7 @@ use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
     backend::StorageBackend,
-    global::{
+    mapache::{
         self, BlobType, FileType, ID, SaveID,
         defaults::{DEFAULT_PACK_SIZE, SHORT_REPO_ID_LEN},
     },
@@ -491,11 +491,11 @@ impl Repository {
 
     /// Finds a file in the repository using an ID prefix
     pub fn find(&self, file_type: FileType, prefix: &str) -> Result<(ID, PathBuf)> {
-        if prefix.len() > 2 * global::ID_LENGTH {
+        if prefix.len() > 2 * mapache::ID_LENGTH {
             // A hex string has 2 characters per byte.
             bail!(
                 "Invalid prefix length. The prefix must not be longer than the ID ({} chars)",
-                2 * global::ID_LENGTH
+                2 * mapache::ID_LENGTH
             );
         } else if prefix.is_empty() {
             // Although it is technically posible to use an empty prefix, which would find a match
@@ -863,7 +863,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        backend::localfs::LocalFS, global::set_global_opts_with_args,
+        backend::localfs::LocalFS, mapache::global::set_global_opts_with_args,
         repository::lock::LOCK_EXPIRE_TIMEOUT,
     };
 
@@ -947,7 +947,7 @@ mod tests {
     ) -> Result<()> {
         use crate::{
             commands::{self, GlobalArgs, cmd_init::CmdArgs},
-            global::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            mapache::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
         };
 
         let tmp_dir = tempdir()?;
@@ -1021,7 +1021,7 @@ mod tests {
     fn test_acquire_lock_deletes_other_expired_lock() -> Result<()> {
         use crate::{
             commands::{self, GlobalArgs, cmd_init::CmdArgs},
-            global::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            mapache::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
         };
 
         let tmp_dir = tempdir()?;

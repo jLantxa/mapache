@@ -27,7 +27,7 @@ use crate::{
         node::{Metadata, Node, NodeType},
         tree::{Tree, find_serialized_node},
     },
-    global::ID,
+    mapache::ID,
     repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},

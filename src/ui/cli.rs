@@ -63,7 +63,7 @@ pub(crate) fn request_auth() -> Auth {
 macro_rules! log_with_level {
     ($min_level:expr, $($arg:tt)*) => {
         {
-            let current_verbosity = $crate::global::GlobalOpts::verbosity();
+            let current_verbosity = $crate::mapache::global::GlobalOpts::verbosity();
             if current_verbosity >= $min_level {
                 println!($($arg)*)
             }

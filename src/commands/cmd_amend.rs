@@ -31,7 +31,7 @@ use crate::{
         parse_tags,
     },
     fs::tree::SerializedNodeStreamer,
-    global::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStreamer},

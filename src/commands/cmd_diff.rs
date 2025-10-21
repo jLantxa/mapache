@@ -24,7 +24,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
-    global::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::DiffCounts,

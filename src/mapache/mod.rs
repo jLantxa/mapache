@@ -15,105 +15,20 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod defaults;
+pub mod global;
 pub mod vars;
 
-use std::{sync::LazyLock, time::Duration};
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
-use parking_lot::RwLock;
 use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{
-    commands::GlobalArgs,
-    global::{
-        defaults::{DEFAULT_PROGRESS_REFRESH_RATE_HZ, DEFAULT_VERBOSITY},
-        vars::{REFRESH_RATE_ENVVAR, get_envvar},
-    },
-    utils,
-};
+use crate::utils;
 
 pub const ID_LENGTH: usize = 32;
 pub type Hash256 = [u8; ID_LENGTH];
-
-#[derive(Debug)]
-pub struct GlobalOpts {
-    pub verbosity: u32,
-    pub progress_refresh_interval: Duration,
-}
-
-// NOTE: Logging macros can't be used here, as they need to read the  verbosity
-// value from the GLOBAL_OPTS, acquiring a lock.
-impl GlobalOpts {
-    fn get_refresh_interval() -> Duration {
-        let var_hz = get_envvar(REFRESH_RATE_ENVVAR);
-
-        let refresh_rate_hz = match var_hz {
-            Some(val) => match val.parse::<f32>() {
-                Ok(hz) => {
-                    if hz > 0.0 && hz <= 60.0 {
-                        hz
-                    } else {
-                        DEFAULT_PROGRESS_REFRESH_RATE_HZ
-                    }
-                }
-                Err(_) => DEFAULT_PROGRESS_REFRESH_RATE_HZ,
-            },
-            None => DEFAULT_PROGRESS_REFRESH_RATE_HZ,
-        };
-
-        calculate_refresh_interval(refresh_rate_hz)
-    }
-
-    pub fn verbosity() -> u32 {
-        GLOBAL_OPTS.read().as_ref().unwrap().verbosity
-    }
-
-    pub fn progress_refresh_interval() -> Duration {
-        GLOBAL_OPTS
-            .read()
-            .as_ref()
-            .unwrap()
-            .progress_refresh_interval
-    }
-}
-
-impl Default for GlobalOpts {
-    fn default() -> Self {
-        Self {
-            verbosity: DEFAULT_VERBOSITY,
-            progress_refresh_interval: Self::get_refresh_interval(),
-        }
-    }
-}
-
-pub static GLOBAL_OPTS: LazyLock<RwLock<Option<GlobalOpts>>> =
-    LazyLock::new(|| RwLock::new(Some(GlobalOpts::default())));
-
-pub fn set_global_opts_with_args(global_args: &GlobalArgs) {
-    let verbosity = if global_args.quiet {
-        0
-    } else if let Some(v) = global_args.verbosity {
-        v
-    } else {
-        DEFAULT_VERBOSITY
-    };
-
-    // Default values that don't change
-    let progress_refresh_interval = GlobalOpts::progress_refresh_interval();
-
-    let new_opts = GlobalOpts {
-        verbosity,
-        progress_refresh_interval,
-    };
-
-    let _ = GLOBAL_OPTS.write().insert(new_opts);
-}
-
-fn calculate_refresh_interval(hz: f32) -> Duration {
-    Duration::from_millis((1000.0 / hz) as u64)
-}
 
 /// This is an ID that identifies object by its content.
 #[derive(Hash, Default, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]

@@ -26,7 +26,7 @@ use crate::{
         node::{Node, NodeType},
         tree::{StreamNode, Tree},
     },
-    global::ID,
+    mapache::ID,
     repository::repo::Repository,
     utils,
 };

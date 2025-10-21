@@ -29,7 +29,7 @@ use parking_lot::RwLock;
 
 use crate::{
     fs::tree::NodeDiff,
-    global::{GlobalOpts, defaults::MAX_PATH_DISPLAY_LEN},
+    mapache::{defaults::MAX_PATH_DISPLAY_LEN, global::GlobalOpts},
     repository::snapshot::{DiffCounts, SnapshotSummary},
     ui::{EMPTY_PATHBUF, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,

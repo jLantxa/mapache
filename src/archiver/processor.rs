@@ -29,7 +29,7 @@ use crate::{
         node::{Node, NodeType},
         tree::{NodeDiff, StreamNode},
     },
-    global::{self, BlobType, ID, SaveID},
+    mapache::{self, BlobType, ID, SaveID},
     repository::repo::Repository,
     ui::snapshot_progress::SnapshotProgressReporter,
 };
@@ -142,7 +142,7 @@ pub(crate) fn save_file(
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
     // Do not chunk if the file is smaller than the minimum chunk size
-    if node.metadata.size < global::defaults::MIN_CHUNK_SIZE {
+    if node.metadata.size < mapache::defaults::MIN_CHUNK_SIZE {
         let data = std::fs::read(src_path)?;
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
             repo.encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)?;
@@ -164,19 +164,19 @@ fn chunk_and_save_blobs(
 ) -> Result<Vec<ID>> {
     let source = File::open(src_path)
         .with_context(|| format!("Could not open file '{}'", src_path.display()))?;
-    let reader = BufReader::with_capacity(global::defaults::MIN_CHUNK_SIZE as usize, source);
+    let reader = BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source);
 
     let file_size = reader.get_ref().metadata()?.len();
-    let estimated_num_chunks = (file_size / global::defaults::AVG_CHUNK_SIZE).max(1) as usize;
+    let estimated_num_chunks = (file_size / mapache::defaults::AVG_CHUNK_SIZE).max(1) as usize;
     let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
 
     // The chunker parameters must remain stable across versions, otherwise
     // same contents will no longer produce same chunks and IDs.
     let chunker = StreamCDC::with_level(
         reader,
-        global::defaults::MIN_CHUNK_SIZE as u32,
-        global::defaults::AVG_CHUNK_SIZE as u32,
-        global::defaults::MAX_CHUNK_SIZE as u32,
+        mapache::defaults::MIN_CHUNK_SIZE as u32,
+        mapache::defaults::AVG_CHUNK_SIZE as u32,
+        mapache::defaults::MAX_CHUNK_SIZE as u32,
         Normalization::Level0,
     );
 

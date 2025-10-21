@@ -24,9 +24,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    global::{
-        GlobalOpts,
+    mapache::{
         defaults::{DEFAULT_GC_TOLERANCE, SHORT_REPO_ID_LEN},
+        global::GlobalOpts,
     },
     repository::{
         gc::{self},

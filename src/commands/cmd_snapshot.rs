@@ -26,7 +26,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
     fs::{self, tree::FSNodeStreamer},
-    global::{self, GlobalOpts, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{self, ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{SnapshotSummary, SnapshotTuple},
@@ -75,11 +75,11 @@ pub struct CmdArgs {
     pub parent: UseSnapshot,
 
     /// Number of files to process in parallel.
-    #[clap(long, default_value_t = global::defaults::DEFAULT_READ_CONCURRENCY)]
+    #[clap(long, default_value_t = mapache::defaults::DEFAULT_READ_CONCURRENCY)]
     pub read_concurrency: usize,
 
     /// Number of writer threads.
-    #[clap(long, default_value_t = global::defaults::DEFAULT_WRITE_CONCURRENCY)]
+    #[clap(long, default_value_t = mapache::defaults::DEFAULT_WRITE_CONCURRENCY)]
     pub write_concurrency: usize,
 
     /// Dry run
@@ -273,7 +273,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let new_snapshot = archiver.snapshot()?;
 
     let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) = repo.save_file(
-        global::FileType::Snapshot,
+        mapache::FileType::Snapshot,
         serde_json::to_string(&new_snapshot)?.as_bytes(),
     )?;
 
@@ -332,7 +332,7 @@ fn show_final_report(snapshot_id: &ID, summary: &SnapshotSummary, args: &CmdArgs
         ui::cli::log!(
             "New snapshot created: {}",
             snapshot_id
-                .to_short_hex(global::defaults::SHORT_SNAPSHOT_ID_LEN)
+                .to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN)
                 .to_string()
                 .bold()
                 .green()

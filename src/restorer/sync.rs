@@ -23,7 +23,7 @@ use std::{
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use crate::{fs::tree::SerializedTreeStreamer, global::ID, repository::repo::Repository, ui};
+use crate::{fs::tree::SerializedTreeStreamer, mapache::ID, repository::repo::Repository, ui};
 
 /// Delete all local nodes not present in a snapshot tree
 pub fn delete_nodes(

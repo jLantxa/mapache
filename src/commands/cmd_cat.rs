@@ -23,7 +23,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::Tree,
-    global::FileType,
+    mapache::FileType,
     repository::{
         lock::Lock,
         repo::{RepoConfig, Repository},

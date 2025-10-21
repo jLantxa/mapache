@@ -20,12 +20,13 @@ use anyhow::{Error, Result, anyhow, bail};
 use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::{
-    global::{
-        self, FileType, ID,
+    mapache::{
+        FileType, ID,
         defaults::{
             DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
             MIN_CONFIGURABLE_PACK_SIZE_MIB,
         },
+        global::set_global_opts_with_args,
     },
     repository::{
         repo::Repository,
@@ -199,7 +200,7 @@ pub fn parse_and_run() -> Result<()> {
     let args = Cli::parse();
 
     if let Some(global) = extract_global(&args.command) {
-        global::set_global_opts_with_args(global);
+        set_global_opts_with_args(global);
     }
 
     match args.command {

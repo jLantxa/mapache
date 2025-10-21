@@ -26,7 +26,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::global::ID;
+use crate::mapache::ID;
 
 /// The type of a node (file, directory, symlink, etc.)
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

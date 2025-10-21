@@ -24,7 +24,7 @@ use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
-    global::{FileType, GlobalOpts},
+    mapache::{FileType, global::GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStreamer,

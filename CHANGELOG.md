@@ -7,6 +7,7 @@
 - `cat` command now accepts a prefix ID for blobs and trees.
 - Added `completion` command to generate autocompletion scripts.
 - Restore symlink metadata on Unix.
+- Added ETA to sync progress bar.
 
 # v0.1.0-beta.2a
 ### Changes

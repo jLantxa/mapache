@@ -121,6 +121,7 @@ fn sync_backends(
     let mut to_delete: Vec<BackendNode> = Vec::new();
 
     let spinner = ProgressBar::new_spinner();
+    spinner.set_draw_target(default_bar_draw_target());
     spinner.set_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.cyan} Calculating differences")

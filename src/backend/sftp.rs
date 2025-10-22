@@ -358,15 +358,23 @@ impl StorageBackend for SftpBackend {
 
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
         let full_path = self.full_path(path);
-
+        let tmp_path = full_path.with_extension("tmp");
         let conn = self.pool.get()?;
+
+        // Write to a tmp path
         let mut file = conn
             .sftp()
-            .create(&full_path)
-            .with_context(|| format!("Failed to create file for writing: {path:?}"))?;
+            .create(&tmp_path)
+            .with_context(|| format!("Failed to create file for writing: {tmp_path:?}"))?;
         file.write_all(contents)
-            .with_context(|| format!("Failed to write to file: {path:?}"))?;
-        Ok(())
+            .with_context(|| format!("Failed to write to file: {tmp_path:?}"))?;
+
+        // Rename to the final path reusing the connection.
+        conn.sftp()
+            .rename(&tmp_path, &full_path, Some(RenameFlags::all()))
+            .with_context(|| {
+                format!("Failed to rename {tmp_path:?}\' to {full_path:?}\' in sftp backend")
+            })
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {

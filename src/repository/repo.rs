@@ -249,7 +249,7 @@ impl Repository {
         let manifest_path = Path::new(MANIFEST_PATH);
 
         let manifest = backend
-            .read(manifest_path)
+            .read(manifest_path, 0, 0)
             .with_context(|| "Could not load manifest file")?;
         let manifest = secure_storage
             .decode(&manifest)
@@ -381,7 +381,7 @@ impl Repository {
         assert_ne!(file_type, FileType::Manifest);
 
         let path = self.get_path(file_type, id);
-        let data = self.backend.read(&path)?;
+        let data = self.backend.read(&path, 0, 0)?;
 
         if file_type != FileType::Pack {
             return self.secure_storage.decode(&data);
@@ -397,7 +397,7 @@ impl Repository {
 
         let path = self.get_path(file_type, id);
         let size = self.backend.lstat(&path)?.size;
-        self.backend.remove_file(&path)?;
+        self.backend.remove(&path)?;
 
         Ok(size.unwrap_or(0))
     }
@@ -411,7 +411,7 @@ impl Repository {
         }
 
         self.backend
-            .remove_file(&snapshot_path)
+            .remove(&snapshot_path)
             .with_context(|| format!("Could not remove snapshot {id}"))
     }
 
@@ -430,7 +430,7 @@ impl Repository {
 
         let paths = self
             .backend
-            .read_dir(&self.snapshot_path)
+            .list(&self.snapshot_path)
             .with_context(|| "Could not read snapshots")?;
 
         for path in paths {
@@ -474,7 +474,7 @@ impl Repository {
 
     /// Loads the repository manifest.
     pub fn load_manifest(&self) -> Result<Manifest> {
-        let manifest = self.backend.read(Path::new(MANIFEST_PATH))?;
+        let manifest = self.backend.read(Path::new(MANIFEST_PATH), 0, 0)?;
         let manifest = self.secure_storage.decode(&manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
@@ -483,7 +483,7 @@ impl Repository {
     /// Loads a KeyFile.
     pub fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
         let key_path = self.keys_path.join(id.to_hex());
-        let key = self.backend.read(&key_path)?;
+        let key = self.backend.read(&key_path, 0, 0)?;
         let key = self.secure_storage.decompress(&key)?;
         let key = serde_json::from_slice(&key)?;
         Ok(key)
@@ -573,7 +573,7 @@ impl Repository {
         assert_ne!(file_type, FileType::Manifest);
 
         let path = self.get_path(file_type, id);
-        self.backend.seek_read(&path, offset, length)
+        self.backend.read(&path, offset as isize, length as usize)
     }
 
     /// Reads from a repository file with offset and length.
@@ -599,7 +599,7 @@ impl Repository {
                 .objects_path
                 .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-            let files = self.backend.read_dir(&dir)?;
+            let files = self.backend.list(&dir)?;
             for path in files {
                 let filename = path.file_name().unwrap().to_string_lossy().to_string();
                 if let Ok(id) = ID::from_hex(&filename) {
@@ -634,9 +634,9 @@ impl Repository {
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.).
     pub fn list_files(&self, file_type: FileType) -> Result<Vec<PathBuf>> {
         match file_type {
-            FileType::Snapshot => self.backend.read_dir(&self.snapshot_path),
-            FileType::Key => self.backend.read_dir(&self.keys_path),
-            FileType::Index => self.backend.read_dir(&self.index_path),
+            FileType::Snapshot => self.backend.list(&self.snapshot_path),
+            FileType::Key => self.backend.list(&self.keys_path),
+            FileType::Index => self.backend.list(&self.index_path),
             FileType::Manifest => Ok(vec![PathBuf::from(MANIFEST_PATH)]),
             FileType::Pack => {
                 let mut files = Vec::new();
@@ -645,7 +645,7 @@ impl Repository {
                         .objects_path
                         .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-                    let sub_files = self.backend.read_dir(&dir_name)?;
+                    let sub_files = self.backend.list(&dir_name)?;
                     for file_path in sub_files.into_iter() {
                         files.push(file_path);
                     }
@@ -653,7 +653,7 @@ impl Repository {
 
                 Ok(files)
             }
-            FileType::Lock => self.backend.read_dir(&self.locks_path),
+            FileType::Lock => self.backend.list(&self.locks_path),
         }
     }
 
@@ -683,7 +683,7 @@ impl Repository {
 
     /// Load the master index from file
     fn load_master_index(&mut self) -> Result<()> {
-        let files = self.backend.read_dir(&self.index_path)?;
+        let files = self.backend.list(&self.index_path)?;
         let num_index_files = files.len();
 
         for file in files {
@@ -693,7 +693,7 @@ impl Repository {
                 .to_string_lossy()
                 .clone();
             let id = ID::from_hex(&file_name)?;
-            let index_file = self.backend.read(&file)?;
+            let index_file = self.backend.read(&file, 0, 0)?;
             let index_file = self.secure_storage.decode(&index_file)?;
             let index_file = match serde_json::from_slice(&index_file) {
                 Ok(idx_file) => idx_file,
@@ -717,14 +717,14 @@ impl Repository {
         let object_path = Self::get_object_path(&self.objects_path, id);
         let data = self
             .backend
-            .seek_read(&object_path, offset as u64, length as u64)?;
+            .read(&object_path, offset as isize, length as usize)?;
         self.secure_storage.decode(&data)
     }
 
     /// Try to acquire a lock
     fn acquire_lock(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
         // Ensure the locks directory exists
-        self.backend.create_dir_all(&PathBuf::from(LOCKS_DIR))?;
+        self.backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
 
         // Create and save the new lock immediately
         let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
@@ -784,7 +784,7 @@ impl Repository {
 
         for path in all_lock_paths {
             // Attempt to read the lock file
-            let lock_data_result = self.backend.read(&path);
+            let lock_data_result = self.backend.read(&path, 0, 0);
 
             let lock = match lock_data_result {
                 Ok(data) => data,

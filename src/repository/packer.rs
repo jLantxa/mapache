@@ -213,16 +213,14 @@ impl Packer {
         pack_id: &ID,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         let (_id, pack_path) = repo.find(FileType::Pack, &pack_id.to_hex())?;
-        let header_length_bytes: [u8; 4] = backend
-            .seek_read_from_end(&pack_path, -4, 4)?
-            .as_slice()
-            .try_into()?;
+        let header_length_bytes: [u8; 4] =
+            backend.read(&pack_path, -4, 4)?.as_slice().try_into()?;
         let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
 
-        let header_data = backend.seek_read_from_end(
+        let header_data = backend.read(
             &pack_path,
-            -(4 + encoded_header_length as i64),
-            4 + encoded_header_length as u64,
+            -(4 + encoded_header_length as isize),
+            4 + encoded_header_length,
         )?;
 
         Self::parse_header(secure_storage, &header_data)

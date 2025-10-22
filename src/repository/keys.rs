@@ -190,7 +190,7 @@ impl KeyManager {
 
         let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-        let keyfile = self.backend.read(&path)?;
+        let keyfile = self.backend.read(&path, 0, 0)?;
         let keyfile = ss.decompress(&keyfile)?;
         let keyfile: KeyFile = serde_json::from_slice(&keyfile)?;
         Ok(Some(keyfile))
@@ -217,7 +217,7 @@ impl KeyManager {
     /// Delete a keyfile with a given ID
     pub fn delete_keyfile_with_id(&self, id: &ID) -> Result<()> {
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
-        self.backend.remove_file(&path)
+        self.backend.remove(&path)
     }
 
     /// Delete keyfiles with a given username
@@ -258,7 +258,7 @@ impl KeyManager {
             bail!("Prefix cannot be empty");
         }
 
-        let files = self.backend.read_dir(Path::new(KEYS_DIR))?;
+        let files = self.backend.list(Path::new(KEYS_DIR))?;
         let mut matches = Vec::new();
 
         for file_path in files {
@@ -300,7 +300,7 @@ pub struct KeyFileStreamer {
 
 impl KeyFileStreamer {
     pub fn new(backend: Arc<dyn StorageBackend>) -> Result<Self> {
-        let entries = backend.read_dir(Path::new(KEYS_DIR))?;
+        let entries = backend.list(Path::new(KEYS_DIR))?;
         Ok(Self { backend, entries })
     }
 }
@@ -320,7 +320,7 @@ impl Iterator for KeyFileStreamer {
 
             let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-            let keyfile_data = match self.backend.read(&path) {
+            let keyfile_data = match self.backend.read(&path, 0, 0) {
                 Ok(data) => data,
                 Err(e) => return Some(Err(e)),
             };
@@ -415,7 +415,7 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let backend = Arc::new(LocalFS::new(tmp_path.to_path_buf()));
         backend.create()?;
-        backend.create_dir_all(Path::new(KEYS_DIR))?;
+        backend.create_dir(Path::new(KEYS_DIR))?;
         let key_manager = KeyManager::new(backend.clone());
 
         let original_key = KeyManager::generate_new_master_key();
@@ -460,7 +460,7 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let backend = Arc::new(LocalFS::new(tmp_path.to_path_buf()));
         backend.create()?;
-        backend.create_dir_all(Path::new(KEYS_DIR))?;
+        backend.create_dir(Path::new(KEYS_DIR))?;
         let key_manager = KeyManager::new(backend.clone());
         let username = "key_finder".to_string();
         let password = "retrieve_password".to_string();
@@ -508,7 +508,7 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let backend = Arc::new(LocalFS::new(tmp_path.to_path_buf()));
         backend.create()?;
-        backend.create_dir_all(Path::new(KEYS_DIR))?;
+        backend.create_dir(Path::new(KEYS_DIR))?;
         let key_manager = KeyManager::new(backend.clone());
         // Save a key for a different user
         let other_auth = Auth {
@@ -548,7 +548,7 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let backend = Arc::new(LocalFS::new(tmp_path.to_path_buf()));
         backend.create()?;
-        backend.create_dir_all(Path::new(KEYS_DIR))?;
+        backend.create_dir(Path::new(KEYS_DIR))?;
         let key_manager = KeyManager::new(backend.clone());
 
         let username = "to_be_deleted".to_string();
@@ -612,7 +612,7 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let backend = Arc::new(LocalFS::new(tmp_path.to_path_buf()));
         backend.create()?;
-        backend.create_dir_all(Path::new(KEYS_DIR))?;
+        backend.create_dir(Path::new(KEYS_DIR))?;
         let key_manager = KeyManager::new(backend.clone());
 
         let original_key = KeyManager::generate_new_master_key();
@@ -682,7 +682,7 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let backend = Arc::new(LocalFS::new(tmp_path.to_path_buf()));
         backend.create()?;
-        backend.create_dir_all(Path::new(KEYS_DIR))?;
+        backend.create_dir(Path::new(KEYS_DIR))?;
         let key_manager = KeyManager::new(backend.clone());
 
         let username = "mapachito".to_string();

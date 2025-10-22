@@ -159,7 +159,7 @@ fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
     })?;
     let key_manager = KeyManager::new(backend.clone());
     let (_id, path) = key_manager.find_id_with_prefix(&args.id)?;
-    backend.remove_file(&path)
+    backend.remove(&path)
 }
 
 fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> Result<()> {

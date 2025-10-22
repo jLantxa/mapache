@@ -370,7 +370,7 @@ impl Repository {
         let encoded_size = data.len() as u64;
         let id = ID::from_content(&data);
         let path = self.get_path(file_type, &id);
-        self.save_with_rename(&path, &data)?;
+        self.backend.write(&path, &data)?;
 
         Ok((id, raw_size, encoded_size))
     }
@@ -655,13 +655,6 @@ impl Repository {
             }
             FileType::Lock => self.backend.read_dir(&self.locks_path),
         }
-    }
-
-    fn save_with_rename(&self, path: &Path, data: &[u8]) -> Result<usize> {
-        let tmp_path = path.with_extension("tmp");
-        self.backend.write(&tmp_path, data)?;
-        self.backend.rename(&tmp_path, path)?;
-        Ok(data.len())
     }
 
     fn flush_packer(&self, packer: &Arc<RwLock<Packer>>) -> Result<(u64, u64)> {

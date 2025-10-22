@@ -21,7 +21,7 @@ use anyhow::{Result, bail};
 use crate::{
     backend::StorageBackend,
     fs::{node::NodeType, tree::SerializedNodeStreamer},
-    mapache::{FileType, ID},
+    mapache::ID,
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils,
 };
@@ -32,14 +32,10 @@ pub fn verify_blob(repo: &Repository, id: &ID) -> Result<(u64, u64)> {
     let index_guard = index.read();
     let blob_entry = index_guard.get(id);
     match blob_entry {
-        Some((pack_id, _blob_type, offset, length, raw_length)) => {
+        Some((pack_id, blob_type, offset, length, raw_length)) => {
             // The ID of a blob is the hash of its plaintext content.
-            let blob_data = repo.read_from_file_and_decode(
-                FileType::Pack,
-                pack_id,
-                offset as u64,
-                length as u64,
-            )?;
+            let blob_data =
+                repo.read_from_pack_and_decode(blob_type, pack_id, offset as u64, length as u64)?;
             let checksum = utils::calculate_hash(&blob_data);
             if checksum != id.0[..] {
                 bail!("Invalid blob checksum");

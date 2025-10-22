@@ -21,7 +21,7 @@ use crossbeam_channel::Sender;
 use rand::Rng;
 
 use crate::{
-    backend::StorageBackend,
+    backend::{Handle, StorageBackend},
     mapache::{BlobType, FileType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
     repository::{repo::Repository, storage::SecureStorage},
     utils,
@@ -213,12 +213,12 @@ impl Packer {
         pack_id: &ID,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         let (_id, pack_path) = repo.find(FileType::Pack, &pack_id.to_hex())?;
-        let header_length_bytes: [u8; 4] =
-            backend.read(&pack_path, -4, 4)?.as_slice().try_into()?;
+        let handle = Handle::new(&pack_path); // TODO: Hint if metadata
+        let header_length_bytes: [u8; 4] = backend.read(&handle, -4, 4)?.as_slice().try_into()?;
         let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
 
         let header_data = backend.read(
-            &pack_path,
+            &handle,
             -(4 + encoded_header_length as isize),
             4 + encoded_header_length,
         )?;
@@ -311,10 +311,10 @@ impl Packer {
     }
 }
 
-pub type QueueFn = Arc<dyn Fn(Vec<u8>, ID) + Send + Sync + 'static>;
+pub type QueueFn = Arc<dyn Fn(Vec<u8>, ID, BlobType) + Send + Sync + 'static>;
 
 pub struct PackSaver {
-    tx: Sender<(Vec<u8>, ID)>,
+    tx: Sender<(Vec<u8>, ID, BlobType)>,
     join_handle: JoinHandle<()>,
 }
 
@@ -330,10 +330,10 @@ impl PackSaver {
                 .build()
                 .expect("Failed to build thread pool");
 
-            while let Ok((data, id)) = rx.recv() {
+            while let Ok((data, id, blob_type)) = rx.recv() {
                 pool.scope(|s| {
                     s.spawn(|_| {
-                        worker_queue_fn(data, id);
+                        worker_queue_fn(data, id, blob_type);
                     });
                 });
             }
@@ -342,14 +342,19 @@ impl PackSaver {
         PackSaver { tx, join_handle }
     }
 
-    pub fn save_pack(&self, packer_data: Vec<u8>, save_id: SaveID) -> Result<ID> {
+    pub fn save_pack(
+        &self,
+        packer_data: Vec<u8>,
+        blob_type: BlobType,
+        save_id: SaveID,
+    ) -> Result<ID> {
         let pack_id = match save_id {
             SaveID::CalculateID => ID::from_content(&packer_data),
             SaveID::WithID(id) => id,
         };
 
         self.tx
-            .send((packer_data, pack_id))
+            .send((packer_data, pack_id, blob_type))
             .with_context(|| "Failed to send pack data to PackSaver channel")?;
 
         Ok(pack_id)

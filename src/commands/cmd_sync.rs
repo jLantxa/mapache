@@ -22,7 +22,7 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
 use crate::{
-    backend::{self, BackendNode, BackendOptions, StorageBackend},
+    backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::cleanup::CleanupHandler,
     mapache::global::GlobalOpts,
     repository::repo::{LOCKS_DIR, RepoConfig, Repository},
@@ -212,8 +212,9 @@ fn sync_backends(
         match node {
             BackendNode::Dir(path) => dst_backend.create_dir(&path)?,
             BackendNode::File(path) => {
-                let data = src_backend.read(&path, 0, 0)?;
-                dst_backend.write(&path, &data)?;
+                let handle = Handle::new(&path);
+                let data = src_backend.read(&handle, 0, 0)?;
+                dst_backend.write(&handle, &data)?;
             }
         }
 

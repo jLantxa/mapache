@@ -26,7 +26,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ssh2::{RenameFlags, Session, Sftp};
 
-use crate::ui;
+use crate::{backend::Handle, ui};
 
 use super::StorageBackend;
 
@@ -313,7 +313,8 @@ impl StorageBackend for SftpBackend {
         self.exists_exact(&self.repo_path, conn.sftp())
     }
 
-    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>> {
+    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+        let path = handle.path;
         let full_path = self.full_path(path);
 
         let conn = self.pool.get()?;
@@ -350,7 +351,8 @@ impl StorageBackend for SftpBackend {
         Ok(contents)
     }
 
-    fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
+    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+        let path = handle.path;
         let full_path = self.full_path(path);
         let tmp_path = full_path.with_extension("tmp");
         let conn = self.pool.get()?;

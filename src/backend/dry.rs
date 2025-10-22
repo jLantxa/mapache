@@ -21,6 +21,8 @@ use std::{
 
 use anyhow::Result;
 
+use crate::backend::Handle;
+
 use super::StorageBackend;
 
 /// A dummy storage backend that sets itself before another backend, redirecting
@@ -47,33 +49,27 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>> {
-        self.backend.read(path, offset, length)
+    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+        self.backend.read(handle, offset, length)
     }
 
     #[inline]
-    fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
-        let _ = contents;
-        let _ = path;
+    fn write(&self, _handle: &Handle, _contents: &[u8]) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let _ = to;
-        let _ = from;
+    fn rename(&self, _from: &Path, _to: &Path) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn create_dir(&self, path: &Path) -> Result<()> {
-        let _ = path;
+    fn create_dir(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn remove(&self, file_path: &Path) -> Result<()> {
-        let _ = file_path;
+    fn remove(&self, _file_path: &Path) -> Result<()> {
         Ok(())
     }
 

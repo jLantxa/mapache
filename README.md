@@ -71,7 +71,7 @@ The second milestone consists of adding features related to repository maintenan
 
 After that, the plan is to expand the functionality with new options, features, optimizations, and ergonomics.
 
-### 3. `Smooth mapache` (current)
+### 3. `Smooth mapache` *(complete)*
 
 The goal of this milestone is to add convenience and quality of life features. Things that are not strictly necessary but make mapache nicer to use. The real goal is to work towards a stable repository format that allows me to add features in the future without making previous versions incompatible. This includes:
 
@@ -85,12 +85,27 @@ The goal of this milestone is to add convenience and quality of life features. T
 
 `mapache` is in an alpha state. Alpha pre-releases of v0.1.0 will be released to validate the concept and architecture of the client while implementing the core features.
 
-### 4. `Stable mapache`
+### 4. v0.1.0 - `Stable mapache` (Current)
 
 The goal of the milestone is to release the first stable version of mapache.
 `mapache` is in a beta state. Beta pre-releases of v0.1.0 will be released during this period and testing will focus on detecting bugs.
 Adding features is not a priority for this milestone, and only smaller features will be added. Bigger features will be implemented in future versions.
 The goal is to have v0.1.0 released by December 1st 2025 and have a break (and focus on Advent of Code?).
+
+Big features and optimizations which could destabilize the code will be postponed for v0.2.0.
+
+### 5. v0.2.0
+After the Christmas season, I will resume implementing all features that didn't make it into v0.1.0. At the moment, these include:
+
+- [ ] configuration files,
+- [ ] master key rotation,
+- [ ] local metadata cache,
+- [ ] `restore` optimization (with in-memory pack file cache),
+- [ ] reimplement SFTP backend with a pure rust crate,
+- [ ] return codes for commands,
+- [ ] regex filters,
+
+and other internal refactors, optimizations and bug fixing.
 
 ## Getting started
 

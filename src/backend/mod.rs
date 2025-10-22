@@ -32,7 +32,7 @@ use localfs::LocalFS;
 
 use crate::{ui, utils::url::Url};
 
-pub struct FileAttr {
+pub struct NodeAttr {
     pub size: Option<u64>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
@@ -55,7 +55,7 @@ pub trait StorageBackend: Send + Sync {
     fn root_exists(&self) -> bool;
 
     /// Returns true if a path exists.
-    fn exists(&self, path: &Path) -> bool;
+    fn path_exists(&self, path: &Path) -> bool;
 
     /// Reads from file.
     ///
@@ -70,7 +70,7 @@ pub trait StorageBackend: Send + Sync {
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;
 
     // List all paths inside a directory.
-    fn list(&self, path: &Path) -> Result<Vec<PathBuf>>;
+    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
 
     /// Creates a new, empty directory at the provided path.
     /// The directory is created recursively, with all of its parent components.
@@ -85,7 +85,8 @@ pub trait StorageBackend: Send + Sync {
     // Returns true if the path is a directory or an error if the path does not exist.
     fn is_dir(&self, path: &Path) -> bool;
 
-    fn lstat(&self, path: &Path) -> Result<FileAttr>;
+    /// Query metadata without following symlinks.
+    fn lstat(&self, path: &Path) -> Result<NodeAttr>;
 }
 
 pub struct BackendOptions {
@@ -201,7 +202,7 @@ impl BackendNode {
 pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec<BackendNode>> {
     let mut nodes = Vec::new();
 
-    let root_nodes = backend.list(path)?;
+    let root_nodes = backend.list_dir(path)?;
     for sub_path in root_nodes {
         if backend.is_file(&sub_path) {
             nodes.push(BackendNode::File(sub_path.to_path_buf()));

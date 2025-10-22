@@ -22,7 +22,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::{backend::FileAttr, fs};
+use crate::{backend::NodeAttr, fs};
 
 use super::StorageBackend;
 
@@ -62,11 +62,11 @@ impl StorageBackend for LocalFS {
         let full_path = self.full_path(path);
 
         let mut file = File::open(&full_path)
-            .with_context(|| format!("Could not open file \'{}\'", path.display()))?;
+            .with_context(|| format!("Could not open file '{}'", path.display()))?;
 
         let file_size = file
             .metadata()
-            .with_context(|| format!("Could not get metadata for \'{}\'", path.display()))?
+            .with_context(|| format!("Could not get metadata for '{}'", path.display()))?
             .len();
 
         let start_position: u64;
@@ -83,7 +83,7 @@ impl StorageBackend for LocalFS {
         }
 
         file.seek(SeekFrom::Start(start_position))
-            .with_context(|| format!("Could not seek to position in \'{}\'", path.display()))?;
+            .with_context(|| format!("Could not seek to position in '{}'", path.display()))?;
 
         let bytes_remaining: usize = file_size.saturating_sub(start_position) as usize;
         let read_length: usize = match length {
@@ -93,7 +93,7 @@ impl StorageBackend for LocalFS {
 
         let mut data = vec![0; read_length];
         file.read_exact(&mut data)
-            .with_context(|| format!("Could not read \'{}\' from local backend", path.display()))?;
+            .with_context(|| format!("Could not read '{}' from local backend", path.display()))?;
 
         Ok(data)
     }
@@ -136,7 +136,7 @@ impl StorageBackend for LocalFS {
         let full_path = self.full_path(path);
         std::fs::create_dir_all(full_path).with_context(|| {
             format!(
-                "Could not create directory \'{}\' in local backend",
+                "Could not create directory '{}' in local backend",
                 path.display()
             )
         })
@@ -150,14 +150,14 @@ impl StorageBackend for LocalFS {
                 if metadata.is_dir() {
                     std::fs::remove_dir_all(&full_path).with_context(|| {
                         format!(
-                            "Could not remove directory \'{}\' recursively from local backend",
+                            "Could not remove directory '{}' recursively from local backend",
                             path.display()
                         )
                     })
                 } else {
                     std::fs::remove_file(&full_path).with_context(|| {
                         format!(
-                            "Could not remove file \'{}\' from local backend",
+                            "Could not remove file '{}' from local backend",
                             path.display()
                         )
                     })
@@ -166,22 +166,22 @@ impl StorageBackend for LocalFS {
 
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e).context(format!(
-                "Failed to determine type of path \'{}\' for removal",
+                "Failed to determine type of path '{}' for removal",
                 path.display()
             )),
         }
     }
-    fn exists(&self, path: &Path) -> bool {
+    fn path_exists(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
         self.exists_exact(&full_path)
     }
 
-    fn list(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let full_path = self.full_path(path);
         let mut paths = Vec::new();
         for entry in std::fs::read_dir(full_path).with_context(|| {
             format!(
-                "Could not list directory \'{}\' in local backend",
+                "Could not list directory '{}' in local backend",
                 path.display()
             )
         })? {
@@ -208,11 +208,11 @@ impl StorageBackend for LocalFS {
         full_path.is_dir()
     }
 
-    fn lstat(&self, path: &Path) -> Result<super::FileAttr> {
+    fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         let full_path = self.full_path(path);
         let meta = std::fs::symlink_metadata(&full_path)?;
 
-        Ok(FileAttr {
+        Ok(NodeAttr {
             size: Some(meta.len()),
             uid: None,
             gid: None,
@@ -225,13 +225,11 @@ impl StorageBackend for LocalFS {
 
 #[cfg(test)]
 mod tests {
-
     use tempfile::tempdir;
 
     use super::*;
 
     #[test]
-
     fn test_local_fs() -> Result<()> {
         let temp_dir = tempdir()?;
         let temp_dir = temp_dir.path();
@@ -241,26 +239,26 @@ mod tests {
         local_fs.write(write_path, b"Mapachito")?;
         let read_content = local_fs.read(write_path, 0, 0)?;
 
-        assert!(local_fs.exists(write_path));
+        assert!(local_fs.path_exists(write_path));
         assert_eq!(read_content, b"Mapachito");
 
         let dir0 = Path::new("dir0");
         let intermediate = dir0.join("intermediate");
         let dir1 = intermediate.join("dir1");
         local_fs.create_dir(&dir1)?;
-        assert!(local_fs.exists(dir0));
-        assert!(local_fs.exists(&intermediate));
-        assert!(local_fs.exists(&dir1));
+        assert!(local_fs.path_exists(dir0));
+        assert!(local_fs.path_exists(&intermediate));
+        assert!(local_fs.path_exists(&dir1));
 
         local_fs.remove(&dir1)?;
-        assert!(!local_fs.exists(&dir1));
+        assert!(!local_fs.path_exists(&dir1));
         local_fs.remove(dir0)?;
-        assert!(!local_fs.exists(dir0));
-        assert!(!local_fs.exists(&intermediate));
-        assert!(!local_fs.exists(&dir1));
+        assert!(!local_fs.path_exists(dir0));
+        assert!(!local_fs.path_exists(&intermediate));
+        assert!(!local_fs.path_exists(&dir1));
 
         let invalid_path = Path::new("fake_path");
-        assert!(!local_fs.exists(invalid_path));
+        assert!(!local_fs.path_exists(invalid_path));
         assert!(local_fs.read(invalid_path, 0, 0).is_err());
 
         // Read range

@@ -258,7 +258,7 @@ impl Repository {
 
         let version = manifest.version();
         if version > THIS_REPOSITORY_VERSION {
-            bail!("Invalid repository version \'{version}\'");
+            bail!("Invalid repository version '{version}'");
         }
 
         let repo = Repository::open(backend, secure_storage.clone(), config)?;
@@ -406,7 +406,7 @@ impl Repository {
     pub fn remove_snapshot(&self, id: &ID) -> Result<()> {
         let snapshot_path = self.snapshot_path.join(id.to_hex());
 
-        if !self.backend.exists(&snapshot_path) {
+        if !self.backend.path_exists(&snapshot_path) {
             bail!("Snapshot {id} doesn't exist")
         }
 
@@ -419,7 +419,7 @@ impl Repository {
     pub fn load_snapshot(&self, id: &ID) -> Result<Snapshot> {
         let snapshot = self
             .load_file(FileType::Snapshot, id)
-            .with_context(|| format!("No snapshot with ID \'{id}\' exists"))?;
+            .with_context(|| format!("No snapshot with ID '{id}' exists"))?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
         Ok(snapshot)
     }
@@ -430,7 +430,7 @@ impl Repository {
 
         let paths = self
             .backend
-            .list(&self.snapshot_path)
+            .list_dir(&self.snapshot_path)
             .with_context(|| "Could not read snapshots")?;
 
         for path in paths {
@@ -599,7 +599,7 @@ impl Repository {
                 .objects_path
                 .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-            let files = self.backend.list(&dir)?;
+            let files = self.backend.list_dir(&dir)?;
             for path in files {
                 let filename = path.file_name().unwrap().to_string_lossy().to_string();
                 if let Ok(id) = ID::from_hex(&filename) {
@@ -634,9 +634,9 @@ impl Repository {
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.).
     pub fn list_files(&self, file_type: FileType) -> Result<Vec<PathBuf>> {
         match file_type {
-            FileType::Snapshot => self.backend.list(&self.snapshot_path),
-            FileType::Key => self.backend.list(&self.keys_path),
-            FileType::Index => self.backend.list(&self.index_path),
+            FileType::Snapshot => self.backend.list_dir(&self.snapshot_path),
+            FileType::Key => self.backend.list_dir(&self.keys_path),
+            FileType::Index => self.backend.list_dir(&self.index_path),
             FileType::Manifest => Ok(vec![PathBuf::from(MANIFEST_PATH)]),
             FileType::Pack => {
                 let mut files = Vec::new();
@@ -645,7 +645,7 @@ impl Repository {
                         .objects_path
                         .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-                    let sub_files = self.backend.list(&dir_name)?;
+                    let sub_files = self.backend.list_dir(&dir_name)?;
                     for file_path in sub_files.into_iter() {
                         files.push(file_path);
                     }
@@ -653,7 +653,7 @@ impl Repository {
 
                 Ok(files)
             }
-            FileType::Lock => self.backend.list(&self.locks_path),
+            FileType::Lock => self.backend.list_dir(&self.locks_path),
         }
     }
 
@@ -683,7 +683,7 @@ impl Repository {
 
     /// Load the master index from file
     fn load_master_index(&mut self) -> Result<()> {
-        let files = self.backend.list(&self.index_path)?;
+        let files = self.backend.list_dir(&self.index_path)?;
         let num_index_files = files.len();
 
         for file in files {

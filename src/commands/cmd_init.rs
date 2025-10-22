@@ -39,7 +39,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         dry_backend: false,
     })?;
 
-    ui::cli::log!("Initializing a new repository in \'{}\'", &global_args.repo);
+    ui::cli::log!("Initializing a new repository in '{}'", &global_args.repo);
     Repository::init(auth.as_ref(), global_args.key.as_ref(), backend)?;
 
     ui::cli::warning!(

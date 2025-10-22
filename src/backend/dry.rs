@@ -78,13 +78,13 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    fn exists(&self, path: &Path) -> bool {
-        self.backend.exists(path)
+    fn path_exists(&self, path: &Path) -> bool {
+        self.backend.path_exists(path)
     }
 
     #[inline]
-    fn list(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        self.backend.list(path)
+    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.backend.list_dir(path)
     }
 
     #[inline]
@@ -97,7 +97,7 @@ impl StorageBackend for DryBackend {
         self.backend.is_dir(path)
     }
 
-    fn lstat(&self, path: &Path) -> Result<super::FileAttr> {
+    fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         self.backend.lstat(path)
     }
 }

@@ -184,7 +184,7 @@ impl KeyManager {
     pub fn load_keyfile_with_id(&self, id: &ID) -> Result<Option<KeyFile>> {
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
 
-        if !self.backend.exists(&path) {
+        if !self.backend.path_exists(&path) {
             return Ok(None);
         }
 
@@ -258,7 +258,7 @@ impl KeyManager {
             bail!("Prefix cannot be empty");
         }
 
-        let files = self.backend.list(Path::new(KEYS_DIR))?;
+        let files = self.backend.list_dir(Path::new(KEYS_DIR))?;
         let mut matches = Vec::new();
 
         for file_path in files {
@@ -300,7 +300,7 @@ pub struct KeyFileStreamer {
 
 impl KeyFileStreamer {
     pub fn new(backend: Arc<dyn StorageBackend>) -> Result<Self> {
-        let entries = backend.list(Path::new(KEYS_DIR))?;
+        let entries = backend.list_dir(Path::new(KEYS_DIR))?;
         Ok(Self { backend, entries })
     }
 }

@@ -367,7 +367,7 @@ impl StorageBackend for SftpBackend {
         conn.sftp()
             .rename(&tmp_path, &full_path, Some(RenameFlags::all()))
             .with_context(|| {
-                format!("Failed to rename {tmp_path:?}\' to {full_path:?}\' in sftp backend")
+                format!("Failed to rename {tmp_path:?}' to {full_path:?}' in sftp backend")
             })
     }
 
@@ -382,7 +382,7 @@ impl StorageBackend for SftpBackend {
                 &full_path_from_to,
                 Some(RenameFlags::all()),
             )
-            .with_context(|| format!("Failed to rename {from:?}\' to {to:?}\' in sftp backend"))
+            .with_context(|| format!("Failed to rename {from:?}' to {to:?}' in sftp backend"))
     }
 
     fn create_dir(&self, path: &Path) -> Result<()> {
@@ -398,14 +398,14 @@ impl StorageBackend for SftpBackend {
         self.remove_recursively_internal(&full_path, conn.sftp())
     }
 
-    fn list(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let full_path = self.full_path(path);
 
         let conn = self.pool.get()?;
         let entries = conn
             .sftp()
             .readdir(full_path)
-            .with_context(|| format!("Could not list directory {path:?}\' in sftp backend"))?;
+            .with_context(|| format!("Could not list directory {path:?}' in sftp backend"))?;
 
         Ok(entries
             .iter()
@@ -413,7 +413,7 @@ impl StorageBackend for SftpBackend {
             .collect())
     }
 
-    fn exists(&self, path: &Path) -> bool {
+    fn path_exists(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
 
         let conn = self.pool.get().unwrap();
@@ -440,13 +440,13 @@ impl StorageBackend for SftpBackend {
         }
     }
 
-    fn lstat(&self, path: &Path) -> Result<super::FileAttr> {
+    fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         let full_path = self.full_path(path);
 
         let conn = self.pool.get().unwrap();
         let meta = conn.sftp().lstat(&full_path)?;
 
-        Ok(super::FileAttr {
+        Ok(super::NodeAttr {
             size: meta.size,
             uid: meta.uid,
             gid: meta.gid,

@@ -210,9 +210,9 @@ fn sync_backends(
         // backend and transfer the files in small chunks.
 
         match node {
-            BackendNode::Dir(path) => dst_backend.create_dir_all(&path)?,
+            BackendNode::Dir(path) => dst_backend.create_dir(&path)?,
             BackendNode::File(path) => {
-                let data = src_backend.read(&path)?;
+                let data = src_backend.read(&path, 0, 0)?;
                 dst_backend.write(&path, &data)?;
             }
         }
@@ -238,8 +238,8 @@ fn sync_backends(
         to_delete.sort_unstable_by(reverse_cmp); // Reverse sort for deletion
         for node in to_delete {
             match node {
-                BackendNode::File(path) => dst_backend.remove_file(&path)?,
-                BackendNode::Dir(path) => dst_backend.remove_dir_all(&path)?,
+                BackendNode::File(path) => dst_backend.remove(&path)?,
+                BackendNode::Dir(path) => dst_backend.remove(&path)?,
             }
 
             delete_progress_bar.inc(1);
@@ -249,7 +249,7 @@ fn sync_backends(
     }
 
     // Create locks folder (ignored by read_backend_dir)
-    dst_backend.create_dir_all(&PathBuf::from(LOCKS_DIR))?;
+    dst_backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
 
     Ok(())
 }

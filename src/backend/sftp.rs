@@ -237,23 +237,6 @@ impl SftpBackend {
         sftp.lstat(path).is_ok()
     }
 
-    /// Creates a directory with the exact path given (not as a relative path to the backend root).
-    fn create_dir_exact(&self, path: &Path, sftp: &Sftp) -> Result<()> {
-        let stats = sftp.lstat(path);
-        if let Ok(stats) = stats {
-            if !stats.is_dir() {
-                bail!(format!(
-                    "Failed to create directory {path:?}' in sftp backend. Path exists, but it is not a directory."
-                ))
-            } else {
-                Ok(())
-            }
-        } else {
-            sftp.mkdir(path, 0o755)
-                .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))
-        }
-    }
-
     fn create_dir_all_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
         if self.exists_exact(path, sftp) {
             let metadata = sftp
@@ -278,37 +261,44 @@ impl SftpBackend {
             .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))
     }
 
-    fn remove_dir_all_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
+    /// Recursively removes a directory/file.
+    fn remove_recursively_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
         if !self.exists_exact(path, sftp) {
             return Ok(());
         }
 
-        let metadata = sftp
-            .lstat(path)
-            .with_context(|| format!("Failed to get metadata for path: {path:?}"))?;
+        match sftp.lstat(path) {
+            Ok(metadata) => {
+                if metadata.is_file() {
+                    return sftp.unlink(path).with_context(|| {
+                        format!("Failed to remove file {path:?}' in sftp backend")
+                    });
+                }
 
-        if metadata.is_file() {
-            sftp.unlink(path)
-                .with_context(|| format!("Failed to remove file {path:?}' in sftp backend"))?;
-            return Ok(());
-        }
+                if metadata.is_dir() {
+                    let entries = sftp.readdir(path).with_context(|| {
+                        format!("Could not list directory {path:?}' in sftp backend")
+                    })?;
 
-        let entries = sftp
-            .readdir(path)
-            .with_context(|| format!("Could not list directory {path:?}' in sftp backend"))?;
+                    for (entry_path, _entry_metadata) in entries {
+                        self.remove_recursively_internal(&entry_path, sftp)?;
+                    }
 
-        for (entry_path, entry_metadata) in entries {
-            if entry_metadata.is_dir() {
-                self.remove_dir_all_internal(&entry_path, sftp)?;
-            } else {
-                sftp.unlink(&entry_path).with_context(|| {
-                    format!("Failed to remove file {entry_path:?}' in sftp backend")
-                })?;
+                    return sftp.rmdir(path).with_context(|| {
+                        format!("Failed to remove dir {path:?}' in sftp backend")
+                    });
+                }
+
+                sftp.unlink(path)
+                    .or_else(|_| sftp.rmdir(path))
+                    .with_context(|| {
+                        format!("Failed to remove item {path:?}' in sftp backend (not file/dir)")
+                    })
             }
+            Err(e) => Err(e).context(format!(
+                "Failed to stat path {path:?}' for recursive removal"
+            )),
         }
-
-        sftp.rmdir(path)
-            .with_context(|| format!("Failed to remove dir {path:?}' in sftp backend"))
     }
 }
 
@@ -323,36 +313,40 @@ impl StorageBackend for SftpBackend {
         self.exists_exact(&self.repo_path, conn.sftp())
     }
 
-    fn read(&self, path: &Path) -> Result<Vec<u8>> {
+    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>> {
         let full_path = self.full_path(path);
 
         let conn = self.pool.get()?;
-        let mut file = conn.sftp().open(full_path).with_context(|| {
-            format!("Failed to open file {path:?}\' in sftp backend for reading")
+        let sftp = conn.sftp();
+        let mut file = sftp.open(&full_path).with_context(|| {
+            format!("Failed to open file {:?} in sftp backend for reading", path)
         })?;
+
+        let seek_from = if offset >= 0 {
+            SeekFrom::Start(offset as u64)
+        } else {
+            SeekFrom::End(offset as i64)
+        };
+
+        file.seek(seek_from).with_context(|| {
+            format!(
+                "Failed to seek to offset {} in sftp file {:?}",
+                offset, path
+            )
+        })?;
+
         let mut contents = Vec::new();
-        file.read_to_end(&mut contents)
-            .with_context(|| format!("Failed to read file {path:?}\' in sftp backend"))?;
-        Ok(contents)
-    }
 
-    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
-        let full_path = self.full_path(path);
-
-        let conn = self.pool.get()?;
-        let mut file = conn.sftp().open(full_path).with_context(|| {
-            format!("Failed to open file {path:?}\' in sftp backend for ranged reading")
-        })?;
-
-        // Read into preallocated vector
-        let mut contents = vec![0; length as usize];
-
-        if offset > 0 {
-            let _ = file.seek(SeekFrom::Start(offset));
+        if length == 0 {
+            file.read_to_end(&mut contents)
+                .with_context(|| format!("Failed to read to end of sftp file {:?}", path))?;
+        } else {
+            let mut limited_reader = file.take(length as u64);
+            limited_reader.read_to_end(&mut contents).with_context(|| {
+                format!("Failed to read {} bytes from sftp file {:?}", length, path)
+            })?;
         }
 
-        file.read_exact(&mut contents)
-            .with_context(|| format!("Failed to seek read file {path:?}\' in sftp backend"))?;
         Ok(contents)
     }
 
@@ -391,31 +385,20 @@ impl StorageBackend for SftpBackend {
             .with_context(|| format!("Failed to rename {from:?}\' to {to:?}\' in sftp backend"))
     }
 
-    fn remove_file(&self, file_path: &Path) -> Result<()> {
-        let full_path = self.full_path(file_path);
-
-        let conn = self.pool.get()?;
-        conn.sftp()
-            .unlink(&full_path)
-            .with_context(|| format!("Failed to remove file {file_path:?}\' in sftp backend"))
-    }
-
     fn create_dir(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-
-        let conn = self.pool.get()?;
-        self.create_dir_exact(&full_path, conn.sftp())
-    }
-
-    #[inline]
-    fn create_dir_all(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
 
         let conn = self.pool.get()?;
         self.create_dir_all_internal(&full_path, conn.sftp())
     }
 
-    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    fn remove(&self, path: &Path) -> Result<()> {
+        let full_path = self.full_path(path);
+        let conn = self.pool.get()?;
+        self.remove_recursively_internal(&full_path, conn.sftp())
+    }
+
+    fn list(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let full_path = self.full_path(path);
 
         let conn = self.pool.get()?;
@@ -428,22 +411,6 @@ impl StorageBackend for SftpBackend {
             .iter()
             .map(|(path, _meta)| path.strip_prefix(&self.repo_path).unwrap().to_path_buf())
             .collect())
-    }
-
-    fn remove_dir(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-
-        let conn = self.pool.get()?;
-        conn.sftp()
-            .rmdir(&full_path)
-            .with_context(|| format!("Failed to remove dir {path:?}\' in sftp backend"))
-    }
-
-    fn remove_dir_all(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-
-        let conn = self.pool.get()?;
-        self.remove_dir_all_internal(&full_path, conn.sftp())
     }
 
     fn exists(&self, path: &Path) -> bool {
@@ -471,26 +438,6 @@ impl StorageBackend for SftpBackend {
             Ok(stat) => stat.is_dir(),
             Err(_) => false,
         }
-    }
-
-    fn seek_read_from_end(&self, path: &Path, offset: i64, length: u64) -> Result<Vec<u8>> {
-        let full_path = self.full_path(path);
-
-        let conn = self.pool.get()?;
-        let mut file = conn.sftp().open(full_path).with_context(|| {
-            format!("Failed to open file {path:?}\' in sftp backend for ranged reading")
-        })?;
-
-        // Read into preallocated vector
-        let mut contents = vec![0; length as usize];
-
-        if offset > 0 {
-            let _ = file.seek(SeekFrom::End(offset));
-        }
-
-        file.read_exact(&mut contents)
-            .with_context(|| format!("Failed to seek read file {path:?}\' in sftp backend"))?;
-        Ok(contents)
     }
 
     fn lstat(&self, path: &Path) -> Result<super::FileAttr> {

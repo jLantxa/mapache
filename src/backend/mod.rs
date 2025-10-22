@@ -51,16 +51,17 @@ pub trait StorageBackend: Send + Sync {
     /// Creates the necessary structure (typically just the repo root directory) for the backend
     fn create(&self) -> Result<()>;
 
+    /// Returns true if the root of the backend exists.
     fn root_exists(&self) -> bool;
 
+    /// Returns true if a path exists.
+    fn exists(&self, path: &Path) -> bool;
+
     /// Reads from file.
-    fn read(&self, path: &Path) -> Result<Vec<u8>>;
-
-    /// Reads a specific range of bytes from a file, starting at `offset` and reading `length` bytes.
-    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>>;
-
-    /// Reads a specific range of bytes from a file, starting at END - `offset` and reading `length` bytes.
-    fn seek_read_from_end(&self, path: &Path, offset: i64, length: u64) -> Result<Vec<u8>>;
+    ///
+    /// If `length` is 0, it reads until the end. If `offset` is negative, it reads from the end of
+    /// the file.
+    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>>;
 
     /// Writes to file, creating the file if necessary.
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()>;
@@ -68,26 +69,15 @@ pub trait StorageBackend: Send + Sync {
     /// Renames a file.
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;
 
-    /// Removes a file.
-    fn remove_file(&self, file_path: &Path) -> Result<()>;
+    // List all paths inside a directory.
+    fn list(&self, path: &Path) -> Result<Vec<PathBuf>>;
 
     /// Creates a new, empty directory at the provided path.
+    /// The directory is created recursively, with all of its parent components.
     fn create_dir(&self, path: &Path) -> Result<()>;
 
-    /// Recursively create a directory and all of its parent components if they are missing.
-    fn create_dir_all(&self, path: &Path) -> Result<()>;
-
-    // List all paths inside a directory.
-    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
-
-    /// Removes an empty directory.
-    fn remove_dir(&self, path: &Path) -> Result<()>;
-
-    /// Removes a directory after removing its contents.
-    fn remove_dir_all(&self, path: &Path) -> Result<()>;
-
-    /// Returns true if a path exists.
-    fn exists(&self, path: &Path) -> bool;
+    /// Removes a path (directory or file) and all its contents recursively.
+    fn remove(&self, file_path: &Path) -> Result<()>;
 
     // Returns true if the path is a file or an error if the path does not exist.
     fn is_file(&self, path: &Path) -> bool;
@@ -211,7 +201,7 @@ impl BackendNode {
 pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec<BackendNode>> {
     let mut nodes = Vec::new();
 
-    let root_nodes = backend.read_dir(path)?;
+    let root_nodes = backend.list(path)?;
     for sub_path in root_nodes {
         if backend.is_file(&sub_path) {
             nodes.push(BackendNode::File(sub_path.to_path_buf()));

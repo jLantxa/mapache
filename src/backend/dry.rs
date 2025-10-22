@@ -47,13 +47,8 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    fn read(&self, path: &Path) -> Result<Vec<u8>> {
-        self.backend.read(path)
-    }
-
-    #[inline]
-    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
-        self.backend.seek_read(path, offset, length)
+    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>> {
+        self.backend.read(path, offset, length)
     }
 
     #[inline]
@@ -71,32 +66,14 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    fn remove_file(&self, file_path: &Path) -> Result<()> {
-        let _ = file_path;
-        Ok(())
-    }
-
-    #[inline]
     fn create_dir(&self, path: &Path) -> Result<()> {
         let _ = path;
         Ok(())
     }
 
     #[inline]
-    fn create_dir_all(&self, path: &Path) -> Result<()> {
-        let _ = path;
-        Ok(())
-    }
-
-    #[inline]
-    fn remove_dir(&self, path: &Path) -> Result<()> {
-        let _ = path;
-        Ok(())
-    }
-
-    #[inline]
-    fn remove_dir_all(&self, path: &Path) -> Result<()> {
-        let _ = path;
+    fn remove(&self, file_path: &Path) -> Result<()> {
+        let _ = file_path;
         Ok(())
     }
 
@@ -106,8 +83,8 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        self.backend.read_dir(path)
+    fn list(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.backend.list(path)
     }
 
     #[inline]
@@ -118,11 +95,6 @@ impl StorageBackend for DryBackend {
     #[inline]
     fn is_dir(&self, path: &Path) -> bool {
         self.backend.is_dir(path)
-    }
-
-    #[inline]
-    fn seek_read_from_end(&self, path: &Path, offset: i64, length: u64) -> Result<Vec<u8>> {
-        self.backend.seek_read_from_end(path, offset, length)
     }
 
     fn lstat(&self, path: &Path) -> Result<super::FileAttr> {

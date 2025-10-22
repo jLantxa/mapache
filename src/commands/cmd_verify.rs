@@ -239,7 +239,7 @@ pub fn verify_snapshot(
     visited_blobs: &mut BTreeSet<ID>,
 ) -> Result<()> {
     let snapshot_path = repo.get_path(FileType::Snapshot, snapshot_id);
-    let snapshot_data = backend.read(&snapshot_path)?;
+    let snapshot_data = backend.read(&snapshot_path, 0, 0)?;
     let checksum = utils::calculate_hash(snapshot_data);
     if checksum != snapshot_id.0[..] {
         bail!("Invalid snapshot checksum");

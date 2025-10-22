@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::{
+    fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
@@ -57,38 +58,44 @@ impl StorageBackend for LocalFS {
         self.exists_exact(&self.repo_path)
     }
 
-    fn read(&self, path: &Path) -> Result<Vec<u8>> {
+    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>> {
         let full_path = self.full_path(path);
-        let data = std::fs::read(full_path)
+
+        let mut file = File::open(&full_path)
+            .with_context(|| format!("Could not open file \'{}\'", path.display()))?;
+
+        let file_size = file
+            .metadata()
+            .with_context(|| format!("Could not get metadata for \'{}\'", path.display()))?
+            .len();
+
+        let start_position: u64;
+
+        if offset >= 0 {
+            start_position = offset as u64;
+        } else {
+            let abs_offset = offset.unsigned_abs() as u64;
+            if abs_offset > file_size {
+                start_position = 0;
+            } else {
+                start_position = file_size.saturating_sub(abs_offset);
+            }
+        }
+
+        file.seek(SeekFrom::Start(start_position))
+            .with_context(|| format!("Could not seek to position in \'{}\'", path.display()))?;
+
+        let bytes_remaining: usize = file_size.saturating_sub(start_position) as usize;
+        let read_length: usize = match length {
+            0 => bytes_remaining, // If length is 0, read until the end of the file.
+            _ => std::cmp::min(length, bytes_remaining), // Read the requested length or remaining bytes.
+        };
+
+        let mut data = vec![0; read_length];
+        file.read_exact(&mut data)
             .with_context(|| format!("Could not read \'{}\' from local backend", path.display()))?;
+
         Ok(data)
-    }
-
-    fn seek_read(&self, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>> {
-        let full_path = self.full_path(path);
-        let mut file = std::fs::File::open(full_path).with_context(|| {
-            format!(
-                "Could not open file {} for range reading from local filesystem",
-                path.display()
-            )
-        })?;
-
-        // Seek to the specified offset
-        file.seek(SeekFrom::Start(offset))
-            .with_context(|| format!("Could not seek to offset {offset} in local file {path:?}"))?;
-
-        // Read the specified number of bytes
-        let mut buffer = vec![0; length as usize];
-        file.read_exact(&mut buffer).with_context(|| {
-            format!(
-                "Could not read {} bytes from offset {} in local file {}",
-                length,
-                offset,
-                path.display()
-            )
-        })?;
-
-        Ok(buffer)
     }
 
     fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
@@ -98,15 +105,16 @@ impl StorageBackend for LocalFS {
         // Write to a tmp path
         std::fs::write(&tmp_path, contents).with_context(|| {
             format!(
-                "Could not write to \'{}\' in local backend",
+                "Could not write to '{}' in local backend",
                 tmp_path.display()
             )
         })?;
 
         // Rename to the final path
-        self.rename(&tmp_path, &full_path).with_context(|| {
+        std::fs::rename(&tmp_path, &full_path).with_context(|| {
             format!(
-                "Could not write to \'{}\' in local backend",
+                "Could not rename '{}' to '{}' in local backend",
+                tmp_path.display(),
                 full_path.display()
             )
         })
@@ -117,34 +125,14 @@ impl StorageBackend for LocalFS {
         let fullpath_to = self.full_path(to);
         std::fs::rename(fullpath_from, fullpath_to).with_context(|| {
             format!(
-                "Could not rename \'{}\' to \'{}\' in local backend",
+                "Could not rename '{}' to '{}' in local backend",
                 from.display(),
                 to.display()
             )
         })
     }
 
-    fn remove_file(&self, file_path: &Path) -> Result<()> {
-        let full_path = self.full_path(file_path);
-        std::fs::remove_file(full_path).with_context(|| {
-            format!(
-                "Could not remove file \'{}\' from local backend",
-                file_path.display()
-            )
-        })
-    }
-
     fn create_dir(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-        std::fs::create_dir(full_path).with_context(|| {
-            format!(
-                "Could not create directory \'{}\' in local backend",
-                path.display()
-            )
-        })
-    }
-
-    fn create_dir_all(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
         std::fs::create_dir_all(full_path).with_context(|| {
             format!(
@@ -154,32 +142,41 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    fn remove_dir(&self, path: &Path) -> Result<()> {
+    fn remove(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
-        std::fs::remove_dir(full_path).with_context(|| {
-            format!(
-                "Could not remove directory \'{}\' in local backend",
-                path.display()
-            )
-        })
-    }
 
-    fn remove_dir_all(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-        std::fs::remove_dir_all(full_path).with_context(|| {
-            format!(
-                "Could not remove directory \'{}\' in local backend",
-                path.display()
-            )
-        })
-    }
+        match std::fs::symlink_metadata(&full_path) {
+            Ok(metadata) => {
+                if metadata.is_dir() {
+                    std::fs::remove_dir_all(&full_path).with_context(|| {
+                        format!(
+                            "Could not remove directory \'{}\' recursively from local backend",
+                            path.display()
+                        )
+                    })
+                } else {
+                    std::fs::remove_file(&full_path).with_context(|| {
+                        format!(
+                            "Could not remove file \'{}\' from local backend",
+                            path.display()
+                        )
+                    })
+                }
+            }
 
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).context(format!(
+                "Failed to determine type of path \'{}\' for removal",
+                path.display()
+            )),
+        }
+    }
     fn exists(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
         self.exists_exact(&full_path)
     }
 
-    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    fn list(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let full_path = self.full_path(path);
         let mut paths = Vec::new();
         for entry in std::fs::read_dir(full_path).with_context(|| {
@@ -209,34 +206,6 @@ impl StorageBackend for LocalFS {
     fn is_dir(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
         full_path.is_dir()
-    }
-
-    fn seek_read_from_end(&self, path: &Path, offset: i64, length: u64) -> Result<Vec<u8>> {
-        let full_path = self.full_path(path);
-        let mut file = std::fs::File::open(full_path).with_context(|| {
-            format!(
-                "Could not open file {} for range reading from local filesystem",
-                path.display()
-            )
-        })?;
-
-        // Seek to the specified offset
-        file.seek(SeekFrom::End(offset)).with_context(|| {
-            format!("Could not seek to offset (from End) {offset} in local file {path:?}")
-        })?;
-
-        // Read the specified number of bytes
-        let mut buffer = vec![0; length as usize];
-        file.read_exact(&mut buffer).with_context(|| {
-            format!(
-                "Could not read {} bytes from offset (from End) {} in local file {}",
-                length,
-                offset,
-                path.display()
-            )
-        })?;
-
-        Ok(buffer)
     }
 
     fn lstat(&self, path: &Path) -> Result<super::FileAttr> {
@@ -270,7 +239,7 @@ mod tests {
 
         let write_path = Path::new("file.txt");
         local_fs.write(write_path, b"Mapachito")?;
-        let read_content = local_fs.read(write_path)?;
+        let read_content = local_fs.read(write_path, 0, 0)?;
 
         assert!(local_fs.exists(write_path));
         assert_eq!(read_content, b"Mapachito");
@@ -278,27 +247,26 @@ mod tests {
         let dir0 = Path::new("dir0");
         let intermediate = dir0.join("intermediate");
         let dir1 = intermediate.join("dir1");
-        local_fs.create_dir(dir0)?;
-        local_fs.create_dir_all(&dir1)?;
+        local_fs.create_dir(&dir1)?;
         assert!(local_fs.exists(dir0));
         assert!(local_fs.exists(&intermediate));
         assert!(local_fs.exists(&dir1));
 
-        local_fs.remove_dir(&dir1)?;
+        local_fs.remove(&dir1)?;
         assert!(!local_fs.exists(&dir1));
-        local_fs.remove_dir_all(dir0)?;
+        local_fs.remove(dir0)?;
         assert!(!local_fs.exists(dir0));
         assert!(!local_fs.exists(&intermediate));
         assert!(!local_fs.exists(&dir1));
 
         let invalid_path = Path::new("fake_path");
         assert!(!local_fs.exists(invalid_path));
-        assert!(local_fs.read(invalid_path).is_err());
+        assert!(local_fs.read(invalid_path, 0, 0).is_err());
 
         // Read range
         let seek_path = Path::new("seek.txt.");
         local_fs.write(seek_path, b"I am just looking for a word in this sentence.")?;
-        let range_str = local_fs.seek_read(seek_path, 10, 7)?;
+        let range_str = local_fs.read(seek_path, 10, 7)?;
         assert_eq!(range_str, b"looking");
 
         Ok(())

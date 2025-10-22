@@ -27,8 +27,8 @@ use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    backend::StorageBackend,
-    mapache::{self, ID},
+    backend::{Handle, StorageBackend},
+    mapache::{self, FileType, ID},
     repository::{
         repo::{Auth, KEYS_DIR},
         storage::SecureStorage,
@@ -190,9 +190,11 @@ impl KeyManager {
 
         let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-        let keyfile = self.backend.read(&path, 0, 0)?;
+        let handle = Handle::new_with_hint(&path, true, FileType::Key);
+        let keyfile = self.backend.read(&handle, 0, 0)?;
         let keyfile = ss.decompress(&keyfile)?;
         let keyfile: KeyFile = serde_json::from_slice(&keyfile)?;
+
         Ok(Some(keyfile))
     }
 
@@ -241,7 +243,10 @@ impl KeyManager {
         let keyfile_json = ss.compress(keyfile_json.as_bytes())?;
         let id = ID::from_content(&keyfile_json);
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
-        self.backend.write(&path, &keyfile_json)?;
+        self.backend.write(
+            &Handle::new_with_hint(&path, true, FileType::Key),
+            &keyfile_json,
+        )?;
 
         Ok(id)
     }
@@ -320,10 +325,14 @@ impl Iterator for KeyFileStreamer {
 
             let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-            let keyfile_data = match self.backend.read(&path, 0, 0) {
-                Ok(data) => data,
-                Err(e) => return Some(Err(e)),
-            };
+            let keyfile_data =
+                match self
+                    .backend
+                    .read(&Handle::new_with_hint(&path, true, FileType::Key), 0, 0)
+                {
+                    Ok(data) => data,
+                    Err(e) => return Some(Err(e)),
+                };
 
             let keyfile_decompressed = match ss.decompress(&keyfile_data) {
                 Ok(data) => data,
@@ -662,7 +671,10 @@ mod tests {
             prefix_short
         );
         let ambiguous_path = PathBuf::from(KEYS_DIR).join(&ambiguous_filename);
-        backend.write(&ambiguous_path, b"dummy content")?; // Write arbitrary content
+        backend.write(
+            &Handle::new_with_hint(&ambiguous_path, true, FileType::Key),
+            b"dummy content",
+        )?; // Write arbitrary content
 
         let result = key_manager.find_id_with_prefix(prefix_short);
         assert!(result.is_err(), "Ambiguous prefix must fail.");

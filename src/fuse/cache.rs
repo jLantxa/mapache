@@ -18,7 +18,11 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Result, bail};
 
-use crate::{fs::tree::Tree, mapache::ID, repository::repo::Repository};
+use crate::{
+    fs::tree::Tree,
+    mapache::{BlobType, ID},
+    repository::repo::Repository,
+};
 
 /// A cache for `Tree` objects that uses a Least Recently Used (LRU) eviction policy.
 pub(super) struct TreeCache {
@@ -89,7 +93,7 @@ impl TreeCache {
         // Load from repository
         let tree_blob = self
             .repo
-            .load_blob(id)
+            .load_blob(id, BlobType::Tree)
             .unwrap_or_else(|_| panic!("Failed to load tree {}", id.to_hex()));
         let tree: Tree = serde_json::from_slice(&tree_blob)
             .unwrap_or_else(|_| panic!("Failed to serialize tree {}", id.to_hex()));
@@ -194,7 +198,7 @@ impl BlobCache {
         // Cache miss: load from repository
         let blob = self
             .repo
-            .load_blob(id)
+            .load_blob(id, BlobType::Data)
             .unwrap_or_else(|_| panic!("Failed to load blob {}", id.to_hex()));
 
         self.size += blob.len() as u64;

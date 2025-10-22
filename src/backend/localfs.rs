@@ -22,7 +22,10 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::{backend::NodeAttr, fs};
+use crate::{
+    backend::{Handle, NodeAttr},
+    fs,
+};
 
 use super::StorageBackend;
 
@@ -58,7 +61,8 @@ impl StorageBackend for LocalFS {
         self.exists_exact(&self.repo_path)
     }
 
-    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>> {
+    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+        let path = handle.path;
         let full_path = self.full_path(path);
 
         let mut file = File::open(&full_path)
@@ -98,7 +102,8 @@ impl StorageBackend for LocalFS {
         Ok(data)
     }
 
-    fn write(&self, path: &Path, contents: &[u8]) -> Result<()> {
+    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+        let path = handle.path;
         let full_path = self.full_path(path);
         let tmp_path = full_path.with_extension("tmp");
 
@@ -235,11 +240,11 @@ mod tests {
         let temp_dir = temp_dir.path();
         let local_fs = Box::new(LocalFS::new(temp_dir.to_path_buf()));
 
-        let write_path = Path::new("file.txt");
-        local_fs.write(write_path, b"Mapachito")?;
-        let read_content = local_fs.read(write_path, 0, 0)?;
+        let write_handle = Handle::new(Path::new("file.txt"));
+        local_fs.write(&write_handle, b"Mapachito")?;
+        let read_content = local_fs.read(&write_handle, 0, 0)?;
 
-        assert!(local_fs.path_exists(write_path));
+        assert!(local_fs.path_exists(write_handle.path));
         assert_eq!(read_content, b"Mapachito");
 
         let dir0 = Path::new("dir0");
@@ -257,14 +262,17 @@ mod tests {
         assert!(!local_fs.path_exists(&intermediate));
         assert!(!local_fs.path_exists(&dir1));
 
-        let invalid_path = Path::new("fake_path");
-        assert!(!local_fs.path_exists(invalid_path));
-        assert!(local_fs.read(invalid_path, 0, 0).is_err());
+        let invalid_handle = Handle::new(Path::new("fake_path"));
+        assert!(!local_fs.path_exists(invalid_handle.path));
+        assert!(local_fs.read(&invalid_handle, 0, 0).is_err());
 
         // Read range
-        let seek_path = Path::new("seek.txt.");
-        local_fs.write(seek_path, b"I am just looking for a word in this sentence.")?;
-        let range_str = local_fs.read(seek_path, 10, 7)?;
+        let seek_handle = Handle::new(Path::new("seek.txt."));
+        local_fs.write(
+            &seek_handle,
+            b"I am just looking for a word in this sentence.",
+        )?;
+        let range_str = local_fs.read(&seek_handle, 10, 7)?;
         assert_eq!(range_str, b"looking");
 
         Ok(())

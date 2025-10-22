@@ -23,7 +23,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::Tree,
-    mapache::FileType,
+    mapache::{BlobType, FileType},
     repository::{
         lock::Lock,
         repo::{RepoConfig, Repository},
@@ -103,7 +103,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 None => bail!("No tree blobs found with prefix {prefix}"),
             };
             let tree = repo
-                .load_blob(id)
+                .load_blob(id, BlobType::Tree)
                 .with_context(|| "Failed to load tree blob")?;
             let tree: Tree = serde_json::from_slice(&tree)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&tree)?);
@@ -116,7 +116,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Some(val) => val,
                 None => bail!("No blobs found with prefix {prefix}"),
             };
-            let blob = repo.load_blob(id).with_context(|| "Failed to load blob")?;
+            let blob = repo
+                .load_blob(id, BlobType::Data)
+                .with_context(|| "Failed to load blob")?;
             ui::cli::log!("{}", String::from_utf8(blob)?);
             Ok(())
         }

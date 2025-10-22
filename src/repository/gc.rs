@@ -293,8 +293,8 @@ impl Plan {
             repack_blob_info.into_par_iter().try_for_each(
                 |(blob_id, (pack_id, blob_type, offset, _raw_length, length))| {
                     // Read and decode the original data from the obsolete pack.
-                    let data = self.repo.read_from_file_and_decode(
-                        FileType::Pack,
+                    let data = self.repo.read_from_pack_and_decode(
+                        blob_type,
                         &pack_id,
                         offset as u64,
                         length as u64,

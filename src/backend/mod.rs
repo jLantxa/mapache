@@ -25,7 +25,7 @@ use std::{
     time::SystemTime,
 };
 
-use crate::backend::sftp::SftpBackend;
+use crate::{backend::sftp::SftpBackend, mapache::FileType};
 use anyhow::{Result, anyhow, bail};
 use dry::DryBackend;
 use localfs::LocalFS;
@@ -39,6 +39,34 @@ pub struct NodeAttr {
     pub perm: Option<u32>,
     pub atime: Option<SystemTime>,
     pub mtime: Option<SystemTime>,
+}
+
+#[derive(Debug)]
+pub struct Handle<'a> {
+    pub path: &'a Path,
+    pub hint: Option<StorageHint>,
+}
+
+impl<'a> Handle<'a> {
+    pub fn new(path: &'a Path) -> Self {
+        Self { path, hint: None }
+    }
+
+    pub fn new_with_hint(path: &'a Path, is_metadata: bool, file_type: FileType) -> Self {
+        Self {
+            path,
+            hint: Some(StorageHint {
+                is_metadata,
+                file_type,
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct StorageHint {
+    pub is_metadata: bool,
+    pub file_type: FileType,
 }
 
 /// Abstraction of a storage backend.
@@ -61,10 +89,10 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// If `length` is 0, it reads until the end. If `offset` is negative, it reads from the end of
     /// the file.
-    fn read(&self, path: &Path, offset: isize, length: usize) -> Result<Vec<u8>>;
+    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>>;
 
     /// Writes to file, creating the file if necessary.
-    fn write(&self, path: &Path, contents: &[u8]) -> Result<()>;
+    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()>;
 
     /// Renames a file.
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;

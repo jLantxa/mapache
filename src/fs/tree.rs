@@ -80,7 +80,7 @@ impl Tree {
 
     /// Load a tree from the repository.
     pub fn load_from_repo(repo: &Repository, root_id: &ID) -> Result<Tree> {
-        let tree_object = repo.load_blob(root_id)?;
+        let tree_object = repo.load_blob(root_id, BlobType::Tree)?;
         let tree: Tree = serde_json::from_slice(&tree_object)?;
         Ok(tree)
     }

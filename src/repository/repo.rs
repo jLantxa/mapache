@@ -25,7 +25,7 @@ use parking_lot::{Mutex, RwLock};
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
-    backend::StorageBackend,
+    backend::{Handle, StorageBackend},
     mapache::{
         self, BlobType, FileType, ID, SaveID,
         defaults::{DEFAULT_PACK_SIZE, SHORT_REPO_ID_LEN},
@@ -142,8 +142,8 @@ impl Repository {
             }
             None => {
                 let p = keys_path.join(keyfile_id.to_hex());
-
-                backend.write(&p, &keyfile_json)?;
+                let handle = Handle::new_with_hint(&p, true, FileType::Key);
+                backend.write(&handle, &keyfile_json)?;
             }
         }
 
@@ -159,7 +159,10 @@ impl Repository {
         let manifest_path = Path::new(MANIFEST_PATH);
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
-        backend.write(manifest_path, &manifest_json)?;
+        backend.write(
+            &Handle::new_with_hint(&manifest_path, true, FileType::Manifest),
+            &manifest_json,
+        )?;
 
         backend.create_dir(&objects_path)?;
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
@@ -249,7 +252,11 @@ impl Repository {
         let manifest_path = Path::new(MANIFEST_PATH);
 
         let manifest = backend
-            .read(manifest_path, 0, 0)
+            .read(
+                &Handle::new_with_hint(&manifest_path, true, FileType::Manifest),
+                0,
+                0,
+            )
             .with_context(|| "Could not load manifest file")?;
         let manifest = secure_storage
             .decode(&manifest)
@@ -339,7 +346,7 @@ impl Repository {
 
         // Flush if the packer is considered full
         let packer_meta_size = if packer.read().size() > self.max_packer_size {
-            self.flush_packer(packer)?
+            self.flush_packer(packer, blob_type)?
         } else {
             (0, 0)
         };
@@ -348,12 +355,12 @@ impl Repository {
     }
 
     /// Loads a blob from the repository.
-    pub fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
+    pub fn load_blob(&self, id: &ID, blob_type: BlobType) -> Result<Vec<u8>> {
         let index = self.index.read();
         let blob_entry = index.get(id);
         match blob_entry {
             Some((pack_id, _blob_type, offset, length, _raw_length)) => {
-                self.load_from_pack(pack_id, offset, length)
+                self.load_from_pack(pack_id, blob_type, offset, length)
             }
             None => bail!("Could not find blob {id:?} in index"),
         }
@@ -364,13 +371,15 @@ impl Repository {
         assert_ne!(file_type, FileType::Key);
         assert_ne!(file_type, FileType::Manifest);
         assert_ne!(file_type, FileType::Lock);
+        assert_ne!(file_type, FileType::Pack);
 
         let raw_size = data.len() as u64;
         let data = self.secure_storage.encode(data)?;
         let encoded_size = data.len() as u64;
         let id = ID::from_content(&data);
         let path = self.get_path(file_type, &id);
-        self.backend.write(&path, &data)?;
+        self.backend
+            .write(&Handle::new_with_hint(&path, true, file_type), &data)?;
 
         Ok((id, raw_size, encoded_size))
     }
@@ -379,9 +388,12 @@ impl Repository {
     pub fn load_file(&self, file_type: FileType, id: &ID) -> Result<Vec<u8>> {
         assert_ne!(file_type, FileType::Key);
         assert_ne!(file_type, FileType::Manifest);
+        assert_ne!(file_type, FileType::Pack);
 
         let path = self.get_path(file_type, id);
-        let data = self.backend.read(&path, 0, 0)?;
+        let data = self
+            .backend
+            .read(&Handle::new_with_hint(&path, true, file_type), 0, 0)?;
 
         if file_type != FileType::Pack {
             return self.secure_storage.decode(&data);
@@ -447,8 +459,8 @@ impl Repository {
     /// Flushes all pending data and saves it.
     /// Returns a tuple (raw_size, encoded_size)
     pub fn flush(&self) -> Result<(u64, u64)> {
-        let data_packer_meta_size = self.flush_packer(&self.data_packer)?;
-        let tree_packer_meta_size = self.flush_packer(&self.tree_packer)?;
+        let data_packer_meta_size = self.flush_packer(&self.data_packer, BlobType::Data)?;
+        let tree_packer_meta_size = self.flush_packer(&self.tree_packer, BlobType::Tree)?;
 
         let (index_raw_size, index_encoded_size) = self.index.write().save(self)?;
 
@@ -474,7 +486,11 @@ impl Repository {
 
     /// Loads the repository manifest.
     pub fn load_manifest(&self) -> Result<Manifest> {
-        let manifest = self.backend.read(Path::new(MANIFEST_PATH), 0, 0)?;
+        let manifest = self.backend.read(
+            &Handle::new_with_hint(Path::new(MANIFEST_PATH), true, FileType::Manifest),
+            0,
+            0,
+        )?;
         let manifest = self.secure_storage.decode(&manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
@@ -483,7 +499,9 @@ impl Repository {
     /// Loads a KeyFile.
     pub fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
         let key_path = self.keys_path.join(id.to_hex());
-        let key = self.backend.read(&key_path, 0, 0)?;
+        let key =
+            self.backend
+                .read(&Handle::new_with_hint(&key_path, true, FileType::Key), 0, 0)?;
         let key = self.secure_storage.decompress(&key)?;
         let key = serde_json::from_slice(&key)?;
         Ok(key)
@@ -540,9 +558,12 @@ impl Repository {
 
         let pack_saver = PackSaver::new(
             concurrency,
-            Arc::new(move |data, id| {
+            Arc::new(move |data, id, blob_type: BlobType| {
                 let path = Self::get_object_path(&objects_path, &id);
-                if let Err(e) = backend.write(&path, &data) {
+                if let Err(e) = backend.write(
+                    &Handle::new_with_hint(&path, blob_type == BlobType::Tree, FileType::Pack),
+                    &data,
+                ) {
                     cli::error!("Could not save pack {}: {}", id.to_hex(), e);
                 }
             }),
@@ -560,32 +581,21 @@ impl Repository {
         self.index.clone()
     }
 
-    /// Reads from a repository file with offset and length.
-    /// This function does not decode the data.
-    pub fn read_from_file(
-        &self,
-        file_type: FileType,
-        id: &ID,
-        offset: u64,
-        length: u64,
-    ) -> Result<Vec<u8>> {
-        assert_ne!(file_type, FileType::Key);
-        assert_ne!(file_type, FileType::Manifest);
-
-        let path = self.get_path(file_type, id);
-        self.backend.read(&path, offset as isize, length as usize)
-    }
-
-    /// Reads from a repository file with offset and length.
+    /// Reads from a pack file with offset and length.
     /// This function decodes the data.
-    pub fn read_from_file_and_decode(
+    pub fn read_from_pack_and_decode(
         &self,
-        file_type: FileType,
+        blob_type: BlobType,
         id: &ID,
         offset: u64,
         length: u64,
     ) -> Result<Vec<u8>> {
-        let data = self.read_from_file(file_type, id, offset, length)?;
+        let path = self.get_path(FileType::Pack, id);
+        let data = self.backend.read(
+            &Handle::new_with_hint(&path, blob_type == BlobType::Tree, FileType::Pack),
+            offset as isize,
+            length as usize,
+        )?;
         self.secure_storage.decode(&data)
     }
 
@@ -657,12 +667,20 @@ impl Repository {
         }
     }
 
-    fn flush_packer(&self, packer: &Arc<RwLock<Packer>>) -> Result<(u64, u64)> {
+    fn flush_packer(
+        &self,
+        packer: &Arc<RwLock<Packer>>,
+        blob_type: BlobType,
+    ) -> Result<(u64, u64)> {
         match packer.write().flush(&self.secure_storage)? {
             None => Ok((0, 0)),
             Some(flushed_pack) => {
                 if let Some(pack_saver) = self.pack_saver.write().as_ref() {
-                    pack_saver.save_pack(flushed_pack.data, SaveID::WithID(flushed_pack.id))?;
+                    pack_saver.save_pack(
+                        flushed_pack.data,
+                        blob_type,
+                        SaveID::WithID(flushed_pack.id),
+                    )?;
                 } else {
                     bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
                 }
@@ -686,14 +704,18 @@ impl Repository {
         let files = self.backend.list_dir(&self.index_path)?;
         let num_index_files = files.len();
 
-        for file in files {
-            let file_name = file
+        for file_path in files {
+            let file_name = file_path
                 .file_name()
                 .expect("Could not read index file name")
                 .to_string_lossy()
                 .clone();
             let id = ID::from_hex(&file_name)?;
-            let index_file = self.backend.read(&file, 0, 0)?;
+            let index_file = self.backend.read(
+                &Handle::new_with_hint(&file_path, true, FileType::Index),
+                0,
+                0,
+            )?;
             let index_file = self.secure_storage.decode(&index_file)?;
             let index_file = match serde_json::from_slice(&index_file) {
                 Ok(idx_file) => idx_file,
@@ -713,11 +735,19 @@ impl Repository {
     }
 
     /// Load and decode data from a pack file
-    pub fn load_from_pack(&self, id: &ID, offset: u32, length: u32) -> Result<Vec<u8>> {
+    pub fn load_from_pack(
+        &self,
+        id: &ID,
+        blob_type: BlobType,
+        offset: u32,
+        length: u32,
+    ) -> Result<Vec<u8>> {
         let object_path = Self::get_object_path(&self.objects_path, id);
-        let data = self
-            .backend
-            .read(&object_path, offset as isize, length as usize)?;
+        let data = self.backend.read(
+            &Handle::new_with_hint(&object_path, blob_type == BlobType::Tree, FileType::Pack),
+            offset as isize,
+            length as usize,
+        )?;
         self.secure_storage.decode(&data)
     }
 
@@ -768,7 +798,10 @@ impl Repository {
         let lock_json = self.secure_storage.encode(lock_json.as_bytes())?;
 
         let lock_path = self.get_path(FileType::Lock, lock_guard.id());
-        self.backend.write(&lock_path, &lock_json)
+        self.backend.write(
+            &Handle::new_with_hint(&lock_path, true, FileType::Lock),
+            &lock_json,
+        )
     }
 
     pub fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
@@ -784,7 +817,9 @@ impl Repository {
 
         for path in all_lock_paths {
             // Attempt to read the lock file
-            let lock_data_result = self.backend.read(&path, 0, 0);
+            let lock_data_result =
+                self.backend
+                    .read(&Handle::new_with_hint(&path, true, FileType::Lock), 0, 0);
 
             let lock = match lock_data_result {
                 Ok(data) => data,

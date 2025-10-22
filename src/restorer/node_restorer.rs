@@ -32,6 +32,7 @@ use anyhow::anyhow;
 
 use crate::{
     fs::node::{Node, NodeType},
+    mapache::BlobType,
     repository::repo::Repository,
     ui::restore_progress::RestoreProgressReporter,
 };
@@ -76,7 +77,7 @@ pub(crate) fn restore_node_to_path(
             };
 
             for (index, blob_id) in blocks.iter().enumerate() {
-                let chunk_data = repo.load_blob(blob_id).with_context(|| {
+                let chunk_data = repo.load_blob(blob_id, BlobType::Data).with_context(|| {
                     format!(
                         "Could not load block #{} ({}) for restoring file {}",
                         index + 1,

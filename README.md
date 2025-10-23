@@ -99,7 +99,7 @@ After the Christmas season, I will resume implementing all features that didn't 
 
 - [ ] configuration files,
 - [ ] master key rotation,
-- [ ] local metadata cache,
+- [x] local metadata cache,
 - [ ] `restore` optimization (with in-memory pack file cache),
 - [ ] reimplement SFTP backend with a pure rust crate,
 - [ ] return codes for commands,

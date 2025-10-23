@@ -203,6 +203,7 @@ impl Drop for PooledSftpConnection {
     }
 }
 
+/// A remote backend connected by SFTP.
 pub struct SftpBackend {
     repo_path: PathBuf,
     pool: Arc<SftpConnectionPool>,

@@ -30,7 +30,7 @@ use crate::{
         fs::Inode,
     },
     mapache::ID,
-    repository::{manifest::Manifest, repo::Repository},
+    repository::repo::Repository,
     utils::size,
 };
 
@@ -74,7 +74,6 @@ pub(super) enum FsNode {
 
 pub(super) struct Stash {
     repo: Arc<Repository>,
-    manifest: Manifest,
 
     ino_counter: Inode,
     nodes: BTreeMap<Inode, FsNode>,
@@ -85,13 +84,10 @@ pub(super) struct Stash {
 
 impl Stash {
     pub(super) fn new_root(repo: Arc<Repository>) -> Result<Self> {
-        let manifest = repo.load_manifest()?;
-
-        let root_attr = build_dir_attr(FUSE_ROOT_ID, manifest.created_time().into());
+        let root_attr = build_dir_attr(FUSE_ROOT_ID, repo.manifest().created_time().into());
 
         let mut stash = Self {
             repo: repo.clone(),
-            manifest,
             ino_counter: FUSE_ROOT_ID,
             nodes: BTreeMap::new(),
             path_cache: BTreeMap::new(),
@@ -112,7 +108,7 @@ impl Stash {
 
     pub(super) fn add_dir(&mut self, parent_ino: Inode, dir_name: String) -> Inode {
         let ino = self.next_ino();
-        let created_time: SystemTime = self.manifest.created_time().into();
+        let created_time: SystemTime = self.repo.manifest().created_time().into();
 
         let attr = build_dir_attr(ino, created_time);
 
@@ -137,7 +133,7 @@ impl Stash {
         tree_id: ID,
     ) -> Inode {
         let ino = self.next_ino();
-        let created_time: SystemTime = self.manifest.created_time().into();
+        let created_time: SystemTime = self.repo.manifest().created_time().into();
 
         let attr = build_dir_attr(ino, created_time);
 
@@ -157,7 +153,7 @@ impl Stash {
 
     pub(super) fn add_symlink(&mut self, parent_ino: Inode, name: String, target: String) -> Inode {
         let ino = self.next_ino();
-        let created_time: SystemTime = self.manifest.created_time().into();
+        let created_time: SystemTime = self.repo.manifest().created_time().into();
 
         let attr = build_symlink_attr(ino, created_time, &target);
 
@@ -217,7 +213,7 @@ impl Stash {
             let parent_create_time = match parent_node {
                 FsNode::SnapshotRoot { attr, .. } => attr.crtime,
                 FsNode::TreeNode { attr, .. } => attr.crtime,
-                _ => self.manifest.created_time().into(),
+                _ => self.repo.manifest().created_time().into(),
             };
 
             for node in tree.nodes.iter() {
@@ -398,7 +394,7 @@ impl Stash {
             let parent_create_time = self
                 .get_attr(ino)
                 .map(|attr| attr.crtime)
-                .unwrap_or(self.manifest.created_time().into());
+                .unwrap_or(self.repo.manifest().created_time().into());
 
             for node in tree.nodes.iter() {
                 let child_ino_result = self.path_cache.get(&(ino, node.name.clone()));

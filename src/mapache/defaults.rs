@@ -18,6 +18,8 @@ use std::time::Duration;
 
 use crate::utils::size;
 
+pub(crate) const APP_NAME: &str = "mapache";
+
 // -- Concurrency --
 pub(crate) const DEFAULT_READ_CONCURRENCY: usize = 4;
 pub(crate) const DEFAULT_WRITE_CONCURRENCY: usize = 4;

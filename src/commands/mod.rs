@@ -104,6 +104,10 @@ pub struct GlobalArgs {
     #[clap(short, long)]
     pub repo: String,
 
+    /// Disable cache
+    #[clap(long)]
+    pub no_cache: bool,
+
     /// SSH public key
     #[clap(long)]
     pub ssh_pubkey: Option<PathBuf>,

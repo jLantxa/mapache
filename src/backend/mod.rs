@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod cache;
 pub mod dry;
 pub mod localfs;
 pub mod sftp;
@@ -122,6 +123,7 @@ pub struct BackendOptions {
     pub ssh_pubkey: Option<PathBuf>,
     pub ssh_privatekey: Option<PathBuf>,
     pub dry_backend: bool,
+    pub cached: bool,
 }
 
 /// Open a new backend and prompt for authentication credentials.

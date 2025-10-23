@@ -25,10 +25,10 @@ use parking_lot::{Mutex, RwLock};
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
-    backend::{Handle, StorageBackend},
+    backend::{Handle, StorageBackend, cache::CacheBackend},
     mapache::{
         self, BlobType, FileType, ID, SaveID,
-        defaults::{DEFAULT_PACK_SIZE, SHORT_REPO_ID_LEN},
+        defaults::{APP_NAME, DEFAULT_PACK_SIZE, SHORT_REPO_ID_LEN},
     },
     repository::{
         keys::KeyManager,
@@ -67,17 +67,21 @@ pub struct Auth {
 #[derive(Debug)]
 pub struct RepoConfig {
     pub pack_size: u64,
+    pub use_cache: bool,
 }
 
 impl Default for RepoConfig {
     fn default() -> Self {
         Self {
             pack_size: DEFAULT_PACK_SIZE,
+            use_cache: true,
         }
     }
 }
 
 pub struct Repository {
+    manifest: Manifest,
+
     backend: Arc<dyn StorageBackend>,
 
     objects_path: PathBuf,
@@ -160,7 +164,7 @@ impl Repository {
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
         backend.write(
-            &Handle::new_with_hint(&manifest_path, true, FileType::Manifest),
+            &Handle::new_with_hint(manifest_path, true, FileType::Manifest),
             &manifest_json,
         )?;
 
@@ -253,7 +257,7 @@ impl Repository {
 
         let manifest = backend
             .read(
-                &Handle::new_with_hint(&manifest_path, true, FileType::Manifest),
+                &Handle::new_with_hint(manifest_path, true, FileType::Manifest),
                 0,
                 0,
             )
@@ -279,12 +283,25 @@ impl Repository {
         secure_storage: Arc<SecureStorage>,
         config: RepoConfig,
     ) -> Result<Arc<Self>> {
+        let manifest: Manifest = Self::load_manifest(secure_storage.clone(), backend.clone())?;
+
+        // If use cache, wrap the backend in a cache
+        let backend = match config.use_cache {
+            true => {
+                let base_dirs = directories::BaseDirs::new().expect("Should exist");
+                let repo_id = manifest.id().to_hex();
+                let cache_dir = base_dirs.cache_dir().join(APP_NAME).join(repo_id);
+                Arc::new(CacheBackend::new(cache_dir.to_owned(), backend.clone()))
+            }
+            false => backend,
+        };
+
         let data_packer = Arc::new(RwLock::new(Packer::new()));
         let tree_packer = Arc::new(RwLock::new(Packer::new()));
-
         let index = Arc::new(RwLock::new(MasterIndex::new()));
 
         let mut repo = Repository {
+            manifest,
             backend,
             objects_path: PathBuf::from(OBJECTS_DIR),
             snapshot_path: PathBuf::from(SNAPSHOTS_DIR),
@@ -302,6 +319,11 @@ impl Repository {
         repo.load_master_index()?;
 
         Ok(Arc::new(repo))
+    }
+
+    /// Returns a reference to the repo manifest.
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
     }
 
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in an pack file.
@@ -485,13 +507,16 @@ impl Repository {
     }
 
     /// Loads the repository manifest.
-    pub fn load_manifest(&self) -> Result<Manifest> {
-        let manifest = self.backend.read(
+    fn load_manifest(
+        secure_storage: Arc<SecureStorage>,
+        backend: Arc<dyn StorageBackend>,
+    ) -> Result<Manifest> {
+        let manifest = backend.read(
             &Handle::new_with_hint(Path::new(MANIFEST_PATH), true, FileType::Manifest),
             0,
             0,
         )?;
-        let manifest = self.secure_storage.decode(&manifest)?;
+        let manifest = secure_storage.decode(&manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
     }
@@ -825,7 +850,7 @@ impl Repository {
                 Ok(data) => data,
                 Err(e) => {
                     // Log the error for debugging, but continue
-                    eprintln!(
+                    ui::cli::warning!(
                         "Warning: Could not read lock file {}: {}",
                         path.display(),
                         e
@@ -839,7 +864,7 @@ impl Repository {
             let decoded_lock = match decoded_lock_result {
                 Ok(data) => data,
                 Err(e) => {
-                    eprintln!(
+                    ui::cli::warning!(
                         "Warning: Could not decode lock from {}: {}",
                         path.display(),
                         e
@@ -856,7 +881,7 @@ impl Repository {
                     locks.push(lock_obj);
                 }
                 Err(e) => {
-                    eprintln!(
+                    ui::cli::warning!(
                         "Warning: Could not deserialize lock from {}: {}",
                         path.display(),
                         e
@@ -1002,6 +1027,7 @@ mod tests {
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            no_cache: true,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -1076,6 +1102,7 @@ mod tests {
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            no_cache: true,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);

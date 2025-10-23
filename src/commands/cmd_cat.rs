@@ -37,7 +37,6 @@ use crate::{
 pub struct CmdArgs {
     /// Object to print:
     /// [manifest|snapshot:ID|pack:ID|blob:ID|tree:ID|index:ID|key:ID|lock:ID].
-    /// Blob and tree types don't accept prefixes.
     #[arg(value_parser)]
     pub object: Object,
 }
@@ -61,10 +60,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
+        cached: !global_args.no_cache,
     })?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
+        use_cache: !global_args.no_cache,
     };
     let (repo, _, lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
@@ -81,9 +82,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     match &args.object {
         Object::Manifest => {
-            let manifest = repo
-                .load_manifest()
-                .with_context(|| "Failed to load manifest")?;
+            let manifest = repo.manifest();
             ui::cli::log!("{}", serde_json::to_string_pretty(&manifest)?);
             Ok(())
         }

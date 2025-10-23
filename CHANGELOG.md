@@ -8,6 +8,7 @@
 - Added `completion` command to generate autocompletion scripts.
 - Restore symlink metadata on Unix.
 - Added ETA to sync progress bar.
+- Implemented a local cache to speedup reading frequently used metadata and reduce download operations.
 
 # v0.1.0-beta.2a
 ### Changes

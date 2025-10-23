@@ -37,6 +37,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
+        cached: !global_args.no_cache,
     })?;
 
     ui::cli::log!("Initializing a new repository in '{}'", &global_args.repo);

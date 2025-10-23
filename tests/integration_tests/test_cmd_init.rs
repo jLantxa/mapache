@@ -55,6 +55,7 @@ mod tests {
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            no_cache: true,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -110,6 +111,7 @@ mod tests {
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            no_cache: true,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);

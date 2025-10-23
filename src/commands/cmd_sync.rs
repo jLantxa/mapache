@@ -24,10 +24,10 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::cleanup::CleanupHandler,
-    mapache::global::GlobalOpts,
+    mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
     repository::repo::{LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
-    utils,
+    utils::{self},
 };
 
 use super::GlobalArgs;
@@ -59,14 +59,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-        cached: false,
+        cached: !global_args.no_cache,
     })?;
 
     let (_repo, _, lock_handle) = Repository::try_open_with_lock(
         src_auth.as_ref(),
         global_args.key.as_ref(),
         src_backend.clone(),
-        RepoConfig::default(),
+        RepoConfig {
+            pack_size: DEFAULT_PACK_SIZE,
+            use_cache: !global_args.no_cache,
+        },
         true,
     )?;
 

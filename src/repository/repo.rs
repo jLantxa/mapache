@@ -26,10 +26,7 @@ use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
     backend::{Handle, StorageBackend, cache::CacheBackend},
-    mapache::{
-        self, BlobType, FileType, ID, SaveID,
-        defaults::{APP_NAME, DEFAULT_PACK_SIZE, SHORT_REPO_ID_LEN},
-    },
+    mapache::{self, BlobType, FileType, ID, SaveID, defaults::SHORT_REPO_ID_LEN},
     repository::{
         keys::KeyManager,
         lock::{Lock, LockHandle},
@@ -68,15 +65,6 @@ pub struct Auth {
 pub struct RepoConfig {
     pub pack_size: u64,
     pub use_cache: bool,
-}
-
-impl Default for RepoConfig {
-    fn default() -> Self {
-        Self {
-            pack_size: DEFAULT_PACK_SIZE,
-            use_cache: true,
-        }
-    }
 }
 
 pub struct Repository {
@@ -288,9 +276,8 @@ impl Repository {
         // If use cache, wrap the backend in a cache
         let backend = match config.use_cache {
             true => {
-                let base_dirs = directories::BaseDirs::new().expect("Should exist");
                 let repo_id = manifest.id().to_hex();
-                let cache_dir = base_dirs.cache_dir().join(APP_NAME).join(repo_id);
+                let cache_dir = CacheBackend::default_dir().join(repo_id);
                 Arc::new(CacheBackend::new(cache_dir.to_owned(), backend.clone()))
             }
             false => backend,
@@ -916,7 +903,8 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        backend::localfs::LocalFS, mapache::global::set_global_opts_with_args,
+        backend::localfs::LocalFS,
+        mapache::{defaults::TEST_REPO_CONFIG, global::set_global_opts_with_args},
         repository::lock::LOCK_EXPIRE_TIMEOUT,
     };
 
@@ -935,7 +923,7 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(auth.as_ref(), None, backend, RepoConfig::default(), false)?;
+        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false)?;
 
         Ok(())
     }
@@ -958,7 +946,7 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(auth.as_ref(), None, backend, RepoConfig::default(), false)?;
+        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false)?;
 
         Ok(())
     }
@@ -1000,7 +988,7 @@ mod tests {
     ) -> Result<()> {
         use crate::{
             commands::{self, GlobalArgs, cmd_init::CmdArgs},
-            mapache::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            mapache::defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
         };
 
         let tmp_dir = tempdir()?;
@@ -1037,12 +1025,8 @@ mod tests {
 
         let backend = Arc::new(LocalFS::new(repo_path));
 
-        let (r0, _ss0) = Repository::try_open_unlocked(
-            Some(&auth),
-            None,
-            backend.clone(),
-            RepoConfig::default(),
-        )?;
+        let (r0, _ss0) =
+            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)?;
 
         let other_lock = Arc::new(Mutex::new(Lock::new(other_lock_exclusive)));
         r0.write_lock(&other_lock)?;
@@ -1051,7 +1035,7 @@ mod tests {
             Some(&auth),
             None,
             backend.clone(),
-            RepoConfig::default(),
+            TEST_REPO_CONFIG,
             own_lock_exclusive,
         );
 
@@ -1112,12 +1096,8 @@ mod tests {
 
         let backend = Arc::new(LocalFS::new(repo_path));
 
-        let (r0, _ss0) = Repository::try_open_unlocked(
-            Some(&auth),
-            None,
-            backend.clone(),
-            RepoConfig::default(),
-        )?;
+        let (r0, _ss0) =
+            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)?;
 
         let other_lock = Arc::new(Mutex::new(Lock::new_for_test(
             true,
@@ -1125,13 +1105,7 @@ mod tests {
         )));
         r0.write_lock(&other_lock)?;
 
-        Repository::try_open_with_lock(
-            Some(&auth),
-            None,
-            backend.clone(),
-            RepoConfig::default(),
-            true,
-        )?; // The other expired lock should have been deleted
+        Repository::try_open_with_lock(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG, true)?; // The other expired lock should have been deleted
 
         Ok(())
     }

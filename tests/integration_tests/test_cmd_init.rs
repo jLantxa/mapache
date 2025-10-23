@@ -22,8 +22,11 @@ mod tests {
     use mapache::{
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, cmd_init::CmdArgs},
-        mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
-        repository::repo::{Auth, RepoConfig, Repository},
+        mapache::{
+            defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
+            global::set_global_opts_with_args,
+        },
+        repository::repo::{Auth, Repository},
     };
 
     use anyhow::{Context, Result};
@@ -78,7 +81,7 @@ mod tests {
 
         // Try to open repo
         let backend = Arc::new(LocalFS::new(repo_path));
-        Repository::try_open_with_lock(Some(&auth), None, backend, RepoConfig::default(), false)
+        Repository::try_open_with_lock(Some(&auth), None, backend, TEST_REPO_CONFIG, false)
             .with_context(|| "Failed to open repository")?;
 
         Ok(())
@@ -139,7 +142,7 @@ mod tests {
             Some(&auth),
             Some(&keyfile_path),
             backend,
-            RepoConfig::default(),
+            TEST_REPO_CONFIG,
             false,
         )
         .with_context(|| "Failed to open repository")?;

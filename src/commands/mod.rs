@@ -36,6 +36,7 @@ use crate::{
 
 // Subcommands
 pub mod cmd_amend;
+pub mod cmd_cache;
 pub mod cmd_cat;
 pub mod cmd_clean;
 mod cmd_completion;
@@ -68,6 +69,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Amend(WithGlobal<cmd_amend::CmdArgs>),
+    Cache(cmd_cache::CmdArgs),
     Cat(WithGlobal<cmd_cat::CmdArgs>),
     Clean(WithGlobal<cmd_clean::CmdArgs>),
     Completion(cmd_completion::CmdArgs),
@@ -208,9 +210,10 @@ pub fn parse_and_run() -> Result<()> {
     }
 
     match args.command {
-        Command::Completion(cmd) => cmd_completion::run(&cmd),
         Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args),
         Command::Cat(cmd) => cmd_cat::run(&cmd.global, &cmd.args),
+        Command::Cache(cmd) => cmd_cache::run(&cmd),
+        Command::Completion(cmd) => cmd_completion::run(&cmd),
         Command::Clean(cmd) => cmd_clean::run(&cmd.global, &cmd.args),
         Command::Diff(cmd) => cmd_diff::run(&cmd.global, &cmd.args),
         Command::Forget(cmd) => cmd_forget::run(&cmd.global, &cmd.args),
@@ -232,11 +235,11 @@ pub fn parse_and_run() -> Result<()> {
 macro_rules! extract_global {
     ($cmd:expr, { $($(#[$meta:meta])* $variant:ident),* $(,)? }) => {
         match $cmd {
-            Command::Completion(_) => None,
             $(
                 $(#[$meta])*
                 Command::$variant(inner) => Some(&inner.global),
             )*
+            _=>None
         }
     };
 }

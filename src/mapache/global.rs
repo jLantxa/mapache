@@ -16,6 +16,7 @@
 
 use std::{sync::LazyLock, time::Duration};
 
+use directories::BaseDirs;
 use parking_lot::RwLock;
 
 use crate::{
@@ -25,6 +26,14 @@ use crate::{
         vars::{REFRESH_RATE_ENVVAR, get_envvar},
     },
 };
+
+/// Base OS directories (cache, home, etc.)
+pub static BASE_DIRS: LazyLock<RwLock<BaseDirs>> = LazyLock::new(|| {
+    RwLock::new(
+        BaseDirs::new()
+            .expect("Expected to find a valid user home directory to initialize base paths"),
+    )
+});
 
 /// Global arguments that can be read at any time during the execution of the program.
 pub static GLOBAL_OPTS: LazyLock<RwLock<Option<GlobalOpts>>> =

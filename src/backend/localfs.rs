@@ -32,16 +32,16 @@ use super::StorageBackend;
 /// A local file system
 #[derive(Default)]
 pub struct LocalFS {
-    repo_path: PathBuf,
+    base_path: PathBuf,
 }
 
 impl LocalFS {
-    pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+    pub fn new(base_path: PathBuf) -> Self {
+        Self { base_path }
     }
 
     fn full_path(&self, path: &Path) -> PathBuf {
-        self.repo_path.join(path)
+        self.base_path.join(path)
     }
 
     fn exists_exact(&self, path: &Path) -> bool {
@@ -52,13 +52,13 @@ impl LocalFS {
 impl StorageBackend for LocalFS {
     fn create(&self) -> Result<()> {
         // Create the repo root folder
-        std::fs::create_dir_all(&self.repo_path)
+        std::fs::create_dir_all(&self.base_path)
             .with_context(|| "Could not create repository backend root")
     }
 
     #[inline]
     fn root_exists(&self) -> bool {
-        self.exists_exact(&self.repo_path)
+        self.exists_exact(&self.base_path)
     }
 
     fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
@@ -194,7 +194,7 @@ impl StorageBackend for LocalFS {
             paths.push(
                 entry
                     .path()
-                    .strip_prefix(&self.repo_path)
+                    .strip_prefix(&self.base_path)
                     .unwrap()
                     .to_path_buf(),
             );

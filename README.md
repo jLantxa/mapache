@@ -131,6 +131,7 @@ Usage: mapache <COMMAND>
 
 Commands:
   amend       Amend an existing snapshot
+  cache       List and cleanup cache directories
   cat         Print repository objects
   clean       Clean up the repository
   completion  Generate autocompletion scripts

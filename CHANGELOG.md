@@ -9,6 +9,7 @@
 - Restore symlink metadata on Unix.
 - Added ETA to sync progress bar.
 - Implemented a local cache to speedup reading frequently used metadata and reduce download operations.
+- Added a `cache` command to manage cache folders.
 
 # v0.1.0-beta.2a
 ### Changes

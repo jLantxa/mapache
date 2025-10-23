@@ -23,9 +23,12 @@ mod tests {
     use mapache::{
         backend::localfs::LocalFS,
         commands::{self, GlobalArgs, UseSnapshot, cmd_amend, cmd_restore, cmd_snapshot},
-        mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
+        mapache::{
+            defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
+            global::set_global_opts_with_args,
+        },
         repository::{
-            repo::{Auth, RepoConfig, Repository},
+            repo::{Auth, Repository},
             snapshot::SnapshotStreamer,
         },
         restorer::Strategy,
@@ -210,13 +213,8 @@ mod tests {
 
         // Init repo
         init_repo(&auth, repo_path.clone())?;
-        let (repo, _, test_repo_lock_handle) = Repository::try_open_with_lock(
-            Some(&auth),
-            None,
-            backend,
-            RepoConfig::default(),
-            false,
-        )?;
+        let (repo, _, test_repo_lock_handle) =
+            Repository::try_open_with_lock(Some(&auth), None, backend, TEST_REPO_CONFIG, false)?;
         drop(test_repo_lock_handle);
 
         // Run snapshot twice

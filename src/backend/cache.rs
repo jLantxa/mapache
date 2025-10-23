@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, localfs::LocalFS},
-    mapache::FileType,
+    mapache::{FileType, defaults::APP_NAME, global::BASE_DIRS},
 };
 
 /// Represents the state of a file in the download queue.
@@ -57,6 +57,10 @@ impl CacheBackend {
             cache,
             download_queue: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn default_dir() -> PathBuf {
+        BASE_DIRS.read().cache_dir().join(APP_NAME)
     }
 
     /// Returns true if the storage `hint` is eligible for caching.

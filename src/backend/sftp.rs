@@ -205,13 +205,13 @@ impl Drop for PooledSftpConnection {
 
 /// A remote backend connected by SFTP.
 pub struct SftpBackend {
-    repo_path: PathBuf,
+    base_path: PathBuf,
     pool: Arc<SftpConnectionPool>,
 }
 
 impl SftpBackend {
     pub fn new(
-        repo_path: PathBuf,
+        base_path: PathBuf,
         username: String,
         host: String,
         port: u16,
@@ -225,12 +225,12 @@ impl SftpBackend {
             &auth_method,
         )?);
 
-        Ok(Self { repo_path, pool })
+        Ok(Self { base_path, pool })
     }
 
     #[inline]
     fn full_path(&self, path: &Path) -> PathBuf {
-        self.repo_path.join(path)
+        self.base_path.join(path)
     }
 
     /// Returns true if the exact path given exists (not as a relative path to the backend root).
@@ -306,12 +306,12 @@ impl SftpBackend {
 impl StorageBackend for SftpBackend {
     fn create(&self) -> Result<()> {
         let conn = self.pool.get()?;
-        self.create_dir_all_internal(&self.repo_path, conn.sftp())
+        self.create_dir_all_internal(&self.base_path, conn.sftp())
     }
 
     fn root_exists(&self) -> bool {
         let conn = self.pool.get().unwrap();
-        self.exists_exact(&self.repo_path, conn.sftp())
+        self.exists_exact(&self.base_path, conn.sftp())
     }
 
     fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
@@ -412,7 +412,7 @@ impl StorageBackend for SftpBackend {
 
         Ok(entries
             .iter()
-            .map(|(path, _meta)| path.strip_prefix(&self.repo_path).unwrap().to_path_buf())
+            .map(|(path, _meta)| path.strip_prefix(&self.base_path).unwrap().to_path_buf())
             .collect())
     }
 

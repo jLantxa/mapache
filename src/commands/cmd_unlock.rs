@@ -46,7 +46,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
+        use_cache: false,
     };
 
     let (repo, _) =

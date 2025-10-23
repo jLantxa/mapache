@@ -1,0 +1,221 @@
+// mapache is a secure, de-duplicating, incremental backup tool.
+// Copyright (C) 2025  Javier Lancha Vázquez <javier.lancha@gmail.com>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use anyhow::{Result, anyhow};
+use clap::Args;
+use colored::Colorize;
+use rayon::prelude::*;
+use std::path::{Path, PathBuf};
+
+use crate::{
+    backend::cache::CacheBackend,
+    mapache::defaults::SHORT_REPO_ID_LEN,
+    ui::{
+        self,
+        table::{Alignment, Table},
+    },
+    utils,
+};
+
+#[derive(Args, Debug)]
+#[clap(about = "List and cleanup cache directories")]
+pub struct CmdArgs {
+    /// List of cache folders to delete, comma-separated
+    #[clap(long = "delete", num_args = 1.., require_equals = true, value_delimiter = ',')]
+    pub delete_list: Option<Vec<String>>,
+
+    /// Delete all cache folders
+    #[clap(long, conflicts_with = "delete")]
+    pub clear: bool,
+}
+
+pub fn run(args: &CmdArgs) -> Result<()> {
+    let cache_base = CacheBackend::default_dir();
+
+    if let Some(list) = &args.delete_list {
+        cleanup(&cache_base, list)
+    } else if args.clear {
+        cleanup(&cache_base, &[])
+    } else {
+        list(&cache_base)
+    }
+}
+
+/// List all cache folders.
+fn list(cache_base: &Path) -> Result<()> {
+    if !cache_base.exists() {
+        println!(
+            "Cache base directory does not exist: {}",
+            cache_base.display()
+        );
+        return Ok(());
+    }
+
+    let mut table = Table::new_with_alignments(vec![Alignment::Left, Alignment::Right]);
+    table.set_headers(vec![
+        "Repo ID".bold().yellow().to_string(),
+        "Size".bold().yellow().to_string(),
+    ]);
+
+    let mut num_directories = 0;
+
+    for entry in std::fs::read_dir(cache_base)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let folder_name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        match utils::dir_size(&path) {
+            Ok(size) => {
+                table.add_row(vec![
+                    folder_name
+                        .get(0..2 * SHORT_REPO_ID_LEN)
+                        .unwrap_or(&folder_name)
+                        .to_string(),
+                    utils::format_size(size, 3),
+                ]);
+                num_directories += 1;
+            }
+            Err(e) => ui::cli::warning!("Error calculating size for {}: {}", path.display(), e),
+        }
+    }
+
+    if num_directories > 0 {
+        println!("{}", table.render());
+    }
+
+    println!(
+        "{} in {:?}",
+        utils::format_count(num_directories, "directory", "directories"),
+        cache_base
+    );
+
+    Ok(())
+}
+
+/// Deletes cache folders by prefix.
+fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
+    if !cache_base.exists() {
+        println!(
+            "Cache base directory does not exist: {}",
+            cache_base.display()
+        );
+        return Ok(());
+    }
+
+    let delete_all = folder_prefixes.is_empty();
+    let entries: Vec<(String, PathBuf)> = std::fs::read_dir(cache_base)?
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let p = e.path();
+            let n = p.file_name()?.to_str()?.to_owned();
+            p.is_dir().then_some((n, p))
+        })
+        .collect();
+
+    // Select folders to delete
+    let to_delete: Vec<_> = if delete_all {
+        entries.iter().map(|(_, p)| p.clone()).collect()
+    } else {
+        let mut matches = Vec::new();
+
+        for prefix in folder_prefixes {
+            let matched: Vec<_> = entries
+                .iter()
+                .filter(|(n, _)| n.starts_with(prefix))
+                .collect();
+
+            match matched.as_slice() {
+                [] => ui::cli::warning!("No cache folder found for prefix: {}", prefix.cyan()),
+                [(_, p)] => matches.push(p.clone()),
+                m => {
+                    let names = m
+                        .iter()
+                        .map(|(n, _)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(anyhow!(
+                        "Ambiguous prefix '{}' matches multiple folders: {}",
+                        prefix.cyan(),
+                        names
+                    ));
+                }
+            }
+        }
+
+        matches.sort();
+        matches.dedup();
+        matches
+    };
+
+    if to_delete.is_empty() {
+        println!("No cache folders to delete.");
+        return Ok(());
+    }
+
+    // Parallel deletion
+    let results: Vec<_> = to_delete
+        .par_iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            let size = utils::dir_size(path).unwrap_or(0);
+
+            match std::fs::remove_dir_all(path) {
+                Ok(_) => Ok((name.to_string(), size)),
+                Err(e) => Err(anyhow!("Failed to delete {}: {}", path.display(), e)),
+            }
+        })
+        .collect();
+
+    let mut deleted = 0usize;
+    let mut freed = 0u64;
+
+    for result in results {
+        match result {
+            Ok((name, size)) => {
+                deleted += 1;
+                freed += size;
+                println!(
+                    "{} {} ({})",
+                    "DELETED".red().bold(),
+                    name.cyan(),
+                    utils::format_size(size, 3).dimmed()
+                );
+            }
+            Err(e) => {
+                ui::cli::error!("{e}");
+            }
+        }
+    }
+
+    println!(
+        "\nCleanup complete: {} folders deleted, {} space freed.",
+        deleted.to_string().green().bold(),
+        utils::format_size(freed, 3).green().bold()
+    );
+
+    Ok(())
+}

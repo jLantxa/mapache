@@ -31,6 +31,7 @@ serde_json = "1.0.145"
 signal-hook = "0.3.18"
 signal-hook-registry = "1.4.6"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
+walkdir = "2.5.0"
 zstd = "0.13.3"
 
 [target.'cfg(unix)'.dependencies]

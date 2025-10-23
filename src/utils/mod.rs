@@ -522,6 +522,39 @@ pub fn get_system_info() -> (Option<String>, Option<String>) {
     (hostname, username)
 }
 
+/// Returns the cummulative size of all files below a base path.
+pub fn dir_size(path: &Path) -> Result<u64> {
+    let mut total_size = 0;
+
+    if !path.is_dir() {
+        if path.is_file() {
+            return Ok(path.metadata()?.len());
+        }
+        return Ok(0);
+    }
+
+    for entry in std::fs::read_dir(path)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if metadata.is_file() {
+            total_size += metadata.len();
+        } else if metadata.is_dir() {
+            total_size += dir_size(&path)?;
+        }
+    }
+
+    Ok(total_size)
+}
+
 // --- Tests ---
 #[cfg(test)]
 mod tests {

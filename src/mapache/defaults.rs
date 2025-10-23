@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use crate::utils::size;
+use crate::{repository::repo::RepoConfig, utils::size};
 
 pub(crate) const APP_NAME: &str = "mapache";
 
@@ -62,3 +62,10 @@ pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
 // -- UI --
 pub(crate) const DEFAULT_PROGRESS_REFRESH_RATE_HZ: f32 = 10.0;
 pub(crate) const MAX_PATH_DISPLAY_LEN: usize = 100;
+
+// -- Others --
+/// A default RepoConfig for use in tests.
+pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {
+    pack_size: DEFAULT_PACK_SIZE,
+    use_cache: false,
+};

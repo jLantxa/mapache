@@ -182,30 +182,32 @@ impl StorageBackend for CacheBackend {
     fn remove(&self, file_path: &Path) -> Result<()> {
         let path_buf = file_path.to_path_buf();
 
-        {
-            let mut queue = self.download_queue.lock();
-
-            loop {
+        loop {
+            let state = {
+                let mut queue = self.download_queue.lock();
                 match queue.get(&path_buf) {
-                    Some(DownloadState::Downloading) => {
-                        parking_lot::MutexGuard::unlock_fair(queue);
-                        std::thread::sleep(DOWNLOAD_WAIT_TIME);
-                        queue = self.download_queue.lock();
-                        continue;
-                    }
+                    Some(DownloadState::Downloading) => Some(DownloadState::Downloading),
                     Some(DownloadState::Failed) => {
                         queue.remove(&path_buf);
-                        break;
+                        None
                     }
-                    None => {
-                        break;
-                    }
+                    None => None,
+                }
+            };
+
+            match state {
+                Some(DownloadState::Downloading) => {
+                    std::thread::sleep(DOWNLOAD_WAIT_TIME);
+                }
+                _ => {
+                    break;
                 }
             }
-        } // Lock is released here.
+        }
 
         self.cache.remove(file_path)?;
         self.backend.remove(file_path)?;
+
         Ok(())
     }
 

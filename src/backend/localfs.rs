@@ -88,11 +88,11 @@ impl StorageBackend for LocalFS {
 
     fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
         let path = handle.path;
-        let full_path = self.full_path(path);
-        let tmp_path = full_path.with_extension("tmp");
+        let tmp_path = path.with_extension("tmp");
+        let full_tmp_path = self.full_path(&tmp_path);
 
         // Write to a tmp path
-        std::fs::write(&tmp_path, contents).with_context(|| {
+        std::fs::write(&full_tmp_path, contents).with_context(|| {
             format!(
                 "Could not write to '{}' in local backend",
                 tmp_path.display()
@@ -100,13 +100,9 @@ impl StorageBackend for LocalFS {
         })?;
 
         // Rename to the final path
-        std::fs::rename(&tmp_path, &full_path).with_context(|| {
-            format!(
-                "Could not rename '{}' to '{}' in local backend",
-                tmp_path.display(),
-                full_path.display()
-            )
-        })
+        self.rename(&tmp_path, path)?;
+
+        Ok(())
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {

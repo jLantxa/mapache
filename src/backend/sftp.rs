@@ -285,6 +285,20 @@ impl SftpBackend {
             )),
         }
     }
+
+    fn rename_internal(&self, sftp: &Sftp, from: &Path, to: &Path) -> Result<()> {
+        let full_from = self.full_path(from);
+        let full_to = self.full_path(to);
+
+        // Remove destination if it already exists. This is a workaround for
+        // SFTP servers where the OVERWRITE flag is not honoured.
+        if sftp.stat(&full_to).is_ok() {
+            sftp.unlink(&full_to)?;
+        }
+        sftp.rename(&full_from, &full_to, Some(RenameFlags::all()))?;
+
+        Ok(())
+    }
 }
 
 impl StorageBackend for SftpBackend {
@@ -334,37 +348,32 @@ impl StorageBackend for SftpBackend {
 
     fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
         let path = handle.path;
-        let full_path = self.full_path(path);
-        let tmp_path = full_path.with_extension("tmp");
+        let tmp_path = path.with_extension("tmp");
+        let full_tmp_path = self.full_path(&tmp_path);
         let conn = self.pool.get()?;
+        let sftp = conn.sftp();
 
         // Write to a tmp path
-        let mut file = conn
-            .sftp()
-            .create(&tmp_path)
+        let mut file = sftp
+            .create(&full_tmp_path)
             .with_context(|| format!("Failed to create file for writing: {tmp_path:?}"))?;
         file.write_all(contents)
             .with_context(|| format!("Failed to write to file: {tmp_path:?}"))?;
 
         // Rename to the final path reusing the connection.
-        conn.sftp()
-            .rename(&tmp_path, &full_path, Some(RenameFlags::all()))
+        self.rename_internal(sftp, &tmp_path, &path)
             .with_context(|| {
-                format!("Failed to rename {tmp_path:?}' to {full_path:?}' in sftp backend")
-            })
+                format!("Failed to rename {tmp_path:?}' to {path:?}' after write in sftp backend")
+            })?;
+
+        Ok(())
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let full_path_from = self.full_path(from);
-        let full_path_from_to = self.full_path(to);
-
         let conn = self.pool.get()?;
-        conn.sftp()
-            .rename(
-                &full_path_from,
-                &full_path_from_to,
-                Some(RenameFlags::all()),
-            )
+        let sftp = conn.sftp();
+
+        self.rename_internal(sftp, from, to)
             .with_context(|| format!("Failed to rename {from:?}' to {to:?}' in sftp backend"))
     }
 

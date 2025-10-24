@@ -381,7 +381,7 @@ impl Repository {
                 let size = compressed_data.len() as u64;
                 (compressed_data, size)
             }
-            FileType::Snapshot | FileType::Index | FileType::Lock => {
+            _ => {
                 let encoded_data = self.secure_storage.encode(data)?;
                 let size = encoded_data.len() as u64;
                 (encoded_data, size)
@@ -839,13 +839,17 @@ impl Repository {
         let lock_guard = lock.lock();
 
         let lock_json = serde_json::to_string(&*lock_guard)?;
-        let lock_json = self.secure_storage.encode(lock_json.as_bytes())?;
 
-        let lock_path = self.get_path(FileType::Lock, lock_guard.id());
-        self.backend.write(
-            &Handle::new_with_hint(&lock_path, true, FileType::Lock),
-            &lock_json,
-        )
+        self.save_file(
+            &SaveID::WithID(*lock_guard.id()),
+            lock_json.as_bytes(),
+            StorageHint {
+                is_metadata: true,
+                file_type: FileType::Lock,
+            },
+        )?;
+
+        Ok(())
     }
 
     pub fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {

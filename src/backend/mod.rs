@@ -79,7 +79,7 @@ pub trait StorageBackend: Send + Sync {
     /// Writes to file, creating the file if necessary.
     fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()>;
 
-    /// Renames a file.
+    /// Renames a file. If the destination exists already, it is overwritten.
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;
 
     // List all paths inside a directory.

@@ -35,7 +35,7 @@ WORKDIR /mapache
 ARG CACHE_BREAKER
 ARG GIT_REF="main"
 
-RUN git clone https://github.com/jLantxa/mapache.git . && \
+RUN git clone https://github.com/jLantxa/mapache.git /mapache && \
     cd /mapache && \
     git checkout $GIT_REF
 

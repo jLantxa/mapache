@@ -174,13 +174,13 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
         })
         .collect();
 
-    let mut deleted = 0usize;
-    let mut freed = 0u64;
+    let mut num_deleted = 0;
+    let mut freed = 0;
 
     for result in results {
         match result {
             Ok((name, size)) => {
-                deleted += 1;
+                num_deleted += 1;
                 freed += size;
                 println!(
                     "{} {} ({})",
@@ -196,8 +196,8 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     }
 
     println!(
-        "\nCleanup complete: {} folders deleted, {} space freed.",
-        deleted.to_string().green().bold(),
+        "\nCleanup complete: {}, {} freed.",
+        utils::format_count(num_deleted, "repo cache", "repo caches"),
         utils::format_size(freed, 3).green().bold()
     );
 

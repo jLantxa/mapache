@@ -7,10 +7,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     archiver::{Archiver, SnapshotOptions},
-    backend::{BackendOptions, new_backend_with_prompt},
+    backend::{BackendOptions, StorageHint, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
     fs::{self, tree::FSNodeStreamer},
-    mapache::{self, ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
+    mapache::{self, FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{SnapshotSummary, SnapshotTuple},
@@ -259,8 +259,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let new_snapshot = archiver.snapshot()?;
 
     let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) = repo.save_file(
-        mapache::FileType::Snapshot,
+        &mapache::SaveID::CalculateID,
         serde_json::to_string(&new_snapshot)?.as_bytes(),
+        StorageHint {
+            is_metadata: true,
+            file_type: FileType::Snapshot,
+        },
     )?;
 
     progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);

@@ -54,7 +54,7 @@ pub fn verify_pack(
     id: &ID,
     visited_blobs: &mut BTreeSet<ID>,
 ) -> Result<usize> {
-    let pack_data = repo.load_object(id)?;
+    let pack_data = repo.load_pack(id)?;
     let checksum = utils::calculate_hash(&pack_data);
     if checksum != id.0[..] {
         bail!("Invalid pack checksum");

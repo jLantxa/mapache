@@ -304,9 +304,9 @@ impl StorageBackend for SftpBackend {
 
         let conn = self.pool.get()?;
         let sftp = conn.sftp();
-        let mut file = sftp.open(&full_path).with_context(|| {
-            format!("Failed to open file {:?} in sftp backend for reading", path)
-        })?;
+        let mut file = sftp
+            .open(&full_path)
+            .with_context(|| format!("Failed to open file {path:?} in sftp backend for reading"))?;
 
         let seek_from = if offset >= 0 {
             SeekFrom::Start(offset as u64)
@@ -314,22 +314,18 @@ impl StorageBackend for SftpBackend {
             SeekFrom::End(offset as i64)
         };
 
-        file.seek(seek_from).with_context(|| {
-            format!(
-                "Failed to seek to offset {} in sftp file {:?}",
-                offset, path
-            )
-        })?;
+        file.seek(seek_from)
+            .with_context(|| format!("Failed to seek to offset {offset} in sftp file {path:?}"))?;
 
         let mut contents = Vec::new();
 
         if length == 0 {
             file.read_to_end(&mut contents)
-                .with_context(|| format!("Failed to read to end of sftp file {:?}", path))?;
+                .with_context(|| format!("Failed to read to end of sftp file {path:?}"))?;
         } else {
             let mut limited_reader = file.take(length as u64);
             limited_reader.read_to_end(&mut contents).with_context(|| {
-                format!("Failed to read {} bytes from sftp file {:?}", length, path)
+                format!("Failed to read {length} bytes from sftp file {path:?}")
             })?;
         }
 

@@ -7,7 +7,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    mapache::{self, BlobType, ID},
+    backend::StorageHint,
+    mapache::{self, BlobType, FileType, ID},
     repository::repo::Repository,
     utils::indexset::IndexSet,
 };
@@ -265,8 +266,12 @@ impl Index {
 
         // Save to Repository
         let (id, raw_size, encoded_size) = repo.save_file(
-            mapache::FileType::Index,
+            &mapache::SaveID::CalculateID,
             serde_json::to_string(&index_file)?.as_bytes(),
+            StorageHint {
+                is_metadata: true,
+                file_type: FileType::Index,
+            },
         )?;
         self.id = Some(id);
 

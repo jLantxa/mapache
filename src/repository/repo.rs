@@ -9,7 +9,7 @@ use parking_lot::{Mutex, RwLock};
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
-    backend::{Handle, StorageBackend, cache::CacheBackend},
+    backend::{Handle, StorageBackend, StorageHint, cache::CacheBackend},
     mapache::{self, BlobType, FileType, ID, SaveID, defaults::SHORT_REPO_ID_LEN},
     repository::{
         keys::KeyManager,
@@ -360,46 +360,58 @@ impl Repository {
     }
 
     /// Saves a file to the repository
-    pub fn save_file(&self, file_type: FileType, data: &[u8]) -> Result<(ID, u64, u64)> {
-        assert_ne!(file_type, FileType::Key);
-        assert_ne!(file_type, FileType::Manifest);
-        assert_ne!(file_type, FileType::Lock);
-        assert_ne!(file_type, FileType::Pack);
+    pub fn save_file(&self, id: &SaveID, data: &[u8], hint: StorageHint) -> Result<(ID, u64, u64)> {
+        let id = match id {
+            SaveID::CalculateID => &ID::from_content(data),
+            SaveID::WithID(id) => id,
+        };
+
+        let file_type = hint.file_type;
+        let path = self.get_path(file_type, id);
+        let handle = Handle {
+            path: &path,
+            hint: Some(hint),
+        };
 
         let raw_size = data.len() as u64;
-        let data = self.secure_storage.encode(data)?;
-        let encoded_size = data.len() as u64;
-        let id = ID::from_content(&data);
-        let path = self.get_path(file_type, &id);
-        self.backend
-            .write(&Handle::new_with_hint(&path, true, file_type), &data)?;
+        let (data, encoded_size) = match file_type {
+            FileType::Pack => (data.to_vec(), raw_size),
+            FileType::Key | FileType::Manifest => {
+                let compressed_data = self.secure_storage.compress(data)?;
+                let size = compressed_data.len() as u64;
+                (compressed_data, size)
+            }
+            FileType::Snapshot | FileType::Index | FileType::Lock => {
+                let encoded_data = self.secure_storage.encode(data)?;
+                let size = encoded_data.len() as u64;
+                (encoded_data, size)
+            }
+        };
 
-        Ok((id, raw_size, encoded_size))
+        self.backend.write(&handle, &data)?;
+
+        Ok((*id, raw_size, encoded_size))
     }
 
     /// Loads a file to the repository
-    pub fn load_file(&self, file_type: FileType, id: &ID) -> Result<Vec<u8>> {
-        assert_ne!(file_type, FileType::Key);
-        assert_ne!(file_type, FileType::Manifest);
-        assert_ne!(file_type, FileType::Pack);
+    pub fn load_file(&self, id: &ID, hint: StorageHint) -> Result<Vec<u8>> {
+        let path = self.get_path(hint.file_type, id);
+        let file_type = hint.file_type;
+        let handle = Handle {
+            path: &path,
+            hint: Some(hint),
+        };
+        let data = self.backend.read(&handle, 0, 0)?;
 
-        let path = self.get_path(file_type, id);
-        let data = self
-            .backend
-            .read(&Handle::new_with_hint(&path, true, file_type), 0, 0)?;
-
-        if file_type != FileType::Pack {
-            return self.secure_storage.decode(&data);
+        match file_type {
+            FileType::Pack => Ok(data),
+            FileType::Key | FileType::Manifest => self.secure_storage.decompress(&data),
+            _ => self.secure_storage.decode(&data),
         }
-
-        Ok(data)
     }
 
     /// Deletes a file from the repository
     pub fn delete_file(&self, file_type: FileType, id: &ID) -> Result<u64> {
-        assert_ne!(file_type, FileType::Key);
-        assert_ne!(file_type, FileType::Manifest);
-
         let path = self.get_path(file_type, id);
         let size = self.backend.lstat(&path)?.size;
         self.backend.remove(&path)?;
@@ -423,7 +435,13 @@ impl Repository {
     /// Loads a snapshot by ID
     pub fn load_snapshot(&self, id: &ID) -> Result<Snapshot> {
         let snapshot = self
-            .load_file(FileType::Snapshot, id)
+            .load_file(
+                id,
+                StorageHint {
+                    is_metadata: true,
+                    file_type: FileType::Snapshot,
+                },
+            )
             .with_context(|| format!("No snapshot with ID '{id}' exists"))?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
         Ok(snapshot)
@@ -464,14 +482,27 @@ impl Repository {
     }
 
     /// Loads a pack.
-    pub fn load_object(&self, id: &ID) -> Result<Vec<u8>> {
-        self.load_file(FileType::Pack, id)
+    pub fn load_pack(&self, id: &ID) -> Result<Vec<u8>> {
+        // We don't really know what kind of pack we are loading, so it is not metadata
+        self.load_file(
+            id,
+            StorageHint {
+                is_metadata: false,
+                file_type: FileType::Pack,
+            },
+        )
     }
 
     /// Loads an index file.
     pub fn load_index(&self, id: &ID) -> Result<IndexFile> {
         let index: Vec<u8> = self
-            .load_file(FileType::Index, id)
+            .load_file(
+                id,
+                StorageHint {
+                    is_metadata: true,
+                    file_type: FileType::Index,
+                },
+            )
             .with_context(|| format!("Could not load index {}", id.to_hex()))?;
         let index = serde_json::from_slice(&index)?;
         Ok(index)
@@ -492,13 +523,30 @@ impl Repository {
         Ok(manifest)
     }
 
+    /// Loads a lock file.
+    pub fn load_lock(&self, id: &ID) -> Result<Lock> {
+        let lock: Vec<u8> = self
+            .load_file(
+                id,
+                StorageHint {
+                    is_metadata: true,
+                    file_type: FileType::Lock,
+                },
+            )
+            .with_context(|| format!("Could not load lock file {}", id.to_hex()))?;
+        let lock = serde_json::from_slice(&lock)?;
+        Ok(lock)
+    }
+
     /// Loads a KeyFile.
     pub fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
-        let key_path = self.keys_path.join(id.to_hex());
-        let key =
-            self.backend
-                .read(&Handle::new_with_hint(&key_path, true, FileType::Key), 0, 0)?;
-        let key = self.secure_storage.decompress(&key)?;
+        let key = self.load_file(
+            id,
+            StorageHint {
+                is_metadata: true,
+                file_type: FileType::Key,
+            },
+        )?;
         let key = serde_json::from_slice(&key)?;
         Ok(key)
     }
@@ -755,7 +803,7 @@ impl Repository {
         // Create and save the new lock immediately
         let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
         let new_lock_id = *new_lock.lock().id();
-        self.write_lock(&new_lock)
+        self.save_lock(&new_lock)
             .with_context(|| "Failed to write new lock file")?;
 
         // Check for conflicts with other unexpired locks
@@ -787,7 +835,7 @@ impl Repository {
         Ok(new_lock)
     }
 
-    fn write_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
+    fn save_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
         let lock_guard = lock.lock();
 
         let lock_json = serde_json::to_string(&*lock_guard)?;
@@ -802,7 +850,7 @@ impl Repository {
 
     pub fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
         lock.lock().refresh();
-        self.write_lock(lock)
+        self.save_lock(lock)
     }
 
     /// Get all locks in the repository. If a lock file cannot be read, decoded
@@ -1013,7 +1061,7 @@ mod tests {
             Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)?;
 
         let other_lock = Arc::new(Mutex::new(Lock::new(other_lock_exclusive)));
-        r0.write_lock(&other_lock)?;
+        r0.save_lock(&other_lock)?;
 
         let own_repo_open_result = Repository::try_open_with_lock(
             Some(&auth),
@@ -1087,7 +1135,7 @@ mod tests {
             true,
             Local::now() - LOCK_EXPIRE_TIMEOUT,
         )));
-        r0.write_lock(&other_lock)?;
+        r0.save_lock(&other_lock)?;
 
         Repository::try_open_with_lock(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG, true)?; // The other expired lock should have been deleted
 

@@ -6,7 +6,8 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
-use crate::backend::BackendOptions;
+use crate::backend::{BackendOptions, StorageHint};
+use crate::mapache::SaveID;
 use crate::{
     archiver::tree_serializer::{self, init_pending_trees},
     backend::new_backend_with_prompt,
@@ -161,8 +162,12 @@ fn amend(
 
     // Save the amended snapshot and delete the old snapshot file
     let (new_id, raw_meta, encoded_meta) = repo.save_file(
-        FileType::Snapshot,
+        &SaveID::CalculateID,
         serde_json::to_string(&snapshot)?.as_bytes(),
+        StorageHint {
+            is_metadata: true,
+            file_type: FileType::Snapshot,
+        },
     )?;
     raw += raw_meta;
     encoded += encoded_meta;

@@ -8,10 +8,7 @@ use crate::{
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::Tree,
     mapache::{BlobType, FileType},
-    repository::{
-        lock::Lock,
-        repo::{RepoConfig, Repository},
-    },
+    repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},
 };
@@ -73,7 +70,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Object::Pack(prefix) => {
             let (id, _) = repo.find(FileType::Pack, prefix)?;
             let object = repo
-                .load_object(&id)
+                .load_pack(&id)
                 .with_context(|| "Failed to load object")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&object)?);
             Ok(())
@@ -129,8 +126,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
         Object::Lock(prefix) => {
             let (id, _) = repo.find(FileType::Lock, prefix)?;
-            let lock = repo.load_file(FileType::Lock, &id)?;
-            let lock: Lock = serde_json::from_slice(&lock)?;
+            let lock = repo.load_lock(&id)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&lock)?);
             Ok(())
         }

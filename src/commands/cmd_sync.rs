@@ -46,7 +46,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         cached: !global_args.no_cache,
     })?;
 
-    let (_repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (_repo, _secure_storage, lock_handle) = Repository::try_open_with_lock(
         src_auth.as_ref(),
         global_args.key.as_ref(),
         src_backend.clone(),
@@ -89,73 +89,8 @@ fn sync_backends(
     dst_backend: &dyn StorageBackend,
     delete: bool,
 ) -> Result<()> {
-    let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
-    let reverse_cmp = |n0: &BackendNode, n1: &BackendNode| n1.path().cmp(n0.path());
-
-    let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new())?;
-    let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new())?;
-
-    // Ignore 'locks' directory.
-    // The sync command will acquire a lock, but the locks must not be synchronized.
-    src_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
-    dst_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
-
-    src_nodes.sort_unstable_by(forward_cmp);
-    dst_nodes.sort_unstable_by(forward_cmp);
-
-    let mut src_iter = src_nodes.into_iter().peekable();
-    let mut dst_iter = dst_nodes.into_iter().peekable();
-
-    let mut to_copy: Vec<BackendNode> = Vec::new();
-    let mut to_delete: Vec<BackendNode> = Vec::new();
-
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Calculating differences")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-
-    loop {
-        match (src_iter.peek(), dst_iter.peek()) {
-            (Some(src_node), Some(dst_node)) => {
-                let ordering = src_node.path().cmp(dst_node.path());
-                match ordering {
-                    std::cmp::Ordering::Less => {
-                        // src_node is in src but not in dst
-                        to_copy.push(src_iter.next().unwrap());
-                    }
-                    std::cmp::Ordering::Greater => {
-                        // dst_node is in dst but not in src
-                        to_delete.push(dst_iter.next().unwrap());
-                    }
-                    std::cmp::Ordering::Equal => {
-                        // All objects in the repository are named by hash, so files with identical
-                        // paths must have the same content.
-                        src_iter.next();
-                        dst_iter.next();
-                    }
-                }
-            }
-            (Some(_src_node), None) => {
-                // Remaining src_nodes are all new
-                to_copy.push(src_iter.next().unwrap());
-            }
-            (None, Some(_dst_node)) => {
-                // Remaining dst_nodes are all to be deleted
-                to_delete.push(dst_iter.next().unwrap());
-            }
-            (None, None) => {
-                // Both iterators exhausted
-                break;
-            }
-        }
-    }
-
-    spinner.finish_and_clear();
+    // Calculate diferences
+    let (to_copy, to_delete) = diff(src_backend, dst_backend)?;
 
     ui::cli::log!(
         "{} {}",
@@ -191,10 +126,8 @@ fn sync_backends(
 
             );
 
-    // Copy nodes to dst
+    // Copy files from src to dst.
     for node in to_copy {
-        // Copy files from src to dst.
-
         // TODO: For better performance, we should implement buffered I/O in the
         // backend and transfer the files in small chunks.
 
@@ -223,9 +156,6 @@ fn sync_backends(
                         .progress_chars("=> "),
                 );
 
-        // It's important to delete files before directories if a directory contains files.
-        // Sorting in reverse order ensures files within a directory are processed before the directory itself.
-        to_delete.sort_unstable_by(reverse_cmp); // Reverse sort for deletion
         for node in to_delete {
             match node {
                 BackendNode::File(path) => dst_backend.remove(&path)?,
@@ -242,4 +172,106 @@ fn sync_backends(
     dst_backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
 
     Ok(())
+}
+
+/// Calculate differences between the source backend and the destination backend.
+/// The results is a sorted list of nodes to copy and nodes to delete.
+fn diff(
+    src_backend: &dyn StorageBackend,
+    dst_backend: &dyn StorageBackend,
+) -> Result<(Vec<BackendNode>, Vec<BackendNode>)> {
+    let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
+    let reverse_cmp = |n0: &BackendNode, n1: &BackendNode| n1.path().cmp(n0.path());
+
+    let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new())?;
+    let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new())?;
+
+    // Ignore 'locks' directory.
+    // The sync command will acquire a lock, but the locks must not be synchronized.
+    src_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
+    dst_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
+
+    src_nodes.sort_unstable_by(forward_cmp);
+    dst_nodes.sort_unstable_by(forward_cmp);
+
+    let mut src_iter = src_nodes.into_iter().peekable();
+    let mut dst_iter = dst_nodes.into_iter().peekable();
+
+    let mut to_copy: Vec<BackendNode> = Vec::new();
+    let mut to_delete: Vec<BackendNode> = Vec::new();
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_draw_target(default_bar_draw_target());
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} Calculating differences: {msg}")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+
+    let mut num_to_copy = 0;
+    let mut num_to_delete = 0;
+    let update_msg = |num_to_copy: usize, num_to_delete: usize| {
+        spinner.set_message(format!(
+            "{} to copy, {} to delete",
+            num_to_copy, num_to_delete
+        ));
+    };
+
+    loop {
+        match (src_iter.peek(), dst_iter.peek()) {
+            (Some(src_node), Some(dst_node)) => {
+                let ordering = src_node.path().cmp(dst_node.path());
+                match ordering {
+                    std::cmp::Ordering::Less => {
+                        // src_node is in src but not in dst
+                        to_copy.push(src_iter.next().unwrap());
+
+                        num_to_copy += 1;
+                        update_msg(num_to_copy, num_to_delete);
+                    }
+                    std::cmp::Ordering::Greater => {
+                        // dst_node is in dst but not in src
+                        to_delete.push(dst_iter.next().unwrap());
+
+                        num_to_delete += 1;
+                        update_msg(num_to_copy, num_to_delete);
+                    }
+                    std::cmp::Ordering::Equal => {
+                        // All objects in the repository are named by hash, so files with identical
+                        // paths must have the same content.
+                        src_iter.next();
+                        dst_iter.next();
+                    }
+                }
+            }
+            (Some(_src_node), None) => {
+                // Remaining src_nodes are all new
+                to_copy.push(src_iter.next().unwrap());
+
+                num_to_copy += 1;
+                update_msg(num_to_copy, num_to_delete);
+            }
+            (None, Some(_dst_node)) => {
+                // Remaining dst_nodes are all to be deleted
+                to_delete.push(dst_iter.next().unwrap());
+
+                num_to_delete += 1;
+                update_msg(num_to_copy, num_to_delete);
+            }
+            (None, None) => {
+                // Both iterators exhausted
+                break;
+            }
+        }
+    }
+
+    // It's important to delete files before directories if a directory contains files.
+    // Sorting in reverse order ensures files within a directory are processed before the directory itself.
+    to_delete.sort_unstable_by(reverse_cmp); // Reverse sort for deletion
+
+    spinner.finish_and_clear();
+
+    Ok((to_copy, to_delete))
 }

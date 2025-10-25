@@ -361,7 +361,7 @@ impl StorageBackend for SftpBackend {
             .with_context(|| format!("Failed to write to file: {tmp_path:?}"))?;
 
         // Rename to the final path reusing the connection.
-        self.rename_internal(sftp, &tmp_path, &path)
+        self.rename_internal(sftp, &tmp_path, path)
             .with_context(|| {
                 format!("Failed to rename {tmp_path:?}' to {path:?}' after write in sftp backend")
             })?;

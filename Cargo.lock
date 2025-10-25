@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "mapache"
-version = "0.1.0-beta.2a"
+version = "0.1.0-beta.3"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",

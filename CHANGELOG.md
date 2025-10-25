@@ -1,6 +1,8 @@
 # Changelog
 
 ## Latest
+
+## v0.1.0-beta.3
 ### Changes
 - Support ssh keys for dst backend in `cmd_sync`.
 - Minor optimizations to the Archiver.
@@ -11,7 +13,7 @@
 - Implemented a local cache to speedup reading frequently used metadata and reduce download operations.
 - Added a `cache` command to manage cache folders.
 
-# v0.1.0-beta.2a
+## v0.1.0-beta.2a
 ### Changes
 - Don't emit a warning for the first snapshot.
 - Made FUSE a feature. The `mount` command can be disabled during compilation on those systems that don't support it.

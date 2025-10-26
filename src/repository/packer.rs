@@ -11,14 +11,14 @@ use crate::{
     utils,
 };
 
+pub const HEADER_ID_OFFSET: usize = 0;
+pub const HEADER_BLOB_TYPE_OFFSET: usize = HEADER_ID_OFFSET + size_of::<ID>();
+pub const HEADER_BLOB_LENGTH_OFFSET: usize = HEADER_BLOB_TYPE_OFFSET + size_of::<u8>();
+pub const HEADER_BLOB_RAW_LENGTH_OFFSET: usize = HEADER_BLOB_LENGTH_OFFSET + size_of::<u32>();
+
 /// Size of a header blob entry
 /// id (256 bits) + type (u8) + length (u32) + raw_length (u32)
-pub(crate) const HEADER_BLOB_LEN: usize = 32 + 4 + 4 + 1;
-
-pub const HEADER_ID_OFFSET: usize = 0;
-pub const HEADER_BLOB_TYPE_OFFSET: usize = 32;
-pub const HEADER_BLOB_LENGTH_OFFSET: usize = 33;
-pub const HEADER_BLOB_RAW_LENGTH_OFFSET: usize = 37;
+pub const HEADER_BLOB_LEN: usize = HEADER_BLOB_RAW_LENGTH_OFFSET + size_of::<u32>();
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a pack.
@@ -53,13 +53,8 @@ pub struct Packer {
     size: u64,
 }
 
-impl Default for Packer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Packer {
+    /// Create a new, empty packer.
     pub fn new() -> Self {
         Self {
             blobs: Vec::new(),
@@ -116,30 +111,36 @@ impl Packer {
         let blobs = std::mem::take(&mut self.blobs);
         self.size = 0;
 
-        let mut offset: u32 = 0;
-        let mut data = Vec::new();
-        let mut descriptors = Vec::new();
+        // Precompute sizes to avoid reallocations.
+        // The minimum pack size is known here: data + (blob_multiple*blob_entry_len) + header_len_field(u32)
+        // Bigger packs just add more blob entries.
+        let total_data_len: usize = blobs.iter().map(|(_, _, data, _)| data.len()).sum();
+        let mut descriptors = Vec::with_capacity(blobs.len());
+        let mut data = Vec::with_capacity(
+            total_data_len + HEADER_BLOB_LEN * HEADER_BLOB_MULTIPLE + size_of::<u32>(),
+        );
 
-        for blob in blobs {
-            let mut blob_data = blob.2;
+        let mut offset: u32 = 0;
+        for (id, blob_type, mut blob_data, raw_len) in blobs {
             let length = blob_data.len() as u32;
             descriptors.push(PackedBlobDescriptor {
-                id: blob.0,
-                blob_type: blob.1,
+                id,
+                blob_type,
                 offset,
                 length,
-                raw_length: blob.3 as u32,
+                raw_length: raw_len as u32,
             });
             data.append(&mut blob_data);
             offset += length;
         }
 
         let header = Self::generate_header(&mut descriptors);
-        let mut header = secure_storage.encode(&header)?;
-        let mut header_length_bytes = (header.len() as u32).to_le_bytes().to_vec();
-        header.append(&mut header_length_bytes);
-        let meta_size: u64 = header.len() as u64;
-        data.append(&mut header);
+        let mut encoded_header = secure_storage.encode(&header)?;
+        let header_len = encoded_header.len() as u32;
+        encoded_header.extend_from_slice(&header_len.to_le_bytes());
+
+        let meta_size = encoded_header.len() as u64;
+        data.extend_from_slice(&encoded_header);
 
         let hash = utils::calculate_hash(&data);
 
@@ -153,39 +154,32 @@ impl Packer {
 
     /// Generates a pack header given a vector of blob descriptors.
     fn generate_header(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
-        // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
-        let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len());
-
-        if !descriptors.len().is_multiple_of(HEADER_BLOB_MULTIPLE) {
-            let num_padding_blobs =
-                HEADER_BLOB_MULTIPLE - (descriptors.len() % HEADER_BLOB_MULTIPLE);
-            for _ in 0..num_padding_blobs {
-                // Add random fields so the compressor cannot reduce the padding size.
+        let len = descriptors.len();
+        if !len.is_multiple_of(HEADER_BLOB_MULTIPLE) {
+            let mut rng = rand::rng();
+            let num_padding = HEADER_BLOB_MULTIPLE - (len % HEADER_BLOB_MULTIPLE);
+            descriptors.reserve(num_padding);
+            for _ in 0..num_padding {
                 descriptors.push(PackedBlobDescriptor {
                     id: ID::new_random(),
                     blob_type: BlobType::Padding,
-                    offset: rand::rng().random(),
-                    length: rand::rng().random(),
-                    raw_length: rand::rng().random(),
+                    offset: rng.random(),
+                    length: rng.random(),
+                    raw_length: rng.random(),
                 });
             }
         }
 
-        for blob in descriptors {
-            let id = blob.id.as_slice();
-            pack_header.extend_from_slice(id);
+        let mut buf = Vec::with_capacity(descriptors.len() * HEADER_BLOB_LEN);
 
-            let blob_type: [u8; 1] = (blob.blob_type.to_owned() as u8).to_le_bytes();
-            pack_header.extend_from_slice(&blob_type);
-
-            let length = blob.length.to_le_bytes();
-            pack_header.extend_from_slice(&length);
-
-            let raw_length = blob.raw_length.to_le_bytes();
-            pack_header.extend_from_slice(&raw_length);
+        for blob in descriptors.iter() {
+            buf.extend_from_slice(blob.id.as_slice());
+            buf.push(blob.blob_type as u8);
+            buf.extend_from_slice(&blob.length.to_le_bytes());
+            buf.extend_from_slice(&blob.raw_length.to_le_bytes());
         }
 
-        pack_header
+        buf
     }
 
     /// Parses the header for a pack with a given ID. This function only reads the header bytes from
@@ -306,19 +300,20 @@ impl PackSaver {
     pub fn new(concurrency: usize, queue_fn: QueueFn) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(concurrency);
 
-        let worker_queue_fn = Arc::clone(&queue_fn);
-
-        let join_handle = std::thread::spawn(move || {
-            let pool = rayon::ThreadPoolBuilder::new()
+        let pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
                 .num_threads(concurrency)
                 .build()
-                .expect("Failed to build thread pool");
+                .expect("Failed to build thread pool"),
+        );
+        let worker_fn = Arc::clone(&queue_fn);
+        let pool_clone = pool.clone();
 
+        let join_handle = std::thread::spawn(move || {
             while let Ok((data, id, blob_type)) = rx.recv() {
-                pool.scope(|s| {
-                    s.spawn(|_| {
-                        worker_queue_fn(data, id, blob_type);
-                    });
+                pool_clone.spawn({
+                    let f = Arc::clone(&worker_fn);
+                    move || f(data, id, blob_type)
                 });
             }
         });

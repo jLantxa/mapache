@@ -1,6 +1,8 @@
 # Changelog
 
 ## Latest
+### Changes
+- Small optimizations to the packer logic.
 
 ## v0.1.0-beta.3
 ### Changes

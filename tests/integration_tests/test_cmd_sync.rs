@@ -73,7 +73,7 @@ mod tests {
             rescan: false,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
-            write_concurrency: 5,
+            write_concurrency: 2,
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
@@ -154,7 +154,7 @@ mod tests {
             rescan: false,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
-            write_concurrency: 5,
+            write_concurrency: 2,
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)

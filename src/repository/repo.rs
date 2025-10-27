@@ -29,12 +29,12 @@ use super::{
 
 pub const THIS_REPOSITORY_VERSION: u32 = 1;
 
-const OBJECTS_DIR: &str = "objects";
-const SNAPSHOTS_DIR: &str = "snapshots";
-const INDEX_DIR: &str = "index";
-const MANIFEST_PATH: &str = "manifest";
-pub(crate) const KEYS_DIR: &str = "keys";
-pub(crate) const LOCKS_DIR: &str = "locks";
+pub const OBJECTS_DIR: &str = "objects";
+pub const SNAPSHOTS_DIR: &str = "snapshots";
+pub const INDEX_DIR: &str = "index";
+pub const MANIFEST_PATH: &str = "manifest";
+pub const KEYS_DIR: &str = "keys";
+pub const LOCKS_DIR: &str = "locks";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 

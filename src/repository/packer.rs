@@ -1,8 +1,9 @@
-use std::{sync::Arc, thread::JoinHandle};
+use std::{io::Write, sync::Arc, thread::JoinHandle};
 
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::Sender;
 use rand::Rng;
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     backend::{Handle, StorageBackend},
@@ -11,14 +12,14 @@ use crate::{
     utils,
 };
 
+pub const HEADER_ID_OFFSET: usize = 0;
+pub const HEADER_BLOB_TYPE_OFFSET: usize = HEADER_ID_OFFSET + size_of::<ID>();
+pub const HEADER_BLOB_LENGTH_OFFSET: usize = HEADER_BLOB_TYPE_OFFSET + size_of::<u8>();
+pub const HEADER_BLOB_RAW_LENGTH_OFFSET: usize = HEADER_BLOB_LENGTH_OFFSET + size_of::<u32>();
+
 /// Size of a header blob entry
 /// id (256 bits) + type (u8) + length (u32) + raw_length (u32)
-pub(crate) const HEADER_BLOB_LEN: usize = 32 + 4 + 4 + 1;
-
-pub const HEADER_ID_OFFSET: usize = 0;
-pub const HEADER_BLOB_TYPE_OFFSET: usize = 32;
-pub const HEADER_BLOB_LENGTH_OFFSET: usize = 33;
-pub const HEADER_BLOB_RAW_LENGTH_OFFSET: usize = 37;
+pub const HEADER_BLOB_LEN: usize = HEADER_BLOB_RAW_LENGTH_OFFSET + size_of::<u32>();
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a pack.
@@ -117,8 +118,9 @@ impl Packer {
         self.size = 0;
 
         let mut offset: u32 = 0;
-        let mut data = Vec::new();
-        let mut descriptors = Vec::new();
+        let total_data_size: usize = blobs.iter().map(|(_, _, d, _)| d.len()).sum();
+        let mut data = Vec::with_capacity(total_data_size);
+        let mut descriptors = Vec::with_capacity(blobs.len());
 
         for blob in blobs {
             let mut blob_data = blob.2;
@@ -154,7 +156,9 @@ impl Packer {
     /// Generates a pack header given a vector of blob descriptors.
     fn generate_header(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
         // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
-        let mut pack_header = Vec::<u8>::with_capacity(HEADER_BLOB_LEN * descriptors.len());
+        let mut pack_header = Vec::with_capacity(HEADER_BLOB_LEN * descriptors.len());
+        let mut cursor = std::io::Cursor::new(&mut pack_header);
+        let mut rng = rand::rng();
 
         if !descriptors.len().is_multiple_of(HEADER_BLOB_MULTIPLE) {
             let num_padding_blobs =
@@ -164,27 +168,21 @@ impl Packer {
                 descriptors.push(PackedBlobDescriptor {
                     id: ID::new_random(),
                     blob_type: BlobType::Padding,
-                    offset: rand::rng().random(),
-                    length: rand::rng().random(),
-                    raw_length: rand::rng().random(),
+                    offset: rng.random(),
+                    length: rng.random(),
+                    raw_length: rng.random(),
                 });
             }
         }
 
         for blob in descriptors {
-            let id = blob.id.as_slice();
-            pack_header.extend_from_slice(id);
-
-            let blob_type: [u8; 1] = (blob.blob_type.to_owned() as u8).to_le_bytes();
-            pack_header.extend_from_slice(&blob_type);
-
-            let length = blob.length.to_le_bytes();
-            pack_header.extend_from_slice(&length);
-
-            let raw_length = blob.raw_length.to_le_bytes();
-            pack_header.extend_from_slice(&raw_length);
+            cursor.write_all(blob.id.as_slice()).unwrap();
+            cursor
+                .write_all(&(blob.blob_type as u8).to_le_bytes())
+                .unwrap();
+            cursor.write_all(&blob.length.to_le_bytes()).unwrap();
+            cursor.write_all(&blob.raw_length.to_le_bytes()).unwrap();
         }
-
         pack_header
     }
 
@@ -305,7 +303,6 @@ pub struct PackSaver {
 impl PackSaver {
     pub fn new(concurrency: usize, queue_fn: QueueFn) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(concurrency);
-
         let worker_queue_fn = Arc::clone(&queue_fn);
 
         let join_handle = std::thread::spawn(move || {
@@ -314,16 +311,16 @@ impl PackSaver {
                 .build()
                 .expect("Failed to build thread pool");
 
-            while let Ok((data, id, blob_type)) = rx.recv() {
-                pool.scope(|s| {
-                    s.spawn(|_| {
+            pool.install(|| {
+                rx.into_iter()
+                    .par_bridge() // pull items from channel in parallel
+                    .for_each(|(data, id, blob_type)| {
                         worker_queue_fn(data, id, blob_type);
                     });
-                });
-            }
+            });
         });
 
-        PackSaver { tx, join_handle }
+        Self { tx, join_handle }
     }
 
     pub fn save_pack(
@@ -346,9 +343,7 @@ impl PackSaver {
 
     pub fn finish(self) {
         drop(self.tx);
-        self.join_handle
-            .join()
-            .expect("Packer saver thread panicked");
+        self.join_handle.join().expect("PackSaver thread panicked");
     }
 }
 

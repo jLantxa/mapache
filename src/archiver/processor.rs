@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::BufReader,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -75,7 +75,7 @@ pub(crate) fn process_item(
 
             // If the node is a file, save its contents to the repository.
             if stream_node_info.node.is_file() {
-                let blobs_ids = save_file(
+                let blobs_ids = chunk_and_store_file(
                     repo, // `repo` is an Arc, so it can be moved here.
                     &path,
                     &stream_node_info.node,
@@ -119,36 +119,31 @@ pub(crate) fn process_item(
 /// This function will split the file into chunks for deduplication, which will be compressed,
 /// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
 /// directly as blobs.
-pub(crate) fn save_file(
+fn chunk_and_store_file(
     repo: Arc<Repository>,
     src_path: &Path,
     node: &Node,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
+    let mut source_file = File::open(src_path)
+        .with_context(|| format!("Could not open file '{}'", src_path.display()))?;
+
     // Do not chunk if the file is smaller than the minimum chunk size
     if node.metadata.size < mapache::defaults::MIN_CHUNK_SIZE {
-        let data = std::fs::read(src_path)?;
+        let mut data = Vec::with_capacity(node.metadata.size as usize);
+        source_file
+            .read_to_end(&mut data)
+            .with_context(|| format!("Failed to read source file '{}'", src_path.display()))?;
+
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
             repo.encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)?;
         progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
         progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);
-        progress_reporter.processed_bytes(node.metadata.size);
 
-        Ok(vec![id])
-    } else {
-        chunk_and_save_blobs(repo, src_path, progress_reporter)
+        return Ok(vec![id]);
     }
-}
 
-// Chunks the file and saves the blobs in the repository.
-fn chunk_and_save_blobs(
-    repo: Arc<Repository>,
-    src_path: &Path,
-    progress_reporter: Arc<SnapshotProgressReporter>,
-) -> Result<Vec<ID>> {
-    let source = File::open(src_path)
-        .with_context(|| format!("Could not open file '{}'", src_path.display()))?;
-    let reader = BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source);
+    let reader = BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
 
     let file_size = reader.get_ref().metadata()?.len();
     let estimated_num_chunks = (file_size / mapache::defaults::AVG_CHUNK_SIZE).max(1) as usize;

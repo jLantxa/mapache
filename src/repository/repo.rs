@@ -361,17 +361,7 @@ impl Repository {
 
     /// Saves a file to the repository
     pub fn save_file(&self, id: &SaveID, data: &[u8], hint: StorageHint) -> Result<(ID, u64, u64)> {
-        let id = match id {
-            SaveID::CalculateID => &ID::from_content(data),
-            SaveID::WithID(id) => id,
-        };
-
         let file_type = hint.file_type;
-        let path = self.get_path(file_type, id);
-        let handle = Handle {
-            path: &path,
-            hint: Some(hint),
-        };
 
         let raw_size = data.len() as u64;
         let (data, encoded_size) = match file_type {
@@ -386,6 +376,18 @@ impl Repository {
                 let size = encoded_data.len() as u64;
                 (encoded_data, size)
             }
+        };
+
+        // Assign ID after (potentially) encoding
+        let id = match id {
+            SaveID::CalculateID => &ID::from_content(&data),
+            SaveID::WithID(id) => id,
+        };
+
+        let path = self.get_path(file_type, id);
+        let handle = Handle {
+            path: &path,
+            hint: Some(hint),
         };
 
         self.backend.write(&handle, &data)?;

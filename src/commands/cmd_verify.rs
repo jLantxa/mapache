@@ -204,15 +204,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
     if error_counter > 0 {
         ui::cli::log!("{} {}", error_counter, "[ERROR]".bold().red());
+        bail!(
+            "Verify failed after {}",
+            utils::pretty_print_duration(start.elapsed())
+        )
+    } else {
+        ui::cli::log!();
+        ui::cli::log!(
+            "Finished in {}",
+            utils::pretty_print_duration(start.elapsed())
+        );
+
+        Ok(())
     }
-
-    ui::cli::log!();
-    ui::cli::log!(
-        "Finished in {}",
-        utils::pretty_print_duration(start.elapsed())
-    );
-
-    Ok(())
 }
 
 /// Verify the checksum and contents of a snapshot with a known ID in the repository.

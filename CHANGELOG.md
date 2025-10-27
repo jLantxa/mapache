@@ -2,6 +2,9 @@
 
 ## Latest
 
+### Fixes
+- Fixed calculation of file hashes (regression). The hash of a file is calculated after the contents are (potentially) encoded.
+
 ## v0.1.0-beta.3
 ### Changes
 - Support ssh keys for dst backend in `cmd_sync`.

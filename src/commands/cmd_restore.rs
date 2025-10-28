@@ -223,6 +223,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )?;
 
     progress_reporter.finalize();
+    let warning_count = progress_reporter.warning_counter.load(Ordering::Relaxed);
     let error_count = progress_reporter.error_counter.load(Ordering::Relaxed);
 
     if args.delete {
@@ -239,9 +240,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     ui::cli::log!(
-        "Finished in {} with {}",
+        "Finished in {} with {} and {}",
         utils::pretty_print_duration(start.elapsed(),),
-        utils::format_count(error_count, "error", "errors")
+        utils::format_count(error_count, "error", "errors"),
+        utils::format_count(warning_count, "warning", "warnings")
     );
 
     Ok(())

@@ -7,12 +7,9 @@ use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 use std::{fs::OpenOptions, io::Write, path::Path};
 
 use {
-    anyhow::{Context, Result, bail},
+    anyhow::{Context, Result},
     filetime::{FileTime, set_file_times},
 };
-
-#[cfg(unix)]
-use anyhow::anyhow;
 
 use crate::{
     fs::node::{Node, NodeType},
@@ -92,7 +89,7 @@ pub(crate) fn restore_node_to_path(
 
             // Restore metadata after content is written
             if !dry_run {
-                restore_node_metadata(node, dst_path, progress_reporter.as_ref())?;
+                try_restore_node_metadata(node, dst_path, progress_reporter.as_ref());
             }
         }
 
@@ -167,7 +164,7 @@ pub(crate) fn restore_node_to_path(
             if !dry_run {
                 #[cfg(unix)]
                 {
-                    restore_symlink_metadata(node, dst_path, progress_reporter.as_ref())?;
+                    try_restore_symlink_metadata(node, dst_path, progress_reporter.as_ref());
                 }
                 #[cfg(not(unix))]
                 {
@@ -235,72 +232,6 @@ pub(crate) fn restore_node_to_path(
     Ok(())
 }
 
-/// Restores the metadata of a node to the specified destination path.
-/// This function attempts to restore all metadata fields with a best-effort approach.
-/// It will collect and return an error with a list of all failures, rather than
-/// failing on the first one.
-#[allow(unused_variables)]
-fn restore_node_metadata(
-    node: &Node,
-    dst_path: &Path,
-    progress_reporter: &RestoreProgressReporter,
-) -> Result<()> {
-    let mut errors = Vec::new();
-
-    // Set file times
-    if let Err(e) = restore_times(
-        dst_path,
-        node.metadata.accessed_time.as_ref(),
-        node.metadata.modified_time.as_ref(),
-    ) {
-        errors.push(e);
-    }
-
-    // Unix-specific metadata (mode, uid, gid)
-    #[cfg(unix)]
-    {
-        // Set file permissions (mode)
-        if !node.is_symlink()
-            && let Some(mode) = node.metadata.mode
-        {
-            let permissions = Permissions::from_mode(mode);
-            if std::fs::set_permissions(dst_path, permissions).is_err() {
-                errors.push(anyhow!("Could not set permissions (mode: {mode:o})."));
-            }
-        }
-
-        if !node.is_symlink() {
-            // Set owner (uid) and group (gid)
-            let uid = node.metadata.owner_uid;
-            let gid = node.metadata.owner_gid;
-
-            // Restoring uid and gid is very likely to fail unless the user is root.
-            if (uid.is_some() || gid.is_some())
-                && let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid)
-            {
-                progress_reporter.warning(&format!(
-                    "Could not set ownership (uid: {:?}, gid: {:?}) for {}: {}",
-                    uid,
-                    gid,
-                    dst_path.display(),
-                    e
-                ));
-            }
-        }
-    }
-
-    if !errors.is_empty() {
-        let mut final_error_message =
-            format!("Failed to restore metadata for {}:\n", dst_path.display());
-        for err in errors {
-            final_error_message.push_str(&format!("  - {err}\n"));
-        }
-        bail!("{final_error_message}");
-    }
-
-    Ok(())
-}
-
 /// Restores file times
 pub fn restore_times(
     dst_path: &Path,
@@ -317,61 +248,78 @@ pub fn restore_times(
     Ok(())
 }
 
-#[cfg(unix)]
-fn restore_symlink_metadata(
+/// Restores the metadata of a node to the specified destination path.
+/// This function attempts to restore all metadata fields with a best-effort approach.
+#[allow(unused_variables)]
+fn try_restore_node_metadata(
     node: &Node,
     dst_path: &Path,
     progress_reporter: &RestoreProgressReporter,
-) -> Result<()> {
-    let mut errors = Vec::new();
+) {
+    // Set file times
+    if let Err(e) = restore_times(
+        dst_path,
+        node.metadata.accessed_time.as_ref(),
+        node.metadata.modified_time.as_ref(),
+    ) {
+        progress_reporter.warning(&format!(
+            "Could not set file times for {}).",
+            dst_path.display()
+        ));
+    }
 
+    // Unix-specific metadata (mode, uid, gid)
+    #[cfg(unix)]
+    {
+        // Set file permissions (mode)
+        if !node.is_symlink()
+            && let Some(mode) = node.metadata.mode
+        {
+            let permissions = Permissions::from_mode(mode);
+            if std::fs::set_permissions(dst_path, permissions).is_err() {
+                progress_reporter.warning(&format!("Could not set permissions (mode: {mode:o})."));
+            }
+        }
+
+        if !node.is_symlink() {
+            // Set owner (uid) and group (gid)
+            let uid = node.metadata.owner_uid;
+            let gid = node.metadata.owner_gid;
+
+            // Restoring uid and gid is very likely to fail unless the user is root.
+            if uid.is_some() || gid.is_some() {
+                let _ = std::os::unix::fs::chown(dst_path, uid, gid);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn try_restore_symlink_metadata(
+    node: &Node,
+    dst_path: &Path,
+    progress_reporter: &RestoreProgressReporter,
+) {
     // Set file times using set_symlink_file_times
     if let Some(mtime) = node.metadata.modified_time.as_ref() {
         let ft_mtime = FileTime::from(*mtime);
         let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
 
         if let Err(e) = filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime) {
-            errors.push(anyhow!("Could not set file times for symlink: {e}"));
+            progress_reporter.warning(&format!("Could not set file times for symlink: {e}"));
         }
     }
 
-    // Set permissions (mode)
-    if let Some(mode) = node.metadata.mode {
-        progress_reporter.warning(&format!(
-            "Skipping permission {mode} restoration for symlink {}",
-            dst_path.display()
-        ));
-    }
+    // TODO: Set permissions for symlink
 
     // Set owner (uid) and group (gid) using lchown
     let uid = node.metadata.owner_uid;
     let gid = node.metadata.owner_gid;
 
     // lchown is needed to change the ownership of the symlink itself, not the target.
-    if (uid.is_some() || gid.is_some())
-        && let Err(e) = std::os::unix::fs::chown(dst_path, uid, gid)
-    {
-        progress_reporter.warning(&format!(
-            "Could not set symlink ownership (uid: {:?}, gid: {:?}) for {}: {}",
-            uid,
-            gid,
-            dst_path.display(),
-            e
-        ));
+    if uid.is_some() || gid.is_some() {
+        let _ = std::os::unix::fs::chown(dst_path, uid, gid);
     }
-
-    if !errors.is_empty() {
-        let mut final_error_message = format!(
-            "Failed to restore symlink metadata for {}:\n",
-            dst_path.display()
-        );
-        for err in errors {
-            final_error_message.push_str(&format!("  - {err}\n"));
-        }
-        bail!("{final_error_message}");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -412,7 +360,7 @@ mod tests {
 
         // Now restore the metadata from the node
         let reporter = RestoreProgressReporter::new(0, 0, 1);
-        restore_node_metadata(&node, &file_path, &reporter)?;
+        try_restore_node_metadata(&node, &file_path, &reporter);
 
         // Check if the mtime was restored back to the node's original mtime
         assert_eq!(

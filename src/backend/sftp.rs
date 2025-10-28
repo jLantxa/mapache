@@ -357,8 +357,19 @@ impl StorageBackend for SftpBackend {
         let mut file = sftp
             .create(&full_tmp_path)
             .with_context(|| format!("Failed to create file for writing: {tmp_path:?}"))?;
-        file.write_all(contents)
-            .with_context(|| format!("Failed to write to file: {tmp_path:?}"))?;
+        if let Err(_) = file.write_all(contents) {
+            // If error, try creating the parent directory first and try again.
+            let parent_dir = path.parent().with_context(|| {
+                format!(
+                    "Could not create parent directory for '{}' in sftp backend",
+                    path.display()
+                )
+            })?;
+            let _ = self.create_dir(parent_dir);
+
+            file.write_all(contents)
+                .with_context(|| format!("Failed to write to file: {tmp_path:?}"))?;
+        }
 
         // Rename to the final path reusing the connection.
         self.rename_internal(sftp, &tmp_path, path)

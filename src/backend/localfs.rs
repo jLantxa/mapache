@@ -92,12 +92,23 @@ impl StorageBackend for LocalFS {
         let full_tmp_path = self.full_path(&tmp_path);
 
         // Write to a tmp path
-        std::fs::write(&full_tmp_path, contents).with_context(|| {
-            format!(
-                "Could not write to '{}' in local backend",
-                tmp_path.display()
-            )
-        })?;
+        if let Err(_) = std::fs::write(&full_tmp_path, contents) {
+            // If error, try creating the parent directory first and try again.
+            let parent_dir = path.parent().with_context(|| {
+                format!(
+                    "Could not create parent directory for '{}' in local backend",
+                    path.display()
+                )
+            })?;
+            let _ = self.create_dir(parent_dir);
+
+            std::fs::write(&full_tmp_path, contents).with_context(|| {
+                format!(
+                    "Could not write to '{}' in local backend",
+                    tmp_path.display()
+                )
+            })?;
+        }
 
         // Rename to the final path
         self.rename(&tmp_path, path)?;

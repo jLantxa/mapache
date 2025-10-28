@@ -1,9 +1,12 @@
 # Changelog
 
 ## Latest
+### Changes
+- Delete all .tmp files from the repository during GC.
 
 ### Fixes
 - Fixed calculation of file hashes (regression). The hash of a file is calculated after the contents are (potentially) encoded.
+- Ignore files with invalid ID names when loading indices, snapshots and keys.
 
 ## v0.1.0-beta.3
 ### Changes

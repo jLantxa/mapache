@@ -213,10 +213,7 @@ fn diff(
     let mut num_to_copy = 0;
     let mut num_to_delete = 0;
     let update_msg = |num_to_copy: usize, num_to_delete: usize| {
-        spinner.set_message(format!(
-            "{} to copy, {} to delete",
-            num_to_copy, num_to_delete
-        ));
+        spinner.set_message(format!("{num_to_copy} to copy, {num_to_delete} to delete"));
     };
 
     loop {

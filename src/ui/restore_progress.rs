@@ -22,6 +22,7 @@ pub struct RestoreProgressReporter {
     processing_items: Arc<RwLock<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
 
     pub(crate) error_counter: Arc<AtomicU64>,
+    pub(crate) warning_counter: Arc<AtomicU64>,
 
     #[allow(dead_code)]
     mp: MultiProgress,
@@ -34,6 +35,7 @@ impl RestoreProgressReporter {
     pub fn new(num_expected_items: u64, num_expected_bytes: u64, num_display_items: usize) -> Self {
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));
         let error_counter_arc = Arc::new(AtomicU64::new(0));
+        let warning_counter_arc = Arc::new(AtomicU64::new(0));
 
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
         let progress_bar = mp.add(ProgressBar::new(num_expected_bytes));
@@ -41,6 +43,7 @@ impl RestoreProgressReporter {
 
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
         let error_counter_arc_clone = error_counter_arc.clone();
+        let warning_counter_arc_clone = warning_counter_arc.clone();
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template(
@@ -66,7 +69,7 @@ impl RestoreProgressReporter {
 
         companion_bar.set_style(
             ProgressStyle::default_bar()
-                .template("[{processed_items_fmt}]  [{errors} errors]")
+                .template("[{processed_items_fmt}]  [{errors} errors, {warnings} warnings]")
                 .expect("The snapshot progress bar should have been created")
                 .progress_chars("=> ")
                 .with_key(
@@ -82,6 +85,13 @@ impl RestoreProgressReporter {
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                         let errors = error_counter_arc_clone.load(Ordering::SeqCst);
                         let _ = w.write_str(&errors.to_string());
+                    },
+                )
+                .with_key(
+                    "warnings",
+                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let warnings = warning_counter_arc_clone.load(Ordering::SeqCst);
+                        let _ = w.write_str(&warnings.to_string());
                     },
                 ),
         );
@@ -103,6 +113,7 @@ impl RestoreProgressReporter {
             processed_items_count: processed_items_count_arc,
             processing_items: Arc::new(RwLock::new(VecDeque::new())),
             error_counter: error_counter_arc,
+            warning_counter: warning_counter_arc,
             mp,
             progress_bar,
             companion_bar,
@@ -156,7 +167,7 @@ impl RestoreProgressReporter {
     }
 
     pub fn warning(&self, msg: &str) {
-        self.error_counter.fetch_add(1, Ordering::SeqCst);
+        self.warning_counter.fetch_add(1, Ordering::SeqCst);
         let _ = self
             .mp
             .println(format!("{} {msg}", "Warning:".bold().yellow()));

@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use crate::{
     backend::{Handle, NodeAttr},
     fs,
+    repository::repo::REPO_TMP_EXTENSION,
 };
 
 use super::StorageBackend;
@@ -88,11 +89,11 @@ impl StorageBackend for LocalFS {
 
     fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
         let path = handle.path;
-        let tmp_path = path.with_extension("tmp");
+        let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
         let full_tmp_path = self.full_path(&tmp_path);
 
         // Write to a tmp path
-        if let Err(_) = std::fs::write(&full_tmp_path, contents) {
+        if std::fs::write(&full_tmp_path, contents).is_err() {
             // If error, try creating the parent directory first and try again.
             let parent_dir = path.parent().with_context(|| {
                 format!(

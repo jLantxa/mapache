@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -13,13 +13,17 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
+    backend::{StorageBackend, read_backend_dir},
     fs::tree::SerializedNodeStreamer,
     mapache::{
         self, DEFAULT_ID, FileType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
         global::GlobalOpts,
     },
-    repository::{repo::Repository, snapshot::SnapshotStreamer},
+    repository::{
+        repo::{REPO_TMP_EXTENSION, Repository},
+        snapshot::SnapshotStreamer,
+    },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
@@ -165,6 +169,8 @@ impl Plan {
             deleted_size += self.delete_old_indices()?;
             deleted_size += self.delete_obsolete_packs()?;
         }
+
+        delete_tmp_files(self.repo.backend().as_ref())?;
 
         Ok((deleted_size - added_size) as i64)
     }
@@ -508,4 +514,26 @@ fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
     );
 
     Ok(size_freed)
+}
+
+/// Remove all .tmp files in the repository.
+/// These spurious files could remain after a failed write or an interruption,
+/// as they are created for atomically writing to the repository.
+fn delete_tmp_files(backend: &dyn StorageBackend) -> Result<()> {
+    let nodes = read_backend_dir(backend, Path::new(""))?;
+    let tmp_nodes = nodes
+        .into_iter()
+        .filter(|node| match node.path().extension() {
+            Some(ext) => ext.to_string_lossy().to_string() == REPO_TMP_EXTENSION,
+            None => false,
+        });
+
+    for node in tmp_nodes {
+        if let Err(_) = backend.remove(node.path()) {
+            // Failing to delete one of these files is not a fatal error.
+            ui::cli::warning!("Could not remove tmp file {}", node.path().display())
+        }
+    }
+
+    Ok(())
 }

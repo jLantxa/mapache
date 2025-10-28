@@ -6,10 +6,10 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
+use crate::archiver::tree_serializer::TreeSerializer;
 use crate::backend::{BackendOptions, StorageHint};
 use crate::mapache::SaveID;
 use crate::{
-    archiver::tree_serializer::{self, init_pending_trees},
     backend::new_backend_with_prompt,
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
@@ -231,8 +231,7 @@ fn rewrite_snapshot_tree(
     let mut paths = snapshot.paths.clone();
     paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
 
-    let mut final_root_tree_id: Option<ID> = None;
-    let mut pending_trees = init_pending_trees(&snapshot.root, &paths);
+    let mut tree_serializer = TreeSerializer::new(repo.clone(), snapshot.root.clone(), &paths);
 
     let node_streamer = SerializedNodeStreamer::new(
         repo.clone(),
@@ -253,18 +252,12 @@ fn rewrite_snapshot_tree(
         }
 
         // The path is not excluded, so we add the node to the pending trees map.
-        let (raw, encoded) = tree_serializer::handle_processed_item(
-            (path.clone(), stream_node),
-            repo.as_ref(),
-            &mut pending_trees,
-            &mut final_root_tree_id,
-            &snapshot.root,
-        )?;
-
+        let (raw, encoded) = tree_serializer.handle_processed_item((path.clone(), stream_node))?;
         raw_bytes += raw;
         encoded_bytes += encoded;
     }
 
+    let _ = tree_serializer.finalize_root()?;
     let (raw_meta, encoded_meta) = repo.flush()?;
     raw_bytes += raw_meta;
     encoded_bytes += encoded_meta;
@@ -277,7 +270,8 @@ fn rewrite_snapshot_tree(
 
     repo.finalize_pack_saver();
 
-    match final_root_tree_id {
+    let root_tree_id = tree_serializer.root_tree();
+    match root_tree_id {
         Some(amended_tree_id) => snapshot.tree = amended_tree_id,
         None => bail!("Failed to serialize new snapshot tree"),
     }

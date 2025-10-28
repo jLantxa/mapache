@@ -578,4 +578,116 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_snapshot_intermediate_paths() -> Result<()> {
+        let tmp_dir = tempdir()?;
+        let tmp_path = tmp_dir.path();
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
+
+        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
+        let backup_data_tmp_path = tmp_path.join("backup");
+        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
+
+        let repo = String::from("repo");
+        let repo_path = tmp_path.join(&repo);
+
+        let global = GlobalArgs {
+            repo: repo_path.to_string_lossy().to_string(),
+            auth_file: Some(auth_file_path),
+            key: None,
+            quiet: true,
+            verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
+            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            no_cache: true,
+        };
+        set_global_opts_with_args(&global);
+
+        // Init repo
+        init_repo(&auth, repo_path.clone())?;
+
+        // Run snapshot
+        let snapshot_args = cmd_snapshot::CmdArgs {
+            paths: vec![
+                backup_data_tmp_path.join("0"),
+                backup_data_tmp_path.join("1/10/file10.txt"), // 1/10 should be included as intermediate_paths
+                backup_data_tmp_path.join("2"),
+                backup_data_tmp_path.join("file.txt"),
+            ],
+            as_root: false,
+            exclude: None,
+            tags_str: String::new(),
+            description: None,
+            rescan: false,
+            parent: UseSnapshot::Latest,
+            read_concurrency: 2,
+            write_concurrency: 2,
+            dry_run: false,
+        };
+        commands::cmd_snapshot::run(&global, &snapshot_args)
+            .with_context(|| "Failed to run cmd_snapshot")?;
+
+        // Run restore
+        let restore_path = tmp_path.join("restore");
+        let restore_args = cmd_restore::CmdArgs {
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Skip,
+            no_verify: false,
+            quit_on_error: true,
+            delete: false,
+        };
+        commands::cmd_restore::run(&global, &restore_args)
+            .with_context(|| "Failed to run cmd_restore")?;
+
+        let paths = vec![
+            PathBuf::from("0"),
+            PathBuf::from("0/file0.txt"),
+            PathBuf::from("0/00"),
+            PathBuf::from("0/00/file00.txt"),
+            PathBuf::from("0/01"),
+            PathBuf::from("0/l01"),
+            PathBuf::from("0/01/file01a.txt"),
+            PathBuf::from("0/01/file01b.txt"),
+            PathBuf::from("1/10/file10.txt"),
+            PathBuf::from("2"),
+            PathBuf::from("file.txt"),
+        ];
+
+        for path in &paths {
+            let backup_path = backup_data_tmp_path.join(path);
+            let restored_path = restore_path.join(path);
+            assert!(restored_path.exists());
+
+            let restored_meta = restored_path.symlink_metadata()?;
+            let backup_meta = backup_path.symlink_metadata()?;
+
+            assert_eq!(restored_meta.len(), backup_meta.len());
+
+            #[cfg(unix)]
+            if restored_path.is_symlink() {
+                assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            }
+
+            if restored_path.is_file() {
+                assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);
+            }
+        }
+
+        Ok(())
+    }
 }

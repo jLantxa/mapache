@@ -36,6 +36,8 @@ pub const MANIFEST_PATH: &str = "manifest";
 pub const KEYS_DIR: &str = "keys";
 pub const LOCKS_DIR: &str = "locks";
 
+pub(crate) const REPO_TMP_EXTENSION: &str = "tmp";
+
 const OBJECTS_DIR_FANOUT: usize = 2;
 
 /// Authentication credentials of a user
@@ -295,6 +297,11 @@ impl Repository {
     /// Returns a reference to the repo manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// Get the repository backend
+    pub fn backend(&self) -> Arc<dyn StorageBackend> {
+        self.backend.clone()
     }
 
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in an pack file.

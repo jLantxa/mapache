@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ssh2::{RenameFlags, Session, Sftp};
 
-use crate::{backend::Handle, ui};
+use crate::{backend::Handle, repository::repo::REPO_TMP_EXTENSION, ui};
 
 use super::StorageBackend;
 
@@ -348,7 +348,7 @@ impl StorageBackend for SftpBackend {
 
     fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
         let path = handle.path;
-        let tmp_path = path.with_extension("tmp");
+        let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
         let full_tmp_path = self.full_path(&tmp_path);
         let conn = self.pool.get()?;
         let sftp = conn.sftp();
@@ -357,7 +357,7 @@ impl StorageBackend for SftpBackend {
         let mut file = sftp
             .create(&full_tmp_path)
             .with_context(|| format!("Failed to create file for writing: {tmp_path:?}"))?;
-        if let Err(_) = file.write_all(contents) {
+        if file.write_all(contents).is_err() {
             // If error, try creating the parent directory first and try again.
             let parent_dir = path.parent().with_context(|| {
                 format!(

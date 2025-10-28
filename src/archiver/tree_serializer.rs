@@ -143,6 +143,7 @@ impl TreeSerializer {
 
     // Helper function to encapsulate the core finalization and serialization logic,
     // handling both root and non-root directories.
+    #[allow(clippy::type_complexity)]
     fn finalize_and_save(
         &mut self,
         dir_path: PathBuf,

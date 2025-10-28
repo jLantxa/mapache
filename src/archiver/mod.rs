@@ -6,9 +6,9 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 use anyhow::{Result, anyhow, bail};
 use chrono::Local;
 use rayon::iter::{ParallelBridge, ParallelIterator};
-use tree_serializer::finalize_if_complete;
 
 use crate::{
+    archiver::tree_serializer::TreeSerializer,
     fs::tree::{FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
     mapache::ID,
     repository::{repo::Repository, snapshot::Snapshot},
@@ -179,9 +179,9 @@ impl Archiver {
         let serializer_snapshot_root_path_clone = arch.snapshot_options.snapshot_root_path.clone();
         let arch_clone = arch.clone();
         let tree_serializer_thread = std::thread::spawn(move || -> Option<ID> {
-            let mut final_root_tree_id: Option<ID> = None;
-            let mut pending_trees = tree_serializer::init_pending_trees(
-                &serializer_snapshot_root_path_clone,
+            let mut tree_serializer = TreeSerializer::new(
+                repo_clone,
+                serializer_snapshot_root_path_clone.clone(),
                 &arch_clone.snapshot_options.absolute_source_paths,
             );
 
@@ -194,13 +194,7 @@ impl Archiver {
                         .unwrap(),
                 );
 
-                match tree_serializer::handle_processed_item(
-                    item,
-                    repo_clone.as_ref(),
-                    &mut pending_trees,
-                    &mut final_root_tree_id,
-                    &serializer_snapshot_root_path_clone,
-                ) {
+                match tree_serializer.handle_processed_item(item) {
                     Ok((raw_tree_size, encoded_tree_size)) => serializer_progress_reporter_clone
                         .written_meta_bytes(raw_tree_size, encoded_tree_size),
                     Err(e) => {
@@ -214,13 +208,7 @@ impl Archiver {
             }
 
             // After the loop, if no error occurred, finalize the root tree.
-            if let Err(e) = finalize_if_complete(
-                serializer_snapshot_root_path_clone.clone(),
-                repo_clone.as_ref(),
-                &mut pending_trees,
-                &mut final_root_tree_id,
-                &serializer_snapshot_root_path_clone,
-            ) {
+            if let Err(e) = tree_serializer.finalize_root() {
                 serializer_progress_reporter_clone.error();
                 ui::cli::error!(
                     "Archiver serializer thread errored finalizing root tree: {:?}",
@@ -228,7 +216,7 @@ impl Archiver {
                 );
             }
 
-            final_root_tree_id
+            tree_serializer.root_tree()
         });
 
         // Join threads

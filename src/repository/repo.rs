@@ -469,7 +469,10 @@ impl Repository {
             if self.backend.is_file(&path)
                 && let Some(file_name) = path.file_name().and_then(|s| s.to_str())
             {
-                ids.push(ID::from_hex(file_name)?);
+                // Ignore all files with invalid ID names
+                if let Ok(id) = ID::from_hex(file_name) {
+                    ids.push(id);
+                }
             }
         }
 
@@ -754,7 +757,7 @@ impl Repository {
 
     /// Load the master index from file
     fn load_master_index(&mut self) -> Result<()> {
-        let files = self.backend.list_dir(&self.index_path)?;
+        let files = self.list_files(FileType::Index)?;
         let num_index_files = files.len();
 
         for file_path in files {
@@ -763,7 +766,10 @@ impl Repository {
                 .expect("Could not read index file name")
                 .to_string_lossy()
                 .clone();
-            let id = ID::from_hex(&file_name)?;
+            let id = match ID::from_hex(&file_name) {
+                Ok(id) => id,
+                Err(_) => continue, // Ignore invalid ID names
+            };
             let index_file = self.backend.read(
                 &Handle::new_with_hint(&file_path, true, FileType::Index),
                 0,

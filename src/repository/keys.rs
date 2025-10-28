@@ -307,6 +307,16 @@ impl Iterator for KeyFileStreamer {
                 continue;
             }
 
+            let id = match ID::from_hex(
+                path.file_name()
+                    .expect("File should have a name")
+                    .to_string_lossy()
+                    .as_ref(),
+            ) {
+                Err(_) => continue, // Ignore key files with invalid ID names
+                Ok(id) => id,
+            };
+
             let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
             let keyfile_data =
@@ -331,15 +341,6 @@ impl Iterator for KeyFileStreamer {
                 }
             };
 
-            let id = match ID::from_hex(
-                path.file_name()
-                    .expect("File should have a name")
-                    .to_string_lossy()
-                    .as_ref(),
-            ) {
-                Err(e) => return Some(Err(e)),
-                Ok(id) => id,
-            };
             return Some(Ok((id, keyfile)));
         }
 

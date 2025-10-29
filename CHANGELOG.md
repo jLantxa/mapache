@@ -9,6 +9,8 @@
 ### Fixes
 - Fixed calculation of file hashes (regression). The hash of a file is calculated after the contents are (potentially) encoded.
 - Ignore files with invalid ID names when loading indices, snapshots and keys.
+- Enforce read concurrency in snapshot cmd.
+- Fixed unclear cleanup handler logs in snapshot cmd.
 
 ## v0.1.0-beta.3
 ### Changes

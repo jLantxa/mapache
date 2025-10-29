@@ -118,53 +118,61 @@ impl Archiver {
         // Item processor thread. This thread receives diffs and processes them in parallel
         // using a rayon parallel iterator, chunking and saving files in the process.
         // The resulting processed nodes are passed to the serializer thread.
+        // A thread of pool is installed in order to enforce the concurrency limit.
         let process_item_tx_clone = process_item_tx.clone();
         let repo_clone = arch.repo.clone();
         let processor_progress_reporter_clone = arch.progress_reporter.clone();
         let snapshot_root_path_clone = arch.snapshot_options.snapshot_root_path.clone();
 
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(arch.read_concurrency)
+            .build()
+            .expect("Failed to create Rayon read concurrency pool");
+
         let processor_thread = std::thread::spawn(move || {
-            diff_rx
-                .into_iter()
-                .par_bridge()
-                .for_each(|(path, prev, next, diff)| {
-                    let inner_process_item_tx_clone = process_item_tx_clone.clone();
-                    let inner_repo_clone = repo_clone.clone();
-                    let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
-                    let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
+            pool.install(|| {
+                diff_rx
+                    .into_iter()
+                    .par_bridge()
+                    .for_each(|(path, prev, next, diff)| {
+                        let inner_process_item_tx_clone = process_item_tx_clone.clone();
+                        let inner_repo_clone = repo_clone.clone();
+                        let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
+                        let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
 
-                    let stripped_path = path
-                        .strip_prefix(&inner_snapshot_root_path_clone)
-                        .unwrap()
-                        .to_path_buf();
+                        let stripped_path = path
+                            .strip_prefix(&inner_snapshot_root_path_clone)
+                            .unwrap()
+                            .to_path_buf();
 
-                    inner_progress_reporter_clone.processing_node(stripped_path, diff);
+                        inner_progress_reporter_clone.processing_node(stripped_path, diff);
 
-                    let processed_item_result = processor::process_item(
-                        (path, prev, next, diff),
-                        inner_repo_clone,
-                        inner_progress_reporter_clone.clone(),
-                    );
+                        let processed_item_result = processor::process_item(
+                            (path, prev, next, diff),
+                            inner_repo_clone,
+                            inner_progress_reporter_clone.clone(),
+                        );
 
-                    match processed_item_result {
-                        Ok(Some(processed_item)) => {
-                            if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
+                        match processed_item_result {
+                            Ok(Some(processed_item)) => {
+                                if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
+                                    inner_progress_reporter_clone.error();
+                                    ui::cli::error!(
+                                        "Archiver processor task thread errored sending processing item: {:?}",
+                                        e.to_string()
+                                    );
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
                                 inner_progress_reporter_clone.error();
                                 ui::cli::error!(
-                                    "Archiver processor task thread errored sending processing item: {:?}",
+                                    "Archiver thread errored processing item: {:?}",
                                     e.to_string()
                                 );
                             }
                         }
-                        Ok(None) => {}
-                        Err(e) => {
-                            inner_progress_reporter_clone.error();
-                            ui::cli::error!(
-                                "Archiver thread errored processing item: {:?}",
-                                e.to_string()
-                            );
-                        }
-                    }
+                    });
                 });
         });
 

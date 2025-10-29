@@ -123,6 +123,11 @@ impl SnapshotProgressReporter {
                 ),
         );
 
+        let refresh_interval = GlobalOpts::progress_refresh_interval();
+
+        progress_bar.enable_steady_tick(refresh_interval);
+        companion_bar.enable_steady_tick(refresh_interval);
+
         let mut file_spinners = Vec::with_capacity(num_processed_items);
         for _ in 0..num_processed_items {
             let file_spinner = mp.add(ProgressBar::new_spinner());
@@ -132,7 +137,7 @@ impl SnapshotProgressReporter {
                     .unwrap()
                     .tick_chars(SPINNER_TICK_CHARS),
             );
-            file_spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+            file_spinner.enable_steady_tick(refresh_interval);
             file_spinners.push(file_spinner);
         }
 
@@ -164,11 +169,11 @@ impl SnapshotProgressReporter {
     }
 
     pub fn finalize(&self) {
-        self.progress_bar.finish_and_clear();
-        self.companion_bar.finish_and_clear();
         for spinner in self.file_spinners.iter() {
             spinner.finish_and_clear();
         }
+        self.companion_bar.finish_and_clear();
+        self.progress_bar.finish_and_clear();
         let _ = self.mp.clear();
     }
 
@@ -176,8 +181,6 @@ impl SnapshotProgressReporter {
         if diff != NodeDiff::Deleted {
             self.processing_items.write().push_back(path.clone());
             self.update_processing_items();
-            self.progress_bar.tick();
-            self.companion_bar.tick();
         }
 
         if self.verbosity >= 3 {
@@ -191,6 +194,9 @@ impl SnapshotProgressReporter {
             self.progress_bar
                 .println(format!("{}  {}", diff_mark, path.display()));
         }
+
+        self.progress_bar.tick();
+        self.companion_bar.tick();
     }
 
     pub fn processed_node(&self, path: &Path) {
@@ -199,8 +205,6 @@ impl SnapshotProgressReporter {
             self.processing_items.write().remove(i);
             self.processed_items_count.fetch_add(1, Ordering::Relaxed);
         }
-        self.progress_bar.tick();
-        self.companion_bar.tick();
     }
 
     pub fn processed_bytes(&self, bytes: u64) {

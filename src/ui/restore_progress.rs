@@ -96,6 +96,10 @@ impl RestoreProgressReporter {
                 ),
         );
 
+        let refresh_interval = GlobalOpts::progress_refresh_interval();
+
+        progress_bar.enable_steady_tick(refresh_interval);
+
         let mut file_spinners = Vec::with_capacity(num_display_items);
         for _ in 0..num_display_items {
             let file_spinner = mp.add(ProgressBar::new_spinner());
@@ -105,7 +109,7 @@ impl RestoreProgressReporter {
                     .unwrap()
                     .tick_chars(SPINNER_TICK_CHARS),
             );
-            file_spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+            file_spinner.enable_steady_tick(refresh_interval);
             file_spinners.push(file_spinner);
         }
 

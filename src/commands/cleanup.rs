@@ -4,8 +4,6 @@ use signal_hook::SigId;
 use signal_hook_registry::{self, register, unregister};
 use std::sync::Arc;
 
-use crate::ui;
-
 pub struct CleanupHandler {
     sigint_handler: SigId,
     sigterm_handler: SigId,
@@ -20,7 +18,6 @@ impl CleanupHandler {
         let clone_for_sigint = shared_cleanup.clone();
         let sigint_handler = unsafe {
             register(libc::SIGINT, move || {
-                ui::cli::log!("Process interrupted: cleaning up...");
                 clone_for_sigint.lock()();
                 std::process::exit(128 + libc::SIGINT);
             })?
@@ -29,7 +26,6 @@ impl CleanupHandler {
         let clone_for_sigterm = Arc::clone(&shared_cleanup);
         let sigterm_handler = unsafe {
             register(libc::SIGTERM, move || {
-                ui::cli::log!("Process terminated: cleaning up...");
                 clone_for_sigterm.lock()();
                 std::process::exit(128 + libc::SIGTERM);
             })?

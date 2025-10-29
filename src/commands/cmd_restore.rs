@@ -114,11 +114,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
     )?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
-
     let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
         Ok(Some((id, snap))) => (id, snap),
         Ok(None) | Err(_) => bail!("Snapshot not found"),
@@ -204,6 +199,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     ));
 
     let abs_normalized_target = get_absolute_normalized_path(&args.target)?;
+
+    // Init cleanup handler
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        lock_handle_clone.write().unlock();
+    })?;
 
     let start = Instant::now();
 

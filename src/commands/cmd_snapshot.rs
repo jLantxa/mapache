@@ -97,15 +97,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
     )?;
 
-    // Handle cleanup
-    let repo_clone = repo.clone();
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        let _ = repo_clone.flush();
-        lock_handle_clone.write().unlock();
-        repo_clone.finalize_pack_saver();
-    })?;
-
     let start = Instant::now();
 
     // Get source paths from arguments or readdir root path
@@ -241,6 +232,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         total_bytes,
         args.read_concurrency,
     ));
+
+    // Init cleanup handler
+    let repo_clone = repo.clone();
+    let reporter_clone = progress_reporter.clone();
+    let lock_handle_clone = lock_handle.clone();
+    let _cleanup_handler = CleanupHandler::new(move || {
+        reporter_clone.finalize();
+        ui::cli::log!("Process interrupted. Cleaning up...");
+
+        let _ = repo_clone.flush();
+        repo_clone.finalize_pack_saver();
+        lock_handle_clone.write().unlock();
+    })?;
 
     // Process and save new snapshot
     let archiver = Archiver::new(

@@ -23,7 +23,7 @@ struct BlobLocation {
     /// The offset of the blob within its pack file.
     pub offset: u32,
     /// The length of the blob within its pack file.
-    pub length: u32,
+    pub encoded_length: u32,
     /// The raw sized (uncompressed, unencrypted) of the blob
     pub raw_length: u32,
 }
@@ -138,7 +138,7 @@ impl Index {
                     BlobLocation {
                         pack_array_index: pack_index as u32,
                         offset: blob.offset,
-                        length: blob.length,
+                        encoded_length: blob.encoded_length,
                         raw_length: blob.raw_length,
                     },
                 );
@@ -167,7 +167,7 @@ impl Index {
                     pack_id,
                     BlobType::Data,
                     location.offset,
-                    location.length,
+                    location.encoded_length,
                     location.raw_length,
                 )
             })
@@ -181,7 +181,7 @@ impl Index {
                         pack_id,
                         BlobType::Tree,
                         location.offset,
-                        location.length,
+                        location.encoded_length,
                         location.raw_length,
                     )
                 })
@@ -205,7 +205,7 @@ impl Index {
                 BlobLocation {
                     pack_array_index: pack_index as u32,
                     offset: blob.offset,
-                    length: blob.length,
+                    encoded_length: blob.encoded_length,
                     raw_length: blob.raw_length,
                 },
             );
@@ -239,7 +239,7 @@ impl Index {
                     id: *blob_id,
                     blob_type,
                     offset: location.offset,
-                    length: location.length,
+                    encoded_length: location.encoded_length,
                     raw_length: location.raw_length,
                 });
             }
@@ -304,7 +304,7 @@ impl Index {
                     BlobLocator {
                         pack_id: *pack_ids.get_value(loc.pack_array_index as usize).unwrap(),
                         offset: loc.offset,
-                        length: loc.length,
+                        length: loc.encoded_length,
                         raw_length: loc.raw_length,
                     },
                 )
@@ -516,7 +516,7 @@ impl MasterIndex {
                         id: *blob_id,
                         blob_type,
                         offset: loc.offset,
-                        length: loc.length,
+                        encoded_length: loc.encoded_length,
                         raw_length: loc.raw_length,
                     };
 
@@ -598,7 +598,7 @@ pub struct IndexFileBlob {
     #[serde(rename = "type")]
     pub blob_type: BlobType,
     pub offset: u32,
-    pub length: u32,
+    pub encoded_length: u32,
     pub raw_length: u32,
 }
 
@@ -616,14 +616,14 @@ mod tests {
         s: &str,
         blob_type: BlobType,
         offset: u32,
-        length: u32,
+        encoded_length: u32,
     ) -> PackedBlobDescriptor {
         PackedBlobDescriptor {
             id: mock_id(s),
             blob_type,
             offset,
-            length,
-            raw_length: length * 2, // Example raw length
+            encoded_length,
+            raw_length: encoded_length * 2, // Example raw length
         }
     }
 

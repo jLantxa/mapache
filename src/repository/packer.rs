@@ -12,14 +12,40 @@ use crate::{
     utils,
 };
 
-pub const HEADER_ID_OFFSET: usize = 0;
-pub const HEADER_BLOB_TYPE_OFFSET: usize = HEADER_ID_OFFSET + size_of::<ID>();
-pub const HEADER_BLOB_LENGTH_OFFSET: usize = HEADER_BLOB_TYPE_OFFSET + size_of::<u8>();
-pub const HEADER_BLOB_RAW_LENGTH_OFFSET: usize = HEADER_BLOB_LENGTH_OFFSET + size_of::<u32>();
+///   Pack header format:
+///
+///   The pack header consists of a variable-length list of metadata blob entries, each 41 bytes
+///   long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
+///   blob type (u8), and both the encoded length and raw length (u32) of the associated
+///   data blob. The trailer is a single u32 field which stores the total length of the
+///   entire pack header, allowing a parser to efficiently skip directly to the file's data section.
+///   All data except the header length field is encrypted.
+///
+///   ┌────────┬────────┬─────┬────────┬─────────────────────┐
+///   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Header length (u32) │
+///   └────────┴────────┴─────┴────────┴─────────────────────┘
+///
+///   ┌──────────────────────────────────────────┐
+///   │     Pack header blob entry (41 bytes)    │
+///   │────────────────────────┬────────┬────────│
+///   │ Field                  │  Size  │ Offset │
+///   │────────────────────────┼────────┼────────│
+///   │ ID (256-bit raw hash)  │   32   │   0    │  Hash of the raw blob data
+///   │────────────────────────┼────────┼────────│
+///   │ Blob type (u8)         │    1   │   32   │
+///   │────────────────────────┼────────┼────────│
+///   │ Encoded length (u32)   │    4   │   32   │  Length of the encoded blob (in-pack)
+///   │────────────────────────┼────────┼────────│
+///   │ Raw length (u32)       │    4   │   37   │
+///   └────────────────────────┴────────┴────────┘
+///     ^ (41 bytes)
+///
 
-/// Size of a header blob entry
-/// id (256 bits) + type (u8) + length (u32) + raw_length (u32)
-pub const HEADER_BLOB_LEN: usize = HEADER_BLOB_RAW_LENGTH_OFFSET + size_of::<u32>();
+pub const HEADER_ID_OFFSET: usize = 0;
+pub const HEADER_BLOB_TYPE_OFFSET: usize = 32;
+pub const HEADER_BLOB_ENCODED_LENGTH_OFFSET: usize = 33;
+pub const HEADER_BLOB_RAW_LENGTH_OFFSET: usize = 37;
+pub const HEADER_BLOB_LEN: usize = 41;
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a pack.
@@ -28,8 +54,8 @@ pub struct PackedBlobDescriptor {
     pub id: ID,
     pub blob_type: BlobType,
     pub offset: u32,
-    pub length: u32,
     pub raw_length: u32,
+    pub encoded_length: u32,
 }
 
 /// A tuple representing the flushed contents of a `Packer`:
@@ -124,16 +150,16 @@ impl Packer {
 
         for blob in blobs {
             let mut blob_data = blob.2;
-            let length = blob_data.len() as u32;
+            let encoded_length = blob_data.len() as u32;
             descriptors.push(PackedBlobDescriptor {
                 id: blob.0,
                 blob_type: blob.1,
                 offset,
-                length,
                 raw_length: blob.3 as u32,
+                encoded_length,
             });
             data.append(&mut blob_data);
-            offset += length;
+            offset += encoded_length;
         }
 
         let header = Self::generate_header(&mut descriptors);
@@ -169,8 +195,8 @@ impl Packer {
                     id: ID::new_random(),
                     blob_type: BlobType::Padding,
                     offset: rng.random(),
-                    length: rng.random(),
                     raw_length: rng.random(),
+                    encoded_length: rng.random(),
                 });
             }
         }
@@ -180,7 +206,9 @@ impl Packer {
             cursor
                 .write_all(&(blob.blob_type as u8).to_le_bytes())
                 .unwrap();
-            cursor.write_all(&blob.length.to_le_bytes()).unwrap();
+            cursor
+                .write_all(&blob.encoded_length.to_le_bytes())
+                .unwrap();
             cursor.write_all(&blob.raw_length.to_le_bytes()).unwrap();
         }
         pack_header
@@ -266,10 +294,10 @@ impl Packer {
             let id = ID::from_bytes(blob_id_bytes);
 
             let length_bytes: [u8; 4] = blob_info
-                [HEADER_BLOB_LENGTH_OFFSET..HEADER_BLOB_LENGTH_OFFSET + 4]
+                [HEADER_BLOB_ENCODED_LENGTH_OFFSET..HEADER_BLOB_ENCODED_LENGTH_OFFSET + 4]
                 .try_into()
                 .unwrap();
-            let length = u32::from_le_bytes(length_bytes);
+            let encoded_length = u32::from_le_bytes(length_bytes);
 
             let raw_length_bytes: [u8; 4] = blob_info
                 [HEADER_BLOB_RAW_LENGTH_OFFSET..HEADER_BLOB_RAW_LENGTH_OFFSET + 4]
@@ -281,12 +309,12 @@ impl Packer {
                 id,
                 blob_type,
                 offset,
-                length,
                 raw_length,
+                encoded_length,
             };
             blob_descriptors.push(blob_descriptor);
 
-            offset += length;
+            offset += encoded_length;
         }
 
         Ok(blob_descriptors)
@@ -403,7 +431,7 @@ mod tests {
         // can decode the content of every blob.
         for (i, descriptor) in header_descriptors.iter().enumerate() {
             let offset = descriptor.offset as usize;
-            let len = descriptor.length as usize;
+            let len = descriptor.encoded_length as usize;
             let data = &flushed_pack.data[offset..(offset + len)];
             let decoded_data = secure_storage.decode(data)?;
 

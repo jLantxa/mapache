@@ -12,34 +12,34 @@ use crate::{
     utils,
 };
 
-///   Pack header format:
-///
-///   The pack header consists of a variable-length list of metadata blob entries, each 41 bytes
-///   long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
-///   blob type (u8), and both the encoded length and raw length (u32) of the associated
-///   data blob. The trailer is a single u32 field which stores the total length of the
-///   entire pack header, allowing a parser to efficiently skip directly to the file's data section.
-///   All data except the header length field is encrypted.
-///
-///   ┌────────┬────────┬─────┬────────┬─────────────────────┐
-///   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Header length (u32) │
-///   └────────┴────────┴─────┴────────┴─────────────────────┘
-///
-///   ┌──────────────────────────────────────────┐
-///   │     Pack header blob entry (41 bytes)    │
-///   │────────────────────────┬────────┬────────│
-///   │ Field                  │  Size  │ Offset │
-///   │────────────────────────┼────────┼────────│
-///   │ ID (256-bit raw hash)  │   32   │   0    │  Hash of the raw blob data
-///   │────────────────────────┼────────┼────────│
-///   │ Blob type (u8)         │    1   │   32   │
-///   │────────────────────────┼────────┼────────│
-///   │ Encoded length (u32)   │    4   │   32   │  Length of the encoded blob (in-pack)
-///   │────────────────────────┼────────┼────────│
-///   │ Raw length (u32)       │    4   │   37   │
-///   └────────────────────────┴────────┴────────┘
-///     ^ (41 bytes)
-///
+//   Pack header format:
+//
+//   The pack header consists of a variable-length list of metadata blob entries, each 41 bytes
+//   long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
+//   blob type (u8), and both the encoded length and raw length (u32) of the associated
+//   data blob. The trailer is a single u32 field which stores the total length of the
+//   entire pack header, allowing a parser to efficiently skip directly to the file's data section.
+//   All data except the header length field is encrypted.
+//
+//   ┌────────┬────────┬─────┬────────┬─────────────────────┐
+//   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Header length (u32) │
+//   └────────┴────────┴─────┴────────┴─────────────────────┘
+//
+//   ┌──────────────────────────────────────────┐
+//   │     Pack header blob entry (41 bytes)    │
+//   │────────────────────────┬────────┬────────│
+//   │ Field                  │  Size  │ Offset │
+//   │────────────────────────┼────────┼────────│
+//   │ ID (256-bit raw hash)  │   32   │   0    │  Hash of the raw blob data
+//   │────────────────────────┼────────┼────────│
+//   │ Blob type (u8)         │    1   │   32   │
+//   │────────────────────────┼────────┼────────│
+//   │ Encoded length (u32)   │    4   │   32   │  Length of the encoded blob (in-pack)
+//   │────────────────────────┼────────┼────────│
+//   │ Raw length (u32)       │    4   │   37   │
+//   └────────────────────────┴────────┴────────┘
+//     ^ (41 bytes)
+//
 
 pub const HEADER_ID_OFFSET: usize = 0;
 pub const HEADER_BLOB_TYPE_OFFSET: usize = 32;

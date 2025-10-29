@@ -524,12 +524,12 @@ fn delete_tmp_files(backend: &dyn StorageBackend) -> Result<()> {
     let tmp_nodes = nodes
         .into_iter()
         .filter(|node| match node.path().extension() {
-            Some(ext) => ext.to_string_lossy().to_string() == REPO_TMP_EXTENSION,
+            Some(ext) => ext.to_string_lossy() == REPO_TMP_EXTENSION,
             None => false,
         });
 
     for node in tmp_nodes {
-        if let Err(_) = backend.remove(node.path()) {
+        if backend.remove(node.path()).is_err() {
             // Failing to delete one of these files is not a fatal error.
             ui::cli::warning!("Could not remove tmp file {}", node.path().display())
         }

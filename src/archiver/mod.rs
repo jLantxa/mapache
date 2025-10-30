@@ -3,7 +3,7 @@ pub(crate) mod tree_serializer;
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
@@ -66,20 +66,19 @@ impl Archiver {
             .map(|(_id, snapshot)| snapshot.tree);
 
         // Create streamers
-        let fs_streamer = match FSNodeStreamer::from_paths(
+        let fs_streamer = FSNodeStreamer::from_paths(
             arch.snapshot_options.absolute_source_paths.clone(),
             arch.snapshot_options.exclude_paths.clone(),
-        ) {
-            Ok(stream) => stream,
-            Err(e) => bail!("Failed to create FSNodeStreamer: {:?}", e.to_string()),
-        };
+        )
+        .context("Failed to create FSNodeStreamer")?;
         let previous_tree_streamer = SerializedNodeStreamer::new(
             arch.repo.clone(),
             parent_tree_id,
             arch.snapshot_options.snapshot_root_path.clone(),
             None,
             None,
-        )?;
+        )
+        .context("Failed to create SerializedNodeStreamer")?;
 
         arch.repo.init_pack_saver(arch.write_concurrency);
 
@@ -89,9 +88,9 @@ impl Archiver {
             Option<StreamNode>,
             Option<StreamNode>,
             NodeDiff,
-        )>(arch.read_concurrency);
+        )>(4 * arch.read_concurrency);
         let (process_item_tx, process_item_rx) =
-            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(arch.read_concurrency);
+            crossbeam_channel::bounded::<(PathBuf, StreamNode)>(4 * arch.read_concurrency);
 
         // Diff thread. This thread iterates the NodeDiffStreamer and passes the
         // items to the item processor thread.
@@ -113,6 +112,9 @@ impl Archiver {
                     }
                 }
             }
+
+            // Exclicitly drop the diff tx.
+            drop(diff_tx);
         });
 
         // Item processor thread. This thread receives diffs and processes them in parallel
@@ -135,17 +137,15 @@ impl Archiver {
                     .into_iter()
                     .par_bridge()
                     .for_each(|(path, prev, next, diff)| {
-                        let inner_process_item_tx_clone = process_item_tx_clone.clone();
                         let inner_repo_clone = repo_clone.clone();
                         let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
-                        let inner_snapshot_root_path_clone = snapshot_root_path_clone.clone();
 
                         let stripped_path = path
-                            .strip_prefix(&inner_snapshot_root_path_clone)
-                            .unwrap()
+                            .strip_prefix(&snapshot_root_path_clone)
+                            .unwrap_or(&path)
                             .to_path_buf();
 
-                        inner_progress_reporter_clone.processing_node(stripped_path, diff);
+                        inner_progress_reporter_clone.processing_node(&stripped_path, diff);
 
                         let processed_item_result = processor::process_item(
                             (path, prev, next, diff),
@@ -155,11 +155,10 @@ impl Archiver {
 
                         match processed_item_result {
                             Ok(Some(processed_item)) => {
-                                if let Err(e) = inner_process_item_tx_clone.send(processed_item) {
+                                if let Err(e) = process_item_tx_clone.send(processed_item) {
                                     inner_progress_reporter_clone.error();
                                     ui::cli::error!(
-                                        "Archiver processor task thread errored sending processing item: {:?}",
-                                        e.to_string()
+                                        "Archiver processor task thread errored sending processing item: {e:#}"
                                     );
                                 }
                             }
@@ -167,8 +166,7 @@ impl Archiver {
                             Err(e) => {
                                 inner_progress_reporter_clone.error();
                                 ui::cli::error!(
-                                    "Archiver thread errored processing item: {:?}",
-                                    e.to_string()
+                                    "Archiver thread errored processing item: {e:#}"
                                 );
                             }
                         }
@@ -199,7 +197,7 @@ impl Archiver {
                 serializer_progress_reporter_clone.processed_node(
                     item_path
                         .strip_prefix(serializer_snapshot_root_path_clone.clone())
-                        .unwrap(),
+                        .unwrap_or(item_path),
                 );
 
                 match tree_serializer.handle_processed_item(item) {
@@ -208,29 +206,38 @@ impl Archiver {
                     Err(e) => {
                         serializer_progress_reporter_clone.error();
                         ui::cli::error!(
-                            "Archiver serializer thread errored handling processed item: {:?}",
-                            e.to_string()
+                            "Archiver serializer thread errored handling processed item: {e:#}"
                         );
                     }
                 }
             }
 
-            // After the loop, if no error occurred, finalize the root tree.
-            if let Err(e) = tree_serializer.finalize_root() {
-                serializer_progress_reporter_clone.error();
-                ui::cli::error!(
-                    "Archiver serializer thread errored finalizing root tree: {:?}",
-                    e.to_string()
-                );
+            // Now finalize the root tree.
+            match tree_serializer.finalize_root() {
+                Ok((raw, encoded)) => {
+                    serializer_progress_reporter_clone.written_meta_bytes(raw, encoded);
+                    tree_serializer.root_tree()
+                }
+                Err(e) => {
+                    serializer_progress_reporter_clone.error();
+                    ui::cli::error!(
+                        "Archiver serializer thread errored finalizing root tree: {e:#}"
+                    );
+                    None
+                }
             }
-
-            tree_serializer.root_tree()
         });
 
         // Join threads
-        let _ = diff_thread.join();
-        let _ = processor_thread.join();
-        let root_tree_id = tree_serializer_thread.join().unwrap();
+        diff_thread
+            .join()
+            .map_err(|_| anyhow!("Archiver diff thread panicked"))?;
+        processor_thread
+            .join()
+            .map_err(|_| anyhow!("Archiver processor thread panicked"))?;
+        let root_tree_id = tree_serializer_thread
+            .join()
+            .map_err(|_| anyhow!("Archiver serializer thread panicked"))?;
 
         // Unwrap the archiver Arc to avoid cloning the contents.
         // Archiver cannot implement Debug, so unwrap is not available.
@@ -239,7 +246,7 @@ impl Archiver {
             Ok(a) => a,
             // This error is never supposed to happen because at this point
             // only one copy of the Arc exists.
-            Err(_) => bail!("Fatal error ocurred unwrapping the Archiver pointer."),
+            Err(_) => bail!("Fatal error occurred unwrapping the Archiver pointer."),
         };
 
         // Flush repo and finalize pack saver

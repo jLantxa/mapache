@@ -177,9 +177,9 @@ impl SnapshotProgressReporter {
         let _ = self.mp.clear();
     }
 
-    pub fn processing_node(&self, path: PathBuf, diff: NodeDiff) {
+    pub fn processing_node(&self, path: &Path, diff: NodeDiff) {
         if diff != NodeDiff::Deleted {
-            self.processing_items.write().push_back(path.clone());
+            self.processing_items.write().push_back(path.to_path_buf());
             self.update_processing_items();
         }
 

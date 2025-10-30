@@ -139,6 +139,7 @@ fn chunk_and_store_file(
             repo.encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)?;
         progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
         progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);
+        progress_reporter.processed_bytes(node.metadata.size);
 
         return Ok(vec![id]);
     }

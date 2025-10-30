@@ -65,7 +65,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let (id, _) = repo
                 .find(ContentIdType::Snapshot, prefix)
                 .with_context(|| format!("Could not find snapshot {prefix}"))?;
-            let snapshot = repo.load_snapshot(&id)?;
+            let snapshot = repo.load_snapshot(&id, None)?;
             vec![(id, snapshot)]
         }
     };

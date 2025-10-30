@@ -157,7 +157,7 @@ impl LockHandle {
         // this will fail, but it's OK anyway.
         let _ = self
             .repo
-            .delete_file(ContentIdType::Lock, self.lock.lock().id());
+            .delete_file(ContentIdType::Lock, self.lock.lock().id(), None);
     }
 }
 

@@ -40,7 +40,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_deleted_locks = 0;
     for lock in locks {
         if args.force || lock.is_expired() {
-            repo.delete_file(ContentIdType::Lock, lock.id())?;
+            repo.delete_file(ContentIdType::Lock, lock.id(), None)?;
             num_deleted_locks += 1;
         }
     }

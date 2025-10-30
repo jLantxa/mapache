@@ -129,7 +129,7 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
         }
         None => {
             let path = Path::new(KEYS_DIR).join(new_keyfile_id.to_hex());
-            let handle = Handle::new_with_hint(&path, true, ContentIdType::Key);
+            let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
             backend.write(&handle, &new_keyfile_json)?;
         }
     }

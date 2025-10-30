@@ -68,8 +68,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Load snapshots
     let (source_id, _) = repo.find(ContentIdType::Snapshot, &args.source_snapshot_id)?;
     let (target_id, _) = repo.find(ContentIdType::Snapshot, &args.target_snapshot_id)?;
-    let source_snapshot = repo.load_snapshot(&source_id)?;
-    let target_snapshot = repo.load_snapshot(&target_id)?;
+    let source_snapshot = repo.load_snapshot(&source_id, None)?;
+    let target_snapshot = repo.load_snapshot(&target_id, None)?;
 
     let source_node_streamer = SerializedNodeStreamer::new(
         repo.clone(),

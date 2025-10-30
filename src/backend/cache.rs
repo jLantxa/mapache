@@ -9,7 +9,7 @@ use anyhow::Result;
 use parking_lot::Mutex;
 
 use crate::{
-    backend::{Handle, StorageBackend, StorageHint, localfs::LocalFS},
+    backend::{Handle, StorageBackend, localfs::LocalFS},
     mapache::{ContentIdType, defaults::APP_NAME, global::BASE_DIRS},
 };
 
@@ -47,16 +47,25 @@ impl CacheBackend {
         BASE_DIRS.read().cache_dir().join(APP_NAME)
     }
 
-    /// Returns true if the storage `hint` is eligible for caching.
+    /// Returns true if the storage handle is eligible for caching.
     /// This function decides what files must be cached.
-    fn should_cache(hint: &Option<StorageHint>) -> bool {
-        match hint {
-            None => false, // No caching without storage hint
-            Some(h) => match h.file_type {
-                ContentIdType::Pack => h.is_metadata, // Cache only tree packs
-                ContentIdType::Snapshot | ContentIdType::Index => true,
-                _ => false,
-            },
+    fn should_cache(handle: &Handle) -> bool {
+        // Files with any extension are never cached.
+        if handle.path.extension().is_some() {
+            return false;
+        }
+
+        // No caching without a storage hint.
+        let hint = match &handle.hint {
+            Some(h) => h,
+            None => return false,
+        };
+
+        // Cache is allowed only for specific ContentIdTypes and conditions.
+        match hint.file_type {
+            ContentIdType::Snapshot | ContentIdType::Index => true,
+            ContentIdType::Pack => hint.is_metadata, // Only cache tree/metadata packs
+            _ => false, // All other types (Key, Data, etc.) are excluded
         }
     }
 }
@@ -132,7 +141,7 @@ impl StorageBackend for CacheBackend {
     }
 
     fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
-        if !Self::should_cache(&handle.hint) {
+        if !Self::should_cache(handle) {
             // If the handle is not eligible for caching, read directly from the primary.
             let data = self.backend.read(handle, offset, length)?;
             return Ok(data);
@@ -154,7 +163,7 @@ impl StorageBackend for CacheBackend {
         self.backend.write(handle, contents)?;
 
         // Then write to the cache backend
-        if Self::should_cache(&handle.hint) {
+        if Self::should_cache(handle) {
             if let Some(parent) = handle.path.parent() {
                 self.cache.create_dir(parent)?;
             }
@@ -166,7 +175,10 @@ impl StorageBackend for CacheBackend {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        self.cache.rename(from, to)?;
+        // Try to rename the cached path. If it failed, it didn't exist.
+        // If this fill should be cached, it will be next time it is read.
+        let _ = self.cache.rename(from, to);
+
         self.backend.rename(from, to)?;
         Ok(())
     }

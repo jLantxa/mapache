@@ -177,13 +177,13 @@ impl SnapshotStreamer {
     pub fn latest(&mut self) -> Option<(ID, Snapshot)> {
         self.snapshot_ids.sort_by_key(|id| {
             // Load each snapshot just to get its timestamp
-            self.repo.load_snapshot(id).ok().map(|s| s.timestamp)
+            self.repo.load_snapshot(id, None).ok().map(|s| s.timestamp)
         });
 
         // Now the last ID in the sorted vector is the latest one.
         // Pop it and load the snapshot one last time.
         let latest_id = self.snapshot_ids.pop()?;
-        let latest_snapshot = self.repo.load_snapshot(&latest_id).ok()?;
+        let latest_snapshot = self.repo.load_snapshot(&latest_id, None).ok()?;
 
         Some((latest_id, latest_snapshot))
     }
@@ -195,7 +195,7 @@ impl Iterator for SnapshotStreamer {
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.snapshot_ids.pop()?;
         self.repo
-            .load_snapshot(&id)
+            .load_snapshot(&id, None)
             .map_or(None, |snapshot| Some((id, snapshot)))
     }
 }

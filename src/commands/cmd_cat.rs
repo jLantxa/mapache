@@ -119,7 +119,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Object::Snapshot(prefix) => {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
             let snapshot = repo
-                .load_snapshot(&id)
+                .load_snapshot(&id, None)
                 .with_context(|| "Failed to load snapshot")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&snapshot)?);
             Ok(())

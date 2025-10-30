@@ -120,7 +120,7 @@ impl Repository {
             }
             None => {
                 let p = keys_path.join(keyfile_id.to_hex());
-                let handle = Handle::new_with_hint(&p, true, ContentIdType::Key);
+                let handle = Handle::new_with_hint(&p, ContentIdType::Key, true);
                 backend.write(&handle, &keyfile_json)?;
             }
         }
@@ -396,8 +396,15 @@ impl Repository {
     }
 
     /// Loads a file to the repository
-    pub fn load_file(&self, id: &ID, hint: StorageHint) -> Result<Vec<u8>> {
-        let path = self.get_path(hint.file_type, id);
+    pub fn load_file(
+        &self,
+        id: &ID,
+        hint: StorageHint,
+        with_extension: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let path = self
+            .get_path(hint.file_type, id)
+            .with_extension(with_extension.unwrap_or_default());
         let file_type = hint.file_type;
         let handle = Handle {
             path: &path,
@@ -413,8 +420,15 @@ impl Repository {
     }
 
     /// Deletes a file from the repository
-    pub fn delete_file(&self, file_type: ContentIdType, id: &ID) -> Result<u64> {
-        let path = self.get_path(file_type, id);
+    pub fn delete_file(
+        &self,
+        file_type: ContentIdType,
+        id: &ID,
+        with_extension: Option<&str>,
+    ) -> Result<u64> {
+        let path = self
+            .get_path(file_type, id)
+            .with_extension(with_extension.unwrap_or_default());
         let size = self.backend.lstat(&path)?.size;
         self.backend.remove(&path)?;
 
@@ -435,14 +449,15 @@ impl Repository {
     }
 
     /// Loads a snapshot by ID
-    pub fn load_snapshot(&self, id: &ID) -> Result<Snapshot> {
+    pub fn load_snapshot(&self, id: &ID, extension: Option<&str>) -> Result<Snapshot> {
         let snapshot = self
             .load_file(
                 id,
                 StorageHint {
-                    is_metadata: true,
                     file_type: ContentIdType::Snapshot,
+                    is_metadata: true,
                 },
+                extension,
             )
             .with_context(|| format!("No snapshot with ID '{id}' exists"))?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
@@ -492,9 +507,10 @@ impl Repository {
         self.load_file(
             id,
             StorageHint {
-                is_metadata: false,
                 file_type: ContentIdType::Pack,
+                is_metadata: false,
             },
+            None,
         )
     }
 
@@ -504,9 +520,10 @@ impl Repository {
             .load_file(
                 id,
                 StorageHint {
-                    is_metadata: true,
                     file_type: ContentIdType::Index,
+                    is_metadata: true,
                 },
+                None,
             )
             .with_context(|| format!("Could not load index {}", id.to_hex()))?;
         let index = serde_json::from_slice(&index)?;
@@ -530,9 +547,10 @@ impl Repository {
             .load_file(
                 id,
                 StorageHint {
-                    is_metadata: true,
                     file_type: ContentIdType::Lock,
+                    is_metadata: true,
                 },
+                None,
             )
             .with_context(|| format!("Could not load lock file {}", id.to_hex()))?;
         let lock = serde_json::from_slice(&lock)?;
@@ -544,9 +562,10 @@ impl Repository {
         let key = self.load_file(
             id,
             StorageHint {
-                is_metadata: true,
                 file_type: ContentIdType::Key,
+                is_metadata: true,
             },
+            None,
         )?;
         let key = serde_json::from_slice(&key)?;
         Ok(key)
@@ -606,7 +625,7 @@ impl Repository {
             Arc::new(move |data, id, blob_type: BlobType| {
                 let path = Self::get_object_path(&objects_path, &id);
                 if let Err(e) = backend.write(
-                    &Handle::new_with_hint(&path, blob_type == BlobType::Tree, ContentIdType::Pack),
+                    &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
                     &data,
                 ) {
                     cli::error!("Could not save pack {}: {}", id.to_hex(), e);
@@ -637,7 +656,7 @@ impl Repository {
     ) -> Result<Vec<u8>> {
         let path = self.get_path(ContentIdType::Pack, id);
         let data = self.backend.read(
-            &Handle::new_with_hint(&path, blob_type == BlobType::Tree, ContentIdType::Pack),
+            &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
             offset as isize,
             length as usize,
         )?;
@@ -758,7 +777,7 @@ impl Repository {
                 Err(_) => continue, // Ignore invalid ID names
             };
             let index_file = self.backend.read(
-                &Handle::new_with_hint(&file_path, true, ContentIdType::Index),
+                &Handle::new_with_hint(&file_path, ContentIdType::Index, true),
                 0,
                 0,
             )?;
@@ -792,8 +811,8 @@ impl Repository {
         let data = self.backend.read(
             &Handle::new_with_hint(
                 &object_path,
-                blob_type == BlobType::Tree,
                 ContentIdType::Pack,
+                blob_type == BlobType::Tree,
             ),
             offset as isize,
             length as usize,
@@ -822,14 +841,14 @@ impl Repository {
 
             // Clean up expired locks from other processes
             if lock.is_expired() {
-                let _ = self.delete_file(ContentIdType::Lock, lock.id());
+                let _ = self.delete_file(ContentIdType::Lock, lock.id(), None);
                 continue;
             }
 
             if exclusive || lock.is_exclusive() {
                 // A race condition occurred, or a conflict was already present.
                 // The NEWLY written lock must be cleaned up and the attempt must fail.
-                let _ = self.delete_file(ContentIdType::Lock, &new_lock_id);
+                let _ = self.delete_file(ContentIdType::Lock, &new_lock_id, None);
 
                 bail!(
                     "Failed to acquire lock: Conflict detected with existing lock (ID: {}).",
@@ -850,8 +869,8 @@ impl Repository {
             &SaveID::WithID(*lock_guard.id()),
             lock_json.as_bytes(),
             StorageHint {
-                is_metadata: true,
                 file_type: ContentIdType::Lock,
+                is_metadata: true,
             },
         )?;
 
@@ -872,7 +891,7 @@ impl Repository {
         for path in all_lock_paths {
             // Attempt to read the lock file
             let lock_data_result = self.backend.read(
-                &Handle::new_with_hint(&path, true, ContentIdType::Lock),
+                &Handle::new_with_hint(&path, ContentIdType::Lock, true),
                 0,
                 0,
             );

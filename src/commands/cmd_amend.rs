@@ -165,8 +165,8 @@ fn amend(
         &SaveID::CalculateID,
         serde_json::to_string(&snapshot)?.as_bytes(),
         StorageHint {
-            is_metadata: true,
             file_type: ContentIdType::Snapshot,
+            is_metadata: true,
         },
     )?;
     raw += raw_meta;
@@ -177,7 +177,7 @@ fn amend(
     // after the new one is saved.
     if new_id != *origin_snapshot_id {
         if !args.keep_old {
-            repo.delete_file(ContentIdType::Snapshot, origin_snapshot_id)?;
+            repo.delete_file(ContentIdType::Snapshot, origin_snapshot_id, None)?;
         }
 
         ui::cli::log!(

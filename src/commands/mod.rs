@@ -168,7 +168,7 @@ fn find_use_snapshot(
         UseSnapshot::Latest => Ok(SnapshotStreamer::new(repo.clone())?.latest()),
         UseSnapshot::SnapshotId(prefix) => {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
-            let snap = repo.load_snapshot(&id)?;
+            let snap = repo.load_snapshot(&id, None)?;
             Ok(Some((id, snap)))
         }
     }

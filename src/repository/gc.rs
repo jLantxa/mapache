@@ -21,7 +21,7 @@ use crate::{
         global::GlobalOpts,
     },
     repository::{
-        repo::{REPO_TMP_EXTENSION, Repository},
+        repo::{REPO_DROPPED_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStreamer,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
@@ -147,6 +147,8 @@ impl Plan {
         // as the expired locks are not useful anymore.
         deleted_size += remove_expired_locks(&self.repo)?;
 
+        delete_trash_files(self.repo.backend().as_ref())?;
+
         // Append small packs to the obsolete pack list. These will be repacked and deleted,
         // which helps consolidate storage and eliminates duplicates that might be in them.
         if self.small_packs.len() > 1 {
@@ -169,8 +171,6 @@ impl Plan {
             deleted_size += self.delete_old_indices()?;
             deleted_size += self.delete_obsolete_packs()?;
         }
-
-        delete_tmp_files(self.repo.backend().as_ref())?;
 
         Ok((deleted_size - added_size) as i64)
     }
@@ -516,22 +516,23 @@ fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
     Ok(size_freed)
 }
 
-/// Remove all .tmp files in the repository.
-/// These spurious files could remain after a failed write or an interruption,
-/// as they are created for atomically writing to the repository.
-fn delete_tmp_files(backend: &dyn StorageBackend) -> Result<()> {
+/// Remove all .tmp and .dropped files in the repository.
+fn delete_trash_files(backend: &dyn StorageBackend) -> Result<()> {
     let nodes = read_backend_dir(backend, Path::new(""))?;
     let tmp_nodes = nodes
         .into_iter()
         .filter(|node| match node.path().extension() {
-            Some(ext) => ext.to_string_lossy() == REPO_TMP_EXTENSION,
+            Some(ext) => {
+                ext.to_string_lossy() == REPO_TMP_EXTENSION
+                    || ext.to_string_lossy() == REPO_DROPPED_EXTENSION
+            }
             None => false,
         });
 
     for node in tmp_nodes {
         if backend.remove(node.path()).is_err() {
             // Failing to delete one of these files is not a fatal error.
-            ui::cli::warning!("Could not remove tmp file {}", node.path().display())
+            ui::cli::warning!("Could not remove file {}", node.path().display())
         }
     }
 

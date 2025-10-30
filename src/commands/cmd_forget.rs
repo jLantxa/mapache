@@ -10,7 +10,7 @@ use crate::commands::cleanup::CleanupHandler;
 use crate::commands::parse_tags;
 use crate::mapache::defaults::DEFAULT_GC_TOLERANCE;
 use crate::mapache::{ContentIdType, ID};
-use crate::repository::repo::{RepoConfig, Repository};
+use crate::repository::repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository};
 use crate::repository::snapshot::{Snapshot, SnapshotStreamer};
 use crate::ui::log_snapshots_compact;
 use crate::utils::size;
@@ -229,7 +229,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if !args.dry_run {
         let num_removed_snapshots = removed_snapshots.len();
         for (id, _) in removed_snapshots {
-            repo.remove_snapshot(&id)?;
+            repo.set_extension(ContentIdType::Snapshot, &id, Some(REPO_DROPPED_EXTENSION))?;
         }
 
         ui::cli::log!(

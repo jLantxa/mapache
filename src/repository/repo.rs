@@ -37,6 +37,7 @@ pub const KEYS_DIR: &str = "keys";
 pub const LOCKS_DIR: &str = "locks";
 
 pub(crate) const REPO_TMP_EXTENSION: &str = "tmp";
+pub(crate) const REPO_DROPPED_EXTENSION: &str = "dropped";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 
@@ -433,6 +434,20 @@ impl Repository {
         self.backend.remove(&path)?;
 
         Ok(size.unwrap_or(0))
+    }
+
+    /// Sets an extension to a file.
+    pub fn set_extension(
+        &self,
+        file_type: ContentIdType,
+        id: &ID,
+        extension: Option<&str>,
+    ) -> Result<()> {
+        let path = self.get_path(file_type, id);
+        let ext_path = path.with_extension(extension.unwrap_or_default());
+        self.backend.rename(&path, &ext_path)?;
+
+        Ok(())
     }
 
     /// Removes a snapshot from the repository, if it exists.

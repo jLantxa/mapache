@@ -153,12 +153,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     // All sapshots, filter by tags and sorted by timestamp
-    let mut snapshots_sorted: Vec<(ID, Snapshot)> = SnapshotStreamer::new(repo.clone())?.collect();
+    let mut snapshots_sorted: Vec<(ID, Snapshot, bool)> = SnapshotStreamer::new(repo.clone())?
+        .map(|(id, snapshot)| (id, snapshot, true))
+        .collect();
     if let Some(tags) = &args.tags_str {
         let tags = parse_tags(Some(tags));
-        snapshots_sorted.retain(|(_id, sn)| sn.has_tags(&tags));
+        snapshots_sorted.retain(|(_id, sn, _active)| sn.has_tags(&tags));
     }
-    snapshots_sorted.sort_unstable_by_key(|(_id, snapshot)| snapshot.timestamp);
+    snapshots_sorted.sort_unstable_by_key(|(_id, snapshot, _active)| snapshot.timestamp);
 
     let mut ids_to_keep: HashSet<ID> = HashSet::new();
 
@@ -169,7 +171,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             forget_ids.insert(id);
         }
 
-        for (id, _snapshot) in &snapshots_sorted {
+        for (id, _snapshot, _active) in &snapshots_sorted {
             if !forget_ids.contains(id) {
                 ids_to_keep.insert(*id);
             }
@@ -209,11 +211,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let mut kept_snapshots = Vec::new();
     let mut removed_snapshots = Vec::new();
-    for (id, snapshot) in snapshots_sorted.into_iter() {
+    for (id, snapshot, active) in snapshots_sorted.into_iter() {
         if !ids_to_keep.contains(&id) {
-            removed_snapshots.push((id, snapshot));
+            removed_snapshots.push((id, snapshot, active));
         } else {
-            kept_snapshots.push((id, snapshot));
+            kept_snapshots.push((id, snapshot, active));
         };
     }
 
@@ -228,7 +230,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     if !args.dry_run {
         let num_removed_snapshots = removed_snapshots.len();
-        for (id, _) in removed_snapshots {
+        for (id, _, _active) in removed_snapshots {
             repo.set_extension(ContentIdType::Snapshot, &id, Some(REPO_DROPPED_EXTENSION))?;
         }
 
@@ -265,7 +267,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 /// `policies`: A slice of `RetentionRule` to apply.
 /// `now`: The current time to use for `KeepWithin` policy (useful for testing).
 pub fn apply_retention_rules(
-    snapshots_sorted: &[(ID, Snapshot)],
+    snapshots_sorted: &[(ID, Snapshot, bool)],
     rules: &[RetentionRule],
     now: DateTime<Local>,
 ) -> HashSet<ID> {
@@ -280,7 +282,7 @@ pub fn apply_retention_rules(
                     .iter()
                     .rev()
                     .take(*n)
-                    .map(|(id, _)| *id)
+                    .map(|(id, _, _active)| *id)
                     .collect()
             }
             RetentionRule::KeepWithin(duration) => {
@@ -288,8 +290,8 @@ pub fn apply_retention_rules(
                 let cutoff_time = now - *duration;
                 snapshots_sorted
                     .iter()
-                    .filter(|(_id, snapshot)| snapshot.timestamp >= cutoff_time)
-                    .map(|(id, _)| *id)
+                    .filter(|(_id, snapshot, _active)| snapshot.timestamp >= cutoff_time)
+                    .map(|(id, _, _active)| *id)
                     .collect()
             }
 
@@ -318,8 +320,8 @@ pub fn apply_retention_rules(
                 // Keep all snapshots that match the required tags.
                 snapshots_sorted
                     .iter()
-                    .filter(|(_id, snapshot)| snapshot.has_tags(tags))
-                    .map(|(id, _)| *id)
+                    .filter(|(_id, snapshot, _active)| snapshot.has_tags(tags))
+                    .map(|(id, _, _active)| *id)
                     .collect()
             }
         };
@@ -336,7 +338,7 @@ pub fn apply_retention_rules(
 /// It finds the latest snapshot for each unique period (defined by `key_extractor`)
 /// and then keeps the latest `n` of those periods.
 fn keep_latest_per_period<K, F>(
-    snapshots_sorted: &[(ID, Snapshot)],
+    snapshots_sorted: &[(ID, Snapshot, bool)],
     n: usize,
     key_extractor: F,
 ) -> HashSet<ID>
@@ -346,7 +348,7 @@ where
 {
     let mut kept_periods: BTreeMap<K, ID> = BTreeMap::new();
 
-    for (id, snapshot) in snapshots_sorted.iter().rev() {
+    for (id, snapshot, _active) in snapshots_sorted.iter().rev() {
         let key = key_extractor(snapshot);
         kept_periods.entry(key).or_insert(*id);
     }
@@ -399,7 +401,11 @@ mod tests {
     }
 
     /// Creates a standard mock snapshot (ID and Snapshot struct).
-    fn create_snapshot(id_val: u32, timestamp: DateTime<Local>, tags: &[&str]) -> (ID, Snapshot) {
+    fn create_snapshot(
+        id_val: u32,
+        timestamp: DateTime<Local>,
+        tags: &[&str],
+    ) -> (ID, Snapshot, bool) {
         let snapshot_id = create_id(id_val);
         (
             snapshot_id,
@@ -415,6 +421,7 @@ mod tests {
                 hostname: None,
                 username: None,
             },
+            true,
         )
     }
 
@@ -422,7 +429,7 @@ mod tests {
         create_datetime((2025, 5, 25), (21, 58, 0), 0)
     }
 
-    fn create_mock_snapshots() -> Vec<(ID, Snapshot)> {
+    fn create_mock_snapshots() -> Vec<(ID, Snapshot, bool)> {
         // Base date for offsets: 2023-01-01 00:00:00
         let base_ymd = (2023, 1, 1);
         let base_hms = (0, 0, 0);
@@ -459,9 +466,9 @@ mod tests {
     }
 
     /// Assert that the snapshots don't have duplicate IDs
-    fn assert_no_duplicate_ids(snapshots: &[(ID, Snapshot)]) {
+    fn assert_no_duplicate_ids(snapshots: &[(ID, Snapshot, bool)]) {
         let count = snapshots.len();
-        let unique_ids: HashSet<&ID> = snapshots.iter().map(|(id, _)| id).collect();
+        let unique_ids: HashSet<&ID> = snapshots.iter().map(|(id, _, _active)| id).collect();
 
         assert_eq!(
             unique_ids.len(),

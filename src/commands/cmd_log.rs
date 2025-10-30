@@ -1,13 +1,13 @@
-use anyhow::{Context, Result};
-use clap::Args;
+use anyhow::{Context, Result, bail};
+use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{cleanup::CleanupHandler, parse_tags},
-    mapache::{ContentIdType, ID},
+    mapache::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        repo::{RepoConfig, Repository},
+        repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStreamer},
     },
     ui::{self, log_snapshots_compact},
@@ -18,10 +18,19 @@ use super::GlobalArgs;
 
 #[derive(Args, Debug)]
 #[clap(about = "Show all snapshots present in the repository")]
+#[clap(group = ArgGroup::new("filter").multiple(false))]
 pub struct CmdArgs {
     /// Show a single snapshot with a given ID
-    #[arg(value_parser)]
+    #[arg(value_parser, group = "filter")]
     pub snapshot: Option<String>,
+
+    /// Show dropped snapshots only
+    #[arg(long, value_parser, default_value_t = false, group = "filter")]
+    pub dropped: bool,
+
+    /// Show active and dropped snapshots
+    #[arg(long, value_parser, default_value_t = false, group = "filter")]
+    pub all: bool,
 
     /// Show a compact list of snapshots
     #[arg(short, long)]
@@ -59,22 +68,54 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
-    let mut snapshots_sorted: Vec<(ID, Snapshot)> = match &args.snapshot {
-        None => SnapshotStreamer::new(repo.clone())?.collect(),
+    let show_active = args.all || !args.dropped;
+    let show_dropped = args.all || args.dropped;
+
+    let mut snapshots_sorted = match &args.snapshot {
+        None => {
+            let mut snapshots = Vec::new();
+
+            if show_active {
+                let mut active_snapshots = SnapshotStreamer::new(repo.clone())?
+                    .map(|(id, snapshot)| (id, snapshot, true))
+                    .collect();
+                snapshots.append(&mut active_snapshots);
+            }
+
+            if show_dropped {
+                let mut dropped_snapshots = SnapshotStreamer::dropped(repo.clone())?
+                    .map(|(id, snapshot)| (id, snapshot, false))
+                    .collect();
+                snapshots.append(&mut dropped_snapshots);
+            }
+
+            snapshots
+        }
         Some(prefix) => {
-            let (id, _) = repo
+            let (id, path) = repo
                 .find(ContentIdType::Snapshot, prefix)
                 .with_context(|| format!("Could not find snapshot {prefix}"))?;
-            let snapshot = repo.load_snapshot(&id, None)?;
-            vec![(id, snapshot)]
+
+            let ext = path.extension().and_then(|s| s.to_str());
+            let active = match ext {
+                Some(REPO_DROPPED_EXTENSION) => false,
+                None => true,
+                _ => bail!(
+                    "Snapshot {} not found",
+                    id.to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                ),
+            };
+
+            let snapshot = repo.load_snapshot(&id, ext)?;
+            vec![(id, snapshot, active)]
         }
     };
 
     if let Some(tags_str) = &args.tags_str {
         let tags = parse_tags(Some(tags_str));
-        snapshots_sorted.retain(|(_id, sn)| sn.has_tags(&tags));
+        snapshots_sorted.retain(|(_id, sn, _active)| sn.has_tags(&tags));
     }
-    snapshots_sorted.sort_unstable_by_key(|(_id, snapshot)| snapshot.timestamp);
+    snapshots_sorted.sort_unstable_by_key(|(_id, snapshot, _active)| snapshot.timestamp);
 
     if snapshots_sorted.is_empty() {
         ui::cli::log!("No snapshots found");
@@ -93,10 +134,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-fn log_snapshots_full(snapshots: &[(ID, Snapshot)]) {
+fn log_snapshots_full(snapshots: &[(ID, Snapshot, bool)]) {
     let mut peekable_snapshots = snapshots.iter().peekable();
-    while let Some((id, snapshot)) = peekable_snapshots.next() {
-        ui::cli::log!("{}", id.to_hex().bold().yellow());
+    while let Some((id, snapshot, active)) = peekable_snapshots.next() {
+        if *active {
+            ui::cli::log!("{}", id.to_hex().bold().yellow());
+        } else {
+            ui::cli::log!("{}", (id.to_hex() + " (dropped)").bold().dimmed());
+        }
+
         ui::cli::log!(
             "{} {}",
             "Date:".bold(),

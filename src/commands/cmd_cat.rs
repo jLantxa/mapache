@@ -7,7 +7,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::Tree,
-    mapache::{BlobType, FileType},
+    mapache::{BlobType, ContentIdType},
     repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},
@@ -68,7 +68,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         }
         Object::Pack(prefix) => {
-            let (id, _) = repo.find(FileType::Pack, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Pack, prefix)?;
             let object = repo
                 .load_pack(&id)
                 .with_context(|| "Failed to load object")?;
@@ -103,7 +103,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         }
         Object::Index(prefix) => {
-            let (id, _) = repo.find(FileType::Index, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Index, prefix)?;
             let index = repo
                 .load_index(&id)
                 .with_context(|| "Failed to load index")?;
@@ -111,13 +111,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         }
         Object::Key(prefix) => {
-            let (id, _) = repo.find(FileType::Key, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Key, prefix)?;
             let key = repo.load_key(&id).with_context(|| "Failed to load key")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&key)?);
             Ok(())
         }
         Object::Snapshot(prefix) => {
-            let (id, _) = repo.find(FileType::Snapshot, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
             let snapshot = repo
                 .load_snapshot(&id)
                 .with_context(|| "Failed to load snapshot")?;
@@ -125,7 +125,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         }
         Object::Lock(prefix) => {
-            let (id, _) = repo.find(FileType::Lock, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Lock, prefix)?;
             let lock = repo.load_lock(&id)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&lock)?);
             Ok(())

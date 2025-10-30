@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    mapache::{FileType, ID},
+    mapache::{ContentIdType, ID},
     repository::repo::Repository,
     ui, utils,
 };
@@ -155,7 +155,9 @@ impl LockHandle {
 
         // If the lock does not exist or it was "created" by a dry backend,
         // this will fail, but it's OK anyway.
-        let _ = self.repo.delete_file(FileType::Lock, self.lock.lock().id());
+        let _ = self
+            .repo
+            .delete_file(ContentIdType::Lock, self.lock.lock().id());
     }
 }
 

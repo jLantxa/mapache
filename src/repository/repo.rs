@@ -10,7 +10,7 @@ use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, cache::CacheBackend},
-    mapache::{self, BlobType, FileType, ID, SaveID, defaults::SHORT_REPO_ID_LEN},
+    mapache::{self, BlobType, ContentIdType, ID, SaveID, defaults::SHORT_REPO_ID_LEN},
     repository::{
         keys::KeyManager,
         lock::{Lock, LockHandle},
@@ -120,7 +120,7 @@ impl Repository {
             }
             None => {
                 let p = keys_path.join(keyfile_id.to_hex());
-                let handle = Handle::new_with_hint(&p, true, FileType::Key);
+                let handle = Handle::new_with_hint(&p, true, ContentIdType::Key);
                 backend.write(&handle, &keyfile_json)?;
             }
         }
@@ -137,10 +137,7 @@ impl Repository {
         let manifest_path = Path::new(MANIFEST_PATH);
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
-        backend.write(
-            &Handle::new_with_hint(manifest_path, true, FileType::Manifest),
-            &manifest_json,
-        )?;
+        backend.write(&Handle::new(manifest_path), &manifest_json)?;
 
         backend.create_dir(&objects_path)?;
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
@@ -230,11 +227,7 @@ impl Repository {
         let manifest_path = Path::new(MANIFEST_PATH);
 
         let manifest = backend
-            .read(
-                &Handle::new_with_hint(manifest_path, true, FileType::Manifest),
-                0,
-                0,
-            )
+            .read(&Handle::new(manifest_path), 0, 0)
             .with_context(|| "Could not load manifest file")?;
         let manifest = secure_storage
             .decode(&manifest)
@@ -372,8 +365,8 @@ impl Repository {
 
         let raw_size = data.len() as u64;
         let (data, encoded_size) = match file_type {
-            FileType::Pack => (data.to_vec(), raw_size),
-            FileType::Key | FileType::Manifest => {
+            ContentIdType::Pack => (data.to_vec(), raw_size),
+            ContentIdType::Key => {
                 let compressed_data = self.secure_storage.compress(data)?;
                 let size = compressed_data.len() as u64;
                 (compressed_data, size)
@@ -413,14 +406,14 @@ impl Repository {
         let data = self.backend.read(&handle, 0, 0)?;
 
         match file_type {
-            FileType::Pack => Ok(data),
-            FileType::Key | FileType::Manifest => self.secure_storage.decompress(&data),
+            ContentIdType::Pack => Ok(data),
+            ContentIdType::Key => self.secure_storage.decompress(&data),
             _ => self.secure_storage.decode(&data),
         }
     }
 
     /// Deletes a file from the repository
-    pub fn delete_file(&self, file_type: FileType, id: &ID) -> Result<u64> {
+    pub fn delete_file(&self, file_type: ContentIdType, id: &ID) -> Result<u64> {
         let path = self.get_path(file_type, id);
         let size = self.backend.lstat(&path)?.size;
         self.backend.remove(&path)?;
@@ -448,7 +441,7 @@ impl Repository {
                 id,
                 StorageHint {
                     is_metadata: true,
-                    file_type: FileType::Snapshot,
+                    file_type: ContentIdType::Snapshot,
                 },
             )
             .with_context(|| format!("No snapshot with ID '{id}' exists"))?;
@@ -500,7 +493,7 @@ impl Repository {
             id,
             StorageHint {
                 is_metadata: false,
-                file_type: FileType::Pack,
+                file_type: ContentIdType::Pack,
             },
         )
     }
@@ -512,7 +505,7 @@ impl Repository {
                 id,
                 StorageHint {
                     is_metadata: true,
-                    file_type: FileType::Index,
+                    file_type: ContentIdType::Index,
                 },
             )
             .with_context(|| format!("Could not load index {}", id.to_hex()))?;
@@ -525,11 +518,7 @@ impl Repository {
         secure_storage: Arc<SecureStorage>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<Manifest> {
-        let manifest = backend.read(
-            &Handle::new_with_hint(Path::new(MANIFEST_PATH), true, FileType::Manifest),
-            0,
-            0,
-        )?;
+        let manifest = backend.read(&Handle::new(Path::new(MANIFEST_PATH)), 0, 0)?;
         let manifest = secure_storage.decode(&manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
@@ -542,7 +531,7 @@ impl Repository {
                 id,
                 StorageHint {
                     is_metadata: true,
-                    file_type: FileType::Lock,
+                    file_type: ContentIdType::Lock,
                 },
             )
             .with_context(|| format!("Could not load lock file {}", id.to_hex()))?;
@@ -556,7 +545,7 @@ impl Repository {
             id,
             StorageHint {
                 is_metadata: true,
-                file_type: FileType::Key,
+                file_type: ContentIdType::Key,
             },
         )?;
         let key = serde_json::from_slice(&key)?;
@@ -564,7 +553,7 @@ impl Repository {
     }
 
     /// Finds a file in the repository using an ID prefix
-    pub fn find(&self, file_type: FileType, prefix: &str) -> Result<(ID, PathBuf)> {
+    pub fn find(&self, file_type: ContentIdType, prefix: &str) -> Result<(ID, PathBuf)> {
         if prefix.len() > 2 * mapache::ID_LENGTH {
             // A hex string has 2 characters per byte.
             bail!(
@@ -617,7 +606,7 @@ impl Repository {
             Arc::new(move |data, id, blob_type: BlobType| {
                 let path = Self::get_object_path(&objects_path, &id);
                 if let Err(e) = backend.write(
-                    &Handle::new_with_hint(&path, blob_type == BlobType::Tree, FileType::Pack),
+                    &Handle::new_with_hint(&path, blob_type == BlobType::Tree, ContentIdType::Pack),
                     &data,
                 ) {
                     cli::error!("Could not save pack {}: {}", id.to_hex(), e);
@@ -646,9 +635,9 @@ impl Repository {
         offset: u64,
         length: u64,
     ) -> Result<Vec<u8>> {
-        let path = self.get_path(FileType::Pack, id);
+        let path = self.get_path(ContentIdType::Pack, id);
         let data = self.backend.read(
-            &Handle::new_with_hint(&path, blob_type == BlobType::Tree, FileType::Pack),
+            &Handle::new_with_hint(&path, blob_type == BlobType::Tree, ContentIdType::Pack),
             offset as isize,
             length as usize,
         )?;
@@ -685,26 +674,24 @@ impl Repository {
             .join(&id_hex)
     }
 
-    pub fn get_path(&self, file_type: FileType, id: &ID) -> PathBuf {
+    pub fn get_path(&self, file_type: ContentIdType, id: &ID) -> PathBuf {
         let id_hex = id.to_hex();
         match file_type {
-            FileType::Pack => Self::get_object_path(&self.objects_path, id),
-            FileType::Snapshot => self.snapshot_path.join(id_hex),
-            FileType::Index => self.index_path.join(id_hex),
-            FileType::Key => self.keys_path.join(id_hex),
-            FileType::Manifest => PathBuf::from(MANIFEST_PATH),
-            FileType::Lock => self.locks_path.join(id_hex),
+            ContentIdType::Pack => Self::get_object_path(&self.objects_path, id),
+            ContentIdType::Snapshot => self.snapshot_path.join(id_hex),
+            ContentIdType::Index => self.index_path.join(id_hex),
+            ContentIdType::Key => self.keys_path.join(id_hex),
+            ContentIdType::Lock => self.locks_path.join(id_hex),
         }
     }
 
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.).
-    pub fn list_files(&self, file_type: FileType) -> Result<Vec<PathBuf>> {
+    pub fn list_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
         match file_type {
-            FileType::Snapshot => self.backend.list_dir(&self.snapshot_path),
-            FileType::Key => self.backend.list_dir(&self.keys_path),
-            FileType::Index => self.backend.list_dir(&self.index_path),
-            FileType::Manifest => Ok(vec![PathBuf::from(MANIFEST_PATH)]),
-            FileType::Pack => {
+            ContentIdType::Snapshot => self.backend.list_dir(&self.snapshot_path),
+            ContentIdType::Key => self.backend.list_dir(&self.keys_path),
+            ContentIdType::Index => self.backend.list_dir(&self.index_path),
+            ContentIdType::Pack => {
                 let mut files = Vec::new();
                 for n in 0x00..(1 << (4 * OBJECTS_DIR_FANOUT)) {
                     let dir_name = self
@@ -719,7 +706,7 @@ impl Repository {
 
                 Ok(files)
             }
-            FileType::Lock => self.backend.list_dir(&self.locks_path),
+            ContentIdType::Lock => self.backend.list_dir(&self.locks_path),
         }
     }
 
@@ -757,7 +744,7 @@ impl Repository {
 
     /// Load the master index from file
     fn load_master_index(&mut self) -> Result<()> {
-        let files = self.list_files(FileType::Index)?;
+        let files = self.list_files(ContentIdType::Index)?;
         let num_index_files = files.len();
 
         for file_path in files {
@@ -771,7 +758,7 @@ impl Repository {
                 Err(_) => continue, // Ignore invalid ID names
             };
             let index_file = self.backend.read(
-                &Handle::new_with_hint(&file_path, true, FileType::Index),
+                &Handle::new_with_hint(&file_path, true, ContentIdType::Index),
                 0,
                 0,
             )?;
@@ -803,7 +790,11 @@ impl Repository {
     ) -> Result<Vec<u8>> {
         let object_path = Self::get_object_path(&self.objects_path, id);
         let data = self.backend.read(
-            &Handle::new_with_hint(&object_path, blob_type == BlobType::Tree, FileType::Pack),
+            &Handle::new_with_hint(
+                &object_path,
+                blob_type == BlobType::Tree,
+                ContentIdType::Pack,
+            ),
             offset as isize,
             length as usize,
         )?;
@@ -831,14 +822,14 @@ impl Repository {
 
             // Clean up expired locks from other processes
             if lock.is_expired() {
-                let _ = self.delete_file(FileType::Lock, lock.id());
+                let _ = self.delete_file(ContentIdType::Lock, lock.id());
                 continue;
             }
 
             if exclusive || lock.is_exclusive() {
                 // A race condition occurred, or a conflict was already present.
                 // The NEWLY written lock must be cleaned up and the attempt must fail.
-                let _ = self.delete_file(FileType::Lock, &new_lock_id);
+                let _ = self.delete_file(ContentIdType::Lock, &new_lock_id);
 
                 bail!(
                     "Failed to acquire lock: Conflict detected with existing lock (ID: {}).",
@@ -860,7 +851,7 @@ impl Repository {
             lock_json.as_bytes(),
             StorageHint {
                 is_metadata: true,
-                file_type: FileType::Lock,
+                file_type: ContentIdType::Lock,
             },
         )?;
 
@@ -875,14 +866,16 @@ impl Repository {
     /// Get all locks in the repository. If a lock file cannot be read, decoded
     /// or deserialized, it will be ignored.
     pub fn get_locks(&self) -> Result<Vec<Lock>> {
-        let all_lock_paths = self.list_files(FileType::Lock)?;
+        let all_lock_paths = self.list_files(ContentIdType::Lock)?;
         let mut locks = Vec::new();
 
         for path in all_lock_paths {
             // Attempt to read the lock file
-            let lock_data_result =
-                self.backend
-                    .read(&Handle::new_with_hint(&path, true, FileType::Lock), 0, 0);
+            let lock_data_result = self.backend.read(
+                &Handle::new_with_hint(&path, true, ContentIdType::Lock),
+                0,
+                0,
+            );
 
             let lock = match lock_data_result {
                 Ok(data) => data,

@@ -3,7 +3,7 @@ use clap::Args;
 
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
-    mapache::FileType,
+    mapache::ContentIdType,
     repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},
@@ -40,7 +40,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_deleted_locks = 0;
     for lock in locks {
         if args.force || lock.is_expired() {
-            repo.delete_file(FileType::Lock, lock.id())?;
+            repo.delete_file(ContentIdType::Lock, lock.id())?;
             num_deleted_locks += 1;
         }
     }

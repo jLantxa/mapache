@@ -5,7 +5,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::{
     mapache::{
-        FileType, ID,
+        ContentIdType, ID,
         defaults::{
             DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
             MIN_CONFIGURABLE_PACK_SIZE_MIB,
@@ -167,7 +167,7 @@ fn find_use_snapshot(
     match use_snapshot {
         UseSnapshot::Latest => Ok(SnapshotStreamer::new(repo.clone())?.latest()),
         UseSnapshot::SnapshotId(prefix) => {
-            let (id, _) = repo.find(FileType::Snapshot, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
             let snap = repo.load_snapshot(&id)?;
             Ok(Some((id, snap)))
         }

@@ -12,7 +12,7 @@ use crate::{
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
     mapache::{
-        FileType, ID,
+        ContentIdType, ID,
         defaults::{MAX_PATH_DISPLAY_LEN, SHORT_SNAPSHOT_ID_LEN},
         global::GlobalOpts,
     },
@@ -228,7 +228,7 @@ pub fn verify_snapshot(
     snapshot_id: &ID,
     visited_blobs: &mut BTreeSet<ID>,
 ) -> Result<()> {
-    let snapshot_path = repo.get_path(FileType::Snapshot, snapshot_id);
+    let snapshot_path = repo.get_path(ContentIdType::Snapshot, snapshot_id);
     let snapshot_data = backend.read(&Handle::new(&snapshot_path), 0, 0)?;
     let checksum = utils::calculate_hash(snapshot_data);
     if checksum != snapshot_id.0[..] {

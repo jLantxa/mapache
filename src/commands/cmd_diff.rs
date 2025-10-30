@@ -8,7 +8,7 @@ use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::tree::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
-    mapache::{FileType, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::DiffCounts,
@@ -66,8 +66,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     // Load snapshots
-    let (source_id, _) = repo.find(FileType::Snapshot, &args.source_snapshot_id)?;
-    let (target_id, _) = repo.find(FileType::Snapshot, &args.target_snapshot_id)?;
+    let (source_id, _) = repo.find(ContentIdType::Snapshot, &args.source_snapshot_id)?;
+    let (target_id, _) = repo.find(ContentIdType::Snapshot, &args.target_snapshot_id)?;
     let source_snapshot = repo.load_snapshot(&source_id)?;
     let target_snapshot = repo.load_snapshot(&target_id)?;
 

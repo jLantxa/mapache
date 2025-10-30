@@ -37,12 +37,12 @@ impl<'a> Handle<'a> {
         Self { path, hint: None }
     }
 
-    pub fn new_with_hint(path: &'a Path, is_metadata: bool, file_type: ContentIdType) -> Self {
+    pub fn new_with_hint(path: &'a Path, file_type: ContentIdType, is_metadata: bool) -> Self {
         Self {
             path,
             hint: Some(StorageHint {
-                is_metadata,
                 file_type,
+                is_metadata,
             }),
         }
     }
@@ -50,8 +50,8 @@ impl<'a> Handle<'a> {
 
 #[derive(Debug)]
 pub struct StorageHint {
-    pub is_metadata: bool,
     pub file_type: ContentIdType,
+    pub is_metadata: bool,
 }
 
 /// Abstraction of a storage backend.

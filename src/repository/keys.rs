@@ -174,7 +174,7 @@ impl KeyManager {
 
         let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-        let handle = Handle::new_with_hint(&path, true, ContentIdType::Key);
+        let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
         let keyfile = self.backend.read(&handle, 0, 0)?;
         let keyfile = ss.decompress(&keyfile)?;
         let keyfile: KeyFile = serde_json::from_slice(&keyfile)?;
@@ -228,7 +228,7 @@ impl KeyManager {
         let id = ID::from_content(&keyfile_json);
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
         self.backend.write(
-            &Handle::new_with_hint(&path, true, ContentIdType::Key),
+            &Handle::new_with_hint(&path, ContentIdType::Key, true),
             &keyfile_json,
         )?;
 
@@ -319,14 +319,14 @@ impl Iterator for KeyFileStreamer {
 
             let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-            let keyfile_data =
-                match self
-                    .backend
-                    .read(&Handle::new_with_hint(&path, true, ContentIdType::Key), 0, 0)
-                {
-                    Ok(data) => data,
-                    Err(e) => return Some(Err(e)),
-                };
+            let keyfile_data = match self.backend.read(
+                &Handle::new_with_hint(&path, ContentIdType::Key, true),
+                0,
+                0,
+            ) {
+                Ok(data) => data,
+                Err(e) => return Some(Err(e)),
+            };
 
             let keyfile_decompressed = match ss.decompress(&keyfile_data) {
                 Ok(data) => data,
@@ -657,7 +657,7 @@ mod tests {
         );
         let ambiguous_path = PathBuf::from(KEYS_DIR).join(&ambiguous_filename);
         backend.write(
-            &Handle::new_with_hint(&ambiguous_path, true, ContentIdType::Key),
+            &Handle::new_with_hint(&ambiguous_path, ContentIdType::Key, true),
             b"dummy content",
         )?; // Write arbitrary content
 

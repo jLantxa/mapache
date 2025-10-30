@@ -235,7 +235,7 @@ pub fn verify_snapshot(
         bail!("Invalid snapshot checksum");
     }
 
-    let snapshot = repo.load_snapshot(snapshot_id)?;
+    let snapshot = repo.load_snapshot(snapshot_id, None)?;
     let tree_id = snapshot.tree;
     let streamer =
         SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;

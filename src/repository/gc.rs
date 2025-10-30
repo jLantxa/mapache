@@ -16,7 +16,7 @@ use crate::{
     backend::{StorageBackend, read_backend_dir},
     fs::tree::SerializedNodeStreamer,
     mapache::{
-        self, DEFAULT_ID, ContentIdType, ID, SaveID,
+        self, ContentIdType, DEFAULT_ID, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
         global::GlobalOpts,
     },
@@ -192,7 +192,7 @@ impl Plan {
 
         let mut deleted_size = 0;
         for id in &self.unused_packs {
-            deleted_size += self.repo.delete_file(ContentIdType::Pack, id)?;
+            deleted_size += self.repo.delete_file(ContentIdType::Pack, id, None)?;
             unused_pack_delete_bar.inc(1);
         }
         unused_pack_delete_bar.finish_and_clear();
@@ -337,7 +337,7 @@ impl Plan {
 
         let deleted_size = AtomicU64::new(0);
         self.index_ids.par_iter().for_each(|id| {
-            let size_res = self.repo.delete_file(ContentIdType::Index, id);
+            let size_res = self.repo.delete_file(ContentIdType::Index, id, None);
             deleted_size.fetch_add(size_res.unwrap_or(0), Ordering::AcqRel);
             index_delete_bar.inc(1);
         });
@@ -366,7 +366,7 @@ impl Plan {
 
         let deleted_size = AtomicU64::new(0);
         self.obsolete_packs.par_iter().for_each(|id| {
-            let size_res = self.repo.delete_file(ContentIdType::Pack, id);
+            let size_res = self.repo.delete_file(ContentIdType::Pack, id, None);
             deleted_size.fetch_add(size_res.unwrap_or(0), Ordering::AcqRel);
             obsolete_pack_delete_bar.inc(1);
         });
@@ -503,7 +503,7 @@ fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
 
     for lock in locks {
         if lock.is_expired() {
-            size_freed += repo.delete_file(ContentIdType::Lock, lock.id())?;
+            size_freed += repo.delete_file(ContentIdType::Lock, lock.id(), None)?;
             num_deleted_locks += 1;
         }
     }

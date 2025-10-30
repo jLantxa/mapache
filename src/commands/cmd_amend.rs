@@ -16,7 +16,7 @@ use crate::{
         parse_tags,
     },
     fs::tree::SerializedNodeStreamer,
-    mapache::{FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStreamer},
@@ -166,7 +166,7 @@ fn amend(
         serde_json::to_string(&snapshot)?.as_bytes(),
         StorageHint {
             is_metadata: true,
-            file_type: FileType::Snapshot,
+            file_type: ContentIdType::Snapshot,
         },
     )?;
     raw += raw_meta;
@@ -177,7 +177,7 @@ fn amend(
     // after the new one is saved.
     if new_id != *origin_snapshot_id {
         if !args.keep_old {
-            repo.delete_file(FileType::Snapshot, origin_snapshot_id)?;
+            repo.delete_file(ContentIdType::Snapshot, origin_snapshot_id)?;
         }
 
         ui::cli::log!(

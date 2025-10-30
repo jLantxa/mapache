@@ -5,7 +5,7 @@ use colored::Colorize;
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{cleanup::CleanupHandler, parse_tags},
-    mapache::{FileType, ID},
+    mapache::{ContentIdType, ID},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStreamer},
@@ -63,7 +63,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         None => SnapshotStreamer::new(repo.clone())?.collect(),
         Some(prefix) => {
             let (id, _) = repo
-                .find(FileType::Snapshot, prefix)
+                .find(ContentIdType::Snapshot, prefix)
                 .with_context(|| format!("Could not find snapshot {prefix}"))?;
             let snapshot = repo.load_snapshot(&id)?;
             vec![(id, snapshot)]

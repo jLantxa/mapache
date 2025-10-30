@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::StorageHint,
-    mapache::{self, BlobType, FileType, ID},
+    mapache::{self, BlobType, ContentIdType, ID},
     repository::repo::Repository,
     utils::indexset::IndexSet,
 };
@@ -270,7 +270,7 @@ impl Index {
             serde_json::to_string(&index_file)?.as_bytes(),
             StorageHint {
                 is_metadata: true,
-                file_type: FileType::Index,
+                file_type: ContentIdType::Index,
             },
         )?;
         self.id = Some(id);

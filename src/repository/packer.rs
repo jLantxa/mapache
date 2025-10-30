@@ -7,7 +7,7 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     backend::{Handle, StorageBackend},
-    mapache::{BlobType, FileType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
+    mapache::{BlobType, ContentIdType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
     repository::{repo::Repository, storage::SecureStorage},
     utils,
 };
@@ -222,7 +222,7 @@ impl Packer {
         secure_storage: &SecureStorage,
         pack_id: &ID,
     ) -> Result<Vec<PackedBlobDescriptor>> {
-        let (_id, pack_path) = repo.find(FileType::Pack, &pack_id.to_hex())?;
+        let (_id, pack_path) = repo.find(ContentIdType::Pack, &pack_id.to_hex())?;
         let handle = Handle::new(&pack_path); // TODO: Hint if metadata
         let header_length_bytes: [u8; 4] = backend.read(&handle, -4, 4)?.as_slice().try_into()?;
         let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;

@@ -149,27 +149,25 @@ pub enum BlobType {
     Padding = 0xff,
 }
 
-/// Type of objects that can be stored in a Repository
+/// Type of content-addressable objects that can be stored in a Repository
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum FileType {
+pub enum ContentIdType {
     Pack,
     Snapshot,
     Index,
     Key,
-    Manifest,
     Lock,
 }
 
-// Implement the Display trait for FileType
-impl std::fmt::Display for FileType {
+// Implement the Display trait for ContentIdType
+impl std::fmt::Display for ContentIdType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileType::Pack => write!(f, "pack"),
-            FileType::Snapshot => write!(f, "snapshot"),
-            FileType::Index => write!(f, "index"),
-            FileType::Key => write!(f, "key"),
-            FileType::Manifest => write!(f, "manifest"),
-            FileType::Lock => write!(f, "lock"),
+            ContentIdType::Pack => write!(f, "pack"),
+            ContentIdType::Snapshot => write!(f, "snapshot"),
+            ContentIdType::Index => write!(f, "index"),
+            ContentIdType::Key => write!(f, "key"),
+            ContentIdType::Lock => write!(f, "lock"),
         }
     }
 }

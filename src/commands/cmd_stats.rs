@@ -1,4 +1,8 @@
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use clap::{Args, ValueEnum};
@@ -8,9 +12,9 @@ use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStreamer},
-    mapache::{FileType, global::GlobalOpts},
+    mapache::{ContentIdType, global::GlobalOpts},
     repository::{
-        repo::{RepoConfig, Repository},
+        repo::{MANIFEST_PATH, RepoConfig, Repository},
         snapshot::SnapshotStreamer,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
@@ -101,31 +105,31 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
     }
 
     // Packs
-    let packs = repo.list_files(FileType::Pack)?;
+    let packs = repo.list_files(ContentIdType::Pack)?;
     let num_packs = packs.len();
     let total_pack_size = sum_sizes(&spinner, backend.as_ref(), "packs", &packs)?;
 
     // Indices
-    let indices = repo.list_files(FileType::Index)?;
+    let indices = repo.list_files(ContentIdType::Index)?;
     let num_indices = indices.len();
     let total_index_size = sum_sizes(&spinner, backend.as_ref(), "index", &indices)?;
 
     // Snapshots
-    let snaps = repo.list_files(FileType::Snapshot)?;
+    let snaps = repo.list_files(ContentIdType::Snapshot)?;
     let num_snapshots = snaps.len();
     let total_snapshot_size = sum_sizes(&spinner, backend.as_ref(), "snapshots", &snaps)?;
 
     // Keys
-    let keys = repo.list_files(FileType::Key)?;
+    let keys = repo.list_files(ContentIdType::Key)?;
     let num_keys = keys.len();
     let total_key_size = sum_sizes(&spinner, backend.as_ref(), "keys", &keys)?;
 
     // Manifest
     spinner.set_message("manifest");
     let manifest_size = repo
-        .list_files(FileType::Manifest)?
-        .first()
-        .and_then(|f| backend.lstat(f).ok()?.size)
+        .backend()
+        .lstat(Path::new(MANIFEST_PATH))?
+        .size
         .unwrap_or(0);
 
     let total_size = total_pack_size

@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, localfs::LocalFS},
-    mapache::{FileType, defaults::APP_NAME, global::BASE_DIRS},
+    mapache::{ContentIdType, defaults::APP_NAME, global::BASE_DIRS},
 };
 
 /// Represents the state of a file in the download queue.
@@ -53,8 +53,8 @@ impl CacheBackend {
         match hint {
             None => false, // No caching without storage hint
             Some(h) => match h.file_type {
-                FileType::Pack => h.is_metadata, // Cache only tree packs
-                FileType::Snapshot | FileType::Index => true,
+                ContentIdType::Pack => h.is_metadata, // Cache only tree packs
+                ContentIdType::Snapshot | ContentIdType::Index => true,
                 _ => false,
             },
         }

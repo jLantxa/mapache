@@ -10,7 +10,7 @@ use crate::{
     backend::{BackendOptions, StorageHint, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
     fs::{self, tree::FSNodeStreamer},
-    mapache::{self, FileType, ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
+    mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{SnapshotSummary, SnapshotTuple},
@@ -267,7 +267,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         serde_json::to_string(&new_snapshot)?.as_bytes(),
         StorageHint {
             is_metadata: true,
-            file_type: FileType::Snapshot,
+            file_type: ContentIdType::Snapshot,
         },
     )?;
 

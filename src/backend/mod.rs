@@ -10,7 +10,7 @@ use std::{
     time::SystemTime,
 };
 
-use crate::{backend::sftp::SftpBackend, mapache::FileType};
+use crate::{backend::sftp::SftpBackend, mapache::ContentIdType};
 use anyhow::{Result, anyhow, bail};
 use dry::DryBackend;
 use localfs::LocalFS;
@@ -37,7 +37,7 @@ impl<'a> Handle<'a> {
         Self { path, hint: None }
     }
 
-    pub fn new_with_hint(path: &'a Path, is_metadata: bool, file_type: FileType) -> Self {
+    pub fn new_with_hint(path: &'a Path, is_metadata: bool, file_type: ContentIdType) -> Self {
         Self {
             path,
             hint: Some(StorageHint {
@@ -51,7 +51,7 @@ impl<'a> Handle<'a> {
 #[derive(Debug)]
 pub struct StorageHint {
     pub is_metadata: bool,
-    pub file_type: FileType,
+    pub file_type: ContentIdType,
 }
 
 /// Abstraction of a storage backend.

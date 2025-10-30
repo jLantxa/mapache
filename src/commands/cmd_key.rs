@@ -7,7 +7,7 @@ use colored::Colorize;
 use crate::{
     backend::{BackendOptions, Handle, new_backend_with_prompt},
     commands::GlobalArgs,
-    mapache::{FileType, ID},
+    mapache::{ContentIdType, ID},
     repository::{
         keys::{KeyFileStreamer, KeyManager},
         repo::{Auth, KEYS_DIR},
@@ -129,7 +129,7 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
         }
         None => {
             let path = Path::new(KEYS_DIR).join(new_keyfile_id.to_hex());
-            let handle = Handle::new_with_hint(&path, true, FileType::Key);
+            let handle = Handle::new_with_hint(&path, true, ContentIdType::Key);
             backend.write(&handle, &new_keyfile_json)?;
         }
     }

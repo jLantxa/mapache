@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{Handle, StorageBackend},
-    mapache::{self, FileType, ID},
+    mapache::{self, ContentIdType, ID},
     repository::{
         repo::{Auth, KEYS_DIR},
         storage::SecureStorage,
@@ -174,7 +174,7 @@ impl KeyManager {
 
         let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
-        let handle = Handle::new_with_hint(&path, true, FileType::Key);
+        let handle = Handle::new_with_hint(&path, true, ContentIdType::Key);
         let keyfile = self.backend.read(&handle, 0, 0)?;
         let keyfile = ss.decompress(&keyfile)?;
         let keyfile: KeyFile = serde_json::from_slice(&keyfile)?;
@@ -228,7 +228,7 @@ impl KeyManager {
         let id = ID::from_content(&keyfile_json);
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
         self.backend.write(
-            &Handle::new_with_hint(&path, true, FileType::Key),
+            &Handle::new_with_hint(&path, true, ContentIdType::Key),
             &keyfile_json,
         )?;
 
@@ -322,7 +322,7 @@ impl Iterator for KeyFileStreamer {
             let keyfile_data =
                 match self
                     .backend
-                    .read(&Handle::new_with_hint(&path, true, FileType::Key), 0, 0)
+                    .read(&Handle::new_with_hint(&path, true, ContentIdType::Key), 0, 0)
                 {
                     Ok(data) => data,
                     Err(e) => return Some(Err(e)),
@@ -657,7 +657,7 @@ mod tests {
         );
         let ambiguous_path = PathBuf::from(KEYS_DIR).join(&ambiguous_filename);
         backend.write(
-            &Handle::new_with_hint(&ambiguous_path, true, FileType::Key),
+            &Handle::new_with_hint(&ambiguous_path, true, ContentIdType::Key),
             b"dummy content",
         )?; // Write arbitrary content
 

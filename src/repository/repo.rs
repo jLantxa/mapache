@@ -502,6 +502,34 @@ impl Repository {
         Ok(ids)
     }
 
+    /// Lists all dropped snapshot IDs
+    pub(crate) fn list_dropped_snapshot_ids(&self) -> Result<Vec<ID>> {
+        let mut ids = Vec::new();
+
+        let paths = self
+            .backend
+            .list_dir(&self.snapshot_path)
+            .with_context(|| "Could not read snapshots")?;
+
+        for path in paths {
+            if self.backend.is_file(&path)
+                && let (Some(file_stem), Some(extension)) = (
+                    path.file_stem().and_then(|s| s.to_str()),
+                    path.extension().and_then(|s| s.to_str()),
+                )
+            {
+                // Ignore all files with invalid ID names
+                if extension == REPO_DROPPED_EXTENSION
+                    && let Ok(id) = ID::from_hex(file_stem)
+                {
+                    ids.push(id);
+                }
+            }
+        }
+
+        Ok(ids)
+    }
+
     /// Flushes all pending data and saves it.
     /// Returns a tuple (raw_size, encoded_size)
     pub fn flush(&self) -> Result<(u64, u64)> {

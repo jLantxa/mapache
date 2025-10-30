@@ -4,6 +4,7 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
+use crate::repository::repo::REPO_DROPPED_EXTENSION;
 use crate::{commands::EMPTY_TAG_MARK, fs::tree::NodeDiff, repository::repo::Repository};
 
 use crate::mapache::ID;
@@ -143,10 +144,11 @@ pub struct SnapshotStreamer {
     snapshot_ids: Vec<ID>,
     repo: Arc<Repository>,
     num_snapshots: usize,
+    ext: Option<String>,
 }
 
 impl SnapshotStreamer {
-    /// Creates a new SnapshotStreamer. It needs a repo to load snapshots.
+    /// Creates a new SnapshotStreamer for active snapshots.
     pub fn new(repo: Arc<Repository>) -> Result<Self> {
         let snapshot_ids = repo.list_snapshot_ids()?;
         let num_snapshots = snapshot_ids.len();
@@ -155,6 +157,20 @@ impl SnapshotStreamer {
             snapshot_ids,
             repo,
             num_snapshots,
+            ext: None,
+        })
+    }
+
+    /// Creates a new SnapshotStreamer for dropped snapshots.
+    pub fn dropped(repo: Arc<Repository>) -> Result<Self> {
+        let snapshot_ids = repo.list_dropped_snapshot_ids()?;
+        let num_snapshots = snapshot_ids.len();
+
+        Ok(Self {
+            snapshot_ids,
+            repo,
+            num_snapshots,
+            ext: Some(REPO_DROPPED_EXTENSION.to_owned()),
         })
     }
 
@@ -177,13 +193,19 @@ impl SnapshotStreamer {
     pub fn latest(&mut self) -> Option<(ID, Snapshot)> {
         self.snapshot_ids.sort_by_key(|id| {
             // Load each snapshot just to get its timestamp
-            self.repo.load_snapshot(id, None).ok().map(|s| s.timestamp)
+            self.repo
+                .load_snapshot(id, self.ext.as_deref())
+                .ok()
+                .map(|s| s.timestamp)
         });
 
         // Now the last ID in the sorted vector is the latest one.
         // Pop it and load the snapshot one last time.
         let latest_id = self.snapshot_ids.pop()?;
-        let latest_snapshot = self.repo.load_snapshot(&latest_id, None).ok()?;
+        let latest_snapshot = self
+            .repo
+            .load_snapshot(&latest_id, self.ext.as_deref())
+            .ok()?;
 
         Some((latest_id, latest_snapshot))
     }
@@ -195,7 +217,7 @@ impl Iterator for SnapshotStreamer {
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.snapshot_ids.pop()?;
         self.repo
-            .load_snapshot(&id, None)
+            .load_snapshot(&id, self.ext.as_deref())
             .map_or(None, |snapshot| Some((id, snapshot)))
     }
 }

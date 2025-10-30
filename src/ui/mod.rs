@@ -32,7 +32,7 @@ pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {
     }
 }
 
-pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot)>) {
+pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot, bool)>) {
     let mut table = Table::new_with_alignments(vec![
         Alignment::Left,
         Alignment::Right,
@@ -49,12 +49,16 @@ pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot)>) {
         "Tags".bold().to_string(),
     ]);
 
-    for (id, snapshot) in snapshots {
+    for (id, snapshot, active) in snapshots {
+        let id_str = id.to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN);
+        let id_str = if *active {
+            id_str.bold().yellow().to_string()
+        } else {
+            (id_str + " (dropped)").bold().dimmed().to_string()
+        };
+
         table.add_row(vec![
-            id.to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN)
-                .bold()
-                .yellow()
-                .to_string(),
+            id_str,
             utils::pretty_print_timestamp(&snapshot.timestamp),
             snapshot.hostname.clone().unwrap_or_default(),
             utils::format_size(snapshot.size(), 3),

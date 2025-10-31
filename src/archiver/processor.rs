@@ -129,7 +129,7 @@ fn chunk_and_store_file(
         .with_context(|| format!("Could not open file '{}'", src_path.display()))?;
 
     // Do not chunk if the file is smaller than the minimum chunk size
-    if node.metadata.size < mapache::defaults::MIN_CHUNK_SIZE {
+    if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
         let mut data = Vec::with_capacity(node.metadata.size as usize);
         source_file
             .read_to_end(&mut data)

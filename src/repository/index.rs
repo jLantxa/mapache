@@ -272,6 +272,7 @@ impl Index {
                 is_metadata: true,
                 file_type: ContentIdType::Index,
             },
+            None,
         )?;
         self.id = Some(id);
 

@@ -103,6 +103,7 @@ mod tests {
         // Keep the last snapshot
         let forget_args = commands::cmd_forget::CmdArgs {
             forget: Vec::new(),
+            force: false,
             keep_last: Some(1),
             keep_within: None,
             keep_yearly: None,
@@ -256,6 +257,7 @@ mod tests {
         // Keep the last snapshot
         let forget_args = commands::cmd_forget::CmdArgs {
             forget: Vec::new(),
+            force: false,
             keep_last: Some(1),
             keep_within: None,
             keep_yearly: None,

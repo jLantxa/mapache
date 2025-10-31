@@ -143,6 +143,7 @@ Commands:
   log         Show all snapshots present in the repository
   ls          List nodes in the repository
   mount       Mount the repository as a file system
+  recall      Recall forgotten snapshots
   restore     Restore a snapshot in a target path
   snapshot    Create a new snapshot
   stats       Display stats about the repository and its contents

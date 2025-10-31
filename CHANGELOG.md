@@ -5,6 +5,9 @@
 - Delete all .tmp files from the repository during GC.
 - Best effort metadata restoring. Failing to restore metadata is not an error, but a warning.
   Highly likely and recurrent warnings, which don't affect the integrity of the data, should not be logged.
+- `mapache forget` does not delete the snapshots permanently unless `--force` is used. The 'forgotten' snapshots are
+  only marked for deletion (dropped) for the garbage collector. This prevents accidental deletion.
+- Added a `recall` command to recover 'forgotten' (dropped) snapshots. `mapache log` can now also list dropped snapshots.
 
 ### Fixes
 - Fixed calculation of file hashes (regression). The hash of a file is calculated after the contents are (potentially) encoded.

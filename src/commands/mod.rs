@@ -32,6 +32,7 @@ pub mod cmd_log;
 pub mod cmd_ls;
 #[cfg(all(feature = "fuse", unix))]
 pub mod cmd_mount;
+pub mod cmd_recall;
 pub mod cmd_restore;
 pub mod cmd_snapshot;
 pub mod cmd_stats;
@@ -65,6 +66,7 @@ pub enum Command {
     Ls(WithGlobal<cmd_ls::CmdArgs>),
     #[cfg(all(feature = "fuse", unix))]
     Mount(WithGlobal<cmd_mount::CmdArgs>),
+    Recall(WithGlobal<cmd_recall::CmdArgs>),
     Restore(WithGlobal<cmd_restore::CmdArgs>),
     Snapshot(WithGlobal<cmd_snapshot::CmdArgs>),
     Stats(WithGlobal<cmd_stats::CmdArgs>),
@@ -207,6 +209,7 @@ pub fn parse_and_run() -> Result<()> {
         Command::Ls(cmd) => cmd_ls::run(&cmd.global, &cmd.args),
         #[cfg(all(feature = "fuse", unix))]
         Command::Mount(cmd) => cmd_mount::run(&cmd.global, &cmd.args),
+        Command::Recall(cmd) => cmd_recall::run(&cmd.global, &cmd.args),
         Command::Restore(cmd) => cmd_restore::run(&cmd.global, &cmd.args),
         Command::Snapshot(cmd) => cmd_snapshot::run(&cmd.global, &cmd.args),
         Command::Stats(cmd) => cmd_stats::run(&cmd.global, &cmd.args),
@@ -242,6 +245,7 @@ fn extract_global(command: &Command) -> Option<&GlobalArgs> {
         Ls,
         #[cfg(all(feature = "fuse", unix))]
         Mount,
+        Recall,
         Restore,
         Snapshot,
         Stats,

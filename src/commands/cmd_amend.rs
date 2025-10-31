@@ -168,6 +168,7 @@ fn amend(
             file_type: ContentIdType::Snapshot,
             is_metadata: true,
         },
+        None,
     )?;
     raw += raw_meta;
     encoded += encoded_meta;

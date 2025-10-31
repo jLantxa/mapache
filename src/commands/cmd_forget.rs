@@ -33,6 +33,10 @@ pub struct CmdArgs {
     #[arg(value_parser, value_delimiter = ' ', group = "policy")]
     pub forget: Vec<String>,
 
+    /// Delete the snapshot without staging.
+    #[arg(long, value_parser, default_value_t = false)]
+    pub force: bool,
+
     /// Only consider snapshots with any tag from the list: tag[,tag,...]
     #[arg(long = "tags", value_parser)]
     pub tags_str: Option<String>,
@@ -231,7 +235,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if !args.dry_run {
         let num_removed_snapshots = removed_snapshots.len();
         for (id, _, _active) in removed_snapshots {
-            repo.set_extension(ContentIdType::Snapshot, &id, Some(REPO_DROPPED_EXTENSION))?;
+            if args.force {
+                repo.delete_file(ContentIdType::Snapshot, &id, None)?;
+            } else {
+                repo.set_extension(ContentIdType::Snapshot, &id, Some(REPO_DROPPED_EXTENSION))?;
+            }
         }
 
         ui::cli::log!(

@@ -361,7 +361,13 @@ impl Repository {
     }
 
     /// Saves a file to the repository
-    pub fn save_file(&self, id: &SaveID, data: &[u8], hint: StorageHint) -> Result<(ID, u64, u64)> {
+    pub fn save_file(
+        &self,
+        id: &SaveID,
+        data: &[u8],
+        hint: StorageHint,
+        with_extension: Option<&str>,
+    ) -> Result<(ID, u64, u64)> {
         let file_type = hint.file_type;
 
         let raw_size = data.len() as u64;
@@ -385,7 +391,9 @@ impl Repository {
             SaveID::WithID(id) => id,
         };
 
-        let path = self.get_path(file_type, id);
+        let path = self
+            .get_path(file_type, id)
+            .with_extension(with_extension.unwrap_or_default());
         let handle = Handle {
             path: &path,
             hint: Some(hint),
@@ -615,7 +623,12 @@ impl Repository {
     }
 
     /// Finds a file in the repository using an ID prefix
-    pub fn find(&self, file_type: ContentIdType, prefix: &str) -> Result<(ID, PathBuf)> {
+    pub(crate) fn find_with_extension(
+        &self,
+        file_type: ContentIdType,
+        prefix: &str,
+        extension: Option<&str>,
+    ) -> Result<(ID, PathBuf)> {
         if prefix.len() > 2 * mapache::ID_LENGTH {
             // A hex string has 2 characters per byte.
             bail!(
@@ -633,17 +646,21 @@ impl Repository {
         let mut matches = Vec::new();
 
         for file_path in type_files {
-            let filename = match file_path.file_name() {
+            let file_stem = match file_path.file_stem() {
                 Some(os_str) => os_str.to_string_lossy().into_owned(),
                 None => bail!("Failed to list file for type {file_type}"),
             };
+            let file_ext = match file_path.extension() {
+                Some(os_str) => os_str.to_str(),
+                None => None,
+            };
 
-            if !filename.starts_with(prefix) {
+            if !file_stem.starts_with(prefix) || file_ext != extension {
                 continue;
             }
 
             if matches.is_empty() {
-                matches.push((filename, file_path));
+                matches.push((file_stem, file_path));
             } else {
                 bail!("Prefix {prefix} is ambiguous");
             }
@@ -653,10 +670,15 @@ impl Repository {
             bail!("File type {file_type} with prefix {prefix} doesn't exist");
         }
 
-        let (filename, filepath) = matches.pop().unwrap();
-        let id = ID::from_hex(&filename)?;
+        let (file_stem, filepath) = matches.pop().unwrap();
+        let id = ID::from_hex(&file_stem)?;
 
         Ok((id, filepath))
+    }
+
+    /// Finds a file in the repository using an ID prefix
+    pub fn find(&self, file_type: ContentIdType, prefix: &str) -> Result<(ID, PathBuf)> {
+        self.find_with_extension(file_type, prefix, None)
     }
 
     pub fn init_pack_saver(&self, concurrency: usize) {
@@ -915,6 +937,7 @@ impl Repository {
                 file_type: ContentIdType::Lock,
                 is_metadata: true,
             },
+            None,
         )?;
 
         Ok(())

@@ -269,6 +269,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             is_metadata: true,
             file_type: ContentIdType::Snapshot,
         },
+        None,
     )?;
 
     progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);

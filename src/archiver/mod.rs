@@ -3,7 +3,7 @@ pub(crate) mod tree_serializer;
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use chrono::Local;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
@@ -69,16 +69,14 @@ impl Archiver {
         let fs_streamer = FSNodeStreamer::from_paths(
             arch.snapshot_options.absolute_source_paths.clone(),
             arch.snapshot_options.exclude_paths.clone(),
-        )
-        .context("Failed to create FSNodeStreamer")?;
+        )?;
         let previous_tree_streamer = SerializedNodeStreamer::new(
             arch.repo.clone(),
             parent_tree_id,
             arch.snapshot_options.snapshot_root_path.clone(),
             None,
             None,
-        )
-        .context("Failed to create SerializedNodeStreamer")?;
+        )?;
 
         arch.repo.init_pack_saver(arch.write_concurrency);
 

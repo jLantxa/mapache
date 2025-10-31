@@ -16,14 +16,15 @@ use crate::{
 use super::packer::PackedBlobDescriptor;
 
 /// Represents the location and size of a blob within a pack file.
+/// This struct is optimized for internal use inside the index.
 #[derive(Debug, Clone)]
-struct BlobLocation {
+struct BlobLocationInternal {
     /// The index into the `pack_ids` `IndexSet` for the pack containing this blob. See Index.
     pub pack_array_index: u32,
     /// The offset of the blob within its pack file.
     pub offset: u32,
     /// The length of the blob within its pack file.
-    pub encoded_length: u32,
+    pub length: u32,
     /// The raw sized (uncompressed, unencrypted) of the blob
     pub raw_length: u32,
 }
@@ -42,12 +43,12 @@ pub struct BlobLocator {
 /// An `Index` can be in a 'pending' state, indicating it's still being built.
 #[derive(Debug, Clone)]
 pub struct Index {
-    /// blob ID -> BlobLocation map. This is the core lookup table.
-    data_ids: HashMap<ID, BlobLocation>,
-    tree_ids: HashMap<ID, BlobLocation>,
+    /// blob ID -> BlobLocationInternal map. This is the core lookup table.
+    data_ids: HashMap<ID, BlobLocationInternal>,
+    tree_ids: HashMap<ID, BlobLocationInternal>,
 
     /// The Pack IDs referenced in this index. Using an `IndexSet` allows us
-    /// to store a small `usize` index in `BlobLocation` instead of the full `ID`,
+    /// to store a small `usize` index in `BlobLocationInternal` instead of the full `ID`,
     /// significantly reducing memory usage.
     pack_ids: IndexSet<ID>,
 
@@ -135,10 +136,10 @@ impl Index {
 
                 map.insert(
                     blob.id,
-                    BlobLocation {
+                    BlobLocationInternal {
                         pack_array_index: pack_index as u32,
                         offset: blob.offset,
-                        encoded_length: blob.encoded_length,
+                        length: blob.length,
                         raw_length: blob.raw_length,
                     },
                 );
@@ -167,7 +168,7 @@ impl Index {
                     pack_id,
                     BlobType::Data,
                     location.offset,
-                    location.encoded_length,
+                    location.length,
                     location.raw_length,
                 )
             })
@@ -181,7 +182,7 @@ impl Index {
                         pack_id,
                         BlobType::Tree,
                         location.offset,
-                        location.encoded_length,
+                        location.length,
                         location.raw_length,
                     )
                 })
@@ -202,10 +203,10 @@ impl Index {
 
             map.insert(
                 blob.id,
-                BlobLocation {
+                BlobLocationInternal {
                     pack_array_index: pack_index as u32,
                     offset: blob.offset,
-                    encoded_length: blob.encoded_length,
+                    length: blob.length,
                     raw_length: blob.raw_length,
                 },
             );
@@ -229,7 +230,8 @@ impl Index {
         }
 
         // Populate Blobs in a single pass over data_ids and tree_ids
-        let mut process_blobs = |blob_map: &HashMap<ID, BlobLocation>, blob_type: BlobType| {
+        let mut process_blobs = |blob_map: &HashMap<ID, BlobLocationInternal>,
+                                 blob_type: BlobType| {
             for (blob_id, location) in blob_map {
                 let (_pack_id, blobs) = packs_with_blobs
                     .get_mut(&(location.pack_array_index as usize))
@@ -239,7 +241,7 @@ impl Index {
                     id: *blob_id,
                     blob_type,
                     offset: location.offset,
-                    encoded_length: location.encoded_length,
+                    length: location.length,
                     raw_length: location.raw_length,
                 });
             }
@@ -305,7 +307,7 @@ impl Index {
                     BlobLocator {
                         pack_id: *pack_ids.get_value(loc.pack_array_index as usize).unwrap(),
                         offset: loc.offset,
-                        length: loc.encoded_length,
+                        length: loc.length,
                         raw_length: loc.raw_length,
                     },
                 )
@@ -322,7 +324,7 @@ impl Index {
 
             self.pack_ids.remove(target_pack_id);
 
-            let process_blobs = |blob_map: &mut HashMap<ID, BlobLocation>| {
+            let process_blobs = |blob_map: &mut HashMap<ID, BlobLocationInternal>| {
                 blob_map.retain(|_, loc| {
                     let current_pack_index_u32 = loc.pack_array_index;
 
@@ -505,7 +507,8 @@ impl MasterIndex {
             let mut packs_to_merge: HashMap<&ID, Vec<PackedBlobDescriptor>> = HashMap::new();
 
             // Helper closure to avoid code duplication
-            let mut collect_blobs = |blob_map: &HashMap<ID, BlobLocation>, blob_type: BlobType| {
+            let mut collect_blobs = |blob_map: &HashMap<ID, BlobLocationInternal>,
+                                     blob_type: BlobType| {
                 for (blob_id, loc) in blob_map.iter() {
                     // Resolve the Pack ID reference using the index
                     let pack_id_ref = idx
@@ -517,7 +520,7 @@ impl MasterIndex {
                         id: *blob_id,
                         blob_type,
                         offset: loc.offset,
-                        encoded_length: loc.encoded_length,
+                        length: loc.length,
                         raw_length: loc.raw_length,
                     };
 
@@ -599,7 +602,7 @@ pub struct IndexFileBlob {
     #[serde(rename = "type")]
     pub blob_type: BlobType,
     pub offset: u32,
-    pub encoded_length: u32,
+    pub length: u32,
     pub raw_length: u32,
 }
 
@@ -617,14 +620,14 @@ mod tests {
         s: &str,
         blob_type: BlobType,
         offset: u32,
-        encoded_length: u32,
+        length: u32,
     ) -> PackedBlobDescriptor {
         PackedBlobDescriptor {
             id: mock_id(s),
             blob_type,
             offset,
-            encoded_length,
-            raw_length: encoded_length * 2, // Example raw length
+            length,
+            raw_length: length * 2, // Example raw length
         }
     }
 

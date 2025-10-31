@@ -1,9 +1,11 @@
 # Changelog
 
 ## Latest
+
+## v0.1.0-beta.4
 ### Changes
 - Delete all .tmp files from the repository during GC.
-- Best effort metadata restoring. Failing to restore metadata is not an error, but a warning.
+- Best effort metadata restoring. Failing to restore metadata is not an error, only a warning.
   Highly likely and recurrent warnings, which don't affect the integrity of the data, should not be logged.
 - `mapache forget` does not delete the snapshots permanently unless `--force` is used. The 'forgotten' snapshots are
   only marked for deletion (dropped) for the garbage collector. This prevents accidental deletion.
@@ -15,7 +17,7 @@
 - Enforce read concurrency in snapshot cmd.
 - Fixed unclear cleanup handler logs in snapshot cmd.
 
-## v0.1.0-beta.3
+## v0.1.0-beta.3a
 ### Changes
 - Support ssh keys for dst backend in `cmd_sync`.
 - Minor optimizations to the Archiver.

@@ -92,7 +92,7 @@ The goal of the milestone is to release the first stable version of mapache.
 Adding features is not a priority for this milestone, and only smaller features will be added. Bigger features will be implemented in future versions.
 The goal is to have v0.1.0 released by December 1st 2025 and have a break (and focus on Advent of Code?).
 
-Big features and optimizations which could destabilize the code will be postponed for v0.2.0.
+Feature freeze starts on November 1st. Big features and optimizations which could destabilize the code will be postponed for v0.2.0.
 
 ### 5. v0.2.0
 After the Christmas season, I will resume implementing all features that didn't make it into v0.1.0. At the moment, these include:
@@ -100,7 +100,7 @@ After the Christmas season, I will resume implementing all features that didn't 
 - [ ] configuration files,
 - [ ] master key rotation,
 - [x] local metadata cache,
-- [ ] `forget` stages snapshots before deletion. `recall` command to recover forgotten snapshots.
+- [x] `forget` stages snapshots before deletion. `recall` command to recover forgotten snapshots.
 - [ ] `restore` optimization (with in-memory pack file cache),
 - [ ] reimplement SFTP backend with a pure rust crate,
 - [ ] return codes for commands,

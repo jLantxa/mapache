@@ -100,6 +100,7 @@ After the Christmas season, I will resume implementing all features that didn't 
 - [ ] configuration files,
 - [ ] master key rotation,
 - [x] local metadata cache,
+- [ ] `forget` stages snapshots before deletion. `recall` command to recover forgotten snapshots.
 - [ ] `restore` optimization (with in-memory pack file cache),
 - [ ] reimplement SFTP backend with a pure rust crate,
 - [ ] return codes for commands,

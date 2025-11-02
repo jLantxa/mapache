@@ -1,6 +1,11 @@
 # Changelog
 
 ## Latest
+### Changes
+- Abort snapshot early if a fatal error occurrs.
+
+### Fixes
+- Failing to read a symlink's target is not an error. Mapache stores all the metadata it can and continue.
 
 ## v0.1.0-beta.4
 ### Changes

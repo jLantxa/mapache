@@ -174,10 +174,11 @@ impl Node {
             symlink_info: None,
         };
 
-        if node.is_symlink() {
-            let target_path = std::fs::read_link(path)
-                .with_context(|| format!("Cannot read symlink target for '{}'", path.display()))?;
-
+        if node.is_symlink()
+            && let Ok(target_path) = std::fs::read_link(path)
+        {
+            // Don't set any symlink metadata if the target could not be read
+            // The symlink will be effectively broken but this will not be an error.
             let target_type = target_path
                 .symlink_metadata()
                 .ok()

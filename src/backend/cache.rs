@@ -176,7 +176,7 @@ impl StorageBackend for CacheBackend {
 
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         // Try to rename the cached path. If it failed, it didn't exist.
-        // If this fill should be cached, it will be next time it is read.
+        // If this file should be cached, it will be next time it is read.
         let _ = self.cache.rename(from, to);
 
         self.backend.rename(from, to)?;

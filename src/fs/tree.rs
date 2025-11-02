@@ -487,12 +487,12 @@ where
             (Some(Err(_)), _) => {
                 let err = self.head_prev.take().unwrap();
                 self.head_prev = self.prev.next();
-                Some(Err(anyhow!("Previous node error: {}", err.unwrap_err())))
+                Some(Err(err.unwrap_err()))
             }
             (_, Some(Err(_))) => {
                 let err = self.head_next.take().unwrap();
                 self.head_next = self.next.next();
-                Some(Err(anyhow!("Next node error: {}", err.unwrap_err())))
+                Some(Err(err.unwrap_err()))
             }
             (Some(Ok(item_a_ref)), Some(Ok(item_b_ref))) => {
                 let path_a = &item_a_ref.0;

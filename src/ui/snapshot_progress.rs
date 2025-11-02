@@ -266,9 +266,9 @@ impl SnapshotProgressReporter {
         self.diff_counts.write().unchanged_dirs += 1;
     }
 
-    #[inline]
-    pub fn error(&self) {
-        self.error_counter.fetch_add(1, Ordering::Relaxed);
+    pub fn error(&self, msg: &str) {
+        self.error_counter.fetch_add(1, Ordering::SeqCst);
+        let _ = self.mp.println(format!("{} {msg}", "Error:".bold().red()));
     }
 
     pub fn get_summary(&self) -> SnapshotSummary {

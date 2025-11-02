@@ -1,7 +1,14 @@
 pub(crate) mod processor;
 pub(crate) mod tree_serializer;
 
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::{Result, anyhow, bail};
 use chrono::Local;
@@ -12,7 +19,7 @@ use crate::{
     fs::tree::{FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
     mapache::ID,
     repository::{repo::Repository, snapshot::Snapshot},
-    ui::{self, snapshot_progress::SnapshotProgressReporter},
+    ui::snapshot_progress::SnapshotProgressReporter,
     utils,
 };
 
@@ -58,6 +65,10 @@ impl Archiver {
     pub fn snapshot(self) -> Result<Snapshot> {
         let arch = Arc::from(self);
 
+        // This error flag signals a fatal error to all running threads so they can
+        // abort execution early. Only fatal, unrecoverable errors should be signaled.
+        let fatal_error_flag = Arc::new(AtomicBool::new(false));
+
         // Extract parent snapshot tree id
         let parent_tree_id: Option<ID> = arch
             .snapshot_options
@@ -93,20 +104,25 @@ impl Archiver {
         // Diff thread. This thread iterates the NodeDiffStreamer and passes the
         // items to the item processor thread.
         let diff_progress_reporter_clone = arch.progress_reporter.clone();
+        let diff_fatal_error_flag = fatal_error_flag.clone();
         let diff_thread = std::thread::spawn(move || {
             let diff_streamer = NodeDiffStreamer::new(previous_tree_streamer, fs_streamer);
 
             for diff_result in diff_streamer {
+                if diff_fatal_error_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 match diff_result {
                     Ok((path, prev, next, diff)) => {
                         if let Err(e) = diff_tx.send((path, prev, next, diff)) {
-                            diff_progress_reporter_clone.error();
-                            ui::cli::error!("Archiver errored sending diff: {:?}", e.to_string());
+                            diff_progress_reporter_clone
+                                .error(&format!("Archiver errored sending diff: {e:#?}"));
+                            diff_fatal_error_flag.store(true, Ordering::SeqCst);
                         }
                     }
                     Err(e) => {
-                        diff_progress_reporter_clone.error();
-                        ui::cli::error!("Diff error: {}", e);
+                        diff_progress_reporter_clone.error(&format!("{e:#?}"));
                     }
                 }
             }
@@ -122,6 +138,7 @@ impl Archiver {
         let process_item_tx_clone = process_item_tx.clone();
         let repo_clone = arch.repo.clone();
         let processor_progress_reporter_clone = arch.progress_reporter.clone();
+        let processor_fatal_error_flag = fatal_error_flag.clone();
         let snapshot_root_path_clone = arch.snapshot_options.snapshot_root_path.clone();
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -131,10 +148,14 @@ impl Archiver {
 
         let processor_thread = std::thread::spawn(move || {
             pool.install(|| {
-                diff_rx
+                let _ = diff_rx
                     .into_iter()
                     .par_bridge()
-                    .for_each(|(path, prev, next, diff)| {
+                    .try_for_each(|(path, prev, next, diff)| {
+                        if processor_fatal_error_flag.load(Ordering::Relaxed) {
+                            return Err(());
+                        }
+
                         let inner_repo_clone = repo_clone.clone();
                         let inner_progress_reporter_clone = processor_progress_reporter_clone.clone();
 
@@ -154,20 +175,23 @@ impl Archiver {
                         match processed_item_result {
                             Ok(Some(processed_item)) => {
                                 if let Err(e) = process_item_tx_clone.send(processed_item) {
-                                    inner_progress_reporter_clone.error();
-                                    ui::cli::error!(
-                                        "Archiver processor task thread errored sending processing item: {e:#}"
-                                    );
+                                    inner_progress_reporter_clone.error(&
+                                  format!(
+                                        "Archiver processor task thread errored sending processing item: {e:#?}"
+                                    ));
+                                    processor_fatal_error_flag.store(true,Ordering::SeqCst);
                                 }
                             }
                             Ok(None) => {}
                             Err(e) => {
-                                inner_progress_reporter_clone.error();
-                                ui::cli::error!(
-                                    "Archiver thread errored processing item: {e:#}"
-                                );
+                                inner_progress_reporter_clone.error(&format!(
+                                    "Archiver thread errored processing item: {e:#?}"
+                                ));
+                                processor_fatal_error_flag.store(true,Ordering::SeqCst);
                             }
                         }
+
+                        Ok(())
                     });
                 });
         });
@@ -182,6 +206,7 @@ impl Archiver {
         let serializer_progress_reporter_clone = arch.progress_reporter.clone();
         let serializer_snapshot_root_path_clone = arch.snapshot_options.snapshot_root_path.clone();
         let arch_clone = arch.clone();
+        let serializer_fatal_error_flag = fatal_error_flag.clone();
         let tree_serializer_thread = std::thread::spawn(move || -> Option<ID> {
             let mut tree_serializer = TreeSerializer::new(
                 repo_clone,
@@ -190,6 +215,10 @@ impl Archiver {
             );
 
             while let Ok(item) = process_item_rx.recv() {
+                if serializer_fatal_error_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 // Notify reporter
                 let (item_path, _) = &item;
                 serializer_progress_reporter_clone.processed_node(
@@ -202,10 +231,10 @@ impl Archiver {
                     Ok((raw_tree_size, encoded_tree_size)) => serializer_progress_reporter_clone
                         .written_meta_bytes(raw_tree_size, encoded_tree_size),
                     Err(e) => {
-                        serializer_progress_reporter_clone.error();
-                        ui::cli::error!(
+                        serializer_progress_reporter_clone.error(&format!(
                             "Archiver serializer thread errored handling processed item: {e:#}"
-                        );
+                        ));
+                        serializer_fatal_error_flag.store(true, Ordering::SeqCst);
                     }
                 }
             }
@@ -217,10 +246,10 @@ impl Archiver {
                     tree_serializer.root_tree()
                 }
                 Err(e) => {
-                    serializer_progress_reporter_clone.error();
-                    ui::cli::error!(
+                    serializer_progress_reporter_clone.error(&format!(
                         "Archiver serializer thread errored finalizing root tree: {e:#}"
-                    );
+                    ));
+
                     None
                 }
             }
@@ -236,6 +265,11 @@ impl Archiver {
         let root_tree_id = tree_serializer_thread
             .join()
             .map_err(|_| anyhow!("Archiver serializer thread panicked"))?;
+
+        // Return now if fatal error
+        if fatal_error_flag.load(Ordering::Relaxed) {
+            bail!("A fatal error occurred. Aborting snapshot.");
+        }
 
         // Unwrap the archiver Arc to avoid cloning the contents.
         // Archiver cannot implement Debug, so unwrap is not available.

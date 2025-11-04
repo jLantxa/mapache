@@ -200,9 +200,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         if node.is_dir() {
             num_dirs += 1;
-        } else if node.is_file() {
+        } else {
+            // For simplicity, everything that is not a directory is counted as a file
+            // but only true files (nodes with content) are accounted for the total size.
             num_files += 1;
-            total_bytes += node.metadata.size;
+            if node.is_file() {
+                total_bytes += node.metadata.size;
+            }
         }
 
         spinner.set_message(format!(

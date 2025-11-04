@@ -28,6 +28,8 @@ pub struct SnapshotProgressReporter {
     expected_items: Arc<RwLock<Option<AtomicU64>>>, // Num expected items
     expected_bytes: Arc<RwLock<Option<AtomicU64>>>, // Num expected bytes
 
+    determined_style: ProgressStyle,
+
     // Metadata
     meta_raw_bytes: Arc<AtomicU64>, // Metadata bytes 'written' before encoding
     meta_encoded_bytes: Arc<AtomicU64>, // Metadata bytes written after encoding
@@ -85,50 +87,95 @@ impl SnapshotProgressReporter {
 
         let processed_bytes_arc_clone = processed_bytes_arc.clone();
         let expected_bytes_arc_clone = expected_bytes_arc.clone();
-        let expected_items_arc_clone = expected_items_arc.clone();
-        progress_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
-                .expect("The snapshot progress bar should have been created")
-                .progress_chars("=> ")
-                .with_key(
-                    "custom_elapsed",
-                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let elapsed = state.elapsed();
-                        let custom_elapsed = utils::pretty_print_duration(elapsed);
-                        let _ = w.write_str(&custom_elapsed);
-                    },
-                )
-                .with_key(
-                    "processed_bytes_fmt",
-                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
-                        let expected_bytes_lock = expected_bytes_arc_clone.write();
-                        let s = match expected_bytes_lock.as_ref() {
-                            Some(atomic_val) => {
-                                let expected_bytes = atomic_val.load(Ordering::SeqCst);
-                                format!(
-                                    "{} / {}",
-                                    utils::format_size(bytes, 3),
-                                    utils::format_size(expected_bytes, 3)
-                                )
-                            },
-                            None => utils::format_size(bytes, 3).to_string(),
-                        };
-                        let _ = w.write_str(&s);
-                    },
-                )
-                .with_key(
-                    "custom_eta",
-                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let eta = state.eta();
-                        let custom_eta = utils::pretty_print_duration(eta);
-                        let _ = w.write_str(&custom_eta);
-                    },
-                ),
-        );
+        let undetermined_style = ProgressStyle::default_bar()
+            .template("[{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
+            .expect("The snapshot progress bar should have been created")
+            .progress_chars("=> ")
+            .with_key(
+                "custom_elapsed",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed = utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                },
+            )
+            .with_key(
+                "processed_bytes_fmt",
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
+                    let expected_bytes_lock = expected_bytes_arc_clone.write();
+                    let s = match expected_bytes_lock.as_ref() {
+                        Some(atomic_val) => {
+                            let expected_bytes = atomic_val.load(Ordering::SeqCst);
+                            format!(
+                                "{} / {}",
+                                utils::format_size(bytes, 3),
+                                utils::format_size(expected_bytes, 3)
+                            )
+                        }
+                        None => utils::format_size(bytes, 3).to_string(),
+                    };
+                    let _ = w.write_str(&s);
+                },
+            )
+            .with_key(
+                "custom_eta",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let eta = state.eta();
+                    let custom_eta = utils::pretty_print_duration(eta);
+                    let _ = w.write_str(&custom_eta);
+                },
+            );
+
+        let processed_bytes_arc_clone = processed_bytes_arc.clone();
+        let expected_bytes_arc_clone = expected_bytes_arc.clone();
+        let determined_style = ProgressStyle::default_bar()
+            .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
+            .expect("The snapshot progress bar should have been created")
+            .progress_chars("=> ")
+            .with_key(
+                "custom_elapsed",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let elapsed = state.elapsed();
+                    let custom_elapsed = utils::pretty_print_duration(elapsed);
+                    let _ = w.write_str(&custom_elapsed);
+                },
+            )
+            .with_key(
+                "processed_bytes_fmt",
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
+                    let expected_bytes_lock = expected_bytes_arc_clone.write();
+                    let s = match expected_bytes_lock.as_ref() {
+                        Some(atomic_val) => {
+                            let expected_bytes = atomic_val.load(Ordering::SeqCst);
+                            format!(
+                                "{} / {}",
+                                utils::format_size(bytes, 3),
+                                utils::format_size(expected_bytes, 3)
+                            )
+                        },
+                        None => utils::format_size(bytes, 3).to_string(),
+                    };
+                    let _ = w.write_str(&s);
+                },
+            )
+            .with_key(
+                "custom_eta",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let eta = state.eta();
+                    let custom_eta = utils::pretty_print_duration(eta);
+                    let _ = w.write_str(&custom_eta);
+                },
+            );
+
+        match expected_size {
+            Some(_) => progress_bar.set_style(determined_style.clone()),
+            None => progress_bar.set_style(undetermined_style.clone()),
+        };
 
         let error_counter_arc_clone = error_counter_arc.clone();
+        let expected_items_arc_clone = expected_items_arc.clone();
         let processed_items_count_arc_clone = processed_items_count_arc.clone();
         companion_bar.set_style(
             ProgressStyle::default_bar()
@@ -188,6 +235,7 @@ impl SnapshotProgressReporter {
             expected_bytes: expected_bytes_arc,
             diff_counts: RwLock::new(DiffCounts::default()),
             processing_items: processing_items_arc,
+            determined_style,
             mp,
             companion_bar,
             progress_bar,
@@ -230,6 +278,7 @@ impl SnapshotProgressReporter {
 
         if let Some(bytes) = bytes_opt {
             self.progress_bar.set_length(bytes);
+            self.progress_bar.set_style(self.determined_style.clone());
         }
     }
 

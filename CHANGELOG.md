@@ -3,6 +3,7 @@
 ## Latest
 ### Changes
 - Abort snapshot early if a fatal error occurrs.
+- Run file system scan concurrently with the snapshot task.
 
 ### Fixes
 - Failing to read a symlink's target is not an error. Mapache stores all the metadata it can and continue.

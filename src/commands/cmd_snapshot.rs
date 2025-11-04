@@ -169,10 +169,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Some((id, snap))
             }
             Ok(None) => {
-                ui::cli::log!(
-                    "{} This is the first snapshot. Doing full scan.",
-                    "[!]".bold().cyan()
-                );
+                ui::cli::log!("{} This is the first snapshot.", "[!]".bold().cyan());
                 None
             }
             Err(_) => bail!("Parent snapshot not found"),

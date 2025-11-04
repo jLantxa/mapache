@@ -5,6 +5,7 @@ pub mod lock;
 pub mod manifest;
 pub mod packer;
 pub mod repo;
+pub mod retention;
 pub mod snapshot;
 pub mod storage;
 pub mod verify;

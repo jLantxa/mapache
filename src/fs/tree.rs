@@ -501,44 +501,44 @@ where
                 match path_a.cmp(path_b) {
                     Ordering::Less => {
                         let item = self.head_prev.take().unwrap().unwrap();
-                        let (previous_path, previous_node) = item;
+                        let (previous_path, previous_stream_node) = item;
 
                         self.head_prev = self.prev.next();
 
                         Some(Ok((
                             previous_path,
-                            Some(previous_node),
+                            Some(previous_stream_node),
                             None,
                             NodeDiff::Deleted,
                         )))
                     }
                     Ordering::Greater => {
                         let item = self.head_next.take().unwrap().unwrap();
-                        let (incoming_path, incoming_node) = item;
+                        let (incoming_path, incoming_stream_node) = item;
 
                         self.head_next = self.next.next();
 
                         Some(Ok((
                             incoming_path,
                             None,
-                            Some(incoming_node),
+                            Some(incoming_stream_node),
                             NodeDiff::New,
                         )))
                     }
                     Ordering::Equal => {
                         let item_a = self.head_prev.take().unwrap().unwrap();
-                        let (previous_path, previous_node) = item_a;
+                        let (previous_path, previous_stream_node) = item_a;
 
                         let item_b = self.head_next.take().unwrap().unwrap();
-                        let (_, incoming_node) = item_b;
+                        let (_, incoming_stream_node) = item_b;
 
                         self.head_prev = self.prev.next();
                         self.head_next = self.next.next();
 
-                        let diff_type = if previous_node
+                        let diff_type = if previous_stream_node
                             .node
                             .metadata
-                            .has_changed(&incoming_node.node.metadata)
+                            .is_modified(&incoming_stream_node.node.metadata)
                         {
                             NodeDiff::Changed
                         } else {
@@ -547,8 +547,8 @@ where
 
                         Some(Ok((
                             previous_path,
-                            Some(previous_node),
-                            Some(incoming_node),
+                            Some(previous_stream_node),
+                            Some(incoming_stream_node),
                             diff_type,
                         )))
                     }
@@ -556,25 +556,25 @@ where
             }
             (Some(Ok(_)), None) => {
                 let item = self.head_prev.take().unwrap().unwrap();
-                let (previous_path, previous_node) = item;
+                let (previous_path, previous_stream_node) = item;
                 self.head_prev = self.prev.next();
 
                 Some(Ok((
                     previous_path,
-                    Some(previous_node),
+                    Some(previous_stream_node),
                     None,
                     NodeDiff::Deleted,
                 )))
             }
             (None, Some(Ok(_))) => {
                 let item = self.head_next.take().unwrap().unwrap();
-                let (incoming_path, incoming_node) = item;
+                let (incoming_path, incoming_stream_node) = item;
                 self.head_next = self.next.next();
 
                 Some(Ok((
                     incoming_path,
                     None,
-                    Some(incoming_node),
+                    Some(incoming_stream_node),
                     NodeDiff::New,
                 )))
             }

@@ -60,7 +60,7 @@ pub struct SymlinkInfo {
 /// We ignore the accessed time. This field changes everytime we analyze a file for backup,
 /// altering the hash of the node. The accessed time will be updated after restoring the
 /// file anyway. We don't include it in the metadata, but we still have it here.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Metadata {
     /// Size in bytes
@@ -140,15 +140,12 @@ impl Metadata {
         }
     }
 
-    /// Returns `true` iff any relevant metadata field differs.
+    /// Compare this metadata with the metadata of another node.
+    /// Returns `true` iff any metadata differs, which could indicate that the
+    /// node contents have changed or the node has been replaced.
     #[inline]
-    pub fn has_changed(&self, other: &Self) -> bool {
-        self.inode != other.inode
-            || self.modified_time != other.modified_time
-            || self.size != other.size
-            || self.mode != other.mode
-            || self.owner_uid != other.owner_uid
-            || self.owner_gid != other.owner_gid
+    pub fn is_modified(&self, other: &Self) -> bool {
+        self != other
     }
 }
 

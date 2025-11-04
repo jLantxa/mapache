@@ -107,32 +107,36 @@ impl Archiver {
         // in the progress bar. To save time, this is started concurrently with the archiver
         // pipeline.
         let scanner_arch_clone = arch.clone();
-        let scanner_thread = std::thread::spawn(move || -> Result<()> {
+        let scanner_thread = std::thread::spawn(move || {
             if !scanner_arch_clone.snapshot_options.no_scan {
-                // Skipping the scan can save some I/O time
-                let scan_streamer = FSNodeStreamer::from_paths(
+                match FSNodeStreamer::from_paths(
                     scanner_arch_clone
                         .snapshot_options
                         .absolute_source_paths
                         .clone(),
                     scanner_arch_clone.snapshot_options.exclude_paths.clone(),
-                )?;
+                ) {
+                    Ok(scan_streamer) => {
+                        for (_path, stream_node) in scan_streamer.flatten() {
+                            let node = stream_node.node;
+                            scanner_arch_clone.progress_reporter.add_expected_items(1);
 
-                for (_path, stream_node) in scan_streamer.flatten() {
-                    let node = stream_node.node;
-                    scanner_arch_clone.progress_reporter.add_expected_items(1);
+                            if node.is_file() {
+                                scanner_arch_clone
+                                    .progress_reporter
+                                    .add_expected_bytes(node.metadata.size);
+                            }
+                        }
 
-                    if node.is_file() {
-                        scanner_arch_clone
-                            .progress_reporter
-                            .add_expected_bytes(node.metadata.size);
+                        scanner_arch_clone.progress_reporter.scan_finished();
+                    }
+                    Err(e) => {
+                        scanner_arch_clone.progress_reporter.error(&format!(
+                            "The scanner failed to traverse the target paths: {e:#?}"
+                        ));
                     }
                 }
-
-                scanner_arch_clone.progress_reporter.scan_finished();
             }
-
-            Ok(())
         });
 
         // Diff thread. This thread iterates the NodeDiffStreamer and passes the
@@ -292,7 +296,7 @@ impl Archiver {
         // Join threads
         scanner_thread
             .join()
-            .map_err(|_| anyhow!("Archiver scanner thread panicked"))??;
+            .map_err(|_| anyhow!("Archiver scanner thread panicked"))?;
         diff_thread
             .join()
             .map_err(|_| anyhow!("Archiver diff thread panicked"))?;

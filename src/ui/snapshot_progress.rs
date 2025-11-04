@@ -25,6 +25,8 @@ pub struct SnapshotProgressReporter {
     processed_bytes: Arc<AtomicU64>,       // Bytes processed (only data)
     raw_bytes: Arc<AtomicU64>,             // Bytes 'written' before encoding
     encoded_bytes: Arc<AtomicU64>,         // Bytes written after encoding
+    expected_items: Arc<RwLock<Option<AtomicU64>>>, // Num expected items
+    expected_bytes: Arc<RwLock<Option<AtomicU64>>>, // Num expected bytes
 
     // Metadata
     meta_raw_bytes: Arc<AtomicU64>, // Metadata bytes 'written' before encoding
@@ -46,16 +48,34 @@ pub struct SnapshotProgressReporter {
 }
 
 impl SnapshotProgressReporter {
-    pub fn new(expected_items: u64, expected_size: u64, num_processed_items: usize) -> Self {
+    pub fn new(
+        expected_items: Option<u64>,
+        expected_size: Option<u64>,
+        num_display_items: usize,
+    ) -> Self {
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
 
-        let progress_bar = mp.add(ProgressBar::new(expected_size));
+        let progress_bar = match expected_size {
+            Some(size) => mp.add(ProgressBar::new(size)),
+            None => mp.add(ProgressBar::no_length()),
+        };
+
         let companion_bar = mp.add(ProgressBar::no_length());
 
         let processed_items_count_arc = Arc::new(AtomicU64::new(0));
         let processed_bytes_arc = Arc::new(AtomicU64::new(0));
         let raw_bytes_arc = Arc::new(AtomicU64::new(0));
         let encoded_bytes_arc = Arc::new(AtomicU64::new(0));
+
+        let expected_items_arc = match expected_items {
+            Some(val) => Arc::new(RwLock::new(Some(AtomicU64::new(val)))),
+            None => Arc::new(RwLock::new(None)),
+        };
+
+        let expected_bytes_arc = match expected_size {
+            Some(val) => Arc::new(RwLock::new(Some(AtomicU64::new(val)))),
+            None => Arc::new(RwLock::new(None)),
+        };
 
         let meta_raw_bytes_arc = Arc::new(AtomicU64::new(0));
         let meta_encoded_bytes_arc = Arc::new(AtomicU64::new(0));
@@ -64,6 +84,8 @@ impl SnapshotProgressReporter {
         let error_counter_arc = Arc::new(AtomicU64::new(0));
 
         let processed_bytes_arc_clone = processed_bytes_arc.clone();
+        let expected_bytes_arc_clone = expected_bytes_arc.clone();
+        let expected_items_arc_clone = expected_items_arc.clone();
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
@@ -81,11 +103,18 @@ impl SnapshotProgressReporter {
                     "processed_bytes_fmt",
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                         let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
-                        let s = format!(
-                            "{} / {}",
-                            utils::format_size(bytes, 3),
-                            utils::format_size(expected_size, 3)
-                        );
+                        let expected_bytes_lock = expected_bytes_arc_clone.write();
+                        let s = match expected_bytes_lock.as_ref() {
+                            Some(atomic_val) => {
+                                let expected_bytes = atomic_val.load(Ordering::SeqCst);
+                                format!(
+                                    "{} / {}",
+                                    utils::format_size(bytes, 3),
+                                    utils::format_size(expected_bytes, 3)
+                                )
+                            },
+                            None => utils::format_size(bytes, 3).to_string(),
+                        };
                         let _ = w.write_str(&s);
                     },
                 )
@@ -110,7 +139,14 @@ impl SnapshotProgressReporter {
                     "processed_items_fmt",
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                         let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
-                        let s = format!("{item_count} / {expected_items} items");
+                        let expected_items_lock = expected_items_arc_clone.write();
+                        let s = match expected_items_lock.as_ref() {
+                            Some(atomic_val) => {
+                                let expected_count = atomic_val.load(Ordering::SeqCst);
+                                format!("{item_count} / {expected_count} items")
+                            }
+                            None => format!("{item_count} items"),
+                        };
                         let _ = w.write_str(&s);
                     },
                 )
@@ -128,8 +164,8 @@ impl SnapshotProgressReporter {
         progress_bar.enable_steady_tick(refresh_interval);
         companion_bar.enable_steady_tick(refresh_interval);
 
-        let mut file_spinners = Vec::with_capacity(num_processed_items);
-        for _ in 0..num_processed_items {
+        let mut file_spinners = Vec::with_capacity(num_display_items);
+        for _ in 0..num_display_items {
             let file_spinner = mp.add(ProgressBar::new_spinner());
             file_spinner.set_style(
                 ProgressStyle::default_spinner()
@@ -148,6 +184,8 @@ impl SnapshotProgressReporter {
             encoded_bytes: encoded_bytes_arc,
             meta_raw_bytes: meta_raw_bytes_arc,
             meta_encoded_bytes: meta_encoded_bytes_arc,
+            expected_items: expected_items_arc,
+            expected_bytes: expected_bytes_arc,
             diff_counts: RwLock::new(DiffCounts::default()),
             processing_items: processing_items_arc,
             mp,
@@ -156,6 +194,42 @@ impl SnapshotProgressReporter {
             file_spinners,
             verbosity: GlobalOpts::verbosity(),
             error_counter: error_counter_arc,
+        }
+    }
+
+    pub fn add_expected_items(&self, val: u64) {
+        let mut expected_items_lock = self.expected_items.write();
+        match expected_items_lock.as_ref() {
+            Some(expected_items_atomic) => {
+                expected_items_atomic.fetch_add(val, Ordering::SeqCst);
+            }
+            None => {
+                let _ = expected_items_lock.insert(AtomicU64::new(val));
+            }
+        }
+    }
+
+    pub fn add_expected_bytes(&self, val: u64) {
+        let mut expected_bytes_lock = self.expected_bytes.write();
+        match expected_bytes_lock.as_ref() {
+            Some(expected_bytes_atomic) => {
+                expected_bytes_atomic.fetch_add(val, Ordering::SeqCst);
+            }
+            None => {
+                let _ = expected_bytes_lock.insert(AtomicU64::new(val));
+            }
+        }
+    }
+
+    pub fn scan_finished(&self) {
+        let expected_bytes_lock = self.expected_bytes.read();
+        let bytes_opt = expected_bytes_lock
+            .as_ref()
+            .map(|bytes_atomic| bytes_atomic.load(Ordering::Relaxed));
+        drop(expected_bytes_lock); // Drop the lock before setting the progress bar length!
+
+        if let Some(bytes) = bytes_opt {
+            self.progress_bar.set_length(bytes);
         }
     }
 

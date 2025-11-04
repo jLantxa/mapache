@@ -3,24 +3,23 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     archiver::{Archiver, SnapshotOptions},
     backend::{BackendOptions, StorageHint, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
-    fs::{self, tree::FSNodeStreamer},
-    mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
+    fs::{self},
+    mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{SnapshotSummary, SnapshotTuple},
     },
     ui::{
-        self, SPINNER_TICK_CHARS, default_bar_draw_target,
+        self,
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },
-    utils::{self, format_size, size},
+    utils::{self, size},
 };
 
 use super::{GlobalArgs, UseSnapshot};
@@ -176,65 +175,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
     };
 
-    // Scan filesystem
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Scanning filesystem ({msg})")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-
-    // Scan the filesystem to collect stats about the targets
-    let mut num_files = 0;
-    let mut num_dirs = 0;
-    let mut total_bytes = 0;
-    let scan_streamer = FSNodeStreamer::from_paths(
-        absolute_source_paths.clone(),
-        normalized_excludes.clone().unwrap_or_default(),
-    )?;
-    for (_path, stream_node) in scan_streamer.flatten() {
-        let node = stream_node.node;
-
-        if node.is_dir() {
-            num_dirs += 1;
-        } else {
-            // For simplicity, everything that is not a directory is counted as a file
-            // but only true files (nodes with content) are accounted for the total size.
-            num_files += 1;
-            if node.is_file() {
-                total_bytes += node.metadata.size;
-            }
-        }
-
-        spinner.set_message(format!(
-            "{} files, {} dirs, {}",
-            num_files,
-            num_dirs,
-            format_size(total_bytes, 3)
-        ));
-    }
-
-    spinner.finish_and_clear();
-    ui::cli::log!(
-        "{} {} files, {} directories, {}\n",
-        "To commit:".bold().cyan(),
-        num_files,
-        num_dirs,
-        utils::format_size(total_bytes, 3),
-    );
-
     // Run Archiver
-    let expected_items = num_files + num_dirs;
     let progress_reporter = Arc::new(SnapshotProgressReporter::new(
-        expected_items,
-        total_bytes,
+        None,
+        None,
         args.read_concurrency,
     ));
 
-    // Init cleanup handler
+    // Init cleanup handlerf
     let repo_clone = repo.clone();
     let reporter_clone = progress_reporter.clone();
     let lock_handle_clone = lock_handle.clone();

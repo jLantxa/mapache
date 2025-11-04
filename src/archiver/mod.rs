@@ -91,6 +91,25 @@ impl Archiver {
 
         arch.repo.init_pack_saver(arch.write_concurrency);
 
+        // Scan the filesystem to collect stats about the targets
+        let scan_streamer = FSNodeStreamer::from_paths(
+            arch.snapshot_options.absolute_source_paths.clone(),
+            arch.snapshot_options.exclude_paths.clone(),
+        )?;
+        let scanner_progress_reporter_clone = arch.progress_reporter.clone();
+        let scanner_thread = std::thread::spawn(move || {
+            for (_path, stream_node) in scan_streamer.flatten() {
+                let node = stream_node.node;
+                scanner_progress_reporter_clone.add_expected_items(1);
+
+                if node.is_file() {
+                    scanner_progress_reporter_clone.add_expected_bytes(node.metadata.size);
+                }
+            }
+
+            scanner_progress_reporter_clone.scan_finished();
+        });
+
         // Channels
         let (diff_tx, diff_rx) = crossbeam_channel::bounded::<(
             PathBuf,
@@ -256,6 +275,9 @@ impl Archiver {
         });
 
         // Join threads
+        scanner_thread
+            .join()
+            .map_err(|_| anyhow!("Archiver scanner thread panicked"))?;
         diff_thread
             .join()
             .map_err(|_| anyhow!("Archiver diff thread panicked"))?;

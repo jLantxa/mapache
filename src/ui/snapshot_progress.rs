@@ -88,7 +88,7 @@ impl SnapshotProgressReporter {
         let processed_bytes_arc_clone = processed_bytes_arc.clone();
         let expected_bytes_arc_clone = expected_bytes_arc.clone();
         let undetermined_style = ProgressStyle::default_bar()
-            .template("[{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
+            .template("[{custom_elapsed}]  [{processed_bytes_fmt}]")
             .expect("The snapshot progress bar should have been created")
             .progress_chars("=> ")
             .with_key(

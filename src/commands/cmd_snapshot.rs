@@ -49,8 +49,12 @@ pub struct CmdArgs {
     pub description: Option<String>,
 
     /// Force a complete analysis of all files and directories
-    #[clap(long = "no-parent", group = "scan_mode")]
-    pub rescan: bool,
+    #[clap(long, group = "scan_mode")]
+    pub no_parent: bool,
+
+    /// Don't scan the file system
+    #[clap(long, value_parser, default_value_t = false)]
+    pub no_scan: bool,
 
     /// Use a snapshot as parent (ID or 'latest'). This snapshot will be the base when analyzing differences.
     #[clap(long, group = "scan_mode", value_parser = clap::value_parser!(UseSnapshot),
@@ -154,7 +158,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let snapshot_root_path = utils::calculate_lcp(&absolute_source_paths, false);
 
     ui::cli::log!();
-    let parent_snapshot_tuple: Option<SnapshotTuple> = match args.rescan {
+    let parent_snapshot_tuple: Option<SnapshotTuple> = match args.no_parent {
         true => {
             ui::cli::log!("Full scan");
             None
@@ -205,6 +209,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             parent_snapshot: parent_snapshot_tuple,
             tags,
             description: args.description.clone(),
+            no_scan: args.no_scan,
         },
         (args.read_concurrency, args.write_concurrency),
         progress_reporter.clone(),

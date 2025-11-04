@@ -30,6 +30,7 @@ pub struct SnapshotOptions {
     pub parent_snapshot: Option<(ID, Snapshot)>,
     pub tags: BTreeSet<String>,
     pub description: Option<String>,
+    pub no_scan: bool,
 }
 
 pub struct Archiver {
@@ -59,7 +60,7 @@ impl Archiver {
     /// Orchestrates the backup snapshot process, building a new snapshot of the source paths.
     ///
     /// This implementation utilizes a multi-threaded, channel-based architecture to manage
-    /// the workflow.Dedicated threads handle generating the difference stream, processing
+    /// the workflow. Dedicated threads handle generating the difference stream, processing
     /// individual file and directory changes, and serializing the resulting tree structure
     /// bottom-up to create the final snapshot.
     pub fn snapshot(self) -> Result<Snapshot> {
@@ -91,25 +92,6 @@ impl Archiver {
 
         arch.repo.init_pack_saver(arch.write_concurrency);
 
-        // Scan the filesystem to collect stats about the targets
-        let scan_streamer = FSNodeStreamer::from_paths(
-            arch.snapshot_options.absolute_source_paths.clone(),
-            arch.snapshot_options.exclude_paths.clone(),
-        )?;
-        let scanner_progress_reporter_clone = arch.progress_reporter.clone();
-        let scanner_thread = std::thread::spawn(move || {
-            for (_path, stream_node) in scan_streamer.flatten() {
-                let node = stream_node.node;
-                scanner_progress_reporter_clone.add_expected_items(1);
-
-                if node.is_file() {
-                    scanner_progress_reporter_clone.add_expected_bytes(node.metadata.size);
-                }
-            }
-
-            scanner_progress_reporter_clone.scan_finished();
-        });
-
         // Channels
         let (diff_tx, diff_rx) = crossbeam_channel::bounded::<(
             PathBuf,
@@ -119,6 +101,39 @@ impl Archiver {
         )>(4 * arch.read_concurrency);
         let (process_item_tx, process_item_rx) =
             crossbeam_channel::bounded::<(PathBuf, StreamNode)>(4 * arch.read_concurrency);
+
+        // Scanner thread. This thread scans the filesystem to collect stats about the targets.
+        // This information is only used to display the total number of bytes and items to process
+        // in the progress bar. To save time, this is started concurrently with the archiver
+        // pipeline.
+        let scanner_arch_clone = arch.clone();
+        let scanner_thread = std::thread::spawn(move || -> Result<()> {
+            if !scanner_arch_clone.snapshot_options.no_scan {
+                // Skipping the scan can save some I/O time
+                let scan_streamer = FSNodeStreamer::from_paths(
+                    scanner_arch_clone
+                        .snapshot_options
+                        .absolute_source_paths
+                        .clone(),
+                    scanner_arch_clone.snapshot_options.exclude_paths.clone(),
+                )?;
+
+                for (_path, stream_node) in scan_streamer.flatten() {
+                    let node = stream_node.node;
+                    scanner_arch_clone.progress_reporter.add_expected_items(1);
+
+                    if node.is_file() {
+                        scanner_arch_clone
+                            .progress_reporter
+                            .add_expected_bytes(node.metadata.size);
+                    }
+                }
+
+                scanner_arch_clone.progress_reporter.scan_finished();
+            }
+
+            Ok(())
+        });
 
         // Diff thread. This thread iterates the NodeDiffStreamer and passes the
         // items to the item processor thread.
@@ -277,7 +292,7 @@ impl Archiver {
         // Join threads
         scanner_thread
             .join()
-            .map_err(|_| anyhow!("Archiver scanner thread panicked"))?;
+            .map_err(|_| anyhow!("Archiver scanner thread panicked"))??;
         diff_thread
             .join()
             .map_err(|_| anyhow!("Archiver diff thread panicked"))?;

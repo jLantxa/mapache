@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     fs::{
-        node::{Node, NodeType},
+        node::Node,
         tree::{StreamNode, Tree},
     },
     mapache::ID,
@@ -105,40 +105,38 @@ impl TreeSerializer {
         &mut self,
         (path, stream_node): (PathBuf, StreamNode),
     ) -> Result<(u64, u64)> {
-        let mut dir_path = utils::extract_parent(&path)
+        let parent_path = utils::extract_parent(&path)
             .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
 
-        match stream_node.node.node_type {
-            NodeType::File
-            | NodeType::Symlink
-            | NodeType::BlockDevice
-            | NodeType::CharDevice
-            | NodeType::Fifo
-            | NodeType::Socket => {
-                self.insert_finalized_node(&dir_path, stream_node.node);
-            }
-            NodeType::Directory => {
-                // If the path is a directory, insert/update its own PendingTree entry
-                self.pending_trees
-                    .entry(path.clone())
-                    .and_modify(|pt| {
-                        // The entry exists because a child was inserted before this dir node was processed
-                        pt.node = Some(stream_node.node.clone());
-                        pt.num_expected_children =
-                            ExpectedChildren::Known(stream_node.num_children);
-                    })
-                    .or_insert_with(|| PendingTree {
-                        // The entry did not exist (e.g., if the directory was empty)
-                        node: Some(stream_node.node),
-                        children: HashMap::new(),
-                        num_expected_children: ExpectedChildren::Known(stream_node.num_children),
-                    });
+        // Determine the directory path that will receive the finalized node.
+        let target_dir_path = if stream_node.node.is_dir() {
+            // If the processed item is a directory (NodeType::Directory),
+            // we update its own PendingTree entry.
+            self.pending_trees
+                .entry(path.clone())
+                .or_insert_with(|| PendingTree {
+                    node: None,
+                    children: HashMap::new(),
+                    num_expected_children: ExpectedChildren::Unknown,
+                })
+                .node = Some(stream_node.node);
 
-                dir_path = path;
-            }
-        }
+            // The number of expected children is now known.
+            self.pending_trees
+                .get_mut(&path)
+                .unwrap() // We just inserted or modified it, so it must exist.
+                .num_expected_children = ExpectedChildren::Known(stream_node.num_children);
 
-        self.finalize_if_complete(&dir_path)
+            path
+        } else {
+            // For non-directory nodes (Files, Symlinks, etc.), we finalize the item
+            // and insert it into the parent's PendingTree.
+            self.insert_finalized_node(&parent_path, stream_node.node);
+
+            parent_path
+        };
+
+        self.finalize_if_complete(&target_dir_path)
     }
 
     // Helper function to encapsulate the core finalization and serialization logic,
@@ -148,19 +146,20 @@ impl TreeSerializer {
         &mut self,
         dir_path: PathBuf,
         pending_tree: PendingTree,
-    ) -> Result<(Option<Node>, Option<PathBuf>, (u64, u64))> {
+    ) -> Result<(Option<(PathBuf, Node)>, (u64, u64))> {
         let mut completed_tree = Tree {
             nodes: pending_tree.children.into_values().collect(),
         };
 
         let (tree_id, sizes) = completed_tree.save_to_repo(&self.repo)?;
         let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
+
         if is_root {
             self.root_tree_id = Some(tree_id);
-            return Ok((None, None, sizes));
+            return Ok((None, sizes));
         }
 
-        // Non-root case: Needs a parent path and a node with the tree_id
+        // Non-root case
         let parent_path = utils::extract_parent(&dir_path).with_context(|| {
             format!(
                 "Could not extract parent path for finalized directory '{}'",
@@ -174,24 +173,25 @@ impl TreeSerializer {
                 dir_path.display()
             )
         })?;
+
         completed_dir_node.tree = Some(tree_id);
 
-        Ok((Some(completed_dir_node), Some(parent_path), sizes))
+        // Return the parent path and the node to be inserted there.
+        Ok((Some((parent_path, completed_dir_node)), sizes))
     }
 
     pub(crate) fn finalize_if_complete(&mut self, dir_path: &Path) -> Result<(u64, u64)> {
-        // Check if pending
-        let is_pending = match self.pending_trees.get(dir_path) {
-            Some(tree) => tree.is_pending(),
-            None => return Ok((0, 0)),
-        };
+        // Check if the directory is present and complete.
+        let pending_tree_entry = self
+            .pending_trees
+            .get(dir_path)
+            .filter(|tree| !tree.is_pending());
 
-        if is_pending {
+        if pending_tree_entry.is_none() {
             return Ok((0, 0));
         }
 
-        // Now we know it's complete, consume the entry.
-        // Use `remove_entry` with `&Path` to avoid cloning `dir_path` just for removal.
+        // Now we know it's complete, remove and process.
         let (dir_path_key, this_pending_tree) =
             self.pending_trees.remove_entry(dir_path).with_context(|| {
                 format!(
@@ -200,13 +200,10 @@ impl TreeSerializer {
                 )
             })?;
 
-        let (completed_dir_node_opt, parent_path_opt, sizes) =
-            self.finalize_and_save(dir_path_key, this_pending_tree)?;
+        let (parent_info_opt, sizes) = self.finalize_and_save(dir_path_key, this_pending_tree)?;
 
-        // If it was the root, the options will be None, and we stop.
-        if let (Some(completed_dir_node), Some(parent_path)) =
-            (completed_dir_node_opt, parent_path_opt)
-        {
+        // Recursively handle the parent if it was not the root.
+        if let Some((parent_path, completed_dir_node)) = parent_info_opt {
             self.insert_finalized_node(&parent_path, completed_dir_node);
             self.finalize_if_complete(&parent_path)?;
         }

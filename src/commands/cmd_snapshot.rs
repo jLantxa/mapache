@@ -5,7 +5,7 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
-    archiver::{Archiver, SnapshotOptions},
+    archiver::{self, SnapshotOptions},
     backend::{BackendOptions, StorageHint, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
     fs::{self},
@@ -200,7 +200,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     // Process and save new snapshot
-    let archiver = Archiver::new(
+    let new_snapshot = archiver::snapshot(
         repo.clone(),
         SnapshotOptions {
             absolute_source_paths,
@@ -213,8 +213,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
         (args.read_concurrency, args.write_concurrency),
         progress_reporter.clone(),
-    );
-    let new_snapshot = archiver.snapshot()?;
+    )?;
 
     let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) = repo.save_file(
         &mapache::SaveID::CalculateID,

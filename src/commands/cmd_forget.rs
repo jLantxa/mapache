@@ -115,7 +115,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: args.dry_run,
-        cached: !global_args.no_cache,
     })?;
 
     let config = RepoConfig {

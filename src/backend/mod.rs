@@ -107,7 +107,6 @@ pub struct BackendOptions {
     pub ssh_pubkey: Option<PathBuf>,
     pub ssh_privatekey: Option<PathBuf>,
     pub dry_backend: bool,
-    pub cached: bool,
 }
 
 /// Open a new backend and prompt for authentication credentials.

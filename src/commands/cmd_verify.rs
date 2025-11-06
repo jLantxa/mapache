@@ -55,13 +55,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-        cached: false,
     };
     let backend_arc = new_backend_with_prompt(backend_options)?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: false,
+        use_cache: !global_args.no_cache,
     };
     let (repo_arc, secure_storage, lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),

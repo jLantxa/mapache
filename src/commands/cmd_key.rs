@@ -75,7 +75,6 @@ fn run_list(global_args: &GlobalArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-        cached: !global_args.no_cache,
     })?;
 
     let mut table = Table::new();
@@ -106,7 +105,6 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-        cached: !global_args.no_cache,
     })?;
 
     let key_manager = KeyManager::new(backend.clone());
@@ -143,7 +141,6 @@ fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-        cached: !global_args.no_cache,
     })?;
     let key_manager = KeyManager::new(backend.clone());
     let (_id, path) = key_manager.find_id_with_prefix(&args.id)?;
@@ -157,7 +154,6 @@ fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> 
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-        cached: !global_args.no_cache,
     })?;
 
     let key_manager = KeyManager::new(backend.clone());

@@ -43,7 +43,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_pubkey: global_args.ssh_pubkey.clone(),
         ssh_privatekey: global_args.ssh_privatekey.clone(),
         dry_backend: false,
-        cached: !global_args.no_cache,
     })?;
 
     let (_repo, _secure_storage, lock_handle) = Repository::try_open_with_lock(
@@ -62,7 +61,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_pubkey: args.dst_ssh_pubkey.clone(),
         ssh_privatekey: args.dst_ssh_privatekey.clone(),
         dry_backend: false,
-        cached: false,
     })?;
     dst_backend.create()?; // Create the backend to create the directory if it doesn't exist.
 

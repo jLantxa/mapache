@@ -2,6 +2,11 @@
 name = "mapache"
 version = "0.1.0-beta.4"
 edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0"
+repository = "https://github.com/jLantxa/mapache"
+keywords = ["backup", "deduplication"]
+readme = "README.md"
 
 [dependencies]
 aes-gcm-siv = "0.11.1"

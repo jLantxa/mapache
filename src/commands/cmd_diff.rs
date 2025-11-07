@@ -17,7 +17,7 @@ use crate::{
         self,
         table::{Alignment, Table},
     },
-    utils::{self, format_size, size},
+    utils::{self, format_size_binary, size},
 };
 
 #[derive(Args, Debug)]
@@ -246,8 +246,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     ]);
     summary_table.add_row(vec![
         "Size".to_string(),
-        format_size(source_snapshot.size(), 3),
-        format_size(target_snapshot.size(), 3),
+        format_size_binary(source_snapshot.size(), 3),
+        format_size_binary(target_snapshot.size(), 3),
     ]);
 
     ui::cli::log!("{}", summary_table.render());

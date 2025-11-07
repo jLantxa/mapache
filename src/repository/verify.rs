@@ -87,7 +87,7 @@ pub fn verify_pack(
 /// This function only verifies that all IDs referenced in a snapshot are listed in the  master
 /// index, but it doesn't check the actual data. The blobs or packs could actually not exist
 /// or be corrupted.
-pub fn verify_snapshot_links(repo: Arc<Repository>, snapshot_id: &ID) -> Result<()> {
+pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<()> {
     let snapshot = repo.load_snapshot(snapshot_id, None)?;
     let tree_id = snapshot.tree;
 

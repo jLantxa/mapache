@@ -16,14 +16,14 @@ use crate::{
     mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
-        verify::verify_snapshot_links,
+        verify::verify_snapshot_refs,
     },
     restorer::{self, RestoreOptions, Strategy},
     ui::{
         self, SPINNER_TICK_CHARS, default_bar_draw_target,
         restore_progress::RestoreProgressReporter,
     },
-    utils::{self, format_size, size},
+    utils::{self, format_size_binary, size},
 };
 
 impl std::fmt::Display for Strategy {
@@ -128,7 +128,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     if !args.no_verify {
         ui::cli::log!("Verifying snapshot links...");
-        verify_snapshot_links(repo.clone(), &snapshot_id)?;
+        verify_snapshot_refs(repo.clone(), &snapshot_id)?;
         ui::cli::log!("{}\n", "[OK]".bold().green());
     }
 
@@ -171,14 +171,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         } else if node.is_file() {
             num_files += 1;
             total_bytes += node.metadata.size;
-            spinner.set_message(format_size(total_bytes, 3));
+            spinner.set_message(format_size_binary(total_bytes, 3));
         }
 
         spinner.set_message(format!(
             "{} files, {} dirs, {}",
             num_files,
             num_dirs,
-            format_size(total_bytes, 3)
+            format_size_binary(total_bytes, 3)
         ));
     }
     spinner.finish_and_clear();
@@ -187,7 +187,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "To restore:".bold().cyan(),
         num_files,
         num_dirs,
-        utils::format_size(total_bytes, 3),
+        utils::format_size_binary(total_bytes, 3),
     );
 
     const NUM_SHOWN_PROCESSING_ITEMS: usize = 1;

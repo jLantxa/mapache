@@ -76,7 +76,7 @@ fn list(cache_base: &Path) -> Result<()> {
                         .get(0..2 * SHORT_REPO_ID_LEN)
                         .unwrap_or(&folder_name)
                         .to_string(),
-                    utils::format_size(size, 3),
+                    utils::format_size_binary(size, 3),
                 ]);
                 num_directories += 1;
             }
@@ -186,7 +186,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
                     "{} {} ({})",
                     "DELETED".red().bold(),
                     name.cyan(),
-                    utils::format_size(size, 3).dimmed()
+                    utils::format_size_binary(size, 3).dimmed()
                 );
             }
             Err(e) => {
@@ -198,7 +198,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     println!(
         "\nCleanup complete: {}, {} freed.",
         utils::format_count(num_deleted, "repo cache", "repo caches"),
-        utils::format_size(freed, 3).green().bold()
+        utils::format_size_binary(freed, 3).green().bold()
     );
 
     Ok(())

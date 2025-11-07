@@ -150,7 +150,7 @@ fn log_snapshots_full(snapshots: &[(ID, Snapshot, bool)]) {
         ui::cli::log!(
             "{} {}",
             "Size:".bold(),
-            utils::format_size(snapshot.summary.processed_bytes, 3)
+            utils::format_size_binary(snapshot.summary.processed_bytes, 3)
         );
         ui::cli::log!("{} {}", "Root:".bold(), &snapshot.root.display());
 

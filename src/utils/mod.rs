@@ -15,15 +15,23 @@ use crate::{mapache::Hash256, repository::repo::Auth};
 
 // --- Constants ---
 
+/// Size units.
 #[allow(non_upper_case_globals)]
 pub mod size {
+    // As of 2025, the TB / TiB units are biggest units that one would
+    // normally expect in a backup. Sizes bigger than the TB / TiB will still
+    // be represented using those units. If this changes in the future, make
+    // sure to add the appropriate units here and the formatting functions.
+
+    // Binary units.
     pub const KiB: u64 = 1024;
     pub const MiB: u64 = KiB * 1024;
     pub const GiB: u64 = MiB * 1024;
     pub const TiB: u64 = GiB * 1024;
 
-    pub const KB: u64 = 1000;
-    pub const MB: u64 = KB * 1000;
+    // Decimal units.
+    pub const kB: u64 = 1000;
+    pub const MB: u64 = kB * 1000;
     pub const GB: u64 = MB * 1000;
     pub const TB: u64 = GB * 1000;
 }
@@ -74,7 +82,7 @@ pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash256 {
 
 /// Formats a byte count into a human-readable string with binary prefixes (KiB, MiB, etc.).
 #[allow(non_upper_case_globals)]
-pub fn format_size(bytes: u64, precision: usize) -> String {
+pub fn format_size_binary(bytes: u64, precision: usize) -> String {
     if bytes >= size::TiB {
         format!("{:.precision$} TiB", (bytes as f64) / (size::TiB as f64))
     } else if bytes >= size::GiB {
@@ -83,6 +91,22 @@ pub fn format_size(bytes: u64, precision: usize) -> String {
         format!("{:.precision$} MiB", (bytes as f64) / (size::MiB as f64))
     } else if bytes >= size::KiB {
         format!("{:.precision$} KiB", (bytes as f64) / (size::KiB as f64))
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Formats a byte count into a human-readable string with decimal prefixes (kB, MB, etc.).
+#[allow(non_upper_case_globals)]
+pub fn format_size_decimal(bytes: u64, precision: usize) -> String {
+    if bytes >= size::TB {
+        format!("{:.precision$} TB", (bytes as f64) / (size::TB as f64))
+    } else if bytes >= size::GB {
+        format!("{:.precision$} GB", (bytes as f64) / (size::GB as f64))
+    } else if bytes >= size::MB {
+        format!("{:.precision$} MB", (bytes as f64) / (size::MB as f64))
+    } else if bytes >= size::kB {
+        format!("{:.precision$} kB", (bytes as f64) / (size::kB as f64))
     } else {
         format!("{bytes} B")
     }
@@ -562,39 +586,75 @@ mod tests {
     }
 
     #[test]
-    fn test_format_size() {
+    fn test_format_size_binary() {
         // With one decimal
-        assert_eq!(format_size(0, 1), "0 B");
-        assert_eq!(format_size(1, 1), "1 B");
-        assert_eq!(format_size(324, 1), "324 B");
-        assert_eq!(format_size(1_205, 1), "1.2 KiB");
-        assert_eq!(format_size(124_112, 1), "121.2 KiB");
-        assert_eq!(format_size(1_045_024, 1), "1020.5 KiB");
-        assert_eq!(format_size(12_995_924, 1), "12.4 MiB");
-        assert_eq!(format_size(1_500_000_000, 1), "1.4 GiB");
-        assert_eq!(format_size(2_100_000_100_000, 1), "1.9 TiB");
+        assert_eq!(format_size_binary(0, 1), "0 B");
+        assert_eq!(format_size_binary(1, 1), "1 B");
+        assert_eq!(format_size_binary(324, 1), "324 B");
+        assert_eq!(format_size_binary(1_205, 1), "1.2 KiB");
+        assert_eq!(format_size_binary(124_112, 1), "121.2 KiB");
+        assert_eq!(format_size_binary(1_045_024, 1), "1020.5 KiB");
+        assert_eq!(format_size_binary(12_995_924, 1), "12.4 MiB");
+        assert_eq!(format_size_binary(1_500_000_000, 1), "1.4 GiB");
+        assert_eq!(format_size_binary(2_100_000_100_000, 1), "1.9 TiB");
 
         // With two decimals
-        assert_eq!(format_size(0, 2), "0 B");
-        assert_eq!(format_size(1, 2), "1 B");
-        assert_eq!(format_size(324, 2), "324 B");
-        assert_eq!(format_size(1_205, 2), "1.18 KiB");
-        assert_eq!(format_size(124_112, 2), "121.20 KiB");
-        assert_eq!(format_size(1_045_024, 2), "1020.53 KiB");
-        assert_eq!(format_size(12_995_924, 2), "12.39 MiB");
-        assert_eq!(format_size(1_500_000_000, 2), "1.40 GiB");
-        assert_eq!(format_size(2_100_000_100_000, 2), "1.91 TiB");
+        assert_eq!(format_size_binary(0, 2), "0 B");
+        assert_eq!(format_size_binary(1, 2), "1 B");
+        assert_eq!(format_size_binary(324, 2), "324 B");
+        assert_eq!(format_size_binary(1_205, 2), "1.18 KiB");
+        assert_eq!(format_size_binary(124_112, 2), "121.20 KiB");
+        assert_eq!(format_size_binary(1_045_024, 2), "1020.53 KiB");
+        assert_eq!(format_size_binary(12_995_924, 2), "12.39 MiB");
+        assert_eq!(format_size_binary(1_500_000_000, 2), "1.40 GiB");
+        assert_eq!(format_size_binary(2_100_000_100_000, 2), "1.91 TiB");
 
         // With three decimals
-        assert_eq!(format_size(0, 3), "0 B");
-        assert_eq!(format_size(1, 3), "1 B");
-        assert_eq!(format_size(324, 3), "324 B");
-        assert_eq!(format_size(1_205, 3), "1.177 KiB");
-        assert_eq!(format_size(124_112, 3), "121.203 KiB");
-        assert_eq!(format_size(1_045_024, 3), "1020.531 KiB");
-        assert_eq!(format_size(12_995_924, 3), "12.394 MiB");
-        assert_eq!(format_size(1_500_000_000, 3), "1.397 GiB");
-        assert_eq!(format_size(2_100_000_100_000, 3), "1.910 TiB");
+        assert_eq!(format_size_binary(0, 3), "0 B");
+        assert_eq!(format_size_binary(1, 3), "1 B");
+        assert_eq!(format_size_binary(324, 3), "324 B");
+        assert_eq!(format_size_binary(1_205, 3), "1.177 KiB");
+        assert_eq!(format_size_binary(124_112, 3), "121.203 KiB");
+        assert_eq!(format_size_binary(1_045_024, 3), "1020.531 KiB");
+        assert_eq!(format_size_binary(12_995_924, 3), "12.394 MiB");
+        assert_eq!(format_size_binary(1_500_000_000, 3), "1.397 GiB");
+        assert_eq!(format_size_binary(2_100_000_100_000, 3), "1.910 TiB");
+    }
+
+    #[test]
+    fn test_format_size_decimal() {
+        // With one decimal
+        assert_eq!(format_size_decimal(0, 1), "0 B");
+        assert_eq!(format_size_decimal(1, 1), "1 B");
+        assert_eq!(format_size_decimal(324, 1), "324 B");
+        assert_eq!(format_size_decimal(1_205, 1), "1.2 kB");
+        assert_eq!(format_size_decimal(124_112, 1), "124.1 kB");
+        assert_eq!(format_size_decimal(1_045_024, 1), "1.0 MB");
+        assert_eq!(format_size_decimal(12_995_924, 1), "13.0 MB");
+        assert_eq!(format_size_decimal(1_500_000_000, 1), "1.5 GB");
+        assert_eq!(format_size_decimal(2_100_000_100_000, 1), "2.1 TB");
+
+        // With two decimals
+        assert_eq!(format_size_decimal(0, 2), "0 B");
+        assert_eq!(format_size_decimal(1, 2), "1 B");
+        assert_eq!(format_size_decimal(324, 2), "324 B");
+        assert_eq!(format_size_decimal(1_205, 2), "1.21 kB");
+        assert_eq!(format_size_decimal(124_112, 2), "124.11 kB");
+        assert_eq!(format_size_decimal(1_045_024, 2), "1.05 MB");
+        assert_eq!(format_size_decimal(12_995_924, 2), "13.00 MB");
+        assert_eq!(format_size_decimal(1_500_000_000, 2), "1.50 GB");
+        assert_eq!(format_size_decimal(2_100_000_100_000, 2), "2.10 TB");
+
+        // With three decimals
+        assert_eq!(format_size_decimal(0, 3), "0 B");
+        assert_eq!(format_size_decimal(1, 3), "1 B");
+        assert_eq!(format_size_decimal(324, 3), "324 B");
+        assert_eq!(format_size_decimal(1_205, 3), "1.205 kB");
+        assert_eq!(format_size_decimal(124_112, 3), "124.112 kB");
+        assert_eq!(format_size_decimal(1_045_024, 3), "1.045 MB");
+        assert_eq!(format_size_decimal(12_995_924, 3), "12.996 MB");
+        assert_eq!(format_size_decimal(1_500_000_000, 3), "1.500 GB");
+        assert_eq!(format_size_decimal(2_100_000_100_000, 3), "2.100 TB");
     }
 
     #[test]

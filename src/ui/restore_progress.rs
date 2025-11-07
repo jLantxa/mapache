@@ -57,7 +57,7 @@ impl RestoreProgressReporter {
                     let _ = w.write_str(&custom_elapsed);
                 })
                 .with_key("processed_bytes_formated", move |state:&ProgressState, w: &mut dyn std::fmt::Write|{
-                    let s = format!("{} / {}", utils::format_size(state.pos(), 3), utils::format_size(state.len().unwrap(), 3));
+                    let s = format!("{} / {}", utils::format_size_binary(state.pos(), 3), utils::format_size_binary(state.len().unwrap(), 3));
                     let _ = w.write_str(&s);
                 })
                 .with_key("custom_eta", move |state:&ProgressState, w: &mut dyn std::fmt::Write| {

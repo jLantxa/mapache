@@ -55,10 +55,12 @@ impl GlobalOpts {
         calculate_refresh_interval(refresh_rate_hz)
     }
 
+    /// Returns the global verbosity setting.
     pub fn verbosity() -> u32 {
         GLOBAL_OPTS.read().as_ref().unwrap().verbosity
     }
 
+    /// Returns the global progress refresh interval.
     pub fn progress_refresh_interval() -> Duration {
         GLOBAL_OPTS
             .read()
@@ -77,6 +79,7 @@ impl Default for GlobalOpts {
     }
 }
 
+/// Sets global options from the global args.
 pub fn set_global_opts_with_args(global_args: &GlobalArgs) {
     let verbosity = if global_args.quiet {
         0

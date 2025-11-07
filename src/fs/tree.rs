@@ -70,12 +70,18 @@ impl Tree {
     }
 }
 
+/// Represents a file system node along with additional information needed for streaming.
+/// This structure is used by the various streaming iterators.
 #[derive(Debug)]
 pub struct StreamNode {
     pub node: Node,
+    /// The number of children this node has that will be yielded by the streamer.
+    /// This is 0 for files or symlinks.
     pub num_children: usize,
 }
 
+/// A tuple representing an item yielded by the node streamers:
+/// (full path of the node, the stream node itself).
 pub type StreamNodeInfo = (PathBuf, StreamNode);
 
 /// A depth‑first *pre‑order* filesystem streamer.
@@ -427,14 +433,21 @@ impl Iterator for SerializedTreeStreamer {
     }
 }
 
+/// Represents the type of difference found between two nodes (or lack thereof).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeDiff {
+    /// The node is present in the 'next' stream but not in the 'previous' stream.
     New,
+    /// The node is present in the 'previous' stream but not in the 'next' stream.
     Deleted,
+    /// The node is present in both streams, but its metadata and/or contents are different.
     Changed,
+    /// The node is present in both streams, and its metadata and contents are the same.
     Unchanged,
 }
 
+/// A tuple representing an item yielded by the NodeDiffStreamer:
+/// (full path, node from 'previous' stream, node from 'next' stream, difference type).
 pub type DiffTuple = (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff);
 
 /// A depth‑first *pre‑order* streamer of node differences.

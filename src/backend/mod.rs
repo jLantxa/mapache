@@ -17,6 +17,8 @@ use localfs::LocalFS;
 
 use crate::{ui, utils::url::Url};
 
+/// Represents the attributes (metadata) of a file or directory node.
+/// This information is typically retrieved via an `lstat` call on the backend.
 pub struct NodeAttr {
     pub size: Option<u64>,
     pub uid: Option<u32>,
@@ -26,6 +28,11 @@ pub struct NodeAttr {
     pub mtime: Option<SystemTime>,
 }
 
+/// A handle used for file operations (read/write) on a `StorageBackend`.
+///
+/// It combines the path of the resource with an optional hint that provides
+/// extra context about the data being stored, allowing the backend to apply
+/// optimization or specific storage logic.
 #[derive(Debug)]
 pub struct Handle<'a> {
     pub path: &'a Path,
@@ -33,10 +40,12 @@ pub struct Handle<'a> {
 }
 
 impl<'a> Handle<'a> {
+    /// Creates a new Handle without a StorageHint.
     pub fn new(path: &'a Path) -> Self {
         Self { path, hint: None }
     }
 
+    /// Creates a new Handle with a StorageHint.
     pub fn new_with_hint(path: &'a Path, file_type: ContentIdType, is_metadata: bool) -> Self {
         Self {
             path,
@@ -48,9 +57,18 @@ impl<'a> Handle<'a> {
     }
 }
 
+/// Provides additional context to the `StorageBackend` about the data
+/// associated with a `Handle` during read or write operations.
+///
+/// This hint is typically used to optimize storage strategy for different
+/// types of backup data (pure data vs. metadata files).
 #[derive(Debug)]
 pub struct StorageHint {
+    /// The type of content ID (e.g., data chunk, index, or configuration file).
     pub file_type: ContentIdType,
+
+    /// Indicates if the content being accessed is backup metadata (e.g., index files)
+    /// rather than raw backed-up data. This can influence caching or redundancy decisions.
     pub is_metadata: bool,
 }
 

@@ -319,14 +319,18 @@ impl Packer {
     }
 }
 
+/// The queue function used to write pack data to the backend.
 pub type QueueFn = Arc<dyn Fn(Vec<u8>, ID, BlobType) + Send + Sync + 'static>;
 
+/// PackSaver is a dedicated worker thread manager responsible for asynchronously writing
+/// fully constructed pack files (`FlushedPack` data) to the repository's storage backend.
 pub struct PackSaver {
     tx: Sender<(Vec<u8>, ID, BlobType)>,
     join_handle: JoinHandle<()>,
 }
 
 impl PackSaver {
+    /// Creates a new pack saver.
     pub fn new(concurrency: usize, queue_fn: QueueFn) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(concurrency);
         let worker_queue_fn = Arc::clone(&queue_fn);
@@ -349,6 +353,7 @@ impl PackSaver {
         Self { tx, join_handle }
     }
 
+    /// Queue a pack into the pack saver for upload.
     pub fn save_pack(
         &self,
         packer_data: Vec<u8>,
@@ -367,6 +372,7 @@ impl PackSaver {
         Ok(pack_id)
     }
 
+    /// Finalize the pack saver worker.
     pub fn finish(self) {
         drop(self.tx);
         self.join_handle.join().expect("PackSaver thread panicked");

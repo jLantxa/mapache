@@ -11,6 +11,10 @@ use crate::mapache::ID;
 
 pub type SnapshotTuple = (ID, Snapshot);
 
+/// Represents a complete snapshot of backed-up data at a specific point in time.
+///
+/// A Snapshot links metadata (like timestamp, paths, and user info) to the
+/// immutable root tree object that represents the actual file hierarchy.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Snapshot {

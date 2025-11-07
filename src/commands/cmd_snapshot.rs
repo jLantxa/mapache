@@ -298,30 +298,30 @@ fn show_final_report(snapshot_id: &ID, summary: &SnapshotSummary, args: &CmdArgs
     ]);
     data_table.add_row(vec![
         "Data".bold().to_string(),
-        utils::format_size(summary.raw_bytes, 3)
+        utils::format_size_binary(summary.raw_bytes, 3)
             .yellow()
             .to_string(),
-        utils::format_size(summary.encoded_bytes, 3)
+        utils::format_size_binary(summary.encoded_bytes, 3)
             .green()
             .to_string(),
     ]);
     data_table.add_row(vec![
         "Metadata".bold().to_string(),
-        utils::format_size(summary.meta_raw_bytes, 3)
+        utils::format_size_binary(summary.meta_raw_bytes, 3)
             .yellow()
             .to_string(),
-        utils::format_size(summary.meta_encoded_bytes, 3)
+        utils::format_size_binary(summary.meta_encoded_bytes, 3)
             .green()
             .to_string(),
     ]);
     data_table.add_separator();
     data_table.add_row(vec![
         "Total".bold().to_string(),
-        utils::format_size(summary.total_raw_bytes, 3)
+        utils::format_size_binary(summary.total_raw_bytes, 3)
             .bold()
             .yellow()
             .to_string(),
-        utils::format_size(summary.total_encoded_bytes, 3)
+        utils::format_size_binary(summary.total_encoded_bytes, 3)
             .bold()
             .green()
             .to_string(),

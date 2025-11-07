@@ -143,7 +143,7 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
     ui::cli::log!("\t{}", utils::format_count(num_packs, "pack", "packs"));
     ui::cli::log!(
         "\tTotal pack size: {}",
-        utils::format_size(total_pack_size, 3)
+        utils::format_size_binary(total_pack_size, 3)
     );
     ui::cli::log!();
     ui::cli::log!("Index:");
@@ -153,7 +153,7 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
     );
     ui::cli::log!(
         "\tTotal index size: {}",
-        utils::format_size(total_index_size, 3)
+        utils::format_size_binary(total_index_size, 3)
     );
     ui::cli::log!();
     ui::cli::log!("Snapshots:");
@@ -163,21 +163,24 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
     );
     ui::cli::log!(
         "\tTotal snapshot size: {}",
-        utils::format_size(total_snapshot_size, 3)
+        utils::format_size_binary(total_snapshot_size, 3)
     );
     ui::cli::log!();
     ui::cli::log!("Keys:");
     ui::cli::log!("\t{}", utils::format_count(num_keys, "key", "keys"));
     ui::cli::log!(
         "\tTotal key size: {}",
-        utils::format_size(total_key_size, 3)
+        utils::format_size_binary(total_key_size, 3)
     );
     ui::cli::log!();
-    ui::cli::log!("Manifest size: {}", utils::format_size(manifest_size, 3));
+    ui::cli::log!(
+        "Manifest size: {}",
+        utils::format_size_binary(manifest_size, 3)
+    );
     ui::cli::log!();
     ui::cli::log!(
         "Total repository size: {}",
-        utils::format_size(total_size, 3)
+        utils::format_size_binary(total_size, 3)
     );
 
     Ok(())
@@ -265,15 +268,15 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
     );
     ui::cli::log!(
         "\tRestore size:       {:>12}",
-        utils::format_size(total_restore_size, 3)
+        utils::format_size_binary(total_restore_size, 3)
     );
     ui::cli::log!(
         "\tTotal raw size:     {:>12}",
-        utils::format_size(total_raw_data_size, 3)
+        utils::format_size_binary(total_raw_data_size, 3)
     );
     ui::cli::log!(
         "\tTotal encoded size: {:>12}",
-        utils::format_size(total_encoded_data_size, 3)
+        utils::format_size_binary(total_encoded_data_size, 3)
     );
 
     let ratio = if total_encoded_data_size == 0 {

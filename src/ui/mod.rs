@@ -21,6 +21,8 @@ pub mod table;
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 pub(crate) static EMPTY_PATHBUF: LazyLock<PathBuf> = LazyLock::new(PathBuf::new);
 
+/// Returns the default draw target for progress bars, with a preconfigured refresh rate
+/// and verbosity.
 pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {
     let verbosity = GlobalOpts::verbosity();
     let refresh_interval = GlobalOpts::progress_refresh_interval();
@@ -32,6 +34,7 @@ pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {
     }
 }
 
+/// Logs a list of snapshots in the form of a compact table.
 pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot, bool)>) {
     let mut table = Table::new_with_alignments(vec![
         Alignment::Left,
@@ -61,7 +64,7 @@ pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot, bool)>) {
             id_str,
             utils::pretty_print_timestamp(&snapshot.timestamp),
             snapshot.hostname.clone().unwrap_or_default(),
-            utils::format_size(snapshot.size(), 3),
+            utils::format_size_binary(snapshot.size(), 3),
             snapshot
                 .tags
                 .iter()

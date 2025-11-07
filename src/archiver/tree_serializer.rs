@@ -18,7 +18,7 @@ use crate::{
 
 /// Represents the expected number of children for a directory node.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ExpectedChildren {
+enum ExpectedChildren {
     /// The number of children is known.
     Known(usize),
     /// The number of children is not yet known (e.g., for the root before stream processing).
@@ -39,7 +39,7 @@ impl From<isize> for ExpectedChildren {
 /// It holds the directory's own node information (if available), the collected child nodes,
 /// and the number of children expected from the stream.
 #[derive(Debug)]
-pub(crate) struct PendingTree {
+struct PendingTree {
     pub num_expected_children: ExpectedChildren,
     pub node: Option<Node>,
     pub children: HashMap<String, Node>,
@@ -55,7 +55,7 @@ impl PendingTree {
     }
 }
 
-pub(crate) fn init_pending_trees(
+fn init_pending_trees(
     snapshot_root_path: &Path,
     paths: &[PathBuf],
 ) -> HashMap<PathBuf, PendingTree> {
@@ -88,7 +88,11 @@ pub(crate) struct TreeSerializer {
 }
 
 impl TreeSerializer {
-    pub fn new(repo: Arc<Repository>, snapshot_root_path: PathBuf, paths: &[PathBuf]) -> Self {
+    pub(crate) fn new(
+        repo: Arc<Repository>,
+        snapshot_root_path: PathBuf,
+        paths: &[PathBuf],
+    ) -> Self {
         Self {
             repo,
             pending_trees: init_pending_trees(&snapshot_root_path, paths),
@@ -97,7 +101,7 @@ impl TreeSerializer {
         }
     }
 
-    pub fn root_tree(&self) -> Option<ID> {
+    pub(crate) fn root_tree(&self) -> Option<ID> {
         self.root_tree_id
     }
 

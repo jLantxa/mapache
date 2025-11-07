@@ -1,27 +1,3 @@
-// Helper function to calculate the "visible" length of a string, ignoring ANSI escape codes.
-fn visible_string_len(s: &str) -> usize {
-    let mut len = 0;
-    let mut in_ansi_escape = false;
-
-    for c in s.chars() {
-        if in_ansi_escape {
-            // Check for the end of an ANSI sequence (typically 'm')
-            if c == 'm' {
-                in_ansi_escape = false;
-            }
-            // Skip other characters within the escape sequence
-            continue;
-        } else if c == '\x1b' {
-            // Start of an ANSI escape sequence (ESC character)
-            in_ansi_escape = true;
-            continue;
-        } else {
-            len += 1;
-        }
-    }
-    len
-}
-
 /// A simple enum to represent column alignments.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Alignment {
@@ -281,6 +257,30 @@ impl Table {
         line.push('\n');
         line
     }
+}
+
+// Helper function to calculate the "visible" length of a string, ignoring ANSI escape codes.
+fn visible_string_len(s: &str) -> usize {
+    let mut len = 0;
+    let mut in_ansi_escape = false;
+
+    for c in s.chars() {
+        if in_ansi_escape {
+            // Check for the end of an ANSI sequence (typically 'm')
+            if c == 'm' {
+                in_ansi_escape = false;
+            }
+            // Skip other characters within the escape sequence
+            continue;
+        } else if c == '\x1b' {
+            // Start of an ANSI escape sequence (ESC character)
+            in_ansi_escape = true;
+            continue;
+        } else {
+            len += 1;
+        }
+    }
+    len
 }
 
 #[cfg(test)]

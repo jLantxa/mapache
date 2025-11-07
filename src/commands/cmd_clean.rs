@@ -15,7 +15,7 @@ use crate::{
     repository::{
         gc::{self},
         repo::{RepoConfig, Repository},
-        verify::verify_snapshot_links,
+        verify::verify_snapshot_refs,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, size},
@@ -112,14 +112,14 @@ pub fn run_with_repo(
         if deleted_size >= 0 {
             ui::cli::log!(
                 "Freed space: {}",
-                utils::format_size(deleted_size.unsigned_abs(), 3)
+                utils::format_size_binary(deleted_size.unsigned_abs(), 3)
                     .bold()
                     .green()
             );
         } else {
             ui::cli::log!(
                 "Added space: {}",
-                utils::format_size(deleted_size.unsigned_abs(), 3)
+                utils::format_size_binary(deleted_size.unsigned_abs(), 3)
                     .bold()
                     .yellow()
             );
@@ -155,7 +155,7 @@ fn verify_snapshots(repo: Arc<Repository>) -> Result<()> {
 
     for id in repo.list_snapshot_ids()? {
         spinner.set_message(format!("{}", id.to_short_hex(SHORT_REPO_ID_LEN).yellow()));
-        verify_snapshot_links(repo.clone(), &id)?;
+        verify_snapshot_refs(repo.clone(), &id)?;
     }
 
     spinner.finish_and_clear();

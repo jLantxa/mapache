@@ -159,7 +159,7 @@ fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
 
     if long {
         let size_str = match human_readable {
-            true => utils::format_size(node.metadata.size, 3),
+            true => utils::format_size_binary(node.metadata.size, 3),
             false => node.metadata.size.to_string(),
         };
 

@@ -19,7 +19,7 @@ use crate::{
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStreamer,
-        verify::{verify_blob, verify_pack, verify_snapshot_links},
+        verify::{verify_blob, verify_pack, verify_snapshot_refs},
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, size},
@@ -178,7 +178,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 &mut visited_blobs,
             )
         } else {
-            verify_snapshot_links(repo_arc.clone(), &snapshot_id)
+            verify_snapshot_refs(repo_arc.clone(), &snapshot_id)
         };
 
         match res {
@@ -258,8 +258,8 @@ pub fn verify_snapshot(
             move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                 let s = format!(
                     "{} / {}",
-                    utils::format_size(state.pos(), 3),
-                    utils::format_size(state.len().unwrap(), 3)
+                    utils::format_size_binary(state.pos(), 3),
+                    utils::format_size_binary(state.len().unwrap(), 3)
                 );
                 let _ = w.write_str(&s);
             },

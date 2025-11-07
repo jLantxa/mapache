@@ -186,17 +186,17 @@ fn amend(
         );
         ui::cli::log!(
             "Added to the repository: {} {}",
-            utils::format_size(raw, 3).bold().yellow(),
-            format!("({} compressed)", utils::format_size(encoded, 3))
+            utils::format_size_binary(raw, 3).bold().yellow(),
+            format!("({} compressed)", utils::format_size_binary(encoded, 3))
                 .bold()
                 .green()
         );
         ui::cli::log!(
             "Snapshot size: {} -> {}",
-            utils::format_size(origin_processed_bytes, 3)
+            utils::format_size_binary(origin_processed_bytes, 3)
                 .yellow()
                 .bold(),
-            utils::format_size(snapshot.summary.processed_bytes, 3)
+            utils::format_size_binary(snapshot.summary.processed_bytes, 3)
                 .green()
                 .bold()
         );

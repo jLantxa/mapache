@@ -109,11 +109,11 @@ impl SnapshotProgressReporter {
                             let expected_bytes = atomic_val.load(Ordering::SeqCst);
                             format!(
                                 "{} / {}",
-                                utils::format_size(bytes, 3),
-                                utils::format_size(expected_bytes, 3)
+                                utils::format_size_binary(bytes, 3),
+                                utils::format_size_binary(expected_bytes, 3)
                             )
                         }
-                        None => utils::format_size(bytes, 3).to_string(),
+                        None => utils::format_size_binary(bytes, 3).to_string(),
                     };
                     let _ = w.write_str(&s);
                 },
@@ -151,11 +151,11 @@ impl SnapshotProgressReporter {
                             let expected_bytes = atomic_val.load(Ordering::SeqCst);
                             format!(
                                 "{} / {}",
-                                utils::format_size(bytes, 3),
-                                utils::format_size(expected_bytes, 3)
+                                utils::format_size_binary(bytes, 3),
+                                utils::format_size_binary(expected_bytes, 3)
                             )
                         },
-                        None => utils::format_size(bytes, 3).to_string(),
+                        None => utils::format_size_binary(bytes, 3).to_string(),
                     };
                     let _ = w.write_str(&s);
                 },

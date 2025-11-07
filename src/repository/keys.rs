@@ -21,7 +21,6 @@ use crate::{
 };
 
 mod argon2_defaults {
-
     pub(crate) const fn default_m() -> u32 {
         argon2::Params::DEFAULT_M_COST
     }

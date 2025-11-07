@@ -241,8 +241,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 fn show_final_report(snapshot_id: &ID, summary: &SnapshotSummary, args: &CmdArgs) {
-    ui::cli::log!("{}", "Changes since parent snapshot".bold());
-    ui::cli::log!();
+    ui::cli::log!(
+        "\nProcessed {}\n",
+        utils::format_size_binary(summary.processed_bytes, 3)
+    );
+
+    ui::cli::log!("{}", "Changes since parent snapshot:".bold());
 
     let mut table = Table::new_with_alignments(vec![
         Alignment::Left,
@@ -277,16 +281,16 @@ fn show_final_report(snapshot_id: &ID, summary: &SnapshotSummary, args: &CmdArgs
 
     if !args.dry_run {
         ui::cli::log!(
-            "New snapshot created: {}",
+            "Created snapshot {}",
             snapshot_id
                 .to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN)
                 .to_string()
                 .bold()
                 .green()
         );
-        ui::cli::log!("This snapshot added:\n");
+        ui::cli::log!("This snapshot added:");
     } else {
-        ui::cli::log!("This snapshot would add:\n");
+        ui::cli::log!("This snapshot would add:");
     }
 
     let mut data_table =

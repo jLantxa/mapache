@@ -489,55 +489,35 @@ impl Repository {
 
     /// Lists all snapshot IDs
     pub fn list_snapshot_ids(&self) -> Result<Vec<ID>> {
-        let mut ids = Vec::new();
-
-        let paths = self
-            .backend
-            .list_dir(&self.snapshot_path)
-            .with_context(|| "Could not read snapshots")?;
-
-        for path in paths {
-            if self.backend.is_file(&path)
-                && let Some(file_name) = path.file_name().and_then(|s| s.to_str())
-            {
-                // Ignore all files with invalid ID names
-                if let Ok(id) = ID::from_hex(file_name) {
-                    ids.push(id);
-                }
-            }
-        }
+        let ids = self
+            .list_files(ContentIdType::Snapshot)
+            .with_context(|| "Could not list snapshots")?
+            .into_iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .and_then(|file_name| ID::from_hex(file_name).ok())
+            })
+            .collect();
 
         Ok(ids)
     }
 
-    /// Lists all dropped snapshot IDs
+    /// Lists all .dropped snapshot IDs
     pub(crate) fn list_dropped_snapshot_ids(&self) -> Result<Vec<ID>> {
-        let mut ids = Vec::new();
-
-        let paths = self
-            .backend
-            .list_dir(&self.snapshot_path)
-            .with_context(|| "Could not read snapshots")?;
-
-        for path in paths {
-            if self.backend.is_file(&path)
-                && let (Some(file_stem), Some(extension)) = (
-                    path.file_stem().and_then(|s| s.to_str()),
-                    path.extension().and_then(|s| s.to_str()),
-                )
-            {
-                // Ignore all files with invalid ID names
-                if extension == REPO_DROPPED_EXTENSION
-                    && let Ok(id) = ID::from_hex(file_stem)
-                {
-                    ids.push(id);
-                }
-            }
-        }
+        let ids = self
+            .list_files_with_extension(ContentIdType::Snapshot, Some(REPO_DROPPED_EXTENSION))
+            .context("Failed to list files with the dropped snapshot extension")?
+            .into_iter()
+            .filter_map(|path| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|file_stem| ID::from_hex(file_stem).ok())
+            })
+            .collect();
 
         Ok(ids)
     }
-
     /// Flushes all pending data and saves it.
     /// Returns a tuple (raw_size, encoded_size)
     pub fn flush(&self) -> Result<(u64, u64)> {
@@ -642,7 +622,7 @@ impl Repository {
             bail!("Prefix cannot be empty");
         }
 
-        let type_files = self.list_files(file_type)?;
+        let type_files = self.list_files_with_extension(file_type, extension)?;
         let mut matches = Vec::new();
 
         for file_path in type_files {
@@ -650,14 +630,6 @@ impl Repository {
                 Some(os_str) => os_str.to_string_lossy().into_owned(),
                 None => bail!("Failed to list file for type {file_type}"),
             };
-            let file_ext = match file_path.extension() {
-                Some(os_str) => os_str.to_str(),
-                None => None,
-            };
-
-            if !file_stem.starts_with(prefix) || file_ext != extension {
-                continue;
-            }
 
             if matches.is_empty() {
                 matches.push((file_stem, file_path));
@@ -769,12 +741,14 @@ impl Repository {
         }
     }
 
-    /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.).
-    pub fn list_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
+    /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
+    /// with all extensions included.
+    pub fn list_all_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
         match file_type {
             ContentIdType::Snapshot => self.backend.list_dir(&self.snapshot_path),
             ContentIdType::Key => self.backend.list_dir(&self.keys_path),
             ContentIdType::Index => self.backend.list_dir(&self.index_path),
+            ContentIdType::Lock => self.backend.list_dir(&self.locks_path),
             ContentIdType::Pack => {
                 let mut files = Vec::new();
                 for n in 0x00..(1 << (4 * OBJECTS_DIR_FANOUT)) {
@@ -790,8 +764,36 @@ impl Repository {
 
                 Ok(files)
             }
-            ContentIdType::Lock => self.backend.list_dir(&self.locks_path),
         }
+    }
+
+    /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
+    /// with extension.
+    pub fn list_files_with_extension(
+        &self,
+        file_type: ContentIdType,
+        extension: Option<&str>,
+    ) -> Result<Vec<PathBuf>> {
+        let paths = self
+            .list_all_files(file_type)?
+            .into_iter()
+            .filter(|p| {
+                let file_ext = p.extension();
+
+                match extension {
+                    Some(ext) => file_ext.map(|os_str| os_str == ext).unwrap_or(false),
+                    None => file_ext.is_none(),
+                }
+            })
+            .collect();
+        Ok(paths)
+    }
+
+    /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
+    /// with NO EXTENSION.
+    #[inline]
+    pub fn list_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
+        self.list_files_with_extension(file_type, None)
     }
 
     fn flush_packer(
@@ -964,46 +966,22 @@ impl Repository {
 
             let lock = match lock_data_result {
                 Ok(data) => data,
-                Err(e) => {
-                    // Log the error for debugging, but continue
-                    ui::cli::warning!(
-                        "Warning: Could not read lock file {}: {}",
-                        path.display(),
-                        e
-                    );
-                    continue;
-                }
+                Err(_) => continue,
             };
 
             // Attempt to decode the lock data
             let decoded_lock_result = self.secure_storage.decode(&lock);
             let decoded_lock = match decoded_lock_result {
                 Ok(data) => data,
-                Err(e) => {
-                    ui::cli::warning!(
-                        "Warning: Could not decode lock from {}: {}",
-                        path.display(),
-                        e
-                    );
-                    continue;
-                }
+                Err(_) => continue,
             };
 
             // Attempt to deserialize the lock
             let lock_obj_result: Result<Lock, serde_json::Error> =
                 serde_json::from_slice(&decoded_lock);
             match lock_obj_result {
-                Ok(lock_obj) => {
-                    locks.push(lock_obj);
-                }
-                Err(e) => {
-                    ui::cli::warning!(
-                        "Warning: Could not deserialize lock from {}: {}",
-                        path.display(),
-                        e
-                    );
-                    continue;
-                }
+                Ok(lock_obj) => locks.push(lock_obj),
+                Err(_) => continue,
             }
         }
 

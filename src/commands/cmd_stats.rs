@@ -104,22 +104,22 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
     }
 
     // Packs
-    let packs = repo.list_files(ContentIdType::Pack)?;
+    let packs = repo.list_all_files(ContentIdType::Pack)?;
     let num_packs = packs.len();
     let total_pack_size = sum_sizes(&spinner, backend.as_ref(), "packs", &packs)?;
 
     // Indices
-    let indices = repo.list_files(ContentIdType::Index)?;
+    let indices = repo.list_all_files(ContentIdType::Index)?;
     let num_indices = indices.len();
     let total_index_size = sum_sizes(&spinner, backend.as_ref(), "index", &indices)?;
 
     // Snapshots
-    let snaps = repo.list_files(ContentIdType::Snapshot)?;
+    let snaps = repo.list_all_files(ContentIdType::Snapshot)?;
     let num_snapshots = snaps.len();
     let total_snapshot_size = sum_sizes(&spinner, backend.as_ref(), "snapshots", &snaps)?;
 
     // Keys
-    let keys = repo.list_files(ContentIdType::Key)?;
+    let keys = repo.list_all_files(ContentIdType::Key)?;
     let num_keys = keys.len();
     let total_key_size = sum_sizes(&spinner, backend.as_ref(), "keys", &keys)?;
 

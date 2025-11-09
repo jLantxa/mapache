@@ -468,14 +468,14 @@ impl Stash {
             }
 
             let indexed_blob_descriptor = index.get(blob_id);
-            let (.., raw_len) = match indexed_blob_descriptor {
+            let locator = match indexed_blob_descriptor {
                 Some(desc) => desc,
                 None => bail!("Node with ino {ino} has unreferenced blobs (blob_id: {blob_id})"),
             };
 
-            if current_offset + (raw_len as i64) < offset {
+            if current_offset + (locator.raw_length as i64) < offset {
                 // We didn't reach the offset yet or are exactly at its end
-                current_offset += raw_len as i64;
+                current_offset += locator.raw_length as i64;
                 continue;
             }
 
@@ -485,12 +485,12 @@ impl Stash {
                 0
             };
 
-            let bytes_available_in_blob = raw_len as i64 - start_in_blob;
+            let bytes_available_in_blob = locator.raw_length as i64 - start_in_blob;
             let bytes_to_read_from_blob = std::cmp::min(size as i64, bytes_available_in_blob);
 
             if bytes_to_read_from_blob <= 0 {
                 // Should never happen, but...
-                current_offset += raw_len as i64;
+                current_offset += locator.raw_length as i64;
                 continue;
             }
 

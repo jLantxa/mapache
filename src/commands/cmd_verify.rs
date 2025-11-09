@@ -309,10 +309,10 @@ pub fn verify_snapshot(
                                 }
                             }
                         } else {
-                            let (_, _, _, raw_length, _) = index_guard
+                            let locator = index_guard
                                 .get(&blob)
                                 .expect("We visited this blob, so it should be indexed");
-                            bar.inc(raw_length as u64);
+                            bar.inc(locator.raw_length as u64);
                         }
                     }
                 }

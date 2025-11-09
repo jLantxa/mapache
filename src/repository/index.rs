@@ -37,6 +37,7 @@ pub struct BlobLocator {
     pub offset: u32,
     pub length: u32,
     pub raw_length: u32,
+    pub blob_type: BlobType,
 }
 
 /// Manages the mapping of blob IDs to their locations within pack files.
@@ -156,7 +157,7 @@ impl Index {
 
     /// Retrieves the pack ID, offset, and length for a given blob ID, if it exists.
     /// Returns `None` if the blob ID is not found.
-    pub fn get(&self, id: &ID) -> Option<(&ID, BlobType, u32, u32, u32)> {
+    pub fn get(&self, id: &ID) -> Option<BlobLocator> {
         self.data_ids
             .get(id)
             .map(|location| {
@@ -164,13 +165,14 @@ impl Index {
                     .pack_ids
                     .get_value(location.pack_array_index as usize)
                     .expect("pack_index should always be valid for an existing blob");
-                (
-                    pack_id,
-                    BlobType::Data,
-                    location.offset,
-                    location.length,
-                    location.raw_length,
-                )
+
+                BlobLocator {
+                    pack_id: *pack_id,
+                    blob_type: BlobType::Data,
+                    offset: location.offset,
+                    length: location.length,
+                    raw_length: location.raw_length,
+                }
             })
             .or_else(|| {
                 self.tree_ids.get(id).map(|location| {
@@ -178,13 +180,14 @@ impl Index {
                         .pack_ids
                         .get_value(location.pack_array_index as usize)
                         .expect("pack_index should always be valid for an existing blob");
-                    (
-                        pack_id,
-                        BlobType::Tree,
-                        location.offset,
-                        location.length,
-                        location.raw_length,
-                    )
+
+                    BlobLocator {
+                        pack_id: *pack_id,
+                        blob_type: BlobType::Tree,
+                        offset: location.offset,
+                        length: location.length,
+                        raw_length: location.raw_length,
+                    }
                 })
             })
     }
@@ -298,20 +301,34 @@ impl Index {
 
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
         let pack_ids = &self.pack_ids;
-        self.data_ids
-            .iter()
-            .chain(self.tree_ids.iter())
-            .map(move |(id, loc)| {
-                (
-                    id,
-                    BlobLocator {
-                        pack_id: *pack_ids.get_value(loc.pack_array_index as usize).unwrap(),
-                        offset: loc.offset,
-                        length: loc.length,
-                        raw_length: loc.raw_length,
-                    },
-                )
-            })
+
+        let data_ids = self.data_ids.iter().map(move |(id, loc)| {
+            (
+                id,
+                BlobLocator {
+                    pack_id: *pack_ids.get_value(loc.pack_array_index as usize).unwrap(),
+                    offset: loc.offset,
+                    length: loc.length,
+                    raw_length: loc.raw_length,
+                    blob_type: BlobType::Data,
+                },
+            )
+        });
+
+        let tree_ids = self.tree_ids.iter().map(move |(id, loc)| {
+            (
+                id,
+                BlobLocator {
+                    pack_id: *pack_ids.get_value(loc.pack_array_index as usize).unwrap(),
+                    offset: loc.offset,
+                    length: loc.length,
+                    raw_length: loc.raw_length,
+                    blob_type: BlobType::Tree,
+                },
+            )
+        });
+
+        data_ids.chain(tree_ids)
     }
 
     fn remove_pack(&mut self, target_pack_id: &ID) {
@@ -384,7 +401,7 @@ impl MasterIndex {
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
-    pub fn get(&self, id: &ID) -> Option<(&ID, BlobType, u32, u32, u32)> {
+    pub fn get(&self, id: &ID) -> Option<BlobLocator> {
         self.indices
             .iter()
             .rev()
@@ -656,20 +673,20 @@ mod tests {
         );
 
         // Test get for Data blob
-        let (p_id, b_type, offset, length, raw_len) = index.get(&data_blob.id).unwrap();
-        assert_eq!(*p_id, pack_id_a);
-        assert_eq!(b_type, BlobType::Data);
-        assert_eq!(offset, 100);
-        assert_eq!(length, 50);
-        assert_eq!(raw_len, 100);
+        let blob_locator = index.get(&data_blob.id).unwrap();
+        assert_eq!(blob_locator.pack_id, pack_id_a);
+        assert_eq!(blob_locator.blob_type, BlobType::Data);
+        assert_eq!(blob_locator.offset, 100);
+        assert_eq!(blob_locator.length, 50);
+        assert_eq!(blob_locator.raw_length, 100);
 
         // Test get for Tree blob
-        let (p_id, b_type, offset, length, raw_len) = index.get(&tree_blob.id).unwrap();
-        assert_eq!(*p_id, pack_id_b);
-        assert_eq!(b_type, BlobType::Tree);
-        assert_eq!(offset, 200);
-        assert_eq!(length, 30);
-        assert_eq!(raw_len, 60);
+        let blob_locator = index.get(&tree_blob.id).unwrap();
+        assert_eq!(blob_locator.pack_id, pack_id_b);
+        assert_eq!(blob_locator.blob_type, BlobType::Tree);
+        assert_eq!(blob_locator.offset, 200);
+        assert_eq!(blob_locator.length, 30);
+        assert_eq!(blob_locator.raw_length, 60);
 
         // Test iterator
         let ids: HashSet<&ID> = index.iter_ids().map(|(id, _)| id).collect();

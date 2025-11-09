@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::LazyLock};
+use std::path::PathBuf;
 
 use colored::Colorize;
 use indicatif::ProgressDrawTarget;
@@ -19,7 +19,7 @@ pub mod snapshot_progress;
 pub mod table;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-pub(crate) static EMPTY_PATHBUF: LazyLock<PathBuf> = LazyLock::new(PathBuf::new);
+pub(crate) static EMPTY_PATHBUF: PathBuf = PathBuf::new();
 
 /// Returns the default draw target for progress bars, with a preconfigured refresh rate
 /// and verbosity.

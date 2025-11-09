@@ -128,7 +128,7 @@ impl RestoreProgressReporter {
     fn update_processing_items(&self) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
             let processing_items_guard = self.processing_items.read();
-            let path = processing_items_guard.get(i).unwrap_or(&*EMPTY_PATHBUF);
+            let path = processing_items_guard.get(i).unwrap_or(&EMPTY_PATHBUF);
             let abbr_path = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
             spinner.set_message(abbr_path);
         }

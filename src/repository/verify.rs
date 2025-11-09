@@ -16,16 +16,20 @@ pub fn verify_blob(repo: &Repository, id: &ID) -> Result<(u64, u64)> {
     let index_guard = index.read();
     let blob_entry = index_guard.get(id);
     match blob_entry {
-        Some((pack_id, blob_type, offset, length, raw_length)) => {
+        Some(locator) => {
             // The ID of a blob is the hash of its plaintext content.
-            let blob_data =
-                repo.read_from_pack_and_decode(blob_type, pack_id, offset as u64, length as u64)?;
+            let blob_data = repo.read_from_pack_and_decode(
+                locator.blob_type,
+                &locator.pack_id,
+                locator.offset as u64,
+                locator.length as u64,
+            )?;
             let checksum = utils::calculate_hash(&blob_data);
             if checksum != id.0[..] {
                 bail!("Invalid blob checksum");
             }
 
-            Ok((raw_length as u64, length as u64))
+            Ok((locator.raw_length as u64, locator.length as u64))
         }
         None => bail!("Could not find blob {id:?} in index"),
     }

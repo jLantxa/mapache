@@ -2,8 +2,6 @@ pub mod defaults;
 pub mod global;
 pub mod vars;
 
-use std::sync::LazyLock;
-
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
 use rand::{TryRngCore, rngs::OsRng};
@@ -17,8 +15,6 @@ pub type Hash256 = [u8; ID_LENGTH];
 /// This is an ID that identifies object by its content.
 #[derive(Hash, Default, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ID(pub(crate) Hash256);
-
-pub(crate) static DEFAULT_ID: LazyLock<ID> = LazyLock::new(ID::default);
 
 impl ID {
     /// Creates a new, random ID.

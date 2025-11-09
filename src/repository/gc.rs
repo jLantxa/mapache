@@ -16,7 +16,7 @@ use crate::{
     backend::{StorageBackend, read_backend_dir},
     fs::tree::SerializedNodeStreamer,
     mapache::{
-        self, ContentIdType, DEFAULT_ID, ID, SaveID,
+        self, ContentIdType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
         global::GlobalOpts,
     },
@@ -229,19 +229,12 @@ impl Plan {
             if self.referenced_blobs.contains(referenced_blob_id)
                 && self.obsolete_packs.contains(&locator.pack_id)
             {
-                // We need the BlobType. We use the canonical MasterIndex::get to get the BlobType
-                // for the referenced ID, or assume Data if the canonical index entry is missing (should not happen).
-                let (_, blob_type, _, _, _) = self.repo.index().read().get(referenced_blob_id).unwrap_or_else(|| {
-                    ui::cli::warning!("Referenced blob {} not found by canonical get. Assuming Data type for repack.", referenced_blob_id);
-                    (&DEFAULT_ID, mapache::BlobType::Data, 0, 0, 0)
-                });
-
                 // HashMap insertion here automatically deduplicates the *repack instruction* by Blob ID.
                 repack_blob_info.insert(
                     *referenced_blob_id,
                     (
                         locator.pack_id,
-                        blob_type,
+                        locator.blob_type,
                         locator.offset,
                         locator.raw_length,
                         locator.length,
@@ -407,8 +400,8 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
         }
 
         match index.read().get(&tree_id) {
-            Some((pack_id, _, _, _, _)) => {
-                referenced_packs.insert(*pack_id);
+            Some(locator) => {
+                referenced_packs.insert(locator.pack_id);
             }
             None => {
                 ui::cli::warning!(
@@ -437,8 +430,8 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
                         }
 
                         match index.read().get(tree) {
-                            Some((pack_id, _, _, _, _)) => {
-                                referenced_packs.insert(*pack_id);
+                            Some(locator) => {
+                                referenced_packs.insert(locator.pack_id);
                             }
                             None => {
                                 missing_tree_blobs += 1;
@@ -454,8 +447,8 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
                             }
 
                             match index.read().get(blob_id) {
-                                Some((pack_id, _, _, _, _)) => {
-                                    referenced_packs.insert(*pack_id);
+                                Some(locator) => {
+                                    referenced_packs.insert(locator.pack_id);
                                 }
                                 None => {
                                     missing_data_blobs += 1;

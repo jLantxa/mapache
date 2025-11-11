@@ -19,17 +19,17 @@ use crate::{
 pub struct CmdArgs {
     /// List of cache folders to delete, comma-separated
     #[clap(long = "delete", num_args = 1.., require_equals = true, value_delimiter = ',')]
-    pub delete_list: Option<Vec<String>>,
+    pub delete_ids: Option<Vec<String>>,
 
     /// Delete all cache folders
-    #[clap(long, conflicts_with = "delete")]
+    #[clap(long, conflicts_with = "delete_ids")]
     pub clear: bool,
 }
 
 pub fn run(args: &CmdArgs) -> Result<()> {
     let cache_base = CacheBackend::default_dir();
 
-    if let Some(list) = &args.delete_list {
+    if let Some(list) = &args.delete_ids {
         cleanup(&cache_base, list)
     } else if args.clear {
         cleanup(&cache_base, &[])

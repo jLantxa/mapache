@@ -1,0 +1,8 @@
+[package]
+name = "chunker"
+version = "0.0.1"
+edition = "2024"
+
+[[bin]]
+name = "chunker-tables"
+path = "src/bin/tables.rs"

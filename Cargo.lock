@@ -240,6 +240,7 @@ name = "chunker"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "fastcdc",
  "rand",
 ]
 
@@ -808,6 +809,7 @@ dependencies = [
  "base64",
  "blake3",
  "chrono",
+ "chunker",
  "clap",
  "clap_complete",
  "colored",

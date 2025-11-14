@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, path::PathBuf};
 
     use anyhow::{Result, anyhow};
     use rand::TryRngCore;
@@ -12,6 +12,8 @@ mod tests {
     const kiB: usize = 1024;
     #[allow(non_upper_case_globals)]
     const MiB: usize = 1024 * kiB;
+
+    const TESTDATA: &str = "testdata";
 
     fn generate_random_data(length: usize) -> Vec<u8> {
         let mut rng = rand::rng();
@@ -210,6 +212,113 @@ mod tests {
             "Normalization L2 should have a LARGER standard deviation than L3. L2: {:.2}, L3: {:.2}",
             stats_l2.std_dev,
             stats_l3.std_dev
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_deterministic_chunks_4k_l2() -> Result<()> {
+        let data: Vec<u8> = std::fs::read(PathBuf::from(TESTDATA).join("mapache.png"))?;
+        let size = data.len();
+        let chunker = Chunker::new(1 * kiB, 4 * kiB, 8 * kiB, Normalization::L2);
+
+        let expected_lens: Vec<usize> = vec![
+            4390, 4154, 7076, 4405, 4660, 1450, 4980, 8192, 5097, 1044, 6644, 5231, 5991, 4368,
+            4232, 4749, 5517, 6227, 4687, 1894, 5005, 6310, 3190, 4524, 6829, 5619, 4211, 5818,
+            6696, 2492, 4181, 5955, 5060, 1560, 4145, 1487, 5256, 4447, 3191, 4290, 4163, 7905,
+            1218, 4879, 5272, 4720, 4659, 6075, 5366, 4644, 1347, 4107, 1679, 4201,
+        ];
+
+        let mut actual_lens: Vec<usize> = Vec::new();
+        let mut total_bytes_chunked: usize = 0;
+        let mut offset: usize = 0;
+
+        while offset < size {
+            let remaining_data = &data[offset..];
+            let cut_len = chunker.cut(remaining_data);
+            assert!(cut_len > 0, "Chunker returned a zero length cut.");
+
+            actual_lens.push(cut_len);
+            total_bytes_chunked += cut_len;
+            offset += cut_len;
+        }
+
+        assert_eq!(
+            actual_lens, expected_lens,
+            "Chunk lengths must be deterministic."
+        );
+        assert_eq!(
+            total_bytes_chunked, size,
+            "Total chunked bytes must match input data size."
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_deterministic_chunks_32k_l2() -> Result<()> {
+        let data: Vec<u8> = std::fs::read(PathBuf::from(TESTDATA).join("mapache.png"))?;
+        let size = data.len();
+        let chunker = Chunker::new(8 * kiB, 32 * kiB, 64 * kiB, Normalization::L2);
+
+        let expected_lens: Vec<usize> = vec![41844, 36372, 33780, 42120, 40715, 42895, 7763];
+
+        let mut actual_lens: Vec<usize> = Vec::new();
+        let mut total_bytes_chunked: usize = 0;
+        let mut offset: usize = 0;
+
+        while offset < size {
+            let remaining_data = &data[offset..];
+            let cut_len = chunker.cut(remaining_data);
+            assert!(cut_len > 0, "Chunker returned a zero length cut.");
+
+            actual_lens.push(cut_len);
+            total_bytes_chunked += cut_len;
+            offset += cut_len;
+        }
+
+        assert_eq!(
+            actual_lens, expected_lens,
+            "Chunk lengths must be deterministic."
+        );
+        assert_eq!(
+            total_bytes_chunked, size,
+            "Total chunked bytes must match input data size."
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_deterministic_chunks_32k_l0() -> Result<()> {
+        let data: Vec<u8> = std::fs::read(PathBuf::from(TESTDATA).join("mapache.png"))?;
+        let size = data.len();
+        let chunker = Chunker::new(8 * kiB, 32 * kiB, 64 * kiB, Normalization::None);
+
+        let expected_lens: Vec<usize> = vec![65536, 44602, 65536, 65536, 4279];
+
+        let mut actual_lens: Vec<usize> = Vec::new();
+        let mut total_bytes_chunked: usize = 0;
+        let mut offset: usize = 0;
+
+        while offset < size {
+            let remaining_data = &data[offset..];
+            let cut_len = chunker.cut(remaining_data);
+            assert!(cut_len > 0, "Chunker returned a zero length cut.");
+
+            actual_lens.push(cut_len);
+            total_bytes_chunked += cut_len;
+            offset += cut_len;
+        }
+
+        assert_eq!(
+            actual_lens, expected_lens,
+            "Chunk lengths must be deterministic."
+        );
+        assert_eq!(
+            total_bytes_chunked, size,
+            "Total chunked bytes must match input data size."
         );
 
         Ok(())

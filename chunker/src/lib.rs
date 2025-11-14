@@ -102,18 +102,16 @@ impl Chunker {
         while i < phase1_end {
             let idx = i << 1;
 
-            unsafe {
-                let b0 = *data.get_unchecked(idx);
-                fp = self.update_fp_even(fp, b0);
-                if (fp & fp_mask_s_ls) == 0 {
-                    return idx;
-                }
+            let b0 = unsafe { *data.get_unchecked(idx) };
+            fp = self.update_fp_even(fp, b0);
+            if (fp & fp_mask_s_ls) == 0 {
+                return idx;
+            }
 
-                let b1 = *data.get_unchecked(idx + 1);
-                fp = self.update_fp_odd(fp, b1);
-                if (fp & fp_mask_s) == 0 {
-                    return idx + 1;
-                }
+            let b1 = unsafe { *data.get_unchecked(idx + 1) };
+            fp = self.update_fp_odd(fp, b1);
+            if (fp & fp_mask_s) == 0 {
+                return idx + 1;
             }
 
             i += 1;
@@ -122,18 +120,16 @@ impl Chunker {
         while i < phase2_end {
             let idx = i << 1;
 
-            unsafe {
-                let b0 = *data.get_unchecked(idx);
-                fp = self.update_fp_even(fp, b0);
-                if (fp & fp_mask_l_ls) == 0 {
-                    return idx;
-                }
+            let b0 = unsafe { *data.get_unchecked(idx) };
+            fp = self.update_fp_even(fp, b0);
+            if (fp & fp_mask_l_ls) == 0 {
+                return idx;
+            }
 
-                let b1 = *data.get_unchecked(idx + 1);
-                fp = self.update_fp_odd(fp, b1);
-                if (fp & fp_mask_l) == 0 {
-                    return idx + 1;
-                }
+            let b1 = unsafe { *data.get_unchecked(idx + 1) };
+            fp = self.update_fp_odd(fp, b1);
+            if (fp & fp_mask_l) == 0 {
+                return idx + 1;
             }
 
             i += 1;

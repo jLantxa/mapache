@@ -214,7 +214,7 @@ fn custom_chunk_and_store_file(
     let estimated_num_chunks = (file_size / mapache::defaults::AVG_CHUNK_SIZE).max(1) as usize;
     let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
 
-    for result in DEFAULT_CHUNKER.chunk_stream(reader) {
+    for result in DEFAULT_CHUNKER.stream(reader) {
         let chunk = result.with_context(|| "Failed to chunk file")?;
         progress_reporter.processed_bytes(chunk.data.len() as u64);
 

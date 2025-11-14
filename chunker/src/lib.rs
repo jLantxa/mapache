@@ -154,7 +154,8 @@ impl Chunker {
         max_cap
     }
 
-    pub fn chunk_stream<R: Read>(&self, source: R) -> ChunkStream<'_, R> {
+    /// Returns a stream of the chunks of a Read trait object.
+    pub fn stream<R: Read>(&self, source: R) -> ChunkStream<'_, R> {
         ChunkStream::new(source, self)
     }
 }
@@ -165,6 +166,10 @@ pub struct Chunk {
     pub data: Vec<u8>,
 }
 
+/// Chunk stream.
+///
+/// A chunk stream is an iterator over a Read object that produces a new
+/// chunk every time the next() function is called.
 pub struct ChunkStream<'a, R: Read> {
     chunker: &'a Chunker,
     source: R,
@@ -186,6 +191,7 @@ impl<'a, R: Read> ChunkStream<'a, R> {
 impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
     type Item = Result<Chunk>;
 
+    /// Finds the next cut-point and returns a Chunk until the data is exhausted.
     fn next(&mut self) -> Option<Self::Item> {
         let max_size = self.chunker.max_size;
         let min_size = self.chunker.min_size;

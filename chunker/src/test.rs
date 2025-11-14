@@ -32,7 +32,7 @@ mod tests {
 
     fn chunk_and_analyze(chunker: &Chunker, data: &[u8]) -> Result<DistributionStats> {
         let reader = Cursor::new(data);
-        let stream = chunker.chunk_stream(reader);
+        let stream = chunker.stream(reader);
 
         let mut chunk_lengths: Vec<usize> = Vec::new();
         let mut total_bytes: usize = 0;
@@ -75,8 +75,6 @@ mod tests {
     #[case(32 * 1024 * 1024, 0, 0)]
     #[should_panic]
     fn test_create_chunker(#[case] min: usize, #[case] avg: usize, #[case] max: usize) {
-        use crate::Normalization;
-
         let _ = Chunker::new(min, avg, max, Normalization::None);
     }
 

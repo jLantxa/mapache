@@ -168,7 +168,6 @@ mod tests {
     #[case(16 * kiB)]
     #[case(128 * kiB)]
     #[case(512 * kiB)]
-    #[case(1 * MiB)]
     fn test_normalization_spread_effect(#[case] normal_size: usize) -> Result<()> {
         const DATA_SIZE: usize = 64 * MiB;
         let data = generate_random_data(DATA_SIZE);

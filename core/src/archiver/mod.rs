@@ -13,25 +13,16 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use chrono::Local;
-use chunker::Chunker;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     archiver::tree_serializer::TreeSerializer,
     fs::tree::{FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
-    mapache::{self, ID},
+    mapache::ID,
     repository::{repo::Repository, snapshot::Snapshot},
     ui::snapshot_progress::SnapshotProgressReporter,
     utils,
 };
-
-/// Reusable chunker instance.
-pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
-    mapache::defaults::MIN_CHUNK_SIZE as usize,
-    mapache::defaults::AVG_CHUNK_SIZE as usize,
-    mapache::defaults::MAX_CHUNK_SIZE as usize,
-    mapache::defaults::CHUNKER_NORMALIZATION,
-);
 
 #[derive(Clone)]
 pub struct SnapshotOptions {
@@ -293,7 +284,6 @@ fn spawn_processor_thread(
                         (path, prev, next, diff),
                         repo.clone(),
                         progress_reporter.clone(),
-                        &DEFAULT_CHUNKER
                     );
 
                     match processed_item_result {

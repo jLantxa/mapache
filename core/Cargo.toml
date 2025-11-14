@@ -11,13 +11,14 @@ argon2 = "0.5.3"
 base64 = "0.22.1"
 blake3 = "1.8.2"
 chrono = { version = "0.4.42", features = ["serde"] }
-chunker = { path = "../chunker" }
+chunker = { path = "../chunker", optional = true }
 clap = { version = "4.5.51", features = ["derive", "wrap_help"] }
 clap_complete = "4.5.60"
 colored = "3.0.0"
 crossbeam-channel = "0.5.15"
 dialoguer = "0.12.0"
 directories = "6.0.0"
+fastcdc =  "3.2.1"
 filetime = "0.2.26"
 hostname = "0.4.1"
 indicatif = { version = "0.18.3", features = ["rayon"] }
@@ -46,3 +47,4 @@ xz2 = "0.1.7"
 [features]
 default = ["fuse"]
 fuse = ["fuser"] #FUSE for mount command
+custom-chunker = ["chunker"]

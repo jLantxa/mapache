@@ -1,0 +1,217 @@
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use anyhow::{Result, anyhow};
+    use rand::TryRngCore;
+    use rstest::rstest;
+
+    use crate::{Chunker, Normalization, lookup::MASKS};
+
+    #[allow(non_upper_case_globals)]
+    const kiB: usize = 1024;
+    #[allow(non_upper_case_globals)]
+    const MiB: usize = 1024 * kiB;
+
+    fn generate_random_data(length: usize) -> Vec<u8> {
+        let mut rng = rand::rng();
+        let mut data = vec![0u8; length];
+        let _ = rng.try_fill_bytes(&mut data);
+        data
+    }
+
+    // Define a struct to hold all collected statistics
+    #[allow(dead_code)]
+    struct DistributionStats {
+        chunk_lengths: Vec<usize>,
+        mean: f64,
+        std_dev: f64,
+    }
+
+    fn chunk_and_analyze(chunker: &Chunker, data: &[u8]) -> Result<DistributionStats> {
+        let reader = Cursor::new(data);
+        let stream = chunker.chunk_stream(reader);
+
+        let mut chunk_lengths: Vec<usize> = Vec::new();
+        let mut total_bytes: usize = 0;
+
+        for chunk_result in stream {
+            let chunk = chunk_result?;
+            chunk_lengths.push(chunk.length);
+            total_bytes += chunk.length;
+        }
+
+        let count = chunk_lengths.len();
+        if count == 0 {
+            return Err(anyhow!("Chunking produced no chunks."));
+        }
+
+        let mean = total_bytes as f64 / count as f64;
+
+        let variance_sum: f64 = chunk_lengths
+            .iter()
+            .map(|&len| {
+                let diff = len as f64 - mean;
+                diff * diff
+            })
+            .sum();
+
+        let variance = variance_sum / count as f64;
+        let std_dev = variance.sqrt();
+
+        Ok(DistributionStats {
+            chunk_lengths,
+            mean,
+            std_dev,
+        })
+    }
+
+    #[rstest]
+    #[case(0, 0, 0)]
+    #[case(0, 0, 32 * 1024 * 1024)]
+    #[case(0, 32 * 1024 * 1024, 0)]
+    #[case(32 * 1024 * 1024, 0, 0)]
+    #[should_panic]
+    fn test_create_chunker(#[case] min: usize, #[case] avg: usize, #[case] max: usize) {
+        use crate::Normalization;
+
+        let _ = Chunker::new(min, avg, max, Normalization::None);
+    }
+
+    #[test]
+    fn test_mask_distributions() {
+        for (n, mask) in MASKS.iter().enumerate() {
+            assert_eq!(mask.count_ones() as usize, n);
+        }
+    }
+
+    #[rstest]
+    #[case(Normalization::None)]
+    fn test_chunker_masks(#[case] normalization: Normalization) {
+        let chunker = Chunker::new(64, 256, 1024, normalization);
+        assert_eq!(chunker.mask_s, MASKS[8 + normalization.to_bits()]);
+        assert_eq!(chunker.mask_l, MASKS[8 - normalization.to_bits()]);
+
+        let chunker = Chunker::new(8 * kiB, 16 * kiB, 32 * kiB, normalization);
+        assert_eq!(chunker.mask_s, MASKS[14 + normalization.to_bits()]);
+        assert_eq!(chunker.mask_l, MASKS[14 - normalization.to_bits()]);
+
+        let chunker = Chunker::new(1 * MiB, 4 * MiB, 16 * MiB, normalization);
+        assert_eq!(chunker.mask_s, MASKS[22 + normalization.to_bits()]);
+        assert_eq!(chunker.mask_l, MASKS[22 - normalization.to_bits()]);
+    }
+
+    #[test]
+    fn test_cut_respects_min_size() {
+        let min_size = 100;
+        let avg_size = 4 * kiB;
+        let max_size = 8 * kiB;
+
+        let chunker = Chunker::new(min_size, avg_size, max_size, Normalization::None);
+
+        let data_len = max_size - 100;
+        let data = vec![0u8; data_len];
+
+        let tiny_data = &data[..min_size - 1];
+        let cut = chunker.cut(tiny_data);
+        assert_eq!(cut, min_size - 1, "Should return full length if < MIN_SIZE");
+
+        let large_data = &data[..];
+        let cut = chunker.cut(large_data);
+        assert_eq!(
+            cut, data_len,
+            "Should return full length/MAX_CAP if no pattern match"
+        );
+    }
+
+    #[test]
+    fn test_cut_hits_max_size_boundary() {
+        let min_size = 128;
+        let avg_size = 1 * kiB;
+        let max_size = 4 * kiB;
+        let chunker = Chunker::new(min_size, avg_size, max_size, Normalization::None);
+
+        let data_max = vec![0u8; max_size];
+        let cut_max = chunker.cut(&data_max);
+        assert_eq!(cut_max, max_size, "Should return MAX_SIZE");
+
+        let data_too_big = vec![0u8; max_size + 500];
+        let cut_too_big = chunker.cut(&data_too_big);
+        assert_eq!(cut_too_big, max_size, "Should cap at MAX_SIZE limit");
+    }
+
+    #[test]
+    fn test_cut_on_random_data_is_not_max_size() {
+        let min_size = 128;
+        let avg_size = 4 * kiB;
+        let max_size = 8 * kiB;
+        let chunker = Chunker::new(min_size, avg_size, max_size, Normalization::None);
+
+        let data_len = 2 * max_size;
+        let data = generate_random_data(data_len);
+
+        let cut_point = chunker.cut(&data);
+
+        assert!(
+            cut_point < data_len,
+            "Should have found a cut point before MAX_CAP"
+        );
+        assert!(
+            cut_point >= chunker.min_size,
+            "Cut point must be >= MIN_SIZE"
+        );
+    }
+
+    #[rstest]
+    #[case(128)]
+    #[case(4 * kiB)]
+    #[case(16 * kiB)]
+    #[case(128 * kiB)]
+    #[case(512 * kiB)]
+    #[case(1 * MiB)]
+    fn test_normalization_spread_effect(#[case] avg_size: usize) -> Result<()> {
+        const DATA_SIZE: usize = 64 * MiB;
+        let data = generate_random_data(DATA_SIZE);
+
+        let min_size = avg_size / 2;
+        let max_size = avg_size * 2;
+
+        // Chunker configurations for comparison
+        let chunker_l0 = Chunker::new(min_size, avg_size, max_size, Normalization::None);
+        let chunker_l1 = Chunker::new(min_size, avg_size, max_size, Normalization::L1);
+        let chunker_l2 = Chunker::new(min_size, avg_size, max_size, Normalization::L2);
+        let chunker_l3 = Chunker::new(min_size, avg_size, max_size, Normalization::L3);
+
+        let stats_l0 = chunk_and_analyze(&chunker_l0, &data)?;
+        let stats_l1 = chunk_and_analyze(&chunker_l1, &data)?;
+        let stats_l2 = chunk_and_analyze(&chunker_l2, &data)?;
+        let stats_l3 = chunk_and_analyze(&chunker_l3, &data)?;
+
+        println!("\n--- Spread Comparison (Avg: {} B) ---", avg_size);
+        println!("L0 StdDev: {:.2} B", stats_l0.std_dev);
+        println!("L1 StdDev: {:.2} B", stats_l1.std_dev);
+        println!("L2 StdDev: {:.2} B", stats_l2.std_dev);
+        println!("L3 StdDev: {:.2} B", stats_l3.std_dev);
+
+        assert!(
+            stats_l0.std_dev > stats_l1.std_dev,
+            "Normalization L0 should have a LARGER standard deviation than L1. L0: {:.2}, L1: {:.2}",
+            stats_l0.std_dev,
+            stats_l1.std_dev
+        );
+        assert!(
+            stats_l1.std_dev > stats_l2.std_dev,
+            "Normalization L1 should have a LARGER standard deviation than L2. L1: {:.2}, L2: {:.2}",
+            stats_l1.std_dev,
+            stats_l2.std_dev
+        );
+        assert!(
+            stats_l2.std_dev > stats_l3.std_dev,
+            "Normalization L2 should have a LARGER standard deviation than L3. L2: {:.2}, L3: {:.2}",
+            stats_l2.std_dev,
+            stats_l3.std_dev
+        );
+
+        Ok(())
+    }
+}

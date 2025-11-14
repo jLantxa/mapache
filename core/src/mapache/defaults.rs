@@ -1,6 +1,9 @@
 use std::time::Duration;
 
+#[cfg(feature = "custom-chunker")]
 use chunker::Normalization;
+#[cfg(not(feature = "custom-chunker"))]
+use fastcdc::v2020::Normalization;
 
 use crate::{repository::repo::RepoConfig, utils::size};
 
@@ -31,7 +34,10 @@ pub(crate) const AVG_CHUNK_SIZE: u64 = size::MiB;
 /// Maximum chunk size.
 pub(crate) const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 /// Chunk normalization level.
+#[cfg(feature = "custom-chunker")]
 pub(crate) const CHUNKER_NORMALIZATION: Normalization = Normalization::L2;
+#[cfg(not(feature = "custom-chunker"))]
+pub(crate) const CHUNKER_NORMALIZATION: Normalization = Normalization::Level2;
 
 // -- Display --
 /// Display length for the repository ID in bytes

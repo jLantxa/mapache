@@ -162,7 +162,7 @@ fn chunk_and_store_file(
         mapache::defaults::MIN_CHUNK_SIZE as u32,
         mapache::defaults::AVG_CHUNK_SIZE as u32,
         mapache::defaults::MAX_CHUNK_SIZE as u32,
-        Normalization::Level0,
+        Normalization::Level2,
     );
 
     for result in chunker {

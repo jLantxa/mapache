@@ -27,7 +27,7 @@ pub(crate) const HEADER_BLOB_MULTIPLE: usize = 64;
 /// Minimum chunk size.
 pub(crate) const MIN_CHUNK_SIZE: u64 = 512 * size::KiB;
 /// Average chunk size.
-pub(crate) const AVG_CHUNK_SIZE: u64 = 1 * size::MiB;
+pub(crate) const AVG_CHUNK_SIZE: u64 = size::MiB;
 /// Maximum chunk size.
 pub(crate) const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 /// Chunk normalization level.

@@ -6,9 +6,14 @@ use crate::lookup::{GEAR, GEAR_LS, MASKS};
 
 mod lookup;
 
+#[cfg(test)]
+mod test;
+
 pub const MIN_SIZE: usize = 64; // 64 Bytes
 pub const MAX_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
+pub const MAX_AVG_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
+#[derive(Debug, Clone, Copy)]
 pub enum Normalization {
     None,
     L1,
@@ -53,6 +58,7 @@ impl Chunker {
         assert!(avg_size <= max_size);
         assert!(min_size >= MIN_SIZE);
         assert!(max_size <= MAX_SIZE);
+        assert!(avg_size <= MAX_AVG_SIZE);
 
         let avg_bits = avg_size.ilog2() as usize;
         let norm_bits = normalization.to_bits();
@@ -255,6 +261,3 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
         None
     }
 }
-
-#[cfg(test)]
-mod tests {}

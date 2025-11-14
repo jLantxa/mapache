@@ -242,6 +242,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "rand",
+ "rstest",
 ]
 
 [[package]]

@@ -216,7 +216,8 @@ fn custom_chunk_and_store_file(
         chunker::Normalization::L2,
     );
 
-    for chunk in chunker.chunk_stream(reader) {
+    for result in chunker.chunk_stream(reader) {
+        let chunk = result.with_context(|| "Failed to chunk file")?;
         progress_reporter.processed_bytes(chunk.data.len() as u64);
 
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo

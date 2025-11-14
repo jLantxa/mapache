@@ -1,5 +1,7 @@
 use std::io::Read;
 
+use anyhow::{Result, anyhow};
+
 use crate::lookup::{GEAR, GEAR_LS, MASKS};
 
 mod lookup;
@@ -168,7 +170,7 @@ impl<'a, R: Read> ChunkStream<'a, R> {
 }
 
 impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
-    type Item = Chunk;
+    type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let max_size = self.chunker.max_size;
@@ -202,8 +204,7 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    eprintln!("Read error: {e}");
-                    return None;
+                    return Some(Err(anyhow!("Read error: {e}")));
                 }
             }
         }
@@ -221,11 +222,11 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                 let offset = self.global_offset;
                 self.global_offset += cut;
 
-                return Some(Chunk {
+                return Some(Ok(Chunk {
                     offset,
                     length: cut,
                     data,
-                });
+                }));
             }
         }
 
@@ -236,11 +237,11 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
 
             self.global_offset += length;
 
-            return Some(Chunk {
+            return Some(Ok(Chunk {
                 offset,
                 length,
                 data,
-            });
+            }));
         }
 
         None

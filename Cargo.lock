@@ -239,6 +239,7 @@ dependencies = [
 name = "chunker"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "blake3",
  "fastcdc",
  "rand",

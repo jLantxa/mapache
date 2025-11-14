@@ -8,6 +8,7 @@ name = "chunker-tables"
 path = "src/bin/gear_gen.rs"
 
 [dependencies]
+anyhow = "1.0.100"
 blake3 = "1.8.2"
 fastcdc = "3.2.1"
 rand = "0.9.2"

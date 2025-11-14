@@ -8,6 +8,7 @@ CONTAINER_NAME="mapache-extract-container"
 DOCKERFILE_PATH="Dockerfile"
 BUILD_PATH="build"
 REF=${1:-"main"}
+FEATURES=${2:-"default"}
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "This script must be run with sudo."
@@ -30,6 +31,7 @@ echo "Building Docker image..."
 docker build \
   --build-arg CACHE_BREAKER="$(date +%s)" \
   --build-arg GIT_REF="$REF" \
+  --build-arg FEATURES="$FEATURES" \
   -t "$IMAGE_NAME" -f "$DOCKERFILE_PATH" .
 
 echo "Creating container..."

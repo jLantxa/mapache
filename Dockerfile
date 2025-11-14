@@ -34,14 +34,15 @@ WORKDIR /mapache
 
 ARG CACHE_BREAKER
 ARG GIT_REF="main"
+ARG FEATURES="default"
 
 RUN git clone https://github.com/jLantxa/mapache.git /mapache && \
     cd /mapache && \
     git checkout $GIT_REF
 
-RUN cargo test -- --skip integration_tests::test_cmd_mount
-RUN cargo build --release
-RUN cargo build --release --target x86_64-pc-windows-gnu
+RUN cargo test --features $FEATURES -- --skip integration_tests::test_cmd_mount
+RUN cargo build --features $FEATURES --release
+RUN cargo build --features $FEATURES --release --target x86_64-pc-windows-gnu
 
 
 FROM alpine:latest

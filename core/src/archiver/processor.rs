@@ -26,7 +26,7 @@ use crate::{
 #[cfg(feature = "custom-chunker")]
 pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::MIN_CHUNK_SIZE as usize,
-    mapache::defaults::AVG_CHUNK_SIZE as usize,
+    mapache::defaults::NORMAL_CHUNK_SIZE as usize,
     mapache::defaults::MAX_CHUNK_SIZE as usize,
     mapache::defaults::CHUNKER_NORMALIZATION,
 );
@@ -161,13 +161,13 @@ fn chunk_and_store_file(
     let reader = BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
 
     let file_size = reader.get_ref().metadata()?.len();
-    let estimated_num_chunks = (file_size / mapache::defaults::AVG_CHUNK_SIZE).max(1) as usize;
+    let estimated_num_chunks = (file_size / mapache::defaults::NORMAL_CHUNK_SIZE).max(1) as usize;
     let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
 
     let chunker = StreamCDC::with_level(
         reader,
         mapache::defaults::MIN_CHUNK_SIZE as u32,
-        mapache::defaults::AVG_CHUNK_SIZE as u32,
+        mapache::defaults::NORMAL_CHUNK_SIZE as u32,
         mapache::defaults::MAX_CHUNK_SIZE as u32,
         mapache::defaults::CHUNKER_NORMALIZATION,
     );
@@ -211,7 +211,7 @@ fn custom_chunk_and_store_file(
     let reader = BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
 
     let file_size = reader.get_ref().metadata()?.len();
-    let estimated_num_chunks = (file_size / mapache::defaults::AVG_CHUNK_SIZE).max(1) as usize;
+    let estimated_num_chunks = (file_size / mapache::defaults::NORMAL_CHUNK_SIZE).max(1) as usize;
     let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
 
     for result in DEFAULT_CHUNKER.stream(reader) {

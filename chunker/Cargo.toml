@@ -1,11 +1,11 @@
 [package]
 name = "chunker"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "chunker-tables"
-path = "src/bin/gear_gen.rs"
+name = "chunker-lookup"
+path = "src/bin/lookup_gen.rs"
 
 [dependencies]
 anyhow = "1.0.100"

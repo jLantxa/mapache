@@ -1,3 +1,17 @@
+//! This is an implementation of the [FastCDC](https://ieeexplore.ieee.org/document/9055082)
+//! algorithm by Wen Xia et al published in 2020.
+//! It implements the Content-Defined Chunking algorithm with all the five
+//! optimization techniques described in the paper: Gear-based rolling hashing,
+//! optimized hash judgment, sub-minimum chunk cut-point skipping, normalized
+//! chunking and "rolling two bytes each time".
+//!
+//! The original paper suggests MD5 for the Gear lookup tables, although this
+//! implementation uses BLAKE3 for the sole purpose of reusing an existing
+//! dependency.
+//!
+//! The masks are randomly generated to distribute the 'one' bits evenly between
+//! bits 0..48.
+
 use std::io::Read;
 
 use anyhow::{Result, anyhow};
@@ -11,8 +25,11 @@ mod test;
 
 pub const MIN_SIZE: usize = 64; // 64 Bytes
 pub const MAX_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
-pub const MAX_AVG_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+pub const MAX_NORMAL_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
+/// Chunk normalization level.
+/// Higher normalization levels result in a narrower distribution of the chunk
+/// sizes around the normal size.
 #[derive(Debug, Clone, Copy)]
 pub enum Normalization {
     None,
@@ -22,6 +39,7 @@ pub enum Normalization {
 }
 
 impl Normalization {
+    #[inline(always)]
     pub const fn to_bits(&self) -> usize {
         match self {
             Normalization::None => 0,
@@ -34,7 +52,7 @@ impl Normalization {
 
 pub struct Chunker {
     min_size: usize,
-    avg_size: usize,
+    normal_size: usize,
     max_size: usize,
 
     gear: &'static [u64; 256],
@@ -50,27 +68,28 @@ impl Chunker {
     /// Initialize a new Chunker with fix parameters.
     pub const fn new(
         min_size: usize,
-        avg_size: usize,
+        normal_size: usize,
         max_size: usize,
         normalization: Normalization,
     ) -> Self {
-        assert!(min_size <= avg_size);
-        assert!(avg_size <= max_size);
+        assert!(min_size <= normal_size);
+        assert!(normal_size <= max_size);
         assert!(min_size >= MIN_SIZE);
         assert!(max_size <= MAX_SIZE);
-        assert!(avg_size <= MAX_AVG_SIZE);
+        assert!(normal_size <= MAX_NORMAL_SIZE);
 
-        let avg_bits = avg_size.ilog2() as usize;
+        let normal_bits = normal_size.ilog2() as usize;
         let norm_bits = normalization.to_bits();
+        assert!(normal_bits + norm_bits <= MASKS.len());
 
-        let mask_s = MASKS[avg_bits + norm_bits];
-        let mask_l = MASKS[avg_bits - norm_bits];
+        let mask_s = MASKS[normal_bits + norm_bits];
+        let mask_l = MASKS[normal_bits - norm_bits];
         let mask_s_ls = mask_s << 1;
         let mask_l_ls = mask_l << 1;
 
         Self {
             min_size,
-            avg_size,
+            normal_size,
             max_size,
             gear: &GEAR,
             gear_ls: &GEAR_LS,
@@ -104,7 +123,7 @@ impl Chunker {
         let fp_mask_l = self.mask_l;
         let fp_mask_l_ls = self.mask_l_ls;
 
-        let center = self.avg_size.min(len);
+        let center = self.normal_size.min(len);
         let max_cap = self.max_size.min(len);
 
         let mut fp: u64 = 0;
@@ -235,16 +254,16 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
 
         if self.buffer.len() >= min_size {
             let slice = &self.buffer[..self.buffer.len().min(max_size)];
-            let cut = self.chunker.cut(slice);
+            let cut_point = self.chunker.cut(slice);
 
-            if cut > 0 {
-                let data: Vec<u8> = self.buffer.drain(..cut).collect();
+            if cut_point > 0 {
+                let data: Vec<u8> = self.buffer.drain(..cut_point).collect();
                 let offset = self.global_offset;
-                self.global_offset += cut;
+                self.global_offset += cut_point;
 
                 return Some(Ok(Chunk {
                     offset,
-                    length: cut,
+                    length: cut_point,
                     data,
                 }));
             }

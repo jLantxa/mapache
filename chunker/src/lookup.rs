@@ -1,3 +1,11 @@
+//! Precalculated lookup tables for the CDC algorithm.
+//!
+//! The tables and masks can be generated using the lookup_gen binary.
+//! The Gear tables are deterministic but the masks are generated randomly
+//! according to some properties.
+
+/// Gear hash look up table.
+/// This table is the BLAKE3 hash of every byte value from 0x00 to 0xff.
 #[rustfmt::skip]
 pub(crate) const GEAR: [u64; 256] = [
     0xb2a5525c1a564cb1, 0xf2d88fedf370a687, 0x154884889f3883fe, 0xd8656cd83ec355c2,
@@ -66,6 +74,7 @@ pub(crate) const GEAR: [u64; 256] = [
     0xa464af9c47182530, 0xb31a97d6a40ebba6, 0x50d6fec8f520da7a, 0xccdf1510c4a39802,
 ];
 
+/// Gear hash look up table shifted one bit left.
 #[rustfmt::skip]
 pub(crate) const GEAR_LS: [u64; 256] = [
     0x654aa4b834ac9962, 0xe5b11fdbe6e14d0e, 0x2a9109113e7107fc, 0xb0cad9b07d86ab84,
@@ -134,6 +143,9 @@ pub(crate) const GEAR_LS: [u64; 256] = [
     0x48c95f388e304a60, 0x66352fad481d774c, 0xa1adfd91ea41b4f4, 0x99be2a2189473004,
 ];
 
+/// Set of masks for the hash judgment.
+/// The masks are indexed by the number of ones.
+/// The `ones` are evenly distributed between bits 0..48
 pub(crate) const MASKS: [u64; 26] = [
     0x0000000000000000, // 1 B
     0x0000000000002000, // 2 B

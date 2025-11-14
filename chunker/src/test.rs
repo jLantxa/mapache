@@ -74,8 +74,8 @@ mod tests {
     #[case(0, 32 * 1024 * 1024, 0)]
     #[case(32 * 1024 * 1024, 0, 0)]
     #[should_panic]
-    fn test_create_chunker(#[case] min: usize, #[case] avg: usize, #[case] max: usize) {
-        let _ = Chunker::new(min, avg, max, Normalization::None);
+    fn test_create_chunker(#[case] min: usize, #[case] normal: usize, #[case] max: usize) {
+        let _ = Chunker::new(min, normal, max, Normalization::None);
     }
 
     #[test]
@@ -104,10 +104,10 @@ mod tests {
     #[test]
     fn test_cut_respects_min_size() {
         let min_size = 100;
-        let avg_size = 4 * kiB;
+        let normal_size = 4 * kiB;
         let max_size = 8 * kiB;
 
-        let chunker = Chunker::new(min_size, avg_size, max_size, Normalization::None);
+        let chunker = Chunker::new(min_size, normal_size, max_size, Normalization::None);
 
         let data_len = max_size - 100;
         let data = vec![0u8; data_len];
@@ -127,9 +127,9 @@ mod tests {
     #[test]
     fn test_cut_hits_max_size_boundary() {
         let min_size = 128;
-        let avg_size = 1 * kiB;
+        let normal_size = 1 * kiB;
         let max_size = 4 * kiB;
-        let chunker = Chunker::new(min_size, avg_size, max_size, Normalization::None);
+        let chunker = Chunker::new(min_size, normal_size, max_size, Normalization::None);
 
         let data_max = vec![0u8; max_size];
         let cut_max = chunker.cut(&data_max);
@@ -143,9 +143,9 @@ mod tests {
     #[test]
     fn test_cut_on_random_data_is_not_max_size() {
         let min_size = 128;
-        let avg_size = 4 * kiB;
+        let normal_size = 4 * kiB;
         let max_size = 8 * kiB;
-        let chunker = Chunker::new(min_size, avg_size, max_size, Normalization::None);
+        let chunker = Chunker::new(min_size, normal_size, max_size, Normalization::None);
 
         let data_len = 2 * max_size;
         let data = generate_random_data(data_len);
@@ -169,25 +169,28 @@ mod tests {
     #[case(128 * kiB)]
     #[case(512 * kiB)]
     #[case(1 * MiB)]
-    fn test_normalization_spread_effect(#[case] avg_size: usize) -> Result<()> {
+    fn test_normalization_spread_effect(#[case] normal_size: usize) -> Result<()> {
         const DATA_SIZE: usize = 64 * MiB;
         let data = generate_random_data(DATA_SIZE);
 
-        let min_size = avg_size / 2;
-        let max_size = avg_size * 2;
+        let min_size = normal_size / 2;
+        let max_size = normal_size * 2;
 
         // Chunker configurations for comparison
-        let chunker_l0 = Chunker::new(min_size, avg_size, max_size, Normalization::None);
-        let chunker_l1 = Chunker::new(min_size, avg_size, max_size, Normalization::L1);
-        let chunker_l2 = Chunker::new(min_size, avg_size, max_size, Normalization::L2);
-        let chunker_l3 = Chunker::new(min_size, avg_size, max_size, Normalization::L3);
+        let chunker_l0 = Chunker::new(min_size, normal_size, max_size, Normalization::None);
+        let chunker_l1 = Chunker::new(min_size, normal_size, max_size, Normalization::L1);
+        let chunker_l2 = Chunker::new(min_size, normal_size, max_size, Normalization::L2);
+        let chunker_l3 = Chunker::new(min_size, normal_size, max_size, Normalization::L3);
 
         let stats_l0 = chunk_and_analyze(&chunker_l0, &data)?;
         let stats_l1 = chunk_and_analyze(&chunker_l1, &data)?;
         let stats_l2 = chunk_and_analyze(&chunker_l2, &data)?;
         let stats_l3 = chunk_and_analyze(&chunker_l3, &data)?;
 
-        println!("\n--- Spread Comparison (Avg: {} B) ---", avg_size);
+        println!(
+            "\n--- Spread Comparison (Normal size: {} B) ---",
+            normal_size
+        );
         println!("L0 StdDev: {:.2} B", stats_l0.std_dev);
         println!("L1 StdDev: {:.2} B", stats_l1.std_dev);
         println!("L2 StdDev: {:.2} B", stats_l2.std_dev);

@@ -6,6 +6,9 @@ use crate::lookup::{GEAR, GEAR_LS, MASKS};
 
 mod lookup;
 
+pub const MIN_SIZE: usize = 64; // 64 Bytes
+pub const MAX_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
+
 pub enum Normalization {
     None,
     L1,
@@ -14,7 +17,7 @@ pub enum Normalization {
 }
 
 impl Normalization {
-    pub fn to_bits(&self) -> usize {
+    pub const fn to_bits(&self) -> usize {
         match self {
             Normalization::None => 0,
             Normalization::L1 => 1,
@@ -40,12 +43,17 @@ pub struct Chunker {
 
 impl Chunker {
     /// Initialize a new Chunker with fix parameters.
-    pub fn new(
+    pub const fn new(
         min_size: usize,
         avg_size: usize,
         max_size: usize,
         normalization: Normalization,
     ) -> Self {
+        assert!(min_size <= avg_size);
+        assert!(avg_size <= max_size);
+        assert!(min_size >= MIN_SIZE);
+        assert!(max_size <= MAX_SIZE);
+
         let avg_bits = avg_size.ilog2() as usize;
         let norm_bits = normalization.to_bits();
 

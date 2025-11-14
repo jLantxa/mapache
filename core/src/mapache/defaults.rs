@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use chunker::Normalization;
+
 use crate::{repository::repo::RepoConfig, utils::size};
 
 pub(crate) const APP_NAME: &str = "mapache";
@@ -20,12 +22,16 @@ pub const DEFAULT_PACK_SIZE: u64 = (DEFAULT_DEFAULT_PACK_SIZE_MIB * size::MiB as
 pub(crate) const HEADER_BLOB_MULTIPLE: usize = 64;
 
 // -- Chunking --
-/// Minimum chunk size
+// The chunker parameters must remain stable across versions, otherwise
+// same contents will no longer produce same chunks and IDs.
+/// Minimum chunk size.
 pub(crate) const MIN_CHUNK_SIZE: u64 = 512 * size::KiB;
-/// Average chunk size
-pub(crate) const AVG_CHUNK_SIZE: u64 = size::MiB;
-/// Maximum chunk size
+/// Average chunk size.
+pub(crate) const AVG_CHUNK_SIZE: u64 = 1 * size::MiB;
+/// Maximum chunk size.
 pub(crate) const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
+/// Chunk normalization level.
+pub(crate) const CHUNKER_NORMALIZATION: Normalization = Normalization::L2;
 
 // -- Display --
 /// Display length for the repository ID in bytes

@@ -45,7 +45,7 @@ pub enum Normalization {
 
 impl Normalization {
     #[inline(always)]
-    const fn to_bits(&self) -> usize {
+    const fn bits(&self) -> usize {
         match self {
             Normalization::None => 0,
             Normalization::L1 => 1,
@@ -85,7 +85,7 @@ impl Chunker {
         assert!(normal_size <= MAX_NORMAL_SIZE);
 
         let normal_bits = normal_size.ilog2() as usize;
-        let norm_bits = normalization.to_bits();
+        let norm_bits = normalization.bits();
         assert!(normal_bits + norm_bits <= MASKS.len());
 
         let mask_s = MASKS[normal_bits + norm_bits];

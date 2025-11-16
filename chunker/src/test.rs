@@ -90,16 +90,16 @@ mod tests {
     #[case(Normalization::None)]
     fn test_chunker_masks(#[case] normalization: Normalization) {
         let chunker = Chunker::new(64, 256, 1024, normalization);
-        assert_eq!(chunker.mask_s, MASKS[8 + normalization.to_bits()]);
-        assert_eq!(chunker.mask_l, MASKS[8 - normalization.to_bits()]);
+        assert_eq!(chunker.mask_s, MASKS[8 + normalization.bits()]);
+        assert_eq!(chunker.mask_l, MASKS[8 - normalization.bits()]);
 
         let chunker = Chunker::new(8 * kiB, 16 * kiB, 32 * kiB, normalization);
-        assert_eq!(chunker.mask_s, MASKS[14 + normalization.to_bits()]);
-        assert_eq!(chunker.mask_l, MASKS[14 - normalization.to_bits()]);
+        assert_eq!(chunker.mask_s, MASKS[14 + normalization.bits()]);
+        assert_eq!(chunker.mask_l, MASKS[14 - normalization.bits()]);
 
         let chunker = Chunker::new(1 * MiB, 4 * MiB, 16 * MiB, normalization);
-        assert_eq!(chunker.mask_s, MASKS[22 + normalization.to_bits()]);
-        assert_eq!(chunker.mask_l, MASKS[22 - normalization.to_bits()]);
+        assert_eq!(chunker.mask_s, MASKS[22 + normalization.bits()]);
+        assert_eq!(chunker.mask_l, MASKS[22 - normalization.bits()]);
     }
 
     #[test]

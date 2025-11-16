@@ -87,7 +87,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         if created_mountpoint {
             // Remove the mountpoint if it was created by us
-            let _ = std::fs::remove_dir(&mpoint);
+            let _ = std::fs::remove_dir_all(&mpoint);
         }
     })?;
 

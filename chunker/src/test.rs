@@ -1,4 +1,5 @@
-#[cfg(test)]
+#![cfg(test)]
+
 mod tests {
     use std::{io::Cursor, path::PathBuf};
 

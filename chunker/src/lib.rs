@@ -23,8 +23,9 @@ mod lookup;
 #[cfg(test)]
 mod test;
 
-pub const MIN_SIZE: usize = 64; // 64 Bytes
-pub const MAX_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
+pub const TOTAL_MIN_SIZE: usize = 64; // 64 B
+pub const TOTAL_MAX_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
+pub const MIN_NORMAL_SIZE: usize = 256; // 256 B
 pub const MAX_NORMAL_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
 /// Chunk normalization level.
@@ -32,15 +33,19 @@ pub const MAX_NORMAL_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 /// sizes around the normal size.
 #[derive(Debug, Clone, Copy)]
 pub enum Normalization {
+    /// No normalization.
     None,
+    /// Level 1: low normalization.
     L1,
+    /// Level 2: medium normalization.
     L2,
+    /// Level 3: aggressive normalization.
     L3,
 }
 
 impl Normalization {
     #[inline(always)]
-    pub const fn to_bits(&self) -> usize {
+    const fn to_bits(&self) -> usize {
         match self {
             Normalization::None => 0,
             Normalization::L1 => 1,
@@ -54,6 +59,7 @@ pub struct Chunker {
     min_size: usize,
     normal_size: usize,
     max_size: usize,
+    normalization: Normalization,
 
     gear: &'static [u64; 256],
     gear_ls: &'static [u64; 256],
@@ -65,7 +71,7 @@ pub struct Chunker {
 }
 
 impl Chunker {
-    /// Initialize a new Chunker with fix parameters.
+    /// Initialize a new Chunker with fixed parameters.
     pub const fn new(
         min_size: usize,
         normal_size: usize,
@@ -74,8 +80,8 @@ impl Chunker {
     ) -> Self {
         assert!(min_size <= normal_size);
         assert!(normal_size <= max_size);
-        assert!(min_size >= MIN_SIZE);
-        assert!(max_size <= MAX_SIZE);
+        assert!(min_size >= TOTAL_MIN_SIZE);
+        assert!(max_size <= TOTAL_MAX_SIZE);
         assert!(normal_size <= MAX_NORMAL_SIZE);
 
         let normal_bits = normal_size.ilog2() as usize;
@@ -91,6 +97,7 @@ impl Chunker {
             min_size,
             normal_size,
             max_size,
+            normalization,
             gear: &GEAR,
             gear_ls: &GEAR_LS,
             mask_s,
@@ -98,6 +105,22 @@ impl Chunker {
             mask_s_ls,
             mask_l_ls,
         }
+    }
+
+    pub const fn min_size(&self) -> usize {
+        self.min_size
+    }
+
+    pub const fn normal_size(&self) -> usize {
+        self.normal_size
+    }
+
+    pub const fn max_size(&self) -> usize {
+        self.max_size
+    }
+
+    pub const fn normalization(&self) -> Normalization {
+        self.normalization
     }
 
     #[inline(always)]
@@ -112,7 +135,7 @@ impl Chunker {
 
     /// Find a cut point in a slice of bytes.
     #[inline(always)]
-    pub(crate) fn cut(&self, data: &[u8]) -> usize {
+    pub fn cut(&self, data: &[u8]) -> usize {
         let len = data.len();
         if len <= self.min_size {
             return len;
@@ -241,7 +264,9 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                         eof = true;
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    continue;
+                }
                 Err(e) => {
                     return Some(Err(anyhow!("Read error: {e}")));
                 }

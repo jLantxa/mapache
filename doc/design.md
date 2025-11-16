@@ -100,7 +100,7 @@ referenced by the index, the blob does not exist for mapache and will be subject
 to elimination by the garbage collector, even if there is a pack file that
 contains it. This allows mapache to append new data atomically. If a backup is
 interrupted, all blobs and packs not referenced by a persisted index will be
-left dangling, as if they were neved added. Restarting the backup will not
+left dangling, as if they were never added. Restarting the backup will not
 resume the process from where it was interrupted, but all indexed blobs will
 not be rewritten. To avoid losing all progress, mapache may periodically
 persist all finalized indices to file.
@@ -108,7 +108,8 @@ persist all finalized indices to file.
 ### Chunking
 
 Mapache uses [FastCDC v2020](https://github.com/nlfiedler/fastcdc-rs) as its
-chunking algorithm.
+Content-Defined Chunking (CDC) algorithm. A custom, self-hosted implementation
+of this algorithm is also available, but it cannot be considered stable yet.
 
 ### Compression and encryption
 
@@ -142,5 +143,5 @@ in the future.
 ### Hashing
 
 All content IDs (hashes) used by mapache to identify objects in the repository
-are generated with the BLAKE3 hashing algorith. BLAKE3 is a modern and fast
+are generated with the BLAKE3 hashing algorithm. BLAKE3 is a modern and fast
 hashing algorithm that produces 256-bit hashes.

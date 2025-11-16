@@ -120,7 +120,9 @@ cargo build
 cargo build --release
 ```
 
-You need to install `perl` in our system in order to compile the `openssl` sources.
+### Dependencies
+
+You need to install `perl` in your system in order to compile the `openssl` sources.
 
 ### Running
 If you run the executable, you will be greeted by something like this:
@@ -144,6 +146,7 @@ Commands:
   ls          List nodes in the repository
   mount       Mount the repository as a file system
   recall      Recall forgotten snapshots
+  rechunk     Rechunk all snapshots
   restore     Restore a snapshot in a target path
   snapshot    Create a new snapshot
   stats       Display stats about the repository and its contents

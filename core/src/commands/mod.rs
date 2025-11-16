@@ -14,7 +14,7 @@ use crate::{
     },
     repository::{
         repo::Repository,
-        snapshot::{Snapshot, SnapshotStreamer},
+        snapshot::{Snapshot, SnapshotStream},
     },
 };
 
@@ -33,6 +33,7 @@ pub mod cmd_ls;
 #[cfg(all(feature = "fuse", unix))]
 pub mod cmd_mount;
 pub mod cmd_recall;
+pub mod cmd_rechunk;
 pub mod cmd_restore;
 pub mod cmd_snapshot;
 pub mod cmd_stats;
@@ -67,6 +68,7 @@ pub enum Command {
     #[cfg(all(feature = "fuse", unix))]
     Mount(WithGlobal<cmd_mount::CmdArgs>),
     Recall(WithGlobal<cmd_recall::CmdArgs>),
+    Rechunk(WithGlobal<cmd_rechunk::CmdArgs>),
     Restore(WithGlobal<cmd_restore::CmdArgs>),
     Snapshot(WithGlobal<cmd_snapshot::CmdArgs>),
     Stats(WithGlobal<cmd_stats::CmdArgs>),
@@ -167,7 +169,7 @@ fn find_use_snapshot(
     use_snapshot: &UseSnapshot,
 ) -> Result<Option<(ID, Snapshot)>> {
     match use_snapshot {
-        UseSnapshot::Latest => Ok(SnapshotStreamer::new(repo.clone())?.latest()),
+        UseSnapshot::Latest => Ok(SnapshotStream::new(repo.clone())?.latest()),
         UseSnapshot::SnapshotId(prefix) => {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
             let snap = repo.load_snapshot(&id, None)?;
@@ -210,6 +212,7 @@ pub fn parse_and_run() -> Result<()> {
         #[cfg(all(feature = "fuse", unix))]
         Command::Mount(cmd) => cmd_mount::run(&cmd.global, &cmd.args),
         Command::Recall(cmd) => cmd_recall::run(&cmd.global, &cmd.args),
+        Command::Rechunk(cmd) => cmd_rechunk::run(&cmd.global, &cmd.args),
         Command::Restore(cmd) => cmd_restore::run(&cmd.global, &cmd.args),
         Command::Snapshot(cmd) => cmd_snapshot::run(&cmd.global, &cmd.args),
         Command::Stats(cmd) => cmd_stats::run(&cmd.global, &cmd.args),
@@ -246,6 +249,7 @@ fn extract_global(command: &Command) -> Option<&GlobalArgs> {
         #[cfg(all(feature = "fuse", unix))]
         Mount,
         Recall,
+        Rechunk,
         Restore,
         Snapshot,
         Stats,

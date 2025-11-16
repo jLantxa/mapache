@@ -1,27 +1,21 @@
-use std::collections::BTreeSet;
-use std::time::Instant;
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
-use crate::archiver::tree_serializer::TreeSerializer;
-use crate::backend::{BackendOptions, StorageHint};
-use crate::mapache::SaveID;
 use crate::{
-    backend::new_backend_with_prompt,
+    backend::{BackendOptions, StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
         parse_tags,
     },
-    fs::tree::SerializedNodeStreamer,
-    mapache::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::{
         repo::{RepoConfig, Repository},
-        snapshot::{Snapshot, SnapshotStreamer},
+        snapshot::{Snapshot, SnapshotStream},
     },
-    ui::{self},
+    ui::{self, snapshot_progress::SnapshotProgressReporter},
     utils::{self, size},
 };
 
@@ -95,7 +89,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
 
     if args.all {
-        let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
+        let snapshot_streamer = SnapshotStream::new(repo.clone())?;
         let mut all_snapshots: Vec<(ID, Snapshot)> = snapshot_streamer.collect();
         snapshots.append(&mut all_snapshots);
     } else {
@@ -156,7 +150,22 @@ fn amend(
     let origin_processed_bytes = snapshot.summary.processed_bytes;
 
     if args.exclude.is_some() {
-        rewrite_snapshot_tree(repo.clone(), snapshot, args.exclude.clone())?;
+        repo.init_pack_saver(1);
+        let progress_reporter = Arc::new(SnapshotProgressReporter::new(
+            Some(snapshot.summary.processed_items_count),
+            Some(snapshot.summary.processed_bytes),
+            1,
+        ));
+        rewrite_snapshot_tree(
+            repo.clone(),
+            snapshot,
+            args.exclude.clone(),
+            false,
+            None,
+            progress_reporter.clone(),
+        )?;
+        progress_reporter.finalize();
+        repo.finalize_pack_saver();
     }
 
     // Save the amended snapshot and delete the old snapshot file
@@ -205,76 +214,4 @@ fn amend(
     }
 
     Ok(())
-}
-
-fn rewrite_snapshot_tree(
-    repo: Arc<Repository>,
-    snapshot: &mut Snapshot,
-    excludes: Option<Vec<PathBuf>>,
-) -> Result<(u64, u64)> {
-    let (mut raw_bytes, mut encoded_bytes) = (0, 0);
-
-    // Cannonicalize the exclude paths and filter the source paths using the excludes
-    // This is a simulated cannonical path, since we don't refer to a path in the host,
-    // but rather a relative path in the snapshot tree. We can just append the relative path
-    // to the snapshot root.
-    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &excludes {
-        let mut canonicalized_vec = Vec::new();
-        for path in exclude_paths {
-            canonicalized_vec.push(snapshot.root.join(path));
-        }
-        Some(canonicalized_vec)
-    } else {
-        None
-    };
-
-    let mut paths = snapshot.paths.clone();
-    paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
-
-    let mut tree_serializer = TreeSerializer::new(repo.clone(), snapshot.root.clone(), &paths);
-
-    let node_streamer = SerializedNodeStreamer::new(
-        repo.clone(),
-        Some(snapshot.tree),
-        snapshot.root.clone(),
-        None,
-        cannonical_excludes.clone(),
-    )?;
-
-    snapshot.summary.processed_items_count = 0;
-    snapshot.summary.processed_bytes = 0;
-
-    repo.init_pack_saver(1);
-    for (path, stream_node) in node_streamer.flatten() {
-        snapshot.summary.processed_items_count += 1;
-        if !stream_node.node.is_dir() {
-            snapshot.summary.processed_bytes += stream_node.node.metadata.size;
-        }
-
-        // The path is not excluded, so we add the node to the pending trees map.
-        let (raw, encoded) = tree_serializer.handle_processed_item((path.clone(), stream_node))?;
-        raw_bytes += raw;
-        encoded_bytes += encoded;
-    }
-
-    let _ = tree_serializer.finalize_root()?;
-    let (raw_meta, encoded_meta) = repo.flush()?;
-    raw_bytes += raw_meta;
-    encoded_bytes += encoded_meta;
-
-    // Increase meta counters in snapshot summary
-    snapshot.summary.meta_raw_bytes += raw_bytes;
-    snapshot.summary.meta_encoded_bytes += encoded_bytes;
-    snapshot.summary.total_raw_bytes += raw_bytes;
-    snapshot.summary.total_encoded_bytes += encoded_bytes;
-
-    repo.finalize_pack_saver();
-
-    let root_tree_id = tree_serializer.root_tree();
-    match root_tree_id {
-        Some(amended_tree_id) => snapshot.tree = amended_tree_id,
-        None => bail!("Failed to serialize new snapshot tree"),
-    }
-
-    Ok((raw_bytes, encoded_bytes))
 }

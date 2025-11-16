@@ -278,9 +278,9 @@ impl KeyManager {
     }
 }
 
-/// A KeyFile streamer.
+/// A KeyFile stream.
 ///
-/// This streamer loads KeyFile on demand.
+/// This stream loads KeyFile on demand.
 pub struct KeyFileStreamer {
     backend: Arc<dyn StorageBackend>,
     entries: Vec<PathBuf>,

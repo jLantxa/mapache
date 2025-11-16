@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     backend::StorageBackend,
-    fs::{node::NodeType, tree::SerializedNodeStreamer},
+    fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::ID,
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils,
@@ -95,14 +95,14 @@ pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<(
     let snapshot = repo.load_snapshot(snapshot_id, None)?;
     let tree_id = snapshot.tree;
 
-    let streamer =
-        SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
+    let stream =
+        SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 
     let index = repo.index();
     let index_guard = index.read();
 
     let mut error_counter = 0;
-    for (_path, stream_node) in streamer.flatten() {
+    for (_path, stream_node) in stream.flatten() {
         let node = stream_node.node;
         match node.node_type {
             NodeType::File => {

@@ -12,7 +12,7 @@ use crate::{
     repository::{
         repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
         retention::{RetentionRule, apply_retention_rules},
-        snapshot::{Snapshot, SnapshotStreamer},
+        snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
     utils::{self, size},
@@ -135,7 +135,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     // All sapshots, filter by tags and sorted by timestamp
-    let mut snapshots_sorted: Vec<(ID, Snapshot, bool)> = SnapshotStreamer::new(repo.clone())?
+    let mut snapshots_sorted: Vec<(ID, Snapshot, bool)> = SnapshotStream::new(repo.clone())?
         .map(|(id, snapshot)| (id, snapshot, true))
         .collect();
     if let Some(tags) = &args.tags_str {

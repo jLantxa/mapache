@@ -12,7 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
-    fs::{get_absolute_normalized_path, tree::SerializedNodeStreamer},
+    fs::{get_absolute_normalized_path, tree::SerializedNodeStream},
     mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
     repository::{
         repo::{RepoConfig, Repository},
@@ -145,7 +145,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_files = 0;
     let mut num_dirs = 0;
     let mut num_expected_items = 0;
-    let scan_node_streamer = SerializedNodeStreamer::new(
+    let scan_node_streamer = SerializedNodeStream::new(
         repo.clone(),
         Some(snapshot.tree),
         PathBuf::new(),

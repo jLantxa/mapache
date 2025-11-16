@@ -61,7 +61,7 @@ fn init_pending_trees(
 ) -> HashMap<PathBuf, PendingTree> {
     let mut pending_trees = HashMap::new();
 
-    // We need to know ahead how many children the root is expecting, because the FSNodeStreamer
+    // We need to know ahead how many children the root is expecting, because the FSNodeStream
     // does not emit it (the root node).
     let (root_children_count, _) = utils::get_intermediate_paths(snapshot_root_path, paths);
 

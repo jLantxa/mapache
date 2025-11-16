@@ -8,7 +8,7 @@ use crate::{
     mapache::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
-        snapshot::{Snapshot, SnapshotStreamer},
+        snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
     utils::{self, size},
@@ -75,14 +75,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let mut snapshots = Vec::new();
 
             if show_active {
-                let mut active_snapshots = SnapshotStreamer::new(repo.clone())?
+                let mut active_snapshots = SnapshotStream::new(repo.clone())?
                     .map(|(id, snapshot)| (id, snapshot, true))
                     .collect();
                 snapshots.append(&mut active_snapshots);
             }
 
             if show_dropped {
-                let mut dropped_snapshots = SnapshotStreamer::dropped(repo.clone())?
+                let mut dropped_snapshots = SnapshotStream::dropped(repo.clone())?
                     .map(|(id, snapshot)| (id, snapshot, false))
                     .collect();
                 snapshots.append(&mut dropped_snapshots);

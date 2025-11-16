@@ -2,18 +2,27 @@ pub mod defaults;
 pub mod global;
 pub mod vars;
 
+use std::{collections::HashSet, io::Write, path::PathBuf, sync::Arc};
+
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
 use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tempfile::NamedTempFile;
 
-use crate::utils;
+use crate::{
+    archiver::{processor::chunk_and_store_file, tree_serializer::TreeSerializer},
+    fs::tree::{NodeDiff, SerializedNodeStream},
+    repository::{repo::Repository, snapshot::Snapshot},
+    ui::snapshot_progress::SnapshotProgressReporter,
+    utils,
+};
 
 pub const ID_LENGTH: usize = 32;
 pub type Hash256 = [u8; ID_LENGTH];
 
 /// This is an ID that identifies object by its content.
-#[derive(Hash, Default, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Default, Hash, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ID(pub(crate) Hash256);
 
 impl ID {
@@ -166,6 +175,135 @@ impl std::fmt::Display for ContentIdType {
             ContentIdType::Lock => write!(f, "lock"),
         }
     }
+}
+
+/// Rewrite a snapshot tree. This function can remove exclude paths or rechunk
+/// files from already existing snapshots.
+pub(crate) fn rewrite_snapshot_tree(
+    repo: Arc<Repository>,
+    snapshot: &mut Snapshot,
+    excludes: Option<Vec<PathBuf>>,
+    rechunk: bool,
+    mut rechunked_blobs_list_set: Option<&mut HashSet<Vec<ID>>>,
+    progress_reporter: Arc<SnapshotProgressReporter>,
+) -> Result<(u64, u64)> {
+    let (mut raw_bytes, mut encoded_bytes) = (0, 0);
+
+    // Cannonicalize the exclude paths and filter the source paths using the excludes
+    // This is a simulated cannonical path, since we don't refer to a path in the host,
+    // but rather a relative path in the snapshot tree. We can just append the relative path
+    // to the snapshot root.
+    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &excludes {
+        let mut canonicalized_vec = Vec::new();
+        for path in exclude_paths {
+            canonicalized_vec.push(snapshot.root.join(path));
+        }
+        Some(canonicalized_vec)
+    } else {
+        None
+    };
+
+    let mut paths = snapshot.paths.clone();
+    paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
+
+    let mut tree_serializer = TreeSerializer::new(repo.clone(), snapshot.root.clone(), &paths);
+    let node_streamer = SerializedNodeStream::new(
+        repo.clone(),
+        Some(snapshot.tree),
+        snapshot.root.clone(),
+        None,
+        cannonical_excludes.clone(),
+    )?;
+
+    snapshot.summary.processed_items_count = 0;
+    snapshot.summary.processed_bytes = 0;
+
+    for (path, mut stream_node) in node_streamer.flatten() {
+        progress_reporter.processing_node(&path, NodeDiff::Unchanged);
+
+        if stream_node.node.is_file() {
+            if rechunk {
+                let blobs = stream_node
+                    .node
+                    .blobs
+                    .as_ref()
+                    .with_context(|| "File Node must have contents (even if empty)")?;
+
+                let already_rechunked = match rechunked_blobs_list_set.as_deref_mut() {
+                    Some(set) => !set.insert(blobs.clone()),
+                    None => false,
+                };
+
+                if already_rechunked {
+                    // If this vector of IDs is in the set, we have chunked a file
+                    // with this contents already. We can skip.
+                    progress_reporter.processed_bytes(stream_node.node.metadata.size);
+                } else {
+                    let mut tmp_file = NamedTempFile::new()?;
+
+                    for (index, blob_id) in blobs.iter().enumerate() {
+                        let chunk_data = repo.load_blob(blob_id).with_context(|| {
+                            format!(
+                                "Could not load block #{} ({}) for file {}",
+                                index + 1,
+                                blob_id,
+                                path.display()
+                            )
+                        })?;
+
+                        tmp_file.write_all(&chunk_data).with_context(|| {
+                            format!(
+                                "Could not restore block #{} ({}) to tmp file",
+                                index + 1,
+                                blob_id,
+                            )
+                        })?;
+                    }
+
+                    let new_chunks = chunk_and_store_file(
+                        repo.clone(),
+                        tmp_file.path(),
+                        &stream_node.node,
+                        progress_reporter.clone(),
+                    )?;
+
+                    // Finally rewrite blob list
+                    stream_node.node.blobs = Some(new_chunks);
+                }
+            } else {
+                progress_reporter.processed_bytes(stream_node.node.metadata.size);
+            }
+
+            snapshot.summary.processed_bytes += stream_node.node.metadata.size;
+        }
+
+        progress_reporter.processed_node(&path);
+        snapshot.summary.processed_items_count += 1;
+
+        // The path is not excluded, so we add the node to the pending trees map.
+        let (raw, encoded) = tree_serializer.handle_processed_item((path.clone(), stream_node))?;
+        raw_bytes += raw;
+        encoded_bytes += encoded;
+    }
+
+    let _ = tree_serializer.finalize_root()?;
+    let (raw_meta, encoded_meta) = repo.flush()?;
+    raw_bytes += raw_meta;
+    encoded_bytes += encoded_meta;
+
+    // Increase meta counters in snapshot summary
+    snapshot.summary.meta_raw_bytes += raw_bytes;
+    snapshot.summary.meta_encoded_bytes += encoded_bytes;
+    snapshot.summary.total_raw_bytes += raw_bytes;
+    snapshot.summary.total_encoded_bytes += encoded_bytes;
+
+    let root_tree_id = tree_serializer.root_tree();
+    match root_tree_id {
+        Some(new_tree_id) => snapshot.tree = new_tree_id,
+        None => bail!("Failed to serialize new snapshot tree"),
+    }
+
+    Ok((raw_bytes, encoded_bytes))
 }
 
 pub enum SaveID {

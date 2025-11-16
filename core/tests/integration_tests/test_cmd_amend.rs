@@ -13,7 +13,7 @@ mod tests {
         },
         repository::{
             repo::{Auth, Repository},
-            snapshot::SnapshotStreamer,
+            snapshot::SnapshotStream,
         },
         restorer::Strategy,
     };
@@ -232,7 +232,7 @@ mod tests {
         commands::cmd_amend::run(&global, &amend_args)
             .with_context(|| "Failed to run cmd_amend (1/2)")?;
 
-        let mut snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
+        let mut snapshot_streamer = SnapshotStream::new(repo.clone())?;
         let (_, snapshot) = snapshot_streamer
             .latest()
             .expect("There should be at least one snapshot");
@@ -253,7 +253,7 @@ mod tests {
         commands::cmd_amend::run(&global, &amend_args)
             .with_context(|| "Failed to run cmd_amend (2/2)")?;
 
-        let mut snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
+        let mut snapshot_streamer = SnapshotStream::new(repo.clone())?;
         let (_, snapshot) = snapshot_streamer
             .latest()
             .expect("There should be at least one snapshot");

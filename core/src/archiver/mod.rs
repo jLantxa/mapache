@@ -17,7 +17,7 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     archiver::tree_serializer::TreeSerializer,
-    fs::tree::{FSNodeStreamer, NodeDiff, NodeDiffStreamer, SerializedNodeStreamer, StreamNode},
+    fs::tree::{FSNodeStream, NodeDiff, NodeDiffStreamer, SerializedNodeStream, StreamNode},
     mapache::ID,
     repository::{repo::Repository, snapshot::Snapshot},
     ui::snapshot_progress::SnapshotProgressReporter,
@@ -58,11 +58,11 @@ pub(crate) fn snapshot(
         .map(|(_id, snapshot)| snapshot.tree);
 
     // Create streamers
-    let fs_streamer = FSNodeStreamer::from_paths(
+    let fs_streamer = FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
     )?;
-    let previous_tree_streamer = SerializedNodeStreamer::new(
+    let previous_tree_streamer = SerializedNodeStream::new(
         repo.clone(),
         parent_tree_id,
         snapshot_options.snapshot_root_path.clone(),
@@ -184,7 +184,7 @@ fn spawn_scanner_thread(
         if no_scan {
             return Ok(());
         }
-        match FSNodeStreamer::from_paths(absolute_source_paths, exclude_paths) {
+        match FSNodeStream::from_paths(absolute_source_paths, exclude_paths) {
             Ok(scan_streamer) => {
                 for (_path, stream_node) in scan_streamer.flatten() {
                     let node = stream_node.node;
@@ -212,8 +212,8 @@ fn spawn_scanner_thread(
 fn spawn_diff_thread(
     progress_reporter: Arc<SnapshotProgressReporter>,
     fatal_error_flag: Arc<AtomicBool>,
-    previous_tree_streamer: SerializedNodeStreamer,
-    fs_streamer: FSNodeStreamer,
+    previous_tree_streamer: SerializedNodeStream,
+    fs_streamer: FSNodeStream,
     diff_tx: crossbeam_channel::Sender<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {

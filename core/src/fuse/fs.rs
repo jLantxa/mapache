@@ -13,7 +13,7 @@ use crate::{
     mapache::ID,
     repository::{
         repo::Repository,
-        snapshot::{Snapshot, SnapshotStreamer},
+        snapshot::{Snapshot, SnapshotStream},
     },
     ui, utils,
 };
@@ -64,7 +64,7 @@ impl MapacheFS {
 
 impl Filesystem for MapacheFS {
     fn init(&mut self, _req: &Request<'_>, _config: &mut KernelConfig) -> Result<(), libc::c_int> {
-        let snapshot_streamer = SnapshotStreamer::new(self.repo.clone());
+        let snapshot_streamer = SnapshotStream::new(self.repo.clone());
         if let Err(e) = &snapshot_streamer {
             ui::cli::error!("Failed to read snapshots: {}", e.to_string());
         }

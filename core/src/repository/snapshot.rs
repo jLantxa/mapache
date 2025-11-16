@@ -141,18 +141,18 @@ pub struct SnapshotSummary {
     pub amends: Option<ID>, // The ID of the snapshot amended by this one
 }
 
-/// A snapshot streamer.
+/// A snapshot stream.
 ///
-/// This streamer loads Snapshots on demand.
-pub struct SnapshotStreamer {
+/// This stream loads Snapshots on demand.
+pub struct SnapshotStream {
     snapshot_ids: Vec<ID>,
     repo: Arc<Repository>,
     num_snapshots: usize,
     ext: Option<String>,
 }
 
-impl SnapshotStreamer {
-    /// Creates a new SnapshotStreamer for active snapshots.
+impl SnapshotStream {
+    /// Creates a new SnapshotStream for active snapshots.
     pub fn new(repo: Arc<Repository>) -> Result<Self> {
         let snapshot_ids = repo.list_snapshot_ids()?;
         let num_snapshots = snapshot_ids.len();
@@ -165,7 +165,7 @@ impl SnapshotStreamer {
         })
     }
 
-    /// Creates a new SnapshotStreamer for dropped snapshots.
+    /// Creates a new SnapshotStream for dropped snapshots.
     pub fn dropped(repo: Arc<Repository>) -> Result<Self> {
         let snapshot_ids = repo.list_dropped_snapshot_ids()?;
         let num_snapshots = snapshot_ids.len();
@@ -178,7 +178,7 @@ impl SnapshotStreamer {
         })
     }
 
-    /// The streamer has no more Snapshot IDs to load. It is therefore empty.
+    /// The stream has no more Snapshot IDs to load. It is therefore empty.
     pub fn is_empty(&self) -> bool {
         self.snapshot_ids.is_empty()
     }
@@ -215,7 +215,7 @@ impl SnapshotStreamer {
     }
 }
 
-impl Iterator for SnapshotStreamer {
+impl Iterator for SnapshotStream {
     type Item = (ID, Snapshot);
 
     fn next(&mut self) -> Option<Self::Item> {

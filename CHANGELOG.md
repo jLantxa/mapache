@@ -2,6 +2,13 @@
 
 ## Latest
 
+### Changes
+
+- Added a `rechunk` command to reprocess all files in all snapshot and rechunk
+  them with the current chunker and parameters. The snapshots are rewriten,
+  but the old chunks will be left unreferenced and deleted by the next run on
+  the garbage collector.
+
 ## v0.1.0-beta.5
 
 ### Changes

@@ -14,7 +14,7 @@ use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterato
 
 use crate::{
     backend::{StorageBackend, read_backend_dir},
-    fs::tree::SerializedNodeStreamer,
+    fs::tree::SerializedNodeStream,
     mapache::{
         self, ContentIdType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
@@ -22,7 +22,7 @@ use crate::{
     },
     repository::{
         repo::{REPO_DROPPED_EXTENSION, REPO_TMP_EXTENSION, Repository},
-        snapshot::SnapshotStreamer,
+        snapshot::SnapshotStream,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
@@ -379,7 +379,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
     let mut referenced_packs: HashSet<ID> = HashSet::new();
     let index = repo.index();
 
-    let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
+    let snapshot_streamer = SnapshotStream::new(repo.clone())?;
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -413,7 +413,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
 
         // Stream all nodes in the snapshot
         let node_streamer =
-            SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
+            SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 
         let mut missing_tree_blobs = 0;
         let mut missing_data_blobs = 0;

@@ -1,7 +1,6 @@
 use std::{
-    fs::File,
     io::{BufReader, Read},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -72,11 +71,15 @@ pub(crate) fn process_item(
             let mut stream_node_info = next_node
                 .with_context(|| "New or changed item but the next node was not provided")?;
 
+            let source_file = std::fs::File::open(&path)?;
+            let mut reader =
+                BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
+
             // Only chunk and store the file content if it's a file
             if stream_node_info.node.is_file() {
                 let blobs_ids = chunk_and_store_file(
                     repo,
-                    &path,
+                    &mut reader,
                     &stream_node_info.node,
                     progress_reporter.clone(),
                 )?;
@@ -136,23 +139,18 @@ fn report_node_diff(
 /// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
 /// directly as blobs.
 #[cfg(not(feature = "custom-chunker"))]
-pub(crate) fn chunk_and_store_file(
+pub(crate) fn chunk_and_store_file<R: Read>(
     repo: Arc<Repository>,
-    src_path: &Path,
+    reader: &mut R,
     node: &Node,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
-    let source_file = File::open(src_path)
-        .with_context(|| format!("Could not open file '{}'", src_path.display()))?;
-
     // Do not chunk if the file is smaller than the minimum chunk size
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(repo, source_file, src_path, node, progress_reporter);
+        return store_small_file(repo, reader, node, progress_reporter);
     }
 
-    let reader = BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
-
-    let file_size = reader.get_ref().metadata()?.len();
+    let file_size = node.metadata.size;
     let estimated_num_chunks = (file_size / mapache::defaults::NORMAL_CHUNK_SIZE).max(1) as usize;
     let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
 
@@ -165,12 +163,12 @@ pub(crate) fn chunk_and_store_file(
     );
 
     for result in chunker {
-        let chunk = result.with_context(|| "Failed to chunk file")?;
+        let chunk = result.context("Failed to chunk file")?;
         progress_reporter.processed_bytes(chunk.data.len() as u64);
 
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
             .encode_and_save_blob(BlobType::Data, chunk.data, SaveID::CalculateID)
-            .with_context(|| format!("Failed to save blob from '{}'", src_path.display()))?;
+            .context("Failed to save blob")?;
 
         chunk_ids.push(id);
         progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
@@ -186,33 +184,28 @@ pub(crate) fn chunk_and_store_file(
 /// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
 /// directly as blobs.
 #[cfg(feature = "custom-chunker")]
-pub(crate) fn chunk_and_store_file(
+pub(crate) fn chunk_and_store_file<R: Read>(
     repo: Arc<Repository>,
-    src_path: &Path,
+    reader: &mut R,
     node: &Node,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
-    let source_file = File::open(src_path)
-        .with_context(|| format!("Could not open file '{}'", src_path.display()))?;
-
     // Do not chunk if the file is smaller than the minimum chunk size
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(repo, source_file, src_path, node, progress_reporter);
+        return store_small_file(repo, reader, node, progress_reporter);
     }
 
-    let reader = BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
-
-    let file_size = reader.get_ref().metadata()?.len();
+    let file_size = node.metadata.size;
     let estimated_num_chunks = (file_size / mapache::defaults::NORMAL_CHUNK_SIZE).max(1) as usize;
     let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
 
     for result in DEFAULT_CHUNKER.stream(reader) {
-        let chunk = result.with_context(|| "Failed to chunk file")?;
+        let chunk = result.context("Failed to chunk file")?;
         progress_reporter.processed_bytes(chunk.data.len() as u64);
 
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
             .encode_and_save_blob(BlobType::Data, chunk.data, SaveID::CalculateID)
-            .with_context(|| format!("Failed to save blob from '{}'", src_path.display()))?;
+            .context("Failed to save blob")?;
 
         chunk_ids.push(id);
         progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
@@ -223,16 +216,14 @@ pub(crate) fn chunk_and_store_file(
 }
 
 /// Stores a small file as a single blob and reports progress.
-fn store_small_file(
+fn store_small_file<R: Read>(
     repo: Arc<Repository>,
-    mut file: File,
-    src_path: &Path,
+    reader: &mut R,
     node: &Node,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
     let mut data = Vec::with_capacity(node.metadata.size as usize);
-    file.read_to_end(&mut data)
-        .with_context(|| format!("Failed to read source file '{}'", src_path.display()))?;
+    reader.read_to_end(&mut data)?;
 
     let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
         repo.encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)?;

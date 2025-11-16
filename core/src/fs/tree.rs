@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -635,6 +636,144 @@ pub fn find_serialized_node(
     }
 
     Ok(None)
+}
+
+/// A streaming reader over a node’s serialized data.
+///
+/// `SerializedNodeDataReader` exposes the contents of a `Node` as a
+/// single, contiguous byte stream, implementing [`std::io::Read`] so it
+/// can be consumed like a regular file.
+///
+/// The node’s data is stored in the repository as a sequence of blobs
+/// (arbitrary-sized chunks). This reader transparently stitches those
+/// blobs together in logical order, allowing callers to read across blob
+/// boundaries without needing to know how the data is chunked.
+///
+/// The reader:
+/// - keeps only **one blob** in memory at a time, making it suitable for
+///   very large files (gigabytes or terabytes);
+/// - uses prefix offsets to quickly determine which blob contains a given
+///   position;
+/// - loads each blob at most once during sequential reading;
+/// - maintains an internal cursor (`pos`) representing the global offset
+///   within the virtual file.
+///
+/// This adapter is intended for sequential reading patterns, but works
+/// correctly with any consumer of the `Read` trait.
+pub struct SerializedNodeDataReader {
+    repo: Arc<Repository>,
+
+    blob_ids: Vec<ID>,
+
+    /// Total length at the start of each blob
+    blob_prefix: Vec<u64>,
+    total_length: u64,
+
+    /// Global position across the whole virtual file.
+    pos: u64,
+
+    /// Cache of the currently loaded blob.
+    current_blob_idx: usize,
+    current_blob: Vec<u8>,
+}
+
+impl SerializedNodeDataReader {
+    pub fn new(repo: Arc<Repository>, node: &Node) -> Result<Self> {
+        let blobs = node
+            .blobs
+            .as_ref()
+            .ok_or_else(|| anyhow!("Node has no blobs"))?;
+
+        // Lookup raw blob lengths from the index.
+        let index = repo.index();
+        let index_guard = index.read();
+
+        let blob_lengths: Vec<u32> = blobs
+            .iter()
+            .map(|id| {
+                index_guard
+                    .get(id)
+                    .expect("Blob must exist in index")
+                    .raw_length
+            })
+            .collect();
+
+        // Compute the prefix sums
+        let mut prefix = Vec::with_capacity(blob_lengths.len() + 1);
+        prefix.push(0);
+        let mut acc = 0u64;
+        for &len in &blob_lengths {
+            acc += len as u64;
+            prefix.push(acc);
+        }
+
+        Ok(Self {
+            repo,
+            blob_ids: blobs.clone(),
+            blob_prefix: prefix.clone(),
+            total_length: acc,
+
+            pos: 0,
+
+            current_blob_idx: usize::MAX, // invalid index to force load on first read
+            current_blob: Vec::new(),
+        })
+    }
+
+    /// Return the index of the blob containing global position `pos`.
+    /// Uses binary search on `blob_prefix`.
+    fn blob_at(&self, pos: u64) -> usize {
+        match self.blob_prefix.binary_search(&pos) {
+            Ok(i) => i,      // exact boundary → at blob i
+            Err(i) => i - 1, // inside blob i-1
+        }
+    }
+
+    /// Ensure the blob at `idx` is loaded into `current_blob`.
+    fn ensure_blob_loaded(&mut self, idx: usize) -> Result<()> {
+        if idx != self.current_blob_idx {
+            let blob = self.repo.load_blob(&self.blob_ids[idx])?;
+            self.current_blob = blob;
+            self.current_blob_idx = idx;
+        }
+        Ok(())
+    }
+}
+
+impl Read for SerializedNodeDataReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() || self.pos >= self.total_length {
+            return Ok(0);
+        }
+
+        let mut written = 0;
+
+        while written < buf.len() && self.pos < self.total_length {
+            // Find blob index for current position
+            let idx = self.blob_at(self.pos);
+
+            // Load the blob if needed
+            self.ensure_blob_loaded(idx)
+                .map_err(std::io::Error::other)?;
+
+            // Compute offset inside this blob
+            let blob_start = self.blob_prefix[idx];
+            let inside = (self.pos - blob_start) as usize;
+
+            let available = self.current_blob.len() - inside;
+            let needed = buf.len() - written;
+            let to_copy = available.min(needed);
+
+            // Copy out to caller buffer
+            buf[written..written + to_copy]
+                .copy_from_slice(&self.current_blob[inside..inside + to_copy]);
+
+            written += to_copy;
+            self.pos += to_copy as u64;
+        }
+
+        Ok(written)
+    }
 }
 
 #[cfg(test)]

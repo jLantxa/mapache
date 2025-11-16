@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
@@ -53,7 +53,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
     let snapshot_stream = SnapshotStream::new(repo.clone())?;
     let num_snapshots = snapshot_stream.len();
-    let mut rechunked_blob_list_set = HashSet::new();
+    let mut rechunked_blob_list_map = HashMap::new();
 
     for (i, (snapshot_id, mut snapshot)) in snapshot_stream.enumerate() {
         ui::cli::log!(
@@ -77,7 +77,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             &mut snapshot,
             None,
             true,
-            Some(&mut rechunked_blob_list_set),
+            Some(&mut rechunked_blob_list_map),
             progress_reporter.clone(),
         )?;
 

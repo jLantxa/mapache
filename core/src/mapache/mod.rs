@@ -2,7 +2,7 @@ pub mod defaults;
 pub mod global;
 pub mod vars;
 
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
@@ -11,7 +11,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     archiver::{processor::chunk_and_store_file, tree_serializer::TreeSerializer},
-    fs::tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
+    fs::{
+        node::Node,
+        tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
+    },
     repository::{repo::Repository, snapshot::Snapshot},
     ui::snapshot_progress::SnapshotProgressReporter,
     utils,
@@ -183,7 +186,7 @@ pub(crate) fn rewrite_snapshot_tree(
     snapshot: &mut Snapshot,
     excludes: Option<Vec<PathBuf>>,
     rechunk: bool,
-    mut rechunked_blobs_list_set: Option<&mut HashSet<Vec<ID>>>,
+    mut rechunked_blobs_list_map: Option<&mut HashMap<Vec<ID>, Vec<ID>>>,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<(u64, u64)> {
     let (mut raw_bytes, mut encoded_bytes) = (0, 0);
@@ -221,38 +224,47 @@ pub(crate) fn rewrite_snapshot_tree(
         progress_reporter.processing_node(&path, NodeDiff::Unchanged);
 
         if stream_node.node.is_file() {
-            if rechunk {
+            if !rechunk {
+                // If not rechunking, just report processed bytes
+                progress_reporter.processed_bytes(stream_node.node.metadata.size);
+            } else {
                 let blobs = stream_node
                     .node
                     .blobs
                     .as_ref()
                     .with_context(|| "File Node must have contents (even if empty)")?;
 
-                let already_rechunked = match rechunked_blobs_list_set.as_deref_mut() {
-                    Some(set) => !set.insert(blobs.clone()),
-                    None => false,
-                };
-
-                if already_rechunked {
-                    // If this vector of IDs is in the set, we have chunked a file
-                    // with this contents already. We can skip.
-                    progress_reporter.processed_bytes(stream_node.node.metadata.size);
-                } else {
-                    let mut blob_data_reader =
-                        SerializedNodeDataReader::new(repo.clone(), &stream_node.node)?;
-                    let new_chunks = chunk_and_store_file(
+                let rechunk_node = |node: &Node| -> Result<Vec<ID>> {
+                    let mut blob_data_reader = SerializedNodeDataReader::new(repo.clone(), node)?;
+                    chunk_and_store_file(
                         repo.clone(),
                         &mut blob_data_reader,
                         &stream_node.node,
                         progress_reporter.clone(),
-                    )?;
+                    )
+                };
 
-                    // Finally rewrite blob list
-                    stream_node.node.blobs = Some(new_chunks);
-                }
-            } else {
-                progress_reporter.processed_bytes(stream_node.node.metadata.size);
-            }
+                let rechunked_blobs = if let Some(map) = rechunked_blobs_list_map.as_deref_mut() {
+                    match map.entry(blobs.clone()) {
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            // The file was already rechunked, so we can skip.
+                            progress_reporter.processed_bytes(stream_node.node.metadata.size);
+                            entry.get().clone()
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            // The file was not rechunked yet, so we do it and insert the lists to the map.
+                            let rechunked = rechunk_node(&stream_node.node)?;
+                            entry.insert(rechunked.clone());
+                            rechunked
+                        }
+                    }
+                } else {
+                    rechunk_node(&stream_node.node)?
+                };
+
+                // Finally rewrite blob list
+                stream_node.node.blobs = Some(rechunked_blobs);
+            } // Finished rechunking
 
             snapshot.summary.processed_bytes += stream_node.node.metadata.size;
         }

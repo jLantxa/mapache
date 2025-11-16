@@ -2,17 +2,16 @@ pub mod defaults;
 pub mod global;
 pub mod vars;
 
-use std::{collections::HashSet, io::Write, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
 use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tempfile::NamedTempFile;
 
 use crate::{
     archiver::{processor::chunk_and_store_file, tree_serializer::TreeSerializer},
-    fs::tree::{NodeDiff, SerializedNodeStream},
+    fs::tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::snapshot_progress::SnapshotProgressReporter,
     utils,
@@ -239,30 +238,11 @@ pub(crate) fn rewrite_snapshot_tree(
                     // with this contents already. We can skip.
                     progress_reporter.processed_bytes(stream_node.node.metadata.size);
                 } else {
-                    let mut tmp_file = NamedTempFile::new()?;
-
-                    for (index, blob_id) in blobs.iter().enumerate() {
-                        let chunk_data = repo.load_blob(blob_id).with_context(|| {
-                            format!(
-                                "Could not load block #{} ({}) for file {}",
-                                index + 1,
-                                blob_id,
-                                path.display()
-                            )
-                        })?;
-
-                        tmp_file.write_all(&chunk_data).with_context(|| {
-                            format!(
-                                "Could not restore block #{} ({}) to tmp file",
-                                index + 1,
-                                blob_id,
-                            )
-                        })?;
-                    }
-
+                    let mut blob_data_reader =
+                        SerializedNodeDataReader::new(repo.clone(), &stream_node.node)?;
                     let new_chunks = chunk_and_store_file(
                         repo.clone(),
-                        tmp_file.path(),
+                        &mut blob_data_reader,
                         &stream_node.node,
                         progress_reporter.clone(),
                     )?;

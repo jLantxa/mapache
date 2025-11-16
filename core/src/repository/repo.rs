@@ -634,10 +634,12 @@ impl Repository {
                 None => bail!("Failed to list file for type {file_type}"),
             };
 
-            if matches.is_empty() {
-                matches.push((file_stem, file_path));
-            } else {
-                bail!("Prefix {prefix} is ambiguous");
+            if file_stem.starts_with(prefix) {
+                if matches.is_empty() {
+                    matches.push((file_stem, file_path));
+                } else {
+                    bail!("Prefix {prefix} is ambiguous");
+                }
             }
         }
 

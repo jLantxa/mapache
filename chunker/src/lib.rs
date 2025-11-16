@@ -136,64 +136,56 @@ impl Chunker {
     /// Find a cut point in a slice of bytes.
     #[inline(always)]
     pub fn cut(&self, data: &[u8]) -> usize {
-        let len = data.len();
-        if len <= self.min_size {
-            return len;
+        let mut fp = 0;
+
+        let mut remaining = data.len();
+        if remaining <= self.min_size {
+            return remaining;
         }
 
-        let fp_mask_s = self.mask_s;
-        let fp_mask_s_ls = self.mask_s_ls;
-        let fp_mask_l = self.mask_l;
-        let fp_mask_l_ls = self.mask_l_ls;
+        let mut i = self.min_size / 2;
+        let mut center = self.normal_size;
+        if remaining > self.max_size {
+            remaining = self.max_size;
+        } else if remaining < center {
+            center = remaining;
+        }
 
-        let center = self.normal_size.min(len);
-        let max_cap = self.max_size.min(len);
+        // Phase 1
+        while i < center / 2 {
+            let n = i * 2;
 
-        let mut fp: u64 = 0;
-
-        // i points to *pair index*, real byte index = i*2
-        let mut i = self.min_size >> 1;
-
-        let phase1_end = center >> 1;
-        let phase2_end = max_cap >> 1;
-
-        while i < phase1_end {
-            let idx = i << 1;
-
-            let b0 = unsafe { *data.get_unchecked(idx) };
-            fp = self.update_fp_even(fp, b0);
-            if (fp & fp_mask_s_ls) == 0 {
-                return idx;
+            fp = self.update_fp_even(fp, data[n]);
+            if (fp & self.mask_s_ls) == 0 {
+                return n;
             }
 
-            let b1 = unsafe { *data.get_unchecked(idx + 1) };
-            fp = self.update_fp_odd(fp, b1);
-            if (fp & fp_mask_s) == 0 {
-                return idx + 1;
+            fp = self.update_fp_odd(fp, data[n + 1]);
+            if (fp & self.mask_s) == 0 {
+                return n + 1;
             }
 
             i += 1;
         }
 
-        while i < phase2_end {
-            let idx = i << 1;
+        // Phase 2
+        while i < remaining / 2 {
+            let n = i * 2;
 
-            let b0 = unsafe { *data.get_unchecked(idx) };
-            fp = self.update_fp_even(fp, b0);
-            if (fp & fp_mask_l_ls) == 0 {
-                return idx;
+            fp = self.update_fp_even(fp, data[n]);
+            if (fp & self.mask_l_ls) == 0 {
+                return n;
             }
 
-            let b1 = unsafe { *data.get_unchecked(idx + 1) };
-            fp = self.update_fp_odd(fp, b1);
-            if (fp & fp_mask_l) == 0 {
-                return idx + 1;
+            fp = self.update_fp_odd(fp, data[n + 1]);
+            if (fp & self.mask_l) == 0 {
+                return n + 1;
             }
 
             i += 1;
         }
 
-        max_cap
+        remaining
     }
 
     /// Returns a stream of the chunks of a Read trait object.

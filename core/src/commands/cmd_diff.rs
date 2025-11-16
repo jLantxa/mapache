@@ -7,7 +7,7 @@ use colored::Colorize;
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    fs::tree::{NodeDiff, NodeDiffStreamer, SerializedNodeStreamer},
+    fs::tree::{NodeDiff, NodeDiffStreamer, SerializedNodeStream},
     mapache::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
@@ -70,14 +70,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let source_snapshot = repo.load_snapshot(&source_id, None)?;
     let target_snapshot = repo.load_snapshot(&target_id, None)?;
 
-    let source_node_streamer = SerializedNodeStreamer::new(
+    let source_node_streamer = SerializedNodeStream::new(
         repo.clone(),
         Some(source_snapshot.tree),
         PathBuf::new(),
         args.include.clone(),
         args.exclude.clone(),
     )?;
-    let target_node_streamer = SerializedNodeStreamer::new(
+    let target_node_streamer = SerializedNodeStream::new(
         repo.clone(),
         Some(target_snapshot.tree),
         PathBuf::new(),

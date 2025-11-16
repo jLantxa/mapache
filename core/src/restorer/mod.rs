@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 
 use crate::{
-    fs::{self, tree::SerializedNodeStreamer},
+    fs::{self, tree::SerializedNodeStream},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::restore_progress::RestoreProgressReporter,
 };
@@ -43,7 +43,7 @@ pub fn restore(
 ) -> Result<()> {
     let tree = snapshot.tree;
     let node_streamer =
-        SerializedNodeStreamer::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)?;
+        SerializedNodeStream::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)?;
 
     // Create the restore target directory
     if !opts.dry_run {

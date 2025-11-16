@@ -21,11 +21,11 @@ pub fn delete_nodes(
     let tree_streamer =
         SerializedTreeStreamer::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
             .with_context(|| {
-            format!("Failed to initialize snapshot tree streamer for root ID {root_tree_id:?}")
+            format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
         })?;
 
     for item_result in tree_streamer {
-        // Handle potential errors from the streamer itself.
+        // Handle potential errors from the stream itself.
         // If an error occurs, log a warning and skip to the next item,
         // rather than bailing out entirely, which seems to be the intended behavior.
         let (path, snapshot_tree) = match item_result {

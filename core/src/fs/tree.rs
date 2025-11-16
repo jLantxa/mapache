@@ -75,7 +75,7 @@ impl Tree {
 #[derive(Debug)]
 pub struct StreamNode {
     pub node: Node,
-    /// The number of children this node has that will be yielded by the streamer.
+    /// The number of children this node has that will be yielded by the stream.
     /// This is 0 for files or symlinks.
     pub num_children: usize,
 }
@@ -84,25 +84,25 @@ pub struct StreamNode {
 /// (full path of the node, the stream node itself).
 pub type StreamNodeInfo = (PathBuf, StreamNode);
 
-/// A depth‑first *pre‑order* filesystem streamer.
+/// A depth‑first *pre‑order* filesystem stream.
 ///
 /// Items are produced in lexicographical order of their *full* paths. The root path is not emitted.
 /// The internal stack only stores the nodes strictly necessary for iteration. The full tree is not
 /// stored in memory. The iteration with a stack avoids recursive calls.
 ///
-/// This streamer will emit all the merged nodes as if they belong to the same tree,
+/// This stream will emit all the merged nodes as if they belong to the same tree,
 /// intercalating intermediate paths between disjoint branches.
-/// This streamer also allows excluding a list of paths. Paths in this list, and their
+/// This stream also allows excluding a list of paths. Paths in this list, and their
 /// children, are never explored nor emitted.
 #[derive(Debug)]
-pub struct FSNodeStreamer {
+pub struct FSNodeStream {
     stack: Vec<PathBuf>,
     intermediate_paths: Vec<(PathBuf, usize)>,
     exclude_paths: Vec<PathBuf>,
 }
 
-impl FSNodeStreamer {
-    /// Creates an FSNodeStreamer from multiple root paths. The paths are iterated in lexicographical order.
+impl FSNodeStream {
+    /// Creates an FSNodeStream from multiple root paths. The paths are iterated in lexicographical order.
     /// Exclude paths and their children are neither emitted nor explored into.
     pub fn from_paths(mut paths: Vec<PathBuf>, mut exclude_paths: Vec<PathBuf>) -> Result<Self> {
         for path in &paths {
@@ -154,7 +154,7 @@ impl FSNodeStreamer {
     }
 }
 
-impl Iterator for FSNodeStreamer {
+impl Iterator for FSNodeStream {
     type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -239,23 +239,23 @@ impl Iterator for FSNodeStreamer {
     }
 }
 
-/// A depth‑first *pre‑order* streamer of serialized nodes.
+/// A depth‑first *pre‑order* stream of serialized nodes.
 ///
 /// Items are produced in lexicographical order of their *full* paths. The root node is not emitted.
 /// Trees are loaded from the repository as they are needed. The full tree is not stored in memory.
 /// The iteration with a stack avoids recursive calls.
 ///
-/// This streamer also allows including and excluding a list of paths. Paths in the exclude list, and their
+/// This stream also allows including and excluding a list of paths. Paths in the exclude list, and their
 /// children, are never explored nor emitted. If the include list is not empty, only nodes in the same branch
 /// (children and parents (intermediate nodes to reach the included path)) as those paths will be emitted.
-pub struct SerializedNodeStreamer {
+pub struct SerializedNodeStream {
     repo: Arc<Repository>,
     stack: Vec<StreamNodeInfo>,
     include: Option<Vec<PathBuf>>,
     exclude: Option<Vec<PathBuf>>,
 }
 
-impl SerializedNodeStreamer {
+impl SerializedNodeStream {
     pub fn new(
         repo: Arc<Repository>,
         root_id: Option<ID>,
@@ -278,7 +278,7 @@ impl SerializedNodeStreamer {
                         node,
 
                         // Actual child count will be determined when this node is processed by `next`.
-                        // Initialize to 0 for consistency with how FSNodeStreamer initializes non-directories.
+                        // Initialize to 0 for consistency with how FSNodeStream initializes non-directories.
                         num_children: 0,
                     },
                 ));
@@ -294,7 +294,7 @@ impl SerializedNodeStreamer {
     }
 }
 
-impl Iterator for SerializedNodeStreamer {
+impl Iterator for SerializedNodeStream {
     type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -352,13 +352,13 @@ impl Iterator for SerializedNodeStreamer {
     }
 }
 
-/// A depth‑first *pre‑order* streamer of serialized trees.
+/// A depth‑first *pre‑order* stream of serialized trees.
 ///
 /// Items are produced in lexicographical order of their *full* paths. The root tree is emitted.
 /// Trees are loaded from the repository as they are needed. The full tree is not stored in memory.
 /// The iteration with a stack avoids recursive calls.
 ///
-/// This streamer also allows including and excluding a list of paths. Paths in the exclude list, and their
+/// This stream also allows including and excluding a list of paths. Paths in the exclude list, and their
 /// children, are never explored nor emitted. If the include list is not empty, only nodes in the same branch
 /// (children and parents (intermediate nodes to reach the included path)) as those paths will be emitted.
 pub struct SerializedTreeStreamer {
@@ -450,7 +450,7 @@ pub enum NodeDiff {
 /// (full path, node from 'previous' stream, node from 'next' stream, difference type).
 pub type DiffTuple = (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff);
 
-/// A depth‑first *pre‑order* streamer of node differences.
+/// A depth‑first *pre‑order* stream of node differences.
 ///
 /// Items are produced in lexicographical order of their *full* paths. The root node is not emitted.
 ///
@@ -672,8 +672,8 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
+        let stream = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
+        let nodes: Vec<Result<(PathBuf, StreamNode)>> = stream.collect();
 
         assert_eq!(nodes.len(), 6);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
@@ -707,11 +707,11 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer = FSNodeStreamer::from_paths(
+        let stream = FSNodeStream::from_paths(
             vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
             Vec::new(),
         )?;
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
+        let nodes: Vec<Result<(PathBuf, StreamNode)>> = stream.collect();
 
         assert_eq!(nodes.len(), 8);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
@@ -750,14 +750,14 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer = FSNodeStreamer::from_paths(
+        let stream = FSNodeStream::from_paths(
             vec![
                 tmp_path.join("dir_a").join("file0"),
                 tmp_path.join("dir_a").join("dir2").join("file1"),
             ],
             Vec::new(),
         )?;
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
+        let nodes: Vec<Result<(PathBuf, StreamNode)>> = stream.collect();
 
         assert_eq!(nodes.len(), 3);
         assert_eq!(
@@ -782,8 +782,8 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let dir_a = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
-        let dir_b = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_b")], Vec::new())?;
+        let dir_a = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
+        let dir_b = FSNodeStream::from_paths(vec![tmp_path.join("dir_b")], Vec::new())?;
         let diff_streamer = NodeDiffStreamer::new(dir_a, dir_b);
         let diffs: Vec<Result<DiffTuple>> = diff_streamer.collect();
 
@@ -806,8 +806,8 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let dir_a1 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
-        let dir_a2 = FSNodeStreamer::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
+        let dir_a1 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
+        let dir_a2 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let diff_streamer = NodeDiffStreamer::new(dir_a1, dir_a2);
         let diffs: Vec<Result<DiffTuple>> = diff_streamer.collect();
 
@@ -828,11 +828,11 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let streamer = FSNodeStreamer::from_paths(
+        let stream = FSNodeStream::from_paths(
             vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
             vec![tmp_path.join("dir_b")],
         )?;
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> = streamer.collect();
+        let nodes: Vec<Result<(PathBuf, StreamNode)>> = stream.collect();
 
         assert_eq!(nodes.len(), 6);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));

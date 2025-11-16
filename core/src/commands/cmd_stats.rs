@@ -11,11 +11,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::{BackendOptions, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    fs::{node::NodeType, tree::SerializedNodeStreamer},
+    fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::{ContentIdType, global::GlobalOpts},
     repository::{
         repo::{MANIFEST_PATH, RepoConfig, Repository},
-        snapshot::SnapshotStreamer,
+        snapshot::SnapshotStream,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, size},
@@ -187,7 +187,7 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
 }
 
 fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
-    let snapshot_streamer = SnapshotStreamer::new(repo.clone())?;
+    let snapshot_streamer = SnapshotStream::new(repo.clone())?;
     let num_snapshots = snapshot_streamer.len();
 
     let mut error_counter = 0usize;
@@ -219,7 +219,7 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
         ));
         total_restore_size = total_restore_size.saturating_add(snapshot.size());
 
-        let streamer = SerializedNodeStreamer::new(
+        let stream = SerializedNodeStream::new(
             repo.clone(),
             Some(snapshot.tree),
             PathBuf::new(),
@@ -227,7 +227,7 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
             None,
         )?;
 
-        for (_path, stream_node) in streamer.flatten() {
+        for (_path, stream_node) in stream.flatten() {
             let node = stream_node.node;
             if let NodeType::File = node.node_type
                 && let Some(blobs) = node.blobs

@@ -10,7 +10,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use crate::{
     backend::{BackendOptions, Handle, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    fs::{node::NodeType, tree::SerializedNodeStreamer},
+    fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::{
         ContentIdType, ID,
         defaults::{MAX_PATH_DISPLAY_LEN, SHORT_SNAPSHOT_ID_LEN},
@@ -18,7 +18,7 @@ use crate::{
     },
     repository::{
         repo::{RepoConfig, Repository},
-        snapshot::SnapshotStreamer,
+        snapshot::SnapshotStream,
         verify::{verify_blob, verify_pack, verify_snapshot_refs},
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
@@ -77,7 +77,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    let snapshot_streamer = SnapshotStreamer::new(repo_arc.clone())?;
+    let snapshot_streamer = SnapshotStream::new(repo_arc.clone())?;
 
     let mut visited_blobs = BTreeSet::new();
 
@@ -236,8 +236,8 @@ pub fn verify_snapshot(
 
     let snapshot = repo.load_snapshot(snapshot_id, None)?;
     let tree_id = snapshot.tree;
-    let streamer =
-        SerializedNodeStreamer::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
+    let stream =
+        SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 
     let mp = MultiProgress::with_draw_target(default_bar_draw_target());
     let bar = mp.add(ProgressBar::new(snapshot.size()));
@@ -289,7 +289,7 @@ pub fn verify_snapshot(
     let index = repo.index();
     let index_guard = index.read();
 
-    for (path, stream_node) in streamer.flatten() {
+    for (path, stream_node) in stream.flatten() {
         spinner.set_message(utils::abbreviate_path(&path, MAX_PATH_DISPLAY_LEN));
 
         let node = stream_node.node;

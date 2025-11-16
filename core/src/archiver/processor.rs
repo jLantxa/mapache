@@ -74,15 +74,7 @@ pub(crate) fn process_item(
 
             // Only chunk and store the file content if it's a file
             if stream_node_info.node.is_file() {
-                #[cfg(not(feature = "custom-chunker"))]
                 let blobs_ids = chunk_and_store_file(
-                    repo,
-                    &path,
-                    &stream_node_info.node,
-                    progress_reporter.clone(),
-                )?;
-                #[cfg(feature = "custom-chunker")]
-                let blobs_ids = custom_chunk_and_store_file(
                     repo,
                     &path,
                     &stream_node_info.node,
@@ -144,7 +136,7 @@ fn report_node_diff(
 /// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
 /// directly as blobs.
 #[cfg(not(feature = "custom-chunker"))]
-fn chunk_and_store_file(
+pub(crate) fn chunk_and_store_file(
     repo: Arc<Repository>,
     src_path: &Path,
     node: &Node,
@@ -194,7 +186,7 @@ fn chunk_and_store_file(
 /// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
 /// directly as blobs.
 #[cfg(feature = "custom-chunker")]
-fn custom_chunk_and_store_file(
+pub(crate) fn chunk_and_store_file(
     repo: Arc<Repository>,
     src_path: &Path,
     node: &Node,

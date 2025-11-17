@@ -5,10 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-#[cfg(not(feature = "custom-chunker"))]
-use fastcdc::v2020::StreamCDC;
 
-#[cfg(feature = "custom-chunker")]
 use chunker::Chunker;
 
 use crate::{
@@ -22,7 +19,6 @@ use crate::{
 };
 
 /// Reusable chunker instance.
-#[cfg(feature = "custom-chunker")]
 pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::MIN_CHUNK_SIZE as usize,
     mapache::defaults::NORMAL_CHUNK_SIZE as usize,
@@ -138,52 +134,6 @@ fn report_node_diff(
 /// This function will split the file into chunks for deduplication, which will be compressed,
 /// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
 /// directly as blobs.
-#[cfg(not(feature = "custom-chunker"))]
-pub(crate) fn chunk_and_store_file<R: Read>(
-    repo: Arc<Repository>,
-    reader: &mut R,
-    node: &Node,
-    progress_reporter: Arc<SnapshotProgressReporter>,
-) -> Result<Vec<ID>> {
-    // Do not chunk if the file is smaller than the minimum chunk size
-    if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(repo, reader, node, progress_reporter);
-    }
-
-    let file_size = node.metadata.size;
-    let estimated_num_chunks = (file_size / mapache::defaults::NORMAL_CHUNK_SIZE).max(1) as usize;
-    let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
-
-    let chunker = StreamCDC::with_level(
-        reader,
-        mapache::defaults::MIN_CHUNK_SIZE as u32,
-        mapache::defaults::NORMAL_CHUNK_SIZE as u32,
-        mapache::defaults::MAX_CHUNK_SIZE as u32,
-        mapache::defaults::CHUNKER_NORMALIZATION,
-    );
-
-    for result in chunker {
-        let chunk = result.context("Failed to chunk file")?;
-        progress_reporter.processed_bytes(chunk.data.len() as u64);
-
-        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
-            .encode_and_save_blob(BlobType::Data, chunk.data, SaveID::CalculateID)
-            .context("Failed to save blob")?;
-
-        chunk_ids.push(id);
-        progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
-        progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);
-    }
-
-    Ok(chunk_ids)
-}
-
-/// Puts a file into the repository
-///
-/// This function will split the file into chunks for deduplication, which will be compressed,
-/// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
-/// directly as blobs.
-#[cfg(feature = "custom-chunker")]
 pub(crate) fn chunk_and_store_file<R: Read>(
     repo: Arc<Repository>,
     reader: &mut R,

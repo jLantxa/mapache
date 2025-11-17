@@ -123,69 +123,66 @@ impl Chunker {
         self.normalization
     }
 
-    #[inline(always)]
-    fn update_fp_even(&self, fp: u64, byte: u8) -> u64 {
-        (fp << 2).wrapping_add(self.gear_ls[byte as usize])
-    }
-
-    #[inline(always)]
-    fn update_fp_odd(&self, fp: u64, byte: u8) -> u64 {
-        fp.wrapping_add(self.gear[byte as usize])
-    }
-
     /// Find a cut point in a slice of bytes.
     #[inline(always)]
     pub fn cut(&self, data: &[u8]) -> usize {
-        let mut fp = 0;
-
-        let mut remaining = data.len();
-        if remaining <= self.min_size {
-            return remaining;
+        let len = data.len();
+        if len <= self.min_size {
+            return len;
         }
 
-        let mut i = self.min_size / 2;
-        let mut center = self.normal_size;
-        if remaining > self.max_size {
-            remaining = self.max_size;
-        } else if remaining < center {
-            center = remaining;
+        let max: usize = len.min(self.max_size);
+        let center: usize = self.normal_size.min(max);
+
+        let mut fp: u64 = 0;
+        let gear = self.gear;
+        let gear_ls = self.gear_ls;
+        let mask_s = self.mask_s;
+        let mask_s_ls = self.mask_s_ls;
+        let mask_l = self.mask_l;
+        let mask_l_ls = self.mask_l_ls;
+
+        let mut n: usize = (self.min_size & !1).min(max);
+        let mid: usize = center & !1;
+        let end: usize = max & !1;
+
+        unsafe {
+            // Phase 1 (small masks) up to the normalization center
+            while n < mid {
+                let b0 = *data.get_unchecked(n);
+                fp = (fp << 2).wrapping_add(*gear_ls.get_unchecked(b0 as usize));
+                if fp & mask_s_ls == 0 {
+                    return n;
+                }
+
+                let b1 = *data.get_unchecked(n + 1);
+                fp = fp.wrapping_add(*gear.get_unchecked(b1 as usize));
+                if fp & mask_s == 0 {
+                    return n + 1;
+                }
+
+                n += 2;
+            }
+
+            // Phase 2 (large masks) up to the hard max
+            while n < end {
+                let b0 = *data.get_unchecked(n);
+                fp = (fp << 2).wrapping_add(*gear_ls.get_unchecked(b0 as usize));
+                if fp & mask_l_ls == 0 {
+                    return n;
+                }
+
+                let b1 = *data.get_unchecked(n + 1);
+                fp = fp.wrapping_add(*gear.get_unchecked(b1 as usize));
+                if fp & mask_l == 0 {
+                    return n + 1;
+                }
+
+                n += 2;
+            }
         }
 
-        // Phase 1
-        while i < center / 2 {
-            let n = i * 2;
-
-            fp = self.update_fp_even(fp, data[n]);
-            if (fp & self.mask_s_ls) == 0 {
-                return n;
-            }
-
-            fp = self.update_fp_odd(fp, data[n + 1]);
-            if (fp & self.mask_s) == 0 {
-                return n + 1;
-            }
-
-            i += 1;
-        }
-
-        // Phase 2
-        while i < remaining / 2 {
-            let n = i * 2;
-
-            fp = self.update_fp_even(fp, data[n]);
-            if (fp & self.mask_l_ls) == 0 {
-                return n;
-            }
-
-            fp = self.update_fp_odd(fp, data[n + 1]);
-            if (fp & self.mask_l) == 0 {
-                return n + 1;
-            }
-
-            i += 1;
-        }
-
-        remaining
+        max
     }
 
     /// Returns a stream of the chunks of a Read trait object.

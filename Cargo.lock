@@ -818,7 +818,6 @@ dependencies = [
  "crossbeam-channel",
  "dialoguer",
  "directories",
- "fastcdc",
  "filetime",
  "fuser",
  "hostname",

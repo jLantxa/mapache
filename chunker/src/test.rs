@@ -231,19 +231,14 @@ mod tests {
             1218, 4879, 5272, 4720, 4659, 6075, 5366, 4644, 1347, 4107, 1679, 4201,
         ];
 
-        let mut actual_lens: Vec<usize> = Vec::new();
-        let mut total_bytes_chunked: usize = 0;
-        let mut offset: usize = 0;
+        let cursor = Cursor::new(data);
 
-        while offset < size {
-            let remaining_data = &data[offset..];
-            let cut_len = chunker.cut(remaining_data);
-            assert!(cut_len > 0, "Chunker returned a zero length cut.");
-
-            actual_lens.push(cut_len);
-            total_bytes_chunked += cut_len;
-            offset += cut_len;
-        }
+        let actual_lens: Vec<usize> = chunker
+            .stream(cursor)
+            .into_iter()
+            .map(|chunk| chunk.unwrap().length)
+            .collect();
+        let total_bytes_chunked: usize = actual_lens.iter().sum();
 
         assert_eq!(
             actual_lens, expected_lens,
@@ -265,19 +260,14 @@ mod tests {
 
         let expected_lens: Vec<usize> = vec![41844, 36372, 33780, 42120, 40715, 42895, 7763];
 
-        let mut actual_lens: Vec<usize> = Vec::new();
-        let mut total_bytes_chunked: usize = 0;
-        let mut offset: usize = 0;
+        let cursor = Cursor::new(data);
 
-        while offset < size {
-            let remaining_data = &data[offset..];
-            let cut_len = chunker.cut(remaining_data);
-            assert!(cut_len > 0, "Chunker returned a zero length cut.");
-
-            actual_lens.push(cut_len);
-            total_bytes_chunked += cut_len;
-            offset += cut_len;
-        }
+        let actual_lens: Vec<usize> = chunker
+            .stream(cursor)
+            .into_iter()
+            .map(|chunk| chunk.unwrap().length)
+            .collect();
+        let total_bytes_chunked: usize = actual_lens.iter().sum();
 
         assert_eq!(
             actual_lens, expected_lens,
@@ -299,19 +289,14 @@ mod tests {
 
         let expected_lens: Vec<usize> = vec![65536, 44602, 65536, 65536, 4279];
 
-        let mut actual_lens: Vec<usize> = Vec::new();
-        let mut total_bytes_chunked: usize = 0;
-        let mut offset: usize = 0;
+        let cursor = Cursor::new(data);
 
-        while offset < size {
-            let remaining_data = &data[offset..];
-            let cut_len = chunker.cut(remaining_data);
-            assert!(cut_len > 0, "Chunker returned a zero length cut.");
-
-            actual_lens.push(cut_len);
-            total_bytes_chunked += cut_len;
-            offset += cut_len;
-        }
+        let actual_lens: Vec<usize> = chunker
+            .stream(cursor)
+            .into_iter()
+            .map(|chunk| chunk.unwrap().length)
+            .collect();
+        let total_bytes_chunked: usize = actual_lens.iter().sum();
 
         assert_eq!(
             actual_lens, expected_lens,

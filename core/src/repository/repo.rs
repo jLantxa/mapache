@@ -490,6 +490,15 @@ impl Repository {
         Ok(snapshot)
     }
 
+    /// Recall a dropped snapshot with ID
+    pub fn recall_dropped_snapshot(&self, id: &ID) -> Result<()> {
+        let path = self
+            .get_path(ContentIdType::Snapshot, id)
+            .with_extension(REPO_DROPPED_EXTENSION);
+        let dropped_path = path.with_extension(REPO_DROPPED_EXTENSION);
+        self.backend.rename(&dropped_path, &path)
+    }
+
     /// Lists all snapshot IDs
     pub fn list_snapshot_ids(&self) -> Result<Vec<ID>> {
         let ids = self

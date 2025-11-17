@@ -221,7 +221,9 @@ impl Packer {
         pack_id: &ID,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         let (_id, pack_path) = repo.find(ContentIdType::Pack, &pack_id.to_hex())?;
-        let handle = Handle::new(&pack_path); // TODO: Hint if metadata
+
+        // We don't know a priori if this pack contains metadata, so we cannot use a StorageHint.
+        let handle = Handle::new(&pack_path);
         let header_length_bytes: [u8; 4] = backend.read(&handle, -4, 4)?.as_slice().try_into()?;
         let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
 

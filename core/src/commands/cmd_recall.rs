@@ -43,15 +43,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
-    let (_id, dropped_path) = repo.find_with_extension(
+    let (id, _dropped_path) = repo.find_with_extension(
         ContentIdType::Snapshot,
         &args.id,
         Some(REPO_DROPPED_EXTENSION),
     )?;
 
-    // TODO: There should be a repo function for this.
-    let dst_path = dropped_path.with_extension("");
-    repo.backend().rename(&dropped_path, &dst_path)?;
+    repo.recall_dropped_snapshot(&id)?;
 
     Ok(())
 }

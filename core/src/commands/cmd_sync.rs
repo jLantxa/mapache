@@ -126,8 +126,9 @@ fn sync_backends(
 
     // Copy files from src to dst.
     for node in to_copy {
-        // TODO: For better performance, we should implement buffered I/O in the
-        // backend and transfer the files in small chunks.
+        // TODO: For better performance, we could implement buffered I/O in the
+        // backend and transfer the files in small chunks. This would complicate the
+        // StorageBackend trait, so it is probably not worth it.
 
         match node {
             BackendNode::Dir(path) => dst_backend.create_dir(&path)?,

@@ -8,6 +8,9 @@
   them with the current chunker and parameters. The snapshots are rewriten,
   but the old chunks will be left unreferenced and deleted by the next run on
   the garbage collector.
+- The custom chunker is now the default and only chunker. Use the `rechunk`
+  command to run the deduplication on older repositories. The old chunks will
+  be removed by the garbage collector the next time `clean` is called.
 
 ## v0.1.0-beta.5
 

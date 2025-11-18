@@ -64,15 +64,19 @@ pub(crate) fn process_item(
         }
 
         NodeDiff::New | NodeDiff::Changed => {
-            let mut stream_node_info = next_node
-                .with_context(|| "New or changed item but the next node was not provided")?;
+            let mut stream_node_info =
+                next_node.context("New or changed item but the next node was not provided")?;
 
-            let source_file = std::fs::File::open(path)?;
-            let mut reader =
-                BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
-
-            // Only chunk and store the file content if it's a file
+            // If the node is a file, send it for chunking and storage.
+            // We use a BufReader with a capacity equal to the normal chunk size
+            // to balance memory usage and I/O system calls.
             if stream_node_info.node.is_file() {
+                let mut source_file = std::fs::File::open(path)?;
+                let mut reader = BufReader::with_capacity(
+                    mapache::defaults::NORMAL_CHUNK_SIZE as usize,
+                    source_file,
+                );
+
                 let blobs_ids = chunk_and_store_file(
                     repo,
                     &mut reader,

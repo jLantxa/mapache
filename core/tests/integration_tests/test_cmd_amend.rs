@@ -82,7 +82,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let excluded_paths = vec![
             PathBuf::from("2"),
@@ -99,8 +99,7 @@ mod tests {
             clear_description: false,
             exclude: Some(excluded_paths.clone()),
         };
-        commands::cmd_amend::run(&global, &amend_args)
-            .with_context(|| "Failed to run cmd_amend")?;
+        commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -116,8 +115,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -217,7 +215,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,
@@ -229,8 +227,7 @@ mod tests {
             clear_description: true,
             exclude: None,
         };
-        commands::cmd_amend::run(&global, &amend_args)
-            .with_context(|| "Failed to run cmd_amend (1/2)")?;
+        commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend (1/2)")?;
 
         let mut snapshot_streamer = SnapshotStream::new(repo.clone())?;
         let (_, snapshot) = snapshot_streamer
@@ -250,8 +247,7 @@ mod tests {
             clear_description: false,
             exclude: None,
         };
-        commands::cmd_amend::run(&global, &amend_args)
-            .with_context(|| "Failed to run cmd_amend (2/2)")?;
+        commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend (2/2)")?;
 
         let mut snapshot_streamer = SnapshotStream::new(repo.clone())?;
         let (_, snapshot) = snapshot_streamer

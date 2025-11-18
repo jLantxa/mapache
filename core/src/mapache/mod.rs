@@ -232,7 +232,7 @@ pub(crate) fn rewrite_snapshot_tree(
                     .node
                     .blobs
                     .as_ref()
-                    .with_context(|| "File Node must have contents (even if empty)")?;
+                    .context("File Node must have contents (even if empty)")?;
 
                 let rechunk_node = |node: &Node| -> Result<Vec<ID>> {
                     let mut blob_data_reader = SerializedNodeDataReader::new(repo.clone(), node)?;

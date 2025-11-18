@@ -173,7 +173,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let mountpoint = tmp_path.join("mount");
         if !auto_mount {
@@ -302,7 +302,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot 1")?;
+            .context("Failed to run cmd_snapshot 1")?;
 
         // Avoid timestamps within one second
         std::thread::sleep(Duration::from_millis(1500));
@@ -326,7 +326,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot 2")?;
+            .context("Failed to run cmd_snapshot 2")?;
 
         let mountpoint = tmp_path.join("mount");
 

@@ -97,7 +97,7 @@ impl Repository {
 
         backend
             .create()
-            .with_context(|| "Could not create root directory")?;
+            .context("Could not create root directory")?;
 
         let keys_path = PathBuf::from(KEYS_DIR);
         backend.create_dir(&keys_path)?;
@@ -105,7 +105,7 @@ impl Repository {
         // Create new key
         let master_key = KeyManager::generate_new_master_key();
         let keyfile = KeyManager::generate_key_file(auth, master_key.clone())
-            .with_context(|| "Could not generate key")?;
+            .context("Could not generate key")?;
         let secure_storage = Arc::new(
             SecureStorage::build()
                 .with_compression(DEFAULT_COMPRESSION_LEVEL)
@@ -197,7 +197,7 @@ impl Repository {
             if let Some(a) = auth.take() {
                 key_manager
                     .retrieve_master_key(a, key_file_path)
-                    .with_context(|| "Incorrect password.")?
+                    .context("Incorrect password.")?
             } else {
                 loop {
                     let auth_from_console = ui::cli::request_auth();
@@ -229,10 +229,10 @@ impl Repository {
 
         let manifest = backend
             .read(&Handle::new(manifest_path), 0, 0)
-            .with_context(|| "Could not load manifest file")?;
+            .context("Could not load manifest file")?;
         let manifest = secure_storage
             .decode(&manifest)
-            .with_context(|| "Could not decode the manifest file")?;
+            .context("Could not decode the manifest file")?;
         let manifest: Manifest = serde_json::from_slice(&manifest)?;
 
         let version = manifest.version();
@@ -503,7 +503,7 @@ impl Repository {
     pub fn list_snapshot_ids(&self) -> Result<Vec<ID>> {
         let ids = self
             .list_files(ContentIdType::Snapshot)
-            .with_context(|| "Could not list snapshots")?
+            .context("Could not list snapshots")?
             .into_iter()
             .filter_map(|path| {
                 path.file_name()
@@ -910,7 +910,7 @@ impl Repository {
         let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
         let new_lock_id = *new_lock.lock().id();
         self.save_lock(&new_lock)
-            .with_context(|| "Failed to write new lock file")?;
+            .context("Failed to write new lock file")?;
 
         // Check for conflicts with other unexpired locks
         let all_locks = self.get_locks()?;
@@ -1142,7 +1142,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        commands::cmd_init::run(&global, &args).with_context(|| "Failed to run cmd_init")?;
+        commands::cmd_init::run(&global, &args).context("Failed to run cmd_init")?;
 
         let backend = Arc::new(LocalFS::new(repo_path));
 
@@ -1213,7 +1213,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        commands::cmd_init::run(&global, &args).with_context(|| "Failed to run cmd_init")?;
+        commands::cmd_init::run(&global, &args).context("Failed to run cmd_init")?;
 
         let backend = Arc::new(LocalFS::new(repo_path));
 

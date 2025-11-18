@@ -35,21 +35,19 @@ impl SftpConnection {
     /// Creates a new SFTP connection.
     pub fn new(username: &str, host: &str, port: u16, auth_method: &AuthMethod) -> Result<Self> {
         let addr = format!("{host}:{port}");
-        let tcp = TcpStream::connect(&addr).with_context(|| "Failed to connect to SFTP server")?;
-        let mut session = Session::new().with_context(|| "Failed to create SSH session")?;
+        let tcp = TcpStream::connect(&addr).context("Failed to connect to SFTP server")?;
+        let mut session = Session::new().context("Failed to create SSH session")?;
         session.set_tcp_stream(tcp);
         session
             .handshake()
-            .with_context(|| "Failed to perform SSH handshake")?;
+            .context("Failed to perform SSH handshake")?;
 
         Self::authenticate(&session, username, auth_method)?;
 
         session.set_keepalive(true, 30);
         session.set_compress(false);
 
-        let sftp = session
-            .sftp()
-            .with_context(|| "Failed to create SFTP session")?;
+        let sftp = session.sftp().context("Failed to create SFTP session")?;
         Ok(Self {
             _session: Arc::new(session),
             sftp,
@@ -71,7 +69,7 @@ impl SftpConnection {
         match auth_method {
             AuthMethod::Password(password) => session
                 .userauth_password(username, password)
-                .with_context(|| "Failed to authenticate with password"),
+                .context("Failed to authenticate with password"),
             AuthMethod::PubKey {
                 pubkey,
                 private_key,
@@ -148,7 +146,7 @@ impl SftpConnectionPool {
         let conn = self
             .receiver
             .recv()
-            .with_context(|| "Failed to get connection from pool")?;
+            .context("Failed to get connection from pool")?;
         Ok(PooledSftpConnection {
             connection: Some(conn),
             pool_sender: self.sender.clone(),

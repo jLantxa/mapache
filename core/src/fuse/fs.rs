@@ -44,7 +44,7 @@ impl MapacheFS {
         if let Err(e) = fuser::mount2(filesystem, mountpoint, &mount_options) {
             ui::cli::error!("FUSE error: {}", e.to_string());
             ui::cli::log!("Unmounting...");
-            Self::unmount(mountpoint).with_context(|| "Failed to unmount after error.")?;
+            Self::unmount(mountpoint).context("Failed to unmount after error.")?;
         }
 
         Ok(())

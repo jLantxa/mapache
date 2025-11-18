@@ -80,7 +80,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot (1/2)")?;
+            .context("Failed to run cmd_snapshot (1/2)")?;
 
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![
@@ -100,7 +100,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot (2/2)")?;
+            .context("Failed to run cmd_snapshot (2/2)")?;
 
         // Keep the last snapshot
         let forget_args = commands::cmd_forget::CmdArgs {
@@ -119,15 +119,14 @@ mod tests {
             keep_tags_str: Some(String::new()),
             verify: true,
         };
-        commands::cmd_forget::run(&global, &forget_args)
-            .with_context(|| "Failed to run cmd_forget")?;
+        commands::cmd_forget::run(&global, &forget_args).context("Failed to run cmd_forget")?;
 
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: false,
             verify: true,
         };
-        commands::cmd_clean::run(&global, &gc_args).with_context(|| "Failed to run cmd_gc")?;
+        commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -143,8 +142,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -236,7 +234,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot (1/2)")?;
+            .context("Failed to run cmd_snapshot (1/2)")?;
 
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![
@@ -256,7 +254,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot (2/2)")?;
+            .context("Failed to run cmd_snapshot (2/2)")?;
 
         // Keep the last snapshot
         let forget_args = commands::cmd_forget::CmdArgs {
@@ -275,8 +273,7 @@ mod tests {
             keep_tags_str: Some(String::new()),
             verify: true,
         };
-        commands::cmd_forget::run(&global, &forget_args)
-            .with_context(|| "Failed to run cmd_forget")?;
+        commands::cmd_forget::run(&global, &forget_args).context("Failed to run cmd_forget")?;
 
         // Run cmd_clean and compare the repositories (using backend readdir)
         let backend = Arc::new(LocalFS::new(repo_path.clone()));
@@ -286,7 +283,7 @@ mod tests {
             dry_run: true, // DRY-RUN !
             verify: true,
         };
-        commands::cmd_clean::run(&global, &gc_args).with_context(|| "Failed to run cmd_gc")?;
+        commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
         let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new())?;
         assert_eq!(pre_clean_nodes, post_clean_nodes);
 
@@ -297,7 +294,7 @@ mod tests {
             dry_run: false, // No dry-run
             verify: true,
         };
-        commands::cmd_clean::run(&global, &gc_args).with_context(|| "Failed to run cmd_gc")?;
+        commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
         let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new())?;
         assert_ne!(pre_clean_nodes, post_clean_nodes);
 

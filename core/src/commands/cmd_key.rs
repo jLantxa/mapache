@@ -112,8 +112,8 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
 
     ui::cli::log!("\nCreating new user key...");
     let new_auth = request_new_auth();
-    let new_key_file = KeyManager::generate_key_file(&new_auth, master_key)
-        .with_context(|| "Could not generate key")?;
+    let new_key_file =
+        KeyManager::generate_key_file(&new_auth, master_key).context("Could not generate key")?;
 
     let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 

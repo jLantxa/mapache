@@ -78,7 +78,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let dst_repo_path = tmp_path.join("sync_dst");
         let sync_args = cmd_sync::CmdArgs {
@@ -87,7 +87,7 @@ mod tests {
             dst_ssh_pubkey: None,
             dst_ssh_privatekey: None,
         };
-        cmd_sync::run(&global, &sync_args).with_context(|| "Failed to run cmd_sync")?;
+        cmd_sync::run(&global, &sync_args).context("Failed to run cmd_sync")?;
 
         let src_backend = Arc::new(LocalFS::new(repo_path));
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path));
@@ -160,7 +160,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let dst_repo_path = tmp_path.join("sync_dst");
 
@@ -191,7 +191,7 @@ mod tests {
             dst_ssh_pubkey: None,
             dst_ssh_privatekey: None,
         };
-        cmd_sync::run(&global, &sync_args).with_context(|| "Failed to run cmd_sync")?;
+        cmd_sync::run(&global, &sync_args).context("Failed to run cmd_sync")?;
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
         let mut src_nodes = backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new())?;

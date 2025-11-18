@@ -252,7 +252,7 @@ impl Packer {
 
         let header_length_bytes: [u8; 4] = header_data[(header_data.len() - 4)..]
             .try_into()
-            .with_context(|| "Could not read pack header length bytes.")?;
+            .context("Could not read pack header length bytes.")?;
         let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
 
         if header_data.len() < encoded_header_length {
@@ -369,7 +369,7 @@ impl PackSaver {
 
         self.tx
             .send((packer_data, pack_id, blob_type))
-            .with_context(|| "Failed to send pack data to PackSaver channel")?;
+            .context("Failed to send pack data to PackSaver channel")?;
 
         Ok(pack_id)
     }

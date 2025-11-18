@@ -39,8 +39,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     if !fs::path_exists(&actual_mountpoint) {
         if args.create_mountpoint {
-            std::fs::create_dir_all(&actual_mountpoint)
-                .with_context(|| "Could not create mount point")?;
+            std::fs::create_dir_all(&actual_mountpoint).context("Could not create mount point")?;
             created_mountpoint = true;
         } else {
             bail!("Mountpoint doesn't exist");

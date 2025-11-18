@@ -76,7 +76,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -92,8 +92,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -192,7 +191,7 @@ mod tests {
             dry_run: true,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // `snapshots` directory should be empty
         let snapshots_read_dir = repo_path.join("snapshots").read_dir()?;
@@ -280,7 +279,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -296,8 +295,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -396,7 +394,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![
@@ -417,7 +415,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let restore_path = tmp_path.join("restore");
         let restore_args = cmd_restore::CmdArgs {
@@ -432,8 +430,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -530,7 +527,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -546,8 +543,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("file0.txt"),
@@ -642,7 +638,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -658,8 +654,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),

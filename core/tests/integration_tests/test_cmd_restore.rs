@@ -78,7 +78,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -94,8 +94,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         let restored_paths = vec![
             PathBuf::from("0"),
@@ -197,7 +196,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -213,8 +212,7 @@ mod tests {
             quit_on_error: true,
             delete: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
         assert!(!restore_path.exists());
 
@@ -278,7 +276,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore 1
         let restore_path = tmp_path.join("restore1");
@@ -298,7 +296,7 @@ mod tests {
             delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore 1")?;
+            .context("Failed to run cmd_restore 1")?;
 
         let restored_paths = vec![PathBuf::from("file0.txt"), PathBuf::from("00/file00.txt")];
         for path in &restored_paths {
@@ -321,7 +319,7 @@ mod tests {
             delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore 2")?;
+            .context("Failed to run cmd_restore 2")?;
 
         let restored_paths = vec![PathBuf::from("file00.txt")];
         for path in &restored_paths {
@@ -389,7 +387,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore to create base files
         let restore_path = tmp_path.join("restore");
@@ -406,7 +404,7 @@ mod tests {
             delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore (1/2)")?;
+            .context("Failed to run cmd_restore (1/2)")?;
 
         // Create extra files
         std::fs::create_dir_all(restore_path.join("0"))?;
@@ -438,7 +436,7 @@ mod tests {
             delete: true,
         };
         commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore (2/2)")?;
+            .context("Failed to run cmd_restore (2/2)")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -530,7 +528,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         // Run restore to create base files
         let restore_path = tmp_path.join("restore");
@@ -547,7 +545,7 @@ mod tests {
             delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore (1/2)")?;
+            .context("Failed to run cmd_restore (1/2)")?;
 
         // Create extra files
         std::fs::create_dir_all(restore_path.join("0"))?;
@@ -579,7 +577,7 @@ mod tests {
             delete: true,
         };
         commands::cmd_restore::run(&global, &restore_args)
-            .with_context(|| "Failed to run cmd_restore (2/2)")?;
+            .context("Failed to run cmd_restore (2/2)")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -661,7 +659,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot S1")?;
+            .context("Failed to run cmd_snapshot S1")?;
 
         let restore_path = tmp_path.join("restore_conflicts");
         let restore_args_initial = cmd_restore::CmdArgs {
@@ -677,7 +675,7 @@ mod tests {
             delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args_initial)
-            .with_context(|| "Failed to run initial cmd_restore")?;
+            .context("Failed to run initial cmd_restore")?;
 
         let file_to_overwrite = restore_path.join("0").join("file0.txt");
         let file_to_skip = restore_path.join("0").join("00").join("file00.txt");
@@ -708,7 +706,7 @@ mod tests {
             delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args_overwrite)
-            .with_context(|| "Failed to run cmd_restore Overwrite")?;
+            .context("Failed to run cmd_restore Overwrite")?;
 
         // Verify that the file was overwritten
         assert_eq!(
@@ -729,7 +727,7 @@ mod tests {
             delete: false,
         };
         commands::cmd_restore::run(&global, &restore_args_skip)
-            .with_context(|| "Failed to run cmd_restore Skip")?;
+            .context("Failed to run cmd_restore Skip")?;
 
         // Verify that the local change was kept (skipped)
         assert_eq!(std::fs::read_to_string(&file_to_skip)?, new_content_skip);

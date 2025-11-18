@@ -24,7 +24,7 @@ mod test_utils {
         let mut archive = Archive::new(xz_decoder);
         archive
             .unpack(extract_to_dir)
-            .with_context(|| "Failed to unpack tar")?;
+            .context("Failed to unpack tar")?;
 
         Ok(())
     }

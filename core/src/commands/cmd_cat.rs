@@ -68,9 +68,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
         Object::Pack(prefix) => {
             let (id, _) = repo.find(ContentIdType::Pack, prefix)?;
-            let object = repo
-                .load_pack(&id)
-                .with_context(|| "Failed to load object")?;
+            let object = repo.load_pack(&id).context("Failed to load object")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&object)?);
             Ok(())
         }
@@ -81,9 +79,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Some(val) => val,
                 None => bail!("No tree blobs found with prefix {prefix}"),
             };
-            let tree = repo
-                .load_blob(id)
-                .with_context(|| "Failed to load tree blob")?;
+            let tree = repo.load_blob(id).context("Failed to load tree blob")?;
             let tree: Tree = serde_json::from_slice(&tree)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&tree)?);
             Ok(())
@@ -95,21 +91,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Some(val) => val,
                 None => bail!("No blobs found with prefix {prefix}"),
             };
-            let blob = repo.load_blob(id).with_context(|| "Failed to load blob")?;
+            let blob = repo.load_blob(id).context("Failed to load blob")?;
             ui::cli::log!("{}", String::from_utf8(blob)?);
             Ok(())
         }
         Object::Index(prefix) => {
             let (id, _) = repo.find(ContentIdType::Index, prefix)?;
-            let index = repo
-                .load_index(&id)
-                .with_context(|| "Failed to load index")?;
+            let index = repo.load_index(&id).context("Failed to load index")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&index)?);
             Ok(())
         }
         Object::Key(prefix) => {
             let (id, _) = repo.find(ContentIdType::Key, prefix)?;
-            let key = repo.load_key(&id).with_context(|| "Failed to load key")?;
+            let key = repo.load_key(&id).context("Failed to load key")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&key)?);
             Ok(())
         }
@@ -117,7 +111,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
             let snapshot = repo
                 .load_snapshot(&id, None)
-                .with_context(|| "Failed to load snapshot")?;
+                .context("Failed to load snapshot")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&snapshot)?);
             Ok(())
         }

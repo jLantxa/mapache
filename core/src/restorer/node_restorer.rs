@@ -32,7 +32,7 @@ pub(crate) fn restore_node_to_path(
             let blocks = node
                 .blobs
                 .as_ref()
-                .with_context(|| "File Node must have contents (even if empty)")?;
+                .context("File Node must have contents (even if empty)")?;
 
             let dst_file = if !dry_run {
                 if let Some(parent) = dst_path.parent() {
@@ -241,7 +241,7 @@ pub fn restore_times(
         let ft_mtime = FileTime::from(*modified_time);
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
-        set_file_times(dst_path, ft_atime, ft_mtime).with_context(|| "Could not set file times")?;
+        set_file_times(dst_path, ft_atime, ft_mtime).context("Could not set file times")?;
     }
 
     Ok(())

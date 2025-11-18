@@ -37,8 +37,7 @@ impl LocalFS {
 impl StorageBackend for LocalFS {
     fn create(&self) -> Result<()> {
         // Create the repo root folder
-        std::fs::create_dir_all(&self.base_path)
-            .with_context(|| "Could not create repository backend root")
+        std::fs::create_dir_all(&self.base_path).context("Could not create repository backend root")
     }
 
     #[inline]

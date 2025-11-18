@@ -93,7 +93,7 @@ impl KeyManager {
             .with_key(&intermediate_key);
 
         ss.decrypt(&encrypted_key)
-            .with_context(|| "Could not retrieve master key from this keyfile")
+            .context("Could not retrieve master key from this keyfile")
     }
 
     /// Generates a new KeyFile for the master key with a new password

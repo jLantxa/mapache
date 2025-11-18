@@ -68,7 +68,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     let (_snapshot_id, snapshot) =
-        find_use_snapshot(repo.clone(), &args.snapshot)?.with_context(|| "Snapshot not found")?;
+        find_use_snapshot(repo.clone(), &args.snapshot)?.context("Snapshot not found")?;
 
     let node = if let Some(p) = &args.path {
         find_serialized_node(repo.as_ref(), &snapshot.tree, p)?

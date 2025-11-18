@@ -39,7 +39,7 @@ pub(crate) fn process_item(
     match diff_type {
         NodeDiff::Deleted => {
             let prev_node =
-                prev_node.with_context(|| "Deleted item but the previous node was not provided")?;
+                prev_node.context("Deleted item but the previous node was not provided")?;
 
             report_node_diff(&prev_node.node, diff_type, &progress_reporter);
             Ok(None)
@@ -47,9 +47,9 @@ pub(crate) fn process_item(
 
         NodeDiff::Unchanged => {
             let mut stream_node_info =
-                next_node.with_context(|| "Unchanged item but the next node was not provided")?;
-            let prev_node = prev_node
-                .with_context(|| "Unchanged item but the previous node was not provided")?;
+                next_node.context("Unchanged item but the next node was not provided")?;
+            let prev_node =
+                prev_node.context("Unchanged item but the previous node was not provided")?;
 
             // Copy the list of blobs from the previous snapshot
             stream_node_info.node.blobs = prev_node.node.blobs;
@@ -71,7 +71,7 @@ pub(crate) fn process_item(
             // We use a BufReader with a capacity equal to the normal chunk size
             // to balance memory usage and I/O system calls.
             if stream_node_info.node.is_file() {
-                let mut source_file = std::fs::File::open(path)?;
+                let source_file = std::fs::File::open(path)?;
                 let mut reader = BufReader::with_capacity(
                     mapache::defaults::NORMAL_CHUNK_SIZE as usize,
                     source_file,

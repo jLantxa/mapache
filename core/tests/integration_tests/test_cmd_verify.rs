@@ -96,7 +96,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let verify_args = cmd_verify::CmdArgs {
             simulate_restore: false,
@@ -109,7 +109,7 @@ mod tests {
 
         // Delete the index to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(INDEX_DIR))
-            .with_context(|| "Failed to remove the index")?;
+            .context("Failed to remove the index")?;
         let second_verify_result = commands::cmd_verify::run(&global, &verify_args);
         assert!(
             second_verify_result.is_err(),
@@ -179,7 +179,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let verify_args = cmd_verify::CmdArgs {
             simulate_restore: true,
@@ -192,7 +192,7 @@ mod tests {
 
         // Delete the packs to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(OBJECTS_DIR))
-            .with_context(|| "Failed to remove the objects")?;
+            .context("Failed to remove the objects")?;
         let second_verify_result = commands::cmd_verify::run(&global, &verify_args);
         assert!(
             second_verify_result.is_err(),
@@ -262,7 +262,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .with_context(|| "Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot")?;
 
         let verify_args = cmd_verify::CmdArgs {
             simulate_restore: false,
@@ -275,7 +275,7 @@ mod tests {
 
         // Delete the packs to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(OBJECTS_DIR))
-            .with_context(|| "Failed to remove the objects")?;
+            .context("Failed to remove the objects")?;
         let second_verify_result = commands::cmd_verify::run(&global, &verify_args);
         assert!(
             second_verify_result.is_err(),

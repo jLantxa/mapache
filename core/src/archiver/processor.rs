@@ -1,6 +1,6 @@
 use std::{
     io::{BufReader, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -28,7 +28,7 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
 
 pub(crate) fn process_item(
     (path, prev_node, next_node, diff_type): (
-        PathBuf,
+        &Path,
         Option<StreamNode>,
         Option<StreamNode>,
         NodeDiff,
@@ -60,14 +60,14 @@ pub(crate) fn process_item(
             }
             report_node_diff(&stream_node_info.node, diff_type, &progress_reporter);
 
-            Ok(Some((path, stream_node_info)))
+            Ok(Some((path.to_path_buf(), stream_node_info)))
         }
 
         NodeDiff::New | NodeDiff::Changed => {
             let mut stream_node_info = next_node
                 .with_context(|| "New or changed item but the next node was not provided")?;
 
-            let source_file = std::fs::File::open(&path)?;
+            let source_file = std::fs::File::open(path)?;
             let mut reader =
                 BufReader::with_capacity(mapache::defaults::MIN_CHUNK_SIZE as usize, source_file);
 
@@ -85,7 +85,7 @@ pub(crate) fn process_item(
             // Report progress based on the current node and diff type
             report_node_diff(&stream_node_info.node, diff_type, &progress_reporter);
 
-            Ok(Some((path, stream_node_info)))
+            Ok(Some((path.to_path_buf(), stream_node_info)))
         }
     }
 }

@@ -273,7 +273,7 @@ pub(crate) fn rewrite_snapshot_tree(
         snapshot.summary.processed_items_count += 1;
 
         // The path is not excluded, so we add the node to the pending trees map.
-        let (raw, encoded) = tree_serializer.handle_processed_item((path.clone(), stream_node))?;
+        let (raw, encoded) = tree_serializer.handle_processed_item((&path, stream_node))?;
         raw_bytes += raw;
         encoded_bytes += encoded;
     }

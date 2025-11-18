@@ -281,7 +281,7 @@ fn spawn_processor_thread(
                     progress_reporter.processing_node(stripped_path, diff);
 
                     let processed_item_result = processor::process_item(
-                        (path, prev, next, diff),
+                        (&path, prev, next, diff),
                         repo.clone(),
                         progress_reporter.clone(),
                     );
@@ -292,7 +292,7 @@ fn spawn_processor_thread(
                                 signal_fatal_error(
                                     &progress_reporter,
                                     &fatal_error_flag,
-                                    &format!("Archiver processor thread errored sending processed item: {e:#?}"),
+                                    &format!("Archiver processor thread errored sending processed item {path:?}: {e:#?}"),
                                 );
                                 return Err(());
                             }
@@ -302,7 +302,7 @@ fn spawn_processor_thread(
                             signal_fatal_error(
                                 &progress_reporter,
                                 &fatal_error_flag,
-                                &format!("Archiver thread errored processing item: {e:#?}"),
+                                &format!("Archiver thread errored processing item {path:?}: {e:#?}"),
                             );
                             return Err(());
                         }
@@ -331,15 +331,14 @@ fn spawn_serializer_thread(
             &absolute_source_paths,
         );
 
-        while let Ok(item) = process_item_rx.recv() {
+        while let Ok((path, stream_node)) = process_item_rx.recv() {
             if fatal_error_flag.load(Ordering::Relaxed) {
                 break;
             }
 
-            let (item_path, _) = &item;
-            progress_reporter.processed_node(strip_prefix(item_path, &snapshot_root_path));
+            progress_reporter.processed_node(strip_prefix(&path, &snapshot_root_path));
 
-            match tree_serializer.handle_processed_item(item) {
+            match tree_serializer.handle_processed_item((&path, stream_node)) {
                 Ok((raw_tree_size, encoded_tree_size)) => {
                     progress_reporter.written_meta_bytes(raw_tree_size, encoded_tree_size)
                 }
@@ -348,7 +347,7 @@ fn spawn_serializer_thread(
                         &progress_reporter,
                         &fatal_error_flag,
                         &format!(
-                            "Archiver serializer thread errored handling processed item: {e:#}"
+                            "Archiver serializer thread errored handling processed item {path:?}: {e:#}"
                         ),
                     );
                 }

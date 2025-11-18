@@ -107,9 +107,9 @@ impl TreeSerializer {
 
     pub(crate) fn handle_processed_item(
         &mut self,
-        (path, stream_node): (PathBuf, StreamNode),
+        (path, stream_node): (&Path, StreamNode),
     ) -> Result<(u64, u64)> {
-        let parent_path = utils::extract_parent(&path)
+        let parent_path = utils::extract_parent(path)
             .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
 
         // Determine the directory path that will receive the finalized node.
@@ -117,7 +117,7 @@ impl TreeSerializer {
             // If the processed item is a directory (NodeType::Directory),
             // we update its own PendingTree entry.
             self.pending_trees
-                .entry(path.clone())
+                .entry(path.to_path_buf())
                 .or_insert_with(|| PendingTree {
                     node: None,
                     children: HashMap::new(),
@@ -127,7 +127,7 @@ impl TreeSerializer {
 
             // The number of expected children is now known.
             self.pending_trees
-                .get_mut(&path)
+                .get_mut(path)
                 .unwrap() // We just inserted or modified it, so it must exist.
                 .num_expected_children = ExpectedChildren::Known(stream_node.num_children);
 
@@ -137,10 +137,10 @@ impl TreeSerializer {
             // and insert it into the parent's PendingTree.
             self.insert_finalized_node(&parent_path, stream_node.node);
 
-            parent_path
+            &parent_path
         };
 
-        self.finalize_if_complete(&target_dir_path)
+        self.finalize_if_complete(target_dir_path)
     }
 
     // Helper function to encapsulate the core finalization and serialization logic,

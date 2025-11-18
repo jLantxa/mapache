@@ -107,9 +107,9 @@ persist all finalized indices to file.
 
 ### Chunking
 
-Mapache uses [FastCDC v2020](https://github.com/nlfiedler/fastcdc-rs) as its
-Content-Defined Chunking (CDC) algorithm. A custom, self-hosted implementation
-of this algorithm is also available, but it cannot be considered stable yet.
+Mapache uses a custom implementation of [FastCDC](https://ieeexplore.ieee.org/document/9055082).
+FastCDC is a Content-Defined Chunking algorithm proposal that offers a speedup
+of 3x - 12x with respect to Rabin-based CDC with comparable deduplication ratio.
 
 ### Compression and encryption
 

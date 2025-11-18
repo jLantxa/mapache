@@ -145,3 +145,19 @@ in the future.
 All content IDs (hashes) used by mapache to identify objects in the repository
 are generated with the BLAKE3 hashing algorithm. BLAKE3 is a modern and fast
 hashing algorithm that produces 256-bit hashes.
+
+## Threat model
+
+## Repository format
+
+### Manifest
+
+### Snapshots
+
+### Packs and blobs
+
+### Index
+
+### Locks
+
+### Keys

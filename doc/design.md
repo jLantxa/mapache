@@ -148,6 +148,47 @@ hashing algorithm that produces 256-bit hashes.
 
 ## Threat model
 
+Mapache assumes that the host system is secure. However, the repository itself
+may reside on an untrusted medium where an attacker has the ability to read,
+modify, or delete the repository files.
+
+### Security Guarantees
+
+Mapache provides strong guarantees for the security of the data, but it cannot
+prevent file system operations by an external attacker:
+
+- **Confidentiality**: An attacker should not be able to decipher the stored data.
+- **Integrity (Verifiability)**: Mapache can detect if the data has been modified
+   or corrupted.
+
+### Protection Mechanisms
+
+Mapache uses a dual-layer approach to ensure data integrity and confidentiality:
+
+- **Authenticated Encryption with Associated Data (AEAD):** All data is
+protected using an AEAD cipher (AES-GCM-SIV). This means the information is both
+   encrypted (ensuring confidentiality) and authenticated. The authentication
+   layer allows Mapache to detect if a file has been altered or manipulated
+   externally.
+- **Content-Addressability:** Objects are identified by the cryptographic hash
+   (ID) of their content (BLAKE3). This provides a secondary and independent
+   verification mechanism to ensure the content has not been corrupted.
+
+### Attacker Limitations
+
+Due to the mandatory encryption and authentication:
+
+- An attacker who reads the data will only obtain unintelligible, encrypted
+   information.
+- An attacker who modifies or renames files will cause the corresponding
+   integrity check (both AEAD and hash verification) to fail, rendering the data
+   unusable by Mapache.
+
+Therefore, the most effective action an attacker on the untrusted medium can
+take is the destruction (deletion) of the repository files. Mapache is unable to
+prevent files in the repository from being modified, renamed, or deleted by an
+external entity with access to the storage medium.
+
 ## Repository format
 
 ### Manifest

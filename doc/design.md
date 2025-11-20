@@ -157,32 +157,33 @@ modify, or delete the repository files.
 Mapache provides strong guarantees for the security of the data, but it cannot
 prevent file system operations by an external attacker:
 
-- **Confidentiality**: An attacker should not be able to decipher the stored data.
-- **Integrity (Verifiability)**: Mapache can detect if the data has been modified
-   or corrupted.
+- **Confidentiality**: An attacker should not be able to decipher the stored
+  data.
+- **Integrity (Verifiability)**: Mapache can detect if the data has been
+  modified or corrupted.
 
 ### Protection Mechanisms
 
 Mapache uses a dual-layer approach to ensure data integrity and confidentiality:
 
 - **Authenticated Encryption with Associated Data (AEAD):** All data is
-protected using an AEAD cipher (AES-GCM-SIV). This means the information is both
-   encrypted (ensuring confidentiality) and authenticated. The authentication
-   layer allows Mapache to detect if a file has been altered or manipulated
-   externally.
+  protected using an AEAD cipher (AES-GCM-SIV). This means the information is
+  both encrypted (ensuring confidentiality) and authenticated. The
+  authentication layer allows Mapache to detect if a file has been altered or
+  manipulated externally.
 - **Content-Addressability:** Objects are identified by the cryptographic hash
-   (ID) of their content (BLAKE3). This provides a secondary and independent
-   verification mechanism to ensure the content has not been corrupted.
+  (ID) of their content (BLAKE3). This provides a secondary and independent
+  verification mechanism to ensure the content has not been corrupted.
 
 ### Attacker Limitations
 
 Due to the mandatory encryption and authentication:
 
 - An attacker who reads the data will only obtain unintelligible, encrypted
-   information.
+  information.
 - An attacker who modifies or renames files will cause the corresponding
-   integrity check (both AEAD and hash verification) to fail, rendering the data
-   unusable by Mapache.
+  integrity check (both AEAD and hash verification) to fail, rendering the data
+  unusable by Mapache.
 
 Therefore, the most effective action an attacker on the untrusted medium can
 take is the destruction (deletion) of the repository files. Mapache is unable to

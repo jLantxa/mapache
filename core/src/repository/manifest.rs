@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::mapache::ID;
@@ -8,7 +8,7 @@ use crate::mapache::ID;
 pub struct Manifest {
     version: u32,
     id: ID,
-    created_time: DateTime<Utc>,
+    created_time: DateTime<Local>,
 }
 
 impl Manifest {
@@ -17,7 +17,7 @@ impl Manifest {
         Self {
             version,
             id: ID::new_random(),
-            created_time: Utc::now(),
+            created_time: Local::now(),
         }
     }
 
@@ -32,7 +32,7 @@ impl Manifest {
     }
 
     /// Returns the creation timestamp of the repository.
-    pub fn created_time(&self) -> DateTime<Utc> {
+    pub fn created_time(&self) -> DateTime<Local> {
         self.created_time
     }
 }

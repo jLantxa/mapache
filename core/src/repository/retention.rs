@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    hash::Hash,
+};
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
 
@@ -31,7 +34,7 @@ pub enum RetentionRule {
 ///
 /// `snapshots_sorted`: A vector of (ID, Snapshot) tuples, sorted in ascending order by timestamp.
 /// `policies`: A slice of `RetentionRule` to apply.
-/// `now`: The current time to use for `KeepWithin` policy (useful for testing).
+/// `now`: The current time to use for `KeepWithin` policy.
 pub fn apply_retention_rules(
     snapshots_sorted: &[(ID, Snapshot, bool)],
     rules: &[RetentionRule],
@@ -64,26 +67,28 @@ pub fn apply_retention_rules(
                     .map(|(id, _, _active)| *id)
                     .collect()
             }
-
             RetentionRule::KeepYearly(n) => {
                 // Cutoff is Jan 1st of the year (N-1) years ago.
                 let target_year = now.year() - ((*n - 1) as i32);
+                let naive_date = NaiveDate::from_ymd_opt(target_year, 1, 1).unwrap();
+                let naive_datetime = naive_date.and_hms_opt(0, 0, 0).unwrap();
+
                 let cutoff = timezone
-                    .with_ymd_and_hms(target_year, 1, 1, 0, 0, 0)
-                    .unwrap();
+                    .from_local_datetime(&naive_datetime)
+                    .earliest()
+                    .unwrap_or_else(|| timezone.from_local_datetime(&naive_datetime).unwrap());
 
                 keep_latest_per_period(snapshots_sorted, |s| s.timestamp.year(), cutoff)
             }
-
             RetentionRule::KeepMonthly(n) => {
                 // Cutoff is the 1st of the month N months ago.
                 let mut target_date: NaiveDate = now_date.with_day(1).unwrap();
 
+                // Manual month decrement logic remains, as this requires calendar arithmetic
                 for _ in 1..*n {
                     let month = target_date.month();
                     let year = target_date.year();
                     if month == 1 {
-                        // January (1) -> December (12) of the previous year
                         target_date = target_date
                             .with_year(year - 1)
                             .unwrap()
@@ -94,11 +99,12 @@ pub fn apply_retention_rules(
                     }
                 }
 
-                let cutoff = target_date
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_local_timezone(timezone)
-                    .unwrap();
+                let naive_datetime = target_date.and_hms_opt(0, 0, 0).unwrap();
+
+                let cutoff = timezone
+                    .from_local_datetime(&naive_datetime)
+                    .earliest()
+                    .unwrap_or_else(|| timezone.from_local_datetime(&naive_datetime).unwrap());
 
                 keep_latest_per_period(
                     snapshots_sorted,
@@ -106,22 +112,19 @@ pub fn apply_retention_rules(
                     cutoff,
                 )
             }
-
             RetentionRule::KeepWeekly(n) => {
                 // Cutoff is the Monday 00:00 of the week N weeks ago (ISO 8601 start of week).
-                // Find the Monday of the current week (day 0 from Monday).
                 let current_monday_date =
                     now_date - Duration::days(now_date.weekday().num_days_from_monday() as i64);
 
                 let target_monday_date = current_monday_date - Duration::weeks((*n - 1) as i64);
 
-                let cutoff = target_monday_date
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_local_timezone(timezone)
-                    .unwrap();
+                let naive_datetime = target_monday_date.and_hms_opt(0, 0, 0).unwrap();
 
-                println!("cut {}", cutoff);
+                let cutoff = timezone
+                    .from_local_datetime(&naive_datetime)
+                    .earliest()
+                    .unwrap_or_else(|| timezone.from_local_datetime(&naive_datetime).unwrap());
 
                 keep_latest_per_period(
                     snapshots_sorted,
@@ -129,7 +132,6 @@ pub fn apply_retention_rules(
                     cutoff,
                 )
             }
-
             RetentionRule::KeepDaily(n) => {
                 // Calculate midnight of the current day for the anchor.
                 let now_midnight = now_date
@@ -141,13 +143,8 @@ pub fn apply_retention_rules(
                 // Cutoff is midnight of the day N days ago.
                 let cutoff = now_midnight - Duration::days((*n - 1) as i64);
 
-                keep_latest_per_period(
-                    snapshots_sorted,
-                    |s| (s.timestamp.year(), s.timestamp.month(), s.timestamp.day()),
-                    cutoff,
-                )
+                keep_latest_per_period(snapshots_sorted, |s| s.timestamp.date_naive(), cutoff)
             }
-
             RetentionRule::KeepTags(tags) => {
                 // Keep all snapshots that match the required tags.
                 snapshots_sorted
@@ -175,10 +172,10 @@ fn keep_latest_per_period<K, F>(
     cut_off: DateTime<Local>,
 ) -> HashSet<ID>
 where
-    K: Ord,
+    K: Eq + Hash,
     F: Fn(&Snapshot) -> K,
 {
-    let mut kept_periods: BTreeMap<K, ID> = BTreeMap::new();
+    let mut kept_periods: HashMap<K, ID> = HashMap::new();
 
     for (id, snapshot, _active) in snapshots_sorted.iter().rev() {
         let key = key_extractor(snapshot);
@@ -283,8 +280,6 @@ mod tests {
         ];
 
         assert_no_duplicate_ids(&snapshots);
-
-        println!("{}", snapshots[17].1.timestamp);
 
         snapshots.sort_by_key(|(_, snapshot, _)| snapshot.timestamp);
 

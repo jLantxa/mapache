@@ -12,8 +12,8 @@ base64 = "0.22.1"
 blake3 = "1.8.2"
 chrono = { version = "0.4.42", features = ["serde"] }
 chunker = { path = "../chunker" }
-clap = { version = "4.5.51", features = ["derive", "wrap_help"] }
-clap_complete = "4.5.60"
+clap = { version = "4.5.53", features = ["derive", "wrap_help"] }
+clap_complete = "4.5.61"
 colored = "3.0.0"
 crossbeam-channel = "0.5.15"
 dialoguer = "0.12.0"

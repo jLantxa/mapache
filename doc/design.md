@@ -375,6 +375,64 @@ All data except the header length field is encrypted.
 
 ### Index
 
+The index files, located in the repo/index directory, are the repository's
+central lookup mechanism and source of truth for all stored data.
+
+These files contain metadata about the repository's pack files. Crucially, they
+act as a map, linking the ID (BLAKE3 hash) of every content-addressable tree and
+data blob to its specific physical location, including the Pack ID, offset, and
+length within that pack.
+
+The index determines what data exists in the repository; any pack or blob data
+not referenced by an index is considered non-existent and subject to garbage
+collection, which is key to mapache's atomic append mechanism. The filename of
+the index file itself is the hash of its encoded content.
+
+```json
+{
+  "packs": [
+    {
+      "id": "c2334c5e29563850cb254b63fba125bb1b60e860b1886fae7bd4f5e5a637f4c0",
+      "blobs": [
+        {
+          "id": "22bb6896db82b2fcc2d8057d6e16298e8318a04d1e0dd5b6c84fadc46a234f4c",
+          "type": "Data",
+          "offset": 25763,
+          "length": 3265,
+          "raw_length": 12108
+        },
+        {
+          "id": "99ce77389066f2982e8350eefdbf21ccef026d94fc4827dbc24cd52d77e25e7f",
+          "type": "Data",
+          "offset": 73520,
+          "length": 2462,
+          "raw_length": 7515
+        },
+      ]
+    },
+    {
+      "id": "9a2ad285d1dd3d9fd7ca7b8fc8bcbcbd62ef9871bbf1f74757ad392a58e4d71e",
+      "blobs": [
+        {
+          "id": "ffcdcfc7ac3832168c952f4e396588b7cb523e009c0abf776c46806468146985",
+          "type": "Tree",
+          "offset": 3188,
+          "length": 897,
+          "raw_length": 3514
+        },
+        {
+          "id": "23f87643e00c9f7c498c057a58ed2f38af22402eaab9e7b58a8bfa505b11756b",
+          "type": "Tree",
+          "offset": 5206,
+          "length": 863,
+          "raw_length": 3475
+        },
+      ]
+    }
+  ]
+}
+```
+
 ### Locks
 
 Lock files are the locking and synchronization mechanism at the repository

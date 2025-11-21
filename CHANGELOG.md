@@ -11,6 +11,9 @@
 - The custom chunker is now the default and only chunker. Use the `rechunk`
   command to run the deduplication on older repositories. The old chunks will
   be removed by the garbage collector the next time `clean` is called.
+- The period-based retention rules (`keep-daily`, `keep-weekly`, `keep-monthly`
+  and `keey-yearly`) now keep one snapshot per period for the last N periods
+  instead of the last N snapshots.
 
 ## v0.1.0-beta.5
 

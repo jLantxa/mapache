@@ -1,11 +1,11 @@
 # mapache
 
+![Badge](https://github.com/jlantxa/mapache/workflows/main/badge.svg)
+
 A **work-in-progress** de-duplicating incremental **backup** tool written in Rust.
 
 **Note:**
 This software is still a work in progress. The format of the repository is unstable and subject to change, which could render different versions incompatible. It has not been thoroughly tested. For the time being, you should not use this tool for anything important.
-
-<img src="doc/res/mapache.png" alt="mapache logo" width="200"/>
 
 ---
 
@@ -46,7 +46,7 @@ The development of `mapache` is guided by the following core principles:
 
 `mapache` is still in early development going through milestones.
 
-<img src="doc/res/v0.1.0_roadmap.drawio.svg" alt="v0.1.0 roadmap"/>
+![v0.1.0 roadmap](doc/res/v0.1.0_roadmap.drawio.svg)
 
 ### 1. `Snapshots` *(complete)*
 

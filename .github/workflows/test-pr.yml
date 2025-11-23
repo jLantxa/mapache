@@ -1,7 +1,7 @@
-name: main
+name: test-pr
 
 on:
-  push:
+  pull_request:
     branches: [ "main" ]
 
 env:

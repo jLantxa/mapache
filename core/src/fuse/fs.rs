@@ -64,11 +64,11 @@ impl MapacheFS {
 
 impl Filesystem for MapacheFS {
     fn init(&mut self, _req: &Request<'_>, _config: &mut KernelConfig) -> Result<(), libc::c_int> {
-        let snapshot_streamer = SnapshotStream::new(self.repo.clone());
-        if let Err(e) = &snapshot_streamer {
+        let snapshot_stream = SnapshotStream::new(self.repo.clone());
+        if let Err(e) = &snapshot_stream {
             ui::cli::error!("Failed to read snapshots: {}", e.to_string());
         }
-        let mut snapshots: Vec<(ID, Snapshot)> = snapshot_streamer.unwrap().collect();
+        let mut snapshots: Vec<(ID, Snapshot)> = snapshot_stream.unwrap().collect();
         snapshots.sort_unstable_by_key(|(_, snapshot)| snapshot.timestamp);
 
         // snapshots

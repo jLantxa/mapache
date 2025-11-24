@@ -12,7 +12,7 @@ use crate::{
     mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
-        snapshot::{SnapshotSummary, SnapshotTuple},
+        snapshot::{SnapshotPair, SnapshotSummary},
     },
     ui::{
         self,
@@ -55,6 +55,10 @@ pub struct CmdArgs {
     /// Don't scan the file system
     #[clap(long, value_parser, default_value_t = false)]
     pub no_scan: bool,
+
+    /// Don't create a snapshot if there are no changes since the parent snapshot
+    #[clap(long, default_value_t = false)]
+    pub skip_if_unchanged: bool,
 
     /// Use a snapshot as parent (ID or 'latest'). This snapshot will be the base when analyzing differences.
     #[clap(long, group = "scan_mode", value_parser = clap::value_parser!(UseSnapshot),
@@ -157,18 +161,18 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let snapshot_root_path = utils::calculate_lcp(&absolute_source_paths, false);
 
     ui::cli::log!();
-    let parent_snapshot_tuple: Option<SnapshotTuple> = match args.no_parent {
+    let parent_snapshot_pair: Option<SnapshotPair> = match args.no_parent {
         true => {
             ui::cli::log!("Full scan");
             None
         }
         false => match find_use_snapshot(repo.clone(), &args.parent) {
-            Ok(Some((id, snap))) => {
+            Ok(Some((id, snapshot))) => {
                 ui::cli::log!(
                     "Using snapshot {} as parent",
                     id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
                 );
-                Some((id, snap))
+                Some(SnapshotPair { id, snapshot })
             }
             Ok(None) => {
                 ui::cli::log!("{} This is the first snapshot.", "[!]".bold().cyan());
@@ -205,7 +209,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             absolute_source_paths,
             snapshot_root_path,
             exclude_paths: normalized_excludes.unwrap_or_default(),
-            parent_snapshot: parent_snapshot_tuple,
+            parent_snapshot: parent_snapshot_pair.as_ref(),
             tags,
             description: args.description.clone(),
             no_scan: args.no_scan,
@@ -214,23 +218,29 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         progress_reporter.clone(),
     )?;
 
-    let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) = repo.save_file(
-        &mapache::SaveID::CalculateID,
-        serde_json::to_string(&new_snapshot)?.as_bytes(),
-        StorageHint {
-            is_metadata: true,
-            file_type: ContentIdType::Snapshot,
-        },
-        None,
-    )?;
+    let should_save_snapshot = !args.skip_if_unchanged
+        || parent_snapshot_pair.is_none()
+        || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
 
-    progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);
+    if should_save_snapshot {
+        let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) = repo.save_file(
+            &mapache::SaveID::CalculateID,
+            serde_json::to_string(&new_snapshot)?.as_bytes(),
+            StorageHint {
+                is_metadata: true,
+                file_type: ContentIdType::Snapshot,
+            },
+            None,
+        )?;
+        progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);
+        progress_reporter.finalize();
 
-    // Finalize reporter. This removes the progress bars.
-    progress_reporter.finalize();
-
-    // Final report
-    show_final_report(&snapshot_id, &progress_reporter.get_summary(), args);
+        // Final report
+        show_final_report(&snapshot_id, &progress_reporter.get_summary(), args);
+    } else {
+        progress_reporter.finalize();
+        ui::cli::log!("No changes detected since parent. Skipping snapshot.");
+    }
 
     ui::cli::log!(
         "Finished in {}",

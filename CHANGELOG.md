@@ -14,6 +14,8 @@
 - The period-based retention rules (`keep-daily`, `keep-weekly`, `keep-monthly`
   and `keey-yearly`) now keep one snapshot per period for the last N periods
   instead of the last N snapshots.
+- Added a `--skip-if-unchanged` flag to `mapache snapshot` to skip saving
+  snapshots without new changes.
 
 ## v0.1.0-beta.5
 

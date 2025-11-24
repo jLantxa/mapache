@@ -77,7 +77,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    let snapshot_streamer = SnapshotStream::new(repo_arc.clone())?;
+    let snapshot_stream = SnapshotStream::new(repo_arc.clone())?;
 
     let mut visited_blobs = BTreeSet::new();
 
@@ -155,11 +155,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!();
     }
 
-    let num_snapshots = snapshot_streamer.len();
+    let num_snapshots = snapshot_stream.len();
     let mut ok_counter = 0;
     let mut error_counter = 0;
 
-    for (i, (snapshot_id, _snapshot)) in snapshot_streamer.enumerate() {
+    for (i, (snapshot_id, _snapshot)) in snapshot_stream.enumerate() {
         ui::cli::log!(
             "Verifying snapshot {}  ({} / {})",
             snapshot_id

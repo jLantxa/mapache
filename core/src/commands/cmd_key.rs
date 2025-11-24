@@ -9,7 +9,7 @@ use crate::{
     commands::GlobalArgs,
     mapache::{ContentIdType, ID},
     repository::{
-        keys::{KeyFileStreamer, KeyManager},
+        keys::{KeyFileStream, KeyManager},
         repo::{Auth, KEYS_DIR},
         storage::SecureStorage,
     },
@@ -84,8 +84,8 @@ fn run_list(global_args: &GlobalArgs) -> Result<()> {
         "Created".bold().yellow().to_string(),
     ]);
 
-    let keyfile_streamer = KeyFileStreamer::new(backend.clone())?;
-    for (id, keyfile) in keyfile_streamer.flatten() {
+    let keyfile_stream = KeyFileStream::new(backend.clone())?;
+    for (id, keyfile) in keyfile_stream.flatten() {
         table.add_row(vec![
             keyfile.username,
             id.to_short_hex(6),

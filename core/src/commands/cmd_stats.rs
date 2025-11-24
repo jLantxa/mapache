@@ -187,8 +187,8 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
 }
 
 fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
-    let snapshot_streamer = SnapshotStream::new(repo.clone())?;
-    let num_snapshots = snapshot_streamer.len();
+    let snapshot_stream = SnapshotStream::new(repo.clone())?;
+    let num_snapshots = snapshot_stream.len();
 
     let mut error_counter = 0usize;
     let mut total_restore_size = 0u64;
@@ -211,7 +211,7 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
     let index = repo.index();
     let index_guard = index.read();
 
-    for (i, (_id, snapshot)) in snapshot_streamer.enumerate() {
+    for (i, (_id, snapshot)) in snapshot_stream.enumerate() {
         spinner.set_message(format!(
             "Analyzing snapshots: {} / {}",
             i + 1,

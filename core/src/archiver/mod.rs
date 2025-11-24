@@ -17,19 +17,22 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     archiver::tree_serializer::TreeSerializer,
-    fs::tree::{FSNodeStream, NodeDiff, NodeDiffStreamer, SerializedNodeStream, StreamNode},
+    fs::tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
     mapache::ID,
-    repository::{repo::Repository, snapshot::Snapshot},
+    repository::{
+        repo::Repository,
+        snapshot::{Snapshot, SnapshotPair},
+    },
     ui::snapshot_progress::SnapshotProgressReporter,
     utils,
 };
 
 #[derive(Clone)]
-pub struct SnapshotOptions {
+pub struct SnapshotOptions<'a> {
     pub absolute_source_paths: Vec<PathBuf>,
     pub snapshot_root_path: PathBuf,
     pub exclude_paths: Vec<PathBuf>,
-    pub parent_snapshot: Option<(ID, Snapshot)>,
+    pub parent_snapshot: Option<&'a SnapshotPair>,
     pub tags: BTreeSet<String>,
     pub description: Option<String>,
     pub no_scan: bool,
@@ -55,14 +58,14 @@ pub(crate) fn snapshot(
     let parent_tree_id: Option<ID> = snapshot_options
         .parent_snapshot
         .as_ref()
-        .map(|(_id, snapshot)| snapshot.tree);
+        .map(|snapshot_pair| snapshot_pair.snapshot.tree);
 
-    // Create streamers
-    let fs_streamer = FSNodeStream::from_paths(
+    // Create streams
+    let fs_stream = FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
     )?;
-    let previous_tree_streamer = SerializedNodeStream::new(
+    let previous_tree_stream = SerializedNodeStream::new(
         repo.clone(),
         parent_tree_id,
         snapshot_options.snapshot_root_path.clone(),
@@ -90,8 +93,8 @@ pub(crate) fn snapshot(
     let diff_thread = spawn_diff_thread(
         progress_reporter.clone(),
         fatal_error_flag.clone(),
-        previous_tree_streamer,
-        fs_streamer,
+        previous_tree_stream,
+        fs_stream,
         diff_tx,
     );
     let processor_thread = spawn_processor_thread(
@@ -141,7 +144,9 @@ pub(crate) fn snapshot(
     match root_tree_id {
         Some(tree_id) => Ok(Snapshot {
             timestamp: Local::now(),
-            parent: snapshot_options.parent_snapshot.map(|(id, _)| id),
+            parent: snapshot_options
+                .parent_snapshot
+                .map(|snapshot_pair| snapshot_pair.id),
             tree: tree_id,
             root: snapshot_options.snapshot_root_path,
             paths: snapshot_options.absolute_source_paths,
@@ -185,8 +190,8 @@ fn spawn_scanner_thread(
             return Ok(());
         }
         match FSNodeStream::from_paths(absolute_source_paths, exclude_paths) {
-            Ok(scan_streamer) => {
-                for (_path, stream_node) in scan_streamer.flatten() {
+            Ok(scan_stream) => {
+                for (_path, stream_node) in scan_stream.flatten() {
                     let node = stream_node.node;
                     progress_reporter.add_expected_items(1);
                     if node.is_file() {
@@ -207,19 +212,19 @@ fn spawn_scanner_thread(
 }
 
 /// Spawns the diff thread.
-/// This thread iterates the NodeDiffStreamer and passes the items to the item
+/// This thread iterates the NodeDiffStream and passes the items to the item
 /// processor thread.
 fn spawn_diff_thread(
     progress_reporter: Arc<SnapshotProgressReporter>,
     fatal_error_flag: Arc<AtomicBool>,
-    previous_tree_streamer: SerializedNodeStream,
-    fs_streamer: FSNodeStream,
+    previous_tree_stream: SerializedNodeStream,
+    fs_stream: FSNodeStream,
     diff_tx: crossbeam_channel::Sender<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let diff_streamer = NodeDiffStreamer::new(previous_tree_streamer, fs_streamer);
+        let diff_stream = NodeDiffStream::new(previous_tree_stream, fs_stream);
 
-        for diff_result in diff_streamer {
+        for diff_result in diff_stream {
             if fatal_error_flag.load(Ordering::Relaxed) {
                 break;
             }

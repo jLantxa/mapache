@@ -75,6 +75,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -208,6 +209,7 @@ mod tests {
             tags_str: "tag0,tag1".to_string(),
             description: Some(String::from("This snapshot will be amended")),
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -229,8 +231,8 @@ mod tests {
         };
         commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend (1/2)")?;
 
-        let mut snapshot_streamer = SnapshotStream::new(repo.clone())?;
-        let (_, snapshot) = snapshot_streamer
+        let mut snapshot_stream = SnapshotStream::new(repo.clone())?;
+        let (_, snapshot) = snapshot_stream
             .latest()
             .expect("There should be at least one snapshot");
 
@@ -249,8 +251,8 @@ mod tests {
         };
         commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend (2/2)")?;
 
-        let mut snapshot_streamer = SnapshotStream::new(repo.clone())?;
-        let (_, snapshot) = snapshot_streamer
+        let mut snapshot_stream = SnapshotStream::new(repo.clone())?;
+        let (_, snapshot) = snapshot_stream
             .latest()
             .expect("There should be at least one snapshot");
 

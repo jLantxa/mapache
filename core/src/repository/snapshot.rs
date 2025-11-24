@@ -9,7 +9,11 @@ use crate::{commands::EMPTY_TAG_MARK, fs::tree::NodeDiff, repository::repo::Repo
 
 use crate::mapache::ID;
 
-pub type SnapshotTuple = (ID, Snapshot);
+#[derive(Debug, Clone)]
+pub struct SnapshotPair {
+    pub id: ID,
+    pub snapshot: Snapshot,
+}
 
 /// Represents a complete snapshot of backed-up data at a specific point in time.
 ///

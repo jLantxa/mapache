@@ -89,8 +89,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
 
     if args.all {
-        let snapshot_streamer = SnapshotStream::new(repo.clone())?;
-        let mut all_snapshots: Vec<(ID, Snapshot)> = snapshot_streamer.collect();
+        let snapshot_stream = SnapshotStream::new(repo.clone())?;
+        let mut all_snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect();
         snapshots.append(&mut all_snapshots);
     } else {
         match find_use_snapshot(repo.clone(), &args.snapshot) {

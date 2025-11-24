@@ -563,6 +563,33 @@ pub fn dir_size(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
+/// Counts entries in a directory based on a custom filtering function.
+///
+/// The filter closure receives a reference to a fs::DirEntry and should return
+/// 'true' if the entry should be counted.
+pub fn count_entries<F>(dir_path: &Path, filter: F) -> Result<usize>
+where
+    F: Fn(&std::fs::DirEntry) -> bool,
+{
+    let entries = dir_path.read_dir()?;
+    let mut count = 0;
+
+    for entry in entries {
+        if let Ok(entry) = entry
+            && filter(&entry)
+        {
+            count += 1;
+        }
+    }
+
+    Ok(count)
+}
+
+/// Counts files in a directory.
+pub fn count_files(dir_path: &Path) -> Result<usize> {
+    count_entries(dir_path, |entry| entry.path().is_file())
+}
+
 // --- Tests ---
 #[cfg(test)]
 mod tests {

@@ -145,7 +145,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_files = 0;
     let mut num_dirs = 0;
     let mut num_expected_items = 0;
-    let scan_node_streamer = SerializedNodeStream::new(
+    let scan_node_stream = SerializedNodeStream::new(
         repo.clone(),
         Some(snapshot.tree),
         PathBuf::new(),
@@ -162,7 +162,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    for (_path, stream_node) in scan_node_streamer.flatten() {
+    for (_path, stream_node) in scan_node_stream.flatten() {
         let node = stream_node.node;
         num_expected_items += 1;
 

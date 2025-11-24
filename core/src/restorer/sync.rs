@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use crate::{fs::tree::SerializedTreeStreamer, mapache::ID, repository::repo::Repository, ui};
+use crate::{fs::tree::SerializedTreeStream, mapache::ID, repository::repo::Repository, ui};
 
 /// Delete all local nodes not present in a snapshot tree
 pub fn delete_nodes(
@@ -18,13 +18,13 @@ pub fn delete_nodes(
     exclude: Option<Vec<PathBuf>>,
     dry_run: bool,
 ) -> Result<()> {
-    let tree_streamer =
-        SerializedTreeStreamer::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
+    let tree_stream =
+        SerializedTreeStream::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
             .with_context(|| {
-            format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
-        })?;
+                format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
+            })?;
 
-    for item_result in tree_streamer {
+    for item_result in tree_stream {
         // Handle potential errors from the stream itself.
         // If an error occurs, log a warning and skip to the next item,
         // rather than bailing out entirely, which seems to be the intended behavior.

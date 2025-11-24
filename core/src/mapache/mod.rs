@@ -209,7 +209,7 @@ pub(crate) fn rewrite_snapshot_tree(
     paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
 
     let mut tree_serializer = TreeSerializer::new(repo.clone(), snapshot.root.clone(), &paths);
-    let node_streamer = SerializedNodeStream::new(
+    let node_stream = SerializedNodeStream::new(
         repo.clone(),
         Some(snapshot.tree),
         snapshot.root.clone(),
@@ -220,7 +220,7 @@ pub(crate) fn rewrite_snapshot_tree(
     snapshot.summary.processed_items_count = 0;
     snapshot.summary.processed_bytes = 0;
 
-    for (path, mut stream_node) in node_streamer.flatten() {
+    for (path, mut stream_node) in node_stream.flatten() {
         progress_reporter.processing_node(&path, NodeDiff::Unchanged);
 
         if stream_node.node.is_file() {

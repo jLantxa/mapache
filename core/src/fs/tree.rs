@@ -81,7 +81,7 @@ pub struct StreamNode {
     pub num_children: usize,
 }
 
-/// A tuple representing an item yielded by the node streamers:
+/// A tuple representing an item yielded by the node streams:
 /// (full path of the node, the stream node itself).
 pub type StreamNodeInfo = (PathBuf, StreamNode);
 
@@ -362,14 +362,14 @@ impl Iterator for SerializedNodeStream {
 /// This stream also allows including and excluding a list of paths. Paths in the exclude list, and their
 /// children, are never explored nor emitted. If the include list is not empty, only nodes in the same branch
 /// (children and parents (intermediate nodes to reach the included path)) as those paths will be emitted.
-pub struct SerializedTreeStreamer {
+pub struct SerializedTreeStream {
     repo: Arc<Repository>,
     stack: Vec<(PathBuf, ID)>,
     include: Option<Vec<PathBuf>>,
     exclude: Option<Vec<PathBuf>>,
 }
 
-impl SerializedTreeStreamer {
+impl SerializedTreeStream {
     pub fn new(
         repo: Arc<Repository>,
         root_id: &ID,
@@ -386,7 +386,7 @@ impl SerializedTreeStreamer {
     }
 }
 
-impl Iterator for SerializedTreeStreamer {
+impl Iterator for SerializedTreeStream {
     type Item = Result<(PathBuf, Tree)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -447,7 +447,7 @@ pub enum NodeDiff {
     Unchanged,
 }
 
-/// A tuple representing an item yielded by the NodeDiffStreamer:
+/// A tuple representing an item yielded by the NodeDiffStream:
 /// (full path, node from 'previous' stream, node from 'next' stream, difference type).
 pub type DiffTuple = (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff);
 
@@ -462,7 +462,7 @@ pub type DiffTuple = (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)
 /// - Deleted: `prev` has a node not present in `next`.
 /// - Changed: `previous` and `next` share a node, but they are deemed to be different (by comparing metadata).
 /// - Unchanged: `previous` and `next` share a node and they are deemed to be the same (by comparing metadata).
-pub struct NodeDiffStreamer<P, I>
+pub struct NodeDiffStream<P, I>
 where
     P: Iterator<Item = Result<(PathBuf, StreamNode)>>,
     I: Iterator<Item = Result<(PathBuf, StreamNode)>>,
@@ -473,7 +473,7 @@ where
     head_next: Option<Result<(PathBuf, StreamNode)>>,
 }
 
-impl<P, I> NodeDiffStreamer<P, I>
+impl<P, I> NodeDiffStream<P, I>
 where
     P: Iterator<Item = Result<(PathBuf, StreamNode)>>,
     I: Iterator<Item = Result<(PathBuf, StreamNode)>>,
@@ -488,7 +488,7 @@ where
     }
 }
 
-impl<P, I> Iterator for NodeDiffStreamer<P, I>
+impl<P, I> Iterator for NodeDiffStream<P, I>
 where
     P: Iterator<Item = Result<(PathBuf, StreamNode)>>,
     I: Iterator<Item = Result<(PathBuf, StreamNode)>>,
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_node_streamer_with_root() -> Result<()> {
+    fn test_fs_node_stream_with_root() -> Result<()> {
         let temp_dir = tempdir()?;
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
@@ -841,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_node_streamer_with_many_roots() -> Result<()> {
+    fn test_fs_node_stream_with_many_roots() -> Result<()> {
         let temp_dir = tempdir()?;
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
@@ -884,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_node_streamer_with_intermediate_paths() -> Result<()> {
+    fn test_fs_node_stream_with_intermediate_paths() -> Result<()> {
         let temp_dir = tempdir()?;
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
@@ -923,8 +923,8 @@ mod tests {
 
         let dir_a = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let dir_b = FSNodeStream::from_paths(vec![tmp_path.join("dir_b")], Vec::new())?;
-        let diff_streamer = NodeDiffStreamer::new(dir_a, dir_b);
-        let diffs: Vec<Result<DiffTuple>> = diff_streamer.collect();
+        let diff_stream = NodeDiffStream::new(dir_a, dir_b);
+        let diffs: Vec<Result<DiffTuple>> = diff_stream.collect();
 
         assert_eq!(diffs.len(), 8);
         assert_eq!(diffs[0].as_ref().unwrap().3, NodeDiff::Deleted);
@@ -947,8 +947,8 @@ mod tests {
 
         let dir_a1 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
         let dir_a2 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())?;
-        let diff_streamer = NodeDiffStreamer::new(dir_a1, dir_a2);
-        let diffs: Vec<Result<DiffTuple>> = diff_streamer.collect();
+        let diff_stream = NodeDiffStream::new(dir_a1, dir_a2);
+        let diffs: Vec<Result<DiffTuple>> = diff_stream.collect();
 
         assert_eq!(diffs.len(), 6);
         assert_eq!(diffs[0].as_ref().unwrap().3, NodeDiff::Unchanged);
@@ -962,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_node_streamer_with_exclude_paths() -> Result<()> {
+    fn test_fs_node_stream_with_exclude_paths() -> Result<()> {
         let temp_dir = tempdir()?;
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;

@@ -379,7 +379,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
     let mut referenced_packs: HashSet<ID> = HashSet::new();
     let index = repo.index();
 
-    let snapshot_streamer = SnapshotStream::new(repo.clone())?;
+    let snapshot_stream = SnapshotStream::new(repo.clone())?;
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -391,7 +391,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    for (_snapshot_id, snapshot) in snapshot_streamer {
+    for (_snapshot_id, snapshot) in snapshot_stream {
         let tree_id = snapshot.tree;
 
         // Tree blob of the snapshot
@@ -412,13 +412,13 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>,
         }
 
         // Stream all nodes in the snapshot
-        let node_streamer =
+        let node_stream =
             SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 
         let mut missing_tree_blobs = 0;
         let mut missing_data_blobs = 0;
 
-        for node_res in node_streamer {
+        for node_res in node_stream {
             match node_res {
                 Ok((_path, stream_node)) => {
                     let node = &stream_node.node;

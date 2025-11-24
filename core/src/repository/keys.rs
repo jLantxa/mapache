@@ -144,8 +144,8 @@ impl KeyManager {
                 Ok((None, Self::decode_master_key(&auth.password, &keyfile)?))
             }
             None => {
-                let keyfile_streamer = KeyFileStreamer::new(self.backend.clone())?;
-                for (id, keyfile) in keyfile_streamer.flatten() {
+                let keyfile_stream = KeyFileStream::new(self.backend.clone())?;
+                for (id, keyfile) in keyfile_stream.flatten() {
                     // Discard this key if it belongs to a different user
                     if keyfile.username != auth.username {
                         continue;
@@ -183,11 +183,11 @@ impl KeyManager {
 
     /// Load a keyfile with a given username
     pub fn load_keyfile_with_username(&self, username: &str) -> Result<Option<(ID, KeyFile)>> {
-        let keyfile_streamer = KeyFileStreamer::new(self.backend.clone())?;
+        let keyfile_stream = KeyFileStream::new(self.backend.clone())?;
 
         // Collect all valid keyfiles for the given username in a single pass.
         // Flattens the Result<T> iterator, silently skipping corrupt files.
-        let matches: Vec<(ID, KeyFile)> = keyfile_streamer
+        let matches: Vec<(ID, KeyFile)> = keyfile_stream
             .flatten()
             .filter(|(_id, keyfile)| keyfile.username == username)
             .collect();
@@ -207,9 +207,9 @@ impl KeyManager {
 
     /// Delete keyfiles with a given username
     pub fn delete_keyfile_with_username(&self, username: &str) -> Result<()> {
-        let keyfile_streamer = KeyFileStreamer::new(self.backend.clone())?;
+        let keyfile_stream = KeyFileStream::new(self.backend.clone())?;
 
-        for (id, keyfile) in keyfile_streamer.flatten() {
+        for (id, keyfile) in keyfile_stream.flatten() {
             if keyfile.username == username {
                 self.delete_keyfile_with_id(&id)?;
             }
@@ -281,19 +281,19 @@ impl KeyManager {
 /// A KeyFile stream.
 ///
 /// This stream loads KeyFile on demand.
-pub struct KeyFileStreamer {
+pub struct KeyFileStream {
     backend: Arc<dyn StorageBackend>,
     entries: Vec<PathBuf>,
 }
 
-impl KeyFileStreamer {
+impl KeyFileStream {
     pub fn new(backend: Arc<dyn StorageBackend>) -> Result<Self> {
         let entries = backend.list_dir(Path::new(KEYS_DIR))?;
         Ok(Self { backend, entries })
     }
 }
 
-impl Iterator for KeyFileStreamer {
+impl Iterator for KeyFileStream {
     type Item = Result<(ID, KeyFile)>;
 
     fn next(&mut self) -> Option<Self::Item> {

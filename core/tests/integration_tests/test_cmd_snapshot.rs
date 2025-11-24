@@ -8,8 +8,9 @@ mod tests {
         commands::{self, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
         fs,
         mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
-        repository::repo::Auth,
+        repository::repo::{Auth, SNAPSHOTS_DIR},
         restorer::Strategy,
+        utils,
     };
 
     use tempfile::tempdir;
@@ -56,6 +57,11 @@ mod tests {
         // Init repo
         init_repo(&auth, repo_path.clone())?;
 
+        let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
+        assert_eq!(utils::count_files(&snapshots_dir)?, 0);
+        let index_dir = repo_path.join("index");
+        assert_eq!(utils::count_files(&index_dir)?, 0);
+
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![
@@ -69,6 +75,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -77,6 +84,8 @@ mod tests {
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
             .context("Failed to run cmd_snapshot")?;
+        assert_eq!(utils::count_files(&snapshots_dir)?, 1);
+        assert_ne!(utils::count_files(&index_dir)?, 0);
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -184,6 +193,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -194,12 +204,12 @@ mod tests {
             .context("Failed to run cmd_snapshot")?;
 
         // `snapshots` directory should be empty
-        let snapshots_read_dir = repo_path.join("snapshots").read_dir()?;
-        assert_eq!(0, snapshots_read_dir.into_iter().count());
+        let snapshots_dir = repo_path.join("snapshots");
+        assert_eq!(utils::count_files(&snapshots_dir)?, 0);
 
         // `index` directory should be empty
-        let index_read_dir = repo_path.join("index").read_dir()?;
-        assert_eq!(0, index_read_dir.into_iter().count());
+        let index_dir = repo_path.join("index");
+        assert_eq!(utils::count_files(&index_dir)?, 0);
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -272,6 +282,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -374,6 +385,9 @@ mod tests {
         // Init repo
         init_repo(&auth, repo_path.clone())?;
 
+        let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
+        assert_eq!(utils::count_files(&snapshots_dir)?, 0);
+
         // Run snapshot (1st)
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![
@@ -387,6 +401,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -394,7 +409,8 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .context("Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot 1")?;
+        assert_eq!(utils::count_files(&snapshots_dir)?, 1);
 
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![
@@ -408,6 +424,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -415,7 +432,8 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
-            .context("Failed to run cmd_snapshot")?;
+            .context("Failed to run cmd_snapshot 2")?;
+        assert_eq!(utils::count_files(&snapshots_dir)?, 2);
 
         let restore_path = tmp_path.join("restore");
         let restore_args = cmd_restore::CmdArgs {
@@ -520,6 +538,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -631,6 +650,7 @@ mod tests {
             tags_str: String::new(),
             description: None,
             no_parent: false,
+            skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
             read_concurrency: 2,
@@ -689,6 +709,78 @@ mod tests {
                 assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_snapshot_skip_if_unchanged() -> Result<()> {
+        let tmp_dir = tempdir()?;
+        let tmp_path = tmp_dir.path();
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
+
+        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
+        let backup_data_tmp_path = tmp_path.join("backup");
+        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
+
+        let repo = String::from("repo");
+        let repo_path = tmp_path.join(&repo);
+
+        let global = GlobalArgs {
+            repo: repo_path.to_string_lossy().to_string(),
+            auth_file: Some(auth_file_path),
+            key: None,
+            quiet: true,
+            verbosity: None,
+            ssh_pubkey: None,
+            ssh_privatekey: None,
+            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            no_cache: true,
+        };
+        set_global_opts_with_args(&global);
+
+        // Init repo
+        init_repo(&auth, repo_path.clone())?;
+
+        let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
+        assert_eq!(utils::count_files(&snapshots_dir)?, 0);
+
+        // Run snapshot (1st)
+        let snapshot_args = cmd_snapshot::CmdArgs {
+            paths: vec![
+                backup_data_tmp_path.join("0"),
+                backup_data_tmp_path.join("1"),
+                backup_data_tmp_path.join("2"),
+                backup_data_tmp_path.join("file.txt"),
+            ],
+            as_root: false,
+            exclude: None,
+            tags_str: String::new(),
+            description: None,
+            no_parent: false,
+            skip_if_unchanged: true,
+            no_scan: true,
+            parent: UseSnapshot::Latest,
+            read_concurrency: 2,
+            write_concurrency: 2,
+            dry_run: false,
+        };
+
+        commands::cmd_snapshot::run(&global, &snapshot_args)
+            .context("Failed to run cmd_snapshot 1")?;
+        assert_eq!(utils::count_files(&snapshots_dir)?, 1);
+
+        commands::cmd_snapshot::run(&global, &snapshot_args)
+            .context("Failed to run cmd_snapshot 2")?;
+        assert_eq!(utils::count_files(&snapshots_dir)?, 1);
 
         Ok(())
     }

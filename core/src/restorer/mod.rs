@@ -42,7 +42,7 @@ pub fn restore(
     progress_reporter: Arc<RestoreProgressReporter>,
 ) -> Result<()> {
     let tree = snapshot.tree;
-    let node_streamer =
+    let node_stream =
         SerializedNodeStream::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)?;
 
     // Create the restore target directory
@@ -53,7 +53,7 @@ pub fn restore(
     // Directories to restore file times later
     let mut restored_dir_times = HashMap::new();
 
-    for node_res in node_streamer {
+    for node_res in node_stream {
         let (mut path, stream_node) = node_res?;
         let node = &stream_node.node;
 

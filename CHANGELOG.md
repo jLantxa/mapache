@@ -2,6 +2,8 @@
 
 ## Latest
 
+## v0.1.0-rc.1
+
 ### Changes
 
 - Added a `rechunk` command to reprocess all files in all snapshot and rechunk

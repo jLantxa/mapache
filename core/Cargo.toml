@@ -1,6 +1,6 @@
 [package]
 name = "mapache"
-version = "0.1.0-beta.5"
+version = "0.1.0-rc.1"
 edition = "2024"
 rust-version = "1.91"
 
@@ -21,7 +21,7 @@ directories = "6.0.0"
 filetime = "0.2.26"
 hostname = "0.4.1"
 indicatif = { version = "0.18.3", features = ["rayon"] }
-libc = { version = "0.2.177"}
+libc = { version = "0.2.177" }
 num_cpus = "1.17.0"
 num_enum = "0.7.5"
 parking_lot = "0.12.5"
@@ -35,7 +35,7 @@ ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 zstd = "0.13.3"
 
 [target.'cfg(unix)'.dependencies]
-fuser = {version = "0.16.0", optional = true}
+fuser = { version = "0.16.0", optional = true }
 
 [dev-dependencies]
 rstest = "0.26.1"
@@ -45,4 +45,4 @@ xz2 = "0.1.7"
 
 [features]
 default = ["fuse"]
-fuse = ["fuser"] #FUSE for mount command
+fuse = ["fuser"]   #FUSE for mount command

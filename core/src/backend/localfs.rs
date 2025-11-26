@@ -32,6 +32,30 @@ impl LocalFS {
     fn exists_exact(&self, path: &Path) -> bool {
         fs::path_exists(path)
     }
+
+    fn set_read_only_internal(&self, path: &Path) -> Result<()> {
+        let full_path = self.full_path(path);
+
+        let mut perms = std::fs::metadata(&full_path)?.permissions();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let current_mode = perms.mode();
+            let readonly_mode = current_mode & !0o222;
+            perms.set_mode(readonly_mode);
+        }
+
+        #[cfg(windows)]
+        {
+            perms.set_readonly(true);
+        }
+
+        std::fs::set_permissions(&full_path, perms)?;
+
+        Ok(())
+    }
 }
 
 impl StorageBackend for LocalFS {
@@ -112,6 +136,8 @@ impl StorageBackend for LocalFS {
 
         // Rename to the final path
         self.rename(&tmp_path, path)?;
+
+        let _ = self.set_read_only_internal(path);
 
         Ok(())
     }

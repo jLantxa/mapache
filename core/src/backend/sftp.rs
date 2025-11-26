@@ -297,6 +297,22 @@ impl SftpBackend {
 
         Ok(())
     }
+
+    fn set_read_only_internal(&self, sftp: &Sftp, path: &Path) -> Result<()> {
+        let full_path = self.full_path(path);
+
+        let mut stat = sftp.stat(&full_path)?;
+
+        if let Some(perm) = stat.perm.as_mut() {
+            *perm &= !0o222;
+        } else {
+            return Ok(());
+        }
+
+        sftp.setstat(&full_path, stat)?;
+
+        Ok(())
+    }
 }
 
 impl StorageBackend for SftpBackend {
@@ -374,6 +390,8 @@ impl StorageBackend for SftpBackend {
             .with_context(|| {
                 format!("Failed to rename {tmp_path:?}' to {path:?}' after write in sftp backend")
             })?;
+
+        let _ = self.set_read_only_internal(sftp, path);
 
         Ok(())
     }

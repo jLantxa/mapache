@@ -2,8 +2,8 @@
 
 ![Badge](https://github.com/jlantxa/mapache/workflows/main/badge.svg)
 
-Mapache is a fast, secure, de-duplicating, incremental **backup** tool written
-in Rust.
+Mapache is a **fast, secure, de-duplicating, incremental **backup** tool**
+written in Rust.
 
 You can find more [in-depth documentation](doc/mapache.md).
 
@@ -105,6 +105,10 @@ cargo build --release
   used for the `mount` command, is only available on Unix-like systems.
   To build mapache without fuse support, use the `--no-default-features` when
   building.
+
+```bash
+cargo build --release --no-default-features
+```
 
 ### Running
 

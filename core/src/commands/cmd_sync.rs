@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::cleanup::CleanupHandler,
-    mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
+    mapache::defaults::DEFAULT_PACK_SIZE,
     repository::repo::{LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self},
@@ -102,7 +102,6 @@ fn sync_backends(
             utils::format_count(to_delete.len(), "item", "items")
         );
     }
-    ui::cli::log!();
 
     let copy_progress_bar =
         ProgressBar::with_draw_target(Some(to_copy.len() as u64), default_bar_draw_target())
@@ -199,15 +198,13 @@ fn diff(
     let mut to_copy: Vec<BackendNode> = Vec::new();
     let mut to_delete: Vec<BackendNode> = Vec::new();
 
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
+    let spinner = ProgressBar::new_spinner().with_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.cyan} Calculating differences: {msg}")
             .unwrap()
             .tick_chars(SPINNER_TICK_CHARS),
     );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+    spinner.set_draw_target(default_bar_draw_target());
 
     let mut num_to_copy = 0;
     let mut num_to_delete = 0;
@@ -261,6 +258,8 @@ fn diff(
                 break;
             }
         }
+
+        spinner.tick();
     }
 
     // It's important to delete files before directories if a directory contains files.

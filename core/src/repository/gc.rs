@@ -213,7 +213,7 @@ impl Plan {
         )
         .with_style(
             ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] Finding blobs to repack ({pos})")
+                .template("[{percent} %] [{bar:20.cyan/white}] Finding blobs to repack")
                 .unwrap()
                 .progress_chars("=> "),
         );

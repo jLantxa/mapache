@@ -131,16 +131,18 @@ mod tests {
     fn test_insert_new_item() {
         let mut set = IndexSet::new();
         let index1 = set.insert("apple".to_string());
+        assert!(set.contains(&"apple".to_string()));
         assert_eq!(index1, 0);
         assert_eq!(set.len(), 1);
         assert_eq!(set.get_value(0), Some(&"apple".to_string()));
         assert_eq!(set.get_index(&"apple".to_string()), Some(&0));
 
         let index2 = set.insert("banana".to_string());
+        assert!(set.contains(&"banana".to_string()));
         assert_eq!(index2, 1);
         assert_eq!(set.len(), 2);
         assert_eq!(set.get_value(1), Some(&"banana".to_string()));
-        assert_eq!(set.get_index(&"banana".to_string()), Some(&1));
+        assert_eq!(set.get_index(&"banana".to_string()), Some(&1))
     }
 
     #[test]
@@ -148,6 +150,7 @@ mod tests {
         let mut set = IndexSet::new();
         set.insert("apple".to_string()); // index 0
         let index = set.insert("apple".to_string()); // Should return existing index
+        assert!(set.contains(&"apple".to_string()));
         assert_eq!(index, 0);
         assert_eq!(set.len(), 1); // Length should not change
     }
@@ -157,6 +160,10 @@ mod tests {
         let mut set = IndexSet::new();
         set.insert("apple".to_string());
         set.insert("banana".to_string());
+
+        assert!(set.contains(&"apple".to_string()));
+        assert!(set.contains(&"banana".to_string()));
+        assert!(!set.contains(&"orange".to_string()));
 
         assert_eq!(set.get_index(&"apple".to_string()), Some(&0));
         assert_eq!(set.get_index(&"banana".to_string()), Some(&1));

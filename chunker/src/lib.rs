@@ -21,7 +21,7 @@ use crate::lookup::{GEAR, GEAR_LS, MASKS};
 mod lookup;
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 pub const TOTAL_MIN_SIZE: usize = 64; // 64 B
 pub const TOTAL_MAX_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
@@ -31,7 +31,7 @@ pub const MAX_NORMAL_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 /// Chunk normalization level.
 /// Higher normalization levels result in a narrower distribution of the chunk
 /// sizes around the normal size.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Normalization {
     /// No normalization.
     None,
@@ -44,7 +44,6 @@ pub enum Normalization {
 }
 
 impl Normalization {
-    #[inline(always)]
     const fn bits(&self) -> usize {
         match self {
             Normalization::None => 0,
@@ -59,7 +58,6 @@ pub struct Chunker {
     min_size: usize,
     normal_size: usize,
     max_size: usize,
-    normalization: Normalization,
 
     gear: &'static [u64; 256],
     gear_ls: &'static [u64; 256],
@@ -97,7 +95,6 @@ impl Chunker {
             min_size,
             normal_size,
             max_size,
-            normalization,
             gear: &GEAR,
             gear_ls: &GEAR_LS,
             mask_s,
@@ -107,24 +104,7 @@ impl Chunker {
         }
     }
 
-    pub const fn min_size(&self) -> usize {
-        self.min_size
-    }
-
-    pub const fn normal_size(&self) -> usize {
-        self.normal_size
-    }
-
-    pub const fn max_size(&self) -> usize {
-        self.max_size
-    }
-
-    pub const fn normalization(&self) -> Normalization {
-        self.normalization
-    }
-
     /// Find a cut point in a slice of bytes.
-    #[inline(always)]
     pub fn cut(&self, data: &[u8]) -> usize {
         let len = data.len();
         if len <= self.min_size {

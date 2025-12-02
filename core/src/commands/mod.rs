@@ -258,3 +258,20 @@ fn extract_global(command: &Command) -> Option<&GlobalArgs> {
         Verify,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pack_size_parser() {
+        assert!(pack_size_parser("0").is_err());
+        assert!(matches!(pack_size_parser("1"), Ok(1.0)));
+        assert!(matches!(pack_size_parser("2"), Ok(2.0)));
+        assert!(matches!(pack_size_parser("16"), Ok(16.0)));
+        assert!(matches!(pack_size_parser("32"), Ok(32.0)));
+        assert!(matches!(pack_size_parser("4095"), Ok(4095.0)));
+        assert!(pack_size_parser("4096").is_err());
+        assert!(pack_size_parser("8000").is_err());
+    }
+}

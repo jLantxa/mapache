@@ -23,25 +23,8 @@ pub struct Tree {
 
 impl Tree {
     /// Creates a new empty tree.
-    pub fn new() -> Self {
-        Self { nodes: Vec::new() }
-    }
-
-    /// Add a node to the tree. This function makes sure to order the list of
-    /// nodes alphabetically by name. If a node with the same name already exists,
-    /// it is replaced.
-    pub fn add_node(&mut self, node: Node) {
-        match self
-            .nodes
-            .binary_search_by(|probe| probe.name.cmp(&node.name))
-        {
-            Ok(idx) => {
-                self.nodes[idx] = node;
-            }
-            Err(idx) => {
-                self.nodes.insert(idx, node);
-            }
-        }
+    pub fn new(nodes: Vec<Node>) -> Self {
+        Self { nodes }
     }
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,

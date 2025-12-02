@@ -685,6 +685,14 @@ mod tests {
     }
 
     #[test]
+    fn test_format_count() {
+        assert_eq!(format_count(0, "thing", "things"), "0 things");
+        assert_eq!(format_count(1, "thing", "things"), "1 thing");
+        assert_eq!(format_count(2, "thing", "things"), "2 things");
+        assert_eq!(format_count(500, "thing", "things"), "500 things");
+    }
+
+    #[test]
     fn test_calculate_lcp() {
         let paths: Vec<PathBuf> = vec![];
         assert_eq!(calculate_lcp(&paths, true), PathBuf::new());

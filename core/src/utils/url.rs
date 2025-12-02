@@ -125,8 +125,7 @@ impl FromStr for Url {
                 return Err(UrlError::InvalidScheme);
             }
         } else {
-            // No scheme found. This parser requires a scheme to be present.
-            return Err(UrlError::InvalidScheme);
+            scheme = String::new();
         }
 
         // --- Parsing for Network-Path URLs (after scheme and "://") ---
@@ -271,5 +270,70 @@ impl FromStr for Url {
             query,
             fragment,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_url() -> Result<()> {
+        let url = Url::from_str("https://mapachito.com")?;
+        assert_eq!(url.scheme, "https".to_string());
+        assert_eq!(url.host, Some("mapachito.com".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_url_no_scheme() -> Result<()> {
+        let url = Url::from_str("mapachito.com")?;
+        assert!(url.scheme.is_empty());
+        assert_eq!(url.host, Some("mapachito.com".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scheme_slash() -> Result<()> {
+        let url = Url::from_str("scheme://mapachito.com")?;
+        assert_eq!(url.scheme, "scheme".to_string());
+        assert_eq!(url.host, Some("mapachito.com".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scheme_sftp_no_port() -> Result<()> {
+        let url = Url::from_str("sftp://user@host")?;
+        assert_eq!(url.scheme, "sftp".to_string());
+        assert_eq!(url.username, "user".to_string());
+        assert_eq!(url.host, Some("host".to_string()));
+        assert_eq!(url.port, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scheme_sftp_with_port() -> Result<()> {
+        let url = Url::from_str("sftp://user@host:1234")?;
+        assert_eq!(url.scheme, "sftp".to_string());
+        assert_eq!(url.username, "user".to_string());
+        assert_eq!(url.host, Some("host".to_string()));
+        assert_eq!(url.port, Some(1234));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scheme_no_slash() -> Result<()> {
+        let url = Url::from_str("mailto:user@host")?; // Opaque URL
+        assert_eq!(url.scheme, "mailto".to_string());
+        assert!(url.username.is_empty());
+        assert_eq!(url.host, None);
+
+        Ok(())
     }
 }

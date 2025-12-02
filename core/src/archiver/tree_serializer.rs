@@ -151,9 +151,7 @@ impl TreeSerializer {
         dir_path: PathBuf,
         pending_tree: PendingTree,
     ) -> Result<(Option<(PathBuf, Node)>, (u64, u64))> {
-        let mut completed_tree = Tree {
-            nodes: pending_tree.children.into_values().collect(),
-        };
+        let mut completed_tree = Tree::new(pending_tree.children.into_values().collect());
 
         let (tree_id, sizes) = completed_tree.save_to_repo(&self.repo)?;
         let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();

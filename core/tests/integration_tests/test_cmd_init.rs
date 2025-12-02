@@ -16,6 +16,8 @@ mod tests {
     use anyhow::{Context, Result};
     use tempfile::tempdir;
 
+    use crate::TEST_QUIET;
+
     #[test]
     fn test_init() -> Result<()> {
         let tmp_dir = tempdir()?;
@@ -37,8 +39,8 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             auth_file: Some(auth_file_path),
             key: None,
-            quiet: true,
-            verbosity: None,
+            quiet: *TEST_QUIET,
+            verbosity: Some(3),
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
@@ -93,8 +95,8 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             auth_file: Some(auth_file_path),
             key: Some(keyfile_path.clone()),
-            quiet: true,
-            verbosity: None,
+            quiet: *TEST_QUIET,
+            verbosity: Some(3),
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,

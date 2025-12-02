@@ -1,6 +1,15 @@
 #![cfg(test)]
 
+use std::sync::LazyLock;
+
 mod integration_tests;
+
+const MAPACHE_TEST_QUIET: &str = "MAPACHE_TEST_QUIET";
+
+const TEST_QUIET: LazyLock<bool> = LazyLock::new(|| match std::env::var(MAPACHE_TEST_QUIET) {
+    Ok(s) => s.parse::<bool>().unwrap_or(true),
+    Err(_) => true,
+});
 
 mod test_utils {
     use std::path::{Path, PathBuf};

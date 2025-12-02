@@ -21,6 +21,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
+        TEST_QUIET,
         integration_tests::{BACKUP_DATA_PATH, init_repo},
         test_utils::{self},
     };
@@ -50,8 +51,8 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             auth_file: Some(auth_file_path),
             key: None,
-            quiet: true,
-            verbosity: None,
+            quiet: *TEST_QUIET,
+            verbosity: Some(3),
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
@@ -186,8 +187,8 @@ mod tests {
             repo: repo_path.to_string_lossy().to_string(),
             auth_file: Some(auth_file_path),
             key: None,
-            quiet: true,
-            verbosity: None,
+            quiet: *TEST_QUIET,
+            verbosity: Some(3),
             ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,

@@ -101,6 +101,7 @@ mod tests {
             no_verify: false,
             quit_on_error: true,
             delete: false,
+            no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
@@ -225,6 +226,7 @@ mod tests {
             no_verify: false,
             quit_on_error: true,
             delete: false,
+            no_preserve_root: false,
         };
 
         let restore_result = commands::cmd_restore::run(&global, &restore_args);
@@ -306,6 +308,7 @@ mod tests {
             no_verify: false,
             quit_on_error: true,
             delete: false,
+            no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
@@ -448,6 +451,7 @@ mod tests {
             no_verify: false,
             quit_on_error: true,
             delete: false,
+            no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
@@ -562,6 +566,7 @@ mod tests {
             no_verify: false,
             quit_on_error: true,
             delete: false,
+            no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 
@@ -674,6 +679,7 @@ mod tests {
             no_verify: false,
             quit_on_error: true,
             delete: false,
+            no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
 

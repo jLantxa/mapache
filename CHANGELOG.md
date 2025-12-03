@@ -2,6 +2,13 @@
 
 ## Latest
 
+### Changes
+
+- Added a `--no-preserve-root` option to `mapache restore`.
+  This option is only used together with `--delete`. By default, `--delete` does
+  not delete any node in the root directory as a protection. `--no-preserve-root`
+  explicitly overrides this protection.
+
 ## v0.1.0
 
 ### Changes

@@ -420,9 +420,11 @@ mod tests {
         std::fs::create_dir_all(restore_path.join("0"))?;
         std::fs::create_dir_all(restore_path.join("1").join("10"))?;
         std::fs::File::create(restore_path.join("extra_root.txt"))?;
+        std::fs::create_dir_all(restore_path.join("extra_root_dir"))?;
         std::fs::File::create(restore_path.join("0").join("extra0.txt"))?;
         std::fs::File::create(restore_path.join("1").join("10").join("extra10.txt"))?;
         assert!(restore_path.join("extra_root.txt").exists());
+        assert!(restore_path.join("extra_root_dir").exists());
         assert!(restore_path.join("0").join("extra0.txt").exists());
         assert!(
             restore_path
@@ -470,6 +472,7 @@ mod tests {
 
         // Assert that extra files were deleted, except at root level
         assert!(restore_path.join("extra_root.txt").exists()); // Not deleted (root level)
+        assert!(restore_path.join("extra_root_dir").exists()); // Not deleted (root level)
         assert!(!restore_path.join("0").join("extra0.txt").exists());
         assert!(
             !restore_path
@@ -564,9 +567,11 @@ mod tests {
         std::fs::create_dir_all(restore_path.join("0"))?;
         std::fs::create_dir_all(restore_path.join("1").join("10"))?;
         std::fs::File::create(restore_path.join("extra_root.txt"))?;
+        std::fs::create_dir_all(restore_path.join("extra_root_dir"))?;
         std::fs::File::create(restore_path.join("0").join("extra0.txt"))?;
         std::fs::File::create(restore_path.join("1").join("10").join("extra10.txt"))?;
         assert!(restore_path.join("extra_root.txt").exists());
+        assert!(restore_path.join("extra_root_dir").exists());
         assert!(restore_path.join("0").join("extra0.txt").exists());
         assert!(
             restore_path
@@ -609,7 +614,8 @@ mod tests {
         }
 
         // Assert that extra files were deleted, except at root level
-        assert!(restore_path.join("extra_root.txt").exists()); // Not deleted as it is outside the includes
+        assert!(restore_path.join("extra_root.txt").exists()); // Not deleted (root level and includes)
+        assert!(restore_path.join("extra_root_dir").exists()); // Not deleted (root level)
         assert!(!restore_path.join("0").join("extra0.txt").exists());
         assert!(
             restore_path
@@ -704,9 +710,11 @@ mod tests {
         std::fs::create_dir_all(restore_path.join("0"))?;
         std::fs::create_dir_all(restore_path.join("1").join("10"))?;
         std::fs::File::create(restore_path.join("extra_root.txt"))?;
+        std::fs::create_dir_all(restore_path.join("extra_root_dir"))?;
         std::fs::File::create(restore_path.join("0").join("extra0.txt"))?;
         std::fs::File::create(restore_path.join("1").join("10").join("extra10.txt"))?;
         assert!(restore_path.join("extra_root.txt").exists());
+        assert!(restore_path.join("extra_root_dir").exists());
         assert!(restore_path.join("0").join("extra0.txt").exists());
         assert!(
             restore_path
@@ -754,6 +762,7 @@ mod tests {
 
         // Assert that extra files were deleted
         assert!(!restore_path.join("extra_root.txt").exists());
+        assert!(!restore_path.join("extra_root_dir").exists());
         assert!(!restore_path.join("0").join("extra0.txt").exists());
         assert!(
             !restore_path

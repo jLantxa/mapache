@@ -237,6 +237,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             tolerance: args.tolerance,
             dry_run: args.dry_run,
             verify: args.verify,
+            no_repack: false,
         };
 
         ui::cli::log!();

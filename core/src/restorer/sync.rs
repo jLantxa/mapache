@@ -17,12 +17,19 @@ pub fn delete_nodes(
     include: Option<Vec<PathBuf>>,
     exclude: Option<Vec<PathBuf>>,
     dry_run: bool,
+    no_preserve_root: bool,
 ) -> Result<()> {
-    let tree_stream =
+    let mut tree_stream =
         SerializedTreeStream::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
             .with_context(|| {
                 format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
             })?;
+
+    // If we preserve nodes at the root level, we skip the first node in the
+    // stream, which corresponds to the root.
+    if !no_preserve_root {
+        tree_stream.next();
+    }
 
     for item_result in tree_stream {
         // Handle potential errors from the stream itself.

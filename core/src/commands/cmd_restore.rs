@@ -79,6 +79,10 @@ pub struct CmdArgs {
     #[clap(long, value_parser, default_value_t = false)]
     pub delete: bool,
 
+    /// When used with --delete, also delete nodes in the same level as the root.
+    #[clap(long, value_parser, default_value_t = false, requires = "delete")]
+    pub no_preserve_root: bool,
+
     /// Quit immediately if a restore error occurs
     #[clap(long, default_value_t = false)]
     pub quit_on_error: bool,
@@ -235,6 +239,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             args.include.clone(),
             args.exclude.clone(),
             args.dry_run,
+            args.no_preserve_root,
         )?;
         ui::cli::log!();
     }

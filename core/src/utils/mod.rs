@@ -593,6 +593,8 @@ pub fn count_files(dir_path: &Path) -> Result<usize> {
 // --- Tests ---
 #[cfg(test)]
 mod tests {
+    use chrono::{NaiveDateTime, TimeZone};
+
     use super::*;
 
     #[test]
@@ -899,6 +901,35 @@ mod tests {
         assert!(parse_duration_string("1as").is_err());
         assert!(parse_duration_string("1d1").is_err());
         assert!(parse_duration_string("1d 2h").is_err()); // spaces are not supported
+    }
+
+    #[test]
+    fn test_pretty_print_system_time() -> Result<()> {
+        let naive_str = "2025-12-01 18:00";
+        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")?;
+        let datetime_with_local_offset: DateTime<Local> =
+            Local.from_local_datetime(&naive_datetime).unwrap();
+        let time: SystemTime = datetime_with_local_offset.into();
+
+        assert_eq!(pretty_print_system_time(time, None)?, "2025-12-01 18:00:00");
+        assert_eq!(
+            pretty_print_system_time(time, Some("%Y-%m-%d %H:%M:%S"))?,
+            "2025-12-01 18:00:00"
+        );
+        assert_eq!(
+            pretty_print_system_time(time, Some("%Y-%m-%d %H:%M:%S"))?,
+            "2025-12-01 18:00:00"
+        );
+        assert_eq!(
+            pretty_print_system_time(time, Some("%Y-%m-%d"))?,
+            "2025-12-01"
+        );
+        assert_eq!(
+            pretty_print_system_time(time, Some("%d/%m/%Y %H:%M:%S"))?,
+            "01/12/2025 18:00:00"
+        );
+
+        Ok(())
     }
 
     #[test]

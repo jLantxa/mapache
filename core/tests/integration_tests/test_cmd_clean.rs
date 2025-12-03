@@ -128,6 +128,7 @@ mod tests {
             tolerance: 0.0_f32,
             dry_run: false,
             verify: true,
+            no_repack: false,
         };
         commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
 
@@ -288,6 +289,7 @@ mod tests {
             tolerance: 0.0_f32,
             dry_run: true, // DRY-RUN !
             verify: true,
+            no_repack: false,
         };
         commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
         let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new())?;
@@ -299,6 +301,7 @@ mod tests {
             tolerance: 0.0_f32,
             dry_run: false, // No dry-run
             verify: true,
+            no_repack: false,
         };
         commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
         let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new())?;

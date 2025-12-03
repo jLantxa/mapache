@@ -29,12 +29,16 @@ use crate::{
 pub struct CmdArgs {
     /// Garbage tolerance. The percentage [0-100] of garbage to tolerate in a
     /// pack file before repacking.
-    #[clap(short, long, default_value_t = 100.0 * DEFAULT_GC_TOLERANCE)]
+    #[clap(short, long, default_value_t = 100.0 * DEFAULT_GC_TOLERANCE, conflicts_with = "no_repack")]
     pub tolerance: f32,
 
     /// Verify that all referenced IDs are stored in the index without reading the data.
     #[clap(long, default_value_t = false)]
     pub verify: bool,
+
+    /// Don't repack
+    #[clap(long, default_value_t = false)]
+    pub no_repack: bool,
 
     /// Dry run. Displays what this command would do without
     /// making changes to the repository.
@@ -77,7 +81,12 @@ pub fn run_with_repo(
     args: &CmdArgs,
     repo: Arc<Repository>,
 ) -> Result<()> {
-    let tolerance = args.tolerance.clamp(0.0, 100.0) / 100.0;
+    let tolerance = if args.no_repack {
+        // No repack means a tolerance of 100 %.
+        100.0
+    } else {
+        args.tolerance.clamp(0.0, 100.0) / 100.0
+    };
 
     let start = Instant::now();
     ui::cli::log!();

@@ -15,7 +15,7 @@ mod test_cmd_snapshot;
 mod test_cmd_sync;
 mod test_cmd_verify;
 
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 mod test_cmd_mount;
 
 const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";

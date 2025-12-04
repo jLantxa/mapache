@@ -34,7 +34,7 @@ signal-hook-registry = "1.4.7"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 zstd = "0.13.3"
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.16.0", optional = true }
 
 [dev-dependencies]

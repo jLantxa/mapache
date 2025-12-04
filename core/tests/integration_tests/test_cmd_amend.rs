@@ -130,6 +130,7 @@ mod tests {
             PathBuf::from("1"),
             PathBuf::from("1/10"),
             PathBuf::from("1/10/file10.txt"),
+            #[cfg(not(target_os = "windows"))]
             PathBuf::from("1/10/lfile10.txt"),
         ];
 

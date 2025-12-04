@@ -111,12 +111,14 @@ mod tests {
             PathBuf::from("0/00"),
             PathBuf::from("0/00/file00.txt"),
             PathBuf::from("0/01"),
+            #[cfg(not(target_os = "windows"))]
             PathBuf::from("0/l01"),
             PathBuf::from("0/01/file01a.txt"),
             PathBuf::from("0/01/file01b.txt"),
             PathBuf::from("1"),
             PathBuf::from("1/10"),
             PathBuf::from("1/10/file10.txt"),
+            #[cfg(not(target_os = "windows"))]
             PathBuf::from("1/10/lfile10.txt"),
             PathBuf::from("2"),
             PathBuf::from("file.txt"),
@@ -320,6 +322,7 @@ mod tests {
             PathBuf::from("1"),
             PathBuf::from("1/10"),
             PathBuf::from("1/10/file10.txt"),
+            #[cfg(not(target_os = "windows"))]
             PathBuf::from("1/10/lfile10.txt"),
             PathBuf::from("2"),
             PathBuf::from("file.txt"),
@@ -575,14 +578,13 @@ mod tests {
             PathBuf::from("00"),
             PathBuf::from("00/file00.txt"),
             PathBuf::from("01"),
+            #[cfg(not(target_os = "windows"))]
             PathBuf::from("l01"),
             PathBuf::from("01/file01a.txt"),
             PathBuf::from("01/file01b.txt"),
         ];
 
         for path in &paths {
-            println!("{:?}", path);
-
             // The source folder still has the "0" folder
             let backup_path = backup_data_tmp_path.join("0").join(path);
             let restored_path = restore_path.join(path);
@@ -689,6 +691,7 @@ mod tests {
             PathBuf::from("0/00"),
             PathBuf::from("0/00/file00.txt"),
             PathBuf::from("0/01"),
+            #[cfg(not(target_os = "windows"))]
             PathBuf::from("0/l01"),
             PathBuf::from("0/01/file01a.txt"),
             PathBuf::from("0/01/file01b.txt"),

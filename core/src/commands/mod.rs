@@ -30,7 +30,7 @@ pub mod cmd_init;
 pub mod cmd_key;
 pub mod cmd_log;
 pub mod cmd_ls;
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 pub mod cmd_mount;
 pub mod cmd_recall;
 pub mod cmd_rechunk;
@@ -65,7 +65,7 @@ pub enum Command {
     Key(WithGlobal<cmd_key::CmdArgs>),
     Log(WithGlobal<cmd_log::CmdArgs>),
     Ls(WithGlobal<cmd_ls::CmdArgs>),
-    #[cfg(all(feature = "fuse", unix))]
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     Mount(WithGlobal<cmd_mount::CmdArgs>),
     Recall(WithGlobal<cmd_recall::CmdArgs>),
     Rechunk(WithGlobal<cmd_rechunk::CmdArgs>),
@@ -209,7 +209,7 @@ pub fn parse_and_run() -> Result<()> {
         Command::Key(cmd) => cmd_key::run(&cmd.global, &cmd.args),
         Command::Log(cmd) => cmd_log::run(&cmd.global, &cmd.args),
         Command::Ls(cmd) => cmd_ls::run(&cmd.global, &cmd.args),
-        #[cfg(all(feature = "fuse", unix))]
+        #[cfg(all(feature = "fuse", target_os = "linux"))]
         Command::Mount(cmd) => cmd_mount::run(&cmd.global, &cmd.args),
         Command::Recall(cmd) => cmd_recall::run(&cmd.global, &cmd.args),
         Command::Rechunk(cmd) => cmd_rechunk::run(&cmd.global, &cmd.args),
@@ -246,7 +246,7 @@ fn extract_global(command: &Command) -> Option<&GlobalArgs> {
         Key,
         Log,
         Ls,
-        #[cfg(all(feature = "fuse", unix))]
+        #[cfg(all(feature = "fuse", target_os = "linux"))]
         Mount,
         Recall,
         Rechunk,

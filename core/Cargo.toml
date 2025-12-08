@@ -21,7 +21,7 @@ directories = "6.0.0"
 filetime = "0.2.26"
 hostname = "0.4.2"
 indicatif = { version = "0.18.3", features = ["rayon"] }
-libc = { version = "0.2.177" }
+libc = { version = "0.2.178" }
 num_cpus = "1.17.0"
 num_enum = "0.7.5"
 parking_lot = "0.12.5"

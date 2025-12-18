@@ -244,11 +244,37 @@ impl SftpBackend {
             .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))
     }
 
+    fn set_readonly_status(&self, sftp: &Sftp, path: &Path, readonly: bool) -> Result<()> {
+        let full_path = self.full_path(path);
+
+        let mut stat = match sftp.stat(&full_path) {
+            Ok(s) => s,
+            // If we are trying to make it writable and it doesn't exist, we're done.
+            Err(_) if !readonly => return Ok(()),
+            Err(e) => return Err(anyhow!(e)).context("Failed to stat remote file"),
+        };
+
+        if let Some(perm) = stat.perm.as_mut() {
+            if readonly {
+                *perm &= !0o222; // Strip all write bits (read-only)
+            } else {
+                *perm |= 0o600; // Add owner read/write (writable)
+            }
+
+            sftp.setstat(&full_path, stat)
+                .with_context(|| format!("Failed to update SFTP permissions for {path:?}"))?;
+        }
+        Ok(())
+    }
+
     /// Recursively removes a directory/file.
     fn remove_recursively_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
         if !self.exists_exact(path, sftp) {
             return Ok(());
         }
+
+        // Ensure the item itself is writable before we try to remove it
+        let _ = self.set_readonly_status(sftp, path, false);
 
         match sftp.lstat(path) {
             Ok(metadata) => {
@@ -288,28 +314,17 @@ impl SftpBackend {
         let full_from = self.full_path(from);
         let full_to = self.full_path(to);
 
-        // Remove destination if it already exists. This is a workaround for
-        // SFTP servers where the OVERWRITE flag is not honoured.
+        // On many SFTP servers (especially Windows-based),
+        // the source must be writable to be moved.
+        let _ = self.set_readonly_status(sftp, &full_from, false);
+
+        // Remove destination if it already exists, ensuring it's writable first.
         if sftp.stat(&full_to).is_ok() {
-            sftp.unlink(&full_to)?;
+            let _ = self.set_readonly_status(sftp, &full_to, true);
+            let _ = sftp.unlink(&full_to);
         }
+
         sftp.rename(&full_from, &full_to, Some(RenameFlags::all()))?;
-
-        Ok(())
-    }
-
-    fn set_read_only_internal(&self, sftp: &Sftp, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-
-        let mut stat = sftp.stat(&full_path)?;
-
-        if let Some(perm) = stat.perm.as_mut() {
-            *perm &= !0o222;
-        } else {
-            return Ok(());
-        }
-
-        sftp.setstat(&full_path, stat)?;
 
         Ok(())
     }
@@ -371,6 +386,7 @@ impl StorageBackend for SftpBackend {
         let mut file = sftp
             .create(&full_tmp_path)
             .with_context(|| format!("Failed to create file for writing: {tmp_path:?}"))?;
+
         if file.write_all(contents).is_err() {
             // If error, try creating the parent directory first and try again.
             let parent_dir = path.parent().with_context(|| {
@@ -385,13 +401,16 @@ impl StorageBackend for SftpBackend {
                 .with_context(|| format!("Failed to write to file: {tmp_path:?}"))?;
         }
 
-        // Rename to the final path reusing the connection.
+        // Before renaming, ensure the destination isn't blocking us because it's Read-Only
+        let full_path = self.full_path(path);
+        let _ = self.set_readonly_status(sftp, &full_path, false);
+
         self.rename_internal(sftp, &tmp_path, path)
             .with_context(|| {
                 format!("Failed to rename {tmp_path:?}' to {path:?}' after write in sftp backend")
             })?;
 
-        let _ = self.set_read_only_internal(sftp, path);
+        let _ = self.set_readonly_status(sftp, path, true);
 
         Ok(())
     }

@@ -8,6 +8,14 @@
   This option is only used together with `--delete`. By default, `--delete` does
   not delete any node in the root directory as a protection. `--no-preserve-root`
   explicitly overrides this protection.
+- Added a `--no-repack` option to `mapache clean` to disable repacking during
+  garbage collection. Internally, this is equivalent to setting the tolerance
+  to 100 %.
+
+
+### Fixes
+
+- Read-only files can now be renamed and deleted in Windows 10.
 
 ## v0.1.0
 

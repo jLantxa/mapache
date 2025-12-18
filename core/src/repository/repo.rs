@@ -671,18 +671,17 @@ impl Repository {
         let backend = self.backend.clone();
         let objects_path = self.objects_path.clone();
 
-        let pack_saver = PackSaver::new(
-            concurrency,
-            Arc::new(move |data, id, blob_type: BlobType| {
-                let path = Self::get_object_path(&objects_path, &id);
-                if let Err(e) = backend.write(
-                    &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
-                    &data,
-                ) {
-                    cli::error!("Could not save pack {}: {}", id.to_hex(), e);
-                }
-            }),
-        );
+        let queue_fn = move |data: Vec<u8>, id: ID, blob_type: BlobType| {
+            let path = Self::get_object_path(&objects_path, &id);
+            if let Err(e) = backend.write(
+                &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
+                &data,
+            ) {
+                cli::error!("Could not save pack {}: {}", id.to_hex(), e);
+            }
+        };
+
+        let pack_saver = PackSaver::new(concurrency, queue_fn);
         self.pack_saver.write().replace(pack_saver);
     }
 

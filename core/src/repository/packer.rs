@@ -1,4 +1,4 @@
-use std::{io::Write, sync::Arc, thread::JoinHandle};
+use std::{io::Write, thread::JoinHandle};
 
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::Sender;
@@ -321,9 +321,6 @@ impl Packer {
     }
 }
 
-/// The queue function used to write pack data to the backend.
-pub type QueueFn = Arc<dyn Fn(Vec<u8>, ID, BlobType) + Send + Sync + 'static>;
-
 /// PackSaver is a dedicated worker thread manager responsible for asynchronously writing
 /// fully constructed pack files (`FlushedPack` data) to the repository's storage backend.
 pub struct PackSaver {
@@ -333,10 +330,11 @@ pub struct PackSaver {
 
 impl PackSaver {
     /// Creates a new pack saver.
-    pub fn new(concurrency: usize, queue_fn: QueueFn) -> Self {
+    pub fn new<F>(concurrency: usize, queue_fn: F) -> Self
+    where
+        F: Fn(Vec<u8>, ID, BlobType) + Send + Sync + 'static,
+    {
         let (tx, rx) = crossbeam_channel::bounded(concurrency);
-        let worker_queue_fn = Arc::clone(&queue_fn);
-
         let join_handle = std::thread::spawn(move || {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(concurrency)
@@ -345,9 +343,9 @@ impl PackSaver {
 
             pool.install(|| {
                 rx.into_iter()
-                    .par_bridge() // pull items from channel in parallel
+                    .par_bridge()
                     .for_each(|(data, id, blob_type)| {
-                        worker_queue_fn(data, id, blob_type);
+                        queue_fn(data, id, blob_type);
                     });
             });
         });

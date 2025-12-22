@@ -25,14 +25,21 @@ pub(super) type Inode = u64;
 pub struct MapacheFS {
     repo: Arc<Repository>,
     stash: Stash,
+    metadata_only: bool, // Do not load file contents.
 }
 
 impl MapacheFS {
     /// Mounts a `Repository` in `mountpoint`
-    pub unsafe fn mount(repo: Arc<Repository>, mountpoint: &Path, allow_other: bool) -> Result<()> {
+    pub unsafe fn mount(
+        repo: Arc<Repository>,
+        mountpoint: &Path,
+        allow_other: bool,
+        metadata_only: bool,
+    ) -> Result<()> {
         let filesystem = Self {
             repo: repo.clone(),
             stash: Stash::new_root(repo.clone())?,
+            metadata_only,
         };
 
         let mut mount_options: Vec<MountOption> =
@@ -160,7 +167,12 @@ impl Filesystem for MapacheFS {
                 // Since we're not maintaining per-file state, we can just return 0
                 // but for correctness in case FUSE expects it, using the ino itself
                 // as the fh is a common simple approach.
-                reply.opened(ino, 0);
+
+                if self.metadata_only {
+                    reply.error(libc::EACCES); // Permission denied
+                } else {
+                    reply.opened(ino, 0);
+                }
             }
             Some(_) => {
                 reply.error(libc::EACCES); // Permission denied
@@ -182,6 +194,10 @@ impl Filesystem for MapacheFS {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
+        if self.metadata_only {
+            return reply.error(libc::EACCES);
+        }
+
         match self.stash.read_from_file(ino, offset, size) {
             Ok(Some(data)) => reply.data(&data),
             Ok(None) => reply.error(libc::ENOENT),

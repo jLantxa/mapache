@@ -188,6 +188,7 @@ mod tests {
             mountpoint: mountpoint.clone(),
             allow_other: false,
             create_mountpoint: auto_mount,
+            metadata_only: false,
         };
 
         let mount_thread = std::thread::spawn(move || {
@@ -340,6 +341,7 @@ mod tests {
             mountpoint: mountpoint.clone(),
             allow_other: false,
             create_mountpoint: true,
+            metadata_only: false,
         };
 
         let mount_thread = std::thread::spawn(move || {

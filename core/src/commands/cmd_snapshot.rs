@@ -270,7 +270,7 @@ fn show_final_report(snapshot_id: &ID, summary: &SnapshotSummary, args: &CmdArgs
         "new".bold().green().to_string(),
         "changed".bold().yellow().to_string(),
         "deleted".bold().red().to_string(),
-        "unmodiffied".bold().to_string(),
+        "unchanged".bold().to_string(),
     ]);
 
     table.add_row(vec![

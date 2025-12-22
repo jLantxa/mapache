@@ -161,6 +161,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let snapshot_root_path = utils::calculate_lcp(&absolute_source_paths, false);
 
     ui::cli::log!();
+    if args.dry_run {
+        ui::cli::log!("{}", "[DRY RUN]".bold().purple());
+    }
+
     let parent_snapshot_pair: Option<SnapshotPair> = match args.no_parent {
         true => {
             ui::cli::log!("Full scan");
@@ -242,8 +246,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!("No changes detected since parent. Skipping snapshot.");
     }
 
+    let prefix = if args.dry_run {
+        format!("{} ", "[DRY RUN]".bold().purple())
+    } else {
+        String::new()
+    };
+
     ui::cli::log!(
-        "Finished in {}",
+        "{}Finished in {}",
+        prefix,
         utils::pretty_print_duration(start.elapsed())
     );
 

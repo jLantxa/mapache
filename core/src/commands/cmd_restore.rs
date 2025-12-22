@@ -136,6 +136,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!("{}\n", "[OK]".bold().green());
     }
 
+    if args.dry_run {
+        ui::cli::log!("{}", "[DRY RUN]".bold().purple());
+    }
+
     ui::cli::log!(
         "Restoring snapshot {}",
         snapshot_id
@@ -244,8 +248,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!();
     }
 
+    let prefix = if args.dry_run {
+        format!("{} ", "[DRY RUN]".bold().purple())
+    } else {
+        String::new()
+    };
+
     ui::cli::log!(
-        "Finished in {} with {} and {}",
+        "{}Finished in {} with {} and {}",
+        prefix,
         utils::pretty_print_duration(start.elapsed(),),
         utils::format_count(error_count, "error", "errors"),
         utils::format_count(warning_count, "warning", "warnings")

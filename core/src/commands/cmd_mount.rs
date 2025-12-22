@@ -28,6 +28,10 @@ pub struct CmdArgs {
     /// Create the mountpoint if it does not exist
     #[arg(short, long, value_parser, default_value_t = false)]
     pub create_mountpoint: bool,
+
+    /// Display files, but do not load its contents
+    #[arg(long, value_parser, default_value_t = false)]
+    pub metadata_only: bool,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -96,7 +100,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "Ctrl+C".bold()
     );
     unsafe {
-        MapacheFS::mount(repo, &cannonical_mountpoint, args.allow_other)?;
+        MapacheFS::mount(
+            repo,
+            &cannonical_mountpoint,
+            args.allow_other,
+            args.metadata_only,
+        )?;
     }
 
     Ok(())

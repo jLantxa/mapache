@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -25,7 +25,10 @@ use crate::{
         snapshot::SnapshotStream,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
-    utils,
+    utils::{
+        self,
+        collections::{IdMap, IdSet},
+    },
 };
 
 /// The cleanup plan. This struct contains lists of items that are valid, unused or need some work.
@@ -33,21 +36,21 @@ use crate::{
 /// object is consumed and cannot be used again. This is an intended safety measure.
 pub struct Plan {
     pub repo: Arc<Repository>,
-    pub total_packs: usize, // Total number of packs in the repository
-    pub referenced_blobs: HashSet<ID>, // Blobs referenced by existing snapshots
-    pub referenced_packs: HashSet<ID>, // Packs referenced by the referenced blobs
-    pub obsolete_packs: HashSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
-    pub small_packs: HashSet<ID>,    // Small packs marked to be repacked (to merge)
-    pub tolerated_packs: HashSet<ID>, // Packs containing garbage, but keep due to tolerance
-    pub unused_packs: HashSet<ID>,   // Packs not referenced by any snapshot or index
-    pub index_ids: HashSet<ID>,      // Current index IDs
+    pub total_packs: usize,          // Total number of packs in the repository
+    pub referenced_blobs: IdSet<ID>, // Blobs referenced by existing snapshots
+    pub referenced_packs: IdSet<ID>, // Packs referenced by the referenced blobs
+    pub obsolete_packs: IdSet<ID>, // Packs containing non-referenced blobs or are small/duplicate sources
+    pub small_packs: IdSet<ID>,    // Small packs marked to be repacked (to merge)
+    pub tolerated_packs: IdSet<ID>, // Packs containing garbage, but keep due to tolerance
+    pub unused_packs: IdSet<ID>,   // Packs not referenced by any snapshot or index
+    pub index_ids: IdSet<ID>,      // Current index IDs
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
 pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 
-    let mut keep_packs: HashSet<ID> = repo.list_objects()?;
+    let mut keep_packs: IdSet<ID> = repo.list_objects()?;
     let mut unused_packs = keep_packs.clone();
 
     keep_packs.retain(|id| referenced_packs.contains(id));
@@ -58,16 +61,16 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
         total_packs: keep_packs.len(),
         referenced_blobs,
         referenced_packs,
-        obsolete_packs: HashSet::new(),
-        tolerated_packs: HashSet::new(),
+        obsolete_packs: IdSet::default(),
+        tolerated_packs: IdSet::default(),
         unused_packs,
         index_ids: repo.index().read().ids(),
-        small_packs: HashSet::new(),
+        small_packs: IdSet::default(),
     };
 
     // Count garbage bytes in each pack
-    let mut kept_pack_size: HashMap<ID, u64> = HashMap::new();
-    let mut pack_garbage: HashMap<ID, u64> = HashMap::new();
+    let mut kept_pack_size: IdMap<ID, u64> = IdMap::default();
+    let mut pack_garbage: IdMap<ID, u64> = IdMap::default();
 
     // Find obsolete packs and blobs in index
     let spinner = ProgressBar::new_spinner();
@@ -374,9 +377,9 @@ impl Plan {
 }
 
 /// Returns all blobs and packs referenced by all existing snapshots in the repository.
-fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(HashSet<ID>, HashSet<ID>)> {
-    let mut referenced_blobs: HashSet<ID> = HashSet::new();
-    let mut referenced_packs: HashSet<ID> = HashSet::new();
+fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, IdSet<ID>)> {
+    let mut referenced_blobs: IdSet<ID> = IdSet::default();
+    let mut referenced_packs: IdSet<ID> = IdSet::default();
     let index = repo.index();
 
     let snapshot_stream = SnapshotStream::new(repo.clone())?;

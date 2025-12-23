@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -18,7 +17,7 @@ use crate::{
         snapshot::SnapshotStream,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
-    utils::{self, size},
+    utils::{self, collections::IdSet, size},
 };
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -195,7 +194,7 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
     let mut total_raw_data_size = 0u64;
     let mut total_encoded_data_size = 0u64;
     let mut num_referenced_blobs = 0u64;
-    let mut visited_blobs = HashSet::new();
+    let mut visited_blobs = IdSet::default();
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());

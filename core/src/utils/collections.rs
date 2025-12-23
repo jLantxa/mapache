@@ -1,5 +1,28 @@
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
+
+/// A simple hasher for types that are already hashes.
+#[derive(Default)]
+pub struct IdentityHasher {
+    hash: u64,
+}
+
+impl Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // We just take the first 8 bytes of the ID to use as the hash
+        let mut out = [0u8; 8];
+        let len = bytes.len().min(8);
+        out[..len].copy_from_slice(&bytes[..len]);
+        self.hash = u64::from_ne_bytes(out);
+    }
+}
+
+pub type IdSet<K> = HashSet<K, BuildHasherDefault<IdentityHasher>>;
+pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdentityHasher>>;
 
 /// IndexSet is a set that can be enumerated by index.
 #[derive(Default, Debug, Clone)]

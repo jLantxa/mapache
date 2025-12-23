@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use anyhow::{Result, bail};
 use chrono::{Duration, Local};
 use clap::{ArgGroup, Parser};
@@ -15,7 +13,7 @@ use crate::{
         snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
-    utils::{self, size},
+    utils::{self, collections::IdSet, size},
 };
 
 use super::GlobalArgs;
@@ -144,10 +142,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
     snapshots_sorted.sort_unstable_by_key(|(_id, snapshot, _active)| snapshot.timestamp);
 
-    let mut ids_to_keep: HashSet<ID> = HashSet::new();
+    let mut ids_to_keep: IdSet<ID> = IdSet::default();
 
     if !args.forget.is_empty() {
-        let mut forget_ids = HashSet::new();
+        let mut forget_ids = IdSet::default();
         for prefix in &args.forget {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
             forget_ids.insert(id);

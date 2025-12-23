@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -18,6 +17,7 @@ use crate::{
         storage::SecureStorage,
     },
     ui::{self, cli},
+    utils::collections::IdSet,
 };
 
 use super::{
@@ -714,8 +714,8 @@ impl Repository {
     }
 
     /// Lists all packs in the repository.
-    pub fn list_objects(&self) -> Result<HashSet<ID>> {
-        let mut list = HashSet::new();
+    pub fn list_objects(&self) -> Result<IdSet<ID>> {
+        let mut list = IdSet::default();
 
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
         for n in 0..num_folders {

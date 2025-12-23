@@ -1,4 +1,4 @@
-pub mod indexset;
+pub mod collections;
 pub mod url;
 
 use std::{

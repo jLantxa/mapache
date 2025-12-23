@@ -1,11 +1,11 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     hash::Hash,
 };
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
 
-use crate::{mapache::ID, repository::snapshot::Snapshot};
+use crate::{mapache::ID, repository::snapshot::Snapshot, utils::collections::IdSet};
 
 // Snapshot retention rules.
 // The rules are applied as a union. Snapshots are kept as long as there is at least
@@ -39,8 +39,8 @@ pub fn apply_retention_rules(
     snapshots_sorted: &[(ID, Snapshot, bool)],
     rules: &[RetentionRule],
     now: DateTime<Local>,
-) -> HashSet<ID> {
-    let mut snapshots_to_keep: HashSet<ID> = HashSet::new();
+) -> IdSet<ID> {
+    let mut snapshots_to_keep: IdSet<ID> = IdSet::default();
 
     // The date part of 'now' for reference
     let now_date = now.date_naive();
@@ -170,7 +170,7 @@ fn keep_latest_per_period<K, F>(
     snapshots_sorted: &[(ID, Snapshot, bool)],
     key_extractor: F,
     cut_off: DateTime<Local>,
-) -> HashSet<ID>
+) -> IdSet<ID>
 where
     K: Eq + Hash,
     F: Fn(&Snapshot) -> K,
@@ -185,7 +185,7 @@ where
         }
     }
 
-    kept_periods.values().copied().collect::<HashSet<ID>>()
+    kept_periods.values().copied().collect::<IdSet<ID>>()
 }
 
 #[cfg(test)]
@@ -301,7 +301,7 @@ mod tests {
     }
 
     // Helper function to create the expected ID HashSet
-    fn create_expected_ids(id_vals: &[u32]) -> HashSet<ID> {
+    fn create_expected_ids(id_vals: &[u32]) -> IdSet<ID> {
         id_vals.iter().map(|&v| create_id(v)).collect()
     }
 

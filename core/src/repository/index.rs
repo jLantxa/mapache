@@ -459,7 +459,7 @@ impl MasterIndex {
         Ok(stats)
     }
 
-    /// Returns a flat iterator without Box<dyn Iterator> chaining.
+    /// Returns a flat iterator without `Box<dyn Iterator>` chaining.
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
         self.indices.iter().flat_map(|idx| idx.iter_ids())
     }

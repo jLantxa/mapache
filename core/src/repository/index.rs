@@ -13,7 +13,7 @@ use crate::{
 use super::packer::PackedBlobDescriptor;
 
 /// Internal optimized representation of a blob's location.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct BlobLocationInternal {
     /// The index into the `pack_ids` `IndexSet` for the pack containing this blob. See Index.
     pub pack_array_index: u32,
@@ -26,13 +26,23 @@ struct BlobLocationInternal {
 }
 
 /// Full descriptor of a blob's location, including the resolved Pack ID.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlobLocator {
     pub pack_id: ID,
     pub offset: u32,
     pub length: u32,
     pub raw_length: u32,
     pub blob_type: BlobType,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum IndexStatus {
+    /// The index is still accepting entries.
+    Pending,
+    /// The index is now read-only but not persisted to file.
+    Finalized,
+    /// The index is persisted to a file with an ID.
+    Persisted(ID),
 }
 
 /// Manages the mapping of blob IDs to their locations within pack files.
@@ -51,13 +61,10 @@ pub struct Index {
     /// Maps PackArrayIndex -> List of Blob IDs.
     reverse_map: HashMap<u32, Vec<ID>>,
 
-    /// If an index is pending, it is still receiving entries from packs and is not yet finalized.
-    is_pending: bool,
+    /// Status: Pending, finalized or serialized.
+    status: IndexStatus,
 
     create_time: Instant,
-
-    // The ID of this index, if it is finalized and serialized
-    id: Option<ID>,
 }
 
 impl Default for Index {
@@ -73,42 +80,37 @@ impl Index {
             tree_ids: IdMap::default(),
             pack_ids: IndexSet::new(),
             reverse_map: HashMap::new(),
-            is_pending: true,
+            status: IndexStatus::Pending,
             create_time: Instant::now(),
-            id: None,
         }
+    }
+
+    /// Returns `true` if the index is currently pending (still receiving entries).
+    #[inline]
+    pub fn is_pending(&self) -> bool {
+        matches!(self.status, IndexStatus::Pending)
     }
 
     /// Marks the index as finalized. A finalized index no longer accepts new entries
     /// and is typically ready for persistence or read-only operations.
     #[inline]
     pub fn finalize(&mut self) {
-        self.is_pending = false;
+        self.set_status(IndexStatus::Finalized);
     }
 
     /// Marks the index as pending.
     #[inline]
-    pub fn set_pending(&mut self) {
-        self.is_pending = true;
-        self.id = None;
+    fn set_status(&mut self, status: IndexStatus) {
+        self.status = status;
     }
 
     /// Returns the id of this index
     #[inline]
     pub fn id(&self) -> Option<ID> {
-        self.id
-    }
-
-    /// Sets the index ID
-    #[inline]
-    pub fn set_id(&mut self, id: ID) {
-        self.id = Some(id);
-    }
-
-    /// Returns `true` if the index is currently pending (still receiving entries).
-    #[inline]
-    pub fn is_pending(&self) -> bool {
-        self.is_pending
+        match self.status {
+            IndexStatus::Persisted(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// Returns true if the index contains enough blobs to be considered full
@@ -120,11 +122,11 @@ impl Index {
 
     /// Creates an `Index` from a serialized `IndexFile`.
     /// The created index is *not* pending, as it represents a complete, loaded file.
-    pub fn from_index_file(index_file: IndexFile) -> Self {
+    pub fn from_index_file(index_file: IndexFile, id: ID) -> Self {
         let mut index = Self::new();
 
         // An index loaded from a file is considered complete and not pending.
-        index.is_pending = false;
+        index.set_status(IndexStatus::Persisted(id));
 
         for pack in index_file.packs {
             let pack_index = index.pack_ids.insert(pack.id) as u32;
@@ -228,7 +230,7 @@ impl Index {
 
     /// Saves the index to the repository.
     /// Returns the total uncompressed and compressed sizes of the saved index files.
-    pub fn finalize_and_save(&mut self, repo: &Repository) -> Result<(u64, u64)> {
+    pub fn persist(&mut self, repo: &Repository) -> Result<(u64, u64)> {
         self.finalize();
 
         if self.is_empty() {
@@ -283,7 +285,8 @@ impl Index {
             None,
         )?;
 
-        self.id = Some(id);
+        self.set_status(IndexStatus::Persisted(id));
+
         Ok((raw, enc))
     }
 
@@ -442,21 +445,27 @@ impl MasterIndex {
         pending_index.add_pack(pack_id, descriptors);
 
         if pending_index.is_full() {
-            pending_index.finalize_and_save(repo)
+            pending_index.persist(repo)
         } else {
             Ok((0, 0))
         }
     }
 
     pub fn save(&mut self, repo: &Repository) -> Result<(u64, u64)> {
-        let mut stats = (0, 0);
-        for idx in self.indices.iter_mut().filter(|idx| idx.is_pending()) {
-            let (u, c) = idx.finalize_and_save(repo)?;
-            stats.0 += u;
-            stats.1 += c;
+        let mut total_raw = 0;
+        let mut total_enc = 0;
+
+        for idx in self.indices.iter_mut() {
+            if matches!(idx.status, IndexStatus::Persisted(_)) || idx.is_empty() {
+                continue;
+            }
+
+            let (raw, enc) = idx.persist(repo)?;
+            total_raw += raw;
+            total_enc += enc;
         }
 
-        Ok(stats)
+        Ok((total_raw, total_enc))
     }
 
     /// Returns a flat iterator without `Box<dyn Iterator>` chaining.
@@ -474,11 +483,11 @@ impl MasterIndex {
     pub fn cleanup(&mut self, obsolete_packs: Option<&IdSet<ID>>) {
         if let Some(packs) = obsolete_packs {
             for idx in &mut self.indices {
-                // IMPORTANT: Mark index as pending so it can be overwritten/merged.
-                idx.set_pending();
-
-                for p in packs {
-                    idx.remove_pack(p);
+                if packs.iter().any(|p| idx.pack_ids.contains(p)) {
+                    idx.set_status(IndexStatus::Pending);
+                    for p in packs {
+                        idx.remove_pack(p);
+                    }
                 }
             }
         }
@@ -504,7 +513,6 @@ impl MasterIndex {
                     continue;
                 }
 
-                // Create a streaming iterator for the descriptors
                 let descriptor_stream = blob_ids.iter().filter_map(|id| {
                     idx.get(id).map(|loc| PackedBlobDescriptor {
                         id: *id,
@@ -515,11 +523,10 @@ impl MasterIndex {
                     })
                 });
 
-                // add_pack now consumes the iterator directly
                 current_index.add_pack(pack_id, descriptor_stream);
 
                 if current_index.is_full() {
-                    current_index.set_pending();
+                    current_index.set_status(IndexStatus::Finalized);
                     new_indices.push(current_index);
                     current_index = Index::new();
                 }
@@ -531,7 +538,7 @@ impl MasterIndex {
         }
 
         if !current_index.is_empty() {
-            current_index.set_pending();
+            current_index.set_status(IndexStatus::Pending);
             new_indices.push(current_index);
         }
 
@@ -570,7 +577,7 @@ pub struct IndexFilePack {
 }
 
 /// Represents a blob's entry within an `IndexFilePack`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndexFileBlob {
     pub id: ID,

@@ -867,10 +867,7 @@ impl Repository {
                 Err(e) => bail!("Failed to load index file {}: {}", id.to_short_hex(4), e),
             };
 
-            let mut index = Index::from_index_file(index_file);
-            index.finalize();
-            index.set_id(id);
-
+            let index = Index::from_index_file(index_file, id);
             self.index.write().add_index(index);
         }
 

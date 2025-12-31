@@ -189,6 +189,7 @@ mod tests {
             allow_other: false,
             create_mountpoint: auto_mount,
             metadata_only: false,
+            data_cache_size_mib: 64.0_f32,
         };
 
         let mount_thread = std::thread::spawn(move || {
@@ -342,6 +343,7 @@ mod tests {
             allow_other: false,
             create_mountpoint: true,
             metadata_only: false,
+            data_cache_size_mib: 64.0_f32,
         };
 
         let mount_thread = std::thread::spawn(move || {

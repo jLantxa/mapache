@@ -15,13 +15,11 @@ use crate::{
     },
     mapache::ID,
     repository::repo::Repository,
-    utils::size,
 };
 
 pub(super) const BLKSIZE: u32 = 512;
 pub(super) const TTL: Duration = Duration::from_secs(60);
 pub(super) const TREE_CACHE_CAPACITY: usize = 512;
-pub(super) const BLOB_CACHE_CAPACITY: u64 = 64 * size::MiB;
 
 #[derive(Debug)]
 pub(super) struct FsNode {
@@ -54,7 +52,7 @@ pub(super) struct Stash {
 }
 
 impl Stash {
-    pub(super) fn new_root(repo: Arc<Repository>) -> Result<Self> {
+    pub(super) fn new_root(repo: Arc<Repository>, data_cache_size: u64) -> Result<Self> {
         let root_attr = simple_attr(
             FUSE_ROOT_ID,
             fuser::FileType::Directory,
@@ -68,7 +66,7 @@ impl Stash {
             nodes: BTreeMap::new(),
             path_cache: BTreeMap::new(),
             tree_cache: TreeCache::new(repo.clone(), TREE_CACHE_CAPACITY),
-            blob_cache: BlobCache::new(repo.clone(), BLOB_CACHE_CAPACITY),
+            blob_cache: BlobCache::new(repo.clone(), data_cache_size),
         };
 
         // Manually insert root
@@ -115,9 +113,10 @@ impl Stash {
         }
 
         if self.ensure_loaded(parent).is_ok()
-            && let Some(&ino) = self.path_cache.get(&(parent, name)) {
-                return self.nodes.get(&ino).map(|n| &n.attr);
-            }
+            && let Some(&ino) = self.path_cache.get(&(parent, name))
+        {
+            return self.nodes.get(&ino).map(|n| &n.attr);
+        }
 
         None
     }
@@ -303,9 +302,10 @@ impl Stash {
 
         // Update parent's children list
         if let Some(parent) = self.nodes.get_mut(&parent_ino)
-            && let NodeKind::Dir { children } = &mut parent.kind {
-                children.insert(name, ino);
-            }
+            && let NodeKind::Dir { children } = &mut parent.kind
+        {
+            children.insert(name, ino);
+        }
 
         ino
     }

@@ -56,6 +56,18 @@ pub(super) enum FsNode {
     },
 }
 
+impl FsNode {
+    pub fn attr(&self) -> &FileAttr {
+        match self {
+            FsNode::Root { attr, .. }
+            | FsNode::Dir { attr, .. }
+            | FsNode::Symlink { attr, .. }
+            | FsNode::SnapshotRoot { attr, .. }
+            | FsNode::TreeNode { attr, .. } => attr,
+        }
+    }
+}
+
 pub(super) struct Stash {
     repo: Arc<Repository>,
 
@@ -161,24 +173,26 @@ impl Stash {
     }
 
     fn insert_child(&mut self, parent_ino: Inode, name: String, child_ino: Inode) {
-        if let Some(FsNode::Root { attr, children }) | Some(FsNode::Dir { attr, children, .. }) =
-            self.nodes.get_mut(&parent_ino)
-        {
-            attr.nlink += 1;
-            children.insert(name, child_ino);
+        let is_dir = matches!(self.nodes.get(&child_ino), Some(node) if node.attr().kind == fuser::FileType::Directory);
+
+        if let Some(parent) = self.nodes.get_mut(&parent_ino) {
+            match parent {
+                FsNode::Root { attr, children } | FsNode::Dir { attr, children, .. } => {
+                    if is_dir {
+                        attr.nlink += 1; // Only increment for sub-directories
+                    }
+                    children.insert(name, child_ino);
+                }
+                _ => {}
+            }
         }
     }
 
     pub(super) fn lookup(&mut self, parent_ino: Inode, name: String) -> Option<&FileAttr> {
         // Check path cache first
         if let Some(ino) = self.path_cache.get(&(parent_ino, name.clone())) {
-            return match self.nodes.get(ino)? {
-                FsNode::Root { attr, .. }
-                | FsNode::Dir { attr, .. }
-                | FsNode::SnapshotRoot { attr, .. }
-                | FsNode::TreeNode { attr, .. }
-                | FsNode::Symlink { attr, .. } => Some(attr),
-            };
+            let node = self.nodes.get(ino)?;
+            Some(node.attr())
         }
 
         let parent_node = self.nodes.get(&parent_ino)?;
@@ -241,14 +255,7 @@ impl Stash {
 
     pub(super) fn get_attr(&self, ino: Inode) -> Option<FileAttr> {
         let node = self.nodes.get(&ino)?;
-
-        match node {
-            FsNode::Root { attr, .. }
-            | FsNode::Dir { attr, .. }
-            | FsNode::SnapshotRoot { attr, .. }
-            | FsNode::TreeNode { attr, .. }
-            | FsNode::Symlink { attr, .. } => Some(*attr),
-        }
+        Some(node.attr())
     }
 
     pub(super) fn read_dir(

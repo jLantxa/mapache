@@ -35,10 +35,11 @@ impl MapacheFS {
         mountpoint: &Path,
         allow_other: bool,
         metadata_only: bool,
+        data_cache_size: u64,
     ) -> Result<()> {
         let filesystem = Self {
             repo: repo.clone(),
-            stash: Stash::new_root(repo.clone())?,
+            stash: Stash::new_root(repo.clone(), data_cache_size)?,
             metadata_only,
         };
 

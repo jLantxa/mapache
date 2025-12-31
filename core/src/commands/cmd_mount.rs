@@ -9,6 +9,7 @@ use crate::{
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs,
     fuse::fs::MapacheFS,
+    mapache::defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB,
     repository::repo::{RepoConfig, Repository},
     ui,
     utils::{self, size},
@@ -32,6 +33,10 @@ pub struct CmdArgs {
     /// Display files, but do not load its contents
     #[arg(long, value_parser, default_value_t = false)]
     pub metadata_only: bool,
+
+    /// Max size of the internal data cache.
+    #[arg(long = "cache-size-mib", value_parser, default_value_t = DEFAULT_FUSE_STASH_CACHE_SIZE_MIB)]
+    pub data_cache_size_mib: f32,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -105,6 +110,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             &cannonical_mountpoint,
             args.allow_other,
             args.metadata_only,
+            (args.data_cache_size_mib * size::MiB as f32) as u64,
         )?;
     }
 

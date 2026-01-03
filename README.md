@@ -126,6 +126,7 @@ Commands:
   clean       Clean up the repository
   completion  Generate autocompletion scripts
   diff        Show differences between snapshots
+  find        Find files and directories in the repository
   forget      Remove snapshots from the repository
   init        Initialize a new repository
   key         Create and manage keys

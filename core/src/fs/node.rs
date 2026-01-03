@@ -8,9 +8,10 @@ use std::{
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
 use anyhow::{Context, Result, bail};
+use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
-use crate::mapache::ID;
+use crate::{mapache::ID, utils};
 
 /// The type of a node (file, directory, symlink, etc.)
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,4 +260,68 @@ fn get_node_type(meta: &FsMetadata) -> Result<NodeType> {
     };
 
     Ok(node_type)
+}
+
+/// Returns a colorized node name.
+/// This function follows the color code convention of ls, but it is not comprehensive.
+fn get_colorized_node_name(node: &Node, name: String) -> String {
+    if node.is_dir() {
+        format!("{}", name.bold().blue())
+    } else if node.is_symlink() {
+        match &node.symlink_info {
+            None => format!("{}", name.cyan()),
+            Some(symlink_info) => {
+                format!("{} -> {}", name.cyan(), symlink_info.target_path.display())
+            }
+        }
+    } else if node.is_block_device() || node.is_char_device() {
+        format!("{}", name.yellow().on_black())
+    } else {
+        name
+    }
+}
+
+/// Prints the relevant metadata of a node as a single line, similar to the Unix ls command.
+pub(crate) fn node_to_string(
+    node: &Node,
+    full_path: Option<&Path>,
+    long: bool,
+    human_readable: bool,
+) -> String {
+    let node_name_str = match full_path {
+        Some(path) => get_colorized_node_name(node, path.to_string_lossy().to_string()),
+        None => get_colorized_node_name(node, node.name.clone()),
+    };
+
+    if long {
+        let size_str = match human_readable {
+            true => utils::format_size_binary(node.metadata.size, 3),
+            false => node.metadata.size.to_string(),
+        };
+
+        const NA: &str = "_";
+
+        format!(
+            "{:10} {:3} {:7}  {:7}  {:>14}  {:12}  {}",
+            node.metadata.mode.map_or(NA.to_string(), |mode| {
+                utils::mode_to_permissions_string(mode)
+            }),
+            node.metadata
+                .nlink
+                .map_or(NA.to_string(), |nlink| nlink.to_string()),
+            node.metadata
+                .owner_uid
+                .map_or(NA.to_string(), |uid| uid.to_string()),
+            node.metadata
+                .owner_gid
+                .map_or(NA.to_string(), |gid| gid.to_string()),
+            size_str,
+            node.metadata.modified_time.map_or(NA.to_string(), |mtime| {
+                utils::pretty_print_system_time(mtime, None).unwrap_or(String::from("Error"))
+            }),
+            node_name_str
+        )
+    } else {
+        node_name_str.to_string()
+    }
 }

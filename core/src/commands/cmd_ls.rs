@@ -2,13 +2,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Args;
-use colored::Colorize;
 
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::{
-        node::{Metadata, Node, NodeType},
+        node::{Metadata, Node, NodeType, node_to_string},
         tree::{Tree, find_serialized_node},
     },
     mapache::ID,
@@ -85,7 +84,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 /// List the contents of a node.
 fn ls(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
     if !node.is_dir() {
-        ui::cli::log!("{}", node_to_string(node, args.long, args.human_readable));
+        ui::cli::log!(
+            "{}",
+            node_to_string(node, None, args.long, args.human_readable)
+        );
         return Ok(());
     }
 
@@ -136,7 +138,10 @@ fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> 
 /// Helper function to print a tree's nodes
 fn print_tree(tree: &Tree, args: &CmdArgs) {
     for node in &tree.nodes {
-        ui::cli::log!("{}", node_to_string(node, args.long, args.human_readable))
+        ui::cli::log!(
+            "{}",
+            node_to_string(node, None, args.long, args.human_readable)
+        )
     }
 }
 
@@ -150,63 +155,5 @@ impl Node {
             tree: Some(*tree_id),
             symlink_info: None,
         }
-    }
-}
-
-/// Prints the relevant metadata of a node as a single line, similar to the Unix ls command.
-fn node_to_string(node: &Node, long: bool, human_readable: bool) -> String {
-    let node_name_str = get_colorized_node_name(node);
-
-    if long {
-        let size_str = match human_readable {
-            true => utils::format_size_binary(node.metadata.size, 3),
-            false => node.metadata.size.to_string(),
-        };
-
-        const NA: &str = "_";
-
-        format!(
-            "{:10} {:3} {:7}  {:7}  {:>14}  {:12}  {}",
-            node.metadata.mode.map_or(NA.to_string(), |mode| {
-                utils::mode_to_permissions_string(mode)
-            }),
-            node.metadata
-                .nlink
-                .map_or(NA.to_string(), |nlink| nlink.to_string()),
-            node.metadata
-                .owner_uid
-                .map_or(NA.to_string(), |uid| uid.to_string()),
-            node.metadata
-                .owner_gid
-                .map_or(NA.to_string(), |gid| gid.to_string()),
-            size_str,
-            node.metadata.modified_time.map_or(NA.to_string(), |mtime| {
-                utils::pretty_print_system_time(mtime, None).unwrap_or(String::from("Error"))
-            }),
-            node_name_str
-        )
-    } else {
-        node_name_str.to_string()
-    }
-}
-
-/// Returns a colorized node name.
-/// This function follows the color code convention of ls, but it is not comprehensive.
-fn get_colorized_node_name(node: &Node) -> String {
-    if node.is_dir() {
-        format!("{}", node.name.bold().blue())
-    } else if node.is_symlink() {
-        match &node.symlink_info {
-            None => format!("{}", node.name.cyan()),
-            Some(symlink_info) => format!(
-                "{} -> {}",
-                node.name.cyan(),
-                symlink_info.target_path.display()
-            ),
-        }
-    } else if node.is_block_device() || node.is_char_device() {
-        format!("{}", node.name.yellow().on_black())
-    } else {
-        node.name.clone()
     }
 }

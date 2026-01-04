@@ -38,12 +38,7 @@ pub struct CmdArgs {
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let src_backend = backend::new_backend_with_prompt(BackendOptions {
-        repo_path: global_args.repo.clone(),
-        ssh_pubkey: global_args.ssh_pubkey.clone(),
-        ssh_privatekey: global_args.ssh_privatekey.clone(),
-        dry_backend: false,
-    })?;
+    let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false))?;
 
     let (_repo, _secure_storage, lock_handle) = Repository::try_open_with_lock(
         src_auth.as_ref(),

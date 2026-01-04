@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-    backend::{BackendOptions, Handle, StorageBackend, new_backend_with_prompt},
+    backend::{Handle, StorageBackend, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::{
@@ -50,12 +50,7 @@ pub struct CmdArgs {
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
 
-    let backend_options = BackendOptions {
-        repo_path: global_args.repo.clone(),
-        ssh_pubkey: global_args.ssh_pubkey.clone(),
-        ssh_privatekey: global_args.ssh_privatekey.clone(),
-        dry_backend: false,
-    };
+    let backend_options = global_args.backend_options(false);
     let backend_arc = new_backend_with_prompt(backend_options)?;
 
     let config = RepoConfig {

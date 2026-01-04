@@ -5,7 +5,7 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    backend::{BackendOptions, StorageHint, new_backend_with_prompt},
+    backend::{StorageHint, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     mapache::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::{
@@ -23,12 +23,7 @@ pub struct CmdArgs {}
 
 pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let backend = new_backend_with_prompt(BackendOptions {
-        repo_path: global_args.repo.clone(),
-        ssh_pubkey: global_args.ssh_pubkey.clone(),
-        ssh_privatekey: global_args.ssh_privatekey.clone(),
-        dry_backend: false,
-    })?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,

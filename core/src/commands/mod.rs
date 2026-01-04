@@ -4,6 +4,7 @@ use anyhow::{Error, Result, anyhow, bail};
 use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::{
+    backend::BackendOptions,
     mapache::{
         ContentIdType, ID,
         defaults::{
@@ -127,6 +128,17 @@ pub struct GlobalArgs {
     /// Set the verbosity level [0-3]
     #[clap(short, long, group = "verbosity_group")]
     pub verbosity: Option<u32>,
+}
+
+impl GlobalArgs {
+    pub fn backend_options(&self, dry: bool) -> BackendOptions {
+        BackendOptions {
+            repo_path: self.repo.clone(),
+            ssh_pubkey: self.ssh_pubkey.clone(),
+            ssh_privatekey: self.ssh_privatekey.clone(),
+            dry_backend: dry,
+        }
+    }
 }
 
 fn pack_size_parser(s: &str) -> Result<f32> {

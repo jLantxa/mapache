@@ -5,7 +5,7 @@ use clap::{Args, Subcommand};
 use colored::Colorize;
 
 use crate::{
-    backend::{BackendOptions, Handle, new_backend_with_prompt},
+    backend::{Handle, new_backend_with_prompt},
     commands::GlobalArgs,
     mapache::{ContentIdType, ID},
     repository::{
@@ -70,12 +70,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 fn run_list(global_args: &GlobalArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(BackendOptions {
-        repo_path: global_args.repo.clone(),
-        ssh_pubkey: global_args.ssh_pubkey.clone(),
-        ssh_privatekey: global_args.ssh_privatekey.clone(),
-        dry_backend: false,
-    })?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let mut table = Table::new();
     table.set_headers(vec![
@@ -100,12 +95,7 @@ fn run_list(global_args: &GlobalArgs) -> Result<()> {
 
 fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
     let auth = request_auth();
-    let backend = new_backend_with_prompt(BackendOptions {
-        repo_path: global_args.repo.clone(),
-        ssh_pubkey: global_args.ssh_pubkey.clone(),
-        ssh_privatekey: global_args.ssh_privatekey.clone(),
-        dry_backend: false,
-    })?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let key_manager = KeyManager::new(backend.clone());
     let (_key_id, master_key) = key_manager.retrieve_master_key(&auth, global_args.key.as_ref())?;
@@ -136,12 +126,7 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
 }
 
 fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(BackendOptions {
-        repo_path: global_args.repo.clone(),
-        ssh_pubkey: global_args.ssh_pubkey.clone(),
-        ssh_privatekey: global_args.ssh_privatekey.clone(),
-        dry_backend: false,
-    })?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
     let key_manager = KeyManager::new(backend.clone());
     let (_id, path) = key_manager.find_id_with_prefix(&args.id)?;
     backend.remove(&path)
@@ -149,12 +134,7 @@ fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
 
 fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> Result<()> {
     let auth = request_auth();
-    let backend = new_backend_with_prompt(BackendOptions {
-        repo_path: global_args.repo.clone(),
-        ssh_pubkey: global_args.ssh_pubkey.clone(),
-        ssh_privatekey: global_args.ssh_privatekey.clone(),
-        dry_backend: false,
-    })?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let key_manager = KeyManager::new(backend.clone());
     let (old_id, old_keyfile) = key_manager

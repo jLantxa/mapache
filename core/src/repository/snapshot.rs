@@ -4,10 +4,12 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::repository::repo::REPO_DROPPED_EXTENSION;
-use crate::{commands::EMPTY_TAG_MARK, fs::tree::NodeDiff, repository::repo::Repository};
-
-use crate::mapache::ID;
+use crate::{
+    commands::EMPTY_TAG_MARK,
+    fs::tree::NodeDiff,
+    mapache::ID,
+    repository::repo::{REPO_DROPPED_EXTENSION, Repository},
+};
 
 #[derive(Debug, Clone)]
 pub struct SnapshotPair {

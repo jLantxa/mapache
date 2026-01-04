@@ -2,7 +2,11 @@ pub mod defaults;
 pub mod global;
 pub mod vars;
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
@@ -177,6 +181,21 @@ impl std::fmt::Display for ContentIdType {
             ContentIdType::Lock => write!(f, "lock"),
         }
     }
+}
+
+pub(crate) fn find_in_snapshot(
+    repo: Arc<Repository>,
+    snapshot: &Snapshot,
+    path: &Path,
+) -> Result<Vec<(PathBuf, Node)>> {
+    let root_tree_id = snapshot.tree;
+    let stream = SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None)?;
+
+    Ok(stream
+        .flatten()
+        .filter(|(node_path, _stream_node)| node_path.ends_with(path))
+        .map(|(path, snode)| (path, snode.node))
+        .collect())
 }
 
 /// Rewrite a snapshot tree. This function can remove exclude paths or rechunk

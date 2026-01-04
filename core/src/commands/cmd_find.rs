@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Args;
@@ -9,13 +6,11 @@ use clap::Args;
 use crate::{
     backend::{BackendOptions, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    fs::{
-        node::{Node, node_to_string},
-        tree::SerializedNodeStream,
-    },
+    fs::node::node_to_string,
+    mapache::find_in_snapshot,
     repository::{
         repo::{RepoConfig, Repository},
-        snapshot::{Snapshot, SnapshotStream},
+        snapshot::SnapshotStream,
     },
     ui,
     utils::{self, size},
@@ -70,19 +65,4 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn find_in_snapshot(
-    repo: Arc<Repository>,
-    snapshot: &Snapshot,
-    path: &Path,
-) -> Result<Vec<(PathBuf, Node)>> {
-    let root_tree_id = snapshot.tree;
-    let stream = SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None)?;
-
-    Ok(stream
-        .flatten()
-        .filter(|(node_path, _stream_node)| node_path.ends_with(path))
-        .map(|(path, snode)| (path, snode.node))
-        .collect())
 }

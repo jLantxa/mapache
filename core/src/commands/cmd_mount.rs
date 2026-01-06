@@ -5,7 +5,7 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    backend::{BackendOptions, BackendUrl, new_backend_with_prompt},
+    backend::{BackendUrl, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     fs,
     fuse::fs::MapacheFS,

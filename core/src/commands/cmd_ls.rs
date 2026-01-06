@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Args;
+use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -114,7 +115,7 @@ fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> 
 
         if args.recursive {
             ui::cli::log!();
-            ui::cli::log!("{}:", current_path.display());
+            ui::cli::log!("{}:", current_path.to_string_lossy().bold().underline());
         }
 
         tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));

@@ -1,10 +1,18 @@
 # Changelog
 
-## Latest
+## v0.1.2
 
 ### Changes
 
 - Added a `find` command to find files and directories in the repository.
+- Added a `--metadata-only` to `mapache mount` to mount snapshots with metadata
+  only (no file data).
+- Added an option to `mapache mount` to select the amount of memory allocated to
+  the internal data cache.
+- Highlight the directory path in recursive `ls`.
+- Display a [DRY RUN] flag in snapshot and restore for better context.
+- Optimizations to the index affecting the garbage collector.
+- Optimizations to the FUSE internals.
 
 ## v0.1.1
 

@@ -20,8 +20,8 @@ pub static BASE_DIRS: LazyLock<RwLock<BaseDirs>> = LazyLock::new(|| {
 });
 
 /// Global arguments that can be read at any time during the execution of the program.
-pub static GLOBAL_OPTS: LazyLock<RwLock<Option<GlobalOpts>>> =
-    LazyLock::new(|| RwLock::new(Some(GlobalOpts::default())));
+pub static GLOBAL_OPTS: LazyLock<RwLock<GlobalOpts>> =
+    LazyLock::new(|| RwLock::new(GlobalOpts::default()));
 
 /// Global execution arguments parameters. This struct stores global configuration.
 /// These values may come from the CLI, program constants, environment variables,
@@ -57,16 +57,12 @@ impl GlobalOpts {
 
     /// Returns the global verbosity setting.
     pub fn verbosity() -> u32 {
-        GLOBAL_OPTS.read().as_ref().unwrap().verbosity
+        GLOBAL_OPTS.read().verbosity
     }
 
     /// Returns the global progress refresh interval.
     pub fn progress_refresh_interval() -> Duration {
-        GLOBAL_OPTS
-            .read()
-            .as_ref()
-            .unwrap()
-            .progress_refresh_interval
+        GLOBAL_OPTS.read().progress_refresh_interval
     }
 }
 
@@ -89,15 +85,8 @@ pub fn set_global_opts_with_args(global_args: &GlobalArgs) {
         DEFAULT_VERBOSITY
     };
 
-    // Default values that don't change
-    let progress_refresh_interval = GlobalOpts::progress_refresh_interval();
-
-    let new_opts = GlobalOpts {
-        verbosity,
-        progress_refresh_interval,
-    };
-
-    let _ = GLOBAL_OPTS.write().insert(new_opts);
+    let mut opts = GLOBAL_OPTS.write();
+    opts.verbosity = verbosity;
 }
 
 fn calculate_refresh_interval(hz: f32) -> Duration {

@@ -124,7 +124,7 @@ impl FSNodeStream {
     fn get_children_sorted(dir: &Path) -> Result<Vec<PathBuf>> {
         let read_dir = std::fs::read_dir(dir).map_err(|e| anyhow!("Cannot read {dir:?}: {e}"))?;
         let mut entries: Vec<_> = read_dir.collect::<Result<Vec<_>, std::io::Error>>()?;
-        entries.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
+        entries.sort_unstable_by_key(|a| a.file_name());
         Ok(entries.into_iter().map(|e| e.path()).collect())
     }
 }

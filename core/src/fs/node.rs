@@ -186,10 +186,10 @@ impl Node {
 
             // Cross-Platform Support: Windows requires knowing if the target is a dir.
             // We probe the target type only if it exists.
-            if let Some(parent) = path.parent() {
-                if let Ok(target_meta) = std::fs::metadata(parent.join(&target)) {
-                    info.target_type = Some(get_node_type(&target_meta)?);
-                }
+            if let Some(parent) = path.parent()
+                && let Ok(target_meta) = std::fs::metadata(parent.join(&target))
+            {
+                info.target_type = Some(get_node_type(&target_meta)?);
             }
             self.symlink_info = Some(info);
         }

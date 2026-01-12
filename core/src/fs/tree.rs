@@ -31,19 +31,19 @@ impl Tree {
     /// that is, when all the contents and/or tree hashes have been resolved.
     pub fn save_to_repo(&mut self, repo: &Repository) -> Result<(ID, (u64, u64))> {
         // Sort all nodes by name before serializing
-        self.nodes.sort_unstable_by_key(|node| node.name.clone());
+        self.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
-        let tree_json = serde_json::to_string(self)?.as_bytes().to_vec();
+        // Reserve some space for each node's text. This value is a heuristic.
+        let mut buffer = Vec::with_capacity(self.nodes.len() * 160);
+        serde_json::to_writer(&mut buffer, self).context("Failed to serialize tree nodes")?;
+
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
-            repo.encode_and_save_blob(BlobType::Tree, tree_json, SaveID::CalculateID)?;
+            repo.encode_and_save_blob(BlobType::Tree, buffer, SaveID::CalculateID)?;
 
-        Ok((
-            id,
-            (
-                raw_data_size + raw_meta_size,
-                encoded_data_size + encoded_meta_size,
-            ),
-        ))
+        let total_raw = raw_data_size + raw_meta_size;
+        let total_encoded = encoded_data_size + encoded_meta_size;
+
+        Ok((id, (total_raw, total_encoded)))
     }
 
     /// Load a tree from the repository.
@@ -122,19 +122,10 @@ impl FSNodeStream {
 
     // Get all children sorted in lexicographical order.
     fn get_children_sorted(dir: &Path) -> Result<Vec<PathBuf>> {
-        match std::fs::read_dir(dir) {
-            Ok(read_dir) => {
-                let mut children: Vec<PathBuf> = read_dir
-                    .map(|res| res.map(|e| e.path()))
-                    .collect::<Result<_, _>>()?;
-                children
-                    .sort_unstable_by(|first, second| first.file_name().cmp(&second.file_name()));
-                Ok(children)
-            }
-            Err(e) => {
-                bail!("Cannot read {dir:?}: {e}")
-            }
-        }
+        let read_dir = std::fs::read_dir(dir).map_err(|e| anyhow!("Cannot read {dir:?}: {e}"))?;
+        let mut entries: Vec<_> = read_dir.collect::<Result<Vec<_>, std::io::Error>>()?;
+        entries.sort_unstable_by(|a, b| a.file_name().cmp(&b.file_name()));
+        Ok(entries.into_iter().map(|e| e.path()).collect())
     }
 }
 
@@ -597,24 +588,23 @@ pub fn find_serialized_node(
     let mut current_tree_id: ID = *base_tree_id;
 
     for (i, component) in components.iter().enumerate() {
-        let tree = Tree::load_from_repo(repo, &current_tree_id).with_context(|| {
-            format!(
-                "Failed to load tree with ID {current_tree_id} for path component '{component}'"
-            )
-        })?;
+        let tree = Tree::load_from_repo(repo, &current_tree_id)?;
 
-        if let Some(node) = tree.nodes.into_iter().find(|n| n.name == *component) {
-            if i == components.len() - 1 {
-                return Ok(Some(node));
-            } else {
-                current_tree_id = node.tree.ok_or_else(|| {
-                    anyhow!(
-                        "Path component '{component}' is not a directory in tree {current_tree_id}"
-                    )
-                })?;
+        match tree
+            .nodes
+            .binary_search_by(|n| n.name.as_str().cmp(component))
+        {
+            Ok(idx) => {
+                let node = &tree.nodes[idx];
+                if i == components.len() - 1 {
+                    return Ok(Some(node.clone()));
+                } else {
+                    current_tree_id = node.tree.ok_or_else(|| {
+                        anyhow!("'{component}' no es un directorio en el árbol {current_tree_id}")
+                    })?;
+                }
             }
-        } else {
-            return Ok(None);
+            Err(_) => return Ok(None),
         }
     }
 

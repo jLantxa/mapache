@@ -154,43 +154,46 @@ impl Node {
     /// Build a `Node` from any path on disk.
     pub fn from_path(path: &Path) -> Result<Self> {
         let meta = std::fs::symlink_metadata(path)
-            .with_context(|| format!("Cannot stat '{}'", path.display()))?;
+            .with_context(|| format!("Stat failed: {}", path.display()))?;
+
         let node_type = get_node_type(&meta)?;
 
         let name = path
             .file_name()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| String::from("/")); // Handle root path gracefully
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
 
         let mut node = Self {
             name,
             node_type,
             metadata: Metadata::from_fs(&meta),
-            blobs: None,
-            tree: None,
-            symlink_info: None,
+            ..Default::default()
         };
 
-        if node.is_symlink()
-            && let Ok(target_path) = std::fs::read_link(path)
-        {
-            // Don't set any symlink metadata if the target could not be read
-            // The symlink will be effectively broken but this will not be an error.
-            let target_type = target_path
-                .symlink_metadata()
-                .ok()
-                .and_then(|m| get_node_type(&m).ok());
-
-            let symlink_info = SymlinkInfo {
-                target_path,
-                target_type,
-            };
-
-            node.symlink_info = Some(symlink_info);
+        if node.is_symlink() {
+            node.populate_symlink_info(path)?;
         }
 
         Ok(node)
+    }
+
+    fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
+        if let Ok(target) = std::fs::read_link(path) {
+            let mut info = SymlinkInfo {
+                target_path: target.clone(),
+                target_type: None,
+            };
+
+            // Cross-Platform Support: Windows requires knowing if the target is a dir.
+            // We probe the target type only if it exists.
+            if let Some(parent) = path.parent() {
+                if let Ok(target_meta) = std::fs::metadata(parent.join(&target)) {
+                    info.target_type = Some(get_node_type(&target_meta)?);
+                }
+            }
+            self.symlink_info = Some(info);
+        }
+        Ok(())
     }
 
     #[inline]

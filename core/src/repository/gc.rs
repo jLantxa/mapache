@@ -50,7 +50,7 @@ pub struct Plan {
 pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
 
-    let mut keep_packs: IdSet<ID> = repo.list_objects()?;
+    let mut keep_packs: IdSet<ID> = repo.list_packs()?;
     let mut unused_packs = keep_packs.clone();
 
     keep_packs.retain(|id| referenced_packs.contains(id));

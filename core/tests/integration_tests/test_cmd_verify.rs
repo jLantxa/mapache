@@ -1,16 +1,13 @@
 #![cfg(test)]
 
 mod tests {
-    use std::{
-        path::{Path, PathBuf},
-        sync::Arc,
-    };
+    use std::{path::PathBuf, sync::Arc};
 
     use anyhow::{Context, Ok, Result};
     use tempfile::tempdir;
 
     use mapache::{
-        backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
+        backend::localfs::LocalFS,
         commands::{self, GlobalArgs, UseSnapshot, cmd_snapshot, cmd_verify},
         mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
         repository::repo::{Auth, INDEX_DIR, OBJECTS_DIR},
@@ -18,24 +15,9 @@ mod tests {
 
     use crate::{
         TEST_QUIET,
-        integration_tests::{BACKUP_DATA_PATH, init_repo},
+        integration_tests::{BACKUP_DATA_PATH, delete_all_files_from, init_repo},
         test_utils,
     };
-
-    /// Remove all file nodes from a base directory. This is useful to remove all
-    /// index files or packs from the repository, without deleting the directories.
-    fn delete_all_files_from(backend: &dyn StorageBackend, dir: &Path) -> Result<()> {
-        let backend_objects = read_backend_dir(backend, &PathBuf::from(dir))?;
-
-        for node in backend_objects {
-            match node {
-                mapache::backend::BackendNode::File(path) => backend.remove(&path)?,
-                mapache::backend::BackendNode::Dir(_) => (),
-            }
-        }
-
-        Ok(())
-    }
 
     #[test]
     fn test_verify_links() -> Result<()> {

@@ -78,7 +78,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut visited_blobs = BTreeSet::new();
 
     if args.all_packs {
-        let packs = repo_arc.list_objects()?;
+        let packs = repo_arc.list_packs()?;
 
         let style = ProgressStyle::default_bar()
             .template(

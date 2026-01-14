@@ -6,6 +6,8 @@
 
 - Added a global `--retry-lock` to setup a timeout to retry acquiring a lock if
   the repository is already locked. No retries are attempted by default.
+- Added a `rebuild-index` command to rebuild the index by scanning all existing
+  packs.
 
 ## v0.1.2
 

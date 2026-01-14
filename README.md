@@ -120,28 +120,29 @@ mapache backup tool
 Usage: mapache <COMMAND>
 
 Commands:
-  amend       Amend an existing snapshot
-  cache       List and cleanup cache directories
-  cat         Print repository objects
-  clean       Clean up the repository
-  completion  Generate autocompletion scripts
-  diff        Show differences between snapshots
-  find        Find files and directories in the repository
-  forget      Remove snapshots from the repository
-  init        Initialize a new repository
-  key         Create and manage keys
-  log         Show all snapshots present in the repository
-  ls          List nodes in the repository
-  mount       Mount the repository as a file system
-  recall      Recall forgotten snapshots
-  rechunk     Rechunk all snapshots
-  restore     Restore a snapshot in a target path
-  snapshot    Create a new snapshot
-  stats       Display stats about the repository and its contents
-  sync        Synchronize a repository in a different location
-  unlock      Remove existing locks
-  verify      Verify the integrity of the data stored in the repository
-  help        Print this message or the help of the given subcommand(s)
+  amend          Amend an existing snapshot
+  cache          List and cleanup cache directories
+  cat            Print repository objects
+  clean          Clean up the repository
+  completion     Generate autocompletion scripts
+  diff           Show differences between snapshots
+  find           Find files and directories in the repository
+  forget         Remove snapshots from the repository
+  init           Initialize a new repository
+  key            Create and manage keys
+  log            Show all snapshots present in the repository
+  ls             List nodes in the repository
+  mount          Mount the repository as a file system
+  rebuild-index  Rebuild the index by scanning all existing packs
+  recall         Recall forgotten snapshots
+  rechunk        Rechunk all snapshots
+  restore        Restore a snapshot in a target path
+  snapshot       Create a new snapshot
+  stats          Display stats about the repository and its contents
+  sync           Synchronize a repository in a different location
+  unlock         Remove existing locks
+  verify         Verify the integrity of the data stored in the repository
+  help           Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help

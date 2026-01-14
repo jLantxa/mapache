@@ -439,7 +439,7 @@ impl MasterIndex {
         }
     }
 
-    pub fn save(&mut self, repo: &Repository) -> Result<(u64, u64)> {
+    pub fn persist(&mut self, repo: &Repository) -> Result<(u64, u64)> {
         let mut total_raw = 0;
         let mut total_enc = 0;
 

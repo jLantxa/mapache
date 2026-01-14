@@ -540,7 +540,7 @@ impl Repository {
         let data_packer_meta_size = self.flush_packer(&self.data_packer, BlobType::Data)?;
         let tree_packer_meta_size = self.flush_packer(&self.tree_packer, BlobType::Tree)?;
 
-        let (index_raw_size, index_encoded_size) = self.index.write().save(self)?;
+        let (index_raw_size, index_encoded_size) = self.index.write().persist(self)?;
 
         Ok((
             data_packer_meta_size.1 + tree_packer_meta_size.0 + index_raw_size,
@@ -718,7 +718,7 @@ impl Repository {
     }
 
     /// Lists all packs in the repository.
-    pub fn list_objects(&self) -> Result<IdSet<ID>> {
+    pub fn list_packs(&self) -> Result<IdSet<ID>> {
         let mut list = IdSet::default();
 
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);

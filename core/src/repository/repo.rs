@@ -907,19 +907,16 @@ impl Repository {
         exclusive: bool,
         retry_duration: Option<Duration>,
     ) -> Result<Arc<Mutex<Lock>>> {
-        self.backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
-
         let start_time = Instant::now();
 
-        const BASE_WAIT_INTERVAL: i64 = 10 * 1000;
-        const MAX_JITTER_MS: i64 = (BASE_WAIT_INTERVAL as f32 * 0.1) as i64;
-        const MEAN_WAIT_INTERVAL: Duration =
-            Duration::milliseconds(BASE_WAIT_INTERVAL - (MAX_JITTER_MS / 2));
+        const MIN_BASE_WAIT_INTERVAL_MS: i64 = 5 * 1000;
+        const MAX_BASE_WAIT_INTERVAL_MS: i64 = 60 * 1000;
+        const MAX_JITTER_MS: i64 = 1000;
+
+        let mut base_wait_interval_ms = MIN_BASE_WAIT_INTERVAL_MS;
 
         loop {
-            let attempt_result = self.try_acquire_lock_once(exclusive);
-
-            match attempt_result {
+            match self.try_acquire_lock_once(exclusive) {
                 Ok(lock) => return Ok(lock),
 
                 Err(e) => {
@@ -934,10 +931,14 @@ impl Repository {
 
                     let mut rng = rand::rng();
                     let jitter_millis = rng.random_range(0..MAX_JITTER_MS);
-                    let wait_time = MEAN_WAIT_INTERVAL + Duration::milliseconds(jitter_millis);
+                    let mean_wait_interval =
+                        Duration::milliseconds(base_wait_interval_ms - (MAX_JITTER_MS / 2));
+                    let wait_time = mean_wait_interval + Duration::milliseconds(jitter_millis);
+                    base_wait_interval_ms =
+                        std::cmp::min(MAX_BASE_WAIT_INTERVAL_MS, 2 * base_wait_interval_ms);
 
                     ui::cli::warning!(
-                        "Repository locked. Waiting {:.0?} seconds before retrying...",
+                        "The repository is locked by another process. Waiting {:.0?} seconds before retrying...",
                         wait_time.as_seconds_f32()
                     );
 
@@ -949,6 +950,7 @@ impl Repository {
 
     /// Try to acquire a lock just once without retrying
     fn try_acquire_lock_once(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
+        self.backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
         let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
 
         let new_lock_id = *new_lock.lock().id();

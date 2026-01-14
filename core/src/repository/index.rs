@@ -45,6 +45,8 @@ pub(crate) enum IndexStatus {
     Persisted(ID),
 }
 
+type ReverseMap = HashMap<u32, Vec<ID>>;
+
 /// Manages the mapping of blob IDs to their locations within pack files.
 /// An `Index` can be in a 'pending' state, indicating it's still being built.
 #[derive(Debug, Clone)]
@@ -57,9 +59,6 @@ pub struct Index {
     /// to store a small `usize` index in `BlobLocationInternal` instead of the full `ID`,
     /// significantly reducing memory usage.
     pack_ids: IndexSet<ID>,
-
-    /// Maps PackArrayIndex -> List of Blob IDs.
-    reverse_map: HashMap<u32, Vec<ID>>,
 
     /// Status: Pending, finalized or serialized.
     status: IndexStatus,
@@ -79,10 +78,18 @@ impl Index {
             data_ids: IdMap::default(),
             tree_ids: IdMap::default(),
             pack_ids: IndexSet::new(),
-            reverse_map: HashMap::new(),
             status: IndexStatus::Pending,
             create_time: Instant::now(),
         }
+    }
+
+    /// Helper to generate a temporary reverse map for management operations.
+    fn get_reverse_map(&self) -> ReverseMap {
+        let mut rev: ReverseMap = HashMap::with_capacity(self.pack_ids.len());
+        for (id, loc) in self.data_ids.iter().chain(self.tree_ids.iter()) {
+            rev.entry(loc.pack_array_index).or_default().push(*id);
+        }
+        rev
     }
 
     /// Returns `true` if the index is currently pending (still receiving entries).
@@ -121,23 +128,18 @@ impl Index {
     }
 
     /// Creates an `Index` from a serialized `IndexFile`.
-    /// The created index is *not* pending, as it represents a complete, loaded file.
     pub fn from_index_file(index_file: IndexFile, id: ID) -> Self {
         let mut index = Self::new();
-
-        // An index loaded from a file is considered complete and not pending.
         index.set_status(IndexStatus::Persisted(id));
 
         for pack in index_file.packs {
             let pack_index = index.pack_ids.insert(pack.id) as u32;
-            let mut blob_ids = Vec::with_capacity(pack.blobs.len());
 
             for blob in pack.blobs {
                 if matches!(blob.blob_type, BlobType::Padding) {
                     continue;
                 }
 
-                blob_ids.push(blob.id);
                 let map = match blob.blob_type {
                     BlobType::Data => &mut index.data_ids,
                     BlobType::Tree => &mut index.tree_ids,
@@ -154,8 +156,6 @@ impl Index {
                     },
                 );
             }
-
-            index.reverse_map.insert(pack_index, blob_ids);
         }
         index
     }
@@ -194,21 +194,16 @@ impl Index {
     }
 
     /// Adds all blob descriptors from a specific pack to the index.
-    /// This method is optimized for adding multiple blobs from the same pack,
-    /// as it only needs to look up the pack ID once.
     pub fn add_pack<I>(&mut self, pack_id: &ID, descriptors: I)
     where
         I: IntoIterator<Item = PackedBlobDescriptor>,
     {
         let pack_index = self.pack_ids.insert(*pack_id) as u32;
-        let blob_ids_entry = self.reverse_map.entry(pack_index).or_default();
 
         for blob in descriptors {
             if matches!(blob.blob_type, BlobType::Padding) {
                 continue;
             }
-
-            blob_ids_entry.push(blob.id);
 
             let map = match blob.blob_type {
                 BlobType::Data => &mut self.data_ids,
@@ -237,12 +232,13 @@ impl Index {
             return Ok((0, 0));
         }
 
+        let reverse = self.get_reverse_map();
         let mut pack_entries = Vec::with_capacity(self.pack_ids.len());
 
         for (p_idx, pack_id) in self.pack_ids.iter().enumerate() {
             let p_idx_u32 = p_idx as u32;
 
-            if let Some(blob_ids) = self.reverse_map.get(&p_idx_u32) {
+            if let Some(blob_ids) = reverse.get(&p_idx_u32) {
                 let mut blobs = Vec::with_capacity(blob_ids.len());
 
                 for id in blob_ids {
@@ -251,7 +247,7 @@ impl Index {
                         .get(id)
                         .map(|l| (l, BlobType::Data))
                         .or_else(|| self.tree_ids.get(id).map(|l| (l, BlobType::Tree)))
-                        .expect("Indexed ID in reverse_map should exist in data/tree maps");
+                        .expect("ID from reverse map must exist in data/tree maps");
 
                     blobs.push(IndexFileBlob {
                         id: *id,
@@ -269,11 +265,9 @@ impl Index {
             }
         }
 
-        let index_file = IndexFile {
+        let serialized = serde_json::to_vec(&IndexFile {
             packs: pack_entries,
-        };
-
-        let serialized = serde_json::to_vec(&index_file)?;
+        })?;
 
         let (id, raw, enc) = repo.save_file(
             &mapache::SaveID::CalculateID,
@@ -321,29 +315,23 @@ impl Index {
         if let Some(&pack_index) = self.pack_ids.get_index(target_pack_id) {
             let p_idx_u32 = pack_index as u32;
 
-            if let Some(ids_to_remove) = self.reverse_map.remove(&p_idx_u32) {
-                for id in ids_to_remove {
-                    self.data_ids.remove(&id);
-                    self.tree_ids.remove(&id);
-                }
-            }
+            // Linear scan to remove blobs belonging to the target pack.
+            self.data_ids
+                .retain(|_, loc| loc.pack_array_index != p_idx_u32);
+            self.tree_ids
+                .retain(|_, loc| loc.pack_array_index != p_idx_u32);
 
             let last_idx = (self.pack_ids.len() - 1) as u32;
-
             self.pack_ids.remove(target_pack_id);
 
-            if p_idx_u32 != last_idx
-                && let Some(moved_blob_ids) = self.reverse_map.remove(&last_idx)
-            {
-                for id in &moved_blob_ids {
-                    if let Some(loc) = self.data_ids.get_mut(id) {
-                        loc.pack_array_index = p_idx_u32;
-                    } else if let Some(loc) = self.tree_ids.get_mut(id) {
+            // If the removed pack wasn't the last one, IndexSet moves the last pack
+            // to fill the gap. We must update the index of all affected blobs.
+            if p_idx_u32 != last_idx {
+                for loc in self.data_ids.values_mut().chain(self.tree_ids.values_mut()) {
+                    if loc.pack_array_index == last_idx {
                         loc.pack_array_index = p_idx_u32;
                     }
                 }
-
-                self.reverse_map.insert(p_idx_u32, moved_blob_ids);
             }
         }
     }
@@ -503,7 +491,8 @@ impl MasterIndex {
         let mut seen_packs = IdSet::default();
 
         for idx in old_indices {
-            for (&pack_array_idx, blob_ids) in &idx.reverse_map {
+            let reverse = idx.get_reverse_map();
+            for (&pack_array_idx, blob_ids) in &reverse {
                 let pack_id = idx
                     .pack_ids
                     .get_value(pack_array_idx as usize)

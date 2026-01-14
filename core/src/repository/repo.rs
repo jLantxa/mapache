@@ -1,10 +1,13 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
+use chrono::Duration;
 use parking_lot::{Mutex, RwLock};
+use rand::Rng;
 use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
@@ -167,9 +170,10 @@ impl Repository {
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
         exclusive_lock: bool,
+        retry_duration: Option<Duration>,
     ) -> Result<(Arc<Repository>, Arc<SecureStorage>, Arc<RwLock<LockHandle>>)> {
         let (repo, secure_storage) = Self::try_open_unlocked(auth, key_file_path, backend, config)?;
-        let lock = repo.acquire_lock(exclusive_lock)?;
+        let lock = repo.try_acquire_lock_with_retry(exclusive_lock, retry_duration)?;
         let lock_handle = Arc::new(RwLock::new(LockHandle::new(repo.clone(), lock)));
 
         Ok((repo, secure_storage, lock_handle))
@@ -897,19 +901,69 @@ impl Repository {
         self.secure_storage.decode(&data)
     }
 
-    /// Try to acquire a lock
-    fn acquire_lock(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
-        // Ensure the locks directory exists
+    /// Try to acquire a lock with a retry deadline
+    fn try_acquire_lock_with_retry(
+        &self,
+        exclusive: bool,
+        retry_duration: Option<Duration>,
+    ) -> Result<Arc<Mutex<Lock>>> {
         self.backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
 
-        // Create and save the new lock immediately
+        let start_time = Instant::now();
+
+        const BASE_WAIT_INTERVAL: i64 = 10 * 1000;
+        const MAX_JITTER_MS: i64 = (BASE_WAIT_INTERVAL as f32 * 0.1) as i64;
+        const MEAN_WAIT_INTERVAL: Duration =
+            Duration::milliseconds(BASE_WAIT_INTERVAL - (MAX_JITTER_MS / 2));
+
+        loop {
+            let attempt_result = self.try_acquire_lock_once(exclusive);
+
+            match attempt_result {
+                Ok(lock) => return Ok(lock),
+
+                Err(e) => {
+                    let timeout = match retry_duration {
+                        Some(t) => t,
+                        None => return Err(e),
+                    };
+
+                    if start_time.elapsed() >= timeout.to_std().unwrap_or_default() {
+                        bail!("Timeout acquiring repository lock");
+                    }
+
+                    let mut rng = rand::rng();
+                    let jitter_millis = rng.random_range(0..MAX_JITTER_MS);
+                    let wait_time = MEAN_WAIT_INTERVAL + Duration::milliseconds(jitter_millis);
+
+                    ui::cli::warning!(
+                        "Repository locked. Waiting {:.0?} seconds before retrying...",
+                        wait_time.as_seconds_f32()
+                    );
+
+                    std::thread::sleep(wait_time.to_std()?);
+                }
+            }
+        }
+    }
+
+    /// Try to acquire a lock just once without retrying
+    fn try_acquire_lock_once(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
         let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
+
         let new_lock_id = *new_lock.lock().id();
+
         self.save_lock(&new_lock)
             .context("Failed to write new lock file")?;
 
-        // Check for conflicts with other unexpired locks
-        let all_locks = self.get_locks()?;
+        let all_locks = match self.get_locks() {
+            Ok(locks) => locks,
+            Err(e) => {
+                let _ = self.delete_file(ContentIdType::Lock, &new_lock_id, None);
+                return Err(e);
+            }
+        };
+
         for lock in all_locks {
             // Skip the lock we just wrote
             if lock.id() == &new_lock_id {
@@ -928,7 +982,7 @@ impl Repository {
                 let _ = self.delete_file(ContentIdType::Lock, &new_lock_id, None);
 
                 bail!(
-                    "Failed to acquire lock: Conflict detected with existing lock (ID: {}).",
+                    "Conflict detected with existing lock (ID: {}).",
                     lock.id().to_short_hex(4)
                 );
             }
@@ -1040,7 +1094,14 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false)?;
+        Repository::try_open_with_lock(
+            auth.as_ref(),
+            None,
+            backend,
+            TEST_REPO_CONFIG,
+            false,
+            None,
+        )?;
 
         Ok(())
     }
@@ -1063,7 +1124,14 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false)?;
+        Repository::try_open_with_lock(
+            auth.as_ref(),
+            None,
+            backend,
+            TEST_REPO_CONFIG,
+            false,
+            None,
+        )?;
 
         Ok(())
     }
@@ -1133,6 +1201,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -1154,6 +1223,7 @@ mod tests {
             backend.clone(),
             TEST_REPO_CONFIG,
             own_lock_exclusive,
+            None,
         );
 
         match (
@@ -1204,6 +1274,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -1222,7 +1293,14 @@ mod tests {
         )));
         r0.save_lock(&other_lock)?;
 
-        Repository::try_open_with_lock(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG, true)?; // The other expired lock should have been deleted
+        Repository::try_open_with_lock(
+            Some(&auth),
+            None,
+            backend.clone(),
+            TEST_REPO_CONFIG,
+            true,
+            None,
+        )?; // The other expired lock should have been deleted
 
         Ok(())
     }

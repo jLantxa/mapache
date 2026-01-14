@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Error, Result, anyhow, bail};
+use chrono::Duration;
 use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::{
@@ -17,6 +18,7 @@ use crate::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotStream},
     },
+    utils,
 };
 
 // Subcommands
@@ -128,6 +130,11 @@ pub struct GlobalArgs {
     /// Set the verbosity level [0-3]
     #[clap(short, long, group = "verbosity_group")]
     pub verbosity: Option<u32>,
+
+    /// Retry acquiring a lock if the repository is already locked. Takes a duration
+    /// string like 5m, 30s or 5m30s.
+    #[clap(long = "retry-lock", value_parser = utils::parse_duration_string)]
+    pub retry_lock_duration: Option<Duration>,
 }
 
 impl GlobalArgs {

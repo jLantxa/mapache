@@ -53,6 +53,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
@@ -173,6 +174,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
@@ -255,6 +257,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
@@ -369,6 +372,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
@@ -516,6 +520,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
@@ -659,6 +664,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
@@ -806,6 +812,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 

@@ -45,6 +45,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -67,7 +68,7 @@ mod tests {
 
         // Try to open repo
         let backend = Arc::new(LocalFS::new(repo_path));
-        Repository::try_open_with_lock(Some(&auth), None, backend, TEST_REPO_CONFIG, false)
+        Repository::try_open_with_lock(Some(&auth), None, backend, TEST_REPO_CONFIG, false, None)
             .context("Failed to open repository")?;
 
         Ok(())
@@ -101,6 +102,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -130,6 +132,7 @@ mod tests {
             backend,
             TEST_REPO_CONFIG,
             false,
+            None,
         )
         .context("Failed to open repository")?;
 

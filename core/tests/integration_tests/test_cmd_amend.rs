@@ -57,6 +57,7 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
@@ -195,13 +196,20 @@ mod tests {
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
+            retry_lock_duration: None,
         };
         set_global_opts_with_args(&global);
 
         // Init repo
         init_repo(&auth, repo_path.clone())?;
-        let (repo, _, test_repo_lock_handle) =
-            Repository::try_open_with_lock(Some(&auth), None, backend, TEST_REPO_CONFIG, false)?;
+        let (repo, _, test_repo_lock_handle) = Repository::try_open_with_lock(
+            Some(&auth),
+            None,
+            backend,
+            TEST_REPO_CONFIG,
+            false,
+            None,
+        )?;
         drop(test_repo_lock_handle);
 
         // Run snapshot twice

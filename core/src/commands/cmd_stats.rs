@@ -56,6 +56,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         backend.clone(),
         config,
         false,
+        global_args.retry_lock_duration,
     )?;
 
     let lock_handle_clone = lock_handle.clone();

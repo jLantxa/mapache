@@ -64,7 +64,7 @@ pub fn verify_pack(
         bail!("Invalid pack checksum");
     }
 
-    let pack_header = Packer::parse_pack_header(repo, backend, secure_storage, id)?;
+    let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, id)?;
     let mut num_dangling_blobs = 0;
 
     let index = repo.index();

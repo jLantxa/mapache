@@ -251,12 +251,13 @@ The file name (ID) is the hash of the encoded content.
 
 Mapache stores backup data in the objects directory. A fanout of 1 byte is used
 to reduce the number of files per directory: 256 directories with names 00 to ff
-contain the pack files. A packfile with ID `dd2856e...` will be stored in `objects/dd/dd2856e9f7ac9b495e7ebce1370f68a2e60824cee9546b817f7cbbb4d571bd4b`.
+contain the pack files. A packfile with ID `dd2856e...` will be stored in
+`objects/dd/dd2856e9f7ac9b495e7ebce1370f68a2e60824cee9546b817f7cbbb4d571bd4b`.
 
 All blobs are stored in pack files, which group multiple blobs together to
 optimize storage and I/O operations. The pack file name (ID) is the hash of its
 content. Since a pack file contains already pre-encoded blobs and an encoded
-header, no further encoding is applied.
+footer, no further encoding is applied.
 
 The layout of a pack file is the following.
 
@@ -264,12 +265,12 @@ Encoded pack 1
 Encoded pack 2
 ...
 Encoded pack N
-PACK HEADER
+PACK FOOTER
 
 The blobs are encoded and appended to the pack. Their ID is the hash of their
-raw content. The pack header describes the blobs contained in the pack header.
-This header includes a 4-byte field which is the length of the total header. The
-pack header is encoded, except for the length field.
+raw content. The pack footer describes the blobs contained in the pack footer.
+This footer includes a 4-byte field which is the length of the total footer. The
+pack footer is encoded, except for the length field.
 
 #### Trees
 
@@ -343,22 +344,22 @@ path and node type of the target.
 }
 ```
 
-#### Pack header format
+#### Pack footer format
 
-The pack header consists of a variable-length list of metadata blob entries, each 41 bytes
+The pack footer consists of a variable-length list of metadata blob entries, each 41 bytes
 long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
 blob type (u8), and both the encoded length and raw length (u32) of the associated
 data blob. The trailer is a single u32 field which stores the total length of the
-entire pack header, allowing a parser to efficiently skip directly to the file's data section.
-All data except the header length field is encrypted.
+entire pack footer, allowing a parser to efficiently skip directly to the file's data section.
+All data except the footer length field is encrypted.
 
 ```text
 ┌────────┬────────┬─────┬────────┬─────────────────────┐
-│ Blob 1 │ Blob 2 │ ... │ Blob N │ Header length (u32) │
+│ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │
 └────────┴────────┴─────┴────────┴─────────────────────┘
 
 ┌──────────────────────────────────────────┐
-│     Pack header blob entry (41 bytes)    │
+│     Pack footer blob entry (41 bytes)    │
 │────────────────────────┬────────┬────────│
 │ Field                  │  Size  │ Offset │
 │────────────────────────┼────────┼────────│

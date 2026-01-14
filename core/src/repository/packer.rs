@@ -7,26 +7,26 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     backend::{Handle, StorageBackend},
-    mapache::{BlobType, ContentIdType, ID, SaveID, defaults::HEADER_BLOB_MULTIPLE},
+    mapache::{BlobType, ContentIdType, ID, SaveID, defaults::FOOTER_BLOB_MULTIPLE},
     repository::{repo::Repository, storage::SecureStorage},
     utils,
 };
 
-//   Pack header format:
+//   Pack footer format:
 //
-//   The pack header consists of a variable-length list of metadata blob entries, each 41 bytes
+//   The pack footer consists of a variable-length list of metadata blob entries, each 41 bytes
 //   long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
 //   blob type (u8), and both the encoded length and raw length (u32) of the associated
 //   data blob. The trailer is a single u32 field which stores the total length of the
-//   entire pack header, allowing a parser to efficiently skip directly to the file's data section.
-//   All data except the header length field is encrypted.
+//   entire pack footer, allowing a parser to efficiently skip directly to the file's data section.
+//   All data except the footer length field is encrypted.
 //
 //   ┌────────┬────────┬─────┬────────┬─────────────────────┐
-//   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Header length (u32) │
+//   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │
 //   └────────┴────────┴─────┴────────┴─────────────────────┘
 //
 //   ┌──────────────────────────────────────────┐
-//   │     Pack header blob entry (41 bytes)    │
+//   │     Pack footer blob entry (41 bytes)    │
 //   │────────────────────────┬────────┬────────│
 //   │ Field                  │  Size  │ Offset │
 //   │────────────────────────┼────────┼────────│
@@ -41,11 +41,11 @@ use crate::{
 //     ^ (41 bytes)
 //
 
-pub const HEADER_ID_OFFSET: usize = 0;
-pub const HEADER_BLOB_TYPE_OFFSET: usize = 32;
-pub const HEADER_BLOB_LENGTH_OFFSET: usize = 33;
-pub const HEADER_BLOB_RAW_LENGTH_OFFSET: usize = 37;
-pub const HEADER_BLOB_LEN: usize = 41;
+pub const FOOTER_ID_OFFSET: usize = 0;
+pub const FOOTER_BLOB_TYPE_OFFSET: usize = 32;
+pub const FOOTER_BLOB_LENGTH_OFFSET: usize = 33;
+pub const FOOTER_BLOB_RAW_LENGTH_OFFSET: usize = 37;
+pub const FOOTER_BLOB_LEN: usize = 41;
 
 /// Describes a single blob's location and size within a packed file.
 /// This metadata is crucial for retrieving individual blobs from a pack.
@@ -162,12 +162,12 @@ impl Packer {
             offset += length;
         }
 
-        let header = Self::generate_header(&mut descriptors);
-        let mut header = secure_storage.encode(&header)?;
-        let mut header_length_bytes = (header.len() as u32).to_le_bytes().to_vec();
-        header.append(&mut header_length_bytes);
-        let meta_size: u64 = header.len() as u64;
-        data.append(&mut header);
+        let footer = Self::generate_footer(&mut descriptors);
+        let mut footer = secure_storage.encode(&footer)?;
+        let mut footer_length_bytes = (footer.len() as u32).to_le_bytes().to_vec();
+        footer.append(&mut footer_length_bytes);
+        let meta_size: u64 = footer.len() as u64;
+        data.append(&mut footer);
 
         let hash = utils::calculate_hash(&data);
 
@@ -179,16 +179,16 @@ impl Packer {
         }))
     }
 
-    /// Generates a pack header given a vector of blob descriptors.
-    fn generate_header(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
-        // blob[id (256 bits), lenght (u32), type (u8)] + header length (u32);
-        let mut pack_header = Vec::with_capacity(HEADER_BLOB_LEN * descriptors.len());
-        let mut cursor = std::io::Cursor::new(&mut pack_header);
+    /// Generates a pack footer given a vector of blob descriptors.
+    fn generate_footer(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
+        // blob[id (256 bits), lenght (u32), type (u8)] + footer length (u32);
+        let mut pack_footer = Vec::with_capacity(FOOTER_BLOB_LEN * descriptors.len());
+        let mut cursor = std::io::Cursor::new(&mut pack_footer);
         let mut rng = rand::rng();
 
-        if !descriptors.len().is_multiple_of(HEADER_BLOB_MULTIPLE) {
+        if !descriptors.len().is_multiple_of(FOOTER_BLOB_MULTIPLE) {
             let num_padding_blobs =
-                HEADER_BLOB_MULTIPLE - (descriptors.len() % HEADER_BLOB_MULTIPLE);
+                FOOTER_BLOB_MULTIPLE - (descriptors.len() % FOOTER_BLOB_MULTIPLE);
             for _ in 0..num_padding_blobs {
                 // Add random fields so the compressor cannot reduce the padding size.
                 descriptors.push(PackedBlobDescriptor {
@@ -209,12 +209,12 @@ impl Packer {
             cursor.write_all(&blob.length.to_le_bytes()).unwrap();
             cursor.write_all(&blob.raw_length.to_le_bytes()).unwrap();
         }
-        pack_header
+        pack_footer
     }
 
-    /// Parses the header for a pack with a given ID. This function only reads the header bytes from
+    /// Parses the footer for a pack with a given ID. This function only reads the footer bytes from
     /// the pack file using the seek read trait function from the backend.
-    pub fn parse_pack_header(
+    pub fn parse_pack_footer(
         repo: &Repository,
         backend: &dyn StorageBackend,
         secure_storage: &SecureStorage,
@@ -224,83 +224,83 @@ impl Packer {
 
         // We don't know a priori if this pack contains metadata, so we cannot use a StorageHint.
         let handle = Handle::new(&pack_path);
-        let header_length_bytes: [u8; 4] = backend.read(&handle, -4, 4)?.as_slice().try_into()?;
-        let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
+        let footer_length_bytes: [u8; 4] = backend.read(&handle, -4, 4)?.as_slice().try_into()?;
+        let encoded_footer_length = u32::from_le_bytes(footer_length_bytes) as usize;
 
-        let header_data = backend.read(
+        let footer_data = backend.read(
             &handle,
-            -(4 + encoded_header_length as isize),
-            4 + encoded_header_length,
+            -(4 + encoded_footer_length as isize),
+            4 + encoded_footer_length,
         )?;
 
-        Self::parse_header(secure_storage, &header_data)
+        Self::parse_footer(secure_storage, &footer_data)
     }
 
-    /// Parses a pack header data from a sliice of bytes. `header_data` must contain the header and
-    /// the length field. Since this function reads the length field, other bytes before the header
+    /// Parses a pack footer data from a sliice of bytes. `footer_data` must contain the footer and
+    /// the length field. Since this function reads the length field, other bytes before the footer
     /// can be still passed and they will be ignored.
-    fn parse_header(
+    fn parse_footer(
         secure_storage: &SecureStorage,
-        header_data: &[u8],
+        footer_data: &[u8],
     ) -> Result<Vec<PackedBlobDescriptor>> {
-        if header_data.len() < 4 {
+        if footer_data.len() < 4 {
             bail!(
-                "Pack header is invalid: data too short for header length (got {} bytes, need at least 4).",
-                header_data.len()
+                "Pack footer is invalid: data too short for footer length (got {} bytes, need at least 4).",
+                footer_data.len()
             );
         }
 
-        let header_length_bytes: [u8; 4] = header_data[(header_data.len() - 4)..]
+        let footer_length_bytes: [u8; 4] = footer_data[(footer_data.len() - 4)..]
             .try_into()
-            .context("Could not read pack header length bytes.")?;
-        let encoded_header_length = u32::from_le_bytes(header_length_bytes) as usize;
+            .context("Could not read pack footer length bytes.")?;
+        let encoded_footer_length = u32::from_le_bytes(footer_length_bytes) as usize;
 
-        if header_data.len() < encoded_header_length {
+        if footer_data.len() < encoded_footer_length {
             bail!(
-                "Pack header is invalid: declared header_length ({}) exceeds total data length ({}).",
-                encoded_header_length,
-                header_data.len()
+                "Pack footer is invalid: declared footer_length ({}) exceeds total data length ({}).",
+                encoded_footer_length,
+                footer_data.len()
             );
         }
 
-        let header_blob_info = secure_storage.decode(
-            &header_data[(header_data.len() - encoded_header_length - 4)..header_data.len() - 4],
+        let footer_blob_info = secure_storage.decode(
+            &footer_data[(footer_data.len() - encoded_footer_length - 4)..footer_data.len() - 4],
         )?;
-        let header_len = header_blob_info.len();
+        let footer_len = footer_blob_info.len();
 
-        let header_blob_info_actual_len = header_len;
-        if header_blob_info_actual_len % HEADER_BLOB_LEN != 0 {
+        let footer_blob_info_actual_len = footer_len;
+        if footer_blob_info_actual_len % FOOTER_BLOB_LEN != 0 {
             bail!(
-                "Pack header is invalid: header blob info length ({header_blob_info_actual_len}) is not a multiple of expected blob descriptor size ({HEADER_BLOB_LEN})."
+                "Pack footer is invalid: footer blob info length ({footer_blob_info_actual_len}) is not a multiple of expected blob descriptor size ({FOOTER_BLOB_LEN})."
             );
         }
 
-        let num_blobs = (header_len) / HEADER_BLOB_LEN;
+        let num_blobs = (footer_len) / FOOTER_BLOB_LEN;
 
         let mut blob_descriptors = Vec::new();
         let mut offset: u32 = 0;
         for i in 0..num_blobs {
-            let blob_info = &header_blob_info[(i * HEADER_BLOB_LEN)..((i + 1) * HEADER_BLOB_LEN)];
+            let blob_info = &footer_blob_info[(i * FOOTER_BLOB_LEN)..((i + 1) * FOOTER_BLOB_LEN)];
 
-            let blob_type: BlobType = blob_info[HEADER_BLOB_TYPE_OFFSET].into();
+            let blob_type: BlobType = blob_info[FOOTER_BLOB_TYPE_OFFSET].into();
             if matches!(blob_type, BlobType::Padding) {
                 // Ignore padding blobs. They "don't exist".
                 continue;
             }
 
-            let blob_id_bytes: [u8; 32] = blob_info[HEADER_ID_OFFSET..HEADER_ID_OFFSET + 32]
+            let blob_id_bytes: [u8; 32] = blob_info[FOOTER_ID_OFFSET..FOOTER_ID_OFFSET + 32]
                 .try_into()
                 .unwrap();
             let id = ID::from_bytes(blob_id_bytes);
 
             let length_bytes: [u8; 4] = blob_info
-                [HEADER_BLOB_LENGTH_OFFSET..HEADER_BLOB_LENGTH_OFFSET + 4]
+                [FOOTER_BLOB_LENGTH_OFFSET..FOOTER_BLOB_LENGTH_OFFSET + 4]
                 .try_into()
                 .unwrap();
             let length = u32::from_le_bytes(length_bytes);
 
             let raw_length_bytes: [u8; 4] = blob_info
-                [HEADER_BLOB_RAW_LENGTH_OFFSET..HEADER_BLOB_RAW_LENGTH_OFFSET + 4]
+                [FOOTER_BLOB_RAW_LENGTH_OFFSET..FOOTER_BLOB_RAW_LENGTH_OFFSET + 4]
                 .try_into()
                 .unwrap();
             let raw_length = u32::from_le_bytes(raw_length_bytes);
@@ -426,14 +426,14 @@ mod tests {
 
         assert_eq!(flushed_pack.data.len(), 2794);
 
-        let header_descriptors = Packer::parse_header(&secure_storage, &flushed_pack.data)?;
+        let footer_descriptors = Packer::parse_footer(&secure_storage, &flushed_pack.data)?;
         assert_eq!(flushed_pack.descriptors.len(), 64);
-        assert_eq!(header_descriptors.len(), 3);
-        assert_ne!(flushed_pack.descriptors, header_descriptors);
+        assert_eq!(footer_descriptors.len(), 3);
+        assert_ne!(flushed_pack.descriptors, footer_descriptors);
 
         // Due to obfuscation we cannot make assumptions about the hash, but we
         // can decode the content of every blob.
-        for (i, descriptor) in header_descriptors.iter().enumerate() {
+        for (i, descriptor) in footer_descriptors.iter().enumerate() {
             let offset = descriptor.offset as usize;
             let len = descriptor.length as usize;
             let data = &flushed_pack.data[offset..(offset + len)];

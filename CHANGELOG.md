@@ -2,12 +2,18 @@
 
 ## Latest
 
+## v0.1.3
+
 ### Changes
 
-- Added a global `--retry-lock` to setup a timeout to retry acquiring a lock if
-  the repository is already locked. No retries are attempted by default.
-- Added a `rebuild-index` command to rebuild the index by scanning all existing
-  packs.
+- Concurrency: Added a global `--retry-lock` to setup a timeout to retry
+  acquiring a lock if the repository is already locked. No retries are attempted
+  by default.
+- Disaster Recovery: Added a `rebuild-index` command to rebuild the index by
+  scanning all existing packs.
+- Memory Optimization: The index `reverse_map` is now ephemeral. It is only
+  loaded into RAM when strictly necessary (e.g., during clean or rebuild-index),
+  drastically reducing the memory footprint for large repositories.
 
 ## v0.1.2
 

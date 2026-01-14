@@ -17,11 +17,11 @@ use crate::{
 };
 
 // Lock self refresh period
-const LOCK_REFRESH_PERIOD: std::time::Duration = Duration::from_secs(60);
+const LOCK_REFRESH_PERIOD: std::time::Duration = Duration::from_secs(3 * 60);
 
 // Lock timeout. This is the time a Lock must go without being refreshed to be considered
 // expired. Expired locks can
-pub(crate) const LOCK_EXPIRE_TIMEOUT: std::time::Duration = Duration::from_secs(5 * 60);
+pub(crate) const LOCK_EXPIRE_TIMEOUT: std::time::Duration = Duration::from_secs(10 * 60);
 
 const _: () = {
     assert!(

@@ -1,5 +1,12 @@
 # Changelog
 
+## Latest
+
+### Changes
+
+- Added a global `--retry-lock` to setup a timeout to retry acquiring a lock if
+  the repository is already locked. No retries are attempted by default.
+
 ## v0.1.2
 
 ### Changes

@@ -79,6 +79,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         backend,
         config,
         false,
+        global_args.retry_lock_duration,
     )?;
 
     // Listen for CTRL + C to unmount.

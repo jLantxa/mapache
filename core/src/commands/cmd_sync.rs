@@ -49,6 +49,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             use_cache: !global_args.no_cache,
         },
         true,
+        global_args.retry_lock_duration,
     )?;
 
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {

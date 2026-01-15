@@ -124,7 +124,6 @@ impl Index {
     #[inline]
     pub fn is_full(&self) -> bool {
         self.num_blobs() >= mapache::defaults::BLOBS_PER_INDEX_FILE
-            || self.create_time.elapsed() >= mapache::defaults::INDEX_FLUSH_TIMEOUT
     }
 
     /// Creates an `Index` from a serialized `IndexFile`.
@@ -346,6 +345,7 @@ pub struct MasterIndex {
 
     /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
     pending_blobs: IdSet<ID>,
+    auto_save: bool,
 }
 
 impl Default for MasterIndex {
@@ -360,6 +360,7 @@ impl MasterIndex {
         Self {
             indices: Vec::with_capacity(1),
             pending_blobs: IdSet::default(),
+            auto_save: true,
         }
     }
 
@@ -428,13 +429,20 @@ impl MasterIndex {
             .indices
             .iter_mut()
             .find(|idx| idx.is_pending())
-            .unwrap();
+            .expect("Debería haber un índice pendiente tras el push");
 
         pending_index.add_pack(pack_id, descriptors);
 
-        if pending_index.is_full() {
+        let is_full = pending_index.is_full();
+        let is_timed_out =
+            pending_index.create_time.elapsed() >= mapache::defaults::INDEX_FLUSH_TIMEOUT;
+
+        if self.auto_save && (is_full || is_timed_out) {
             pending_index.persist(repo)
         } else {
+            if is_full {
+                pending_index.finalize();
+            }
             Ok((0, 0))
         }
     }
@@ -545,6 +553,10 @@ impl MasterIndex {
             bail!("Prefix '{}' is ambiguous", prefix);
         }
         Ok(matched.first().cloned())
+    }
+
+    pub fn set_autosave(&mut self, auto_save: bool) {
+        self.auto_save = auto_save;
     }
 }
 

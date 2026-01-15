@@ -2,6 +2,10 @@
 
 ## Latest
 
+### Fixes
+
+- Fixed size reported by `rebuild-index`.
+
 ## v0.1.3
 
 ### Changes

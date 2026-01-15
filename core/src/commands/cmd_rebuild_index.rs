@@ -66,13 +66,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let all_pack_ids = repo.list_packs()?;
     let old_index_ids = repo.index().read().ids();
     let mut new_master_index = MasterIndex::new();
+    new_master_index.set_autosave(false);
     ui::cli::log!("Found {} packs", all_pack_ids.len());
 
     let scan_bar =
         ProgressBar::with_draw_target(Some(all_pack_ids.len() as u64), default_bar_draw_target())
             .with_style(
                 ProgressStyle::default_bar()
-                    .template("[{bar:20.cyan/white}] Scanning packs: {pos}/{len} ({msg})")
+                    .template("[{bar:20.cyan/white}] Scanning packs: {pos}/{len}")
                     .unwrap()
                     .progress_chars("=> "),
             );

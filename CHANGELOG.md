@@ -2,6 +2,10 @@
 
 ## Latest
 
+### Changes
+- Optimized the `verify` command massively. Removed unnecessary duplicate checks
+  and parallelize verification of packs. The performance gain can be up to 10x.
+
 ### Fixes
 
 - Fixed size reported by `rebuild-index`.

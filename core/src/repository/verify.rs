@@ -1,6 +1,7 @@
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Result, bail};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::StorageBackend,
@@ -10,80 +11,39 @@ use crate::{
     utils,
 };
 
-/// Verify the checksum and contents of a blob with a known ID in the repository.
-pub fn verify_blob(repo: &Repository, id: &ID) -> Result<(u64, u64)> {
-    let index = repo.index();
-    let index_guard = index.read();
-    let blob_entry = index_guard.get(id);
-    match blob_entry {
-        Some(locator) => {
-            // The ID of a blob is the hash of its plaintext content.
-            let blob_data = repo.read_from_pack_and_decode(
-                locator.blob_type,
-                &locator.pack_id,
-                locator.offset as u64,
-                locator.length as u64,
-            )?;
-            let checksum = utils::calculate_hash(&blob_data);
-            if checksum != id.0[..] {
-                bail!("Invalid blob checksum");
-            }
-
-            Ok((locator.raw_length as u64, locator.length as u64))
-        }
-        None => bail!("Could not find blob {id:?} in index"),
-    }
-}
-
-// No significant changes needed here, it's already concise.
-pub fn verify_data(id: &ID, data: &[u8], expected_len: Option<u32>) -> Result<u64> {
-    let checksum = utils::calculate_hash(data);
-    if checksum != id.0[..] {
-        bail!("Invalid blob checksum");
-    }
-    if let Some(some_len) = expected_len
-        && data.len() != some_len as usize
-    {
-        bail!("Invalid blob length");
-    }
-
-    Ok(data.len() as u64)
-}
-
-/// Verify the checksum and contents of a pack  with a known ID in the repository.
+/// Verify the checksum and contents of a pack with a known ID in the repository.
 pub fn verify_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
-    id: &ID,
-    visited_blobs: &mut BTreeSet<ID>,
+    pack_id: &ID,
 ) -> Result<usize> {
-    let pack_data = repo.load_pack(id)?;
-    let checksum = utils::calculate_hash(&pack_data);
-    if checksum != id.0[..] {
-        bail!("Invalid pack checksum");
-    }
-
-    let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, id)?;
-    let mut num_dangling_blobs = 0;
+    let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, pack_id)?;
 
     let index = repo.index();
     let index_guard = index.read();
 
-    for blob_descriptor in pack_header {
-        if !visited_blobs.contains(&blob_descriptor.id) {
-            // Only verify blobs referenced by the master index
-            if index_guard.contains(&blob_descriptor.id) {
-                // The blob ID is verified inside verify_blob
-                verify_blob(repo, &blob_descriptor.id)?;
-                visited_blobs.insert(blob_descriptor.id);
-            } else {
-                num_dangling_blobs += 1;
-            }
-        }
-    }
+    pack_header.par_iter().try_for_each(|blob_desc| {
+        let data = repo.load_blob(&blob_desc.id)?;
+        let checksum = utils::calculate_hash(&data);
 
-    Ok(num_dangling_blobs)
+        if checksum != blob_desc.id.0[..] {
+            bail!(
+                "Invalid checksum for blob {:?} in pack {:?}",
+                blob_desc.id,
+                pack_id
+            );
+        }
+
+        Ok(())
+    })?;
+
+    let num_dangling = pack_header
+        .iter()
+        .filter(|blob| !index_guard.contains(&blob.id))
+        .count();
+
+    Ok(num_dangling)
 }
 
 /// Verify that all blobs referenced by a snapshot are indexed.

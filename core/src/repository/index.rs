@@ -7,7 +7,7 @@ use crate::{
     backend::StorageHint,
     mapache::{self, BlobType, ContentIdType, ID},
     repository::repo::Repository,
-    utils::collections::{IdMap, IdSet, IndexSet},
+    utils::collections::{IdIndexSet, IdMap, IdSet},
 };
 
 use super::packer::PackedBlobDescriptor;
@@ -58,7 +58,7 @@ pub struct Index {
     /// The Pack IDs referenced in this index. Using an `IndexSet` allows us
     /// to store a small `usize` index in `BlobLocationInternal` instead of the full `ID`,
     /// significantly reducing memory usage.
-    pack_ids: IndexSet<ID>,
+    pack_ids: IdIndexSet<ID>,
 
     /// Status: Pending, finalized or serialized.
     status: IndexStatus,
@@ -77,7 +77,7 @@ impl Index {
         Self {
             data_ids: IdMap::default(),
             tree_ids: IdMap::default(),
-            pack_ids: IndexSet::new(),
+            pack_ids: IdIndexSet::new_id_set(),
             status: IndexStatus::Pending,
             create_time: Instant::now(),
         }

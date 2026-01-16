@@ -25,16 +25,17 @@ pub type IdSet<K> = HashSet<K, BuildHasherDefault<IdentityHasher>>;
 pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdentityHasher>>;
 
 /// IndexSet is a set that can be enumerated by index.
-#[derive(Default, Debug, Clone)]
-pub struct IndexSet<T>
+#[derive(Debug, Clone)]
+pub struct IndexSet<T, S = std::collections::hash_map::RandomState>
 where
     T: Hash + Eq + Clone,
+    S: std::hash::BuildHasher,
 {
     values: Vec<T>,
-    map: HashMap<T, usize>,
+    map: HashMap<T, usize, S>,
 }
 
-impl<T> IndexSet<T>
+impl<T> IndexSet<T, std::collections::hash_map::RandomState>
 where
     T: Hash + Eq + Clone,
 {
@@ -44,7 +45,27 @@ where
             map: HashMap::new(),
         }
     }
+}
 
+pub type IdIndexSet<T> = IndexSet<T, BuildHasherDefault<IdentityHasher>>;
+
+impl<T> IdIndexSet<T>
+where
+    T: Hash + Eq + Clone,
+{
+    pub fn new_id_set() -> Self {
+        Self {
+            values: Vec::new(),
+            map: HashMap::default(),
+        }
+    }
+}
+
+impl<T, S> IndexSet<T, S>
+where
+    T: Hash + Eq + Clone,
+    S: std::hash::BuildHasher + Default,
+{
     pub fn insert(&mut self, item: T) -> usize {
         if let Some(&idx) = self.map.get(&item) {
             idx
@@ -81,7 +102,7 @@ where
     }
 
     pub fn contains(&self, value: &T) -> bool {
-        self.values.contains(value)
+        self.map.contains_key(value)
     }
 
     pub fn get_index(&self, item: &T) -> Option<&usize> {

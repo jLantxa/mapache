@@ -9,7 +9,7 @@ use zstd::{Decoder as ZstdDecoder, bulk::Compressor as ZstdCompressor, zstd_safe
 use crate::mapache;
 
 const AES_GCM_NONCE_LEN: usize = 12;
-const ZSTD_WINDOW_LOG: u32 = mapache::defaults::NORMAL_CHUNK_SIZE.ilog2();
+const ZSTD_WINDOW_LOG: u32 = mapache::defaults::MIN_CHUNK_SIZE.ilog2();
 
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
@@ -73,8 +73,6 @@ impl SecureStorage {
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
         let mut decoder = ZstdDecoder::new(data)?;
-        decoder.window_log_max(ZSTD_WINDOW_LOG)?;
-
         let mut decompressed = Vec::with_capacity(data.len());
         decoder.read_to_end(&mut decompressed)?;
         Ok(decompressed)

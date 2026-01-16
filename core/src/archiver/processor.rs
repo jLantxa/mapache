@@ -1,5 +1,5 @@
 use std::{
-    io::{BufReader, Read},
+    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -71,15 +71,11 @@ pub(crate) fn process_item(
             // We use a BufReader with a capacity equal to the normal chunk size
             // to balance memory usage and I/O system calls.
             if stream_node_info.node.is_file() {
-                let source_file = std::fs::File::open(path)?;
-                let mut reader = BufReader::with_capacity(
-                    mapache::defaults::NORMAL_CHUNK_SIZE as usize,
-                    source_file,
-                );
+                let mut source_file = std::fs::File::open(path)?;
 
                 let blobs_ids = chunk_and_store_file(
                     repo,
-                    &mut reader,
+                    &mut source_file,
                     &stream_node_info.node,
                     progress_reporter.clone(),
                 )?;

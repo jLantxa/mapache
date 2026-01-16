@@ -21,7 +21,6 @@ pub fn verify_pack(
     let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, pack_id)?;
 
     let index = repo.index();
-    let index_guard = index.read();
 
     pack_header.par_iter().try_for_each(|blob_desc| {
         let data = repo.load_blob(&blob_desc.id)?;
@@ -40,7 +39,7 @@ pub fn verify_pack(
 
     let num_dangling = pack_header
         .iter()
-        .filter(|blob| !index_guard.contains(&blob.id))
+        .filter(|blob| !index.contains(&blob.id))
         .count();
 
     Ok(num_dangling)
@@ -59,7 +58,6 @@ pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<(
         SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
 
     let index = repo.index();
-    let index_guard = index.read();
 
     let mut error_counter = 0;
     for (_path, stream_node) in stream.flatten() {
@@ -68,7 +66,7 @@ pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<(
             NodeType::File => {
                 if let Some(blobs) = node.blobs {
                     for blob_id in &blobs {
-                        if index_guard.get(blob_id).is_none() {
+                        if index.get(blob_id).is_none() {
                             error_counter += 1;
                         }
                     }
@@ -76,7 +74,7 @@ pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<(
             }
             NodeType::Directory => {
                 if let Some(tree_id) = &node.tree
-                    && index_guard.get(tree_id).is_none()
+                    && index.get(tree_id).is_none()
                 {
                     error_counter += 1;
                 }

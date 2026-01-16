@@ -78,7 +78,7 @@ pub struct Repository {
     tree_packer: Arc<RwLock<Packer>>,
     pack_saver: Arc<RwLock<Option<PackSaver>>>,
 
-    index: Arc<RwLock<MasterIndex>>,
+    master_index: Arc<MasterIndex>,
 }
 
 impl Repository {
@@ -269,7 +269,7 @@ impl Repository {
 
         let data_packer = Arc::new(RwLock::new(Packer::new()));
         let tree_packer = Arc::new(RwLock::new(Packer::new()));
-        let index = Arc::new(RwLock::new(MasterIndex::new()));
+        let master_index = Arc::new(MasterIndex::new());
 
         let mut repo = Repository {
             manifest,
@@ -284,7 +284,7 @@ impl Repository {
             data_packer,
             tree_packer,
             pack_saver: Arc::new(RwLock::new(None)),
-            index,
+            master_index,
         };
 
         repo.load_master_index()?;
@@ -325,9 +325,8 @@ impl Repository {
             SaveID::WithID(id) => id,
         };
 
-        let mut index_wlock = self.index.write();
-        let blob_exists = index_wlock.contains(&id) || !index_wlock.add_pending_blob(id);
-        drop(index_wlock);
+        let blob_exists =
+            self.master_index.contains(&id) || !self.master_index.add_pending_blob(id);
 
         // If the blob was already pending, return early, as we are finished here.
         if blob_exists {
@@ -354,8 +353,7 @@ impl Repository {
 
     /// Loads a blob from the repository.
     pub fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
-        let index = self.index.read();
-        let blob_entry = index.get(id);
+        let blob_entry = self.master_index.get(id);
         match blob_entry {
             Some(locator) => self.load_from_pack(
                 &locator.pack_id,
@@ -540,7 +538,7 @@ impl Repository {
         let data_packer_meta_size = self.flush_packer(&self.data_packer, BlobType::Data)?;
         let tree_packer_meta_size = self.flush_packer(&self.tree_packer, BlobType::Tree)?;
 
-        let (index_raw_size, index_encoded_size) = self.index.write().persist(self)?;
+        let (index_raw_size, index_encoded_size) = self.master_index.persist(self)?;
 
         Ok((
             data_packer_meta_size.1 + tree_packer_meta_size.0 + index_raw_size,
@@ -695,8 +693,8 @@ impl Repository {
         }
     }
 
-    pub fn index(&self) -> Arc<RwLock<MasterIndex>> {
-        self.index.clone()
+    pub fn index(&self) -> Arc<MasterIndex> {
+        self.master_index.clone()
     }
 
     /// Reads from a pack file with offset and length.
@@ -831,11 +829,9 @@ impl Repository {
                     bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
                 }
 
-                let (index_raw, index_encoded) = self.index.write().add_pack(
-                    self,
-                    &flushed_pack.id,
-                    flushed_pack.descriptors,
-                )?;
+                let (index_raw, index_encoded) =
+                    self.master_index
+                        .add_pack(self, &flushed_pack.id, flushed_pack.descriptors)?;
 
                 Ok((
                     flushed_pack.meta_size + index_raw,
@@ -872,7 +868,7 @@ impl Repository {
             };
 
             let index = Index::from_index_file(index_file, id);
-            self.index.write().add_index(index);
+            self.master_index.add_index(index);
         }
 
         ui::cli::verbose_1!("Loaded {} index files", num_index_files);

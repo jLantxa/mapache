@@ -204,7 +204,6 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
 
     // Hold index read-lock once
     let index = repo.index();
-    let index_guard = index.read();
 
     for (i, (_id, snapshot)) in snapshot_stream.enumerate() {
         spinner.set_message(format!(
@@ -230,7 +229,7 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
                 for blob_id in blobs {
                     // Single op membership check
                     if visited_blobs.insert(blob_id) {
-                        if let Some(locator) = index_guard.get(&blob_id) {
+                        if let Some(locator) = index.get(&blob_id) {
                             total_raw_data_size =
                                 total_raw_data_size.saturating_add(locator.raw_length as u64);
                             total_encoded_data_size =

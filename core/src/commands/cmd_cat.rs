@@ -70,24 +70,22 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
         Object::Tree(prefix) => {
             let index = repo.index();
-            let index_guard = index.read();
-            let id = match index_guard.search_prefix(prefix)? {
+            let id = match index.search_prefix(prefix)? {
                 Some(val) => val,
                 None => bail!("No tree blobs found with prefix {prefix}"),
             };
-            let tree = repo.load_blob(id).context("Failed to load tree blob")?;
+            let tree = repo.load_blob(&id).context("Failed to load tree blob")?;
             let tree: Tree = serde_json::from_slice(&tree)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&tree)?);
             Ok(())
         }
         Object::Blob(prefix) => {
             let index = repo.index();
-            let index_guard = index.read();
-            let id = match index_guard.search_prefix(prefix)? {
+            let id = match index.search_prefix(prefix)? {
                 Some(val) => val,
                 None => bail!("No blobs found with prefix {prefix}"),
             };
-            let blob = repo.load_blob(id).context("Failed to load blob")?;
+            let blob = repo.load_blob(&id).context("Failed to load blob")?;
             ui::cli::log!("{}", String::from_utf8(blob)?);
             Ok(())
         }

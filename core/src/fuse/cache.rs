@@ -159,7 +159,7 @@ impl BlobCache {
             return Ok(data);
         }
 
-        let blob_indexed_size = match self.repo.index().read().get(id) {
+        let blob_indexed_size = match self.repo.index().get(id) {
             None => bail!("Blob is not indexed"),
             Some(blob_locator) => blob_locator.length,
         };

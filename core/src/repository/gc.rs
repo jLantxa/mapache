@@ -64,7 +64,7 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
         obsolete_packs: IdSet::default(),
         tolerated_packs: IdSet::default(),
         unused_packs,
-        index_ids: repo.index().read().ids(),
+        index_ids: repo.index().ids(),
         small_packs: IdSet::default(),
     };
 
@@ -82,7 +82,9 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
             .tick_chars(SPINNER_TICK_CHARS),
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-    for (id, locator) in repo.index().read().iter_ids() {
+    // for (id, locator) in repo.index().read().iter_ids() {
+
+    repo.index().for_each_id(|id, locator| {
         kept_pack_size
             .entry(locator.pack_id)
             .and_modify(|size| {
@@ -97,7 +99,7 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
                 .or_insert(locator.length as u64);
             spinner.inc(1);
         }
-    }
+    });
 
     // Find small packs to repack
     let current_pack_size = repo.pack_size();
@@ -226,34 +228,33 @@ impl Plan {
         // HashMap ensures we only get one repack instruction per unique referenced blob ID.
         let mut repack_blob_info = HashMap::<ID, (ID, mapache::BlobType, u32, u32, u32)>::new();
 
-        for (referenced_blob_id, locator) in self.repo.index().read().iter_ids() {
-            repack_bar.inc(1);
+        self.repo
+            .index()
+            .for_each_id(|referenced_blob_id, locator| {
+                repack_bar.inc(1);
 
-            if self.referenced_blobs.contains(referenced_blob_id)
-                && self.obsolete_packs.contains(&locator.pack_id)
-            {
-                // HashMap insertion here automatically deduplicates the *repack instruction* by Blob ID.
-                repack_blob_info.insert(
-                    *referenced_blob_id,
-                    (
-                        locator.pack_id,
-                        locator.blob_type,
-                        locator.offset,
-                        locator.raw_length,
-                        locator.length,
-                    ),
-                );
-            }
-        }
+                if self.referenced_blobs.contains(referenced_blob_id)
+                    && self.obsolete_packs.contains(&locator.pack_id)
+                {
+                    // HashMap insertion here automatically deduplicates the *repack instruction* by Blob ID.
+                    repack_blob_info.insert(
+                        *referenced_blob_id,
+                        (
+                            locator.pack_id,
+                            locator.blob_type,
+                            locator.offset,
+                            locator.raw_length,
+                            locator.length,
+                        ),
+                    );
+                }
+            });
         repack_bar.finish_and_clear();
 
         // Index cleanup must happen before repacking to clear the old references,
         // otherwise the repacked blobs will be considered duplicates and the save will fail.
         // This is where the old, duplicate index entries are logically removed.
-        self.repo
-            .index()
-            .write()
-            .cleanup(Some(&self.obsolete_packs));
+        self.repo.index().cleanup(Some(&self.obsolete_packs));
 
         let repack_bar = ProgressBar::with_draw_target(
             Some(repack_blob_info.len() as u64),
@@ -315,7 +316,7 @@ impl Plan {
     fn delete_old_indices(&mut self) -> Result<u64> {
         // Delete obsolete index files
         // Make sure that the new index files don't overlap the files to delete.
-        let new_index_ids = self.repo.index().read().ids();
+        let new_index_ids = self.repo.index().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
 
         let index_delete_bar = ProgressBar::with_draw_target(
@@ -402,7 +403,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, I
             spinner.set_position(referenced_blobs.len() as u64);
         }
 
-        match index.read().get(&tree_id) {
+        match index.get(&tree_id) {
             Some(locator) => {
                 referenced_packs.insert(locator.pack_id);
             }
@@ -432,7 +433,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, I
                             spinner.set_position(referenced_blobs.len() as u64);
                         }
 
-                        match index.read().get(tree) {
+                        match index.get(tree) {
                             Some(locator) => {
                                 referenced_packs.insert(locator.pack_id);
                             }
@@ -449,7 +450,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, I
                                 spinner.set_position(referenced_blobs.len() as u64);
                             }
 
-                            match index.read().get(blob_id) {
+                            match index.get(blob_id) {
                                 Some(locator) => {
                                     referenced_packs.insert(locator.pack_id);
                                 }

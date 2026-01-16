@@ -35,6 +35,15 @@ where
     map: HashMap<T, usize, S>,
 }
 
+impl<T> Default for IndexSet<T, std::collections::hash_map::RandomState>
+where
+    T: Hash + Eq + Clone,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> IndexSet<T, std::collections::hash_map::RandomState>
 where
     T: Hash + Eq + Clone,

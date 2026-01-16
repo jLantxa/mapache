@@ -659,16 +659,10 @@ impl SerializedNodeDataReader {
 
         // Lookup raw blob lengths from the index.
         let index = repo.index();
-        let index_guard = index.read();
 
         let blob_lengths: Vec<u32> = blobs
             .iter()
-            .map(|id| {
-                index_guard
-                    .get(id)
-                    .expect("Blob must exist in index")
-                    .raw_length
-            })
+            .map(|id| index.get(id).expect("Blob must exist in index").raw_length)
             .collect();
 
         // Compute the prefix sums

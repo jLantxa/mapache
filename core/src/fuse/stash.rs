@@ -184,8 +184,7 @@ impl Stash {
             None => return Ok(None),
         };
 
-        let index_lock = self.repo.index();
-        let index = index_lock.read();
+        let index = self.repo.index();
 
         let mut buffer = Vec::with_capacity(size as usize);
         let mut file_pos: i64 = 0;

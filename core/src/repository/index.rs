@@ -1,6 +1,7 @@
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use anyhow::{Result, bail};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -340,12 +341,17 @@ impl Index {
 /// over all known blobs in the repository.
 #[derive(Debug, Clone)]
 pub struct MasterIndex {
+    /// Internal state protected by a read-write lock.
+    inner: Arc<RwLock<MasterIndexInner>>,
+    auto_save: bool,
+}
+
+#[derive(Debug)]
+struct MasterIndexInner {
     /// A list of individual indices, some of which might be pending.
     indices: Vec<Index>,
-
     /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
     pending_blobs: IdSet<ID>,
-    auto_save: bool,
 }
 
 impl Default for MasterIndex {
@@ -358,8 +364,10 @@ impl MasterIndex {
     /// Creates a new, empty `MasterIndex`.
     pub fn new() -> Self {
         Self {
-            indices: Vec::with_capacity(1),
-            pending_blobs: IdSet::default(),
+            inner: Arc::new(RwLock::new(MasterIndexInner {
+                indices: Vec::with_capacity(1),
+                pending_blobs: IdSet::default(),
+            })),
             auto_save: true,
         }
     }
@@ -367,12 +375,16 @@ impl MasterIndex {
     /// Returns `true` if the object ID is known either in a finalized index
     /// or is currently a pending blob.
     pub fn contains(&self, id: &ID) -> bool {
-        self.pending_blobs.contains(id) || self.indices.iter().rev().any(|idx| idx.contains(id))
+        let lock = self.inner.read();
+
+        lock.pending_blobs.contains(id) || lock.indices.iter().rev().any(|idx| idx.contains(id))
     }
 
     /// Search backwards for Data blobs specifically.
     pub fn get_data(&self, id: &ID) -> Option<BlobLocator> {
-        self.indices.iter().rev().find_map(|idx| {
+        let lock = self.inner.read();
+
+        lock.indices.iter().rev().find_map(|idx| {
             idx.data_ids
                 .get(id)
                 .map(|l| idx.resolve_location(l, BlobType::Data))
@@ -381,7 +393,9 @@ impl MasterIndex {
 
     // Search backwards for Tree blobs specifically.
     pub fn get_tree(&self, id: &ID) -> Option<BlobLocator> {
-        self.indices.iter().rev().find_map(|idx| {
+        let lock = self.inner.read();
+
+        lock.indices.iter().rev().find_map(|idx| {
             idx.tree_ids
                 .get(id)
                 .map(|l| idx.resolve_location(l, BlobType::Tree))
@@ -391,19 +405,35 @@ impl MasterIndex {
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
     pub fn get(&self, id: &ID) -> Option<BlobLocator> {
-        self.indices.iter().rev().find_map(|idx| idx.get(id))
+        let lock = self.inner.read();
+
+        lock.indices.iter().rev().find_map(|idx| idx.get(id))
     }
 
     /// Adds a fully constructed `Index` to the master index.
     /// This is typically used for adding loaded, finalized indices.
-    pub fn add_index(&mut self, index: Index) {
-        self.indices.push(index);
+    pub fn add_index(&self, index: Index) {
+        let mut lock = self.inner.write();
+
+        lock.indices.push(index);
     }
 
     /// Adds a blob ID to the set of blobs that are waiting to be packed.
     /// Returns `true` if the ID did not exist in the set and was inserted; `false` otherwise.
-    pub fn add_pending_blob(&mut self, id: ID) -> bool {
-        self.pending_blobs.insert(id)
+    pub fn add_pending_blob(&self, id: ID) -> bool {
+        if self.contains(&id) {
+            return false;
+        }
+
+        let mut lock = self.inner.write();
+
+        if lock.pending_blobs.contains(&id)
+            || lock.indices.iter().rev().any(|idx| idx.contains(&id))
+        {
+            return false;
+        }
+
+        lock.pending_blobs.insert(id)
     }
 
     /// Processes a newly created pack of blobs. It removes these blobs from the
@@ -412,24 +442,26 @@ impl MasterIndex {
     /// It's assumed that there is at least one pending index that should receive these blobs,
     /// or that a new one will be created as part of the overall backup process if needed.
     pub fn add_pack(
-        &mut self,
+        &self,
         repo: &Repository,
         pack_id: &ID,
         descriptors: Vec<PackedBlobDescriptor>,
     ) -> Result<(u64, u64)> {
+        let mut lock = self.inner.write();
+
         for blob in &descriptors {
-            self.pending_blobs.remove(&blob.id);
+            lock.pending_blobs.remove(&blob.id);
         }
 
-        if !self.indices.iter().any(|idx| idx.is_pending()) {
-            self.indices.push(Index::new());
+        if !lock.indices.iter().any(|idx| idx.is_pending()) {
+            lock.indices.push(Index::new());
         }
 
-        let pending_index = self
+        let pending_index = lock
             .indices
             .iter_mut()
             .find(|idx| idx.is_pending())
-            .expect("Debería haber un índice pendiente tras el push");
+            .expect("There should be a pending index");
 
         pending_index.add_pack(pack_id, descriptors);
 
@@ -447,11 +479,13 @@ impl MasterIndex {
         }
     }
 
-    pub fn persist(&mut self, repo: &Repository) -> Result<(u64, u64)> {
+    pub fn persist(&self, repo: &Repository) -> Result<(u64, u64)> {
         let mut total_raw = 0;
         let mut total_enc = 0;
 
-        for idx in self.indices.iter_mut() {
+        let mut lock = self.inner.write();
+
+        for idx in lock.indices.iter_mut() {
             if matches!(idx.status, IndexStatus::Persisted(_)) || idx.is_empty() {
                 continue;
             }
@@ -464,21 +498,33 @@ impl MasterIndex {
         Ok((total_raw, total_enc))
     }
 
-    /// Returns a flat iterator without `Box<dyn Iterator>` chaining.
-    pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
-        self.indices.iter().flat_map(|idx| idx.iter_ids())
+    pub fn for_each_id<F>(&self, mut f: F)
+    where
+        F: FnMut(&ID, BlobLocator),
+    {
+        let lock = self.inner.read();
+
+        for idx in &lock.indices {
+            for (id, loc) in idx.iter_ids() {
+                f(id, loc);
+            }
+        }
     }
 
     pub fn ids(&self) -> IdSet<ID> {
-        self.indices
+        let lock = self.inner.read();
+
+        lock.indices
             .iter()
             .filter_map(|idx| if !idx.is_pending() { idx.id() } else { None })
             .collect()
     }
 
-    pub fn cleanup(&mut self, obsolete_packs: Option<&IdSet<ID>>) {
+    pub fn cleanup(&self, obsolete_packs: Option<&IdSet<ID>>) {
+        let mut lock = self.inner.write();
+
         if let Some(packs) = obsolete_packs {
-            for idx in &mut self.indices {
+            for idx in &mut lock.indices {
                 if packs.iter().any(|p| idx.pack_ids.contains(p)) {
                     idx.set_status(IndexStatus::Pending);
                     for p in packs {
@@ -488,12 +534,12 @@ impl MasterIndex {
             }
         }
 
-        self.merge_index();
+        self.merge_index(&mut lock);
     }
 
     /// Merges all current indices into a new collection of full indices.
-    fn merge_index(&mut self) {
-        let old_indices = std::mem::take(&mut self.indices);
+    fn merge_index(&self, lock: &mut MasterIndexInner) {
+        let old_indices = std::mem::take(&mut lock.indices);
         let mut new_indices = Vec::new();
         let mut current_index = Index::new();
         let mut seen_packs = IdSet::default();
@@ -539,19 +585,22 @@ impl MasterIndex {
             new_indices.push(current_index);
         }
 
-        self.indices = new_indices;
+        lock.indices = new_indices;
     }
 
-    pub fn search_prefix(&self, prefix: &str) -> Result<Option<&ID>> {
-        let matched: Vec<_> = self
-            .iter_ids()
-            .filter(|(id, _)| id.to_hex().starts_with(prefix))
-            .map(|(id, _)| id)
-            .collect();
+    pub fn search_prefix(&self, prefix: &str) -> Result<Option<ID>> {
+        let mut matched = Vec::new();
+
+        self.for_each_id(|id, _| {
+            if id.to_hex().starts_with(prefix) {
+                matched.push(*id);
+            }
+        });
 
         if matched.len() > 1 {
             bail!("Prefix '{}' is ambiguous", prefix);
         }
+
         Ok(matched.first().cloned())
     }
 

@@ -1,4 +1,11 @@
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
@@ -82,14 +89,14 @@ impl Snapshot {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiffCounts {
-    pub new_files: usize,
-    pub deleted_files: usize,
-    pub changed_files: usize,
-    pub new_dirs: usize,
-    pub deleted_dirs: usize,
-    pub changed_dirs: usize,
-    pub unchanged_files: usize,
-    pub unchanged_dirs: usize,
+    pub new_files: u64,
+    pub deleted_files: u64,
+    pub changed_files: u64,
+    pub new_dirs: u64,
+    pub deleted_dirs: u64,
+    pub changed_dirs: u64,
+    pub unchanged_files: u64,
+    pub unchanged_dirs: u64,
 }
 
 impl DiffCounts {
@@ -97,32 +104,98 @@ impl DiffCounts {
         match diff_type {
             NodeDiff::New => {
                 if is_dir {
-                    self.new_dirs += 1;
+                    self.new_dirs += 1
                 } else {
-                    self.new_files += 1;
+                    self.new_files += 1
                 }
             }
             NodeDiff::Deleted => {
                 if is_dir {
-                    self.deleted_dirs += 1;
+                    self.deleted_dirs += 1
                 } else {
-                    self.deleted_files += 1;
+                    self.deleted_files += 1
                 }
             }
             NodeDiff::Changed => {
                 if is_dir {
-                    self.changed_dirs += 1;
+                    self.changed_dirs += 1
                 } else {
-                    self.changed_files += 1;
+                    self.changed_files += 1
                 }
             }
             NodeDiff::Unchanged => {
                 if is_dir {
-                    self.unchanged_dirs += 1;
+                    self.unchanged_dirs += 1
                 } else {
-                    self.unchanged_files += 1;
+                    self.unchanged_files += 1
                 }
             }
+        }
+    }
+}
+
+/// Contadores concurrentes, lock-free.
+#[derive(Debug, Default)]
+pub struct DiffCountsAtomic {
+    pub new_files: AtomicU64,
+    pub deleted_files: AtomicU64,
+    pub changed_files: AtomicU64,
+    pub new_dirs: AtomicU64,
+    pub deleted_dirs: AtomicU64,
+    pub changed_dirs: AtomicU64,
+    pub unchanged_files: AtomicU64,
+    pub unchanged_dirs: AtomicU64,
+}
+
+impl DiffCountsAtomic {
+    #[inline]
+    pub fn increment(&self, is_dir: bool, diff_type: &NodeDiff) {
+        let o = Ordering::Relaxed;
+
+        match diff_type {
+            NodeDiff::New => {
+                if is_dir {
+                    self.new_dirs.fetch_add(1, o);
+                } else {
+                    self.new_files.fetch_add(1, o);
+                }
+            }
+            NodeDiff::Deleted => {
+                if is_dir {
+                    self.deleted_dirs.fetch_add(1, o);
+                } else {
+                    self.deleted_files.fetch_add(1, o);
+                }
+            }
+            NodeDiff::Changed => {
+                if is_dir {
+                    self.changed_dirs.fetch_add(1, o);
+                } else {
+                    self.changed_files.fetch_add(1, o);
+                }
+            }
+            NodeDiff::Unchanged => {
+                if is_dir {
+                    self.unchanged_dirs.fetch_add(1, o);
+                } else {
+                    self.unchanged_files.fetch_add(1, o);
+                }
+            }
+        }
+    }
+
+    #[inline]
+    pub fn snapshot(&self) -> DiffCounts {
+        let o = Ordering::Relaxed;
+        DiffCounts {
+            new_files: self.new_files.load(o),
+            deleted_files: self.deleted_files.load(o),
+            changed_files: self.changed_files.load(o),
+            new_dirs: self.new_dirs.load(o),
+            deleted_dirs: self.deleted_dirs.load(o),
+            changed_dirs: self.changed_dirs.load(o),
+            unchanged_files: self.unchanged_files.load(o),
+            unchanged_dirs: self.unchanged_dirs.load(o),
         }
     }
 }

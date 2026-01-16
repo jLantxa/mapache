@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -14,8 +14,8 @@ use parking_lot::RwLock;
 use crate::{
     fs::tree::NodeDiff,
     mapache::{defaults::MAX_PATH_DISPLAY_LEN, global::GlobalOpts},
-    repository::snapshot::{DiffCounts, SnapshotSummary},
-    ui::{EMPTY_PATHBUF, SPINNER_TICK_CHARS, default_bar_draw_target},
+    repository::snapshot::{DiffCountsAtomic, SnapshotSummary},
+    ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
 
@@ -34,9 +34,9 @@ pub struct SnapshotProgressReporter {
     meta_raw_bytes: Arc<AtomicU64>, // Metadata bytes 'written' before encoding
     meta_encoded_bytes: Arc<AtomicU64>, // Metadata bytes written after encoding
 
-    diff_counts: RwLock<DiffCounts>,
+    diff_counts: Arc<DiffCountsAtomic>,
 
-    processing_items: Arc<RwLock<VecDeque<PathBuf>>>, // List of items being processed (for displaying)
+    processing_items: Arc<RwLock<VecDeque<String>>>, // List of items being processed (for displaying)
 
     error_counter: Arc<AtomicU64>,
 
@@ -102,11 +102,11 @@ impl SnapshotProgressReporter {
             .with_key(
                 "processed_bytes_fmt",
                 move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
+                    let bytes = processed_bytes_arc_clone.load(Ordering::Relaxed);
                     let expected_bytes_lock = expected_bytes_arc_clone.write();
                     let s = match expected_bytes_lock.as_ref() {
                         Some(atomic_val) => {
-                            let expected_bytes = atomic_val.load(Ordering::SeqCst);
+                            let expected_bytes = atomic_val.load(Ordering::Relaxed);
                             format!(
                                 "{} / {}",
                                 utils::format_size_binary(bytes, 3),
@@ -144,11 +144,11 @@ impl SnapshotProgressReporter {
             .with_key(
                 "processed_bytes_fmt",
                 move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let bytes = processed_bytes_arc_clone.load(Ordering::SeqCst);
-                    let expected_bytes_lock = expected_bytes_arc_clone.write();
+                    let bytes = processed_bytes_arc_clone.load(Ordering::Relaxed);
+                    let expected_bytes_lock = expected_bytes_arc_clone.read();
                     let s = match expected_bytes_lock.as_ref() {
                         Some(atomic_val) => {
-                            let expected_bytes = atomic_val.load(Ordering::SeqCst);
+                            let expected_bytes = atomic_val.load(Ordering::Relaxed);
                             format!(
                                 "{} / {}",
                                 utils::format_size_binary(bytes, 3),
@@ -185,11 +185,11 @@ impl SnapshotProgressReporter {
                 .with_key(
                     "processed_items_fmt",
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let item_count = processed_items_count_arc_clone.load(Ordering::SeqCst);
+                        let item_count = processed_items_count_arc_clone.load(Ordering::Relaxed);
                         let expected_items_lock = expected_items_arc_clone.write();
                         let s = match expected_items_lock.as_ref() {
                             Some(atomic_val) => {
-                                let expected_count = atomic_val.load(Ordering::SeqCst);
+                                let expected_count = atomic_val.load(Ordering::Relaxed);
                                 format!("{item_count} / {expected_count} items")
                             }
                             None => format!("{item_count} items"),
@@ -200,7 +200,7 @@ impl SnapshotProgressReporter {
                 .with_key(
                     "errors",
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let errors = error_counter_arc_clone.load(Ordering::SeqCst);
+                        let errors = error_counter_arc_clone.load(Ordering::Relaxed);
                         let _ = w.write_str(&errors.to_string());
                     },
                 ),
@@ -233,7 +233,7 @@ impl SnapshotProgressReporter {
             meta_encoded_bytes: meta_encoded_bytes_arc,
             expected_items: expected_items_arc,
             expected_bytes: expected_bytes_arc,
-            diff_counts: RwLock::new(DiffCounts::default()),
+            diff_counts: Arc::new(DiffCountsAtomic::default()),
             processing_items: processing_items_arc,
             determined_style,
             mp,
@@ -249,7 +249,7 @@ impl SnapshotProgressReporter {
         let mut expected_items_lock = self.expected_items.write();
         match expected_items_lock.as_ref() {
             Some(expected_items_atomic) => {
-                expected_items_atomic.fetch_add(val, Ordering::SeqCst);
+                expected_items_atomic.fetch_add(val, Ordering::Relaxed);
             }
             None => {
                 let _ = expected_items_lock.insert(AtomicU64::new(val));
@@ -261,7 +261,7 @@ impl SnapshotProgressReporter {
         let mut expected_bytes_lock = self.expected_bytes.write();
         match expected_bytes_lock.as_ref() {
             Some(expected_bytes_atomic) => {
-                expected_bytes_atomic.fetch_add(val, Ordering::SeqCst);
+                expected_bytes_atomic.fetch_add(val, Ordering::Relaxed);
             }
             None => {
                 let _ = expected_bytes_lock.insert(AtomicU64::new(val));
@@ -284,10 +284,9 @@ impl SnapshotProgressReporter {
 
     fn update_processing_items(&self) {
         for (i, spinner) in self.file_spinners.iter().enumerate() {
-            let processing_items_guard = self.processing_items.read();
-            let path = processing_items_guard.get(i).unwrap_or(&EMPTY_PATHBUF);
-            let abbr_path = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
-            spinner.set_message(abbr_path);
+            let guard = self.processing_items.read();
+            let msg = guard.get(i).map(|s| s.as_str()).unwrap_or("");
+            spinner.set_message(msg.to_string());
         }
     }
 
@@ -302,7 +301,17 @@ impl SnapshotProgressReporter {
 
     pub fn processing_node(&self, path: &Path, diff: NodeDiff) {
         if diff != NodeDiff::Deleted {
-            self.processing_items.write().push_back(path.to_path_buf());
+            let abbr = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
+            let cap = self.file_spinners.len();
+
+            {
+                let mut q = self.processing_items.write();
+                if cap != 0 && q.len() == cap {
+                    q.pop_front();
+                }
+                q.push_back(abbr);
+            }
+
             self.update_processing_items();
         }
 
@@ -313,7 +322,6 @@ impl SnapshotProgressReporter {
                 NodeDiff::Changed => "M".bold().yellow(),
                 NodeDiff::Unchanged => "U".bold(),
             };
-
             self.progress_bar
                 .println(format!("{}  {}", diff_mark, path.display()));
         }
@@ -322,12 +330,8 @@ impl SnapshotProgressReporter {
         self.companion_bar.tick();
     }
 
-    pub fn processed_node(&self, path: &Path) {
-        let idx = self.processing_items.read().iter().position(|p| p.eq(path));
-        if let Some(i) = idx {
-            self.processing_items.write().remove(i);
-            self.processed_items_count.fetch_add(1, Ordering::Relaxed);
-        }
+    pub fn processed_node(&self, _path: &Path) {
+        self.processed_items_count.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn processed_bytes(&self, bytes: u64) {
@@ -351,65 +355,77 @@ impl SnapshotProgressReporter {
 
     #[inline]
     pub fn new_file(&self) {
-        self.diff_counts.write().new_files += 1;
+        self.diff_counts.new_files.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn changed_file(&self) {
-        self.diff_counts.write().changed_files += 1;
+        self.diff_counts
+            .changed_files
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn unchanged_file(&self) {
-        self.diff_counts.write().unchanged_files += 1;
+        self.diff_counts
+            .unchanged_files
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn deleted_file(&self) {
-        self.diff_counts.write().deleted_files += 1;
+        self.diff_counts
+            .deleted_files
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn new_dir(&self) {
-        self.diff_counts.write().new_dirs += 1;
+        self.diff_counts.new_dirs.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn changed_dir(&self) {
-        self.diff_counts.write().changed_dirs += 1;
+        self.diff_counts
+            .changed_dirs
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn deleted_dir(&self) {
-        self.diff_counts.write().deleted_dirs += 1;
+        self.diff_counts
+            .deleted_dirs
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
     pub fn unchanged_dir(&self) {
-        self.diff_counts.write().unchanged_dirs += 1;
+        self.diff_counts
+            .unchanged_dirs
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn error(&self, msg: &str) {
-        self.error_counter.fetch_add(1, Ordering::SeqCst);
+        self.error_counter.fetch_add(1, Ordering::Relaxed);
         let _ = self.mp.println(format!("{} {msg}", "Error:".bold().red()));
     }
 
     pub fn get_summary(&self) -> SnapshotSummary {
         let total_raw_bytes =
-            self.raw_bytes.load(Ordering::SeqCst) + self.meta_raw_bytes.load(Ordering::SeqCst);
-        let total_encoded_bytes = self.encoded_bytes.load(Ordering::SeqCst)
-            + self.meta_encoded_bytes.load(Ordering::SeqCst);
+            self.raw_bytes.load(Ordering::Relaxed) + self.meta_raw_bytes.load(Ordering::Relaxed);
+        let total_encoded_bytes = self.encoded_bytes.load(Ordering::Relaxed)
+            + self.meta_encoded_bytes.load(Ordering::Relaxed);
 
         SnapshotSummary {
-            processed_items_count: self.processed_items_count.load(Ordering::SeqCst),
-            processed_bytes: self.processed_bytes.load(Ordering::SeqCst),
-            raw_bytes: self.raw_bytes.load(Ordering::SeqCst),
-            encoded_bytes: self.encoded_bytes.load(Ordering::SeqCst),
-            meta_raw_bytes: self.meta_raw_bytes.load(Ordering::SeqCst),
-            meta_encoded_bytes: self.meta_encoded_bytes.load(Ordering::SeqCst),
+            processed_items_count: self.processed_items_count.load(Ordering::Relaxed),
+            processed_bytes: self.processed_bytes.load(Ordering::Relaxed),
+            raw_bytes: self.raw_bytes.load(Ordering::Relaxed),
+            encoded_bytes: self.encoded_bytes.load(Ordering::Relaxed),
+            meta_raw_bytes: self.meta_raw_bytes.load(Ordering::Relaxed),
+            meta_encoded_bytes: self.meta_encoded_bytes.load(Ordering::Relaxed),
             total_raw_bytes,
             total_encoded_bytes,
-            diff_counts: self.diff_counts.read().clone(),
+            diff_counts: self.diff_counts.snapshot(),
             amends: None,
         }
     }

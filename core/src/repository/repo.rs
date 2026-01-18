@@ -8,7 +8,6 @@ use anyhow::{Context, Result, bail};
 use chrono::Duration;
 use parking_lot::{Mutex, RwLock};
 use rand::Rng;
-use zstd::DEFAULT_COMPRESSION_LEVEL;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, cache::CacheBackend},
@@ -111,7 +110,7 @@ impl Repository {
             .context("Could not generate key")?;
         let secure_storage = Arc::new(
             SecureStorage::build()
-                .with_compression(DEFAULT_COMPRESSION_LEVEL)
+                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
                 .with_key(&master_key),
         );
 
@@ -225,7 +224,7 @@ impl Repository {
 
         let secure_storage = Arc::new(
             SecureStorage::build()
-                .with_compression(DEFAULT_COMPRESSION_LEVEL)
+                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
                 .with_key(&master_key),
         );
 

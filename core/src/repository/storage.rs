@@ -138,7 +138,6 @@ impl SecureStorage {
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
-    use zstd::DEFAULT_COMPRESSION_LEVEL;
 
     use super::*;
 
@@ -204,7 +203,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_encode_decode_with_compression_and_key() -> Result<()> {
         let key = TEST_KEY;
         let ss = SecureStorage::build()
-            .with_compression(DEFAULT_COMPRESSION_LEVEL)
+            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
             .with_key(&key);
 
         let ciphertext = ss.encode(TEXT)?;
@@ -263,7 +262,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_encode_decode_no_key_with_compression() -> Result<()> {
-        let ss = SecureStorage::build().with_compression(DEFAULT_COMPRESSION_LEVEL);
+        let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
         let encoded_data = ss.encode(TEXT)?;
         let decoded_data = ss.decode(&encoded_data)?;

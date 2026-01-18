@@ -5,7 +5,7 @@ mod tests {
 
     use mapache::{
         backend::localfs::LocalFS,
-        commands::{self, GlobalArgs, cmd_init::CmdArgs},
+        commands::{self, Compression, GlobalArgs, cmd_init::CmdArgs},
         mapache::{
             defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
             global::set_global_opts_with_args,
@@ -46,6 +46,7 @@ mod tests {
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
+            compression_level: Compression::Fastest,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -103,6 +104,7 @@ mod tests {
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
+            compression_level: Compression::Fastest,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);

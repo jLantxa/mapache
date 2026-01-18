@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use chunker::Normalization;
 
-use crate::{repository::repo::RepoConfig, utils::size};
+use crate::{commands::Compression, repository::repo::RepoConfig, utils::size};
 
 pub(crate) const APP_NAME: &str = "mapache";
 
@@ -62,4 +62,5 @@ pub(crate) const DEFAULT_FUSE_STASH_CACHE_SIZE_MIB: f32 = 64.0;
 pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {
     pack_size: DEFAULT_PACK_SIZE,
     use_cache: false,
+    compression: Compression::Fastest,
 };

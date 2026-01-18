@@ -133,6 +133,10 @@ pub struct GlobalArgs {
     #[clap(short, long, group = "verbosity_group")]
     pub verbosity: Option<u32>,
 
+    /// Compression level [fastest|fast|balanced|better|best|level:val]
+    #[clap(long = "compression", value_parser = parse_compression_level,  default_value_t = Compression::Fast)]
+    pub compression_level: Compression,
+
     /// Retry acquiring a lock if the repository is already locked. Takes a duration
     /// string like 5m, 30s or 5m30s.
     #[clap(long = "retry-lock", value_parser = utils::parse_duration_string)]
@@ -158,6 +162,73 @@ fn pack_size_parser(s: &str) -> Result<f32> {
         );
     }
     Ok(val)
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Compression {
+    Manual(i32),
+    Fastest,
+    Fast,
+    Balanced,
+    Better,
+    Best,
+}
+
+impl Compression {
+    pub fn to_level(&self) -> i32 {
+        match self {
+            Self::Manual(level) => *level,
+            Self::Fastest => 1,
+            Self::Fast => 3,
+            Self::Balanced => 5,
+            Self::Better => 10,
+            Self::Best => 19,
+        }
+    }
+}
+
+impl FromStr for Compression {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let result = match s.to_lowercase().as_str() {
+            "fastest" => Some(Self::Fastest),
+            "fast" => Some(Self::Fast),
+            "balanced" => Some(Self::Balanced),
+            "better" => Some(Self::Better),
+            "best" => Some(Self::Best),
+            _ => None,
+        };
+
+        if let Some(variant) = result {
+            return Ok(variant);
+        }
+
+        s.strip_prefix("level:")
+            .ok_or_else(|| anyhow!("Invalid compression format: {s}"))
+            .and_then(|val| {
+                val.parse::<i32>()
+                    .map(Self::Manual)
+                    .map_err(|_| anyhow!("Invalid compression level: {val}"))
+            })
+    }
+}
+
+impl std::fmt::Display for Compression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fastest => write!(f, "fastest"),
+            Self::Fast => write!(f, "fast"),
+            Self::Balanced => write!(f, "balanced"),
+            Self::Better => write!(f, "better"),
+            Self::Best => write!(f, "best"),
+            Self::Manual(level) => write!(f, "level:{level}"),
+        }
+    }
+}
+
+fn parse_compression_level(s: &str) -> Result<Compression> {
+    Compression::from_str(s)
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -8,7 +8,9 @@ mod tests {
 
     use mapache::{
         backend::localfs::LocalFS,
-        commands::{self, GlobalArgs, UseSnapshot, cmd_rebuild_index, cmd_snapshot, cmd_verify},
+        commands::{
+            self, Compression, GlobalArgs, UseSnapshot, cmd_rebuild_index, cmd_snapshot, cmd_verify,
+        },
         mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
         repository::repo::{Auth, INDEX_DIR},
     };
@@ -54,6 +56,7 @@ mod tests {
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
+            compression_level: Compression::Fastest,
         };
         set_global_opts_with_args(&global);
 

@@ -11,6 +11,7 @@ use rand::Rng;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, cache::CacheBackend},
+    commands::Compression,
     mapache::{self, BlobType, ContentIdType, ID, SaveID, defaults::SHORT_REPO_ID_LEN},
     repository::{
         keys::KeyManager,
@@ -54,6 +55,7 @@ pub struct Auth {
 pub struct RepoConfig {
     pub pack_size: u64,
     pub use_cache: bool,
+    pub(crate) compression: Compression,
 }
 
 pub struct Repository {
@@ -110,7 +112,7 @@ impl Repository {
             .context("Could not generate key")?;
         let secure_storage = Arc::new(
             SecureStorage::build()
-                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+                .with_compression(Compression::Fast.to_level())
                 .with_key(&master_key),
         );
 
@@ -224,7 +226,7 @@ impl Repository {
 
         let secure_storage = Arc::new(
             SecureStorage::build()
-                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+                .with_compression(config.compression.to_level())
                 .with_key(&master_key),
         );
 
@@ -1072,6 +1074,7 @@ mod tests {
 
     use crate::{
         backend::localfs::LocalFS,
+        commands::Compression,
         mapache::{defaults::TEST_REPO_CONFIG, global::set_global_opts_with_args},
         repository::lock::LOCK_EXPIRE_TIMEOUT,
     };
@@ -1149,7 +1152,7 @@ mod tests {
         let intermediate_key =
             SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params())?;
         let ss = SecureStorage::build()
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_compression(Compression::Fast.to_level())
             .with_key(&intermediate_key);
 
         let decrypted_key = ss.decrypt(&encrypted_key)?;
@@ -1169,7 +1172,7 @@ mod tests {
         #[case] other_lock_exclusive: bool,
     ) -> Result<()> {
         use crate::{
-            commands::{self, GlobalArgs, cmd_init::CmdArgs},
+            commands::{self, Compression, GlobalArgs, cmd_init::CmdArgs},
             mapache::defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
         };
 
@@ -1199,6 +1202,7 @@ mod tests {
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
+            compression_level: Compression::Fastest,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -1272,6 +1276,7 @@ mod tests {
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
+            compression_level: Compression::Fastest,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);

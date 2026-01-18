@@ -47,6 +47,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         RepoConfig {
             pack_size: DEFAULT_PACK_SIZE,
             use_cache: !global_args.no_cache,
+            compression: global_args.compression_level,
         },
         true,
         global_args.retry_lock_duration,

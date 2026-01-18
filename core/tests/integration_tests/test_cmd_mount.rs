@@ -9,7 +9,7 @@ mod tests {
     use anyhow::{Context, Result, bail};
 
     use mapache::{
-        commands::{self, GlobalArgs, UseSnapshot, cmd_mount, cmd_snapshot},
+        commands::{self, Compression, GlobalArgs, UseSnapshot, cmd_mount, cmd_snapshot},
         mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
         repository::repo::Auth,
     };
@@ -151,6 +151,7 @@ mod tests {
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
+            compression_level: Compression::Fastest,
         };
         set_global_opts_with_args(&global);
 
@@ -284,6 +285,7 @@ mod tests {
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
+            compression_level: Compression::Fastest,
         };
         set_global_opts_with_args(&global);
 

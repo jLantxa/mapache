@@ -2,11 +2,16 @@
 
 ## Latest
 
+### Changes
+- The compression level is now configurable. Added a `--compression` global
+  option to control the compression level.
+- Internal optimizations to the archiver.
+
 ### v0.1.4
 
 ### Changes
 - Optimized the `verify` command massively. Removed unnecessary duplicate checks
-  and parallelize verification of packs. The performance gain can be up to 10x.
+  and parallelize verification of packs.
 
 ### Fixes
 

@@ -23,7 +23,12 @@ pub fn verify_pack(
     let index = repo.index();
 
     pack_header.par_iter().try_for_each(|blob_desc| {
-        let data = repo.load_blob(&blob_desc.id)?;
+        let data = repo.load_from_pack(
+            pack_id,
+            blob_desc.blob_type,
+            blob_desc.offset,
+            blob_desc.length,
+        )?;
         let checksum = utils::calculate_hash(&data);
 
         if checksum != blob_desc.id.0[..] {

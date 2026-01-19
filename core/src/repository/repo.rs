@@ -707,24 +707,30 @@ impl Repository {
         let backend = self.backend.clone();
         let objects_path = self.objects_path.clone();
 
-        let queue_fn = move |data: Vec<u8>, id: ID, blob_type: BlobType| {
+        let queue_fn = move |data: Vec<u8>, id: ID, blob_type: BlobType| -> Result<()> {
             let path = Self::get_object_path(&objects_path, &id);
+
             if let Err(e) = backend.write(
                 &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
                 &data,
             ) {
                 cli::error!("Could not save pack {}: {}", id.to_hex(), e);
+                return Err(e).context(format!("Could not save pack {}", id.to_hex()));
             }
+
+            Ok(())
         };
 
         let pack_saver = PackSaver::new(concurrency, queue_fn);
         self.pack_saver.write().replace(pack_saver);
     }
 
-    pub fn finalize_pack_saver(&self) {
-        if let Some(pack_saver) = self.pack_saver.write().take() {
-            pack_saver.finish();
+    pub fn finalize_pack_saver(&self) -> Result<()> {
+        let pack_saver = self.pack_saver.write().take();
+        if let Some(pack_saver) = pack_saver {
+            pack_saver.finish()?;
         }
+        Ok(())
     }
 
     pub fn index(&self) -> Arc<MasterIndex> {
@@ -1092,7 +1098,7 @@ impl Repository {
 impl Drop for Repository {
     fn drop(&mut self) {
         let _ = self.flush();
-        self.finalize_pack_saver();
+        let _ = self.finalize_pack_saver();
     }
 }
 

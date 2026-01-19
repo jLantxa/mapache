@@ -604,7 +604,7 @@ pub fn find_serialized_node(
                     return Ok(Some(node.clone()));
                 } else {
                     current_tree_id = node.tree.ok_or_else(|| {
-                        anyhow!("'{component}' no es un directorio en el árbol {current_tree_id}")
+                        anyhow!("'{component}' is not a directory in tree {current_tree_id}")
                     })?;
                 }
             }

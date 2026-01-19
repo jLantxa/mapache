@@ -199,7 +199,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!("Process interrupted. Cleaning up...");
 
         let _ = repo_clone.flush();
-        repo_clone.finalize_pack_saver();
+        let _ = repo_clone.finalize_pack_saver();
         lock_handle_clone.write().unlock();
     })?;
 

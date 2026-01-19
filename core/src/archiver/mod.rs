@@ -137,7 +137,7 @@ pub(crate) fn snapshot(
     // Flush repo and finalize pack saver
     let flushed_meta_size = repo.flush()?;
     progress_reporter.written_meta_bytes(flushed_meta_size);
-    repo.finalize_pack_saver();
+    repo.finalize_pack_saver()?;
 
     let (hostname, username) = utils::get_system_info();
 

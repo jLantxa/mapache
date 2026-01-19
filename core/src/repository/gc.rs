@@ -169,7 +169,7 @@ impl Plan {
 
             added_size += self.repack()?;
             let size = self.repo.flush()?;
-            self.repo.finalize_pack_saver();
+            self.repo.finalize_pack_saver()?;
 
             added_size += size.encoded;
 

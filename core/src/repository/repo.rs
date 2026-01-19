@@ -17,7 +17,7 @@ use crate::{
         keys::KeyManager,
         lock::{Lock, LockHandle},
         packer::{PackSaver, Packer},
-        storage::SecureStorage,
+        storage::{EncodingContext, SecureStorage},
     },
     ui::{self, cli},
     utils::collections::IdSet,
@@ -308,6 +308,7 @@ impl Repository {
     #[allow(clippy::type_complexity)]
     pub fn encode_and_save_blob(
         &self,
+        encoding_context: &mut EncodingContext,
         blob_type: BlobType,
         data: Vec<u8>,
         save_id: SaveID,
@@ -335,7 +336,10 @@ impl Repository {
         }
 
         let raw_length = data.len() as u64;
-        let data = self.secure_storage.encode(&data)?;
+        let data = self
+            .secure_storage
+            .encode_managed(encoding_context, &data)?
+            .to_vec();
         let encoded_length = data.len() as u64;
 
         packer
@@ -696,6 +700,10 @@ impl Repository {
 
     pub fn index(&self) -> Arc<MasterIndex> {
         self.master_index.clone()
+    }
+
+    pub fn get_encoding_context(&self) -> Result<EncodingContext> {
+        self.secure_storage.get_encoding_context()
     }
 
     /// Reads from a pack file with offset and length.

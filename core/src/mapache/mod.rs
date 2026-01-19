@@ -239,6 +239,8 @@ pub(crate) fn rewrite_snapshot_tree(
     snapshot.summary.processed_items_count = 0;
     snapshot.summary.processed_bytes = 0;
 
+    let mut encoding_context = repo.get_encoding_context()?;
+
     for (path, mut stream_node) in node_stream.flatten() {
         progress_reporter.processing_node(&path, NodeDiff::Unchanged);
 
@@ -253,10 +255,11 @@ pub(crate) fn rewrite_snapshot_tree(
                     .as_ref()
                     .context("File Node must have contents (even if empty)")?;
 
-                let rechunk_node = |node: &Node| -> Result<Vec<ID>> {
+                let mut rechunk_node = |node: &Node| -> Result<Vec<ID>> {
                     let mut blob_data_reader = SerializedNodeDataReader::new(repo.clone(), node)?;
                     chunk_and_store_file(
                         repo.clone(),
+                        &mut encoding_context,
                         &mut blob_data_reader,
                         &stream_node.node,
                         progress_reporter.clone(),

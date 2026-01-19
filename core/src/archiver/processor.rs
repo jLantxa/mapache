@@ -14,7 +14,7 @@ use crate::{
         tree::{NodeDiff, StreamNode},
     },
     mapache::{self, BlobType, ID, SaveID},
-    repository::repo::Repository,
+    repository::{repo::Repository, storage::EncodingContext},
     ui::snapshot_progress::SnapshotProgressReporter,
 };
 
@@ -34,6 +34,7 @@ pub(crate) fn process_item(
         NodeDiff,
     ),
     repo: Arc<Repository>,
+    encoding_context: &mut EncodingContext,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Option<(PathBuf, StreamNode)>> {
     match diff_type {
@@ -75,6 +76,7 @@ pub(crate) fn process_item(
 
                 let blobs_ids = chunk_and_store_file(
                     repo,
+                    encoding_context,
                     &mut source_file,
                     &stream_node_info.node,
                     progress_reporter.clone(),
@@ -136,13 +138,14 @@ fn report_node_diff(
 /// directly as blobs.
 pub(crate) fn chunk_and_store_file<R: Read>(
     repo: Arc<Repository>,
+    encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Vec<ID>> {
     // Do not chunk if the file is smaller than the minimum chunk size
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(repo, reader, node, progress_reporter);
+        return store_small_file(repo, encoding_context, reader, node, progress_reporter);
     }
 
     let file_size = node.metadata.size;
@@ -154,7 +157,12 @@ pub(crate) fn chunk_and_store_file<R: Read>(
         progress_reporter.processed_bytes(chunk.data.len() as u64);
 
         let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
-            .encode_and_save_blob(BlobType::Data, chunk.data, SaveID::CalculateID)
+            .encode_and_save_blob(
+                encoding_context,
+                BlobType::Data,
+                chunk.data,
+                SaveID::CalculateID,
+            )
             .context("Failed to save blob")?;
 
         chunk_ids.push(id);
@@ -168,6 +176,7 @@ pub(crate) fn chunk_and_store_file<R: Read>(
 /// Stores a small file as a single blob and reports progress.
 fn store_small_file<R: Read>(
     repo: Arc<Repository>,
+    encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
     progress_reporter: Arc<SnapshotProgressReporter>,
@@ -176,7 +185,7 @@ fn store_small_file<R: Read>(
     reader.read_to_end(&mut data)?;
 
     let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
-        repo.encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)?;
+        repo.encode_and_save_blob(encoding_context, BlobType::Data, data, SaveID::CalculateID)?;
 
     progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
     progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);

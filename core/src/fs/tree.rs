@@ -37,8 +37,14 @@ impl Tree {
         let mut buffer = Vec::with_capacity(self.nodes.len() * 160);
         serde_json::to_writer(&mut buffer, self).context("Failed to serialize tree nodes")?;
 
-        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
-            repo.encode_and_save_blob(BlobType::Tree, buffer, SaveID::CalculateID)?;
+        let mut encoding_context = repo.get_encoding_context()?;
+        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
+            .encode_and_save_blob(
+                &mut encoding_context,
+                BlobType::Tree,
+                buffer,
+                SaveID::CalculateID,
+            )?;
 
         let total_raw = raw_data_size + raw_meta_size;
         let total_encoded = encoded_data_size + encoded_meta_size;

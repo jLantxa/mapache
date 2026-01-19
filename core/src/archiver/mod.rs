@@ -274,10 +274,12 @@ fn spawn_processor_thread(
             .expect("Failed to create Rayon read concurrency pool");
 
         pool.install(|| {
-            let _ = diff_rx
-                .into_iter()
-                .par_bridge()
-                .try_for_each(|(path, prev, next, diff)| {
+            let _ = diff_rx.into_iter().par_bridge().try_for_each_init(
+                || {
+                    repo.get_encoding_context()
+                        .expect("Failed to create thread context")
+                },
+                |ctx, (path, prev, next, diff)| {
                     if fatal_error_flag.load(Ordering::Relaxed) {
                         return Err(());
                     }
@@ -288,6 +290,7 @@ fn spawn_processor_thread(
                     let processed_item_result = processor::process_item(
                         (&path, prev, next, diff),
                         repo.clone(),
+                        ctx,
                         progress_reporter.clone(),
                     );
 
@@ -297,7 +300,7 @@ fn spawn_processor_thread(
                                 signal_fatal_error(
                                     &progress_reporter,
                                     &fatal_error_flag,
-                                    &format!("Archiver processor thread errored sending processed item {path:?}: {e:#?}"),
+                                    &format!("Archiver error sending item {path:?}: {e:#?}"),
                                 );
                                 return Err(());
                             }
@@ -307,13 +310,14 @@ fn spawn_processor_thread(
                             signal_fatal_error(
                                 &progress_reporter,
                                 &fatal_error_flag,
-                                &format!("Archiver thread errored processing item {path:?}: {e:#?}"),
+                                &format!("Archiver error processing item {path:?}: {e:#?}"),
                             );
                             return Err(());
                         }
                     }
                     Ok(())
-                });
+                },
+            );
         });
     })
 }

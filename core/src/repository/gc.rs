@@ -277,8 +277,13 @@ impl Plan {
             .expect("Failed to build thread pool");
 
         let process_result: Result<()> = pool.install(|| {
-            repack_blob_info.into_par_iter().try_for_each(
-                |(blob_id, (pack_id, blob_type, offset, _raw_length, length))| {
+            repack_blob_info.into_par_iter().try_for_each_init(
+                || {
+                    self.repo
+                        .get_encoding_context()
+                        .expect("Failed to create thread context")
+                },
+                |ctx, (blob_id, (pack_id, blob_type, offset, _raw_length, length))| {
                     // Read and decode the original data from the obsolete pack.
                     let data = self.repo.read_from_pack_and_decode(
                         blob_type,
@@ -291,7 +296,7 @@ impl Plan {
                     // and its new location is recorded in the MasterIndex.
                     let (_id, (_raw_length, encoded_length), (_raw_meta, encoded_meta)) = self
                         .repo
-                        .encode_and_save_blob(blob_type, data, SaveID::WithID(blob_id))?;
+                        .encode_and_save_blob(ctx, blob_type, data, SaveID::WithID(blob_id))?;
 
                     added_size.fetch_add(encoded_length + encoded_meta, Ordering::AcqRel);
 

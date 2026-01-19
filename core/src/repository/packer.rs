@@ -75,6 +75,7 @@ pub struct FlushedPack {
 pub struct Packer {
     buffer: Vec<u8>,
     descriptors: Vec<PackedBlobDescriptor>,
+    max_capacity: usize,
 }
 
 impl Packer {
@@ -82,6 +83,7 @@ impl Packer {
         Self {
             buffer: Vec::with_capacity(capacity),
             descriptors: Vec::new(),
+            max_capacity: capacity,
         }
     }
 
@@ -124,14 +126,13 @@ impl Packer {
         }
 
         let footer = Self::generate_footer(&mut self.descriptors);
-        let mut encoded_footer = secure_storage.encode(&footer)?;
+        let encoded_footer = secure_storage.encode(&footer)?;
         let footer_len_bytes = (encoded_footer.len() as u32).to_le_bytes();
 
-        // Añadimos footer y su longitud al final del mismo buffer
-        self.buffer.append(&mut encoded_footer);
+        self.buffer.extend_from_slice(&encoded_footer);
         self.buffer.extend_from_slice(&footer_len_bytes);
 
-        let data = std::mem::take(&mut self.buffer);
+        let data = std::mem::replace(&mut self.buffer, Vec::with_capacity(self.max_capacity));
         let descriptors = std::mem::take(&mut self.descriptors);
 
         let hash = utils::calculate_hash(&data);

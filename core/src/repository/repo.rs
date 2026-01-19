@@ -268,8 +268,8 @@ impl Repository {
             false => backend,
         };
 
-        let data_packer = Arc::new(RwLock::new(Packer::new()));
-        let tree_packer = Arc::new(RwLock::new(Packer::new()));
+        let data_packer = Arc::new(RwLock::new(Packer::new(config.pack_size as usize)));
+        let tree_packer = Arc::new(RwLock::new(Packer::new(config.pack_size as usize)));
         let master_index = Arc::new(MasterIndex::new());
 
         let mut repo = Repository {
@@ -338,9 +338,7 @@ impl Repository {
         let data = self.secure_storage.encode(&data)?;
         let encoded_length = data.len() as u64;
 
-        packer
-            .write()
-            .add_blob(id, blob_type, data, raw_length, encoded_length);
+        packer.write().add_blob(id, blob_type, &data, raw_length);
 
         // Flush if the packer is considered full
         let packer_meta_size = if packer.read().size() > self.max_packer_size {

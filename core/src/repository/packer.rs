@@ -72,109 +72,74 @@ pub struct FlushedPack {
 /// multiple blob objects and their raw data. When `flush` is called, it
 /// releases the combined data and a list of descriptors, ready to be written
 /// as a single pack file.
-///
-/// This design helps minimize memory reallocations by consolidating all blob
-/// data into a single `Vec<u8>` and tracking individual blob locations.
 pub struct Packer {
-    blobs: Vec<(ID, BlobType, Vec<u8>, u64)>, // (ID, type, encoded_data, raw_length)
-    size: u64,
-}
-
-impl Default for Packer {
-    fn default() -> Self {
-        Self::new()
-    }
+    buffer: Vec<u8>,
+    descriptors: Vec<PackedBlobDescriptor>,
 }
 
 impl Packer {
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
-            blobs: Vec::new(),
-            size: 0,
+            buffer: Vec::with_capacity(capacity),
+            descriptors: Vec::new(),
         }
     }
 
-    /// Returns the current total byte size of all raw data accumulated in the packer.
     #[inline]
     pub fn size(&self) -> u64 {
-        self.size
+        self.buffer.len() as u64
     }
 
-    /// Returns `true` if the packer contains no blob data and no descriptors.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.blobs.is_empty()
+        self.buffer.is_empty()
     }
 
-    /// Returns the number of individual blob objects currently stored in the packer.
     #[inline]
     pub fn num_objects(&self) -> usize {
-        self.blobs.len()
+        self.descriptors.len()
     }
 
     /// Appends a new blob's data to the packer and records its corresponding descriptor.
-    ///
-    /// The `blob_data` `Vec<u8>` is efficiently moved into the packer's internal
-    /// buffer using `Vec::append`, avoiding a costly copy. After this call, `blob_data`
-    /// will be empty.
-    pub fn add_blob(
-        &mut self,
-        id: ID,
-        blob_type: BlobType,
-        blob_data: Vec<u8>,
-        raw_size: u64,
-        encoded_size: u64,
-    ) {
-        self.size += encoded_size;
-        self.blobs.push((id, blob_type, blob_data, raw_size));
+    pub fn add_blob(&mut self, id: ID, blob_type: BlobType, encoded_data: &[u8], raw_size: u64) {
+        let offset = self.buffer.len() as u32;
+        let length = encoded_data.len() as u32;
+
+        self.buffer.extend_from_slice(encoded_data);
+
+        self.descriptors.push(PackedBlobDescriptor {
+            id,
+            blob_type,
+            offset,
+            length,
+            raw_length: raw_size as u32,
+        });
     }
 
     /// Flushes the contents of the packer, returning the accumulated raw data
     /// and the list of `PackedBlobDescriptor`s.
-    ///
-    /// After calling `flush`, the `Packer` instance will be reset to an empty state,
-    /// ready to accumulate new blobs. Ownership of the `Vec<u8>` and `Vec<PackedBlobDescriptor>`
-    /// is transferred to the caller, making this an efficient way to extract the packed content.
     pub fn flush(&mut self, secure_storage: &SecureStorage) -> Result<Option<FlushedPack>> {
-        if self.is_empty() {
+        if self.buffer.is_empty() {
             return Ok(None);
         }
 
-        let blobs = std::mem::take(&mut self.blobs);
-        self.size = 0;
+        let footer = Self::generate_footer(&mut self.descriptors);
+        let mut encoded_footer = secure_storage.encode(&footer)?;
+        let footer_len_bytes = (encoded_footer.len() as u32).to_le_bytes();
 
-        let mut offset: u32 = 0;
-        let total_data_size: usize = blobs.iter().map(|(_, _, d, _)| d.len()).sum();
-        let mut data = Vec::with_capacity(total_data_size);
-        let mut descriptors = Vec::with_capacity(blobs.len());
+        // Añadimos footer y su longitud al final del mismo buffer
+        self.buffer.append(&mut encoded_footer);
+        self.buffer.extend_from_slice(&footer_len_bytes);
 
-        for blob in blobs {
-            let mut blob_data = blob.2;
-            let length = blob_data.len() as u32;
-            descriptors.push(PackedBlobDescriptor {
-                id: blob.0,
-                blob_type: blob.1,
-                offset,
-                length,
-                raw_length: blob.3 as u32,
-            });
-            data.append(&mut blob_data);
-            offset += length;
-        }
-
-        let footer = Self::generate_footer(&mut descriptors);
-        let mut footer = secure_storage.encode(&footer)?;
-        let mut footer_length_bytes = (footer.len() as u32).to_le_bytes().to_vec();
-        footer.append(&mut footer_length_bytes);
-        let meta_size: u64 = footer.len() as u64;
-        data.append(&mut footer);
+        let data = std::mem::take(&mut self.buffer);
+        let descriptors = std::mem::take(&mut self.descriptors);
 
         let hash = utils::calculate_hash(&data);
 
         Ok(Some(FlushedPack {
             data,
             descriptors,
-            meta_size,
+            meta_size: (encoded_footer.len() + 4) as u64,
             id: ID::from_bytes(hash),
         }))
     }
@@ -388,14 +353,12 @@ mod tests {
     fn add_blob(packer: &mut Packer, data: &[u8], secure_storage: &SecureStorage) -> Result<()> {
         let raw_size = data.len() as u64;
         let encoded_data = secure_storage.encode(&data)?;
-        let encoded_size = encoded_data.len() as u64;
 
         packer.add_blob(
             ID::from_content(&encoded_data),
             BlobType::Data,
-            encoded_data,
+            &encoded_data,
             raw_size,
-            encoded_size,
         );
 
         Ok(())
@@ -403,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_pack_flush() -> Result<()> {
-        let mut packer = Packer::new();
+        let mut packer = Packer::new(0);
 
         let key = KeyManager::generate_new_master_key();
         let secure_storage = SecureStorage::build()
@@ -447,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_empty_pack_flush() -> Result<()> {
-        let mut packer = Packer::new();
+        let mut packer = Packer::new(0);
 
         assert_eq!(packer.size(), 0);
         assert!(packer.is_empty());

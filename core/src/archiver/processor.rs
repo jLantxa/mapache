@@ -156,7 +156,7 @@ pub(crate) fn chunk_and_store_file<R: Read>(
         let chunk = result.context("Failed to chunk file")?;
         progress_reporter.processed_bytes(chunk.data.len() as u64);
 
-        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
+        let (id, data_size, meta_size) = repo
             .encode_and_save_blob(
                 encoding_context,
                 BlobType::Data,
@@ -166,8 +166,8 @@ pub(crate) fn chunk_and_store_file<R: Read>(
             .context("Failed to save blob")?;
 
         chunk_ids.push(id);
-        progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
-        progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);
+        progress_reporter.written_data_bytes(data_size);
+        progress_reporter.written_meta_bytes(meta_size);
     }
 
     Ok(chunk_ids)
@@ -184,11 +184,11 @@ fn store_small_file<R: Read>(
     let mut data = Vec::with_capacity(node.metadata.size as usize);
     reader.read_to_end(&mut data)?;
 
-    let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) =
+    let (id, data_size, meta_size) =
         repo.encode_and_save_blob(encoding_context, BlobType::Data, data, SaveID::CalculateID)?;
 
-    progress_reporter.written_data_bytes(raw_data_size, encoded_data_size);
-    progress_reporter.written_meta_bytes(raw_meta_size, encoded_meta_size);
+    progress_reporter.written_data_bytes(data_size);
+    progress_reporter.written_meta_bytes(meta_size);
     progress_reporter.processed_bytes(node.metadata.size);
 
     Ok(vec![id])

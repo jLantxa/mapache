@@ -14,7 +14,10 @@ use parking_lot::RwLock;
 use crate::{
     fs::tree::NodeDiff,
     mapache::{defaults::MAX_PATH_DISPLAY_LEN, global::GlobalOpts},
-    repository::snapshot::{DiffCountsAtomic, SnapshotSummary},
+    repository::{
+        repo::SizePair,
+        snapshot::{DiffCountsAtomic, SnapshotSummary},
+    },
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
@@ -341,16 +344,17 @@ impl SnapshotProgressReporter {
     }
 
     #[inline]
-    pub fn written_data_bytes(&self, raw: u64, encoded: u64) {
-        self.raw_bytes.fetch_add(raw, Ordering::Relaxed);
-        self.encoded_bytes.fetch_add(encoded, Ordering::Relaxed);
+    pub fn written_data_bytes(&self, size: SizePair) {
+        self.raw_bytes.fetch_add(size.raw, Ordering::Relaxed);
+        self.encoded_bytes
+            .fetch_add(size.encoded, Ordering::Relaxed);
     }
 
     #[inline]
-    pub fn written_meta_bytes(&self, raw: u64, encoded: u64) {
-        self.meta_raw_bytes.fetch_add(raw, Ordering::Relaxed);
+    pub fn written_meta_bytes(&self, size: SizePair) {
+        self.meta_raw_bytes.fetch_add(size.raw, Ordering::Relaxed);
         self.meta_encoded_bytes
-            .fetch_add(encoded, Ordering::Relaxed);
+            .fetch_add(size.encoded, Ordering::Relaxed);
     }
 
     #[inline]

@@ -135,8 +135,8 @@ pub(crate) fn snapshot(
     }
 
     // Flush repo and finalize pack saver
-    let (flushed_raw_meta_size, flushed_encode_meta_size) = repo.flush()?;
-    progress_reporter.written_meta_bytes(flushed_raw_meta_size, flushed_encode_meta_size);
+    let flushed_meta_size = repo.flush()?;
+    progress_reporter.written_meta_bytes(flushed_meta_size);
     repo.finalize_pack_saver();
 
     let (hostname, username) = utils::get_system_info();
@@ -348,9 +348,7 @@ fn spawn_serializer_thread(
             progress_reporter.processed_node(strip_prefix(&path, &snapshot_root_path));
 
             match tree_serializer.handle_processed_item((&path, stream_node)) {
-                Ok((raw_tree_size, encoded_tree_size)) => {
-                    progress_reporter.written_meta_bytes(raw_tree_size, encoded_tree_size)
-                }
+                Ok(size) => progress_reporter.written_meta_bytes(size),
                 Err(e) => {
                     signal_fatal_error(
                         &progress_reporter,
@@ -364,8 +362,8 @@ fn spawn_serializer_thread(
         }
 
         match tree_serializer.finalize_root() {
-            Ok((raw, encoded)) => {
-                progress_reporter.written_meta_bytes(raw, encoded);
+            Ok(size) => {
+                progress_reporter.written_meta_bytes(size);
                 tree_serializer.root_tree()
             }
             Err(e) => {

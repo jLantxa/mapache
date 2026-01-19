@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::StorageHint,
     mapache::{self, BlobType, ContentIdType, ID},
-    repository::repo::Repository,
+    repository::repo::{Repository, SizePair},
     utils::collections::{IdIndexSet, IdMap, IdSet},
 };
 
@@ -225,11 +225,11 @@ impl Index {
 
     /// Saves the index to the repository.
     /// Returns the total uncompressed and compressed sizes of the saved index files.
-    pub fn persist(&mut self, repo: &Repository) -> Result<(u64, u64)> {
+    pub fn persist(&mut self, repo: &Repository) -> Result<SizePair> {
         self.finalize();
 
         if self.is_empty() {
-            return Ok((0, 0));
+            return Ok(SizePair::zero());
         }
 
         let reverse = self.get_reverse_map();
@@ -269,7 +269,7 @@ impl Index {
             packs: pack_entries,
         })?;
 
-        let (id, raw, enc) = repo.save_file(
+        let (id, size) = repo.save_file(
             &mapache::SaveID::CalculateID,
             &serialized,
             StorageHint {
@@ -281,7 +281,7 @@ impl Index {
 
         self.set_status(IndexStatus::Persisted(id));
 
-        Ok((raw, enc))
+        Ok(size)
     }
 
     #[inline]
@@ -446,7 +446,7 @@ impl MasterIndex {
         repo: &Repository,
         pack_id: &ID,
         descriptors: Vec<PackedBlobDescriptor>,
-    ) -> Result<(u64, u64)> {
+    ) -> Result<SizePair> {
         let mut lock = self.inner.write();
 
         for blob in &descriptors {
@@ -475,13 +475,12 @@ impl MasterIndex {
             if is_full {
                 pending_index.finalize();
             }
-            Ok((0, 0))
+            Ok(SizePair::zero())
         }
     }
 
-    pub fn persist(&self, repo: &Repository) -> Result<(u64, u64)> {
-        let mut total_raw = 0;
-        let mut total_enc = 0;
+    pub fn persist(&self, repo: &Repository) -> Result<SizePair> {
+        let mut total_size = SizePair::zero();
 
         let mut lock = self.inner.write();
 
@@ -490,12 +489,11 @@ impl MasterIndex {
                 continue;
             }
 
-            let (raw, enc) = idx.persist(repo)?;
-            total_raw += raw;
-            total_enc += enc;
+            let size = idx.persist(repo)?;
+            total_size += size;
         }
 
-        Ok((total_raw, total_enc))
+        Ok(total_size)
     }
 
     pub fn for_each_id<F>(&self, mut f: F)

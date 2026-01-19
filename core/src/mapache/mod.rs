@@ -19,7 +19,10 @@ use crate::{
         node::Node,
         tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
     },
-    repository::{repo::Repository, snapshot::Snapshot},
+    repository::{
+        repo::{Repository, SizePair},
+        snapshot::Snapshot,
+    },
     ui::snapshot_progress::SnapshotProgressReporter,
     utils,
 };
@@ -207,8 +210,8 @@ pub(crate) fn rewrite_snapshot_tree(
     rechunk: bool,
     mut rechunked_blobs_list_map: Option<&mut HashMap<Vec<ID>, Vec<ID>>>,
     progress_reporter: Arc<SnapshotProgressReporter>,
-) -> Result<(u64, u64)> {
-    let (mut raw_bytes, mut encoded_bytes) = (0, 0);
+) -> Result<SizePair> {
+    let mut bytes = SizePair::zero();
 
     // Cannonicalize the exclude paths and filter the source paths using the excludes
     // This is a simulated cannonical path, since we don't refer to a path in the host,
@@ -295,21 +298,17 @@ pub(crate) fn rewrite_snapshot_tree(
         snapshot.summary.processed_items_count += 1;
 
         // The path is not excluded, so we add the node to the pending trees map.
-        let (raw, encoded) = tree_serializer.handle_processed_item((&path, stream_node))?;
-        raw_bytes += raw;
-        encoded_bytes += encoded;
+        bytes += tree_serializer.handle_processed_item((&path, stream_node))?;
     }
 
     let _ = tree_serializer.finalize_root()?;
-    let (raw_meta, encoded_meta) = repo.flush()?;
-    raw_bytes += raw_meta;
-    encoded_bytes += encoded_meta;
+    bytes += repo.flush()?;
 
     // Increase meta counters in snapshot summary
-    snapshot.summary.meta_raw_bytes += raw_bytes;
-    snapshot.summary.meta_encoded_bytes += encoded_bytes;
-    snapshot.summary.total_raw_bytes += raw_bytes;
-    snapshot.summary.total_encoded_bytes += encoded_bytes;
+    snapshot.summary.meta_raw_bytes += bytes.raw;
+    snapshot.summary.meta_encoded_bytes += bytes.encoded;
+    snapshot.summary.total_raw_bytes += bytes.raw;
+    snapshot.summary.total_encoded_bytes += bytes.encoded;
 
     let root_tree_id = tree_serializer.root_tree();
     match root_tree_id {
@@ -317,7 +316,7 @@ pub(crate) fn rewrite_snapshot_tree(
         None => bail!("Failed to serialize new snapshot tree"),
     }
 
-    Ok((raw_bytes, encoded_bytes))
+    Ok(bytes)
 }
 
 pub enum SaveID {

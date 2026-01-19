@@ -162,7 +162,7 @@ fn amend(
             progress_reporter.clone(),
         )?;
         progress_reporter.finalize();
-        repo.finalize_pack_saver();
+        repo.finalize_pack_saver()?;
     }
 
     // Save the amended snapshot and delete the old snapshot file

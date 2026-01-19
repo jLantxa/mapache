@@ -1,7 +1,8 @@
-use std::{io::Write, thread::JoinHandle};
+use std::{io::Write, sync::Arc, thread::JoinHandle};
 
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::Sender;
+use parking_lot::Mutex;
 use rand::Rng;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
@@ -291,35 +292,51 @@ impl Packer {
 /// fully constructed pack files (`FlushedPack` data) to the repository's storage backend.
 pub struct PackSaver {
     tx: Sender<(Vec<u8>, ID, BlobType)>,
-    join_handle: JoinHandle<()>,
+    join_handle: JoinHandle<Result<()>>,
 }
 
 impl PackSaver {
-    /// Creates a new pack saver.
     pub fn new<F>(concurrency: usize, queue_fn: F) -> Self
     where
-        F: Fn(Vec<u8>, ID, BlobType) + Send + Sync + 'static,
+        F: Fn(Vec<u8>, ID, BlobType) -> Result<()> + Send + Sync + 'static,
     {
         let (tx, rx) = crossbeam_channel::bounded(concurrency);
-        let join_handle = std::thread::spawn(move || {
+
+        let first_err: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
+        let first_err_worker = Arc::clone(&first_err);
+
+        let queue_fn = Arc::new(queue_fn);
+
+        let join_handle = std::thread::spawn(move || -> Result<()> {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(concurrency)
                 .build()
-                .expect("Failed to build thread pool");
+                .context("Failed to build PackSaver thread pool")?;
 
             pool.install(|| {
                 rx.into_iter()
                     .par_bridge()
                     .for_each(|(data, id, blob_type)| {
-                        queue_fn(data, id, blob_type);
+                        // If we already failed, you can skip doing more work:
+                        if first_err_worker.lock().is_some() {
+                            return;
+                        }
+                        if let Err(e) = queue_fn(data, id, blob_type) {
+                            *first_err_worker.lock() = Some(e.context("Failed to upload pack"));
+                        }
                     });
             });
+
+            if let Some(e) = first_err.lock().take() {
+                Err(e)
+            } else {
+                Ok(())
+            }
         });
 
         Self { tx, join_handle }
     }
 
-    /// Queue a pack into the pack saver for upload.
     pub fn save_pack(
         &self,
         packer_data: Vec<u8>,
@@ -338,10 +355,11 @@ impl PackSaver {
         Ok(pack_id)
     }
 
-    /// Finalize the pack saver worker.
-    pub fn finish(self) {
+    pub fn finish(self) -> Result<()> {
         drop(self.tx);
-        self.join_handle.join().expect("PackSaver thread panicked");
+        self.join_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("PackSaver thread panicked"))?
     }
 }
 

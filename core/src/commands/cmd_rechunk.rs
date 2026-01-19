@@ -94,7 +94,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         progress_reporter.finalize();
     }
 
-    repo.finalize_pack_saver();
+    repo.finalize_pack_saver()?;
 
     ui::cli::log!(
         "Finished in {}",

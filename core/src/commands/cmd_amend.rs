@@ -12,7 +12,7 @@ use crate::{
     },
     mapache::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::{
-        repo::{RepoConfig, Repository},
+        repo::{RepoConfig, Repository, SizePair},
         snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, snapshot_progress::SnapshotProgressReporter},
@@ -126,7 +126,7 @@ fn amend(
     snapshot: &mut Snapshot,
     args: &CmdArgs,
 ) -> Result<()> {
-    let (mut raw, mut encoded) = (0, 0);
+    let mut size = SizePair::zero();
 
     snapshot.summary.amends = Some(*origin_snapshot_id);
 
@@ -166,7 +166,7 @@ fn amend(
     }
 
     // Save the amended snapshot and delete the old snapshot file
-    let (new_id, raw_meta, encoded_meta) = repo.save_file(
+    let (new_id, meta_size) = repo.save_file(
         &SaveID::CalculateID,
         serde_json::to_string(&snapshot)?.as_bytes(),
         StorageHint {
@@ -175,8 +175,7 @@ fn amend(
         },
         None,
     )?;
-    raw += raw_meta;
-    encoded += encoded_meta;
+    size += meta_size;
 
     // Delete the old snapshot ID if it changed
     // Note: To protect the repo from interruptions, we delete the snapshot only
@@ -192,10 +191,13 @@ fn amend(
         );
         ui::cli::log!(
             "Added to the repository: {} {}",
-            utils::format_size_binary(raw, 3).bold().yellow(),
-            format!("({} compressed)", utils::format_size_binary(encoded, 3))
-                .bold()
-                .green()
+            utils::format_size_binary(size.raw, 3).bold().yellow(),
+            format!(
+                "({} compressed)",
+                utils::format_size_binary(size.encoded, 3)
+            )
+            .bold()
+            .green()
         );
         ui::cli::log!(
             "Snapshot size: {} -> {}",

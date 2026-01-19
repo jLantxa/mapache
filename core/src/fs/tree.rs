@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     fs::{self, node::Node},
     mapache::{BlobType, ID, SaveID},
-    repository::repo::Repository,
+    repository::repo::{Repository, SizePair},
     utils,
 };
 
@@ -29,7 +29,7 @@ impl Tree {
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_to_repo(&mut self, repo: &Repository) -> Result<(ID, (u64, u64))> {
+    pub fn save_to_repo(&mut self, repo: &Repository) -> Result<(ID, SizePair)> {
         // Sort all nodes by name before serializing
         self.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
@@ -38,18 +38,16 @@ impl Tree {
         serde_json::to_writer(&mut buffer, self).context("Failed to serialize tree nodes")?;
 
         let mut encoding_context = repo.get_encoding_context()?;
-        let (id, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size)) = repo
-            .encode_and_save_blob(
-                &mut encoding_context,
-                BlobType::Tree,
-                buffer,
-                SaveID::CalculateID,
-            )?;
+        let (id, data_size, meta_size) = repo.encode_and_save_blob(
+            &mut encoding_context,
+            BlobType::Tree,
+            buffer,
+            SaveID::CalculateID,
+        )?;
 
-        let total_raw = raw_data_size + raw_meta_size;
-        let total_encoded = encoded_data_size + encoded_meta_size;
+        let total_size = data_size + meta_size;
 
-        Ok((id, (total_raw, total_encoded)))
+        Ok((id, total_size))
     }
 
     /// Load a tree from the repository.

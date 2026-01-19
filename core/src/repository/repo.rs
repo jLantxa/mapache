@@ -44,6 +44,41 @@ pub(crate) const REPO_DROPPED_EXTENSION: &str = "dropped";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 
+#[derive(Debug)]
+pub struct SizePair {
+    pub raw: u64,
+    pub encoded: u64,
+}
+
+impl SizePair {
+    pub fn new(raw: u64, encoded: u64) -> Self {
+        Self { raw, encoded }
+    }
+
+    pub fn zero() -> Self {
+        Self { raw: 0, encoded: 0 }
+    }
+}
+
+impl std::ops::Add for SizePair {
+    type Output = SizePair;
+    #[inline]
+    fn add(self, rhs: SizePair) -> SizePair {
+        SizePair {
+            raw: self.raw + rhs.raw,
+            encoded: self.encoded + rhs.encoded,
+        }
+    }
+}
+
+impl std::ops::AddAssign for SizePair {
+    #[inline]
+    fn add_assign(&mut self, rhs: SizePair) {
+        self.raw += rhs.raw;
+        self.encoded += rhs.encoded;
+    }
+}
+
 /// Authentication credentials of a user
 #[derive(Debug)]
 pub struct Auth {
@@ -304,15 +339,14 @@ impl Repository {
     }
 
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in an pack file.
-    /// Returns a tuple (`ID`, (raw_data_size, encoded_data_size), (raw_meta_size, encoded_meta_size))
-    #[allow(clippy::type_complexity)]
+    /// Returns a tuple (`ID`, data_size, meta_size)
     pub fn encode_and_save_blob(
         &self,
         encoding_context: &mut EncodingContext,
         blob_type: BlobType,
         data: Vec<u8>,
         save_id: SaveID,
-    ) -> Result<(ID, (u64, u64), (u64, u64))> {
+    ) -> Result<(ID, SizePair, SizePair)> {
         let packer = match blob_type {
             BlobType::Data => &self.data_packer,
             BlobType::Tree => &self.tree_packer,
@@ -332,7 +366,7 @@ impl Repository {
 
         // If the blob was already pending, return early, as we are finished here.
         if blob_exists {
-            return Ok((id, (0, 0), (0, 0)));
+            return Ok((id, SizePair::zero(), SizePair::zero()));
         }
 
         let raw_length = data.len() as u64;
@@ -348,10 +382,14 @@ impl Repository {
         let packer_meta_size = if packer.read().size() > self.max_packer_size {
             self.flush_packer(packer, blob_type)?
         } else {
-            (0, 0)
+            SizePair::zero()
         };
 
-        Ok((id, (raw_length, encoded_length), packer_meta_size))
+        Ok((
+            id,
+            SizePair::new(raw_length, encoded_length),
+            packer_meta_size,
+        ))
     }
 
     /// Loads a blob from the repository.
@@ -375,7 +413,7 @@ impl Repository {
         data: &[u8],
         hint: StorageHint,
         with_extension: Option<&str>,
-    ) -> Result<(ID, u64, u64)> {
+    ) -> Result<(ID, SizePair)> {
         let file_type = hint.file_type;
 
         let raw_size = data.len() as u64;
@@ -409,7 +447,7 @@ impl Repository {
 
         self.backend.write(&handle, &data)?;
 
-        Ok((*id, raw_size, encoded_size))
+        Ok((*id, SizePair::new(raw_size, encoded_size)))
     }
 
     /// Loads a file to the repository
@@ -497,9 +535,7 @@ impl Repository {
 
     /// Recall a dropped snapshot with ID
     pub fn recall_dropped_snapshot(&self, id: &ID) -> Result<()> {
-        let path = self
-            .get_path(ContentIdType::Snapshot, id)
-            .with_extension(REPO_DROPPED_EXTENSION);
+        let path = self.get_path(ContentIdType::Snapshot, id);
         let dropped_path = path.with_extension(REPO_DROPPED_EXTENSION);
         self.backend.rename(&dropped_path, &path)
     }
@@ -536,17 +572,12 @@ impl Repository {
         Ok(ids)
     }
     /// Flushes all pending data and saves it.
-    /// Returns a tuple (raw_size, encoded_size)
-    pub fn flush(&self) -> Result<(u64, u64)> {
-        let data_packer_meta_size = self.flush_packer(&self.data_packer, BlobType::Data)?;
-        let tree_packer_meta_size = self.flush_packer(&self.tree_packer, BlobType::Tree)?;
-
-        let (index_raw_size, index_encoded_size) = self.master_index.persist(self)?;
-
-        Ok((
-            data_packer_meta_size.1 + tree_packer_meta_size.0 + index_raw_size,
-            data_packer_meta_size.1 + tree_packer_meta_size.1 + index_encoded_size,
-        ))
+    pub fn flush(&self) -> Result<SizePair> {
+        let mut total_size = SizePair::zero();
+        total_size += self.flush_packer(&self.data_packer, BlobType::Data)?;
+        total_size += self.flush_packer(&self.tree_packer, BlobType::Tree)?;
+        total_size += self.master_index.persist(self)?;
+        Ok(total_size)
     }
 
     /// Loads a pack.
@@ -818,13 +849,9 @@ impl Repository {
         self.list_files_with_extension(file_type, None)
     }
 
-    fn flush_packer(
-        &self,
-        packer: &Arc<RwLock<Packer>>,
-        blob_type: BlobType,
-    ) -> Result<(u64, u64)> {
+    fn flush_packer(&self, packer: &Arc<RwLock<Packer>>, blob_type: BlobType) -> Result<SizePair> {
         match packer.write().flush(&self.secure_storage)? {
-            None => Ok((0, 0)),
+            None => Ok(SizePair::zero()),
             Some(flushed_pack) => {
                 if let Some(pack_saver) = self.pack_saver.write().as_ref() {
                     pack_saver.save_pack(
@@ -836,13 +863,13 @@ impl Repository {
                     bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
                 }
 
-                let (index_raw, index_encoded) =
+                let index_size =
                     self.master_index
                         .add_pack(self, &flushed_pack.id, flushed_pack.descriptors)?;
 
-                Ok((
-                    flushed_pack.meta_size + index_raw,
-                    flushed_pack.meta_size + index_encoded,
+                Ok(SizePair::new(
+                    flushed_pack.meta_size + index_size.raw,
+                    flushed_pack.meta_size + index_size.encoded,
                 ))
             }
         }

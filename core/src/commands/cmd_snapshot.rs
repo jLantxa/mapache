@@ -224,7 +224,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
 
     if should_save_snapshot {
-        let (snapshot_id, snapshot_raw_size, snapshot_encoded_size) = repo.save_file(
+        let (snapshot_id, snapshot_size) = repo.save_file(
             &mapache::SaveID::CalculateID,
             serde_json::to_string(&new_snapshot)?.as_bytes(),
             StorageHint {
@@ -233,7 +233,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             },
             None,
         )?;
-        progress_reporter.written_meta_bytes(snapshot_raw_size, snapshot_encoded_size);
+        progress_reporter.written_meta_bytes(snapshot_size);
         progress_reporter.finalize();
 
         // Final report

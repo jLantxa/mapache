@@ -168,10 +168,10 @@ impl Plan {
                 .init_pack_saver(mapache::defaults::DEFAULT_WRITE_CONCURRENCY);
 
             added_size += self.repack()?;
-            let (_, encoded) = self.repo.flush()?;
+            let size = self.repo.flush()?;
             self.repo.finalize_pack_saver();
 
-            added_size += encoded;
+            added_size += size.encoded;
 
             deleted_size += self.delete_old_indices()?;
             deleted_size += self.delete_obsolete_packs()?;
@@ -294,11 +294,14 @@ impl Plan {
 
                     // Re-encode and save the blob. SaveID::WithID ensures the same blob_id is used,
                     // and its new location is recorded in the MasterIndex.
-                    let (_id, (_raw_length, encoded_length), (_raw_meta, encoded_meta)) = self
-                        .repo
-                        .encode_and_save_blob(ctx, blob_type, data, SaveID::WithID(blob_id))?;
+                    let (_id, data_size, meta_size) = self.repo.encode_and_save_blob(
+                        ctx,
+                        blob_type,
+                        data,
+                        SaveID::WithID(blob_id),
+                    )?;
 
-                    added_size.fetch_add(encoded_length + encoded_meta, Ordering::AcqRel);
+                    added_size.fetch_add(data_size.encoded + meta_size.encoded, Ordering::AcqRel);
 
                     repack_bar.inc(1);
                     Ok(())

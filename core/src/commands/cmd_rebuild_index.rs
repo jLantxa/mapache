@@ -118,7 +118,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     // Save the new index
-    let (_new_raw, new_enc) = new_master_index.persist(repo.as_ref())?;
+    let new_index_size = new_master_index.persist(repo.as_ref())?;
     ui::cli::log!("Persisted {} new indices", new_master_index.ids().len());
 
     // Delete the old index
@@ -146,7 +146,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
 
     // Report added space
-    let added_size: i64 = new_enc as i64 - deleted_size.load(Ordering::Relaxed) as i64;
+    let added_size: i64 =
+        new_index_size.encoded as i64 - deleted_size.load(Ordering::Relaxed) as i64;
     if added_size >= 0 {
         ui::cli::log!(
             "Added space: {}",

@@ -12,7 +12,7 @@ use rand::Rng;
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, cache::CacheBackend},
     commands::Compression,
-    mapache::{self, BlobType, ContentIdType, ID, SaveID, defaults::SHORT_REPO_ID_LEN},
+    mapache::{self, BlobType, ContentIdType, ID, SaveID},
     repository::{
         keys::KeyManager,
         lock::{Lock, LockHandle},
@@ -123,7 +123,7 @@ impl Repository {
         auth: Option<&Auth>,
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
-    ) -> Result<()> {
+    ) -> Result<Manifest> {
         let auth = match auth {
             Some(a) => a,
             None => &ui::cli::request_new_auth(),
@@ -189,12 +189,7 @@ impl Repository {
         backend.create_dir(&index_path)?;
         backend.create_dir(&locks_path)?;
 
-        ui::cli::log!(
-            "Created repo with id {}",
-            manifest.id().to_short_hex(SHORT_REPO_ID_LEN)
-        );
-
-        Ok(())
+        Ok(manifest)
     }
 
     /// Try to open a repository and acquire a lock.

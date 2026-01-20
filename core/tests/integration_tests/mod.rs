@@ -26,7 +26,8 @@ const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
 
 fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
     let backend = Arc::new(LocalFS::new(repo_path));
-    Repository::init(Some(auth), None, backend).context("Failed to init repo")
+    let _ = Repository::init(Some(auth), None, backend).context("Failed to init repo")?;
+    Ok(())
 }
 
 /// Remove all file nodes from a base directory. This is useful to remove all

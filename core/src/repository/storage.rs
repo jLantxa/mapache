@@ -10,8 +10,6 @@ use crate::mapache::{self, defaults::MIN_CHUNK_SIZE};
 const AES_GCM_NONCE_LEN: usize = 12;
 const AES_GCM_TAG_LEN: usize = 16;
 
-const ZSTD_WINDOW_LOG: u32 = mapache::defaults::MIN_CHUNK_SIZE.ilog2();
-
 /// Secure storage is an abstraction for file IO that handles compression and encryption.
 pub struct SecureStorage {
     compression_level: i32,
@@ -48,6 +46,9 @@ impl SecureStorage {
     pub fn get_encoding_context(&self) -> Result<EncodingContext> {
         let mut compressor = zstd::bulk::Compressor::new(self.compression_level)
             .map_err(|e| anyhow!("zstd init failed: {e}"))?;
+
+        // Use a maximum back-reference window the size of the biggest chunk.
+        const ZSTD_WINDOW_LOG: u32 = mapache::defaults::MAX_CHUNK_SIZE.ilog2();
 
         compressor.set_parameter(zstd::zstd_safe::CParameter::WindowLog(ZSTD_WINDOW_LOG))?;
         compressor.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(false))?;

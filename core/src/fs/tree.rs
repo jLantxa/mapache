@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     fs::{self, node::Node},
     mapache::{BlobType, ID, SaveID},
-    repository::repo::{Repository, SizePair},
+    repository::{
+        repo::{Repository, SizePair},
+        storage::EncodingContext,
+    },
     utils,
 };
 
@@ -29,7 +32,11 @@ impl Tree {
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub fn save_to_repo(&mut self, repo: &Repository) -> Result<(ID, SizePair)> {
+    pub fn save_to_repo(
+        &mut self,
+        repo: &Repository,
+        encoding_context: &mut EncodingContext,
+    ) -> Result<(ID, SizePair)> {
         // Sort all nodes by name before serializing
         self.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
@@ -37,9 +44,8 @@ impl Tree {
         let mut buffer = Vec::with_capacity(self.nodes.len() * 160);
         serde_json::to_writer(&mut buffer, self).context("Failed to serialize tree nodes")?;
 
-        let mut encoding_context = repo.get_encoding_context()?;
         let (id, data_size, meta_size) = repo.encode_and_save_blob(
-            &mut encoding_context,
+            encoding_context,
             BlobType::Tree,
             buffer,
             SaveID::CalculateID,

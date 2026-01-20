@@ -146,7 +146,7 @@ impl Repository {
         let keyfile = KeyManager::generate_key_file(auth, master_key.clone())
             .context("Could not generate key")?;
         let secure_storage = Arc::new(
-            SecureStorage::build()
+            SecureStorage::new()
                 .with_compression(Compression::Fast.to_level())
                 .with_key(&master_key),
         );
@@ -255,7 +255,7 @@ impl Repository {
         };
 
         let secure_storage = Arc::new(
-            SecureStorage::build()
+            SecureStorage::new()
                 .with_compression(config.compression.to_level())
                 .with_key(&master_key),
         );
@@ -298,8 +298,14 @@ impl Repository {
             false => backend,
         };
 
-        let data_packer = Arc::new(RwLock::new(Packer::new(config.pack_size as usize)));
-        let tree_packer = Arc::new(RwLock::new(Packer::new(config.pack_size as usize)));
+        let data_packer = Arc::new(RwLock::new(Packer::new(
+            config.pack_size as usize,
+            secure_storage.clone(),
+        )?));
+        let tree_packer = Arc::new(RwLock::new(Packer::new(
+            config.pack_size as usize,
+            secure_storage.clone(),
+        )?));
         let master_index = Arc::new(MasterIndex::new());
 
         let mut repo = Repository {
@@ -851,7 +857,7 @@ impl Repository {
     }
 
     fn flush_packer(&self, packer: &Arc<RwLock<Packer>>, blob_type: BlobType) -> Result<SizePair> {
-        match packer.write().flush(&self.secure_storage)? {
+        match packer.write().flush()? {
             None => Ok(SizePair::zero()),
             Some(flushed_pack) => {
                 if let Some(pack_saver) = self.pack_saver.write().as_ref() {
@@ -1185,7 +1191,7 @@ mod tests {
 
         let intermediate_key =
             SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params())?;
-        let ss = SecureStorage::build()
+        let ss = SecureStorage::new()
             .with_compression(Compression::Fast.to_level())
             .with_key(&intermediate_key);
 

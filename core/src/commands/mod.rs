@@ -9,7 +9,7 @@ use crate::{
     mapache::{
         ContentIdType, ID,
         defaults::{
-            DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
+            DEFAULT_COMPRESSION, DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
             MIN_CONFIGURABLE_PACK_SIZE_MIB,
         },
         global::set_global_opts_with_args,
@@ -134,7 +134,7 @@ pub struct GlobalArgs {
     pub verbosity: Option<u32>,
 
     /// Compression level [fastest|fast|balanced|better|best|level:val]
-    #[clap(long = "compression", value_parser = parse_compression_level,  default_value_t = Compression::Fast)]
+    #[clap(long = "compression", value_parser = parse_compression_level,  default_value_t = DEFAULT_COMPRESSION)]
     pub compression_level: Compression,
 
     /// Retry acquiring a lock if the repository is already locked. Takes a duration

@@ -12,7 +12,10 @@ use crate::{
         tree::{StreamNode, Tree},
     },
     mapache::ID,
-    repository::repo::{Repository, SizePair},
+    repository::{
+        repo::{Repository, SizePair},
+        storage::EncodingContext,
+    },
     utils,
 };
 
@@ -42,7 +45,7 @@ impl From<isize> for ExpectedChildren {
 struct PendingTree {
     pub num_expected_children: ExpectedChildren,
     pub node: Option<Node>,
-    pub children: HashMap<String, Node>,
+    children: Vec<Node>,
 }
 
 impl PendingTree {
@@ -65,12 +68,12 @@ fn init_pending_trees(
     // does not emit it (the root node).
     let (root_children_count, _) = utils::get_intermediate_paths(snapshot_root_path, paths);
 
-    // The tree root, has no node
+    // The tree root. It has no node.
     pending_trees.insert(
         snapshot_root_path.to_path_buf(),
         PendingTree {
             node: None,
-            children: HashMap::new(),
+            children: Vec::with_capacity(root_children_count),
             num_expected_children: ExpectedChildren::Known(root_children_count),
         },
     );
@@ -108,6 +111,7 @@ impl TreeSerializer {
     pub(crate) fn handle_processed_item(
         &mut self,
         (path, stream_node): (&Path, StreamNode),
+        encoding_context: &mut EncodingContext,
     ) -> Result<SizePair> {
         let parent_path = utils::extract_parent(path)
             .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
@@ -116,31 +120,34 @@ impl TreeSerializer {
         let target_dir_path = if stream_node.node.is_dir() {
             // If the processed item is a directory (NodeType::Directory),
             // we update its own PendingTree entry.
-            self.pending_trees
+            let pending = self
+                .pending_trees
                 .entry(path.to_path_buf())
                 .or_insert_with(|| PendingTree {
                     node: None,
-                    children: HashMap::new(),
+                    children: Vec::new(),
                     num_expected_children: ExpectedChildren::Unknown,
-                })
-                .node = Some(stream_node.node);
+                });
 
             // The number of expected children is now known.
-            self.pending_trees
-                .get_mut(path)
-                .unwrap() // We just inserted or modified it, so it must exist.
-                .num_expected_children = ExpectedChildren::Known(stream_node.num_children);
+            pending.node = Some(stream_node.node);
+            pending.num_expected_children = ExpectedChildren::Known(stream_node.num_children);
+
+            if pending.children.capacity() < stream_node.num_children {
+                pending
+                    .children
+                    .reserve(stream_node.num_children - pending.children.len());
+            }
 
             path
         } else {
             // For non-directory nodes (Files, Symlinks, etc.), we finalize the item
             // and insert it into the parent's PendingTree.
             self.insert_finalized_node(&parent_path, stream_node.node);
-
             &parent_path
         };
 
-        self.finalize_if_complete(target_dir_path)
+        self.finalize_if_complete(target_dir_path, encoding_context)
     }
 
     // Helper function to encapsulate the core finalization and serialization logic,
@@ -150,10 +157,19 @@ impl TreeSerializer {
         &mut self,
         dir_path: PathBuf,
         pending_tree: PendingTree,
+        encoding_context: &mut EncodingContext,
     ) -> Result<(Option<(PathBuf, Node)>, SizePair)> {
-        let mut completed_tree = Tree::new(pending_tree.children.into_values().collect());
+        if pending_tree
+            .children
+            .windows(2)
+            .any(|w| w[0].name == w[1].name)
+        {
+            anyhow::bail!("Duplicate child name in {}", dir_path.display());
+        }
 
-        let (tree_id, size) = completed_tree.save_to_repo(&self.repo)?;
+        let mut completed_tree = Tree::new(pending_tree.children);
+
+        let (tree_id, size) = completed_tree.save_to_repo(&self.repo, encoding_context)?;
         let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
 
         if is_root {
@@ -182,7 +198,11 @@ impl TreeSerializer {
         Ok((Some((parent_path, completed_dir_node)), size))
     }
 
-    pub(crate) fn finalize_if_complete(&mut self, dir_path: &Path) -> Result<SizePair> {
+    pub(crate) fn finalize_if_complete(
+        &mut self,
+        dir_path: &Path,
+        encoding_context: &mut EncodingContext,
+    ) -> Result<SizePair> {
         // Check if the directory is present and complete.
         let pending_tree_entry = self
             .pending_trees
@@ -202,20 +222,24 @@ impl TreeSerializer {
                 )
             })?;
 
-        let (parent_info_opt, size) = self.finalize_and_save(dir_path_key, this_pending_tree)?;
+        let (parent_info_opt, size) =
+            self.finalize_and_save(dir_path_key, this_pending_tree, encoding_context)?;
 
         // Recursively handle the parent if it was not the root.
         if let Some((parent_path, completed_dir_node)) = parent_info_opt {
             self.insert_finalized_node(&parent_path, completed_dir_node);
-            self.finalize_if_complete(&parent_path)?;
+            self.finalize_if_complete(&parent_path, encoding_context)?;
         }
 
         Ok(size)
     }
 
-    pub(crate) fn finalize_root(&mut self) -> Result<SizePair> {
+    pub(crate) fn finalize_root(
+        &mut self,
+        encoding_context: &mut EncodingContext,
+    ) -> Result<SizePair> {
         let root = self.snapshot_root_path.clone();
-        self.finalize_if_complete(&root)
+        self.finalize_if_complete(&root, encoding_context)
     }
 
     #[inline]
@@ -225,9 +249,9 @@ impl TreeSerializer {
             .entry(parent_path.to_path_buf())
             .or_insert_with(|| PendingTree {
                 node: None,
-                children: HashMap::new(),
+                children: Vec::new(),
                 num_expected_children: ExpectedChildren::Unknown,
             });
-        parent_pending_tree.children.insert(node.name.clone(), node);
+        parent_pending_tree.children.push(node);
     }
 }

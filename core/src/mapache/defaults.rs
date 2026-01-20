@@ -33,6 +33,9 @@ pub(crate) const MAX_CHUNK_SIZE: u64 = 8 * size::MiB;
 /// Chunk normalization level.
 pub(crate) const CHUNKER_NORMALIZATION: Normalization = Normalization::L2;
 
+// --- Encoding ---
+pub(crate) const DEFAULT_COMPRESSION: Compression = Compression::Fast;
+
 // --- Display ---
 /// Display length for the repository ID in bytes
 pub(crate) const SHORT_REPO_ID_LEN: usize = 5;

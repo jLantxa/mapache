@@ -298,10 +298,11 @@ pub(crate) fn rewrite_snapshot_tree(
         snapshot.summary.processed_items_count += 1;
 
         // The path is not excluded, so we add the node to the pending trees map.
-        bytes += tree_serializer.handle_processed_item((&path, stream_node))?;
+        bytes +=
+            tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)?;
     }
 
-    let _ = tree_serializer.finalize_root()?;
+    let _ = tree_serializer.finalize_root(&mut encoding_context)?;
     bytes += repo.flush()?;
 
     // Increase meta counters in snapshot summary

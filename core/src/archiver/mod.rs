@@ -81,7 +81,7 @@ pub(crate) fn snapshot(
             4 * read_concurrency,
         );
     let (process_item_tx, process_item_rx) =
-        crossbeam_channel::bounded::<(PathBuf, StreamNode)>(4 * read_concurrency);
+        crossbeam_channel::bounded::<(PathBuf, StreamNode)>(16 * read_concurrency);
 
     // Spawn archiver threads
     let scanner_thread = spawn_scanner_thread(
@@ -340,6 +340,18 @@ fn spawn_serializer_thread(
             &absolute_source_paths,
         );
 
+        let mut encoding_context = match repo.get_encoding_context() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                signal_fatal_error(
+                    &progress_reporter,
+                    &fatal_error_flag,
+                    &format!("Serializer thread failed to initialize encoding context: {e:#}"),
+                );
+                return None; // Exit the thread early
+            }
+        };
+
         while let Ok((path, stream_node)) = process_item_rx.recv() {
             if fatal_error_flag.load(Ordering::Relaxed) {
                 break;
@@ -347,7 +359,8 @@ fn spawn_serializer_thread(
 
             progress_reporter.processed_node(strip_prefix(&path, &snapshot_root_path));
 
-            match tree_serializer.handle_processed_item((&path, stream_node)) {
+            match tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)
+            {
                 Ok(size) => progress_reporter.written_meta_bytes(size),
                 Err(e) => {
                     signal_fatal_error(
@@ -361,7 +374,11 @@ fn spawn_serializer_thread(
             }
         }
 
-        match tree_serializer.finalize_root() {
+        if fatal_error_flag.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        match tree_serializer.finalize_root(&mut encoding_context) {
             Ok(size) => {
                 progress_reporter.written_meta_bytes(size);
                 tree_serializer.root_tree()

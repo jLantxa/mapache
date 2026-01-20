@@ -9,7 +9,10 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 use crate::{
     backend::{Handle, StorageBackend},
     mapache::{BlobType, ContentIdType, ID, SaveID, defaults::FOOTER_BLOB_MULTIPLE},
-    repository::{repo::Repository, storage::SecureStorage},
+    repository::{
+        repo::Repository,
+        storage::{EncodingContext, SecureStorage},
+    },
     utils,
 };
 
@@ -77,15 +80,21 @@ pub struct Packer {
     buffer: Vec<u8>,
     descriptors: Vec<PackedBlobDescriptor>,
     max_capacity: usize,
+    secure_storage: Arc<SecureStorage>,
+    encoding_context: EncodingContext,
 }
 
 impl Packer {
-    pub fn new(capacity: usize) -> Self {
-        Self {
+    pub fn new(capacity: usize, secure_storage: Arc<SecureStorage>) -> Result<Self> {
+        let encoding_context = secure_storage.get_encoding_context()?;
+
+        Ok(Self {
             buffer: Vec::with_capacity(capacity),
             descriptors: Vec::new(),
             max_capacity: capacity,
-        }
+            secure_storage,
+            encoding_context,
+        })
     }
 
     #[inline]
@@ -121,16 +130,18 @@ impl Packer {
 
     /// Flushes the contents of the packer, returning the accumulated raw data
     /// and the list of `PackedBlobDescriptor`s.
-    pub fn flush(&mut self, secure_storage: &SecureStorage) -> Result<Option<FlushedPack>> {
+    pub fn flush(&mut self) -> Result<Option<FlushedPack>> {
         if self.buffer.is_empty() {
             return Ok(None);
         }
 
         let footer = Self::generate_footer(&mut self.descriptors);
-        let encoded_footer = secure_storage.encode(&footer)?;
+        let encoded_footer = self
+            .secure_storage
+            .encode_managed(&mut self.encoding_context, &footer)?;
         let footer_len_bytes = (encoded_footer.len() as u32).to_le_bytes();
 
-        self.buffer.extend_from_slice(&encoded_footer);
+        self.buffer.extend_from_slice(encoded_footer);
         self.buffer.extend_from_slice(&footer_len_bytes);
 
         let data = std::mem::replace(&mut self.buffer, Vec::with_capacity(self.max_capacity));
@@ -365,6 +376,8 @@ impl PackSaver {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::repository::keys::KeyManager;
 
     use super::*;
@@ -385,12 +398,14 @@ mod tests {
 
     #[test]
     fn test_pack_flush() -> Result<()> {
-        let mut packer = Packer::new(0);
-
         let key = KeyManager::generate_new_master_key();
-        let secure_storage = SecureStorage::build()
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
-            .with_key(&key);
+        let secure_storage = Arc::new(
+            SecureStorage::new()
+                .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+                .with_key(&key),
+        );
+
+        let mut packer = Packer::new(0, secure_storage.clone())?;
 
         let blobs = vec![b"mapache".to_vec(), b"backup".to_vec(), b"rust".to_vec()];
 
@@ -402,7 +417,7 @@ mod tests {
         assert!(!packer.is_empty());
 
         let flushed_pack = packer
-            .flush(&secure_storage)
+            .flush()
             .expect("Failed to flush packer")
             .expect("Flushed pack data must be Some");
 
@@ -429,15 +444,15 @@ mod tests {
 
     #[test]
     fn test_empty_pack_flush() -> Result<()> {
-        let mut packer = Packer::new(0);
+        // We cannot test with encryption enabled because the NONCE is randomized every time.
+        let secure_storage = Arc::new(SecureStorage::new());
+
+        let mut packer = Packer::new(0, secure_storage)?;
 
         assert_eq!(packer.size(), 0);
         assert!(packer.is_empty());
 
-        // We cannot test with encryption enabled because the NONCE is randomized every time.
-        let secure_storage = SecureStorage::build();
-
-        let flushed_pack_data = packer.flush(&secure_storage)?;
+        let flushed_pack_data = packer.flush()?;
         assert!(flushed_pack_data.is_none());
 
         Ok(())

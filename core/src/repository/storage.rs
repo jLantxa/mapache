@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
 use rand::{TryRngCore, rngs::OsRng};
 
-use crate::mapache::{self, defaults::MIN_CHUNK_SIZE};
+use crate::mapache::{self, defaults::DEFAULT_COMPRESSION};
 
 const AES_GCM_NONCE_LEN: usize = 12;
 const AES_GCM_TAG_LEN: usize = 16;
@@ -17,15 +17,17 @@ pub struct SecureStorage {
 }
 
 impl SecureStorage {
-    pub fn build() -> Self {
+    pub fn new() -> Self {
         Self {
-            // No compression by default (level -1).
-            // This is not exactly true, as zstd has no setting to 'disable' compression, but this
-            // compression level is so low and fast that the compressed slice is identical to the
-            // input data (in all my tests).
-            compression_level: -1,
+            compression_level: DEFAULT_COMPRESSION.to_level(),
             cipher: None,
         }
+    }
+
+    /// Set compression level
+    pub fn with_compression(mut self, level: i32) -> Self {
+        self.compression_level = level;
+        self
     }
 
     /// Set a 32-byte key and initialize the cipher (immutable afterward)
@@ -37,22 +39,18 @@ impl SecureStorage {
         self
     }
 
-    /// Set compression level
-    pub fn with_compression(mut self, level: i32) -> Self {
-        self.compression_level = level;
-        self
-    }
-
     pub fn get_encoding_context(&self) -> Result<EncodingContext> {
         let mut compressor = zstd::bulk::Compressor::new(self.compression_level)
             .map_err(|e| anyhow!("zstd init failed: {e}"))?;
 
         // Use a maximum back-reference window the size of the biggest chunk.
-        const ZSTD_WINDOW_LOG: u32 = mapache::defaults::MAX_CHUNK_SIZE.ilog2();
+        const ZSTD_WINDOW_LOG: u32 = mapache::defaults::MAX_CHUNK_SIZE
+            .saturating_sub(1)
+            .next_power_of_two()
+            .ilog2();
 
         compressor.set_parameter(zstd::zstd_safe::CParameter::WindowLog(ZSTD_WINDOW_LOG))?;
         compressor.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(false))?;
-        compressor.set_parameter(zstd::zstd_safe::CParameter::NbWorkers(0))?;
 
         Ok(EncodingContext::new(compressor))
     }
@@ -69,18 +67,22 @@ impl SecureStorage {
         ctx: &'a mut EncodingContext,
         data: &[u8],
     ) -> Result<&'a [u8]> {
-        ctx.compression_buf.clear();
         let bound = zstd::zstd_safe::compress_bound(data.len());
+
+        // Resize the buffer to `bound` elements without allocation.
+        // The compressor will write to the buffer later.
+        ctx.compression_buf.clear();
         if ctx.compression_buf.capacity() < bound {
             ctx.compression_buf.reserve(bound);
         }
+        unsafe { ctx.compression_buf.set_len(bound) };
 
         let n = ctx
             .compressor
             .compress_to_buffer(data, &mut ctx.compression_buf)
             .map_err(|e| anyhow!("zstd compress failed: {e}"))?;
+        ctx.compression_buf.truncate(n);
 
-        unsafe { ctx.compression_buf.set_len(n) };
         Ok(&ctx.compression_buf)
     }
 
@@ -98,27 +100,28 @@ impl SecureStorage {
             return Ok(out.as_slice());
         };
 
+        let total = AES_GCM_NONCE_LEN + data.len() + AES_GCM_TAG_LEN;
+
+        // Resize the buffer without allocations
         out.clear();
-        out.reserve(AES_GCM_NONCE_LEN + data.len() + AES_GCM_TAG_LEN);
+        if out.capacity() < total {
+            out.reserve(total);
+        }
+        unsafe { out.set_len(total) };
 
-        // nonce prefix
-        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
+        let (nonce_bytes, rest) = out.split_at_mut(AES_GCM_NONCE_LEN);
         OsRng
-            .try_fill_bytes(&mut nonce_bytes)
+            .try_fill_bytes(nonce_bytes)
             .map_err(|e| anyhow!("rng failed: {e}"))?;
-        out.extend_from_slice(&nonce_bytes);
 
-        // plaintext -> ciphertext in place
-        out.extend_from_slice(data);
+        let (payload, tag_out) = rest.split_at_mut(data.len());
+        payload.copy_from_slice(data);
 
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let data_start = AES_GCM_NONCE_LEN;
-
+        let nonce = Nonce::from_slice(nonce_bytes);
         let tag = cipher
-            .encrypt_in_place_detached(nonce, b"", &mut out[data_start..])
+            .encrypt_in_place_detached(nonce, b"", payload)
             .map_err(|_| anyhow!("encryption failed"))?;
-
-        out.extend_from_slice(tag.as_slice());
+        tag_out.copy_from_slice(tag.as_slice());
 
         Ok(out.as_slice())
     }
@@ -134,14 +137,15 @@ impl SecureStorage {
         let Some(cipher) = &self.cipher else {
             return Ok(data.to_vec());
         };
-        if data.len() < AES_GCM_NONCE_LEN {
+
+        if data.len() < AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN {
             bail!("invalid ciphertext");
         }
-        let (nonce, ciphertext) = data.split_at(AES_GCM_NONCE_LEN);
-        match cipher.decrypt(Nonce::from_slice(nonce), ciphertext) {
-            Ok(pt) => Ok(pt),
-            Err(_) => bail!("decryption failed"),
-        }
+
+        let (nonce, ciphertext_and_tag) = data.split_at(AES_GCM_NONCE_LEN);
+        cipher
+            .decrypt(Nonce::from_slice(nonce), ciphertext_and_tag)
+            .map_err(|_| anyhow!("decryption failed"))
     }
 
     /// Encrypt with an EncodingContext
@@ -182,28 +186,10 @@ impl SecureStorage {
         data: &[u8],
     ) -> Result<&'a [u8]> {
         self.compress_managed(ctx, data)?;
-
-        let Some(cipher) = &self.cipher else {
+        if self.cipher.is_none() {
             return Ok(&ctx.compression_buf);
-        };
-
-        ctx.encryption_buf.clear();
-        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
-        OsRng.try_fill_bytes(&mut nonce_bytes)?;
-        ctx.encryption_buf.extend_from_slice(&nonce_bytes);
-
-        ctx.encryption_buf.extend_from_slice(&ctx.compression_buf);
-
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let data_start = AES_GCM_NONCE_LEN;
-
-        let tag = cipher
-            .encrypt_in_place_detached(nonce, b"", &mut ctx.encryption_buf[data_start..])
-            .map_err(|_| anyhow!("encryption failed"))?;
-
-        ctx.encryption_buf.extend_from_slice(tag.as_slice());
-
-        Ok(&ctx.encryption_buf)
+        }
+        self.encrypt_into(&mut ctx.encryption_buf, &ctx.compression_buf)
     }
 
     /// decrypt → decompress
@@ -230,8 +216,8 @@ impl EncodingContext {
     fn new(compressor: zstd::bulk::Compressor<'static>) -> Self {
         Self {
             compressor,
-            compression_buf: Vec::with_capacity(MIN_CHUNK_SIZE as usize),
-            encryption_buf: Vec::with_capacity(MIN_CHUNK_SIZE as usize),
+            compression_buf: Vec::with_capacity(2 * mapache::defaults::NORMAL_CHUNK_SIZE as usize),
+            encryption_buf: Vec::with_capacity(2 * mapache::defaults::NORMAL_CHUNK_SIZE as usize),
         }
     }
 }
@@ -259,7 +245,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[case(15)]
     #[case(22)]
     fn test_compression_and_decompression(#[case] level: i32) {
-        let ss = SecureStorage::build().with_compression(level);
+        let ss = SecureStorage::new().with_compression(level);
 
         let original_data = TEXT;
         let compressed_data = ss.compress(original_data).unwrap();
@@ -303,7 +289,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[test]
     fn test_encode_decode_with_compression_and_key() -> Result<()> {
         let key = TEST_KEY;
-        let ss = SecureStorage::build()
+        let ss = SecureStorage::new()
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
             .with_key(&key);
 
@@ -318,7 +304,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_encryption_decryption_with_key() -> Result<()> {
         // No compression: length checks are stable (nonce + tag overhead)
         let key = TEST_KEY;
-        let ss = SecureStorage::build().with_key(&key);
+        let ss = SecureStorage::new().with_key(&key);
 
         let original_data = TEXT.as_slice();
         let encrypted_data = ss.encrypt(original_data)?;
@@ -335,7 +321,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_encryption_decryption_no_key() -> Result<()> {
-        let ss = SecureStorage::build(); // no key, default compression
+        let ss = SecureStorage::new(); // no key, default compression
         let original_data = TEXT.as_slice();
 
         let encrypted_data = ss.encrypt(original_data)?;
@@ -349,21 +335,8 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     }
 
     #[test]
-    fn test_encode_decode_with_key_no_compression() -> Result<()> {
-        let key = TEST_KEY;
-        let ss = SecureStorage::build().with_key(&key);
-
-        let encoded_data = ss.encode(TEXT)?;
-        let decoded_data = ss.decode(&encoded_data)?;
-
-        assert!(encoded_data.len() >= TEXT.len());
-        assert_eq!(TEXT.as_slice(), decoded_data.as_slice());
-        Ok(())
-    }
-
-    #[test]
     fn test_encode_decode_no_key_with_compression() -> Result<()> {
-        let ss = SecureStorage::build().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+        let ss = SecureStorage::new().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
 
         let encoded_data = ss.encode(TEXT)?;
         let decoded_data = ss.decode(&encoded_data)?;
@@ -378,7 +351,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[test]
     fn test_decrypt_invalid_data_length() {
         let key = TEST_KEY;
-        let ss = SecureStorage::build().with_key(&key);
+        let ss = SecureStorage::new().with_key(&key);
 
         // Shorter than nonce length
         let too_short_data = [0u8; AES_GCM_NONCE_LEN - 1];
@@ -390,7 +363,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[test]
     fn test_decrypt_tampered_data() -> Result<()> {
         let key = TEST_KEY;
-        let ss = SecureStorage::build().with_key(&key);
+        let ss = SecureStorage::new().with_key(&key);
 
         let original_data = TEXT.as_slice();
         let mut encrypted_data = ss.encrypt(original_data)?;
@@ -407,7 +380,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[test]
     fn test_encode_decode_managed() -> Result<()> {
         let key = TEST_KEY;
-        let ss = SecureStorage::build()
+        let ss = SecureStorage::new()
             .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
             .with_key(&key);
 

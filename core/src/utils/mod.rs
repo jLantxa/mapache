@@ -1,8 +1,10 @@
 pub mod collections;
+pub mod filter;
 pub mod url;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
+    ffi::OsString,
     path::{Component, MAIN_SEPARATOR, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -10,6 +12,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use blake3::Hasher;
 use chrono::{DateTime, Duration, Local};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{mapache::Hash256, repository::repo::Auth};
 
@@ -210,92 +213,49 @@ pub fn extract_parent(path: &Path) -> Option<PathBuf> {
 /// The `usize` value is the count of distinct direct children under that parent.
 /// The first element of the tuple is the count of distinct direct children under `root`.
 pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMap<PathBuf, usize>) {
-    let mut children_map: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut unique_root_children: BTreeSet<PathBuf> = BTreeSet::new();
+    // parent dir -> set of *child names* (single component) directly under that parent
+    let mut children_map: FxHashMap<PathBuf, FxHashSet<OsString>> = FxHashMap::default();
+    let mut unique_root_children: FxHashSet<OsString> = FxHashSet::default();
 
     for full_path in paths {
-        let mut current_ancestor = full_path.as_path();
+        let mut cur = full_path.as_path();
+        let mut direct_root_child_name: Option<OsString> = None;
 
-        let mut direct_root_child: Option<&Path> = None;
-
-        while let Some(parent) = current_ancestor.parent() {
+        while let Some(parent) = cur.parent() {
+            // Stop when we reached (or crossed) root.
+            // Note: this relies on your existing ordering semantics for normalized absolute paths.
             if parent <= root {
-                if parent == root {
-                    direct_root_child = Some(current_ancestor);
+                if parent == root
+                    && let Some(name) = cur.file_name()
+                {
+                    direct_root_child_name = Some(name.to_os_string());
                 }
                 break;
             }
 
-            children_map
-                .entry(parent.to_path_buf())
-                .or_default()
-                .insert(current_ancestor.to_path_buf());
+            // Insert the child name under its parent.
+            if let Some(name) = cur.file_name() {
+                children_map
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .insert(name.to_os_string());
+            }
 
-            current_ancestor = parent;
+            cur = parent;
         }
 
-        if let Some(child_of_root) = direct_root_child {
-            unique_root_children.insert(child_of_root.to_path_buf());
+        if let Some(name) = direct_root_child_name {
+            unique_root_children.insert(name);
         }
     }
 
     let root_children_count = unique_root_children.len();
 
-    let intermediate_counts = children_map
-        .into_iter()
-        .map(|(path, set_of_children)| (path, set_of_children.len()))
-        .collect();
+    // Convert to BTreeMap for sorted keys (preserves your original return type / ordering)
+    let mut intermediate_counts = BTreeMap::new();
+    intermediate_counts.extend(children_map.into_iter().map(|(p, set)| (p, set.len())));
 
     (root_children_count, intermediate_counts)
-}
-
-/// Filters a path based on include and exclude rules.
-/// Returns `true` if the path should be included, `false` otherwise.
-/// Exclude rules take precedence over include rules.
-///
-/// # Arguments
-/// * `path` - The path to filter.
-/// * `include` - An optional slice of paths to include. If `None`, all paths are implicitly included
-///   unless excluded. If `Some`, the path must either be an include path, a descendant
-///   of an include path, or an ancestor of an include path.
-///
-/// * `exclude` - An optional slice of paths to exclude. If `Some`, the path is excluded if it
-///   starts with any of the exclude paths.
-///
-/// # Behavior
-/// 1. If `path` starts with any `exclude_path`, it's excluded (returns `false`).
-/// 2. If `include_paths` is `Some`:
-///    a. The path is included only if it is either:
-///      - An include path itself (`path == in_path`).
-///      - A descendant of an include path (`path.starts_with(in_path)`).
-///      - An ancestor of an include path (`in_path.starts_with(path)`).
-///
-///    b. If it doesn't satisfy any of these conditions for any `include_path`, it's excluded (returns `false`).
-/// 3. If `include_paths` is `None` and not excluded by step 1, it's included (returns `true`).
-pub fn filter_path(
-    path: &Path,
-    include: Option<&Vec<PathBuf>>,
-    exclude: Option<&Vec<PathBuf>>,
-) -> bool {
-    if let Some(exclude_paths) = exclude
-        && exclude_paths
-            .iter()
-            .any(|ex_path| path.starts_with(ex_path))
-    {
-        return false;
-    }
-
-    if let Some(include_paths) = include {
-        let is_included = include_paths
-            .iter()
-            .any(|in_path| path.starts_with(in_path) || in_path.starts_with(path));
-
-        if !is_included {
-            return false;
-        }
-    }
-
-    true
 }
 
 /// Abbreviates a path to fit within `max_len`, keeping the first and last components.
@@ -930,58 +890,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn test_filter_path() {
-        let path1 = PathBuf::from("/a/b/c");
-        let path2 = PathBuf::from("/x/y/z");
-        let path3 = PathBuf::from("/a/b");
-        let path4 = PathBuf::from("/a/b/c/d");
-
-        // No include/exclude
-        assert!(filter_path(&path1, None, None));
-
-        // Exclude only
-        assert!(!filter_path(&path1, None, Some(&vec![PathBuf::from("/a")])));
-        assert!(filter_path(&path2, None, Some(&vec![PathBuf::from("/a")])));
-        assert!(!filter_path(
-            &path4,
-            None,
-            Some(&vec![PathBuf::from("/a/b/c")])
-        ));
-
-        // Include only
-        assert!(filter_path(&path1, Some(&vec![PathBuf::from("/a")]), None));
-        assert!(!filter_path(&path2, Some(&vec![PathBuf::from("/a")]), None));
-        assert!(filter_path(
-            &path3,
-            Some(&vec![PathBuf::from("/a/b/c")]),
-            None
-        ));
-        assert!(filter_path(
-            &path4,
-            Some(&vec![PathBuf::from("/a/b/c")]),
-            None
-        ));
-
-        // Exclude and Include
-        // Exclude takes precedence
-        assert!(!filter_path(
-            &path1,
-            Some(&vec![PathBuf::from("/a")]),
-            Some(&vec![PathBuf::from("/a/b")])
-        ));
-        assert!(!filter_path(
-            &path2,
-            Some(&vec![PathBuf::from("/a")]),
-            Some(&vec![PathBuf::from("/a")])
-        ));
-        assert!(filter_path(
-            &path1,
-            Some(&vec![PathBuf::from("/a/b/c")]),
-            Some(&vec![PathBuf::from("/x")])
-        ))
     }
 
     #[cfg(unix)]

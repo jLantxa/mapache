@@ -177,6 +177,66 @@ impl Node {
         Ok(node)
     }
 
+    pub fn from_dir_entry(path: &Path, e: &std::fs::DirEntry) -> Result<Self> {
+        let ft = e
+            .file_type()
+            .with_context(|| format!("file_type failed: {}", path.display()))?;
+
+        // Name is cheap: file_name is already an OsString
+        let name = e.file_name().to_string_lossy().into_owned();
+
+        // Determine node_type without extra syscalls
+        let node_type = if ft.is_dir() {
+            NodeType::Directory
+        } else if ft.is_file() {
+            NodeType::File
+        } else if ft.is_symlink() {
+            NodeType::Symlink
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt;
+                if ft.is_block_device() {
+                    NodeType::BlockDevice
+                } else if ft.is_char_device() {
+                    NodeType::CharDevice
+                } else if ft.is_fifo() {
+                    NodeType::Fifo
+                } else if ft.is_socket() {
+                    NodeType::Socket
+                } else {
+                    bail!("Unsupported file type {ft:?}");
+                }
+            }
+            #[cfg(not(unix))]
+            bail!("Unsupported file type {:?}", ft)
+        };
+
+        // Metadata:
+        // - For non-symlinks, DirEntry::metadata is usually the best option.
+        // - For symlinks, keep same semantics as Node::from_path: symlink_metadata.
+        let meta = if node_type == NodeType::Symlink {
+            std::fs::symlink_metadata(path)
+                .with_context(|| format!("Stat failed: {}", path.display()))?
+        } else {
+            e.metadata()
+                .with_context(|| format!("metadata failed: {}", path.display()))?
+        };
+
+        let mut node = Self {
+            name,
+            node_type,
+            metadata: Metadata::from_fs(&meta),
+            ..Default::default()
+        };
+
+        if node.is_symlink() {
+            node.populate_symlink_info(path)?;
+        }
+
+        Ok(node)
+    }
+
     fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
         if let Ok(target) = std::fs::read_link(path) {
             let mut info = SymlinkInfo {

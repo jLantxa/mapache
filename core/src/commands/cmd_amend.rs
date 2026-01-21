@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
@@ -16,7 +16,7 @@ use crate::{
         snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, snapshot_progress::SnapshotProgressReporter},
-    utils::{self, size},
+    utils::{self, filter::parse_relative_filter_paths, size},
 };
 
 #[derive(Args, Debug)]
@@ -54,8 +54,8 @@ pub struct CmdArgs {
     pub clear_description: bool,
 
     /// List of paths to exclude from the backup
-    #[clap(long, value_parser, required = false)]
-    pub exclude: Option<Vec<PathBuf>>,
+    #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
+    pub exclude: Option<Vec<String>>,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -145,8 +145,9 @@ fn amend(
     }
 
     let origin_processed_bytes = snapshot.summary.processed_bytes;
+    let parsed_excludes = parse_relative_filter_paths(args.exclude.as_ref());
 
-    if args.exclude.is_some() {
+    if parsed_excludes.is_some() {
         repo.init_pack_saver(1);
         let progress_reporter = Arc::new(SnapshotProgressReporter::new(
             Some(snapshot.summary.processed_items_count),
@@ -156,7 +157,7 @@ fn amend(
         rewrite_snapshot_tree(
             repo.clone(),
             snapshot,
-            args.exclude.clone(),
+            parsed_excludes,
             false,
             None,
             progress_reporter.clone(),

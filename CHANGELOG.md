@@ -3,13 +3,18 @@
 ## Latest
 
 ### Changes
+
 - The compression level is now configurable. Added a `--compression` global
   option to control the compression level.
 - Internal optimizations to the archiver.
+- `--include` and `--exclude` now accept patterns. For example,
+  `--exclude **/*.jpg` would exclude all .jpg files in every folder.
+- Many optimizations to the archiver and the tree streams.
 
 ### v0.1.4
 
 ### Changes
+
 - Optimized the `verify` command massively. Removed unnecessary duplicate checks
   and parallelize verification of packs.
 

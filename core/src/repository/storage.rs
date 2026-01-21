@@ -16,6 +16,12 @@ pub struct SecureStorage {
     cipher: Option<Aes256GcmSiv>,
 }
 
+impl Default for SecureStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SecureStorage {
     pub fn new() -> Self {
         Self {

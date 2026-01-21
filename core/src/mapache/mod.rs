@@ -24,7 +24,7 @@ use crate::{
         snapshot::Snapshot,
     },
     ui::snapshot_progress::SnapshotProgressReporter,
-    utils,
+    utils::{self, filter::PathFilter},
 };
 
 pub const ID_LENGTH: usize = 32;
@@ -227,8 +227,10 @@ pub(crate) fn rewrite_snapshot_tree(
         None
     };
 
+    let path_filter = PathFilter::new(None, cannonical_excludes.as_deref());
+
     let mut paths = snapshot.paths.clone();
-    paths.retain(|p| utils::filter_path(p, None, cannonical_excludes.as_ref()));
+    paths.retain(|p| path_filter.allow(p));
 
     let mut tree_serializer = TreeSerializer::new(repo.clone(), snapshot.root.clone(), &paths);
     let node_stream = SerializedNodeStream::new(
@@ -265,7 +267,7 @@ pub(crate) fn rewrite_snapshot_tree(
                         &mut encoding_context,
                         &mut blob_data_reader,
                         &stream_node.node,
-                        progress_reporter.clone(),
+                        progress_reporter.as_ref(),
                     )
                 };
 

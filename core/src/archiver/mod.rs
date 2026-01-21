@@ -287,34 +287,30 @@ fn spawn_processor_thread(
                     let stripped_path = strip_prefix(&path, &snapshot_root_path);
                     progress_reporter.processing_node(stripped_path, diff);
 
-                    let processed_item_result = processor::process_item(
-                        (&path, prev, next, diff),
+                    match processor::process_item(
+                        (path.as_path(), prev, next, diff),
                         repo.clone(),
                         ctx,
-                        progress_reporter.clone(),
-                    );
+                        progress_reporter.as_ref(),
+                    ) {
+                        Ok(Some(stream_node)) => {
+                            // re-wrap with the owned PathBuf for the channel
+                            let processed_item: (PathBuf, StreamNode) = (path, stream_node);
 
-                    match processed_item_result {
-                        Ok(Some(processed_item)) => {
                             if let Err(e) = process_item_tx.send(processed_item) {
-                                signal_fatal_error(
-                                    &progress_reporter,
-                                    &fatal_error_flag,
-                                    &format!("Archiver error sending item {path:?}: {e:#?}"),
-                                );
-                                return Err(());
+                                progress_reporter.error(&format!(
+                                    "Archiver error sending item {:?}: {e:#?}",
+                                    e.0.0
+                                ));
                             }
                         }
                         Ok(None) => {}
                         Err(e) => {
-                            signal_fatal_error(
-                                &progress_reporter,
-                                &fatal_error_flag,
-                                &format!("Archiver error processing item {path:?}: {e:#?}"),
-                            );
-                            return Err(());
+                            progress_reporter
+                                .error(&format!("Archiver error processing item {path:?}: {e:#?}"));
                         }
                     }
+
                     Ok(())
                 },
             );
@@ -356,8 +352,6 @@ fn spawn_serializer_thread(
             if fatal_error_flag.load(Ordering::Relaxed) {
                 break;
             }
-
-            progress_reporter.processed_node(strip_prefix(&path, &snapshot_root_path));
 
             match tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)
             {

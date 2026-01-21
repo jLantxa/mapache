@@ -289,7 +289,16 @@ mod tests {
                 backup_data_tmp_path.join("file.txt"),
             ],
             as_root: false,
-            exclude: Some(vec![backup_data_tmp_path.join("0/01")]),
+            exclude: Some(vec![
+                backup_data_tmp_path
+                    .join("0/01")
+                    .to_string_lossy()
+                    .into_owned(),
+                backup_data_tmp_path
+                    .join("0/00/*.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]),
             tags_str: String::new(),
             description: None,
             no_parent: false,
@@ -324,7 +333,6 @@ mod tests {
             PathBuf::from("0"),
             PathBuf::from("0/file0.txt"),
             PathBuf::from("0/00"),
-            PathBuf::from("0/00/file00.txt"),
             PathBuf::from("1"),
             PathBuf::from("1/10"),
             PathBuf::from("1/10/file10.txt"),
@@ -333,6 +341,9 @@ mod tests {
             PathBuf::from("2"),
             PathBuf::from("file.txt"),
         ];
+
+        // Excluded
+        assert!(!restore_path.join("0/00/file00.txt").exists());
 
         for path in &paths {
             let backup_path = backup_data_tmp_path.join(path);
@@ -412,7 +423,12 @@ mod tests {
                 backup_data_tmp_path.join("file.txt"),
             ],
             as_root: false,
-            exclude: Some(vec![backup_data_tmp_path.join("0/01")]),
+            exclude: Some(vec![
+                backup_data_tmp_path
+                    .join("0/01")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]),
             tags_str: String::new(),
             description: None,
             no_parent: false,

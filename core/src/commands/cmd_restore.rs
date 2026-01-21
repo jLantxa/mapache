@@ -23,7 +23,11 @@ use crate::{
         self, SPINNER_TICK_CHARS, default_bar_draw_target,
         restore_progress::RestoreProgressReporter,
     },
-    utils::{self, format_size_binary, size},
+    utils::{
+        self,
+        filter::{expand_include_paths, parse_relative_filter_paths},
+        format_size_binary, size,
+    },
 };
 
 impl std::fmt::Display for Strategy {
@@ -54,12 +58,12 @@ pub struct CmdArgs {
     pub target: PathBuf,
 
     /// A list of paths to restore: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_delimiter = ',')]
-    pub include: Option<Vec<PathBuf>>,
+    #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
+    pub include: Option<Vec<String>>,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_delimiter = ',')]
-    pub exclude: Option<Vec<PathBuf>>,
+    #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
+    pub exclude: Option<Vec<String>>,
 
     /// Strip the longest common prefix from all restored routes.
     #[clap(long, value_parser, default_value_t = false)]
@@ -119,8 +123,16 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Ok(None) | Err(_) => bail!("Snapshot not found"),
     };
 
+    let parsed_excludes = parse_relative_filter_paths(args.exclude.as_ref());
+    let parsed_includes = expand_include_paths(
+        repo.clone(),
+        &snapshot_id,
+        args.include.as_deref(),
+        parsed_excludes.clone(),
+    )?;
+
     let common_prefix: Option<PathBuf> = if args.strip_prefix {
-        args.include
+        parsed_includes
             .as_ref()
             .map(|includes| utils::calculate_lcp(includes, false))
     } else {
@@ -154,8 +166,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo.clone(),
         Some(snapshot.tree),
         PathBuf::new(),
-        args.include.clone(),
-        args.exclude.clone(),
+        parsed_includes.clone(),
+        parsed_excludes.clone(),
     )?;
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -216,8 +228,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo.clone(),
         &snapshot,
         &abs_normalized_target,
-        args.include.clone(),
-        args.exclude.clone(),
+        parsed_includes.clone(),
+        parsed_excludes.clone(),
         RestoreOptions {
             dry_run: args.dry_run,
             strategy: args.strategy.clone(),
@@ -237,8 +249,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             repo,
             abs_normalized_target.clone(),
             &snapshot.tree,
-            args.include.clone(),
-            args.exclude.clone(),
+            parsed_includes,
+            parsed_excludes,
             args.dry_run,
             args.no_preserve_root,
         )?;

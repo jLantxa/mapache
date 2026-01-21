@@ -70,7 +70,12 @@ mod tests {
                 backup_data_tmp_path.join("file.txt"),
             ],
             as_root: false,
-            exclude: Some(vec![backup_data_tmp_path.join("0/01")]),
+            exclude: Some(vec![
+                backup_data_tmp_path
+                    .join("0/01")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]),
             tags_str: String::new(),
             description: None,
             no_parent: false,
@@ -90,8 +95,11 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
-            include: Some(vec![PathBuf::from("0"), PathBuf::from("1")]),
-            exclude: Some(vec![PathBuf::from("0/00/file00.txt")]),
+            include: Some(vec!["0".to_string(), "1".to_string()]),
+            exclude: Some(vec![
+                String::from("0/00/file00.txt"),
+                String::from("0/*.txt"),
+            ]),
             strip_prefix: false,
             strategy: Strategy::Skip,
             no_verify: false,
@@ -103,13 +111,13 @@ mod tests {
 
         let restored_paths = vec![
             PathBuf::from("0"),
-            PathBuf::from("0/file0.txt"),
             PathBuf::from("0/00"),
             PathBuf::from("1"),
             PathBuf::from("1/10"),
         ];
 
         let excluded_paths = vec![
+            PathBuf::from("0/file0.txt"),
             PathBuf::from("0/00/file00.txt"),
             PathBuf::from("2"),
             PathBuf::from("file.txt"),
@@ -297,8 +305,8 @@ mod tests {
             snapshot: UseSnapshot::Latest,
             dry_run: false,
             include: Some(vec![
-                PathBuf::from("0/file0.txt"),
-                PathBuf::from("0/00/file00.txt"),
+                "0/file0.txt".to_string(),
+                "0/00/file00.txt".to_string(),
             ]),
             exclude: None,
             strip_prefix: true,
@@ -323,7 +331,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
-            include: Some(vec![PathBuf::from("0/00/file00.txt")]),
+            include: Some(vec!["0/00/file00.txt".to_string()]),
             exclude: None,
             strip_prefix: true,
             strategy: Strategy::Skip,
@@ -596,7 +604,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
-            include: Some(vec![PathBuf::from("0")]),
+            include: Some(vec!["0".to_string()]),
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Overwrite,
@@ -880,7 +888,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
-            include: Some(vec![PathBuf::from("0/file0.txt")]),
+            include: Some(vec!["0/file0.txt".to_string()]),
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Overwrite,
@@ -902,7 +910,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
-            include: Some(vec![PathBuf::from("0/00/file00.txt")]),
+            include: Some(vec!["0/00/file00.txt".to_string()]),
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,

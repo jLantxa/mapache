@@ -91,9 +91,9 @@ mod tests {
             .context("Failed to run cmd_snapshot")?;
 
         let excluded_paths = vec![
-            PathBuf::from("2"),
-            PathBuf::from("file.txt"),
-            PathBuf::from("0/00/file00.txt"),
+            "2".to_string(),
+            "file.txt".to_string(),
+            "0/00/file00.txt".to_string(),
         ];
         let amend_args = cmd_amend::CmdArgs {
             snapshot: UseSnapshot::Latest,

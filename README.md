@@ -79,7 +79,7 @@ make it into v0.1.0. At the moment, these include:
 - [ ] `restore` redesign,
 - [ ] reimplement SFTP backend with a pure rust crate,
 - [ ] return codes for commands,
-- [ ] regex filters,
+- [x] regex filters,
 
 and other internal refactors, optimizations and bug fixing.
 

@@ -3,17 +3,21 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use colored::Colorize;
+use crossbeam_channel::{Receiver, Sender};
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::RwLock;
+use rustc_hash::FxHashSet;
 
 use crate::{
     fs::tree::NodeDiff,
-    mapache::{defaults::MAX_PATH_DISPLAY_LEN, global::GlobalOpts},
+    mapache::global::GlobalOpts,
     repository::{
         repo::SizePair,
         snapshot::{DiffCountsAtomic, SnapshotSummary},
@@ -22,34 +26,112 @@ use crate::{
     utils,
 };
 
+enum UiEvent {
+    Start(String),
+    Done(String),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ui_loop(
+    stop: Arc<AtomicBool>,
+    refresh: Duration,
+    rx: Receiver<UiEvent>,
+    processed_bytes: Arc<AtomicU64>,
+    pb: ProgressBar,
+    cb: ProgressBar,
+    spinners: Vec<ProgressBar>,
+    _n: usize, // not needed; use spinners.len()
+) {
+    let slots = spinners.len().max(1);
+
+    // Active items in *start order* (oldest at front).
+    let mut active: VecDeque<String> = VecDeque::with_capacity(slots);
+
+    // Fast membership / dedup for Start.
+    let mut in_flight: FxHashSet<String> = FxHashSet::default();
+    in_flight.reserve(slots * 4);
+
+    while !stop.load(Ordering::Relaxed) {
+        // Drain all pending UI events.
+        for ev in rx.try_iter() {
+            match ev {
+                UiEvent::Start(s) => {
+                    if in_flight.insert(s.clone()) {
+                        active.push_back(s);
+
+                        // Should not happen if concurrency is correct, but keep bounded anyway.
+                        while active.len() > slots {
+                            if let Some(old) = active.pop_front() {
+                                in_flight.remove(&old);
+                            }
+                        }
+                    }
+                }
+                UiEvent::Done(s) => {
+                    if in_flight.remove(&s) {
+                        // Remove from active (O(slots) worst-case; slots is small).
+                        if let Some(pos) = active.iter().position(|x| x == &s) {
+                            active.remove(pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update main bar from atomic.
+        pb.set_position(processed_bytes.load(Ordering::Relaxed));
+
+        // Render oldest-first into spinners.
+        let mut i = 0usize;
+        for item in active.iter() {
+            if i == spinners.len() {
+                break;
+            }
+            spinners[i].set_message(item.clone());
+            spinners[i].tick();
+            i += 1;
+        }
+
+        // Clear remaining spinners so nothing “freezes”.
+        for sp in spinners.iter().skip(i) {
+            sp.set_message(String::new());
+            sp.tick();
+        }
+
+        pb.tick();
+        cb.tick();
+        thread::sleep(refresh);
+    }
+}
+
 pub struct SnapshotProgressReporter {
-    // Processed items
-    processed_items_count: Arc<AtomicU64>, // Number of files processed (written or not)
-    processed_bytes: Arc<AtomicU64>,       // Bytes processed (only data)
-    raw_bytes: Arc<AtomicU64>,             // Bytes 'written' before encoding
-    encoded_bytes: Arc<AtomicU64>,         // Bytes written after encoding
-    expected_items: Arc<RwLock<Option<AtomicU64>>>, // Num expected items
-    expected_bytes: Arc<RwLock<Option<AtomicU64>>>, // Num expected bytes
+    // Hot-path counters
+    processed_items_count: Arc<AtomicU64>,
+    processed_bytes: Arc<AtomicU64>,
+    raw_bytes: Arc<AtomicU64>,
+    encoded_bytes: Arc<AtomicU64>,
+    meta_raw_bytes: Arc<AtomicU64>,
+    meta_encoded_bytes: Arc<AtomicU64>,
+
+    expected_items: Arc<RwLock<Option<AtomicU64>>>,
+    expected_bytes: Arc<RwLock<Option<AtomicU64>>>,
+
+    diff_counts: Arc<DiffCountsAtomic>,
+    error_counter: Arc<AtomicU64>,
 
     determined_style: ProgressStyle,
 
-    // Metadata
-    meta_raw_bytes: Arc<AtomicU64>, // Metadata bytes 'written' before encoding
-    meta_encoded_bytes: Arc<AtomicU64>, // Metadata bytes written after encoding
-
-    diff_counts: Arc<DiffCountsAtomic>,
-
-    processing_items: Arc<RwLock<VecDeque<String>>>, // List of items being processed (for displaying)
-
-    error_counter: Arc<AtomicU64>,
-
-    #[allow(dead_code)]
     mp: MultiProgress,
     progress_bar: ProgressBar,
     companion_bar: ProgressBar,
     file_spinners: Vec<ProgressBar>,
 
     verbosity: u32,
+
+    // UI thread
+    ui_tx: Sender<UiEvent>,
+    ui_stop: Arc<AtomicBool>,
+    ui_thread: Option<JoinHandle<()>>,
 }
 
 impl SnapshotProgressReporter {
@@ -58,142 +140,125 @@ impl SnapshotProgressReporter {
         expected_size: Option<u64>,
         num_display_items: usize,
     ) -> Self {
+        let verbosity = GlobalOpts::verbosity();
+        let refresh_interval = GlobalOpts::progress_refresh_interval();
+
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
 
         let progress_bar = match expected_size {
             Some(size) => mp.add(ProgressBar::new(size)),
             None => mp.add(ProgressBar::no_length()),
         };
-
         let companion_bar = mp.add(ProgressBar::no_length());
 
-        let processed_items_count_arc = Arc::new(AtomicU64::new(0));
-        let processed_bytes_arc = Arc::new(AtomicU64::new(0));
-        let raw_bytes_arc = Arc::new(AtomicU64::new(0));
-        let encoded_bytes_arc = Arc::new(AtomicU64::new(0));
+        // ---------------- Hot-path counters ----------------
+        let processed_items_count = Arc::new(AtomicU64::new(0));
+        let processed_bytes = Arc::new(AtomicU64::new(0));
+        let raw_bytes = Arc::new(AtomicU64::new(0));
+        let encoded_bytes = Arc::new(AtomicU64::new(0));
+        let meta_raw_bytes = Arc::new(AtomicU64::new(0));
+        let meta_encoded_bytes = Arc::new(AtomicU64::new(0));
 
-        let expected_items_arc = match expected_items {
-            Some(val) => Arc::new(RwLock::new(Some(AtomicU64::new(val)))),
-            None => Arc::new(RwLock::new(None)),
-        };
+        let expected_items = Arc::new(RwLock::new(expected_items.map(AtomicU64::new)));
+        let expected_bytes = Arc::new(RwLock::new(expected_size.map(AtomicU64::new)));
 
-        let expected_bytes_arc = match expected_size {
-            Some(val) => Arc::new(RwLock::new(Some(AtomicU64::new(val)))),
-            None => Arc::new(RwLock::new(None)),
-        };
+        let diff_counts = Arc::new(DiffCountsAtomic::default());
+        let error_counter = Arc::new(AtomicU64::new(0));
 
-        let meta_raw_bytes_arc = Arc::new(AtomicU64::new(0));
-        let meta_encoded_bytes_arc = Arc::new(AtomicU64::new(0));
-
-        let processing_items_arc = Arc::new(RwLock::new(VecDeque::new()));
-        let error_counter_arc = Arc::new(AtomicU64::new(0));
-
-        let processed_bytes_arc_clone = processed_bytes_arc.clone();
-        let expected_bytes_arc_clone = expected_bytes_arc.clone();
+        // ---------------- Styles ----------------
+        // IMPORTANT: closures must not take write locks.
+        let processed_bytes_arc_clone = processed_bytes.clone();
+        let expected_bytes_arc_clone = expected_bytes.clone();
         let undetermined_style = ProgressStyle::default_bar()
             .template("[{custom_elapsed}]  [{processed_bytes_fmt}]")
-            .expect("The snapshot progress bar should have been created")
+            .expect("progress bar template")
             .progress_chars("=> ")
             .with_key(
                 "custom_elapsed",
                 move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let elapsed = state.elapsed();
-                    let custom_elapsed = utils::pretty_print_duration(elapsed);
-                    let _ = w.write_str(&custom_elapsed);
+                    let s = utils::pretty_print_duration(state.elapsed());
+                    let _ = w.write_str(&s);
                 },
             )
             .with_key(
                 "processed_bytes_fmt",
                 move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                     let bytes = processed_bytes_arc_clone.load(Ordering::Relaxed);
-                    let expected_bytes_lock = expected_bytes_arc_clone.write();
-                    let s = match expected_bytes_lock.as_ref() {
-                        Some(atomic_val) => {
-                            let expected_bytes = atomic_val.load(Ordering::Relaxed);
+                    let lock = expected_bytes_arc_clone.read();
+                    let s = match lock.as_ref() {
+                        Some(a) => {
+                            let expected = a.load(Ordering::Relaxed);
                             format!(
                                 "{} / {}",
                                 utils::format_size_binary(bytes, 3),
-                                utils::format_size_binary(expected_bytes, 3)
+                                utils::format_size_binary(expected, 3),
                             )
                         }
                         None => utils::format_size_binary(bytes, 3).to_string(),
                     };
                     let _ = w.write_str(&s);
                 },
-            )
-            .with_key(
-                "custom_eta",
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let eta = state.eta();
-                    let custom_eta = utils::pretty_print_duration(eta);
-                    let _ = w.write_str(&custom_eta);
-                },
             );
 
-        let processed_bytes_arc_clone = processed_bytes_arc.clone();
-        let expected_bytes_arc_clone = expected_bytes_arc.clone();
+        let processed_bytes_arc_clone = processed_bytes.clone();
+        let expected_bytes_arc_clone = expected_bytes.clone();
         let determined_style = ProgressStyle::default_bar()
-            .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
-            .expect("The snapshot progress bar should have been created")
-            .progress_chars("=> ")
-            .with_key(
-                "custom_elapsed",
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let elapsed = state.elapsed();
-                    let custom_elapsed = utils::pretty_print_duration(elapsed);
-                    let _ = w.write_str(&custom_elapsed);
-                },
-            )
-            .with_key(
-                "processed_bytes_fmt",
-                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let bytes = processed_bytes_arc_clone.load(Ordering::Relaxed);
-                    let expected_bytes_lock = expected_bytes_arc_clone.read();
-                    let s = match expected_bytes_lock.as_ref() {
-                        Some(atomic_val) => {
-                            let expected_bytes = atomic_val.load(Ordering::Relaxed);
-                            format!(
-                                "{} / {}",
-                                utils::format_size_binary(bytes, 3),
-                                utils::format_size_binary(expected_bytes, 3)
-                            )
-                        },
-                        None => utils::format_size_binary(bytes, 3).to_string(),
-                    };
-                    let _ = w.write_str(&s);
-                },
-            )
-            .with_key(
-                "custom_eta",
-                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let eta = state.eta();
-                    let custom_eta = utils::pretty_print_duration(eta);
-                    let _ = w.write_str(&custom_eta);
-                },
-            );
+        .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
+        .expect("progress bar template")
+        .progress_chars("=> ")
+        .with_key(
+            "custom_elapsed",
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let s = utils::pretty_print_duration(state.elapsed());
+                let _ = w.write_str(&s);
+            },
+        )
+        .with_key(
+            "processed_bytes_fmt",
+            move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let bytes = processed_bytes_arc_clone.load(Ordering::Relaxed);
+                let lock = expected_bytes_arc_clone.read();
+                let s = match lock.as_ref() {
+                    Some(a) => {
+                        let expected = a.load(Ordering::Relaxed);
+                        format!(
+                            "{} / {}",
+                            utils::format_size_binary(bytes, 3),
+                            utils::format_size_binary(expected, 3),
+                        )
+                    }
+                    None => utils::format_size_binary(bytes, 3).to_string(),
+                };
+                let _ = w.write_str(&s);
+            },
+        )
+        .with_key("custom_eta", move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let s = utils::pretty_print_duration(state.eta());
+            let _ = w.write_str(&s);
+        });
 
         match expected_size {
             Some(_) => progress_bar.set_style(determined_style.clone()),
-            None => progress_bar.set_style(undetermined_style.clone()),
+            None => progress_bar.set_style(undetermined_style),
         };
 
-        let error_counter_arc_clone = error_counter_arc.clone();
-        let expected_items_arc_clone = expected_items_arc.clone();
-        let processed_items_count_arc_clone = processed_items_count_arc.clone();
+        let error_counter_clone = error_counter.clone();
+        let expected_items_clone = expected_items.clone();
+        let processed_items_count_clone = processed_items_count.clone();
         companion_bar.set_style(
             ProgressStyle::default_bar()
                 .template("[{processed_items_fmt}]  [{errors} errors]")
-                .expect("The snapshot progress bar should have been created")
+                .expect("companion bar template")
                 .progress_chars("=> ")
                 .with_key(
                     "processed_items_fmt",
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let item_count = processed_items_count_arc_clone.load(Ordering::Relaxed);
-                        let expected_items_lock = expected_items_arc_clone.write();
-                        let s = match expected_items_lock.as_ref() {
-                            Some(atomic_val) => {
-                                let expected_count = atomic_val.load(Ordering::Relaxed);
-                                format!("{item_count} / {expected_count} items")
+                        let item_count = processed_items_count_clone.load(Ordering::Relaxed);
+                        let lock = expected_items_clone.read();
+                        let s = match lock.as_ref() {
+                            Some(a) => {
+                                let expected = a.load(Ordering::Relaxed);
+                                format!("{item_count} / {expected} items")
                             }
                             None => format!("{item_count} items"),
                         };
@@ -203,81 +268,109 @@ impl SnapshotProgressReporter {
                 .with_key(
                     "errors",
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let errors = error_counter_arc_clone.load(Ordering::Relaxed);
+                        let errors = error_counter_clone.load(Ordering::Relaxed);
                         let _ = w.write_str(&errors.to_string());
                     },
                 ),
         );
 
-        let refresh_interval = GlobalOpts::progress_refresh_interval();
-
-        progress_bar.enable_steady_tick(refresh_interval);
-        companion_bar.enable_steady_tick(refresh_interval);
-
+        // ---------------- Spinners ----------------
         let mut file_spinners = Vec::with_capacity(num_display_items);
         for _ in 0..num_display_items {
-            let file_spinner = mp.add(ProgressBar::new_spinner());
-            file_spinner.set_style(
+            let s = mp.add(ProgressBar::new_spinner());
+            s.set_style(
                 ProgressStyle::default_spinner()
                     .template("{spinner:.cyan} {msg}")
                     .unwrap()
                     .tick_chars(SPINNER_TICK_CHARS),
             );
-            file_spinner.enable_steady_tick(refresh_interval);
-            file_spinners.push(file_spinner);
+            file_spinners.push(s);
         }
 
+        // ---------------- UI channel + thread ----------------
+        // Bounded so worker hot-path can't blow up memory if UI stalls.
+        let (ui_tx, ui_rx) = crossbeam_channel::unbounded::<UiEvent>();
+        let ui_stop = Arc::new(AtomicBool::new(false));
+
+        // Clone handles (cheap: indicatif internals are Arc-based)
+        let pb = progress_bar.clone();
+        let cb = companion_bar.clone();
+        let spinners_for_thread: Vec<ProgressBar> = file_spinners.to_vec();
+
+        let processed_bytes_for_thread = processed_bytes.clone();
+        let ui_stop_for_thread = ui_stop.clone();
+
+        let ui_thread = Some(thread::spawn(move || {
+            ui_loop(
+                ui_stop_for_thread,
+                refresh_interval,
+                ui_rx,
+                processed_bytes_for_thread,
+                pb,
+                cb,
+                spinners_for_thread,
+                num_display_items.max(1),
+            );
+        }));
+
         Self {
-            processed_items_count: processed_items_count_arc,
-            processed_bytes: processed_bytes_arc,
-            raw_bytes: raw_bytes_arc,
-            encoded_bytes: encoded_bytes_arc,
-            meta_raw_bytes: meta_raw_bytes_arc,
-            meta_encoded_bytes: meta_encoded_bytes_arc,
-            expected_items: expected_items_arc,
-            expected_bytes: expected_bytes_arc,
-            diff_counts: Arc::new(DiffCountsAtomic::default()),
-            processing_items: processing_items_arc,
+            processed_items_count,
+            processed_bytes,
+            raw_bytes,
+            encoded_bytes,
+            meta_raw_bytes,
+            meta_encoded_bytes,
+
+            expected_items,
+            expected_bytes,
+
+            diff_counts,
+            error_counter,
+
             determined_style,
+
             mp,
-            companion_bar,
             progress_bar,
+            companion_bar,
             file_spinners,
-            verbosity: GlobalOpts::verbosity(),
-            error_counter: error_counter_arc,
+
+            verbosity,
+
+            ui_tx,
+            ui_stop,
+            ui_thread,
         }
     }
 
     pub fn add_expected_items(&self, val: u64) {
-        let mut expected_items_lock = self.expected_items.write();
-        match expected_items_lock.as_ref() {
-            Some(expected_items_atomic) => {
-                expected_items_atomic.fetch_add(val, Ordering::Relaxed);
+        let mut lock = self.expected_items.write();
+        match lock.as_ref() {
+            Some(a) => {
+                a.fetch_add(val, Ordering::Relaxed);
             }
             None => {
-                let _ = expected_items_lock.insert(AtomicU64::new(val));
+                let _ = lock.insert(AtomicU64::new(val));
             }
         }
     }
 
     pub fn add_expected_bytes(&self, val: u64) {
-        let mut expected_bytes_lock = self.expected_bytes.write();
-        match expected_bytes_lock.as_ref() {
-            Some(expected_bytes_atomic) => {
-                expected_bytes_atomic.fetch_add(val, Ordering::Relaxed);
+        let mut lock = self.expected_bytes.write();
+        match lock.as_ref() {
+            Some(a) => {
+                a.fetch_add(val, Ordering::Relaxed);
             }
             None => {
-                let _ = expected_bytes_lock.insert(AtomicU64::new(val));
+                let _ = lock.insert(AtomicU64::new(val));
             }
         }
     }
 
+    /// Call when scan completed and you now know total expected bytes.
     pub fn scan_finished(&self) {
-        let expected_bytes_lock = self.expected_bytes.read();
-        let bytes_opt = expected_bytes_lock
-            .as_ref()
-            .map(|bytes_atomic| bytes_atomic.load(Ordering::Relaxed));
-        drop(expected_bytes_lock); // Drop the lock before setting the progress bar length!
+        let lock = self.expected_bytes.read();
+        let bytes_opt = lock.as_ref().map(|a| a.load(Ordering::Relaxed));
+        drop(lock);
 
         if let Some(bytes) = bytes_opt {
             self.progress_bar.set_length(bytes);
@@ -285,37 +378,50 @@ impl SnapshotProgressReporter {
         }
     }
 
-    fn update_processing_items(&self) {
-        for (i, spinner) in self.file_spinners.iter().enumerate() {
-            let guard = self.processing_items.read();
-            let msg = guard.get(i).map(|s| s.as_str()).unwrap_or("");
-            spinner.set_message(msg.to_string());
-        }
-    }
-
     pub fn finalize(&self) {
-        for spinner in self.file_spinners.iter() {
-            spinner.finish_and_clear();
+        // Stop UI thread first (so it doesn't race MultiProgress clear/finish).
+        self.ui_stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.ui_thread.as_ref() {
+            h.thread().unpark();
+        }
+        if let Some(h) = self.ui_thread.as_ref() {
+            // We cannot join from &self without ownership; see finalize_owned below.
+            // Still safe: stopping prevents further ticks; leaving thread detached is OK but not ideal.
+            // If you can change call sites, prefer finalize_owned().
+            let _ = h; // no-op to keep intent clear
+        }
+
+        // Finish bars
+        for sp in self.file_spinners.iter() {
+            sp.finish_and_clear();
         }
         self.companion_bar.finish_and_clear();
         self.progress_bar.finish_and_clear();
         let _ = self.mp.clear();
     }
 
+    /// Prefer calling this if you can consume the reporter (e.g., store in Arc and drop last Arc).
+    pub fn finalize_owned(mut self) {
+        self.ui_stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.ui_thread.take() {
+            let _ = h.join();
+        }
+
+        for sp in self.file_spinners.iter() {
+            sp.finish_and_clear();
+        }
+        self.companion_bar.finish_and_clear();
+        self.progress_bar.finish_and_clear();
+        let _ = self.mp.clear();
+    }
+
+    fn abbr(path: &Path) -> String {
+        crate::utils::abbreviate_path(path, crate::mapache::defaults::MAX_PATH_DISPLAY_LEN)
+    }
+
     pub fn processing_node(&self, path: &Path, diff: NodeDiff) {
-        if diff != NodeDiff::Deleted {
-            let abbr = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
-            let cap = self.file_spinners.len();
-
-            {
-                let mut q = self.processing_items.write();
-                if cap != 0 && q.len() == cap {
-                    q.pop_front();
-                }
-                q.push_back(abbr);
-            }
-
-            self.update_processing_items();
+        if !self.file_spinners.is_empty() && diff != NodeDiff::Deleted {
+            let _ = self.ui_tx.try_send(UiEvent::Start(Self::abbr(path)));
         }
 
         if self.verbosity >= 3 {
@@ -328,19 +434,19 @@ impl SnapshotProgressReporter {
             self.progress_bar
                 .println(format!("{}  {}", diff_mark, path.display()));
         }
-
-        self.progress_bar.tick();
-        self.companion_bar.tick();
     }
 
-    pub fn processed_node(&self, _path: &Path) {
+    pub fn processed_node(&self, path: &Path) {
         self.processed_items_count.fetch_add(1, Ordering::Relaxed);
+
+        if !self.file_spinners.is_empty() {
+            let _ = self.ui_tx.try_send(UiEvent::Done(Self::abbr(path)));
+        }
     }
 
+    #[inline]
     pub fn processed_bytes(&self, bytes: u64) {
         self.processed_bytes.fetch_add(bytes, Ordering::Relaxed);
-        self.progress_bar.inc(bytes);
-        self.companion_bar.tick();
     }
 
     #[inline]

@@ -28,14 +28,6 @@ pub struct CmdArgs {
 
     #[arg(value_parser)]
     pub target_snapshot_id: String,
-
-    /// A list of paths to include.
-    #[clap(long)]
-    pub include: Option<Vec<PathBuf>>,
-
-    /// A list of paths to exclude.
-    #[clap(long)]
-    pub exclude: Option<Vec<PathBuf>>,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -71,15 +63,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             repo.clone(),
             Some(src_snap.tree),
             PathBuf::new(),
-            args.include.clone(),
-            args.exclude.clone(),
+            None,
+            None,
         )?,
         SerializedNodeStream::new(
             repo.clone(),
             Some(tgt_snap.tree),
             PathBuf::new(),
-            args.include.clone(),
-            args.exclude.clone(),
+            None,
+            None,
         )?,
     );
 

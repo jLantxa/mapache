@@ -15,7 +15,7 @@ use crate::{
         repo::{Repository, SizePair},
         storage::EncodingContext,
     },
-    utils,
+    utils::{self, filter::PathFilter},
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -90,14 +90,15 @@ pub type StreamNodeInfo = (PathBuf, StreamNode);
 /// children, are never explored nor emitted.
 #[derive(Debug)]
 pub struct FSNodeStream {
-    stack: Vec<PathBuf>,
+    stack: Vec<(PathBuf, StreamNode)>,
     intermediate_paths: Vec<(PathBuf, usize)>,
-    exclude_paths: Vec<PathBuf>,
+    filter: PathFilter,
+
+    // reused buffer: (file_name, direntry)
+    scratch: Vec<(std::ffi::OsString, std::fs::DirEntry)>,
 }
 
 impl FSNodeStream {
-    /// Creates an FSNodeStream from multiple root paths. The paths are iterated in lexicographical order.
-    /// Exclude paths and their children are neither emitted nor explored into.
     pub fn from_paths(mut paths: Vec<PathBuf>, mut exclude_paths: Vec<PathBuf>) -> Result<Self> {
         for path in &paths {
             if !fs::path_exists(path) {
@@ -106,36 +107,59 @@ impl FSNodeStream {
         }
 
         exclude_paths.sort_unstable();
-        paths.retain(|path| utils::filter_path(path, None, Some(exclude_paths.as_ref())));
+        let filter = PathFilter::new(None, Some(exclude_paths.as_slice()));
 
-        // Calculate intermediate paths and count children (root included)
+        // Keep only allowed roots
+        paths.retain(|p| filter.allow(p));
+
         let common_root = utils::calculate_lcp(&paths, false);
-        let (_root_children_count, intermediate_path_set) =
+        let (_root_children_count, intermediate_map) =
             utils::get_intermediate_paths(&common_root, &paths);
 
-        // Filter intermediate paths based on exclude_paths and collect
-        let mut intermediate_paths: Vec<(PathBuf, usize)> = intermediate_path_set
+        // Prefilter intermediate paths once (no need to re-check in next()).
+        let mut intermediate_paths: Vec<(PathBuf, usize)> = intermediate_map
             .into_iter()
-            .filter(|(path, _)| utils::filter_path(path, None, Some(exclude_paths.as_ref())))
+            .filter(|(p, _)| filter.allow(p))
             .collect();
 
-        // Sort paths in reverse order
-        paths.sort_unstable_by(|first, second| second.cmp(first));
-        intermediate_paths.sort_unstable_by(|(first, _), (second, _)| second.cmp(first));
+        // reverse for pop()
+        paths.sort_unstable_by(|a, b| b.cmp(a));
+        intermediate_paths.sort_unstable_by(|(a, _), (b, _)| b.cmp(a));
+
+        // Stack holds full paths. Root nodes are "uninitialized" (name == ""),
+        // so we'll stat them once when popped.
+        let mut stack = Vec::with_capacity(paths.len());
+        for p in paths {
+            stack.push((
+                p,
+                StreamNode {
+                    node: Node::default(), // sentinel: name == ""
+                    num_children: 0,
+                },
+            ));
+        }
 
         Ok(Self {
-            stack: paths,
+            stack,
             intermediate_paths,
-            exclude_paths,
+            filter,
+            scratch: Vec::with_capacity(256),
         })
     }
 
-    // Get all children sorted in lexicographical order.
-    fn get_children_sorted(dir: &Path) -> Result<Vec<PathBuf>> {
-        let read_dir = std::fs::read_dir(dir).map_err(|e| anyhow!("Cannot read {dir:?}: {e}"))?;
-        let mut entries: Vec<_> = read_dir.collect::<Result<Vec<_>, std::io::Error>>()?;
-        entries.sort_unstable_by_key(|a| a.file_name());
-        Ok(entries.into_iter().map(|e| e.path()).collect())
+    #[inline]
+    fn fill_children_sorted(&mut self, dir: &Path) -> Result<()> {
+        self.scratch.clear();
+
+        let rd = std::fs::read_dir(dir).with_context(|| format!("Cannot read {:?}.", dir))?;
+        for e in rd {
+            let e = e?;
+            self.scratch.push((e.file_name(), e));
+        }
+
+        // Keep your global lexicographic-by-full-path order determinism.
+        self.scratch.sort_unstable_by(|(na, _), (nb, _)| na.cmp(nb));
+        Ok(())
     }
 }
 
@@ -143,84 +167,68 @@ impl Iterator for FSNodeStream {
     type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Helper to peek the next path in each list
-        fn peek_path(entry: &(PathBuf, usize)) -> &PathBuf {
-            &entry.0
-        }
+        // We only need a loop to skip filtered items.
+        while let (Some(_), _) | (_, Some(_)) = (self.intermediate_paths.last(), self.stack.last())
+        {
+            // Choose next item in full-path lexical order:
+            let take_intermediate = match (self.intermediate_paths.last(), self.stack.last()) {
+                (None, None) => unreachable!(),
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some((ip, _)), Some((sp, _))) => ip < sp,
+            };
 
-        // Decide which source has the lexicographically smaller “next” element
-        let take_intermediate = loop {
-            match (self.intermediate_paths.last(), self.stack.last()) {
-                (Some(iv), Some(sv)) => {
-                    let iv_path = peek_path(iv);
-                    let sv_path = sv;
-
-                    // Skip intermediate if it's excluded
-                    if !utils::filter_path(iv_path, None, Some(&self.exclude_paths)) {
-                        self.intermediate_paths.pop();
-                        continue;
-                    }
-                    // Skip stack path if it's excluded
-                    if !utils::filter_path(sv_path, None, Some(&self.exclude_paths)) {
-                        self.stack.pop();
-                        continue;
-                    }
-
-                    break iv_path.cmp(sv_path) == std::cmp::Ordering::Less;
+            if take_intermediate {
+                let (path, num_children) = self.intermediate_paths.pop().unwrap();
+                if !self.filter.allow(&path) {
+                    continue;
                 }
-                (Some(iv), None) => {
-                    let iv_path = peek_path(iv);
-                    if !utils::filter_path(iv_path, None, Some(&self.exclude_paths)) {
-                        self.intermediate_paths.pop();
-                        continue;
-                    }
-                    break true;
-                }
-                (None, Some(sv)) => {
-                    if !utils::filter_path(sv, None, Some(&self.exclude_paths)) {
-                        self.stack.pop();
-                        continue;
-                    }
-                    break false;
-                }
-                (None, None) => return None, // Both are empty
+                return Some(
+                    Node::from_path(&path).map(|node| (path, StreamNode { node, num_children })),
+                );
             }
-        };
 
-        if take_intermediate {
-            let (path, num_children) = self.intermediate_paths.pop().unwrap();
-            let node = match Node::from_path(&path) {
-                Ok(n) => n,
-                Err(e) => return Some(Err(e)),
-            };
+            // Pop next path
+            let (path, mut stream_node) = self.stack.pop().unwrap();
+            if !self.filter.allow(&path) {
+                continue;
+            }
 
-            return Some(Ok((path.clone(), StreamNode { node, num_children })));
+            return Some((|| {
+                let node = Node::from_path(&path)?;
+                stream_node.node = node;
+
+                if stream_node.node.is_dir() {
+                    self.fill_children_sorted(&path)?;
+                    let mut count = 0usize;
+
+                    for (_name, e) in self.scratch.iter().rev() {
+                        let child_path = e.path();
+                        if !self.filter.allow(&child_path) {
+                            continue;
+                        }
+
+                        let child_node = Node::from_dir_entry(&child_path, e)?;
+                        self.stack.push((
+                            child_path,
+                            StreamNode {
+                                node: child_node,
+                                num_children: 0,
+                            },
+                        ));
+                        count += 1;
+                    }
+
+                    stream_node.num_children = count;
+                } else {
+                    stream_node.num_children = 0;
+                }
+
+                Ok((path, stream_node))
+            })());
         }
 
-        // Otherwise pop from the DFS stack as before
-        let path = self.stack.pop().unwrap(); // We know it's not None due to the loop logic
-        let result = (|| {
-            let node = Node::from_path(&path)?;
-
-            let num_children = if node.is_dir() {
-                let children = Self::get_children_sorted(&path)?;
-                let mut valid_children_count = 0;
-
-                for child in children.into_iter().rev() {
-                    if utils::filter_path(&child, None, Some(&self.exclude_paths)) {
-                        self.stack.push(child);
-                        valid_children_count += 1;
-                    }
-                }
-                valid_children_count
-            } else {
-                0
-            };
-
-            Ok((path, StreamNode { node, num_children }))
-        })();
-
-        Some(result)
+        None
     }
 }
 
@@ -235,9 +243,8 @@ impl Iterator for FSNodeStream {
 /// (children and parents (intermediate nodes to reach the included path)) as those paths will be emitted.
 pub struct SerializedNodeStream {
     repo: Arc<Repository>,
-    stack: Vec<StreamNodeInfo>,
-    include: Option<Vec<PathBuf>>,
-    exclude: Option<Vec<PathBuf>>,
+    stack: Vec<StreamNodeInfo>, // (full path, StreamNode)
+    filter: PathFilter,
 }
 
 impl SerializedNodeStream {
@@ -248,33 +255,33 @@ impl SerializedNodeStream {
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
     ) -> Result<Self> {
-        let mut stack = Vec::new();
+        let filter = PathFilter::new(include.as_deref(), exclude.as_deref());
+        let mut stack: Vec<StreamNodeInfo> = Vec::new();
 
         if let Some(id) = root_id {
-            let mut tree = Tree::load_from_repo(repo.as_ref(), &id)
+            let tree = Tree::load_from_repo(repo.as_ref(), &id)
                 .with_context(|| format!("Failed to load root tree with ID {id}"))?;
 
-            tree.nodes
-                .sort_unstable_by(|first, second| first.name.cmp(&second.name));
+            // Tree nodes are expected to be sorted by name on disk (save_to_repo does it).
+            // We push in reverse so pop() yields lexicographically smallest first.
             for node in tree.nodes.into_iter().rev() {
-                stack.push((
-                    base_path.clone(),
-                    StreamNode {
-                        node,
-
-                        // Actual child count will be determined when this node is processed by `next`.
-                        // Initialize to 0 for consistency with how FSNodeStream initializes non-directories.
-                        num_children: 0,
-                    },
-                ));
+                let full_path = base_path.join(&node.name);
+                if filter.allow(&full_path) {
+                    stack.push((
+                        full_path,
+                        StreamNode {
+                            node,
+                            num_children: 0,
+                        },
+                    ));
+                }
             }
         }
 
         Ok(Self {
             repo,
             stack,
-            include,
-            exclude,
+            filter,
         })
     }
 }
@@ -283,56 +290,49 @@ impl Iterator for SerializedNodeStream {
     type Item = Result<StreamNodeInfo>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // pop next allowed node (stack was prefiltered, but children are filtered too)
         let (current_path, mut stream_node) = loop {
-            let (cpath, node) = match self.stack.pop() {
+            match self.stack.pop() {
                 None => return None,
-                Some((parent_path, stream_node)) => {
-                    let current_path = parent_path.join(&stream_node.node.name);
-                    (current_path, stream_node)
+                Some((path, node)) => {
+                    // Keep correctness even if some caller pushes unfiltered items later
+                    if self.filter.allow(&path) {
+                        break (path, node);
+                    }
                 }
-            };
-
-            if utils::filter_path(&cpath, self.include.as_ref(), self.exclude.as_ref()) {
-                break (cpath, node);
             }
         };
 
         let res = (|| {
-            // If it’s a subtree (i.e., a directory), load its children and push them.
-            // Also, update the current `stream_node`'s `num_children` with its actual count.
             if let Some(subtree_id) = &stream_node.node.tree {
                 let subtree = Tree::load_from_repo(self.repo.as_ref(), subtree_id)?;
 
-                // Filter children based on include/exclude lists before counting and pushing.
-                let mut filtered_children = Vec::new();
-                for subnode in subtree.nodes.into_iter() {
+                let mut pushed = 0usize;
+
+                // Push children in reverse lexicographic name order so that pop() yields
+                // lexicographically smallest full paths first.
+                for subnode in subtree.nodes.into_iter().rev() {
                     let child_path = current_path.join(&subnode.name);
-                    if utils::filter_path(&child_path, self.include.as_ref(), self.exclude.as_ref())
-                    {
-                        filtered_children.push(subnode);
+                    if self.filter.allow(&child_path) {
+                        self.stack.push((
+                            child_path,
+                            StreamNode {
+                                node: subnode,
+                                num_children: 0,
+                            },
+                        ));
+                        pushed += 1;
                     }
                 }
 
-                stream_node.num_children = filtered_children.len();
-
-                // Push filtered children for the next iteration, in reverse lexicographical order
-                filtered_children.sort_unstable_by(|first, second| first.name.cmp(&second.name));
-                for subnode in filtered_children.into_iter().rev() {
-                    self.stack.push((
-                        current_path.clone(),
-                        StreamNode {
-                            node: subnode,
-                            num_children: 0, // Children nodes initially have 0, their own children count is set when *they* are processed
-                        },
-                    ));
-                }
+                stream_node.num_children = pushed;
             } else {
-                // For files or symlinks, ensure num_children is 0.
                 stream_node.num_children = 0;
             }
 
             Ok((current_path, stream_node))
         })();
+
         Some(res)
     }
 }
@@ -349,8 +349,7 @@ impl Iterator for SerializedNodeStream {
 pub struct SerializedTreeStream {
     repo: Arc<Repository>,
     stack: Vec<(PathBuf, ID)>,
-    include: Option<Vec<PathBuf>>,
-    exclude: Option<Vec<PathBuf>>,
+    filter: PathFilter,
 }
 
 impl SerializedTreeStream {
@@ -364,8 +363,7 @@ impl SerializedTreeStream {
         Ok(Self {
             repo,
             stack: vec![(base_path, *root_id)],
-            include,
-            exclude,
+            filter: PathFilter::new(include.as_deref(), exclude.as_deref()),
         })
     }
 }
@@ -378,7 +376,7 @@ impl Iterator for SerializedTreeStream {
             match self.stack.pop() {
                 None => return None,
                 Some((path, id)) => {
-                    if utils::filter_path(&path, self.include.as_ref(), self.exclude.as_ref()) {
+                    if self.filter.allow(&path) {
                         break (path, id);
                     }
                 }
@@ -393,27 +391,19 @@ impl Iterator for SerializedTreeStream {
                 )
             })?;
 
-            // Collect children (directories only)
-            let mut children = Vec::new();
-            for node in tree.nodes.iter() {
+            // Push children (dirs only), reverse order.
+            for node in tree.nodes.iter().rev() {
                 if let Some(subtree_id) = &node.tree {
                     let child_path = current_path.join(&node.name);
-                    // Filter children before pushing to the stack
-                    if utils::filter_path(&child_path, self.include.as_ref(), self.exclude.as_ref())
-                    {
-                        children.push((child_path, subtree_id));
+                    if self.filter.allow(&child_path) {
+                        self.stack.push((child_path, *subtree_id));
                     }
                 }
             }
 
-            // Push children to stack in reverse lexicographical order
-            children.sort_unstable_by(|(path1, _), (path2, _)| path1.cmp(path2));
-            for (child_path, child_id) in children.into_iter().rev() {
-                self.stack.push((child_path, *child_id));
-            }
-
             Ok((current_path, tree))
         })();
+
         Some(res)
     }
 }

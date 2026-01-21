@@ -1,8 +1,4 @@
-use std::{
-    io::Read,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{io::Read, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 
@@ -35,15 +31,14 @@ pub(crate) fn process_item(
     ),
     repo: Arc<Repository>,
     encoding_context: &mut EncodingContext,
-    progress_reporter: Arc<SnapshotProgressReporter>,
-) -> Result<Option<(PathBuf, StreamNode)>> {
-    match diff_type {
+    progress_reporter: &SnapshotProgressReporter,
+) -> Result<Option<StreamNode>> {
+    let out = match diff_type {
         NodeDiff::Deleted => {
             let prev_node =
                 prev_node.context("Deleted item but the previous node was not provided")?;
-
-            report_node_diff(&prev_node.node, diff_type, &progress_reporter);
-            Ok(None)
+            report_node_diff(&prev_node.node, diff_type, progress_reporter);
+            None
         }
 
         NodeDiff::Unchanged => {
@@ -52,46 +47,49 @@ pub(crate) fn process_item(
             let prev_node =
                 prev_node.context("Unchanged item but the previous node was not provided")?;
 
-            // Copy the list of blobs from the previous snapshot
             stream_node_info.node.blobs = prev_node.node.blobs;
 
-            // Report progress
             if stream_node_info.node.is_file() {
                 progress_reporter.processed_bytes(stream_node_info.node.metadata.size);
             }
-            report_node_diff(&stream_node_info.node, diff_type, &progress_reporter);
+            report_node_diff(&stream_node_info.node, diff_type, progress_reporter);
 
-            Ok(Some((path.to_path_buf(), stream_node_info)))
+            Some(stream_node_info)
         }
 
         NodeDiff::New | NodeDiff::Changed => {
             let mut stream_node_info =
                 next_node.context("New or changed item but the next node was not provided")?;
 
-            // If the node is a file, send it for chunking and storage.
-            // We use a BufReader with a capacity equal to the normal chunk size
-            // to balance memory usage and I/O system calls.
             if stream_node_info.node.is_file() {
-                let mut source_file = std::fs::File::open(path)?;
+                let file = open_for_sequential_read(path)?;
+                let mut reader = std::io::BufReader::with_capacity(
+                    mapache::defaults::NORMAL_CHUNK_SIZE as usize,
+                    file,
+                );
 
                 let blobs_ids = chunk_and_store_file(
                     repo,
                     encoding_context,
-                    &mut source_file,
+                    &mut reader,
                     &stream_node_info.node,
-                    progress_reporter.clone(),
+                    progress_reporter,
                 )?;
                 stream_node_info.node.blobs = Some(blobs_ids);
             }
 
-            // Report progress based on the current node and diff type
-            report_node_diff(&stream_node_info.node, diff_type, &progress_reporter);
+            report_node_diff(&stream_node_info.node, diff_type, progress_reporter);
 
-            Ok(Some((path.to_path_buf(), stream_node_info)))
+            Some(stream_node_info)
         }
-    }
+    };
+
+    progress_reporter.processed_node(path);
+
+    Ok(out)
 }
 
+#[inline]
 fn report_node_diff(
     node: &Node,
     diff_type: NodeDiff,
@@ -131,19 +129,14 @@ fn report_node_diff(
     }
 }
 
-/// Puts a file into the repository
-///
-/// This function will split the file into chunks for deduplication, which will be compressed,
-/// encrypted and stored in the repository. Files smaller than the minimum chunk size are stored
-/// directly as blobs.
+/// Split file into chunks and store blobs.
 pub(crate) fn chunk_and_store_file<R: Read>(
     repo: Arc<Repository>,
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
-    progress_reporter: Arc<SnapshotProgressReporter>,
+    progress_reporter: &SnapshotProgressReporter, // borrow
 ) -> Result<Vec<ID>> {
-    // Do not chunk if the file is smaller than the minimum chunk size
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
         return store_small_file(repo, encoding_context, reader, node, progress_reporter);
     }
@@ -173,16 +166,17 @@ pub(crate) fn chunk_and_store_file<R: Read>(
     Ok(chunk_ids)
 }
 
-/// Stores a small file as a single blob and reports progress.
 fn store_small_file<R: Read>(
     repo: Arc<Repository>,
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
-    progress_reporter: Arc<SnapshotProgressReporter>,
+    progress_reporter: &SnapshotProgressReporter, // borrow
 ) -> Result<Vec<ID>> {
-    let mut data = Vec::with_capacity(node.metadata.size as usize);
-    reader.read_to_end(&mut data)?;
+    let size = node.metadata.size as usize;
+
+    let mut data = vec![0u8; size];
+    reader.read_exact(&mut data)?;
 
     let (id, data_size, meta_size) =
         repo.encode_and_save_blob(encoding_context, BlobType::Data, data, SaveID::CalculateID)?;
@@ -192,4 +186,20 @@ fn store_small_file<R: Read>(
     progress_reporter.processed_bytes(node.metadata.size);
 
     Ok(vec![id])
+}
+
+fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(path)
+    }
 }

@@ -19,7 +19,11 @@ use crate::{
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },
-    utils::{self, size},
+    utils::{
+        self,
+        filter::{PathFilter, normalized_exclude_paths},
+        size,
+    },
 };
 
 use super::{GlobalArgs, UseSnapshot};
@@ -37,8 +41,8 @@ pub struct CmdArgs {
     pub as_root: bool,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_parser, value_delimiter = ',', required = false)]
-    pub exclude: Option<Vec<PathBuf>>,
+    #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
+    pub exclude: Option<Vec<String>>,
 
     /// Tags
     #[clap(long = "tags", value_parser, default_value_t = EMPTY_TAG_MARK.to_string())]
@@ -138,20 +142,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     // Normalize the exclude paths and filter the source paths using the excludes
-    let normalized_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &args.exclude {
-        let mut normalized_vec = Vec::new();
-        for path in exclude_paths {
-            match fs::get_absolute_normalized_path(path) {
-                Ok(normalized_path) => normalized_vec.push(normalized_path),
-                Err(e) => bail!("{path:?}: {e}"),
-            };
-        }
-        Some(normalized_vec)
-    } else {
-        None
-    };
+    let normalized_excludes: Option<Vec<PathBuf>> =
+        normalized_exclude_paths(args.exclude.as_ref())?;
+    let path_filter = PathFilter::new(None, normalized_excludes.as_deref());
 
-    absolute_source_paths.retain(|p| utils::filter_path(p, None, normalized_excludes.as_ref()));
+    absolute_source_paths.retain(|p| path_filter.allow(p));
     let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
 
     // Extract the snapshot root path

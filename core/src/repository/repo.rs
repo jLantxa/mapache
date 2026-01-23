@@ -364,7 +364,7 @@ impl Repository {
         let tx_guard = self.aggregator_tx.lock();
         let tx = tx_guard
             .as_ref()
-            .context("Aggregator not initialized. Did you call init_pack_saver?")?;
+            .context("Packer is stopped or not initialized")?;
 
         tx.send(AggregatorRequest::SaveBlob {
             id,

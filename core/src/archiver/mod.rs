@@ -164,8 +164,12 @@ fn signal_fatal_error(
     fatal_error_flag: &AtomicBool,
     msg: &str,
 ) {
-    progress_reporter.error(msg);
-    fatal_error_flag.store(true, Ordering::SeqCst);
+    let already_errored = fatal_error_flag.swap(true, Ordering::SeqCst);
+
+    if !already_errored {
+        // Only the first thread to "flip" the switch gets to log the error.
+        progress_reporter.error(msg);
+    }
 }
 
 /// Spawns a scanner thread.
@@ -196,7 +200,7 @@ fn spawn_scanner_thread(
             }
             Err(e) => {
                 progress_reporter.error(&format!(
-                    "The scanner failed to traverse the target paths: {e:#?}"
+                    "The scanner failed to traverse the target paths: {e:?}"
                 ));
                 Err(e)
             }
@@ -228,12 +232,12 @@ fn spawn_diff_thread(
                         signal_fatal_error(
                             &progress_reporter,
                             &fatal_error_flag,
-                            &format!("Archiver errored sending diff: {e:#?}"),
+                            &format!("Archiver errored sending diff: {e:?}"),
                         );
                     }
                 }
                 Err(e) => {
-                    signal_fatal_error(&progress_reporter, &fatal_error_flag, &format!("{e:#?}"));
+                    signal_fatal_error(&progress_reporter, &fatal_error_flag, &format!("{e:?}"));
                 }
             }
         }
@@ -294,7 +298,7 @@ fn spawn_processor_thread(
                                 signal_fatal_error(
                                     &progress_reporter,
                                     &fatal_error_flag,
-                                    &format!("Archiver error sending item {:?}: {e:#?}", e.0.0),
+                                    &format!("Archiver error sending item {:?}: {e:?}", e.0.0),
                                 );
                             }
                         }
@@ -303,7 +307,7 @@ fn spawn_processor_thread(
                             signal_fatal_error(
                                 &progress_reporter,
                                 &fatal_error_flag,
-                                &format!("Archiver error processing item {path:?}: {e:#?}"),
+                                &format!("Archiver error processing item {path:?}: {e:?}"),
                             );
                         }
                     }

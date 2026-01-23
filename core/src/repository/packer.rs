@@ -8,7 +8,6 @@ use anyhow::{Context, Result, bail};
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
 use rand::Rng;
-use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     backend::{Handle, StorageBackend},
@@ -329,20 +328,28 @@ impl PackSaver {
                 .build()
                 .context("Failed to build PackSaver thread pool")?;
 
-            pool.install(|| {
-                rx.into_iter()
-                    .par_bridge()
-                    .for_each(|(data, id, blob_type)| {
-                        // If we already failed,  skip doing more work
-                        if first_err_worker.lock().is_some() {
-                            return;
-                        }
-                        if let Err(e) = queue_fn(data, id, blob_type) {
-                            *first_err_worker.lock() = Some(e.context("Failed to upload pack"));
+            pool.scope(|s| {
+                while let Ok((data, id, blob_type)) = rx.recv() {
+                    // If we already failed, drain the channel but don't spawn new work
+                    if first_err_worker.lock().is_some() {
+                        continue;
+                    }
+
+                    let worker_queue_fn = Arc::clone(&queue_fn);
+                    let err_worker = Arc::clone(&first_err_worker);
+
+                    s.spawn(move |_| {
+                        if let Err(e) = worker_queue_fn(data, id, blob_type) {
+                            let mut lock = err_worker.lock();
+                            if lock.is_none() {
+                                *lock = Some(e.context("Failed to upload pack"));
+                            }
                         }
                     });
+                }
             });
 
+            // After the channel is closed and all scoped tasks finish, check for error
             if let Some(e) = first_err.lock().take() {
                 Err(e)
             } else {

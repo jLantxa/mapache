@@ -1,6 +1,9 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -16,10 +19,10 @@ use crate::{
     repository::{
         keys::KeyManager,
         lock::{Lock, LockHandle},
-        packer::{PackSaver, Packer},
+        packer::{Aggregator, AggregatorRequest, PackSaver},
         storage::{EncodingContext, SecureStorage},
     },
-    ui::{self, cli},
+    ui::{self},
     utils::collections::IdSet,
 };
 
@@ -106,13 +109,14 @@ pub struct Repository {
 
     secure_storage: Arc<SecureStorage>,
 
-    // Packers.
-    // By design, we pack blobs and trees separately so we can potentially cache trees
-    // separately.
     max_packer_size: u64,
-    data_packer: Arc<RwLock<Packer>>,
-    tree_packer: Arc<RwLock<Packer>>,
-    pack_saver: Arc<RwLock<Option<PackSaver>>>,
+    aggregator_tx: Mutex<Option<crossbeam_channel::Sender<AggregatorRequest>>>,
+    aggregator_handle: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
+
+    pub(super) raw_bytes: AtomicU64,
+    pub(super) encoded_bytes: AtomicU64,
+    pub(super) meta_raw_bytes: AtomicU64,
+    pub(super) meta_encoded_bytes: AtomicU64,
 
     master_index: Arc<MasterIndex>,
 }
@@ -298,14 +302,6 @@ impl Repository {
             false => backend,
         };
 
-        let data_packer = Arc::new(RwLock::new(Packer::new(
-            config.pack_size as usize,
-            secure_storage.clone(),
-        )?));
-        let tree_packer = Arc::new(RwLock::new(Packer::new(
-            config.pack_size as usize,
-            secure_storage.clone(),
-        )?));
         let master_index = Arc::new(MasterIndex::new());
 
         let mut repo = Repository {
@@ -318,10 +314,13 @@ impl Repository {
             locks_path: PathBuf::from(LOCKS_DIR),
             secure_storage,
             max_packer_size: config.pack_size,
-            data_packer,
-            tree_packer,
-            pack_saver: Arc::new(RwLock::new(None)),
             master_index,
+            aggregator_tx: Mutex::new(None),
+            aggregator_handle: Mutex::new(None),
+            raw_bytes: AtomicU64::new(0),
+            encoded_bytes: AtomicU64::new(0),
+            meta_raw_bytes: AtomicU64::new(0),
+            meta_encoded_bytes: AtomicU64::new(0),
         };
 
         repo.load_master_index()?;
@@ -347,16 +346,7 @@ impl Repository {
         blob_type: BlobType,
         data: Vec<u8>,
         save_id: SaveID,
-    ) -> Result<(ID, SizePair, SizePair)> {
-        let packer = match blob_type {
-            BlobType::Data => &self.data_packer,
-            BlobType::Tree => &self.tree_packer,
-            BlobType::Padding => panic!("Internal error: blob type not allowed"),
-        };
-
-        // The ID of a blob is the hash of its plaintext content.
-        // It has to be like that because the encoding appends a random 12-byte
-        // Nonce which would change the ID every time, ruining the deduplication.
+    ) -> Result<ID> {
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
             SaveID::WithID(id) => id,
@@ -365,32 +355,30 @@ impl Repository {
         let blob_exists =
             self.master_index.contains(&id) || !self.master_index.add_pending_blob(id);
 
-        // If the blob was already pending, return early, as we are finished here.
         if blob_exists {
-            return Ok((id, SizePair::zero(), SizePair::zero()));
+            return Ok(id);
         }
 
+        //  Encrypt/Compress
         let raw_length = data.len() as u64;
-        let data = self
+        let encoded_data = self
             .secure_storage
             .encode_managed(encoding_context, &data)?
             .to_vec();
-        let encoded_length = data.len() as u64;
 
-        packer.write().add_blob(id, blob_type, &data, raw_length);
+        let tx_guard = self.aggregator_tx.lock();
+        let tx = tx_guard
+            .as_ref()
+            .context("Aggregator not initialized. Did you call init_pack_saver?")?;
 
-        // Flush if the packer is considered full
-        let packer_meta_size = if packer.read().size() > self.max_packer_size {
-            self.flush_packer(packer, blob_type)?
-        } else {
-            SizePair::zero()
-        };
-
-        Ok((
+        tx.send(AggregatorRequest::SaveBlob {
             id,
-            SizePair::new(raw_length, encoded_length),
-            packer_meta_size,
-        ))
+            blob_type,
+            data: encoded_data,
+            raw_length,
+        })?;
+
+        Ok(id)
     }
 
     /// Loads a blob from the repository.
@@ -572,14 +560,6 @@ impl Repository {
 
         Ok(ids)
     }
-    /// Flushes all pending data and saves it.
-    pub fn flush(&self) -> Result<SizePair> {
-        let mut total_size = SizePair::zero();
-        total_size += self.flush_packer(&self.data_packer, BlobType::Data)?;
-        total_size += self.flush_packer(&self.tree_packer, BlobType::Tree)?;
-        total_size += self.master_index.persist(self)?;
-        Ok(total_size)
-    }
 
     /// Loads a pack.
     pub fn load_pack(&self, id: &ID) -> Result<Vec<u8>> {
@@ -704,34 +684,64 @@ impl Repository {
         self.find_with_extension(file_type, prefix, None)
     }
 
-    pub fn init_pack_saver(&self, concurrency: usize) {
+    pub fn init_pack_saver(self: &Arc<Self>, concurrency: usize) -> Result<()> {
+        let (tx, rx) = crossbeam_channel::bounded(16 * concurrency);
+
         let backend = self.backend.clone();
         let objects_path = self.objects_path.clone();
 
-        let queue_fn = move |data: Vec<u8>, id: ID, blob_type: BlobType| -> Result<()> {
+        let queue_fn = move |data: Vec<u8>, id: ID, b_type: BlobType| -> Result<()> {
             let path = Self::get_object_path(&objects_path, &id);
+            // We use a storage hint: Trees (metadata) might be handled differently by the backend
+            let handle =
+                Handle::new_with_hint(&path, ContentIdType::Pack, b_type == BlobType::Tree);
 
-            if let Err(e) = backend.write(
-                &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
-                &data,
-            ) {
-                cli::error!("Could not save pack {}: {}", id.to_hex(), e);
-                return Err(e).context(format!("Could not save pack {}", id.to_hex()));
-            }
-
-            Ok(())
+            backend
+                .write(&handle, &data)
+                .context(format!("Failed to write pack {} to backend", id.to_hex()))
         };
 
         let pack_saver = PackSaver::new(concurrency, queue_fn);
-        self.pack_saver.write().replace(pack_saver);
+        let weak_self = Arc::downgrade(self);
+        let storage = self.secure_storage.clone();
+
+        let max_packer_size = self.max_packer_size;
+
+        let handle = std::thread::spawn(move || {
+            let aggregator = Aggregator::new(rx, pack_saver, weak_self, storage, max_packer_size)?;
+            aggregator.run()
+        });
+
+        *self.aggregator_tx.lock() = Some(tx);
+        *self.aggregator_handle.lock() = Some(handle);
+
+        Ok(())
     }
 
-    pub fn finalize_pack_saver(&self) -> Result<()> {
-        let pack_saver = self.pack_saver.write().take();
-        if let Some(pack_saver) = pack_saver {
-            pack_saver.finish()?;
+    pub fn flush_and_finalize_pack_saver(&self) -> Result<(SizePair, SizePair)> {
+        // Take the sender out of the mutex and drop it to signal the Aggregator to stop
+        let tx = self.aggregator_tx.lock().take();
+        drop(tx);
+
+        // Wait for the Aggregator to finish its final flushes and exit
+        if let Some(handle) = self.aggregator_handle.lock().take() {
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("Aggregator thread panicked"))??;
         }
-        Ok(())
+
+        let index_size = self.index().persist(self)?;
+
+        let data_size = SizePair::new(
+            self.raw_bytes.load(Ordering::Relaxed),
+            self.encoded_bytes.load(Ordering::Relaxed),
+        );
+        let meta_size = SizePair::new(
+            self.meta_raw_bytes.load(Ordering::Relaxed),
+            self.meta_encoded_bytes.load(Ordering::Relaxed),
+        ) + index_size;
+
+        Ok((data_size, meta_size))
     }
 
     pub fn index(&self) -> Arc<MasterIndex> {
@@ -854,32 +864,6 @@ impl Repository {
     #[inline]
     pub fn list_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
         self.list_files_with_extension(file_type, None)
-    }
-
-    fn flush_packer(&self, packer: &Arc<RwLock<Packer>>, blob_type: BlobType) -> Result<SizePair> {
-        match packer.write().flush()? {
-            None => Ok(SizePair::zero()),
-            Some(flushed_pack) => {
-                if let Some(pack_saver) = self.pack_saver.write().as_ref() {
-                    pack_saver.save_pack(
-                        flushed_pack.data,
-                        blob_type,
-                        SaveID::WithID(flushed_pack.id),
-                    )?;
-                } else {
-                    bail!("PackSaver is not initialized. Call `init_pack_saver` first.");
-                }
-
-                let index_size =
-                    self.master_index
-                        .add_pack(self, &flushed_pack.id, flushed_pack.descriptors)?;
-
-                Ok(SizePair::new(
-                    flushed_pack.meta_size + index_size.raw,
-                    flushed_pack.meta_size + index_size.encoded,
-                ))
-            }
-        }
     }
 
     /// Load the master index from file
@@ -1098,8 +1082,7 @@ impl Repository {
 
 impl Drop for Repository {
     fn drop(&mut self) {
-        let _ = self.flush();
-        let _ = self.finalize_pack_saver();
+        let _ = self.flush_and_finalize_pack_saver();
     }
 }
 

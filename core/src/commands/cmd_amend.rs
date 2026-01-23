@@ -12,7 +12,7 @@ use crate::{
     },
     mapache::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::{
-        repo::{RepoConfig, Repository, SizePair},
+        repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, snapshot_progress::SnapshotProgressReporter},
@@ -126,8 +126,6 @@ fn amend(
     snapshot: &mut Snapshot,
     args: &CmdArgs,
 ) -> Result<()> {
-    let mut size = SizePair::zero();
-
     snapshot.summary.amends = Some(*origin_snapshot_id);
 
     if args.description.is_some() {
@@ -148,26 +146,23 @@ fn amend(
     let parsed_excludes = parse_relative_filter_paths(args.exclude.as_ref());
 
     if parsed_excludes.is_some() {
-        repo.init_pack_saver(1);
-        let progress_reporter = Arc::new(SnapshotProgressReporter::new(
-            Some(snapshot.summary.processed_items_count),
-            Some(snapshot.summary.processed_bytes),
-            1,
-        ));
+        repo.init_pack_saver(1)?;
+        let progress_reporter = Arc::new(SnapshotProgressReporter::new(None, None, 1));
         rewrite_snapshot_tree(
             repo.clone(),
             snapshot,
-            parsed_excludes,
+            parsed_excludes.as_ref(),
             false,
             None,
             progress_reporter.clone(),
         )?;
+
+        repo.flush_and_finalize_pack_saver()?;
         progress_reporter.finalize();
-        repo.finalize_pack_saver()?;
     }
 
     // Save the amended snapshot and delete the old snapshot file
-    let (new_id, meta_size) = repo.save_file(
+    let (new_id, _meta_size) = repo.save_file(
         &SaveID::CalculateID,
         serde_json::to_string(&snapshot)?.as_bytes(),
         StorageHint {
@@ -176,7 +171,6 @@ fn amend(
         },
         None,
     )?;
-    size += meta_size;
 
     // Delete the old snapshot ID if it changed
     // Note: To protect the repo from interruptions, we delete the snapshot only
@@ -189,16 +183,6 @@ fn amend(
         ui::cli::log!(
             "New snapshot ID   {}",
             new_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().green()
-        );
-        ui::cli::log!(
-            "Added to the repository: {} {}",
-            utils::format_size_binary(size.raw, 3).bold().yellow(),
-            format!(
-                "({} compressed)",
-                utils::format_size_binary(size.encoded, 3)
-            )
-            .bold()
-            .green()
         );
         ui::cli::log!(
             "Snapshot size: {} -> {}",

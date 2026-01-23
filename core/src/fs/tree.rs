@@ -11,10 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     fs::{self, node::Node},
     mapache::{BlobType, ID, SaveID},
-    repository::{
-        repo::{Repository, SizePair},
-        storage::EncodingContext,
-    },
+    repository::{repo::Repository, storage::EncodingContext},
     utils::{self, filter::PathFilter},
 };
 
@@ -36,7 +33,7 @@ impl Tree {
         &mut self,
         repo: &Repository,
         encoding_context: &mut EncodingContext,
-    ) -> Result<(ID, SizePair)> {
+    ) -> Result<ID> {
         // Sort all nodes by name before serializing
         self.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
@@ -44,16 +41,14 @@ impl Tree {
         let mut buffer = Vec::with_capacity(self.nodes.len() * 160);
         serde_json::to_writer(&mut buffer, self).context("Failed to serialize tree nodes")?;
 
-        let (id, data_size, meta_size) = repo.encode_and_save_blob(
+        let id = repo.encode_and_save_blob(
             encoding_context,
             BlobType::Tree,
             buffer,
             SaveID::CalculateID,
         )?;
 
-        let total_size = data_size + meta_size;
-
-        Ok((id, total_size))
+        Ok(id)
     }
 
     /// Load a tree from the repository.
@@ -107,7 +102,7 @@ impl FSNodeStream {
         }
 
         exclude_paths.sort_unstable();
-        let filter = PathFilter::new(None, Some(exclude_paths.as_slice()));
+        let filter = PathFilter::new(None, Some(exclude_paths));
 
         // Keep only allowed roots
         paths.retain(|p| filter.allow(p));
@@ -255,7 +250,7 @@ impl SerializedNodeStream {
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
     ) -> Result<Self> {
-        let filter = PathFilter::new(include.as_deref(), exclude.as_deref());
+        let filter = PathFilter::new(include, exclude);
         let mut stack: Vec<StreamNodeInfo> = Vec::new();
 
         if let Some(id) = root_id {
@@ -363,7 +358,7 @@ impl SerializedTreeStream {
         Ok(Self {
             repo,
             stack: vec![(base_path, *root_id)],
-            filter: PathFilter::new(include.as_deref(), exclude.as_deref()),
+            filter: PathFilter::new(include, exclude),
         })
     }
 }

@@ -19,10 +19,7 @@ use crate::{
         node::Node,
         tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
     },
-    repository::{
-        repo::{Repository, SizePair},
-        snapshot::Snapshot,
-    },
+    repository::{repo::Repository, snapshot::Snapshot},
     ui::snapshot_progress::SnapshotProgressReporter,
     utils::{self, filter::PathFilter},
 };
@@ -206,18 +203,16 @@ pub(crate) fn find_in_snapshot(
 pub(crate) fn rewrite_snapshot_tree(
     repo: Arc<Repository>,
     snapshot: &mut Snapshot,
-    excludes: Option<Vec<PathBuf>>,
+    excludes: Option<&Vec<PathBuf>>,
     rechunk: bool,
     mut rechunked_blobs_list_map: Option<&mut HashMap<Vec<ID>, Vec<ID>>>,
     progress_reporter: Arc<SnapshotProgressReporter>,
-) -> Result<SizePair> {
-    let mut bytes = SizePair::zero();
-
+) -> Result<()> {
     // Cannonicalize the exclude paths and filter the source paths using the excludes
     // This is a simulated cannonical path, since we don't refer to a path in the host,
     // but rather a relative path in the snapshot tree. We can just append the relative path
     // to the snapshot root.
-    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = &excludes {
+    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = excludes {
         let mut canonicalized_vec = Vec::new();
         for path in exclude_paths {
             canonicalized_vec.push(snapshot.root.join(path));
@@ -227,7 +222,7 @@ pub(crate) fn rewrite_snapshot_tree(
         None
     };
 
-    let path_filter = PathFilter::new(None, cannonical_excludes.as_deref());
+    let path_filter = PathFilter::new(None, cannonical_excludes.clone());
 
     let mut paths = snapshot.paths.clone();
     paths.retain(|p| path_filter.allow(p));
@@ -238,7 +233,7 @@ pub(crate) fn rewrite_snapshot_tree(
         Some(snapshot.tree),
         snapshot.root.clone(),
         None,
-        cannonical_excludes.clone(),
+        cannonical_excludes,
     )?;
 
     snapshot.summary.processed_items_count = 0;
@@ -300,18 +295,11 @@ pub(crate) fn rewrite_snapshot_tree(
         snapshot.summary.processed_items_count += 1;
 
         // The path is not excluded, so we add the node to the pending trees map.
-        bytes +=
-            tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)?;
+
+        tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)?;
     }
 
-    let _ = tree_serializer.finalize_root(&mut encoding_context)?;
-    bytes += repo.flush()?;
-
-    // Increase meta counters in snapshot summary
-    snapshot.summary.meta_raw_bytes += bytes.raw;
-    snapshot.summary.meta_encoded_bytes += bytes.encoded;
-    snapshot.summary.total_raw_bytes += bytes.raw;
-    snapshot.summary.total_encoded_bytes += bytes.encoded;
+    tree_serializer.finalize_root(&mut encoding_context)?;
 
     let root_tree_id = tree_serializer.root_tree();
     match root_tree_id {
@@ -319,7 +307,7 @@ pub(crate) fn rewrite_snapshot_tree(
         None => bail!("Failed to serialize new snapshot tree"),
     }
 
-    Ok(bytes)
+    Ok(())
 }
 
 pub enum SaveID {

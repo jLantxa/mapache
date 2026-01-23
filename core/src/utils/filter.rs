@@ -466,11 +466,11 @@ pub struct PathFilter {
 }
 
 impl PathFilter {
-    pub fn new(include: Option<&[PathBuf]>, exclude: Option<&[PathBuf]>) -> Self {
+    pub fn new(include: Option<Vec<PathBuf>>, exclude: Option<Vec<PathBuf>>) -> Self {
         let include_trie = include.map(|paths| {
             let mut t = PathTrie::with_capacity(paths.len().max(1));
             for p in paths {
-                t.insert(p);
+                t.insert(&p);
             }
             t.finalize();
             t
@@ -483,8 +483,8 @@ impl PathFilter {
                 let mut literals = Vec::new();
 
                 for p in paths {
-                    if GlobRule::has_meta(p) {
-                        globs.push(GlobRule::new(p));
+                    if GlobRule::has_meta(&p) {
+                        globs.push(GlobRule::new(&p));
                     } else {
                         estimated_nodes += p.components().count();
                         literals.push(p);
@@ -494,7 +494,7 @@ impl PathFilter {
                 let trie = if !literals.is_empty() {
                     let mut t = PathTrie::with_capacity(estimated_nodes);
                     for p in literals {
-                        t.insert(p);
+                        t.insert(&p);
                     }
                     t.finalize();
                     Some(t)
@@ -592,10 +592,9 @@ pub fn expand_include_paths(
             SerializedNodeStream::new(repo, Some(*tree_id), PathBuf::new(), None, excludes)?;
 
         for (path, stream_node) in stream.flatten() {
-            if stream_node.node.is_file() {
-                if include_rules.iter().any(|g| g.is_strict_match(&path)) {
-                    fixed_includes.push(path);
-                }
+            if stream_node.node.is_file() && include_rules.iter().any(|g| g.is_strict_match(&path))
+            {
+                fixed_includes.push(path);
             }
         }
     }
@@ -624,20 +623,23 @@ mod tests {
         assert!(filter.allow(p_abc));
 
         // --- Exclude Only ---
-        let filter = PathFilter::new(None, Some(&[PathBuf::from("/a")]));
+        let filter = PathFilter::new(None, Some(vec![PathBuf::from("/a")]));
         assert!(!filter.allow(p_abc));
         assert!(filter.allow(p_xyz));
         assert!(!filter.allow(p_img));
 
         // --- Include Only ---
-        let filter = PathFilter::new(Some(&[PathBuf::from("/a/b/c")]), None);
+        let filter = PathFilter::new(Some(vec![PathBuf::from("/a/b/c")]), None);
         assert!(filter.allow(p_abc));
         assert!(!filter.allow(p_xyz));
         assert!(filter.allow(p_ab));
         assert!(filter.allow(p_abcd));
 
         // --- Exclude vs Include Priority ---
-        let filter = PathFilter::new(Some(&[PathBuf::from("/a")]), Some(&[PathBuf::from("/a/b")]));
+        let filter = PathFilter::new(
+            Some(vec![PathBuf::from("/a")]),
+            Some(vec![PathBuf::from("/a/b")]),
+        );
         assert!(!filter.allow(p_abc));
         assert!(!filter.allow(p_ab));
         assert!(filter.allow(Path::new("/a/other.txt")));
@@ -646,7 +648,7 @@ mod tests {
     #[test]
     fn test_glob_exclude_prefix_semantics() {
         // Exclude: /a/*/c (and descendants)
-        let filter = PathFilter::new(None, Some(&[PathBuf::from("/a/*/c")]));
+        let filter = PathFilter::new(None, Some(vec![PathBuf::from("/a/*/c")]));
 
         assert!(filter.allow(Path::new("/a")));
         assert!(filter.allow(Path::new("/a/b")));
@@ -657,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_glob_exclude_overrides_glob_include() {
-        let filter = PathFilter::new(None, Some(&[PathBuf::from("/a/*/c")]));
+        let filter = PathFilter::new(None, Some(vec![PathBuf::from("/a/*/c")]));
 
         assert!(filter.allow(Path::new("/a/b")));
         assert!(!filter.allow(Path::new("/a/b/c")));

@@ -106,6 +106,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
+    repo.init_pack_saver(args.write_concurrency)?;
+
     // Get source paths from arguments or readdir root path
     let source_paths = if !args.as_root {
         args.paths.clone()
@@ -144,7 +146,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Normalize the exclude paths and filter the source paths using the excludes
     let normalized_excludes: Option<Vec<PathBuf>> =
         normalized_exclude_paths(args.exclude.as_ref())?;
-    let path_filter = PathFilter::new(None, normalized_excludes.as_deref());
+    let path_filter = PathFilter::new(None, normalized_excludes.clone());
 
     absolute_source_paths.retain(|p| path_filter.allow(p));
     let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
@@ -193,8 +195,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         reporter_clone.finalize();
         ui::cli::log!("Process interrupted. Cleaning up...");
 
-        let _ = repo_clone.flush();
-        let _ = repo_clone.finalize_pack_saver();
+        let _ = repo_clone.flush_and_finalize_pack_saver();
         lock_handle_clone.write().unlock();
     })?;
 
@@ -210,9 +211,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             description: args.description.clone(),
             no_scan: args.no_scan,
         },
-        (args.read_concurrency, args.write_concurrency),
+        args.read_concurrency,
         progress_reporter.clone(),
     )?;
+
+    // Flush repo and finalize pack saver
+    let (pack_data_size, pack_meta_size) = repo.flush_and_finalize_pack_saver()?;
 
     let should_save_snapshot = !args.skip_if_unchanged
         || parent_snapshot_pair.is_none()
@@ -228,11 +232,20 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             },
             None,
         )?;
-        progress_reporter.written_meta_bytes(snapshot_size);
         progress_reporter.finalize();
 
+        let mut snapshot_summary = progress_reporter.get_summary();
+        snapshot_summary.raw_bytes = pack_data_size.raw;
+        snapshot_summary.encoded_bytes = pack_data_size.encoded;
+        snapshot_summary.meta_raw_bytes = snapshot_size.raw + pack_meta_size.raw;
+        snapshot_summary.meta_encoded_bytes = snapshot_size.encoded + pack_meta_size.encoded;
+        snapshot_summary.total_raw_bytes =
+            snapshot_summary.raw_bytes + snapshot_summary.meta_raw_bytes;
+        snapshot_summary.total_encoded_bytes =
+            snapshot_summary.encoded_bytes + snapshot_summary.meta_encoded_bytes;
+
         // Final report
-        show_final_report(&snapshot_id, &progress_reporter.get_summary(), args);
+        show_final_report(&snapshot_id, &snapshot_summary, args);
     } else {
         progress_reporter.finalize();
         ui::cli::log!("No changes detected since parent. Skipping snapshot.");

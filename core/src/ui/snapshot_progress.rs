@@ -18,10 +18,7 @@ use rustc_hash::FxHashSet;
 use crate::{
     fs::tree::NodeDiff,
     mapache::global::GlobalOpts,
-    repository::{
-        repo::SizePair,
-        snapshot::{DiffCountsAtomic, SnapshotSummary},
-    },
+    repository::snapshot::{DiffCountsAtomic, SnapshotSummary},
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
@@ -108,10 +105,6 @@ pub struct SnapshotProgressReporter {
     // Hot-path counters
     processed_items_count: Arc<AtomicU64>,
     processed_bytes: Arc<AtomicU64>,
-    raw_bytes: Arc<AtomicU64>,
-    encoded_bytes: Arc<AtomicU64>,
-    meta_raw_bytes: Arc<AtomicU64>,
-    meta_encoded_bytes: Arc<AtomicU64>,
 
     expected_items: Arc<RwLock<Option<AtomicU64>>>,
     expected_bytes: Arc<RwLock<Option<AtomicU64>>>,
@@ -154,10 +147,6 @@ impl SnapshotProgressReporter {
         // ---------------- Hot-path counters ----------------
         let processed_items_count = Arc::new(AtomicU64::new(0));
         let processed_bytes = Arc::new(AtomicU64::new(0));
-        let raw_bytes = Arc::new(AtomicU64::new(0));
-        let encoded_bytes = Arc::new(AtomicU64::new(0));
-        let meta_raw_bytes = Arc::new(AtomicU64::new(0));
-        let meta_encoded_bytes = Arc::new(AtomicU64::new(0));
 
         let expected_items = Arc::new(RwLock::new(expected_items.map(AtomicU64::new)));
         let expected_bytes = Arc::new(RwLock::new(expected_size.map(AtomicU64::new)));
@@ -316,10 +305,6 @@ impl SnapshotProgressReporter {
         Self {
             processed_items_count,
             processed_bytes,
-            raw_bytes,
-            encoded_bytes,
-            meta_raw_bytes,
-            meta_encoded_bytes,
 
             expected_items,
             expected_bytes,
@@ -450,20 +435,6 @@ impl SnapshotProgressReporter {
     }
 
     #[inline]
-    pub fn written_data_bytes(&self, size: SizePair) {
-        self.raw_bytes.fetch_add(size.raw, Ordering::Relaxed);
-        self.encoded_bytes
-            .fetch_add(size.encoded, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn written_meta_bytes(&self, size: SizePair) {
-        self.meta_raw_bytes.fetch_add(size.raw, Ordering::Relaxed);
-        self.meta_encoded_bytes
-            .fetch_add(size.encoded, Ordering::Relaxed);
-    }
-
-    #[inline]
     pub fn new_file(&self) {
         self.diff_counts.new_files.fetch_add(1, Ordering::Relaxed);
     }
@@ -521,20 +492,15 @@ impl SnapshotProgressReporter {
     }
 
     pub fn get_summary(&self) -> SnapshotSummary {
-        let total_raw_bytes =
-            self.raw_bytes.load(Ordering::Relaxed) + self.meta_raw_bytes.load(Ordering::Relaxed);
-        let total_encoded_bytes = self.encoded_bytes.load(Ordering::Relaxed)
-            + self.meta_encoded_bytes.load(Ordering::Relaxed);
-
         SnapshotSummary {
             processed_items_count: self.processed_items_count.load(Ordering::Relaxed),
             processed_bytes: self.processed_bytes.load(Ordering::Relaxed),
-            raw_bytes: self.raw_bytes.load(Ordering::Relaxed),
-            encoded_bytes: self.encoded_bytes.load(Ordering::Relaxed),
-            meta_raw_bytes: self.meta_raw_bytes.load(Ordering::Relaxed),
-            meta_encoded_bytes: self.meta_encoded_bytes.load(Ordering::Relaxed),
-            total_raw_bytes,
-            total_encoded_bytes,
+            raw_bytes: 0,
+            encoded_bytes: 0,
+            meta_raw_bytes: 0,
+            meta_encoded_bytes: 0,
+            total_raw_bytes: 0,
+            total_encoded_bytes: 0,
             diff_counts: self.diff_counts.snapshot(),
             amends: None,
         }

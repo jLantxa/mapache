@@ -12,10 +12,7 @@ use crate::{
         tree::{StreamNode, Tree},
     },
     mapache::ID,
-    repository::{
-        repo::{Repository, SizePair},
-        storage::EncodingContext,
-    },
+    repository::{repo::Repository, storage::EncodingContext},
     utils,
 };
 
@@ -112,7 +109,7 @@ impl TreeSerializer {
         &mut self,
         (path, stream_node): (&Path, StreamNode),
         encoding_context: &mut EncodingContext,
-    ) -> Result<SizePair> {
+    ) -> Result<()> {
         let parent_path = utils::extract_parent(path)
             .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
 
@@ -158,7 +155,7 @@ impl TreeSerializer {
         dir_path: PathBuf,
         pending_tree: PendingTree,
         encoding_context: &mut EncodingContext,
-    ) -> Result<(Option<(PathBuf, Node)>, SizePair)> {
+    ) -> Result<Option<(PathBuf, Node)>> {
         if pending_tree
             .children
             .windows(2)
@@ -169,12 +166,12 @@ impl TreeSerializer {
 
         let mut completed_tree = Tree::new(pending_tree.children);
 
-        let (tree_id, size) = completed_tree.save_to_repo(&self.repo, encoding_context)?;
+        let tree_id = completed_tree.save_to_repo(&self.repo, encoding_context)?;
         let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
 
         if is_root {
             self.root_tree_id = Some(tree_id);
-            return Ok((None, size));
+            return Ok(None);
         }
 
         // Non-root case
@@ -195,14 +192,14 @@ impl TreeSerializer {
         completed_dir_node.tree = Some(tree_id);
 
         // Return the parent path and the node to be inserted there.
-        Ok((Some((parent_path, completed_dir_node)), size))
+        Ok(Some((parent_path, completed_dir_node)))
     }
 
     pub(crate) fn finalize_if_complete(
         &mut self,
         dir_path: &Path,
         encoding_context: &mut EncodingContext,
-    ) -> Result<SizePair> {
+    ) -> Result<()> {
         // Check if the directory is present and complete.
         let pending_tree_entry = self
             .pending_trees
@@ -210,7 +207,7 @@ impl TreeSerializer {
             .filter(|tree| !tree.is_pending());
 
         if pending_tree_entry.is_none() {
-            return Ok(SizePair::zero());
+            return Ok(());
         }
 
         // Now we know it's complete, remove and process.
@@ -222,7 +219,7 @@ impl TreeSerializer {
                 )
             })?;
 
-        let (parent_info_opt, size) =
+        let parent_info_opt =
             self.finalize_and_save(dir_path_key, this_pending_tree, encoding_context)?;
 
         // Recursively handle the parent if it was not the root.
@@ -231,13 +228,10 @@ impl TreeSerializer {
             self.finalize_if_complete(&parent_path, encoding_context)?;
         }
 
-        Ok(size)
+        Ok(())
     }
 
-    pub(crate) fn finalize_root(
-        &mut self,
-        encoding_context: &mut EncodingContext,
-    ) -> Result<SizePair> {
+    pub(crate) fn finalize_root(&mut self, encoding_context: &mut EncodingContext) -> Result<()> {
         let root = self.snapshot_root_path.clone();
         self.finalize_if_complete(&root, encoding_context)
     }

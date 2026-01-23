@@ -44,7 +44,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
-    repo.init_pack_saver(1);
+    repo.init_pack_saver(1)?;
 
     let start = Instant::now();
 
@@ -94,7 +94,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         progress_reporter.finalize();
     }
 
-    repo.finalize_pack_saver()?;
+    repo.flush_and_finalize_pack_saver()?;
 
     ui::cli::log!(
         "Finished in {}",

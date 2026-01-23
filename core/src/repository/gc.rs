@@ -145,12 +145,12 @@ impl Plan {
     /// Execute the plan. Calling this method consumes the plan so it cannot be
     /// executed more than once.
     pub fn execute(mut self) -> Result<i64> {
-        let mut deleted_size = 0;
-        let mut added_size = 0;
+        let mut deleted_size: i64 = 0;
+        let mut added_size: i64 = 0;
 
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
-        deleted_size += remove_expired_locks(&self.repo)?;
+        deleted_size += remove_expired_locks(&self.repo)? as i64;
 
         delete_trash_files(self.repo.backend().as_ref())?;
 
@@ -160,24 +160,23 @@ impl Plan {
             self.obsolete_packs.extend(self.small_packs.drain());
         }
 
-        deleted_size += self.delete_unused_packs()?;
+        deleted_size += self.delete_unused_packs()? as i64;
 
         // No need to repack and rewrite the indices if there are no obsolete packs
         if !self.obsolete_packs.is_empty() {
             self.repo
-                .init_pack_saver(mapache::defaults::DEFAULT_WRITE_CONCURRENCY);
+                .init_pack_saver(mapache::defaults::DEFAULT_WRITE_CONCURRENCY)?;
 
-            added_size += self.repack()?;
-            let size = self.repo.flush()?;
-            self.repo.finalize_pack_saver()?;
+            self.repack()?;
+            let (data_size, meta_size) = self.repo.flush_and_finalize_pack_saver()?;
 
-            added_size += size.encoded;
+            added_size += (data_size + meta_size).encoded as i64;
 
-            deleted_size += self.delete_old_indices()?;
-            deleted_size += self.delete_obsolete_packs()?;
+            deleted_size += self.delete_old_indices()? as i64;
+            deleted_size += self.delete_obsolete_packs()? as i64;
         }
 
-        Ok((deleted_size - added_size) as i64)
+        Ok(deleted_size - added_size)
     }
 
     /// Delete packs that contain no referenced blobs.
@@ -208,7 +207,7 @@ impl Plan {
 
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
-    fn repack(&mut self) -> Result<u64> {
+    fn repack(&mut self) -> Result<()> {
         // Collect information about ALL referenced blobs in obsolete packs.
         // We use iter_ids to find every single record (including duplicates)
         // that points into a pack scheduled for deletion.
@@ -268,8 +267,6 @@ impl Plan {
         );
         repack_bar.tick();
 
-        let added_size = AtomicU64::new(0);
-
         const REPACK_CONCURRENCY: usize = 4;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(REPACK_CONCURRENCY)
@@ -294,14 +291,13 @@ impl Plan {
 
                     // Re-encode and save the blob. SaveID::WithID ensures the same blob_id is used,
                     // and its new location is recorded in the MasterIndex.
-                    let (_id, data_size, meta_size) = self.repo.encode_and_save_blob(
+                    // let (_id, data_size, meta_size) = self.repo.encode_and_save_blob(
+                    self.repo.encode_and_save_blob(
                         ctx,
                         blob_type,
                         data,
                         SaveID::WithID(blob_id),
                     )?;
-
-                    added_size.fetch_add(data_size.encoded + meta_size.encoded, Ordering::AcqRel);
 
                     repack_bar.inc(1);
                     Ok(())
@@ -315,7 +311,7 @@ impl Plan {
             bail!("An error occurred during repacking: {e}");
         }
 
-        Ok(added_size.load(Ordering::Relaxed))
+        Ok(())
     }
 
     /// Delete old index files

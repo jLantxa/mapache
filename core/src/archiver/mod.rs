@@ -47,7 +47,7 @@ pub struct SnapshotOptions<'a> {
 pub(crate) fn snapshot(
     repo: Arc<Repository>,
     snapshot_options: SnapshotOptions,
-    (read_concurrency, write_concurrency): (usize, usize),
+    read_concurrency: usize,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Snapshot> {
     // This error flag signals a fatal error to all running threads so they can
@@ -72,8 +72,6 @@ pub(crate) fn snapshot(
         None,
         None,
     )?;
-
-    repo.init_pack_saver(write_concurrency);
 
     // Channels
     let (diff_tx, diff_rx) =
@@ -133,11 +131,6 @@ pub(crate) fn snapshot(
     if fatal_error_flag.load(Ordering::Relaxed) {
         bail!("A fatal error occurred. Aborting snapshot.");
     }
-
-    // Flush repo and finalize pack saver
-    let flushed_meta_size = repo.flush()?;
-    progress_reporter.written_meta_bytes(flushed_meta_size);
-    repo.finalize_pack_saver()?;
 
     let (hostname, username) = utils::get_system_info();
 
@@ -240,7 +233,7 @@ fn spawn_diff_thread(
                     }
                 }
                 Err(e) => {
-                    progress_reporter.error(&format!("{e:#?}"));
+                    signal_fatal_error(&progress_reporter, &fatal_error_flag, &format!("{e:#?}"));
                 }
             }
         }
@@ -298,16 +291,20 @@ fn spawn_processor_thread(
                             let processed_item: (PathBuf, StreamNode) = (path, stream_node);
 
                             if let Err(e) = process_item_tx.send(processed_item) {
-                                progress_reporter.error(&format!(
-                                    "Archiver error sending item {:?}: {e:#?}",
-                                    e.0.0
-                                ));
+                                signal_fatal_error(
+                                    &progress_reporter,
+                                    &fatal_error_flag,
+                                    &format!("Archiver error sending item {:?}: {e:#?}", e.0.0),
+                                );
                             }
                         }
                         Ok(None) => {}
                         Err(e) => {
-                            progress_reporter
-                                .error(&format!("Archiver error processing item {path:?}: {e:#?}"));
+                            signal_fatal_error(
+                                &progress_reporter,
+                                &fatal_error_flag,
+                                &format!("Archiver error processing item {path:?}: {e:#?}"),
+                            );
                         }
                     }
 
@@ -353,18 +350,16 @@ fn spawn_serializer_thread(
                 break;
             }
 
-            match tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)
+            if let Err(e) =
+                tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)
             {
-                Ok(size) => progress_reporter.written_meta_bytes(size),
-                Err(e) => {
-                    signal_fatal_error(
-                        &progress_reporter,
-                        &fatal_error_flag,
-                        &format!(
-                            "Archiver serializer thread errored handling processed item {path:?}: {e:#}"
-                        ),
-                    );
-                }
+                signal_fatal_error(
+                    &progress_reporter,
+                    &fatal_error_flag,
+                    &format!(
+                        "Archiver serializer thread errored handling processed item {path:?}: {e:#}"
+                    ),
+                );
             }
         }
 
@@ -373,14 +368,13 @@ fn spawn_serializer_thread(
         }
 
         match tree_serializer.finalize_root(&mut encoding_context) {
-            Ok(size) => {
-                progress_reporter.written_meta_bytes(size);
-                tree_serializer.root_tree()
-            }
+            Ok(_) => tree_serializer.root_tree(),
             Err(e) => {
-                progress_reporter.error(&format!(
-                    "Archiver serializer thread errored finalizing root tree: {e:#}"
-                ));
+                signal_fatal_error(
+                    &progress_reporter,
+                    &fatal_error_flag,
+                    &format!("Archiver serializer thread errored finalizing root tree: {e:#}"),
+                );
                 None
             }
         }

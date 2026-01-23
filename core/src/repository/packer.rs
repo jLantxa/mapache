@@ -1,4 +1,8 @@
-use std::{io::Write, sync::Arc, thread::JoinHandle};
+use std::{
+    io::Write,
+    sync::{Arc, Weak, atomic::Ordering},
+    thread::JoinHandle,
+};
 
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::Sender;
@@ -10,7 +14,7 @@ use crate::{
     backend::{Handle, StorageBackend},
     mapache::{BlobType, ContentIdType, ID, SaveID, defaults::FOOTER_BLOB_MULTIPLE},
     repository::{
-        repo::Repository,
+        repo::{Repository, SizePair},
         storage::{EncodingContext, SecureStorage},
     },
     utils,
@@ -135,17 +139,18 @@ impl Packer {
             return Ok(None);
         }
 
-        let footer = Self::generate_footer(&mut self.descriptors);
+        let mut data = std::mem::replace(&mut self.buffer, Vec::with_capacity(self.max_capacity));
+        let mut descriptors = std::mem::take(&mut self.descriptors);
+
+        let footer = Self::generate_footer(&mut descriptors);
+
         let encoded_footer = self
             .secure_storage
             .encode_managed(&mut self.encoding_context, &footer)?;
         let footer_len_bytes = (encoded_footer.len() as u32).to_le_bytes();
 
-        self.buffer.extend_from_slice(encoded_footer);
-        self.buffer.extend_from_slice(&footer_len_bytes);
-
-        let data = std::mem::replace(&mut self.buffer, Vec::with_capacity(self.max_capacity));
-        let descriptors = std::mem::take(&mut self.descriptors);
+        data.extend_from_slice(encoded_footer);
+        data.extend_from_slice(&footer_len_bytes);
 
         let hash = utils::calculate_hash(&data);
 
@@ -328,7 +333,7 @@ impl PackSaver {
                 rx.into_iter()
                     .par_bridge()
                     .for_each(|(data, id, blob_type)| {
-                        // If we already failed, you can skip doing more work:
+                        // If we already failed,  skip doing more work
                         if first_err_worker.lock().is_some() {
                             return;
                         }
@@ -371,6 +376,160 @@ impl PackSaver {
         self.join_handle
             .join()
             .map_err(|_| anyhow::anyhow!("PackSaver thread panicked"))?
+    }
+}
+
+pub(crate) enum AggregatorRequest {
+    SaveBlob {
+        id: ID,
+        blob_type: BlobType,
+        data: Vec<u8>,
+        raw_length: u64,
+    },
+}
+
+pub(crate) struct Aggregator {
+    rx: crossbeam_channel::Receiver<AggregatorRequest>,
+    pack_saver: PackSaver,
+    repo: Weak<Repository>,
+    data_packer: Packer,
+    tree_packer: Packer,
+    max_packer_size: u64,
+}
+
+impl Aggregator {
+    pub(crate) fn new(
+        rx: crossbeam_channel::Receiver<AggregatorRequest>,
+        pack_saver: PackSaver,
+        repo: Weak<Repository>,
+        secure_storage: Arc<SecureStorage>,
+        max_packer_size: u64,
+    ) -> Result<Self> {
+        Ok(Self {
+            rx,
+            pack_saver,
+            repo,
+            data_packer: Packer::new(max_packer_size as usize, secure_storage.clone())?,
+            tree_packer: Packer::new(max_packer_size as usize, secure_storage)?,
+            max_packer_size,
+        })
+    }
+
+    pub fn run(mut self) -> Result<()> {
+        while let Ok(request) = self.rx.recv() {
+            match request {
+                AggregatorRequest::SaveBlob {
+                    id,
+                    blob_type,
+                    data,
+                    raw_length,
+                } => {
+                    let packer = match blob_type {
+                        BlobType::Data => &mut self.data_packer,
+                        BlobType::Tree => &mut self.tree_packer,
+                        _ => continue, // Skip unsupported types or padding
+                    };
+
+                    packer.add_blob(id, blob_type, &data, raw_length);
+
+                    // Auto-flush if the packer exceeds max_packer_size
+                    if packer.size() >= self.max_packer_size {
+                        let (pack_data_size, pack_meta_size) = Self::static_flush_and_save(
+                            packer,
+                            blob_type,
+                            &self.pack_saver,
+                            &self.repo,
+                        )?;
+
+                        // Update sizes
+                        let repo = self
+                            .repo
+                            .upgrade()
+                            .ok_or_else(|| anyhow::anyhow!("Repository dropped"))?;
+
+                        repo.raw_bytes
+                            .fetch_add(pack_data_size.raw, Ordering::Relaxed);
+                        repo.encoded_bytes
+                            .fetch_add(pack_data_size.encoded, Ordering::Relaxed);
+                        repo.meta_raw_bytes
+                            .fetch_add(pack_meta_size.raw, Ordering::Relaxed);
+                        repo.meta_encoded_bytes
+                            .fetch_add(pack_meta_size.encoded, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+
+        // Final flushes when the sender is dropped (channel closed)
+        let (pack_data_packer_data_size, pack_data_packer_meta_size) = Self::static_flush_and_save(
+            &mut self.data_packer,
+            BlobType::Data,
+            &self.pack_saver,
+            &self.repo,
+        )?;
+        let (pack_tree_packer_data_size, pack_tree_packer_meta_size) = Self::static_flush_and_save(
+            &mut self.tree_packer,
+            BlobType::Tree,
+            &self.pack_saver,
+            &self.repo,
+        )?;
+
+        // Update sizes
+        let repo = self
+            .repo
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("Repository dropped"))?;
+
+        let data_size = pack_data_packer_data_size;
+        let meta_size =
+            pack_data_packer_meta_size + pack_tree_packer_data_size + pack_tree_packer_meta_size;
+
+        repo.raw_bytes.fetch_add(data_size.raw, Ordering::Relaxed);
+        repo.encoded_bytes
+            .fetch_add(data_size.encoded, Ordering::Relaxed);
+        repo.meta_raw_bytes
+            .fetch_add(meta_size.raw, Ordering::Relaxed);
+        repo.meta_encoded_bytes
+            .fetch_add(meta_size.encoded, Ordering::Relaxed);
+
+        // Signal PackSaver to wait for all pending I/O tasks to finish
+        self.pack_saver.finish()?;
+        Ok(())
+    }
+
+    /// This is now an associated function (static method).
+    /// It takes exactly the components it needs, avoiding the `&mut self` conflict.
+    fn static_flush_and_save(
+        packer: &mut Packer,
+        blob_type: BlobType,
+        pack_saver: &PackSaver,
+        repo_weak: &Weak<Repository>,
+    ) -> Result<(SizePair, SizePair)> {
+        let mut data_size = SizePair::zero();
+        let mut meta_size = SizePair::zero();
+
+        if let Some(flushed) = packer.flush()? {
+            // TODO: The flushed pack struct should contain the raw size before encoding blobs
+            let pack_data_size =
+                SizePair::new(flushed.data.len() as u64, flushed.data.len() as u64);
+
+            pack_saver.save_pack(flushed.data, blob_type, SaveID::WithID(flushed.id))?;
+
+            match blob_type {
+                BlobType::Data => data_size += pack_data_size,
+                BlobType::Tree => meta_size += pack_data_size,
+                _ => (),
+            }
+
+            meta_size += SizePair::new(flushed.meta_size, flushed.meta_size);
+
+            let repo = repo_weak
+                .upgrade()
+                .ok_or_else(|| anyhow::anyhow!("Repository dropped"))?;
+            repo.index()
+                .add_pack(&repo, &flushed.id, flushed.descriptors)?;
+        }
+        Ok((data_size, meta_size))
     }
 }
 

@@ -13,7 +13,6 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use chrono::Local;
-use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     archiver::tree_serializer::TreeSerializer,
@@ -265,20 +264,24 @@ fn spawn_processor_thread(
     process_item_tx: crossbeam_channel::Sender<(PathBuf, StreamNode)>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(read_concurrency)
-            .build()
-            .expect("Failed to create Rayon read concurrency pool");
+        let mut handles = Vec::with_capacity(read_concurrency);
 
-        pool.install(|| {
-            let _ = diff_rx.into_iter().par_bridge().try_for_each_init(
-                || {
-                    repo.get_encoding_context()
-                        .expect("Failed to create thread context")
-                },
-                |ctx, (path, prev, next, diff)| {
+        for _ in 0..read_concurrency {
+            let rx = diff_rx.clone();
+            let repo = repo.clone();
+            let progress_reporter = progress_reporter.clone();
+            let fatal_error_flag = fatal_error_flag.clone();
+            let snapshot_root_path = snapshot_root_path.clone();
+            let process_item_tx = process_item_tx.clone();
+
+            handles.push(std::thread::spawn(move || {
+                let mut ctx = repo
+                    .get_encoding_context()
+                    .expect("Failed to create thread context");
+
+                while let Ok((path, prev, next, diff)) = rx.recv() {
                     if fatal_error_flag.load(Ordering::Relaxed) {
-                        return Err(());
+                        break;
                     }
 
                     let stripped_path = strip_prefix(&path, &snapshot_root_path);
@@ -287,19 +290,17 @@ fn spawn_processor_thread(
                     match processor::process_item(
                         (path.as_path(), prev, next, diff),
                         repo.clone(),
-                        ctx,
+                        &mut ctx,
                         progress_reporter.as_ref(),
                     ) {
                         Ok(Some(stream_node)) => {
-                            // re-wrap with the owned PathBuf for the channel
-                            let processed_item: (PathBuf, StreamNode) = (path, stream_node);
-
-                            if let Err(e) = process_item_tx.send(processed_item) {
+                            if let Err(e) = process_item_tx.send((path, stream_node)) {
                                 signal_fatal_error(
                                     &progress_reporter,
                                     &fatal_error_flag,
                                     &format!("Archiver error sending item {:?}: {e:?}", e.0.0),
                                 );
+                                break;
                             }
                         }
                         Ok(None) => {}
@@ -309,13 +310,18 @@ fn spawn_processor_thread(
                                 &fatal_error_flag,
                                 &format!("Archiver error processing item {path:?}: {e:?}"),
                             );
+                            break;
                         }
                     }
+                }
+            }));
+        }
 
-                    Ok(())
-                },
-            );
-        });
+        drop(process_item_tx); // allow serializer to terminate when workers finish
+
+        for h in handles {
+            let _ = h.join();
+        }
     })
 }
 

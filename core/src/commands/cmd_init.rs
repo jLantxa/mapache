@@ -1,4 +1,5 @@
 use anyhow::Result;
+use anyhow::bail;
 use clap::Args;
 use colored::Colorize;
 
@@ -15,9 +16,14 @@ use super::GlobalArgs;
 pub struct CmdArgs {}
 
 pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
+    // Create the repository root
+    if backend.root_exists() {
+        bail!("Cannot initialize a repository because a directory already exists");
+    }
+
+    let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let manifest = Repository::init(auth.as_ref(), global_args.key.as_ref(), backend.clone())?;
 
     ui::cli::log!(

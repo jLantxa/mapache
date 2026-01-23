@@ -133,11 +133,6 @@ impl Repository {
             None => &ui::cli::request_new_auth(),
         };
 
-        // Create the repository root
-        if backend.root_exists() {
-            bail!("Could not initialize a repository because a directory already exists");
-        }
-
         backend
             .create()
             .context("Could not create root directory")?;

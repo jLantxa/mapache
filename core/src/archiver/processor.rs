@@ -12,6 +12,7 @@ use crate::{
     mapache::{self, BlobType, ID, SaveID},
     repository::{repo::Repository, storage::EncodingContext},
     ui::snapshot_progress::SnapshotProgressReporter,
+    utils::size,
 };
 
 /// Reusable chunker instance.
@@ -63,10 +64,15 @@ pub(crate) fn process_item(
 
             if stream_node_info.node.is_file() {
                 let file = open_for_sequential_read(path)?;
-                let mut reader = std::io::BufReader::with_capacity(
-                    mapache::defaults::NORMAL_CHUNK_SIZE as usize,
-                    file,
-                );
+
+                // Allocate a BufReader with dynamic size
+                // The compiler seems to like this linear logic more than std::cmd::min()
+                let file_size = stream_node_info.node.metadata.size;
+                let mut reader = if file_size < size::MiB {
+                    std::io::BufReader::with_capacity(file_size as usize, file)
+                } else {
+                    std::io::BufReader::with_capacity(size::MiB as usize, file)
+                };
 
                 let blobs_ids = chunk_and_store_file(
                     repo,
@@ -135,7 +141,7 @@ pub(crate) fn chunk_and_store_file<R: Read>(
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
-    progress_reporter: &SnapshotProgressReporter, // borrow
+    progress_reporter: &SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
         return store_small_file(repo, encoding_context, reader, node, progress_reporter);
@@ -169,7 +175,7 @@ fn store_small_file<R: Read>(
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
-    progress_reporter: &SnapshotProgressReporter, // borrow
+    progress_reporter: &SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     let size = node.metadata.size as usize;
 

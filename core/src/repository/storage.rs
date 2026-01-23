@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use aes_gcm_siv::{AeadInPlace, Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
@@ -61,82 +59,104 @@ impl SecureStorage {
         Ok(EncodingContext::new(compressor))
     }
 
-    pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut ctx = self.get_encoding_context()?;
-        let compressed_slice = self.compress_managed(&mut ctx, data)?;
-        Ok(compressed_slice.to_vec())
+    fn transform_into(&self, ctx: Option<&mut EncodingContext>, data: &[u8]) -> Result<Vec<u8>> {
+        let bound = if ctx.is_some() {
+            zstd::zstd_safe::compress_bound(data.len())
+        } else {
+            data.len()
+        };
+
+        let has_cipher = self.cipher.is_some();
+        let prefix_len = if has_cipher { AES_GCM_NONCE_LEN } else { 0 };
+        let suffix_len = if has_cipher { AES_GCM_TAG_LEN } else { 0 };
+
+        let mut out = Vec::with_capacity(prefix_len + bound + suffix_len);
+
+        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
+        if has_cipher {
+            OsRng.try_fill_bytes(&mut nonce_bytes)?;
+            out.extend_from_slice(&nonce_bytes);
+        }
+
+        let data_start = out.len();
+        if let Some(c) = ctx {
+            let spare = out.spare_capacity_mut();
+            let dest =
+                unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, bound) };
+            let n = c
+                .compressor
+                .compress_to_buffer(data, dest)
+                .map_err(|e| anyhow!("zstd failed: {e}"))?;
+            unsafe {
+                out.set_len(data_start + n);
+            }
+        } else {
+            out.extend_from_slice(data);
+        }
+
+        if let Some(cipher) = &self.cipher {
+            let payload_mut = &mut out[data_start..];
+            let tag = cipher
+                .encrypt_in_place_detached(Nonce::from_slice(&nonce_bytes), b"", payload_mut)
+                .map_err(|_| anyhow!("encryption failed"))?;
+            out.extend_from_slice(tag.as_slice());
+        }
+
+        Ok(out)
     }
 
-    /// Compress with an EncodingContext
-    pub fn compress_managed<'a>(
-        &self,
-        ctx: &'a mut EncodingContext,
-        data: &[u8],
-    ) -> Result<&'a [u8]> {
-        let bound = zstd::zstd_safe::compress_bound(data.len());
+    /// Compresses data and returns an owned Vec.
+    pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut ctx = self.get_encoding_context()?;
+        self.compress_managed(&mut ctx, data)
+    }
 
-        // Resize the buffer to `bound` elements without allocation.
-        // The compressor will write to the buffer later.
-        ctx.compression_buf.clear();
-        if ctx.compression_buf.capacity() < bound {
-            ctx.compression_buf.reserve(bound);
-        }
-        unsafe { ctx.compression_buf.set_len(bound) };
-
-        let n = ctx
-            .compressor
-            .compress_to_buffer(data, &mut ctx.compression_buf)
-            .map_err(|e| anyhow!("zstd compress failed: {e}"))?;
-        ctx.compression_buf.truncate(n);
-
-        Ok(&ctx.compression_buf)
+    /// Compress using a reusable context. Returns owned Vec.
+    pub fn compress_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
+        let temp_ss = Self {
+            compression_level: self.compression_level,
+            cipher: None,
+        };
+        temp_ss.transform_into(Some(ctx), data)
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut decoder = zstd::Decoder::new(data)?;
-        let mut decompressed = Vec::with_capacity(data.len());
-        decoder.read_to_end(&mut decompressed)?;
+        let mut decompressed = Vec::with_capacity(data.len() * 2);
+        zstd::stream::copy_decode(data, &mut decompressed)?;
         Ok(decompressed)
     }
 
-    fn encrypt_into<'a>(&self, out: &'a mut Vec<u8>, data: &[u8]) -> Result<&'a [u8]> {
+    /// Logic for encryption into a provided vector.
+    fn encrypt_into(&self, data: &[u8]) -> Result<Vec<u8>> {
         let Some(cipher) = &self.cipher else {
-            out.clear();
-            out.extend_from_slice(data);
-            return Ok(out.as_slice());
+            return Ok(data.to_vec());
         };
 
         let total = AES_GCM_NONCE_LEN + data.len() + AES_GCM_TAG_LEN;
+        let mut out = Vec::with_capacity(total);
 
-        // Resize the buffer without allocations
-        out.clear();
-        if out.capacity() < total {
-            out.reserve(total);
-        }
-        unsafe { out.set_len(total) };
-
-        let (nonce_bytes, rest) = out.split_at_mut(AES_GCM_NONCE_LEN);
+        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
         OsRng
-            .try_fill_bytes(nonce_bytes)
+            .try_fill_bytes(&mut nonce_bytes)
             .map_err(|e| anyhow!("rng failed: {e}"))?;
 
-        let (payload, tag_out) = rest.split_at_mut(data.len());
-        payload.copy_from_slice(data);
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(data);
 
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let payload_mut = &mut out[AES_GCM_NONCE_LEN..];
+        let nonce = Nonce::from_slice(&nonce_bytes);
         let tag = cipher
-            .encrypt_in_place_detached(nonce, b"", payload)
+            .encrypt_in_place_detached(nonce, b"", payload_mut)
             .map_err(|_| anyhow!("encryption failed"))?;
-        tag_out.copy_from_slice(tag.as_slice());
 
-        Ok(out.as_slice())
+        out.extend_from_slice(tag.as_slice());
+
+        Ok(out)
     }
 
     #[inline]
     pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(AES_GCM_NONCE_LEN + data.len() + AES_GCM_TAG_LEN);
-        self.encrypt_into(&mut out, data)?;
-        Ok(out)
+        self.transform_into(None, data)
     }
 
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
@@ -154,17 +174,28 @@ impl SecureStorage {
             .map_err(|_| anyhow!("decryption failed"))
     }
 
-    /// Encrypt with an EncodingContext
-    #[inline]
-    pub fn encrypt_managed<'a>(
-        &self,
-        ctx: &'a mut EncodingContext,
-        data: &'a [u8],
-    ) -> Result<&'a [u8]> {
-        self.encrypt_into(&mut ctx.encryption_buf, data)
+    /// Encrypt using a context (though buffers are no longer held).
+    ///  #[inline]
+    pub fn encrypt_managed(&self, _ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt_into(data)
     }
 
-    /// Derive a key from a password and salt (Argon2id)
+    pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut ctx = self.get_encoding_context()?;
+        self.encode_managed(&mut ctx, data)
+    }
+
+    /// Encrypt with an EncodingContext
+    #[inline]
+    pub fn encode_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
+        self.transform_into(Some(ctx), data)
+    }
+
+    pub fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let decrypted = self.decrypt(data)?;
+        self.decompress(&decrypted)
+    }
+
     pub fn derive_key<const KEY_LEN: usize>(
         password: &str,
         salt: &[u8],
@@ -178,33 +209,7 @@ impl SecureStorage {
         Ok(key)
     }
 
-    /// compress → encrypt
-    pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut ctx = self.get_encoding_context()?;
-        let encoded_slice = self.encode_managed(&mut ctx, data)?;
-        Ok(encoded_slice.to_vec())
-    }
-
-    /// compress → encrypt with an EncodingContext
-    pub fn encode_managed<'a>(
-        &self,
-        ctx: &'a mut EncodingContext,
-        data: &[u8],
-    ) -> Result<&'a [u8]> {
-        self.compress_managed(ctx, data)?;
-        if self.cipher.is_none() {
-            return Ok(&ctx.compression_buf);
-        }
-        self.encrypt_into(&mut ctx.encryption_buf, &ctx.compression_buf)
-    }
-
-    /// decrypt → decompress
-    pub fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let decrypted = self.decrypt(data)?;
-        self.decompress(&decrypted)
-    }
-
-    /// Generate a cryptographically random salt
+    /// Generate a cryptographically strong salt using the OS random source.
     pub fn generate_salt<const LENGTH: usize>() -> [u8; LENGTH] {
         let mut salt = [0u8; LENGTH];
         OsRng.try_fill_bytes(&mut salt).expect("OS RNG failed");
@@ -214,17 +219,11 @@ impl SecureStorage {
 
 pub struct EncodingContext {
     compressor: zstd::bulk::Compressor<'static>,
-    compression_buf: Vec<u8>,
-    encryption_buf: Vec<u8>,
 }
 
 impl EncodingContext {
     fn new(compressor: zstd::bulk::Compressor<'static>) -> Self {
-        Self {
-            compressor,
-            compression_buf: Vec::with_capacity(2 * mapache::defaults::NORMAL_CHUNK_SIZE as usize),
-            encryption_buf: Vec::with_capacity(2 * mapache::defaults::NORMAL_CHUNK_SIZE as usize),
-        }
+        Self { compressor }
     }
 }
 
@@ -296,7 +295,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_encode_decode_with_compression_and_key() -> Result<()> {
         let key = TEST_KEY;
         let ss = SecureStorage::new()
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&key);
 
         let ciphertext = ss.encode(TEXT)?;
@@ -342,7 +341,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_encode_decode_no_key_with_compression() -> Result<()> {
-        let ss = SecureStorage::new().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+        let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
         let encoded_data = ss.encode(TEXT)?;
         let decoded_data = ss.decode(&encoded_data)?;
@@ -387,7 +386,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_encode_decode_managed() -> Result<()> {
         let key = TEST_KEY;
         let ss = SecureStorage::new()
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&key);
 
         let mut ectx = ss.get_encoding_context()?;

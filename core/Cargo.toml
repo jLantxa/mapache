@@ -22,6 +22,7 @@ filetime = "0.2.27"
 hostname = "0.4.2"
 indicatif = { version = "0.18.3", features = ["rayon"] }
 libc = { version = "0.2.180" }
+mimalloc = { version = "0.1.48", features = ["override"] }
 num_cpus = "1.17.0"
 num_enum = "0.7.5"
 parking_lot = "0.12.5"

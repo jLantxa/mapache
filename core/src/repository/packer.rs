@@ -148,7 +148,7 @@ impl Packer {
             .encode_managed(&mut self.encoding_context, &footer)?;
         let footer_len_bytes = (encoded_footer.len() as u32).to_le_bytes();
 
-        data.extend_from_slice(encoded_footer);
+        data.extend_from_slice(&encoded_footer);
         data.extend_from_slice(&footer_len_bytes);
 
         let hash = utils::calculate_hash(&data);

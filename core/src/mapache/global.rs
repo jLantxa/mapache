@@ -11,6 +11,11 @@ use crate::{
     },
 };
 
+/// Use mimalloc, but only on Windows. On Linux this leads to a higher RAM use.
+#[cfg(target_os = "windows")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Base OS directories (cache, home, etc.)
 pub static BASE_DIRS: LazyLock<RwLock<BaseDirs>> = LazyLock::new(|| {
     RwLock::new(

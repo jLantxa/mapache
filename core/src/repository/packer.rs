@@ -315,41 +315,41 @@ impl PackSaver {
     where
         F: Fn(Vec<u8>, ID, BlobType) -> Result<()> + Send + Sync + 'static,
     {
-        let (tx, rx) = crossbeam_channel::bounded(concurrency);
+        let (tx, rx) = crossbeam_channel::bounded::<(Vec<u8>, ID, BlobType)>(concurrency);
 
-        let first_err: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
-        let first_err_worker = Arc::clone(&first_err);
-
+        let first_err = Arc::new(Mutex::new(None));
         let queue_fn = Arc::new(queue_fn);
 
         let join_handle = std::thread::spawn(move || -> Result<()> {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(concurrency)
-                .build()
-                .context("Failed to build PackSaver thread pool")?;
+            let mut workers = Vec::with_capacity(concurrency);
 
-            pool.scope(|s| {
-                while let Ok((data, id, blob_type)) = rx.recv() {
-                    // If we already failed, drain the channel but don't spawn new work
-                    if first_err_worker.lock().is_some() {
-                        continue;
-                    }
+            for _ in 0..concurrency {
+                let rx = rx.clone();
+                let queue_fn = queue_fn.clone();
+                let first_err = Arc::clone(&first_err);
 
-                    let worker_queue_fn = Arc::clone(&queue_fn);
-                    let err_worker = Arc::clone(&first_err_worker);
+                workers.push(std::thread::spawn(move || {
+                    while let Ok((data, id, blob_type)) = rx.recv() {
+                        if first_err.lock().is_some() {
+                            return; // Early exit on failure
+                        }
 
-                    s.spawn(move |_| {
-                        if let Err(e) = worker_queue_fn(data, id, blob_type) {
-                            let mut lock = err_worker.lock();
+                        if let Err(e) = queue_fn(data, id, blob_type) {
+                            let mut lock = first_err.lock();
                             if lock.is_none() {
                                 *lock = Some(e.context("Failed to upload pack"));
                             }
+                            return;
                         }
-                    });
-                }
-            });
+                    }
+                }));
+            }
 
-            // After the channel is closed and all scoped tasks finish, check for error
+            // Wait for all workers to finish their current tasks
+            for worker in workers {
+                let _ = worker.join();
+            }
+
             if let Some(e) = first_err.lock().take() {
                 Err(e)
             } else {

@@ -13,7 +13,7 @@
 - Big optimizations in the Archiver pipeline buffering to promote Zero-Copy for
   massive gains in performance. Mapache has traditionally been slow when
   processing many small files. This weakness seems to have been eliminated.
-- Using the `mimalloc` allocator.
+- Using the `mimalloc` allocator on Windows.
 
 ### v0.1.4
 

@@ -48,7 +48,7 @@ impl SecureStorage {
             .map_err(|e| anyhow!("zstd init failed: {e}"))?;
 
         // Use a maximum back-reference window the size of the biggest chunk.
-        const ZSTD_WINDOW_LOG: u32 = mapache::defaults::MAX_CHUNK_SIZE
+        const ZSTD_WINDOW_LOG: u32 = mapache::defaults::NORMAL_CHUNK_SIZE
             .saturating_sub(1)
             .next_power_of_two()
             .ilog2();
@@ -175,7 +175,7 @@ impl SecureStorage {
     }
 
     /// Encrypt using a context (though buffers are no longer held).
-    ///  #[inline]
+    #[inline]
     pub fn encrypt_managed(&self, _ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
         self.encrypt_into(data)
     }

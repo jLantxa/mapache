@@ -3,9 +3,6 @@ use colored::Colorize;
 
 use mapache::{commands, ui};
 
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 fn main() -> Result<()> {
     // Parse arguments and execute commands
     if let Err(e) = commands::parse_and_run() {

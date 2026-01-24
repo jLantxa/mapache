@@ -10,8 +10,8 @@ use parking_lot::Mutex;
 use rand::Rng;
 
 use crate::{
-    backend::{Handle, StorageBackend},
-    mapache::{BlobType, ContentIdType, ID, defaults::FOOTER_BLOB_MULTIPLE},
+    backend::{Handle, StorageBackend, StorageHint},
+    mapache::{BlobType, ContentIdType, ID, SaveID, defaults::FOOTER_BLOB_MULTIPLE},
     repository::{
         repo::Repository,
         storage::{EncodingContext, SecureStorage},
@@ -371,45 +371,56 @@ impl PackSaver {
     ///
     /// # Arguments
     /// * `upload_fn` - A closure or function that defines how a finalized pack is written to storage.
-    pub(crate) fn new<F>(
+    pub(crate) fn new(
         rx: crossbeam_channel::Receiver<PackSaverRequest>,
-        repo: Weak<Repository>,
+        repo_weak: Weak<Repository>,
         secure_storage: Arc<SecureStorage>,
         max_packer_size: u64,
-        concurrency: usize,
-        upload_fn: F,
-    ) -> Result<Self>
-    where
-        F: Fn(Vec<u8>, ID, BlobType) -> Result<()> + Send + Sync + 'static,
-    {
+        write_concurrency: usize,
+    ) -> Result<Self> {
         let (worker_tx, worker_rx) =
-            crossbeam_channel::bounded::<(Vec<u8>, ID, BlobType)>(concurrency);
+            crossbeam_channel::bounded::<(Vec<u8>, ID, BlobType)>(write_concurrency);
         let first_err = Arc::new(Mutex::new(None));
-        let upload_fn = Arc::new(upload_fn);
+        let worker_repo_weak_clone = repo_weak.clone();
 
         let worker_handle = std::thread::spawn(move || -> Result<()> {
-            let mut threads = Vec::with_capacity(concurrency);
-            for _ in 0..concurrency {
+            let mut workers = Vec::with_capacity(write_concurrency);
+            for _ in 0..write_concurrency {
                 let rx = worker_rx.clone();
-                let upload = upload_fn.clone();
                 let err_ptr = Arc::clone(&first_err);
 
-                threads.push(std::thread::spawn(move || {
+                let repo_weak_clone = worker_repo_weak_clone.clone();
+
+                workers.push(std::thread::spawn(move || -> Result<()> {
                     while let Ok((data, id, b_type)) = rx.recv() {
                         if err_ptr.lock().is_some() {
-                            return;
+                            return Ok(());
                         }
-                        if let Err(e) = upload(data, id, b_type) {
+
+                        let repo = repo_weak_clone.upgrade().context("Repository dropped")?;
+                        let save_id = SaveID::WithID(id);
+
+                        if let Err(e) = repo.save_file(
+                            &save_id,
+                            &data,
+                            StorageHint {
+                                file_type: ContentIdType::Pack,
+                                is_metadata: b_type == BlobType::Tree,
+                            },
+                            None,
+                        ) {
                             let mut lock = err_ptr.lock();
                             if lock.is_none() {
                                 *lock = Some(e.context("Upload failed"));
                             }
-                            return;
+                            return Ok(());
                         }
                     }
+
+                    Ok(())
                 }));
             }
-            for t in threads {
+            for t in workers {
                 let _ = t.join();
             }
             first_err.lock().take().map_or(Ok(()), Err)
@@ -417,7 +428,7 @@ impl PackSaver {
 
         Ok(Self {
             rx,
-            repo: repo.clone(),
+            repo: repo_weak,
             data_packer: Packer::new(max_packer_size as usize, secure_storage.clone())?,
             tree_packer: Packer::new(max_packer_size as usize, secure_storage)?,
             max_packer_size,

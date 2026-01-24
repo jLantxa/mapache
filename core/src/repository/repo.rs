@@ -721,42 +721,19 @@ impl Repository {
         self.find_with_extension(file_type, prefix, None)
     }
 
-    pub fn init_pack_saver(self: &Arc<Self>, concurrency: usize) -> Result<()> {
-        // The main channel for the rest of the app to send blobs to the PackSaver
-        let (tx, rx) = crossbeam_channel::bounded(16 * concurrency);
-
-        let backend = self.backend.clone();
-        let objects_path = self.objects_path.clone();
-
-        // This closure is passed into the PackSaver to be used by its internal worker pool
-        let upload_fn = move |data: Vec<u8>, id: ID, b_type: BlobType| -> Result<()> {
-            let path = Self::get_object_path(&objects_path, &id);
-            let handle =
-                Handle::new_with_hint(&path, ContentIdType::Pack, b_type == BlobType::Tree);
-
-            backend
-                .write(&handle, &data)
-                .context(format!("Failed to write pack {} to backend", id.to_hex()))
-        };
+    pub fn init_pack_saver(self: &Arc<Self>, write_concurrency: usize) -> Result<()> {
+        let (tx, rx) = crossbeam_channel::bounded(16 * write_concurrency);
 
         let weak_self = Arc::downgrade(self);
         let storage = self.secure_storage.clone();
         let max_packer_size = self.max_packer_size;
 
-        // Spawn the unified PackSaver thread
         let handle = std::thread::spawn(move || {
-            let pack_saver = PackSaver::new(
-                rx,
-                weak_self,
-                storage,
-                max_packer_size,
-                concurrency,
-                upload_fn,
-            )?;
+            let pack_saver =
+                PackSaver::new(rx, weak_self, storage, max_packer_size, write_concurrency)?;
             pack_saver.run()
         });
 
-        // Store the sender and thread handle in the Repository
         *self.pack_saver_tx.lock() = Some(tx);
         *self.pack_saver_handle.lock() = Some(handle);
 
@@ -764,7 +741,7 @@ impl Repository {
     }
 
     pub fn flush_and_finalize_pack_saver(&self) -> Result<RepoStatsSnapshot> {
-        // Signal PackSaver to stop
+        // Signal PackSaver to stop by dropping the channel
         let tx = self.pack_saver_tx.lock().take();
         drop(tx);
 
@@ -774,8 +751,8 @@ impl Repository {
                 .map_err(|_| anyhow::anyhow!("Pack saver thread panicked"))??;
         }
 
-        // Persist index and add its size to meta stats
         let index_size = self.index().persist(self)?;
+
         self.stats
             .meta_raw_bytes
             .fetch_add(index_size.raw, Ordering::Relaxed);
@@ -783,7 +760,6 @@ impl Repository {
             .meta_encoded_bytes
             .fetch_add(index_size.encoded, Ordering::Relaxed);
 
-        // Return the full snapshot
         Ok(self.stats.snapshot())
     }
 

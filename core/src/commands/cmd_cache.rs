@@ -55,6 +55,7 @@ fn list(cache_base: &Path) -> Result<()> {
     ]);
 
     let mut num_directories = 0;
+    let mut total_cache_size = 0;
 
     for entry in std::fs::read_dir(cache_base)? {
         let entry = entry?;
@@ -79,6 +80,7 @@ fn list(cache_base: &Path) -> Result<()> {
                     utils::format_size_binary(size, 3),
                 ]);
                 num_directories += 1;
+                total_cache_size += size;
             }
             Err(e) => ui::cli::warning!("Error calculating size for {}: {}", path.display(), e),
         }
@@ -89,8 +91,9 @@ fn list(cache_base: &Path) -> Result<()> {
     }
 
     println!(
-        "{} in {:?}",
+        "{} ({}) in {:?}",
         utils::format_count(num_directories, "directory", "directories"),
+        utils::format_size_binary(total_cache_size, 3),
         cache_base
     );
 
@@ -196,7 +199,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     }
 
     println!(
-        "\nCleanup complete: {}, {} freed.",
+        "\nCleanup complete: {} ({}) freed.",
         utils::format_count(num_deleted, "repo cache", "repo caches"),
         utils::format_size_binary(freed, 3).green().bold()
     );

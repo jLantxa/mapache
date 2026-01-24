@@ -4,18 +4,19 @@
 
 ### Changes
 
-- The compression level is now configurable. Added a `--compression` global
-  option to control the compression level.
-- `--include` and `--exclude` now accept patterns. For example,
-  `--exclude **/*.jpg` would exclude all .jpg files in every folder.
 - Added an aggregator stage to the Archiver pipeline to receive blobs from the
   processor threads and pack them in parallel.
 - Big optimizations in the Archiver pipeline buffering to promote Zero-Copy for
   massive gains in performance. Mapache has traditionally been slow when
   processing many small files. This weakness seems to have been eliminated.
+- The compression level is now configurable. Added a `--compression` global
+  option to control the compression level.
+- `--include` and `--exclude` now accept patterns. For example,
+  `--exclude **/*.jpg` would exclude all .jpg files in every folder.
 - Using the `mimalloc` allocator on Windows.
+- `mapache cache` now displays the total size of the local cache.
 
-### v0.1.4
+## v0.1.4
 
 ### Changes
 

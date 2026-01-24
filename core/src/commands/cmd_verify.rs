@@ -102,7 +102,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     repo_ref.as_ref(),
                     backend_ref.as_ref(),
                     secure_storage_ref.as_ref(),
-                    pack_id,
+                    &pack_id,
                 );
 
                 bar.inc(1);

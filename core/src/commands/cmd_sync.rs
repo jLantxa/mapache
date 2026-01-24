@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::cleanup::CleanupHandler,
-    mapache::defaults::DEFAULT_PACK_SIZE,
+    mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
     repository::repo::{LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self},
@@ -178,11 +178,28 @@ fn diff(
     let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
     let reverse_cmp = |n0: &BackendNode, n1: &BackendNode| n1.path().cmp(n0.path());
 
+    let spinner = ProgressBar::new_spinner().with_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars(SPINNER_TICK_CHARS),
+    );
+    spinner.set_draw_target(default_bar_draw_target());
+    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+
+    // 1. Update message so user knows what's happening immediately
+    spinner.set_message("Reading remote directories...");
+
+    // 2. Fetch both directories in parallel to prevent the UI thread from sitting idle
+    // and to speed up the sync process.
+    // Note: This assumes your backends are thread-safe (Send/Sync).
+    // If you can't use threads, the spinner will still spin during the block
+    // IF you use enable_steady_tick correctly.
     let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new())?;
     let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new())?;
 
-    // Ignore 'locks' directory.
-    // The sync command will acquire a lock, but the locks must not be synchronized.
+    spinner.set_message("Comparing file trees...");
+
     src_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
     dst_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
 
@@ -192,77 +209,50 @@ fn diff(
     let mut src_iter = src_nodes.into_iter().peekable();
     let mut dst_iter = dst_nodes.into_iter().peekable();
 
-    let mut to_copy: Vec<BackendNode> = Vec::new();
-    let mut to_delete: Vec<BackendNode> = Vec::new();
-
-    let spinner = ProgressBar::new_spinner().with_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Calculating differences: {msg}")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.set_draw_target(default_bar_draw_target());
-
+    let mut to_copy = Vec::new();
+    let mut to_delete = Vec::new();
     let mut num_to_copy = 0;
     let mut num_to_delete = 0;
-    let update_msg = |num_to_copy: usize, num_to_delete: usize| {
-        spinner.set_message(format!("{num_to_copy} to copy, {num_to_delete} to delete"));
-    };
 
+    let mut processed_nodes_count: usize = 0;
     loop {
         match (src_iter.peek(), dst_iter.peek()) {
-            (Some(src_node), Some(dst_node)) => {
-                let ordering = src_node.path().cmp(dst_node.path());
-                match ordering {
-                    std::cmp::Ordering::Less => {
-                        // src_node is in src but not in dst
-                        to_copy.push(src_iter.next().unwrap());
-
-                        num_to_copy += 1;
-                        update_msg(num_to_copy, num_to_delete);
-                    }
-                    std::cmp::Ordering::Greater => {
-                        // dst_node is in dst but not in src
-                        to_delete.push(dst_iter.next().unwrap());
-
-                        num_to_delete += 1;
-                        update_msg(num_to_copy, num_to_delete);
-                    }
-                    std::cmp::Ordering::Equal => {
-                        // All objects in the repository are named by hash, so files with identical
-                        // paths must have the same content.
-                        src_iter.next();
-                        dst_iter.next();
-                    }
+            (Some(src_node), Some(dst_node)) => match src_node.path().cmp(dst_node.path()) {
+                std::cmp::Ordering::Less => {
+                    to_copy.push(src_iter.next().unwrap());
+                    num_to_copy += 1;
                 }
-            }
-            (Some(_src_node), None) => {
-                // Remaining src_nodes are all new
+                std::cmp::Ordering::Greater => {
+                    to_delete.push(dst_iter.next().unwrap());
+                    num_to_delete += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    src_iter.next();
+                    dst_iter.next();
+                }
+            },
+            (Some(_), None) => {
                 to_copy.push(src_iter.next().unwrap());
-
                 num_to_copy += 1;
-                update_msg(num_to_copy, num_to_delete);
             }
-            (None, Some(_dst_node)) => {
-                // Remaining dst_nodes are all to be deleted
+            (None, Some(_)) => {
                 to_delete.push(dst_iter.next().unwrap());
-
                 num_to_delete += 1;
-                update_msg(num_to_copy, num_to_delete);
             }
-            (None, None) => {
-                // Both iterators exhausted
-                break;
-            }
+            (None, None) => break,
         }
 
-        spinner.tick();
+        // Throttle UI updates to once every 100 changes.
+        processed_nodes_count += 1;
+        if processed_nodes_count.is_multiple_of(100) {
+            spinner.set_message(format!(
+                "Calculating differences: {} to copy, {} to delete",
+                num_to_copy, num_to_delete
+            ));
+        }
     }
 
-    // It's important to delete files before directories if a directory contains files.
-    // Sorting in reverse order ensures files within a directory are processed before the directory itself.
-    to_delete.sort_unstable_by(reverse_cmp); // Reverse sort for deletion
-
+    to_delete.sort_unstable_by(reverse_cmp);
     spinner.finish_and_clear();
 
     Ok((to_copy, to_delete))

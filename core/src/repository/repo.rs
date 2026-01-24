@@ -19,7 +19,7 @@ use crate::{
     repository::{
         keys::KeyManager,
         lock::{Lock, LockHandle},
-        packer::{Aggregator, AggregatorRequest, PackSaver},
+        packer::{PackSaver, PackSaverRequest},
         storage::{EncodingContext, SecureStorage},
     },
     ui::{self},
@@ -47,7 +47,7 @@ pub(crate) const REPO_DROPPED_EXTENSION: &str = "dropped";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 
-#[derive(Debug)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct SizePair {
     pub raw: u64,
     pub encoded: u64,
@@ -96,29 +96,74 @@ pub struct RepoConfig {
     pub(crate) compression: Compression,
 }
 
+#[derive(Debug, Default)]
+pub struct RepoStats {
+    pub raw_bytes: AtomicU64,
+    pub encoded_bytes: AtomicU64,
+    pub blobs_count: AtomicU64,
+
+    pub meta_raw_bytes: AtomicU64,
+    pub meta_encoded_bytes: AtomicU64,
+    pub meta_blobs_count: AtomicU64,
+
+    pub unique_blobs: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RepoStatsSnapshot {
+    pub data: SizePair,
+    pub meta: SizePair,
+    pub total: SizePair,
+    pub blobs: u64,
+    pub meta_blobs: u64,
+    pub total_blobs: u64,
+    pub unique_blobs: u64,
+}
+
+impl RepoStats {
+    pub fn snapshot(&self) -> RepoStatsSnapshot {
+        let rb = self.raw_bytes.load(Ordering::Relaxed);
+        let eb = self.encoded_bytes.load(Ordering::Relaxed);
+        let mrb = self.meta_raw_bytes.load(Ordering::Relaxed);
+        let meb = self.meta_encoded_bytes.load(Ordering::Relaxed);
+        let bc = self.blobs_count.load(Ordering::Relaxed);
+        let mbc = self.meta_blobs_count.load(Ordering::Relaxed);
+
+        RepoStatsSnapshot {
+            data: SizePair::new(rb, eb),
+            meta: SizePair::new(mrb, meb),
+            total: SizePair::new(rb + mrb, eb + meb),
+            blobs: bc,
+            meta_blobs: mbc,
+            total_blobs: bc + mbc,
+            unique_blobs: self.unique_blobs.load(Ordering::Relaxed),
+        }
+    }
+}
+
 pub struct Repository {
     manifest: Manifest,
 
+    // Storage
     backend: Arc<dyn StorageBackend>,
+    secure_storage: Arc<SecureStorage>,
 
+    // Paths
     objects_path: PathBuf,
     snapshot_path: PathBuf,
     index_path: PathBuf,
     keys_path: PathBuf,
     locks_path: PathBuf,
 
-    secure_storage: Arc<SecureStorage>,
-
-    max_packer_size: u64,
-    aggregator_tx: Mutex<Option<crossbeam_channel::Sender<AggregatorRequest>>>,
-    aggregator_handle: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
-
-    pub(super) raw_bytes: AtomicU64,
-    pub(super) encoded_bytes: AtomicU64,
-    pub(super) meta_raw_bytes: AtomicU64,
-    pub(super) meta_encoded_bytes: AtomicU64,
-
     master_index: Arc<MasterIndex>,
+
+    // Packing
+    max_packer_size: u64,
+    pack_saver_tx: Mutex<Option<crossbeam_channel::Sender<PackSaverRequest>>>,
+    pack_saver_handle: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
+
+    // Stats
+    pub(super) stats: RepoStats,
 }
 
 impl Repository {
@@ -310,12 +355,9 @@ impl Repository {
             secure_storage,
             max_packer_size: config.pack_size,
             master_index,
-            aggregator_tx: Mutex::new(None),
-            aggregator_handle: Mutex::new(None),
-            raw_bytes: AtomicU64::new(0),
-            encoded_bytes: AtomicU64::new(0),
-            meta_raw_bytes: AtomicU64::new(0),
-            meta_encoded_bytes: AtomicU64::new(0),
+            pack_saver_tx: Mutex::new(None),
+            pack_saver_handle: Mutex::new(None),
+            stats: RepoStats::default(),
         };
 
         repo.load_master_index()?;
@@ -361,12 +403,12 @@ impl Repository {
             .encode_managed(encoding_context, &data)?
             .to_vec();
 
-        let tx_guard = self.aggregator_tx.lock();
+        let tx_guard = self.pack_saver_tx.lock();
         let tx = tx_guard
             .as_ref()
             .context("Packer is stopped or not initialized")?;
 
-        tx.send(AggregatorRequest::SaveBlob {
+        tx.send(PackSaverRequest::SaveBlob {
             id,
             blob_type,
             data: encoded_data,
@@ -680,14 +722,15 @@ impl Repository {
     }
 
     pub fn init_pack_saver(self: &Arc<Self>, concurrency: usize) -> Result<()> {
+        // The main channel for the rest of the app to send blobs to the PackSaver
         let (tx, rx) = crossbeam_channel::bounded(16 * concurrency);
 
         let backend = self.backend.clone();
         let objects_path = self.objects_path.clone();
 
-        let queue_fn = move |data: Vec<u8>, id: ID, b_type: BlobType| -> Result<()> {
+        // This closure is passed into the PackSaver to be used by its internal worker pool
+        let upload_fn = move |data: Vec<u8>, id: ID, b_type: BlobType| -> Result<()> {
             let path = Self::get_object_path(&objects_path, &id);
-            // We use a storage hint: Trees (metadata) might be handled differently by the backend
             let handle =
                 Handle::new_with_hint(&path, ContentIdType::Pack, b_type == BlobType::Tree);
 
@@ -696,47 +739,52 @@ impl Repository {
                 .context(format!("Failed to write pack {} to backend", id.to_hex()))
         };
 
-        let pack_saver = PackSaver::new(concurrency, queue_fn);
         let weak_self = Arc::downgrade(self);
         let storage = self.secure_storage.clone();
-
         let max_packer_size = self.max_packer_size;
 
+        // Spawn the unified PackSaver thread
         let handle = std::thread::spawn(move || {
-            let aggregator = Aggregator::new(rx, pack_saver, weak_self, storage, max_packer_size)?;
-            aggregator.run()
+            let pack_saver = PackSaver::new(
+                rx,
+                weak_self,
+                storage,
+                max_packer_size,
+                concurrency,
+                upload_fn,
+            )?;
+            pack_saver.run()
         });
 
-        *self.aggregator_tx.lock() = Some(tx);
-        *self.aggregator_handle.lock() = Some(handle);
+        // Store the sender and thread handle in the Repository
+        *self.pack_saver_tx.lock() = Some(tx);
+        *self.pack_saver_handle.lock() = Some(handle);
 
         Ok(())
     }
 
-    pub fn flush_and_finalize_pack_saver(&self) -> Result<(SizePair, SizePair)> {
-        // Take the sender out of the mutex and drop it to signal the Aggregator to stop
-        let tx = self.aggregator_tx.lock().take();
+    pub fn flush_and_finalize_pack_saver(&self) -> Result<RepoStatsSnapshot> {
+        // Signal PackSaver to stop
+        let tx = self.pack_saver_tx.lock().take();
         drop(tx);
 
-        // Wait for the Aggregator to finish its final flushes and exit
-        if let Some(handle) = self.aggregator_handle.lock().take() {
+        if let Some(handle) = self.pack_saver_handle.lock().take() {
             handle
                 .join()
-                .map_err(|_| anyhow::anyhow!("Aggregator thread panicked"))??;
+                .map_err(|_| anyhow::anyhow!("Pack saver thread panicked"))??;
         }
 
+        // Persist index and add its size to meta stats
         let index_size = self.index().persist(self)?;
+        self.stats
+            .meta_raw_bytes
+            .fetch_add(index_size.raw, Ordering::Relaxed);
+        self.stats
+            .meta_encoded_bytes
+            .fetch_add(index_size.encoded, Ordering::Relaxed);
 
-        let data_size = SizePair::new(
-            self.raw_bytes.load(Ordering::Relaxed),
-            self.encoded_bytes.load(Ordering::Relaxed),
-        );
-        let meta_size = SizePair::new(
-            self.meta_raw_bytes.load(Ordering::Relaxed),
-            self.meta_encoded_bytes.load(Ordering::Relaxed),
-        ) + index_size;
-
-        Ok((data_size, meta_size))
+        // Return the full snapshot
+        Ok(self.stats.snapshot())
     }
 
     pub fn index(&self) -> Arc<MasterIndex> {

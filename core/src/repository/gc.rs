@@ -168,9 +168,9 @@ impl Plan {
                 .init_pack_saver(mapache::defaults::DEFAULT_WRITE_CONCURRENCY)?;
 
             self.repack()?;
-            let (data_size, meta_size) = self.repo.flush_and_finalize_pack_saver()?;
+            let repo_stats = self.repo.flush_and_finalize_pack_saver()?;
 
-            added_size += (data_size + meta_size).encoded as i64;
+            added_size += (repo_stats.data + repo_stats.meta).encoded as i64;
 
             deleted_size += self.delete_old_indices()? as i64;
             deleted_size += self.delete_obsolete_packs()? as i64;

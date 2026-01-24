@@ -216,7 +216,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )?;
 
     // Flush repo and finalize pack saver
-    let (pack_data_size, pack_meta_size) = repo.flush_and_finalize_pack_saver()?;
+    let repo_stats = repo.flush_and_finalize_pack_saver()?;
 
     let should_save_snapshot = !args.skip_if_unchanged
         || parent_snapshot_pair.is_none()
@@ -235,10 +235,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         progress_reporter.finalize();
 
         let mut snapshot_summary = progress_reporter.get_summary();
-        snapshot_summary.raw_bytes = pack_data_size.raw;
-        snapshot_summary.encoded_bytes = pack_data_size.encoded;
-        snapshot_summary.meta_raw_bytes = snapshot_size.raw + pack_meta_size.raw;
-        snapshot_summary.meta_encoded_bytes = snapshot_size.encoded + pack_meta_size.encoded;
+        snapshot_summary.raw_bytes = repo_stats.data.raw;
+        snapshot_summary.encoded_bytes = repo_stats.data.encoded;
+        snapshot_summary.meta_raw_bytes = snapshot_size.raw + repo_stats.meta.raw;
+        snapshot_summary.meta_encoded_bytes = snapshot_size.encoded + repo_stats.meta.encoded;
         snapshot_summary.total_raw_bytes =
             snapshot_summary.raw_bytes + snapshot_summary.meta_raw_bytes;
         snapshot_summary.total_encoded_bytes =

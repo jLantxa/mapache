@@ -200,7 +200,7 @@ impl RestoreProgressReporter {
     pub fn processed_item(&self, path: &Path) {
         let total = self.processed_items_count.fetch_add(1, Ordering::Relaxed) + 1;
         // Periodic sync to keep internal ETA logic fresh without hammering Mutex
-        if total % 10 == 0 {
+        if total.is_multiple_of(10) {
             self.companion_bar.set_position(total);
         }
 

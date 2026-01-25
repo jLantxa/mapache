@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use crate::{
     fs::{
@@ -110,9 +110,6 @@ impl TreeSerializer {
         (path, stream_node): (&Path, StreamNode),
         encoding_context: &mut EncodingContext,
     ) -> Result<()> {
-        let parent_path = utils::extract_parent(path)
-            .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
-
         // Determine the directory path that will receive the finalized node.
         let target_dir_path = if stream_node.node.is_dir() {
             // If the processed item is a directory (NodeType::Directory),
@@ -136,15 +133,18 @@ impl TreeSerializer {
                     .reserve(stream_node.num_children - pending.children.len());
             }
 
-            path
+            path.to_path_buf()
         } else {
             // For non-directory nodes (Files, Symlinks, etc.), we finalize the item
             // and insert it into the parent's PendingTree.
+            let parent_path = utils::extract_parent(path)
+                .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
+
             self.insert_finalized_node(&parent_path, stream_node.node);
-            &parent_path
+            parent_path
         };
 
-        self.finalize_if_complete(target_dir_path, encoding_context)
+        self.finalize_if_complete(&target_dir_path, encoding_context)
     }
 
     // Helper function to encapsulate the core finalization and serialization logic,
@@ -156,6 +156,18 @@ impl TreeSerializer {
         pending_tree: PendingTree,
         encoding_context: &mut EncodingContext,
     ) -> Result<Option<(PathBuf, Node)>> {
+        // Invariant check: Ensure we actually have the expected number of children
+        if let ExpectedChildren::Known(expected) = pending_tree.num_expected_children {
+            let actual = pending_tree.children.len();
+            ensure!(
+                actual == expected,
+                "Integrity error for {}: expected {} children but got {}",
+                dir_path.display(),
+                expected,
+                actual
+            );
+        }
+
         if pending_tree
             .children
             .windows(2)
@@ -166,7 +178,10 @@ impl TreeSerializer {
 
         let mut completed_tree = Tree::new(pending_tree.children);
 
-        let tree_id = completed_tree.save_to_repo(&self.repo, encoding_context)?;
+        let tree_id = completed_tree
+            .save_to_repo(&self.repo, encoding_context)
+            .with_context(|| format!("Failed to save tree for {}", dir_path.display()))?;
+
         let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
 
         if is_root {
@@ -201,12 +216,12 @@ impl TreeSerializer {
         encoding_context: &mut EncodingContext,
     ) -> Result<()> {
         // Check if the directory is present and complete.
-        let pending_tree_entry = self
+        let is_complete = self
             .pending_trees
             .get(dir_path)
-            .filter(|tree| !tree.is_pending());
+            .is_some_and(|tree| !tree.is_pending());
 
-        if pending_tree_entry.is_none() {
+        if !is_complete {
             return Ok(());
         }
 

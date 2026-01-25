@@ -39,22 +39,28 @@ impl Tree {
 
         // Reserve some space for each node's text. This value is a heuristic.
         let mut buffer = Vec::with_capacity(self.nodes.len() * 160);
-        serde_json::to_writer(&mut buffer, self).context("Failed to serialize tree nodes")?;
+        serde_json::to_writer(&mut buffer, self)
+            .context("Failed to serialize tree nodes to JSON")?;
 
-        let id = repo.encode_and_save_blob(
-            encoding_context,
-            BlobType::Tree,
-            buffer,
-            SaveID::CalculateID,
-        )?;
+        let id = repo
+            .encode_and_save_blob(
+                encoding_context,
+                BlobType::Tree,
+                buffer,
+                SaveID::CalculateID,
+            )
+            .context("Failed to save tree blob to repository")?;
 
         Ok(id)
     }
 
     /// Load a tree from the repository.
     pub fn load_from_repo(repo: &Repository, root_id: &ID) -> Result<Tree> {
-        let tree_object = repo.load_blob(root_id)?;
-        let tree: Tree = serde_json::from_slice(&tree_object)?;
+        let tree_object = repo
+            .load_blob(root_id)
+            .with_context(|| format!("Failed to load tree blob with ID {root_id}"))?;
+        let tree: Tree = serde_json::from_slice(&tree_object)
+            .with_context(|| format!("Failed to deserialize tree with ID {root_id}"))?;
         Ok(tree)
     }
 }
@@ -97,7 +103,7 @@ impl FSNodeStream {
     pub fn from_paths(mut paths: Vec<PathBuf>, mut exclude_paths: Vec<PathBuf>) -> Result<Self> {
         for path in &paths {
             if !fs::path_exists(path) {
-                bail!("Path {} does not exist", path.display());
+                bail!("Path {} does not exist or is inaccessible", path.display());
             }
         }
 
@@ -146,9 +152,10 @@ impl FSNodeStream {
     fn fill_children_sorted(&mut self, dir: &Path) -> Result<()> {
         self.scratch.clear();
 
-        let rd = std::fs::read_dir(dir).with_context(|| format!("Cannot read {:?}.", dir))?;
+        let rd = std::fs::read_dir(dir)
+            .with_context(|| format!("Cannot read directory contents of {:?}", dir))?;
         for e in rd {
-            let e = e?;
+            let e = e.with_context(|| format!("Error reading directory entry in {:?}", dir))?;
             self.scratch.push((e.file_name(), e));
         }
 
@@ -163,34 +170,39 @@ impl Iterator for FSNodeStream {
 
     fn next(&mut self) -> Option<Self::Item> {
         // We only need a loop to skip filtered items.
-        while let (Some(_), _) | (_, Some(_)) = (self.intermediate_paths.last(), self.stack.last())
-        {
+        while self.intermediate_paths.last().is_some() || self.stack.last().is_some() {
             // Choose next item in full-path lexical order:
             let take_intermediate = match (self.intermediate_paths.last(), self.stack.last()) {
-                (None, None) => unreachable!(),
+                (None, None) => unreachable!("Loop condition ensures one is Some"),
                 (Some(_), None) => true,
                 (None, Some(_)) => false,
                 (Some((ip, _)), Some((sp, _))) => ip < sp,
             };
 
             if take_intermediate {
-                let (path, num_children) = self.intermediate_paths.pop().unwrap();
+                let (path, num_children) = self.intermediate_paths.pop().expect("Verified Some");
                 if !self.filter.allow(&path) {
                     continue;
                 }
                 return Some(
-                    Node::from_path(&path).map(|node| (path, StreamNode { node, num_children })),
+                    Node::from_path(&path)
+                        .with_context(|| {
+                            format!("Failed to create node from path {}", path.display())
+                        })
+                        .map(|node| (path, StreamNode { node, num_children })),
                 );
             }
 
             // Pop next path
-            let (path, mut stream_node) = self.stack.pop().unwrap();
+            let (path, mut stream_node) = self.stack.pop().expect("Verified Some");
             if !self.filter.allow(&path) {
                 continue;
             }
 
             return Some((|| {
-                let node = Node::from_path(&path)?;
+                let node = Node::from_path(&path).with_context(|| {
+                    format!("Failed to create node from path {}", path.display())
+                })?;
                 stream_node.node = node;
 
                 if stream_node.node.is_dir() {
@@ -203,7 +215,10 @@ impl Iterator for FSNodeStream {
                             continue;
                         }
 
-                        let child_node = Node::from_dir_entry(&child_path, e)?;
+                        let child_node =
+                            Node::from_dir_entry(&child_path, e).with_context(|| {
+                                format!("Failed to read node info for {}", child_path.display())
+                            })?;
                         self.stack.push((
                             child_path,
                             StreamNode {
@@ -254,8 +269,12 @@ impl SerializedNodeStream {
         let mut stack: Vec<StreamNodeInfo> = Vec::new();
 
         if let Some(id) = root_id {
-            let tree = Tree::load_from_repo(repo.as_ref(), &id)
-                .with_context(|| format!("Failed to load root tree with ID {id}"))?;
+            let tree = Tree::load_from_repo(repo.as_ref(), &id).with_context(|| {
+                format!(
+                    "Failed to load root tree with ID {id} at base path {}",
+                    base_path.display()
+                )
+            })?;
 
             // Tree nodes are expected to be sorted by name on disk (save_to_repo does it).
             // We push in reverse so pop() yields lexicographically smallest first.
@@ -300,7 +319,13 @@ impl Iterator for SerializedNodeStream {
 
         let res = (|| {
             if let Some(subtree_id) = &stream_node.node.tree {
-                let subtree = Tree::load_from_repo(self.repo.as_ref(), subtree_id)?;
+                let subtree =
+                    Tree::load_from_repo(self.repo.as_ref(), subtree_id).with_context(|| {
+                        format!(
+                            "Failed to load subtree {subtree_id} for path {}",
+                            current_path.display()
+                        )
+                    })?;
 
                 let mut pushed = 0usize;
 
@@ -468,14 +493,14 @@ where
         match (&self.head_prev, &self.head_next) {
             (None, None) => None,
             (Some(Err(_)), _) => {
-                let err = self.head_prev.take().unwrap();
+                let err = self.head_prev.take().expect("Verified Some");
                 self.head_prev = self.prev.next();
-                Some(Err(err.unwrap_err()))
+                Some(Err(err.unwrap_err()).context("Error in 'previous' stream"))
             }
             (_, Some(Err(_))) => {
-                let err = self.head_next.take().unwrap();
+                let err = self.head_next.take().expect("Verified Some");
                 self.head_next = self.next.next();
-                Some(Err(err.unwrap_err()))
+                Some(Err(err.unwrap_err()).context("Error in 'next' stream"))
             }
             (Some(Ok(item_a_ref)), Some(Ok(item_b_ref))) => {
                 let path_a = &item_a_ref.0;
@@ -575,27 +600,27 @@ pub fn find_serialized_node(
         return Ok(None);
     }
 
-    let components: Vec<&str> = path
-        .components()
-        .map(|c| c.as_os_str().to_str().unwrap_or_default())
-        .collect();
-
     let mut current_tree_id: ID = *base_tree_id;
+    let mut components = path.components().peekable();
 
-    for (i, component) in components.iter().enumerate() {
+    while let Some(component) = components.next() {
+        let name = component
+            .as_os_str()
+            .to_str()
+            .ok_or_else(|| anyhow!("Path component contains invalid UTF-8: {:?}", component))?;
+
         let tree = Tree::load_from_repo(repo, &current_tree_id)?;
 
-        match tree
-            .nodes
-            .binary_search_by(|n| n.name.as_str().cmp(component))
-        {
+        match tree.nodes.binary_search_by(|n| n.name.as_str().cmp(name)) {
             Ok(idx) => {
                 let node = &tree.nodes[idx];
-                if i == components.len() - 1 {
+                if components.peek().is_none() {
                     return Ok(Some(node.clone()));
                 } else {
                     current_tree_id = node.tree.ok_or_else(|| {
-                        anyhow!("'{component}' is not a directory in tree {current_tree_id}")
+                        anyhow!(
+                            "Path component '{name}' is not a directory in tree {current_tree_id}"
+                        )
                     })?;
                 }
             }
@@ -611,23 +636,6 @@ pub fn find_serialized_node(
 /// `SerializedNodeDataReader` exposes the contents of a `Node` as a
 /// single, contiguous byte stream, implementing [`std::io::Read`] so it
 /// can be consumed like a regular file.
-///
-/// The node’s data is stored in the repository as a sequence of blobs
-/// (arbitrary-sized chunks). This reader transparently stitches those
-/// blobs together in logical order, allowing callers to read across blob
-/// boundaries without needing to know how the data is chunked.
-///
-/// The reader:
-/// - keeps only **one blob** in memory at a time, making it suitable for
-///   very large files (gigabytes or terabytes);
-/// - uses prefix offsets to quickly determine which blob contains a given
-///   position;
-/// - loads each blob at most once during sequential reading;
-/// - maintains an internal cursor (`pos`) representing the global offset
-///   within the virtual file.
-///
-/// This adapter is intended for sequential reading patterns, but works
-/// correctly with any consumer of the `Read` trait.
 pub struct SerializedNodeDataReader {
     repo: Arc<Repository>,
 
@@ -650,29 +658,27 @@ impl SerializedNodeDataReader {
         let blobs = node
             .blobs
             .as_ref()
-            .ok_or_else(|| anyhow!("Node has no blobs"))?;
+            .ok_or_else(|| anyhow!("Node has no blobs and cannot be read as data"))?;
 
         // Lookup raw blob lengths from the index.
         let index = repo.index();
 
-        let blob_lengths: Vec<u32> = blobs
-            .iter()
-            .map(|id| index.get(id).expect("Blob must exist in index").raw_length)
-            .collect();
-
-        // Compute the prefix sums
-        let mut prefix = Vec::with_capacity(blob_lengths.len() + 1);
+        let mut prefix = Vec::with_capacity(blobs.len() + 1);
         prefix.push(0);
         let mut acc = 0u64;
-        for &len in &blob_lengths {
-            acc += len as u64;
+
+        for id in blobs {
+            let entry = index
+                .get(id)
+                .ok_or_else(|| anyhow!("Blob {id} not found in repository index"))?;
+            acc += entry.raw_length as u64;
             prefix.push(acc);
         }
 
         Ok(Self {
             repo,
             blob_ids: blobs.clone(),
-            blob_prefix: prefix.clone(),
+            blob_prefix: prefix,
             total_length: acc,
 
             pos: 0,
@@ -694,7 +700,10 @@ impl SerializedNodeDataReader {
     /// Ensure the blob at `idx` is loaded into `current_blob`.
     fn ensure_blob_loaded(&mut self, idx: usize) -> Result<()> {
         if idx != self.current_blob_idx {
-            let blob = self.repo.load_blob(&self.blob_ids[idx])?;
+            let blob = self
+                .repo
+                .load_blob(&self.blob_ids[idx])
+                .with_context(|| format!("Failed to load data blob {}", self.blob_ids[idx]))?;
             self.current_blob = blob;
             self.current_blob_idx = idx;
         }
@@ -716,7 +725,7 @@ impl Read for SerializedNodeDataReader {
 
             // Load the blob if needed
             self.ensure_blob_loaded(idx)
-                .map_err(std::io::Error::other)?;
+                .map_err(|_| std::io::ErrorKind::Other)?;
 
             // Compute offset inside this blob
             let blob_start = self.blob_prefix[idx];

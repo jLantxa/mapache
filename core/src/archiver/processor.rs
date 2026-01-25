@@ -36,57 +36,57 @@ pub(crate) fn process_item(
 ) -> Result<Option<StreamNode>> {
     let out = match diff_type {
         NodeDiff::Deleted => {
-            let prev_node =
-                prev_node.context("Deleted item but the previous node was not provided")?;
-            report_node_diff(&prev_node.node, diff_type, progress_reporter);
+            let prev = prev_node.with_context(|| {
+                format!("Inconsistent state: Deleted diff but no prev_node for {path:?}")
+            })?;
+            report_node_diff(&prev.node, diff_type, progress_reporter);
             None
         }
 
         NodeDiff::Unchanged => {
-            let mut stream_node_info =
-                next_node.context("Unchanged item but the next node was not provided")?;
-            let prev_node =
-                prev_node.context("Unchanged item but the previous node was not provided")?;
+            let mut next = next_node.with_context(|| {
+                format!("Inconsistent state: Unchanged diff but no next_node for {path:?}")
+            })?;
+            let prev = prev_node.with_context(|| {
+                format!("Inconsistent state: Unchanged diff but no prev_node for {path:?}")
+            })?;
 
-            stream_node_info.node.blobs = prev_node.node.blobs;
+            next.node.blobs = prev.node.blobs;
 
-            if stream_node_info.node.is_file() {
-                progress_reporter.processed_bytes(stream_node_info.node.metadata.size);
+            if next.node.is_file() {
+                progress_reporter.processed_bytes(next.node.metadata.size);
             }
-            report_node_diff(&stream_node_info.node, diff_type, progress_reporter);
-
-            Some(stream_node_info)
+            report_node_diff(&next.node, diff_type, progress_reporter);
+            Some(next)
         }
 
         NodeDiff::New | NodeDiff::Changed => {
-            let mut stream_node_info =
-                next_node.context("New or changed item but the next node was not provided")?;
+            let mut next = next_node.with_context(|| {
+                format!("Inconsistent state: New/Changed diff but no next_node for {path:?}")
+            })?;
 
-            if stream_node_info.node.is_file() {
-                let file = open_for_sequential_read(path)?;
+            if next.node.is_file() {
+                let file = open_for_sequential_read(path)
+                    .with_context(|| format!("Failed to open: {}", path.display()))?;
 
-                // Allocate a BufReader with dynamic size
-                // The compiler seems to like this linear logic more than std::cmd::min()
-                let file_size = stream_node_info.node.metadata.size;
-                let mut reader = if file_size < size::MiB {
-                    std::io::BufReader::with_capacity(file_size as usize, file)
-                } else {
-                    std::io::BufReader::with_capacity(size::MiB as usize, file)
-                };
+                let file_size = next.node.metadata.size;
+                let capacity = (file_size as usize).min(size::MiB as usize);
+                let mut reader = std::io::BufReader::with_capacity(capacity, file);
 
                 let blobs_ids = chunk_and_store_file(
                     repo,
                     encoding_context,
                     &mut reader,
-                    &stream_node_info.node,
+                    &next.node,
                     progress_reporter,
-                )?;
-                stream_node_info.node.blobs = Some(blobs_ids);
+                )
+                .with_context(|| format!("Failed to process blobs for: {}", path.display()))?;
+
+                next.node.blobs = Some(blobs_ids);
             }
 
-            report_node_diff(&stream_node_info.node, diff_type, progress_reporter);
-
-            Some(stream_node_info)
+            report_node_diff(&next.node, diff_type, progress_reporter);
+            Some(next)
         }
     };
 

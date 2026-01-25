@@ -11,6 +11,9 @@ use crate::{
     },
 };
 
+pub const THIS_MAPACHE_VERSION: &str =
+    concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO_PKG_VERSION"));
+
 /// Use mimalloc, but only on Windows. On Linux this leads to a higher RAM use.
 #[cfg(target_os = "windows")]
 #[global_allocator]

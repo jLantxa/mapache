@@ -15,7 +15,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::{
     fs::tree::NodeDiff,
     mapache::global::GlobalOpts,
-    repository::snapshot::{DiffCountsAtomic, SnapshotSummary},
+    repository::snapshot::{DiffCounts, DiffCountsAtomic},
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self},
 };
@@ -53,6 +53,12 @@ fn ui_loop(rx: Receiver<UiEvent>, spinners: Vec<ProgressBar>) {
             }
         }
     }
+}
+
+pub(crate) struct SnapshotProcessSummary {
+    pub processed_items_count: u64,
+    pub processed_bytes: u64,
+    pub diff_counts: DiffCounts,
 }
 
 pub struct SnapshotProgressReporter {
@@ -427,18 +433,11 @@ impl SnapshotProgressReporter {
         let _ = self.mp.println(format!("{} {msg}", "Error:".bold().red()));
     }
 
-    pub fn get_summary(&self) -> SnapshotSummary {
-        SnapshotSummary {
+    pub(crate) fn summary(&self) -> SnapshotProcessSummary {
+        SnapshotProcessSummary {
             processed_items_count: self.processed_items_count.load(Ordering::Relaxed),
             processed_bytes: self.processed_bytes.load(Ordering::Relaxed),
-            raw_bytes: 0,
-            encoded_bytes: 0,
-            meta_raw_bytes: 0,
-            meta_encoded_bytes: 0,
-            total_raw_bytes: 0,
-            total_encoded_bytes: 0,
             diff_counts: self.diff_counts.snapshot(),
-            amends: None,
         }
     }
 }
@@ -513,7 +512,7 @@ mod tests {
         reporter.new_dir();
         reporter.error("Test error");
 
-        let summary = reporter.get_summary();
+        let summary = reporter.summary();
         assert_eq!(summary.processed_bytes, 500);
         assert_eq!(summary.diff_counts.new_files, 1);
         assert_eq!(summary.diff_counts.new_dirs, 1);

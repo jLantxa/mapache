@@ -17,10 +17,10 @@ use chrono::Local;
 use crate::{
     archiver::tree_serializer::TreeSerializer,
     fs::tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
-    mapache::ID,
+    mapache::{ID, global::THIS_MAPACHE_VERSION},
     repository::{
         repo::Repository,
-        snapshot::{Snapshot, SnapshotPair},
+        snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
     },
     ui::snapshot_progress::SnapshotProgressReporter,
     utils,
@@ -178,9 +178,10 @@ pub(crate) fn snapshot(
             paths: snapshot_options.absolute_source_paths,
             hostname,
             username,
+            version: Some(THIS_MAPACHE_VERSION.to_string()),
             tags: snapshot_options.tags,
             description: snapshot_options.description,
-            summary: progress_reporter.get_summary(),
+            summary: SnapshotSummary::default(),
         }),
         None => Err(anyhow!(
             "Failed to finalize snapshot: No root tree ID was generated."

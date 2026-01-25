@@ -200,7 +200,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     // Process and save new snapshot
-    let new_snapshot = archiver::snapshot(
+    let mut new_snapshot = archiver::snapshot(
         repo.clone(),
         SnapshotOptions {
             absolute_source_paths,
@@ -216,14 +216,32 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )?;
 
     // Flush repo and finalize pack saver
-    let repo_stats = repo.flush_and_finalize_pack_saver()?;
+    let repo_stats: crate::repository::repo::RepoStatsSnapshot =
+        repo.flush_and_finalize_pack_saver()?;
+    let snapshot_report_summary = progress_reporter.summary();
+
+    // Fill snapshot summary
+    new_snapshot.summary.processed_items_count = snapshot_report_summary.processed_items_count;
+    new_snapshot.summary.processed_bytes = snapshot_report_summary.processed_bytes;
+    new_snapshot.summary.diff_counts = snapshot_report_summary.diff_counts;
+    new_snapshot.summary.raw_bytes = repo_stats.data.raw;
+    new_snapshot.summary.encoded_bytes = repo_stats.data.encoded;
+    new_snapshot.summary.meta_raw_bytes = repo_stats.meta.raw;
+    new_snapshot.summary.meta_encoded_bytes = repo_stats.meta.encoded;
+    new_snapshot.summary.total_raw_bytes =
+        new_snapshot.summary.raw_bytes + new_snapshot.summary.meta_raw_bytes;
+    new_snapshot.summary.total_encoded_bytes =
+        new_snapshot.summary.encoded_bytes + new_snapshot.summary.meta_encoded_bytes;
+    new_snapshot.summary.data_blobs = repo_stats.blobs;
+    new_snapshot.summary.meta_blobs = repo_stats.meta_blobs;
+    new_snapshot.summary.total_blobs = repo_stats.total_blobs;
 
     let should_save_snapshot = !args.skip_if_unchanged
         || parent_snapshot_pair.is_none()
         || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
 
     if should_save_snapshot {
-        let (snapshot_id, snapshot_size) = repo.save_file(
+        let (new_snapshot_id, new_snapshot_size) = repo.save_file(
             &mapache::SaveID::CalculateID,
             serde_json::to_string(&new_snapshot)?.as_bytes(),
             StorageHint {
@@ -234,18 +252,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         )?;
         progress_reporter.finalize();
 
-        let mut snapshot_summary = progress_reporter.get_summary();
-        snapshot_summary.raw_bytes = repo_stats.data.raw;
-        snapshot_summary.encoded_bytes = repo_stats.data.encoded;
-        snapshot_summary.meta_raw_bytes = snapshot_size.raw + repo_stats.meta.raw;
-        snapshot_summary.meta_encoded_bytes = snapshot_size.encoded + repo_stats.meta.encoded;
-        snapshot_summary.total_raw_bytes =
-            snapshot_summary.raw_bytes + snapshot_summary.meta_raw_bytes;
-        snapshot_summary.total_encoded_bytes =
-            snapshot_summary.encoded_bytes + snapshot_summary.meta_encoded_bytes;
+        // Add the size of the snapshot file for display (only after saving the snapshot)
+        new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw;
+        new_snapshot.summary.meta_encoded_bytes += new_snapshot_size.encoded;
 
         // Final report
-        show_final_report(&snapshot_id, &snapshot_summary, args);
+        show_final_report(&new_snapshot_id, &new_snapshot.summary, args);
     } else {
         progress_reporter.finalize();
         ui::cli::log!("No changes detected since parent. Skipping snapshot.");

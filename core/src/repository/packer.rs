@@ -513,7 +513,7 @@ impl PackSaver {
                         .meta_encoded_bytes
                         .fetch_add(meta_len, Ordering::Relaxed);
                     repo.stats
-                        .blobs_count
+                        .data_blobs
                         .fetch_add(num_blobs, Ordering::Relaxed);
                 }
                 BlobType::Tree => {
@@ -524,7 +524,7 @@ impl PackSaver {
                         .meta_encoded_bytes
                         .fetch_add(meta_len, Ordering::Relaxed);
                     repo.stats
-                        .meta_blobs_count
+                        .meta_blobs
                         .fetch_add(num_blobs, Ordering::Relaxed);
                 }
                 _ => {}

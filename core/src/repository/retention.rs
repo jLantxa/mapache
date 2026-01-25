@@ -238,6 +238,7 @@ mod tests {
                 summary: Default::default(),
                 hostname: None,
                 username: None,
+                version: None,
             },
             true,
         )

@@ -54,6 +54,9 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+
     /// Tags
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub tags: BTreeSet<String>,
@@ -212,6 +215,9 @@ pub struct SnapshotSummary {
     pub meta_encoded_bytes: u64,  // Metadata bytes written after encoding
     pub total_raw_bytes: u64,     // Total raw bytes
     pub total_encoded_bytes: u64, // Total bytes after encoding
+    pub data_blobs: u64,
+    pub meta_blobs: u64,
+    pub total_blobs: u64,
 
     #[serde(flatten)]
     pub diff_counts: DiffCounts,

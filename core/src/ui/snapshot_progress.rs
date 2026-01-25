@@ -1,19 +1,16 @@
 use std::{
-    collections::VecDeque,
     path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use colored::Colorize;
 use crossbeam_channel::{Receiver, Sender};
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
-use parking_lot::RwLock;
-use rustc_hash::FxHashSet;
+use parking_lot::{Mutex, RwLock};
 
 use crate::{
     fs::tree::NodeDiff,
@@ -26,78 +23,45 @@ use crate::{
 enum UiEvent {
     Start(String),
     Done(String),
+    Shutdown,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn ui_loop(
-    stop: Arc<AtomicBool>,
-    refresh: Duration,
     rx: Receiver<UiEvent>,
     processed_bytes: Arc<AtomicU64>,
     pb: ProgressBar,
-    cb: ProgressBar,
     spinners: Vec<ProgressBar>,
-    _n: usize, // not needed; use spinners.len()
 ) {
-    let slots = spinners.len().max(1);
+    let slots_limit = spinners.len();
+    let mut active: Vec<String> = Vec::with_capacity(slots_limit);
 
-    // Active items in *start order* (oldest at front).
-    let mut active: VecDeque<String> = VecDeque::with_capacity(slots);
-
-    // Fast membership / dedup for Start.
-    let mut in_flight: FxHashSet<String> = FxHashSet::default();
-    in_flight.reserve(slots * 4);
-
-    while !stop.load(Ordering::Relaxed) {
-        // Drain all pending UI events.
-        for ev in rx.try_iter() {
-            match ev {
-                UiEvent::Start(s) => {
-                    if in_flight.insert(s.clone()) {
-                        active.push_back(s);
-
-                        // Should not happen if concurrency is correct, but keep bounded anyway.
-                        while active.len() > slots {
-                            if let Some(old) = active.pop_front() {
-                                in_flight.remove(&old);
-                            }
-                        }
-                    }
+    while let Ok(ev) = rx.recv() {
+        match ev {
+            UiEvent::Start(path) => {
+                if !active.contains(&path) {
+                    active.push(path);
                 }
-                UiEvent::Done(s) => {
-                    if in_flight.remove(&s) {
-                        // Remove from active (O(slots) worst-case; slots is small).
-                        if let Some(pos) = active.iter().position(|x| x == &s) {
-                            active.remove(pos);
-                        }
-                    }
+                if active.len() > slots_limit {
+                    active.remove(0);
                 }
             }
+            UiEvent::Done(path) => {
+                if let Some(pos) = active.iter().position(|x| x == &path) {
+                    active.remove(pos);
+                }
+            }
+            UiEvent::Shutdown => break, // Clean exit
         }
 
-        // Update main bar from atomic.
         pb.set_position(processed_bytes.load(Ordering::Relaxed));
 
-        // Render oldest-first into spinners.
-        let mut i = 0usize;
-        for item in active.iter() {
-            if i == spinners.len() {
-                break;
+        for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
+            if let Some(path) = active.get(i) {
+                spinner.set_message(path.clone());
+            } else {
+                spinner.set_message("");
             }
-            spinners[i].set_message(item.clone());
-            spinners[i].tick();
-            i += 1;
         }
-
-        // Clear remaining spinners so nothing “freezes”.
-        for sp in spinners.iter().skip(i) {
-            sp.set_message(String::new());
-            sp.tick();
-        }
-
-        pb.tick();
-        cb.tick();
-        thread::sleep(refresh);
     }
 }
 
@@ -123,8 +87,16 @@ pub struct SnapshotProgressReporter {
 
     // UI thread
     ui_tx: Sender<UiEvent>,
-    ui_stop: Arc<AtomicBool>,
-    ui_thread: Option<JoinHandle<()>>,
+    ui_stop: AtomicBool,
+    _ui_thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for SnapshotProgressReporter {
+    fn drop(&mut self) {
+        // We call finalize to ensure the thread is joined and
+        // the terminal is restored even if finalize wasn't called manually.
+        self.finalize();
+    }
 }
 
 impl SnapshotProgressReporter {
@@ -134,8 +106,8 @@ impl SnapshotProgressReporter {
         num_display_items: usize,
     ) -> Self {
         let verbosity = GlobalOpts::verbosity();
-        let refresh_interval = GlobalOpts::progress_refresh_interval();
 
+        let refresh_rate = GlobalOpts::progress_refresh_interval();
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
 
         let progress_bar = match expected_size {
@@ -273,33 +245,22 @@ impl SnapshotProgressReporter {
                     .unwrap()
                     .tick_chars(SPINNER_TICK_CHARS),
             );
+            s.enable_steady_tick(refresh_rate);
             file_spinners.push(s);
         }
 
         // ---------------- UI channel + thread ----------------
-        // Bounded so worker hot-path can't blow up memory if UI stalls.
         let (ui_tx, ui_rx) = crossbeam_channel::unbounded::<UiEvent>();
-        let ui_stop = Arc::new(AtomicBool::new(false));
+        let ui_stop = AtomicBool::new(false);
 
         // Clone handles (cheap: indicatif internals are Arc-based)
         let pb = progress_bar.clone();
-        let cb = companion_bar.clone();
         let spinners_for_thread: Vec<ProgressBar> = file_spinners.to_vec();
 
         let processed_bytes_for_thread = processed_bytes.clone();
-        let ui_stop_for_thread = ui_stop.clone();
 
         let ui_thread = Some(thread::spawn(move || {
-            ui_loop(
-                ui_stop_for_thread,
-                refresh_interval,
-                ui_rx,
-                processed_bytes_for_thread,
-                pb,
-                cb,
-                spinners_for_thread,
-                num_display_items.max(1),
-            );
+            ui_loop(ui_rx, processed_bytes_for_thread, pb, spinners_for_thread);
         }));
 
         Self {
@@ -323,7 +284,7 @@ impl SnapshotProgressReporter {
 
             ui_tx,
             ui_stop,
-            ui_thread,
+            _ui_thread: Mutex::new(ui_thread),
         }
     }
 
@@ -364,31 +325,11 @@ impl SnapshotProgressReporter {
     }
 
     pub fn finalize(&self) {
-        // Stop UI thread first (so it doesn't race MultiProgress clear/finish).
         self.ui_stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.ui_thread.as_ref() {
-            h.thread().unpark();
-        }
-        if let Some(h) = self.ui_thread.as_ref() {
-            // We cannot join from &self without ownership; see finalize_owned below.
-            // Still safe: stopping prevents further ticks; leaving thread detached is OK but not ideal.
-            // If you can change call sites, prefer finalize_owned().
-            let _ = h; // no-op to keep intent clear
-        }
 
-        // Finish bars
-        for sp in self.file_spinners.iter() {
-            sp.finish_and_clear();
-        }
-        self.companion_bar.finish_and_clear();
-        self.progress_bar.finish_and_clear();
-        let _ = self.mp.clear();
-    }
+        let _ = self.ui_tx.send(UiEvent::Shutdown);
 
-    /// Prefer calling this if you can consume the reporter (e.g., store in Arc and drop last Arc).
-    pub fn finalize_owned(mut self) {
-        self.ui_stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.ui_thread.take() {
+        if let Some(h) = self._ui_thread.lock().take() {
             let _ = h.join();
         }
 
@@ -405,7 +346,12 @@ impl SnapshotProgressReporter {
     }
 
     pub fn processing_node(&self, path: &Path, diff: NodeDiff) {
+        if self.ui_stop.load(Ordering::Relaxed) {
+            return;
+        }
+
         if !self.file_spinners.is_empty() && diff != NodeDiff::Deleted {
+            // 2. Direct send: No Mutex, no Option unwrap
             let _ = self.ui_tx.try_send(UiEvent::Start(Self::abbr(path)));
         }
 
@@ -424,7 +370,7 @@ impl SnapshotProgressReporter {
     pub fn processed_node(&self, path: &Path) {
         self.processed_items_count.fetch_add(1, Ordering::Relaxed);
 
-        if !self.file_spinners.is_empty() {
+        if !self.ui_stop.load(Ordering::Relaxed) && !self.file_spinners.is_empty() {
             let _ = self.ui_tx.try_send(UiEvent::Done(Self::abbr(path)));
         }
     }
@@ -504,5 +450,90 @@ impl SnapshotProgressReporter {
             diff_counts: self.diff_counts.snapshot(),
             amends: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn setup_test() -> (Sender<UiEvent>, Vec<ProgressBar>, JoinHandle<()>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let pb = ProgressBar::hidden();
+        let spinners = vec![ProgressBar::hidden(), ProgressBar::hidden()]; // 2 slots
+        let processed_bytes = Arc::new(AtomicU64::new(0));
+
+        let s_clone = spinners.clone();
+        let handle = std::thread::spawn(move || {
+            ui_loop(rx, processed_bytes, pb, s_clone);
+        });
+
+        (tx, spinners, handle)
+    }
+
+    #[test]
+    fn test_ui_overflow_scrolling() {
+        let (tx, spinners, _handle) = setup_test();
+
+        // Fill slots
+        tx.send(UiEvent::Start("A".into())).unwrap();
+        tx.send(UiEvent::Start("B".into())).unwrap();
+
+        // Add a third file (overflow)
+        // Expected behavior: A is removed, B moves to index 0, C at index 1
+        tx.send(UiEvent::Start("C".into())).unwrap();
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(spinners[0].message(), "B");
+        assert_eq!(spinners[1].message(), "C");
+    }
+
+    #[test]
+    fn test_ui_duplicate_prevention() {
+        let (tx, spinners, _handle) = setup_test();
+
+        tx.send(UiEvent::Start("A".into())).unwrap();
+        tx.send(UiEvent::Start("A".into())).unwrap(); // Duplicate
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(spinners[0].message(), "A");
+        assert_eq!(spinners[1].message(), ""); // Second slot should stay empty
+    }
+
+    #[test]
+    fn test_ui_loop_scroll_up_logic() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let pb = ProgressBar::hidden();
+        let spinners = vec![ProgressBar::hidden(), ProgressBar::hidden()];
+        let processed_bytes = Arc::new(AtomicU64::new(0));
+
+        // Start the loop in a background thread
+        let spinners_clone = spinners.clone();
+        let pb_clone = pb.clone();
+        std::thread::spawn(move || {
+            ui_loop(rx, processed_bytes, pb_clone, spinners_clone);
+        });
+
+        // Start two files
+        tx.send(UiEvent::Start("file_A".to_string())).unwrap();
+        tx.send(UiEvent::Start("file_B".to_string())).unwrap();
+
+        // Give the loop a moment to process
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert_eq!(spinners[0].message(), "file_A");
+        assert_eq!(spinners[1].message(), "file_B");
+
+        // Finish the FIRST file (file_A)
+        // file_B should move UP to slot 0
+        tx.send(UiEvent::Done("file_A".to_string())).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert_eq!(spinners[0].message(), "file_B");
+        assert_eq!(spinners[1].message(), ""); // Slot 1 cleared
+
+        // Drop sender to close the loop
+        drop(tx);
     }
 }

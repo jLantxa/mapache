@@ -153,8 +153,12 @@ impl Metadata {
 impl Node {
     /// Build a `Node` from any path on disk.
     pub fn from_path(path: &Path) -> Result<Self> {
-        let meta = std::fs::symlink_metadata(path)
-            .with_context(|| format!("Stat failed: {}", path.display()))?;
+        let meta = std::fs::symlink_metadata(path).with_context(|| {
+            format!(
+                "Failed to get symlink metadata for path: {}",
+                path.display()
+            )
+        })?;
 
         let node_type = get_node_type(&meta)?;
 
@@ -180,7 +184,7 @@ impl Node {
     pub fn from_dir_entry(path: &Path, e: &std::fs::DirEntry) -> Result<Self> {
         let ft = e
             .file_type()
-            .with_context(|| format!("file_type failed: {}", path.display()))?;
+            .with_context(|| format!("Failed to get file type for entry: {}", path.display()))?;
 
         // Name is cheap: file_name is already an OsString
         let name = e.file_name().to_string_lossy().into_owned();
@@ -205,11 +209,14 @@ impl Node {
                 } else if ft.is_socket() {
                     NodeType::Socket
                 } else {
-                    bail!("Unsupported file type {ft:?}");
+                    bail!("Unsupported Unix file type for entry: {}", path.display());
                 }
             }
             #[cfg(not(unix))]
-            bail!("Unsupported file type {:?}", ft)
+            bail!(
+                "Unsupported non-Unix file type for entry: {}",
+                path.display()
+            )
         };
 
         // Metadata:
@@ -217,10 +224,14 @@ impl Node {
         // - For symlinks, keep same semantics as Node::from_path: symlink_metadata.
         let meta = if node_type == NodeType::Symlink {
             std::fs::symlink_metadata(path)
-                .with_context(|| format!("Stat failed: {}", path.display()))?
+                .with_context(|| format!("Failed to get symlink metadata: {}", path.display()))?
         } else {
-            e.metadata()
-                .with_context(|| format!("metadata failed: {}", path.display()))?
+            e.metadata().with_context(|| {
+                format!(
+                    "Failed to get metadata for directory entry: {}",
+                    path.display()
+                )
+            })?
         };
 
         let mut node = Self {
@@ -238,21 +249,29 @@ impl Node {
     }
 
     fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
-        if let Ok(target) = std::fs::read_link(path) {
-            let mut info = SymlinkInfo {
-                target_path: target.clone(),
-                target_type: None,
-            };
+        let target = std::fs::read_link(path)
+            .with_context(|| format!("Failed to read symlink target for: {}", path.display()))?;
 
-            // Cross-Platform Support: Windows requires knowing if the target is a dir.
-            // We probe the target type only if it exists.
-            if let Some(parent) = path.parent()
-                && let Ok(target_meta) = std::fs::metadata(parent.join(&target))
-            {
-                info.target_type = Some(get_node_type(&target_meta)?);
+        let mut info = SymlinkInfo {
+            target_path: target.clone(),
+            target_type: None,
+        };
+
+        // Cross-Platform Support: Windows requires knowing if the target is a dir.
+        // We probe the target type only if it exists.
+        if let Some(parent) = path.parent() {
+            let full_target_path = parent.join(&target);
+            if let Ok(target_meta) = std::fs::metadata(&full_target_path) {
+                info.target_type = Some(get_node_type(&target_meta).with_context(|| {
+                    format!(
+                        "Failed to resolve target type for symlink: {}",
+                        full_target_path.display()
+                    )
+                })?);
             }
-            self.symlink_info = Some(info);
         }
+
+        self.symlink_info = Some(info);
         Ok(())
     }
 
@@ -315,11 +334,11 @@ fn get_node_type(meta: &FsMetadata) -> Result<NodeType> {
             } else if file_type.is_socket() {
                 NodeType::Socket
             } else {
-                bail!("Unsupported file type {file_type:?}")
+                bail!("Found unsupported Unix file type")
             }
         }
         #[cfg(not(unix))]
-        bail!("Unsupported file type {:?}", file_type)
+        bail!("Found unsupported non-Unix file type")
     };
 
     Ok(node_type)
@@ -380,11 +399,12 @@ pub(crate) fn node_to_string(
                 .map_or(NA.to_string(), |gid| gid.to_string()),
             size_str,
             node.metadata.modified_time.map_or(NA.to_string(), |mtime| {
-                utils::pretty_print_system_time(mtime, None).unwrap_or(String::from("Error"))
+                utils::pretty_print_system_time(mtime, None)
+                    .unwrap_or_else(|_| String::from("Error"))
             }),
             node_name_str
         )
     } else {
-        node_name_str.to_string()
+        node_name_str
     }
 }

@@ -72,7 +72,7 @@ pub fn restore(
         }
 
         let restore_path = target_path.join(&path);
-        progress_reporter.processing_node(path.clone());
+        progress_reporter.processing_node(&path);
 
         let mut should_restore = true;
         if fs::path_exists(&restore_path) {

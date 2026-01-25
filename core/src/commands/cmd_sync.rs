@@ -186,15 +186,8 @@ fn diff(
     );
     spinner.set_draw_target(default_bar_draw_target());
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-
-    // 1. Update message so user knows what's happening immediately
     spinner.set_message("Reading remote directories...");
 
-    // 2. Fetch both directories in parallel to prevent the UI thread from sitting idle
-    // and to speed up the sync process.
-    // Note: This assumes your backends are thread-safe (Send/Sync).
-    // If you can't use threads, the spinner will still spin during the block
-    // IF you use enable_steady_tick correctly.
     let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new())?;
     let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new())?;
 

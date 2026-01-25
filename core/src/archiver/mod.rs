@@ -3,7 +3,7 @@ pub(crate) mod tree_serializer;
 
 use std::{
     collections::BTreeSet,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -99,7 +99,6 @@ pub(crate) fn snapshot(
         repo.clone(),
         progress_reporter.clone(),
         fatal_error_flag.clone(),
-        snapshot_options.snapshot_root_path.clone(),
         diff_rx,
         process_item_tx,
     );
@@ -152,10 +151,6 @@ pub(crate) fn snapshot(
             "Failed to finalize snapshot: No root tree ID was generated."
         )),
     }
-}
-
-fn strip_prefix<'a>(full_path: &'a Path, root_path: &'a Path) -> &'a Path {
-    full_path.strip_prefix(root_path).unwrap_or(full_path)
 }
 
 fn signal_fatal_error(
@@ -254,7 +249,6 @@ fn spawn_processor_thread(
     repo: Arc<Repository>,
     progress_reporter: Arc<SnapshotProgressReporter>,
     fatal_error_flag: Arc<AtomicBool>,
-    snapshot_root_path: PathBuf,
     diff_rx: crossbeam_channel::Receiver<(
         PathBuf,
         Option<StreamNode>,
@@ -271,7 +265,6 @@ fn spawn_processor_thread(
             let repo = repo.clone();
             let progress_reporter = progress_reporter.clone();
             let fatal_error_flag = fatal_error_flag.clone();
-            let snapshot_root_path = snapshot_root_path.clone();
             let process_item_tx = process_item_tx.clone();
 
             handles.push(std::thread::spawn(move || {
@@ -284,8 +277,7 @@ fn spawn_processor_thread(
                         break;
                     }
 
-                    let stripped_path = strip_prefix(&path, &snapshot_root_path);
-                    progress_reporter.processing_node(stripped_path, diff);
+                    progress_reporter.processing_node(&path, diff);
 
                     match processor::process_item(
                         (path.as_path(), prev, next, diff),

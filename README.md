@@ -61,7 +61,7 @@ The development of `mapache` is guided by the following core principles:
 
 ### v0.1.0 (_we are here_)
 
-mapache 0.1.0 is the first public stable release. It is meant to be a first
+mapache 0.1.0 was the first public stable release. It was meant to be a first
 stable prototype with all core features after 8 months of work.
 
 The repository format can suffer small changes in the next few versions as it
@@ -69,17 +69,26 @@ converges to a final solution. The archiver pipeline (backup) is already very
 efficient, but the restore needs a redesign to optimize the performance and
 minimize I/O operations.
 
+The v0.1.x series will bring bug fixes, optimizations and new little features.
+The main goal is to optimize the Archiver performance.
+
 ### v0.2.0
 
-After the Christmas season, I will resume implementing all features that didn't
-make it into v0.1.0. At the moment, these include:
+The main goal for the v0.2.0 is to redesign the restorer. The current restorer
+is file-centric and performs one backend IO read per blob. While this was
+perfectly functional for a v0.1.0, we need to redesign it to improve run-time
+and IO efficiency.
+
+- [ ] `restore` redesign,
+
+### v0.3.0
+
+All other planned features which will not make it into v0.2.x.
 
 - [ ] configuration files,
 - [ ] master key rotation,
-- [ ] `restore` redesign,
 - [ ] reimplement SFTP backend with a pure rust crate,
 - [ ] return codes for commands,
-- [x] regex filters,
 
 and other internal refactors, optimizations and bug fixing.
 

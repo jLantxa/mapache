@@ -1,6 +1,6 @@
 # Changelog
 
-## Latest
+## v0.1.6
 
 ### Changes
 
@@ -8,6 +8,7 @@
 - Better progress logs in `mapache sync`.
 - Unified the aggregator and pack saver stages in the Archiver pipeline for
   performance.
+- Throttle UI events to improve responsiveness.
 
 ### Fixes
 

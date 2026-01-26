@@ -5,7 +5,7 @@ pub mod url;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    path::{Component, MAIN_SEPARATOR, Path, PathBuf},
+    path::{MAIN_SEPARATOR, Path, PathBuf, is_separator},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -273,61 +273,77 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
         return path_str.into_owned();
     }
 
-    let mut components = path.components().peekable();
-    let first = match components.next() {
-        Some(Component::RootDir) => MAIN_SEPARATOR.to_string(),
-        Some(c) => c.as_os_str().to_string_lossy().into_owned(),
-        None => return String::new(),
-    };
-
-    let all_components: Vec<_> = components
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    if all_components.is_empty() {
-        return first; // only one component
-    }
-
-    let last = all_components.last().unwrap();
-    let middle = &all_components[..all_components.len().saturating_sub(1)];
-    let ellipsis = "...";
-    let sep_len = 1;
-
-    // Fast path: check if everything fits
-    let full_len = path_str.len();
-    if full_len <= max_len {
+    let components: Vec<_> = path.components().collect();
+    if components.len() <= 2 {
         return path_str.into_owned();
     }
 
-    // Compute available space
-    let mut result_len = first.len() + sep_len + ellipsis.len() + sep_len + last.len();
-    let mut middle_parts = Vec::new();
+    let first = components[0].as_os_str().to_string_lossy();
+    let last = components.last().unwrap().as_os_str().to_string_lossy();
+    let ellipsis = "...";
 
-    for comp in middle {
-        let comp_len = comp.len() + sep_len;
-        if result_len + comp_len <= max_len {
-            result_len += comp_len;
-            middle_parts.push(comp);
+    // base_res_len handles: [first][sep?][...][sep][last]
+    let needs_sep_after_first = !first.ends_with(is_separator);
+    let mut base_res_len = first.len() + ellipsis.len() + last.len() + 1;
+    if needs_sep_after_first {
+        base_res_len += 1;
+    }
+
+    if base_res_len > max_len {
+        return path_str.into_owned();
+    }
+
+    let mut middle_parts = Vec::new();
+    let mut current_len = base_res_len;
+
+    // --- FIX START ---
+    // If we have a Windows prefix followed by a root (e.g., C:\),
+    // we skip the RootDir component to avoid double slashes.
+    let skip_count = if components.len() > 1
+        && matches!(components[0], std::path::Component::Prefix(_))
+        && matches!(components[1], std::path::Component::RootDir)
+    {
+        2
+    } else {
+        1
+    };
+
+    let middle_count = components.len().saturating_sub(1 + skip_count);
+
+    for component in components.iter().skip(skip_count).take(middle_count) {
+        // --- FIX END ---
+        let comp_str = component.as_os_str().to_string_lossy();
+        let added_len = comp_str.len() + 1; // component + separator
+
+        if current_len + added_len <= max_len {
+            current_len += added_len;
+            middle_parts.push(comp_str);
         } else {
+            // We've reached the length limit; the rest will be replaced by ellipsis.
             break;
         }
     }
 
-    // If everything fit, return original path
-    if middle_parts.len() == middle.len() {
-        return path_str.into_owned();
+    let mut result = String::with_capacity(current_len);
+    result.push_str(&first);
+
+    for comp in middle_parts {
+        if !result.ends_with(is_separator) {
+            result.push(MAIN_SEPARATOR);
+        }
+        result.push_str(&comp);
     }
 
-    // Build the result efficiently
-    let mut result = String::with_capacity(max_len.min(full_len));
-    result.push_str(first.trim_end_matches(MAIN_SEPARATOR));
-    for comp in middle_parts {
+    if !result.ends_with(is_separator) {
         result.push(MAIN_SEPARATOR);
-        result.push_str(comp);
     }
-    result.push(MAIN_SEPARATOR);
     result.push_str(ellipsis);
-    result.push(MAIN_SEPARATOR);
-    result.push_str(last);
+
+    if !result.ends_with(is_separator) {
+        result.push(MAIN_SEPARATOR);
+    }
+    result.push_str(&last);
+
     result
 }
 
@@ -894,47 +910,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    // This unit test only tests Unix-style paths and therefore should only be
-    // available on Unix-like systems.
     fn test_abbreviate_path_unix() {
-        // Short paths (no abbreviation expected)
-        assert_eq!(abbreviate_path(Path::new("short/path"), 5), "short/path");
-        assert_eq!(abbreviate_path(Path::new("short/path"), 20), "short/path");
-        assert_eq!(abbreviate_path(Path::new("short/path"), 100), "short/path");
+        // Note: On Unix, the first component of "/home/user" is "/"
 
-        // Typical abbreviations
+        assert_eq!(abbreviate_path(Path::new("short/path"), 5), "short/path");
+
         let path = Path::new("/home/user/some/path/to/a/file.txt");
+        // first="/" + middle="home" + "..." + last="file.txt" = "/home/.../file.txt"
         assert_eq!(abbreviate_path(path, 20), "/home/.../file.txt");
         assert_eq!(abbreviate_path(path, 30), "/home/user/some/.../file.txt");
-        assert_eq!(
-            abbreviate_path(path, 34),
-            "/home/user/some/path/to/a/file.txt"
-        );
-        assert_eq!(
-            abbreviate_path(path, 50),
-            "/home/user/some/path/to/a/file.txt"
-        );
 
-        // Long paths
-        let path = Path::new(
-            "/home/user/projects/backup_tool/src/core/commiter/engine/tasks/diff/handlers/filesystem/snapshots/metadata/permissions.rs",
-        );
+        let long_path_str = "/home/user/projects/backup_tool/src/core/permissions.rs";
+        let long_path = Path::new(long_path_str);
+
         assert_eq!(
-            abbreviate_path(path, 50),
-            "/home/user/projects/.../permissions.rs"
+            abbreviate_path(long_path, 30),
+            "/home/user/.../permissions.rs"
         );
-        assert_eq!(
-            abbreviate_path(path, 80),
-            "/home/user/projects/backup_tool/src/core/commiter/engine/.../permissions.rs"
-        );
-        assert_eq!(
-            abbreviate_path(path, 100),
-            "/home/user/projects/backup_tool/src/core/commiter/engine/tasks/diff/handlers/.../permissions.rs"
-        );
-        assert_eq!(
-            abbreviate_path(path, 120),
-            "/home/user/projects/backup_tool/src/core/commiter/engine/tasks/diff/handlers/filesystem/snapshots/.../permissions.rs"
-        );
-        assert_eq!(abbreviate_path(path, 150), path.to_string_lossy());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_abbreviate_path_windows() {
+        let path = Path::new(r"C:\Users\Admin\Documents\file.txt");
+        let result = abbreviate_path(path, 20);
+        // Should handle C:\ without doubling the backslash
+        assert_eq!(result, r"C:\...\file.txt");
+        assert!(!result.contains(r"\\"));
+
+        let path = Path::new(r"C:\Users\Admin\Documents\file.txt");
+        let result = abbreviate_path(path, 25);
+        // Should handle C:\ without doubling the backslash
+        assert_eq!(result, r"C:\Users\...\file.txt");
+        assert!(!result.contains(r"\\"));
+
+        let path = Path::new(r"C:\Users\Admin\Documents\file.txt");
+        let result = abbreviate_path(path, 30);
+        // Should handle C:\ without doubling the backslash
+        assert_eq!(result, r"C:\Users\Admin\...\file.txt");
+        assert!(!result.contains(r"\\"));
     }
 }

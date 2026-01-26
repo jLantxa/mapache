@@ -234,7 +234,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         new_snapshot.summary.encoded_bytes + new_snapshot.summary.meta_encoded_bytes;
     new_snapshot.summary.data_blobs = repo_stats.blobs;
     new_snapshot.summary.meta_blobs = repo_stats.meta_blobs;
-    new_snapshot.summary.total_blobs = repo_stats.total_blobs;
 
     let should_save_snapshot = !args.skip_if_unchanged
         || parent_snapshot_pair.is_none()

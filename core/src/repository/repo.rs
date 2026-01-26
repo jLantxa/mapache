@@ -114,7 +114,6 @@ pub struct RepoStatsSnapshot {
     pub total: SizePair,
     pub blobs: u64,
     pub meta_blobs: u64,
-    pub total_blobs: u64,
 }
 
 impl RepoStats {
@@ -132,7 +131,6 @@ impl RepoStats {
             total: SizePair::new(rb + mrb, eb + meb),
             blobs: bc,
             meta_blobs: mbc,
-            total_blobs: bc + mbc,
         }
     }
 }

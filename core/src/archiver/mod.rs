@@ -11,7 +11,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use chrono::Local;
 
 use crate::{
@@ -93,20 +93,24 @@ pub(crate) fn snapshot(
         .map(|snapshot_pair| snapshot_pair.snapshot.tree);
 
     // Create streams
-    let fs_stream = FSNodeStream::from_paths(
+    let fs_stream = match FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
-    )
-    .context("Failed to initialize filesystem node stream")?;
+    ) {
+        Ok(stream) => stream,
+        Err(e) => bail!(anyhow!("Failed to initialize filesystem node stream: {e}")),
+    };
 
-    let previous_tree_stream = SerializedNodeStream::new(
+    let previous_tree_stream = match SerializedNodeStream::new(
         repo.clone(),
         parent_tree_id,
         snapshot_options.snapshot_root_path.clone(),
         None,
         None,
-    )
-    .context("Failed to initialize previous tree stream")?;
+    ) {
+        Ok(stream) => stream,
+        Err(e) => bail!(anyhow!("Failed to initialize previous tree stream: {e}")),
+    };
 
     // Channels
     let (diff_tx, diff_rx) =
@@ -203,8 +207,10 @@ fn spawn_scanner_thread(
         if no_scan {
             return Ok(());
         }
-        let scan_stream = FSNodeStream::from_paths(absolute_source_paths, exclude_paths)
-            .context("Scanner failed to start")?;
+        let scan_stream = match FSNodeStream::from_paths(absolute_source_paths, exclude_paths) {
+            Ok(stream) => stream,
+            Err(e) => bail!(anyhow!("Scanner failed to start: {e}")),
+        };
 
         for item in scan_stream {
             if status.is_failed() {

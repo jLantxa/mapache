@@ -85,7 +85,7 @@ impl RestoreProgressReporter {
         // Note: Template closures pull from Atomics to avoid lock-stepping workers with UI
         progress_bar.set_style(
             ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
+                .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [ETA: {custom_eta}]")
                 .expect("progress bar template")
                 .progress_chars("=> ")
                 .with_key("custom_elapsed", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -114,7 +114,7 @@ impl RestoreProgressReporter {
         let warn_clone = warning_counter.clone();
         companion_bar.set_style(
             ProgressStyle::default_bar()
-                .template("[{processed_items_fmt}]  [{errors} errors, {warnings} warnings]")
+                .template("[{processed_items_fmt}] [{errors} errors, {warnings} warnings]")
                 .expect("companion bar template")
                 .with_key(
                     "processed_items_fmt",

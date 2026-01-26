@@ -128,7 +128,7 @@ impl SnapshotProgressReporter {
         let processed_bytes_arc_clone = processed_bytes.clone();
         let expected_bytes_arc_clone = expected_bytes.clone();
         let undetermined_style = ProgressStyle::default_bar()
-            .template("[{custom_elapsed}]  [{processed_bytes_fmt}]")
+            .template("[{custom_elapsed}] [{processed_bytes_fmt}]")
             .expect("progress bar template")
             .progress_chars("=> ")
             .with_key(
@@ -161,7 +161,7 @@ impl SnapshotProgressReporter {
         let processed_bytes_arc_clone = processed_bytes.clone();
         let expected_bytes_arc_clone = expected_bytes.clone();
         let determined_style = ProgressStyle::default_bar()
-        .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}]  [{processed_bytes_fmt}]  [ETA: {custom_eta}]")
+        .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [ETA: {custom_eta}]")
         .expect("progress bar template")
         .progress_chars("=> ")
         .with_key(
@@ -205,7 +205,7 @@ impl SnapshotProgressReporter {
         let processed_items_count_clone = processed_items_count.clone();
         companion_bar.set_style(
             ProgressStyle::default_bar()
-                .template("[{processed_items_fmt}]  [{errors} errors]")
+                .template("[{processed_items_fmt}] [{errors} errors]")
                 .expect("companion bar template")
                 .progress_chars("=> ")
                 .with_key(

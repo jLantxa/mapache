@@ -1,5 +1,20 @@
 # Changelog
 
+## Latest
+
+### Changes
+
+- Improved error messages.
+- Better progress logs in `mapache sync`.
+- Unified the aggregator and pack saver stages in the Archiver pipeline for
+  performance.
+
+### Fixes
+
+- Fixed snapshot summary data missing in the snapshot metadata.
+- Fixed abbreviation of Windows paths appending a redundant separator after the
+  root prefix.
+
 ## v0.1.5
 
 ### Changes

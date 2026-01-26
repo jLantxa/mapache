@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use colored::Colorize;
@@ -24,8 +25,10 @@ pub enum UiEvent {
     Shutdown,
 }
 
-pub fn ui_loop(rx: Receiver<UiEvent>, spinners: Vec<ProgressBar>) {
+pub fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<ProgressBar>) {
+    let slots_limit = spinners.len();
     let mut active: Vec<String> = Vec::with_capacity(128);
+    let mut last_update = Instant::now();
 
     while let Ok(ev) = rx.recv() {
         match ev {
@@ -42,12 +45,13 @@ pub fn ui_loop(rx: Receiver<UiEvent>, spinners: Vec<ProgressBar>) {
             UiEvent::Shutdown => break,
         }
 
-        for (i, spinner) in spinners.iter().enumerate() {
-            if let Some(msg) = active.get(i) {
-                spinner.set_message(msg.clone());
-            } else {
-                spinner.set_message("");
+        // Apply the same high-performance throttling
+        if rx.is_empty() || last_update.elapsed() >= update_interval {
+            for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
+                let msg = active.get(i).cloned().unwrap_or_default();
+                spinner.set_message(msg);
             }
+            last_update = Instant::now();
         }
     }
 }
@@ -85,7 +89,7 @@ impl RestoreProgressReporter {
         // Note: Template closures pull from Atomics to avoid lock-stepping workers with UI
         progress_bar.set_style(
             ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [ETA: {custom_eta}]")
+                .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
                 .expect("progress bar template")
                 .progress_chars("=> ")
                 .with_key("custom_elapsed", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -106,6 +110,13 @@ impl RestoreProgressReporter {
                 .with_key("custom_eta", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                     let _ = w.write_str(&utils::pretty_print_duration(_state.eta()));
                 })
+                .with_key(
+                  "data_rate",
+                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let rate = state.per_sec().floor() as u64;
+                        let _ = w.write_str(&utils::format_size_binary(rate, 1));
+                    },
+                )
         );
         progress_bar.enable_steady_tick(refresh_interval);
 
@@ -157,7 +168,7 @@ impl RestoreProgressReporter {
         let spinners_clone = file_spinners.clone();
 
         let ui_thread = thread::spawn(move || {
-            ui_loop(ui_rx, spinners_clone);
+            ui_loop(ui_rx, refresh_interval, spinners_clone);
         });
 
         Self {
@@ -244,11 +255,12 @@ mod tests {
         num_slots: usize,
     ) -> (Sender<UiEvent>, Vec<ProgressBar>, JoinHandle<()>) {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let refresh_interval = Duration::from_millis(100);
         let spinners: Vec<ProgressBar> = (0..num_slots).map(|_| ProgressBar::hidden()).collect();
 
         let s_clone = spinners.clone();
 
-        let handle = std::thread::spawn(move || ui_loop(rx, s_clone));
+        let handle = std::thread::spawn(move || ui_loop(rx, refresh_interval, s_clone));
 
         (tx, spinners, handle)
     }

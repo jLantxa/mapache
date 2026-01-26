@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use colored::Colorize;
@@ -26,9 +27,12 @@ enum UiEvent {
     Shutdown,
 }
 
-fn ui_loop(rx: Receiver<UiEvent>, spinners: Vec<ProgressBar>) {
+fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<ProgressBar>) {
     let slots_limit = spinners.len();
     let mut active: Vec<String> = Vec::with_capacity(slots_limit);
+
+    // Throttle UI updates
+    let mut last_update = Instant::now();
 
     while let Ok(ev) = rx.recv() {
         match ev {
@@ -45,12 +49,14 @@ fn ui_loop(rx: Receiver<UiEvent>, spinners: Vec<ProgressBar>) {
             UiEvent::Shutdown => break,
         }
 
-        for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
-            if let Some(path) = active.get(i) {
-                spinner.set_message(path.clone());
-            } else {
-                spinner.set_message("");
+        // Only redraw if the channel is drained OR enough time has passed.
+        // This ensures "snappy" updates when idle, but "batched" updates during bursts.
+        if rx.is_empty() || last_update.elapsed() >= update_interval {
+            for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
+                let msg = active.get(i).cloned().unwrap_or_default();
+                spinner.set_message(msg);
             }
+            last_update = Instant::now();
         }
     }
 }
@@ -128,7 +134,7 @@ impl SnapshotProgressReporter {
         let processed_bytes_arc_clone = processed_bytes.clone();
         let expected_bytes_arc_clone = expected_bytes.clone();
         let undetermined_style = ProgressStyle::default_bar()
-            .template("[{custom_elapsed}] [{processed_bytes_fmt}]")
+            .template("[{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s]")
             .expect("progress bar template")
             .progress_chars("=> ")
             .with_key(
@@ -156,12 +162,19 @@ impl SnapshotProgressReporter {
                     };
                     let _ = w.write_str(&s);
                 },
+            )
+            .with_key(
+                "data_rate",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let rate = state.per_sec().floor() as u64;
+                    let _ = w.write_str(&utils::format_size_binary(rate, 1));
+                },
             );
 
         let processed_bytes_arc_clone = processed_bytes.clone();
         let expected_bytes_arc_clone = expected_bytes.clone();
         let determined_style = ProgressStyle::default_bar()
-        .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [ETA: {custom_eta}]")
+        .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
         .expect("progress bar template")
         .progress_chars("=> ")
         .with_key(
@@ -193,6 +206,10 @@ impl SnapshotProgressReporter {
         .with_key("custom_eta", move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
             let s = utils::pretty_print_duration(state.eta());
             let _ = w.write_str(&s);
+        })
+        .with_key("data_rate", move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let rate = state.per_sec().floor() as u64;
+            let _ = w.write_str(&utils::format_size_binary(rate, 1));
         });
 
         match expected_size {
@@ -255,7 +272,7 @@ impl SnapshotProgressReporter {
         let spinners_for_thread = file_spinners.to_vec();
 
         let ui_thread = Some(thread::spawn(move || {
-            ui_loop(ui_rx, spinners_for_thread);
+            ui_loop(ui_rx, refresh_interval, spinners_for_thread);
         }));
 
         Self {
@@ -322,7 +339,7 @@ impl SnapshotProgressReporter {
     pub fn finalize(&self) {
         self.ui_stop.store(true, Ordering::Relaxed);
 
-        let _ = self.ui_tx.send(UiEvent::Shutdown);
+        let _ = self.ui_tx.try_send(UiEvent::Shutdown);
 
         if let Some(h) = self._ui_thread.lock().take() {
             let _ = h.join();
@@ -346,7 +363,7 @@ impl SnapshotProgressReporter {
         }
 
         if !self.file_spinners.is_empty() && diff != NodeDiff::Deleted {
-            let _ = self.ui_tx.send(UiEvent::Start(Self::abbr(path)));
+            let _ = self.ui_tx.try_send(UiEvent::Start(Self::abbr(path)));
         }
 
         if self.verbosity >= 3 {
@@ -451,12 +468,12 @@ mod tests {
     /// We use hidden bars to avoid messing with the cargo test output.
     fn setup_ui_test(num_slots: usize) -> (Sender<UiEvent>, Vec<ProgressBar>, JoinHandle<()>) {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let refresh_interval = Duration::from_millis(100);
         let spinners: Vec<ProgressBar> = (0..num_slots).map(|_| ProgressBar::hidden()).collect();
 
         let s_clone = spinners.clone();
-
         let handle = std::thread::spawn(move || {
-            ui_loop(rx, s_clone);
+            ui_loop(rx, refresh_interval, s_clone);
         });
 
         (tx, spinners, handle)

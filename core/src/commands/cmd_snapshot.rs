@@ -256,6 +256,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         new_snapshot.summary.meta_encoded_bytes += new_snapshot_size.encoded;
 
         // Final report
+        ui::cli::log!();
         show_final_report(&new_snapshot_id, &new_snapshot.summary, args);
     } else {
         progress_reporter.finalize();
@@ -269,20 +270,16 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     ui::cli::log!(
-        "{}Finished in {}",
+        "{}Processed {} in {}",
         prefix,
-        utils::pretty_print_duration(start.elapsed())
+        utils::format_size_binary(new_snapshot.summary.processed_bytes, 3).cyan(),
+        utils::pretty_print_duration(start.elapsed()).cyan()
     );
 
     Ok(())
 }
 
 fn show_final_report(snapshot_id: &ID, summary: &SnapshotSummary, args: &CmdArgs) {
-    ui::cli::log!(
-        "\nProcessed {}\n",
-        utils::format_size_binary(summary.processed_bytes, 3)
-    );
-
     ui::cli::log!("{}", "Changes since parent snapshot:".bold());
 
     let mut table = Table::new_with_alignments(vec![

@@ -2,7 +2,10 @@ use anyhow::{Result, anyhow};
 use clap::Args;
 use colored::Colorize;
 use rayon::prelude::*;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 
 use crate::{
     backend::cache::CacheBackend,
@@ -161,9 +164,14 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     }
 
     // Parallel deletion
-    let results: Vec<_> = to_delete
-        .par_iter()
-        .map(|path| {
+    let num_deleted = AtomicUsize::new(0);
+    let freed = AtomicU64::new(0);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    pool.install(|| {
+        to_delete.par_iter().for_each(|path| {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -171,37 +179,31 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
             let size = utils::dir_size(path).unwrap_or(0);
 
             match std::fs::remove_dir_all(path) {
-                Ok(_) => Ok((name.to_string(), size)),
-                Err(e) => Err(anyhow!("Failed to delete {}: {}", path.display(), e)),
+                Ok(_) => {
+                    num_deleted.fetch_add(1, Ordering::Relaxed);
+                    freed.fetch_add(size, Ordering::Relaxed);
+                    println!(
+                        "{} {} ({})",
+                        "DELETED".bright_red().bold(),
+                        name.cyan(),
+                        utils::format_size_binary(size, 3).dimmed()
+                    );
+                }
+                Err(e) => ui::cli::warning!("Failed to delete {}: {}", path.display(), e),
             }
-        })
-        .collect();
-
-    let mut num_deleted = 0;
-    let mut freed = 0;
-
-    for result in results {
-        match result {
-            Ok((name, size)) => {
-                num_deleted += 1;
-                freed += size;
-                println!(
-                    "{} {} ({})",
-                    "DELETED".red().bold(),
-                    name.cyan(),
-                    utils::format_size_binary(size, 3).dimmed()
-                );
-            }
-            Err(e) => {
-                ui::cli::error!("{e}");
-            }
-        }
-    }
+        });
+    });
 
     println!(
         "\nCleanup complete: {} ({}) freed.",
-        utils::format_count(num_deleted, "repo cache", "repo caches"),
-        utils::format_size_binary(freed, 3).green().bold()
+        utils::format_count(
+            num_deleted.load(Ordering::Relaxed),
+            "repo cache",
+            "repo caches"
+        ),
+        utils::format_size_binary(freed.load(Ordering::Relaxed), 3)
+            .green()
+            .bold()
     );
 
     Ok(())

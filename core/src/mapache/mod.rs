@@ -301,7 +301,7 @@ pub(crate) fn rewrite_snapshot_tree(
             snapshot.summary.processed_bytes += stream_node.node.metadata.size;
         }
 
-        progress_reporter.processed_node(&path);
+        progress_reporter.processed_node(&path, NodeDiff::Unchanged);
         snapshot.summary.processed_items_count += 1;
 
         // The path is not excluded, so we add the node to the pending trees map.

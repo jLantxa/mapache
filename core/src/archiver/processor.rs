@@ -34,6 +34,8 @@ pub(crate) fn process_item(
     encoding_context: &mut EncodingContext,
     progress_reporter: &SnapshotProgressReporter,
 ) -> Result<Option<StreamNode>> {
+    progress_reporter.processing_node(path, diff_type);
+
     let out = match diff_type {
         NodeDiff::Deleted => {
             let prev = prev_node.with_context(|| {
@@ -90,7 +92,7 @@ pub(crate) fn process_item(
         }
     };
 
-    progress_reporter.processed_node(path);
+    progress_reporter.processed_node(path, diff_type);
 
     Ok(out)
 }

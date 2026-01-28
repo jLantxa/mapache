@@ -378,9 +378,11 @@ impl SnapshotProgressReporter {
         }
     }
 
-    pub fn processed_node(&self, path: &Path) {
-        self.processed_items_count.fetch_add(1, Ordering::Relaxed);
-        self.companion_bar.inc(1);
+    pub fn processed_node(&self, path: &Path, diff: NodeDiff) {
+        if diff != NodeDiff::Deleted {
+            self.processed_items_count.fetch_add(1, Ordering::Relaxed);
+            self.companion_bar.inc(1);
+        }
 
         if !self.ui_stop.load(Ordering::Relaxed) && !self.file_spinners.is_empty() {
             let _ = self.ui_tx.send(UiEvent::Done(Self::abbr(path)));

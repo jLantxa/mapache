@@ -310,8 +310,6 @@ fn spawn_processor_thread(
                         break;
                     }
 
-                    status.progress_reporter.processing_node(&path, diff);
-
                     match processor::process_item(
                         (path.as_path(), prev, next, diff),
                         repo.clone(),

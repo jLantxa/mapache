@@ -44,3 +44,12 @@ fn delete_all_files_from(backend: &dyn StorageBackend, dir: &Path) -> Result<()>
 
     Ok(())
 }
+
+fn set_write_permission<P: AsRef<Path>>(path: P, writable: bool) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(&path)?;
+    let mut perms = metadata.permissions();
+
+    perms.set_readonly(!writable);
+
+    std::fs::set_permissions(&path, perms)
+}

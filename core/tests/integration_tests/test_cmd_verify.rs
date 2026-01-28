@@ -1,13 +1,18 @@
 #![cfg(test)]
 
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{
+        fs::OpenOptions,
+        io::{Read, Seek, SeekFrom, Write},
+        path::PathBuf,
+        sync::Arc,
+    };
 
     use anyhow::{Context, Ok, Result};
     use tempfile::tempdir;
 
     use mapache::{
-        backend::localfs::LocalFS,
+        backend::{BackendNode, localfs::LocalFS, read_backend_dir},
         commands::{self, Compression, GlobalArgs, UseSnapshot, cmd_snapshot, cmd_verify},
         mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
         repository::repo::{Auth, INDEX_DIR, OBJECTS_DIR},
@@ -15,7 +20,9 @@ mod tests {
 
     use crate::{
         TEST_QUIET,
-        integration_tests::{BACKUP_DATA_PATH, delete_all_files_from, init_repo},
+        integration_tests::{
+            BACKUP_DATA_PATH, delete_all_files_from, init_repo, set_write_permission,
+        },
         test_utils,
     };
 
@@ -255,6 +262,38 @@ mod tests {
         assert!(first_verify_result.is_ok(), "Verify should pass");
 
         let backend = Arc::new(LocalFS::new(repo_path.clone()));
+
+        // Bit flips should make it fail
+        {
+            let backend_nodes = read_backend_dir(backend.as_ref(), &repo_path.join(OBJECTS_DIR))?;
+
+            let first_pack_path = &repo_path.join(
+                backend_nodes
+                    .iter()
+                    .find(|&node| matches!(node, BackendNode::File(_)))
+                    .expect("There should at least be one pack")
+                    .path(),
+            );
+
+            set_write_permission(first_pack_path, true)?;
+
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&first_pack_path)?;
+
+            let mut first_byte = [0u8; 1];
+            file.read_exact(&mut first_byte)?;
+            first_byte[0] = !first_byte[0];
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&first_byte)?;
+
+            let bit_flip_verify_result = commands::cmd_verify::run(&global, &verify_args);
+            assert!(
+                bit_flip_verify_result.is_err(),
+                "Verify should fail because of bit-flip (decryption error)"
+            );
+        }
 
         // Delete the packs to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(OBJECTS_DIR))

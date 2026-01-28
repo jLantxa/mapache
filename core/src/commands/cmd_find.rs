@@ -1,16 +1,14 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler},
+    commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::node::node_to_string,
-    mapache::find_in_snapshot,
+    mapache::{ID, find_in_snapshot},
     repository::{
         repo::{RepoConfig, Repository},
-        snapshot::SnapshotStream,
+        snapshot::{Snapshot, SnapshotStream},
     },
     ui,
     utils::{self, size},
@@ -19,9 +17,14 @@ use crate::{
 #[derive(Args, Debug)]
 #[clap(about = "Find files and directories in the repository")]
 pub struct CmdArgs {
-    /// Path
+    /// Target
     #[arg()]
-    pub path: PathBuf,
+    pub target: String,
+
+    /// Snapshot ID to search in. If omitted, searches in ALL snapshots.
+    /// Use 'latest' for the most recent one.
+    #[clap(long, value_parser = clap::value_parser!(UseSnapshot))]
+    pub snapshot: Option<UseSnapshot>,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -47,16 +50,26 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
-    let snapshot_stream = SnapshotStream::new(repo.clone())?;
-    for (snapshot_id, snapshot) in snapshot_stream {
-        let found_nodes = find_in_snapshot(repo.clone(), &snapshot, &args.path)?;
+    let snapshots: Vec<(ID, Snapshot)> = if let Some(use_snap) = &args.snapshot {
+        find_use_snapshot(repo.clone(), use_snap)?
+            .into_iter()
+            .collect()
+    } else {
+        SnapshotStream::new(repo.clone())?.collect()
+    };
 
-        if !found_nodes.is_empty() {
-            ui::cli::log!("Found in snapshot {}", snapshot_id.to_hex());
-            for (path, node) in found_nodes {
+    if snapshots.is_empty() {
+        ui::cli::log!("No snapshots found.");
+        return Ok(());
+    }
+
+    for (id, snap) in snapshots {
+        let found = find_in_snapshot(repo.clone(), &snap, &args.target)?;
+        if !found.is_empty() {
+            ui::cli::log!("Found in snapshot {}", id.to_hex());
+            for (path, node) in found {
                 ui::cli::log!("{}", node_to_string(&node, Some(&path), true, true));
             }
-
             ui::cli::log!();
         }
     }

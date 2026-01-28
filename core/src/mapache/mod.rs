@@ -21,7 +21,10 @@ use crate::{
     },
     repository::{repo::Repository, snapshot::Snapshot},
     ui::snapshot_progress::SnapshotProgressReporter,
-    utils::{self, filter::PathFilter},
+    utils::{
+        self,
+        filter::{GlobRule, PathFilter},
+    },
 };
 
 pub const ID_LENGTH: usize = 32;
@@ -183,19 +186,26 @@ impl std::fmt::Display for ContentIdType {
     }
 }
 
-pub(crate) fn find_in_snapshot(
+/// Finds a terminal node in a snapshot tree by name or glob.
+pub fn find_in_snapshot(
     repo: Arc<Repository>,
     snapshot: &Snapshot,
-    path: &Path,
+    pattern: &str,
 ) -> Result<Vec<(PathBuf, Node)>> {
     let root_tree_id = snapshot.tree;
+    let glob_rule = GlobRule::new(Path::new(pattern));
     let stream = SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None)?;
+    let mut results = Vec::new();
 
-    Ok(stream
-        .flatten()
-        .filter(|(node_path, _stream_node)| node_path.ends_with(path))
-        .map(|(path, snode)| (path, snode.node))
-        .collect())
+    for res in stream {
+        let (node_path, stream_node) = res?;
+
+        if glob_rule.is_strict_match(&node_path) {
+            results.push((node_path, stream_node.node));
+        }
+    }
+
+    Ok(results)
 }
 
 /// Rewrite a snapshot tree. This function can remove exclude paths or rechunk

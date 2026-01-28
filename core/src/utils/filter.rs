@@ -282,7 +282,7 @@ impl GlobRule {
 
     /// Exclude semantics: rule matches if it matches any *prefix* of `path`.
     #[inline]
-    fn matches_for_exclude(&self, path: &Path) -> bool {
+    pub fn matches_for_exclude(&self, path: &Path) -> bool {
         if self.tokens.len() <= Self::MAX_TOKENS_U128 {
             self.matches_prefix_u128(path)
         } else {
@@ -291,7 +291,7 @@ impl GlobRule {
     }
 
     /// Returns true ONLY if the entire path matches the glob pattern.
-    pub(crate) fn is_strict_match(&self, path: &Path) -> bool {
+    pub fn is_strict_match(&self, path: &Path) -> bool {
         let mut states: u128 = 1; // Start state
         states = self.epsilon_closure_u128(states);
 

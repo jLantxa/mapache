@@ -13,6 +13,7 @@
 
 - `--read-concurency` and `--write-concurrency` in `mapache snapshot` are now
   called `--readers` and `packers`.
+- `mapache find` now accepts patterns and allows finding in a selected snapshot.
 
 ## v0.1.6
 

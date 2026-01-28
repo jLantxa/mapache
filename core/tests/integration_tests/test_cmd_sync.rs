@@ -77,8 +77,8 @@ mod tests {
             skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
-            read_concurrency: 2,
-            write_concurrency: 2,
+            num_readers: 2,
+            num_packers: 2,
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
@@ -162,8 +162,8 @@ mod tests {
             skip_if_unchanged: false,
             no_scan: true,
             parent: UseSnapshot::Latest,
-            read_concurrency: 2,
-            write_concurrency: 2,
+            num_readers: 2,
+            num_packers: 2,
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)

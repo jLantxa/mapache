@@ -9,6 +9,11 @@
   check (indexed refs) could be `[OK]` and the user would be misled that the
   verification passed.
 
+### Changes
+
+- `--read-concurency` and `--write-concurrency` in `mapache snapshot` are now
+  called `--readers` and `packers`.
+
 ## v0.1.6
 
 ### Changes

@@ -376,16 +376,16 @@ impl PackSaver {
         repo_weak: Weak<Repository>,
         secure_storage: Arc<SecureStorage>,
         max_packer_size: u64,
-        write_concurrency: usize,
+        num_packers: usize,
     ) -> Result<Self> {
         let (worker_tx, worker_rx) =
-            crossbeam_channel::bounded::<(Vec<u8>, ID, BlobType)>(write_concurrency);
+            crossbeam_channel::bounded::<(Vec<u8>, ID, BlobType)>(num_packers);
         let first_err = Arc::new(Mutex::new(None));
         let worker_repo_weak_clone = repo_weak.clone();
 
         let worker_handle = std::thread::spawn(move || -> Result<()> {
-            let mut workers = Vec::with_capacity(write_concurrency);
-            for _ in 0..write_concurrency {
+            let mut workers = Vec::with_capacity(num_packers);
+            for _ in 0..num_packers {
                 let rx = worker_rx.clone();
                 let err_ptr = Arc::clone(&first_err);
 

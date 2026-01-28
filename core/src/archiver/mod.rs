@@ -81,7 +81,7 @@ impl PipelineStatus {
 pub(crate) fn snapshot(
     repo: Arc<Repository>,
     snapshot_options: SnapshotOptions,
-    read_concurrency: usize,
+    num_readers: usize,
     progress_reporter: Arc<SnapshotProgressReporter>,
 ) -> Result<Snapshot> {
     let status = Arc::new(PipelineStatus::new(progress_reporter.clone()));
@@ -115,10 +115,10 @@ pub(crate) fn snapshot(
     // Channels
     let (diff_tx, diff_rx) =
         crossbeam_channel::bounded::<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)>(
-            4 * read_concurrency,
+            4 * num_readers,
         );
     let (process_item_tx, process_item_rx) =
-        crossbeam_channel::bounded::<(PathBuf, StreamNode)>(16 * read_concurrency);
+        crossbeam_channel::bounded::<(PathBuf, StreamNode)>(16 * num_readers);
 
     // Spawn archiver threads
     let scanner_thread = spawn_scanner_thread(
@@ -129,7 +129,7 @@ pub(crate) fn snapshot(
     );
     let diff_thread = spawn_diff_thread(status.clone(), previous_tree_stream, fs_stream, diff_tx);
     let processor_thread = spawn_processor_thread(
-        read_concurrency,
+        num_readers,
         repo.clone(),
         status.clone(),
         diff_rx,
@@ -276,7 +276,7 @@ fn spawn_diff_thread(
 /// processed nodes are passed to the serializer thread. A thread of pool is
 /// installed in order to enforce the concurrency limit.
 fn spawn_processor_thread(
-    read_concurrency: usize,
+    num_readers: usize,
     repo: Arc<Repository>,
     status: Arc<PipelineStatus>,
     diff_rx: crossbeam_channel::Receiver<(
@@ -288,9 +288,9 @@ fn spawn_processor_thread(
     process_item_tx: crossbeam_channel::Sender<(PathBuf, StreamNode)>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut handles = Vec::with_capacity(read_concurrency);
+        let mut handles = Vec::with_capacity(num_readers);
 
-        for _ in 0..read_concurrency {
+        for _ in 0..num_readers {
             let rx = diff_rx.clone();
             let repo = repo.clone();
             let status = status.clone();

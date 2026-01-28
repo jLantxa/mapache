@@ -715,16 +715,15 @@ impl Repository {
         self.find_with_extension(file_type, prefix, None)
     }
 
-    pub fn init_pack_saver(self: &Arc<Self>, write_concurrency: usize) -> Result<()> {
-        let (tx, rx) = crossbeam_channel::bounded(16 * write_concurrency);
+    pub fn init_pack_saver(self: &Arc<Self>, num_packers: usize) -> Result<()> {
+        let (tx, rx) = crossbeam_channel::bounded(16 * num_packers);
 
         let weak_self = Arc::downgrade(self);
         let storage = self.secure_storage.clone();
         let max_packer_size = self.max_packer_size;
 
         let handle = std::thread::spawn(move || {
-            let pack_saver =
-                PackSaver::new(rx, weak_self, storage, max_packer_size, write_concurrency)?;
+            let pack_saver = PackSaver::new(rx, weak_self, storage, max_packer_size, num_packers)?;
             pack_saver.run()
         });
 

@@ -70,12 +70,12 @@ pub struct CmdArgs {
     pub parent: UseSnapshot,
 
     /// Number of files to process in parallel.
-    #[clap(long, default_value_t = mapache::defaults::DEFAULT_READ_CONCURRENCY)]
-    pub read_concurrency: usize,
+    #[clap(long = "readers", default_value_t = mapache::defaults::DEFAULT_SNAPSHOT_READERS)]
+    pub num_readers: usize,
 
     /// Number of writer threads.
-    #[clap(long, default_value_t = mapache::defaults::DEFAULT_WRITE_CONCURRENCY)]
-    pub write_concurrency: usize,
+    #[clap(long = "packers", default_value_t = mapache::defaults::DEFAULT_SNAPSHOT_PACKERS)]
+    pub num_packers: usize,
 
     /// Dry run
     #[clap(long, default_value_t = false)]
@@ -106,7 +106,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    repo.init_pack_saver(args.write_concurrency)?;
+    repo.init_pack_saver(args.num_packers)?;
 
     // Get source paths from arguments or readdir root path
     let source_paths = if !args.as_root {
@@ -181,11 +181,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     // Run Archiver
-    let progress_reporter = Arc::new(SnapshotProgressReporter::new(
-        None,
-        None,
-        args.read_concurrency,
-    ));
+    let progress_reporter = Arc::new(SnapshotProgressReporter::new(None, None, args.num_readers));
 
     // Init cleanup handlerf
     let repo_clone = repo.clone();
@@ -211,7 +207,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             description: args.description.clone(),
             no_scan: args.no_scan,
         },
-        args.read_concurrency,
+        args.num_readers,
         progress_reporter.clone(),
     )?;
 

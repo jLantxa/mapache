@@ -50,7 +50,13 @@ pub(crate) mod cleanup;
 
 /// mapache CLI definition
 #[derive(Parser, Debug)]
-#[command(version, about = "mapache backup tool")]
+#[command(
+    name = "mapache",
+    version,
+    about = "🦝 mapache backup program",
+    long_about = "mapache is a fast, secure, efficient and deduplicated program\
+        to make backup copies of your files."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

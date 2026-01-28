@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
@@ -8,63 +8,91 @@ use crate::{
     fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::ID,
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
-    utils,
 };
 
-/// Verify the checksum and contents of a pack with a known ID in the repository.
+pub struct PackStats {
+    pub dangling: usize,
+    pub verified_blobs: usize,
+    pub bytes_processed: u64,
+}
+
+/// Verify the checksum and contents of a pack.
+///
+/// This performs a "Physical Verification":
+/// 1. Reads the pack footer (decrypts metadata).
+/// 2. Reads EVERY blob in the pack (decrypts data).
+/// 3. Hashes the plaintext and compares it to the ID.
 pub fn verify_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
     pack_id: &ID,
-) -> Result<usize> {
-    let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, pack_id)?;
+) -> Result<PackStats> {
+    // Verify Footer / Metadata
+    let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, pack_id)
+        .context("Failed to parse pack footer")?;
 
     let index = repo.index();
 
-    pack_header.par_iter().try_for_each(|blob_desc| {
-        let data = repo.load_from_pack(
-            pack_id,
-            blob_desc.blob_type,
-            blob_desc.offset,
-            blob_desc.length,
-        )?;
-        let checksum = utils::calculate_hash(&data);
+    // Verify Data Integrity (Parallel)
+    // We map-reduce to get stats and bubble up the first error encountered.
+    let (verified_blobs, bytes_processed) = pack_header.par_iter().try_fold(
+        || (0, 0),
+        |acc, blob_desc| {
+            let data = repo.load_from_pack(
+                pack_id,
+                blob_desc.blob_type,
+                blob_desc.offset,
+                blob_desc.length,
+            ).with_context(|| format!("Failed to load/decrypt blob {}", blob_desc.id))?;
 
-        if checksum != blob_desc.id.0[..] {
-            bail!(
-                "Invalid checksum for blob {:?} in pack {:?}",
-                blob_desc.id,
-                pack_id
-            );
+            // Integrity Check: Hash(Plaintext) == ID
+            let checksum = ID::from_content(&data);
+            if checksum != blob_desc.id {
+                bail!(
+                    "Checksum Mismatch! Blob: {:?} | Pack: {:?} | Calculated: {} | Expected: {}",
+                    blob_desc.id,
+                    pack_id,
+                    checksum.to_hex(),
+                    blob_desc.id
+                );
+            }
+
+            Ok((acc.0 + 1, acc.1 + blob_desc.length as u64))
         }
+    ).try_reduce(
+        || (0, 0),
+        |a, b| Ok((a.0 + b.0, a.1 + b.1))
+    )?;
 
-        Ok(())
-    })?;
-
+    // Check for Dangling Blobs (Garbage Collection hints)
     let num_dangling = pack_header
         .iter()
         .filter(|blob| !index.contains(&blob.id))
         .count();
 
-    Ok(num_dangling)
+    Ok(PackStats {
+        dangling: num_dangling,
+        verified_blobs,
+        bytes_processed,
+    })
 }
 
 /// Verify that all blobs referenced by a snapshot are indexed.
-///
-/// This function only verifies that all IDs referenced in a snapshot are listed in the  master
-/// index, but it doesn't check the actual data. The blobs or packs could actually not exist
-/// or be corrupted.
-pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<()> {
+pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<usize> {
     let snapshot = repo.load_snapshot(snapshot_id, None)?;
     let tree_id = snapshot.tree;
 
+    // Validate the root tree exists first
+    if repo.index().get(&tree_id).is_none() {
+        bail!("Snapshot root tree {} is missing from index", tree_id);
+    }
+
     let stream =
         SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
-
     let index = repo.index();
+    let mut missing_blobs = 0;
 
-    let mut error_counter = 0;
     for (_path, stream_node) in stream.flatten() {
         let node = stream_node.node;
         match node.node_type {
@@ -72,29 +100,31 @@ pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<(
                 if let Some(blobs) = node.blobs {
                     for blob_id in &blobs {
                         if index.get(blob_id).is_none() {
-                            error_counter += 1;
+                            // TODO: Optional verbose logging here to list missing files
+                            missing_blobs += 1;
                         }
                     }
                 }
             }
             NodeType::Directory => {
-                if let Some(tree_id) = &node.tree
-                    && index.get(tree_id).is_none()
+                // Directories refer to a subtree ID
+                if let Some(subtree_id) = &node.tree
+                    && index.get(subtree_id).is_none()
                 {
-                    error_counter += 1;
+                    missing_blobs += 1;
                 }
             }
-            NodeType::Symlink
-            | NodeType::BlockDevice
-            | NodeType::CharDevice
-            | NodeType::Fifo
-            | NodeType::Socket => (),
+            // Other types usually store data inline or in the node struct
+            _ => (),
         }
     }
 
-    if error_counter > 0 {
-        bail!("Snapshot has {error_counter} corrupt blobs");
+    if missing_blobs > 0 {
+        bail!(
+            "Snapshot contains {} missing references (index entries not found)",
+            missing_blobs
+        );
     }
 
-    Ok(())
+    Ok(0) // 0 errors
 }

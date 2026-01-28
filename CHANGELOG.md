@@ -1,5 +1,14 @@
 # Changelog
 
+## Latest
+
+### Fixes
+
+- `mapache verify` is now very explicit about data corruption in the pack files.
+  Before, it would log an error when a corrupt pack is found, but the logical
+  check (indexed refs) could be `[OK]` and the user would be misled that the
+  verification passed.
+
 ## v0.1.6
 
 ### Changes

@@ -1,6 +1,6 @@
 # Changelog
 
-## Latest
+## v0.1.7
 
 ### Fixes
 
@@ -8,12 +8,15 @@
   Before, it would log an error when a corrupt pack is found, but the logical
   check (indexed refs) could be `[OK]` and the user would be misled that the
   verification passed.
+- Fixed an inconsistency in the number of reported processed items in
+  incremental snapshots.
 
 ### Changes
 
 - `--read-concurency` and `--write-concurrency` in `mapache snapshot` are now
-  called `--readers` and `packers`.
+  called `--readers` and `--packers`.
 - `mapache find` now accepts patterns and allows finding in a selected snapshot.
+- Minor changes to the snapshot report.
 
 ## v0.1.6
 

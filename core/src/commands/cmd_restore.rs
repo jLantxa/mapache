@@ -14,10 +14,7 @@ use crate::{
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
     fs::{get_absolute_normalized_path, tree::SerializedNodeStream},
     mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
-    repository::{
-        repo::{RepoConfig, Repository},
-        verify::verify_snapshot_refs,
-    },
+    repository::repo::{RepoConfig, Repository},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
         self, SPINNER_TICK_CHARS, default_bar_draw_target,
@@ -91,10 +88,6 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub quit_on_error: bool,
 
-    /// Skip verification of data
-    #[clap(long = "no-verify", value_parser, default_value_t = false)]
-    pub no_verify: bool,
-
     /// Dry run
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
@@ -138,12 +131,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     } else {
         None
     };
-
-    if !args.no_verify {
-        ui::cli::log!("Verifying snapshot links...");
-        verify_snapshot_refs(repo.clone(), &snapshot_id)?;
-        ui::cli::log!("{}\n", "[OK]".bold().green());
-    }
 
     if args.dry_run {
         ui::cli::log!("{}", "[DRY RUN]".bold().purple());

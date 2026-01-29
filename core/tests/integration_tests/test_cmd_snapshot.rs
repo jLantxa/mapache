@@ -100,7 +100,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
-            no_verify: false,
+
             quit_on_error: true,
             delete: false,
             no_preserve_root: false,
@@ -229,7 +229,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
-            no_verify: false,
+
             quit_on_error: true,
             delete: false,
             no_preserve_root: false,
@@ -322,7 +322,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
-            no_verify: false,
+
             quit_on_error: true,
             delete: false,
             no_preserve_root: false,
@@ -475,7 +475,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
-            no_verify: false,
+
             quit_on_error: true,
             delete: false,
             no_preserve_root: false,
@@ -592,7 +592,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
-            no_verify: false,
+
             quit_on_error: true,
             delete: false,
             no_preserve_root: false,
@@ -706,7 +706,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
-            no_verify: false,
+
             quit_on_error: true,
             delete: false,
             no_preserve_root: false,

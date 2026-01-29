@@ -3,21 +3,16 @@ use std::{sync::Arc, time::Instant};
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    mapache::{
-        defaults::{DEFAULT_GC_TOLERANCE, SHORT_REPO_ID_LEN},
-        global::GlobalOpts,
-    },
+    mapache::defaults::DEFAULT_GC_TOLERANCE,
     repository::{
         gc::{self},
         repo::{RepoConfig, Repository},
-        verify::verify_snapshot_refs,
     },
-    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{self},
     utils::{self, size},
 };
 
@@ -31,10 +26,6 @@ pub struct CmdArgs {
     /// pack file before repacking.
     #[clap(short, long, default_value_t = 100.0 * DEFAULT_GC_TOLERANCE, conflicts_with = "no_repack")]
     pub tolerance: f32,
-
-    /// Verify that all referenced IDs are stored in the index without reading the data.
-    #[clap(long, default_value_t = false)]
-    pub verify: bool,
 
     /// Don't repack
     #[clap(long, default_value_t = false)]
@@ -130,42 +121,12 @@ pub fn run_with_repo(
                     .yellow()
             );
         }
-
-        if args.verify {
-            ui::cli::log!();
-            verify_snapshots(repo.clone())?;
-        }
-
         ui::cli::log!();
         ui::cli::log!(
             "Finished in {}",
             utils::pretty_print_duration(start.elapsed())
         );
     }
-
-    Ok(())
-}
-
-fn verify_snapshots(repo: Arc<Repository>) -> Result<()> {
-    ui::cli::log!("Verifying snapshots...");
-
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-
-    for id in repo.list_snapshot_ids()? {
-        spinner.set_message(format!("{}", id.to_short_hex(SHORT_REPO_ID_LEN).yellow()));
-        verify_snapshot_refs(repo.clone(), &id)?;
-    }
-
-    spinner.finish_and_clear();
-    ui::cli::log!("{}\n", "[OK]".bold().green());
 
     Ok(())
 }

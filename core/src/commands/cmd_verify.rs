@@ -81,12 +81,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let start = Instant::now();
     let stats = VerifyStats::new();
 
+    let packs = repo_arc.list_packs()?;
+
     // --------------------------------
     // Physical Verification (Optional)
     // --------------------------------
     if args.read_packs {
         ui::cli::log!("{}", "Verifying Pack Integrity (Physical)...".bold());
-        let packs = repo_arc.list_packs()?;
 
         let style = ProgressStyle::default_bar()
             .template("[{custom_elapsed}] [{bar:25.cyan/white}] {pos}/{len} packs ({msg})")
@@ -149,7 +150,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::error!("Physical verification failed. The repository data is corrupt.");
         } else {
             ui::cli::log!(
-                "Physical verification passed. {} blobs verified.",
+                "{} {} blobs verified.",
+                "Physical verification passed.".bold().green(),
                 stats.blobs_verified.load(Ordering::Relaxed)
             );
         }
@@ -172,14 +174,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         // Print progress
         let msg = format!(
-            "Snapshot {} ({}/{})",
+            "Snapshot {} {}",
             short_id.bold().yellow(),
-            i + 1,
-            num_snapshots
+            format!("({}/{})", i + 1, num_snapshots).dimmed()
         );
 
         // Check refs
-        match verify_snapshot_refs(repo_arc.clone(), snapshot_id) {
+        match verify_snapshot_refs(repo_arc.clone(), snapshot_id, &packs) {
             Ok(_) => {
                 ui::cli::log!("{} {}", msg, "[OK]".bold().green());
             }

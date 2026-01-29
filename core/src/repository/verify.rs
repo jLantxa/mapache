@@ -5,9 +5,10 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::StorageBackend,
-    fs::{node::NodeType, tree::SerializedNodeStream},
+    fs::tree::SerializedNodeStream,
     mapache::ID,
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
+    utils::collections::IdSet,
 };
 
 pub struct PackStats {
@@ -79,7 +80,11 @@ pub fn verify_pack(
 }
 
 /// Verify that all blobs referenced by a snapshot are indexed.
-pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<usize> {
+pub fn verify_snapshot_refs(
+    repo: Arc<Repository>,
+    snapshot_id: &ID,
+    existing_packs: &IdSet<ID>,
+) -> Result<usize> {
     let snapshot = repo.load_snapshot(snapshot_id, None)?;
     let tree_id = snapshot.tree;
 
@@ -95,27 +100,22 @@ pub fn verify_snapshot_refs(repo: Arc<Repository>, snapshot_id: &ID) -> Result<u
 
     for (_path, stream_node) in stream.flatten() {
         let node = stream_node.node;
-        match node.node_type {
-            NodeType::File => {
-                if let Some(blobs) = node.blobs {
-                    for blob_id in &blobs {
-                        if index.get(blob_id).is_none() {
-                            // TODO: Optional verbose logging here to list missing files
-                            missing_blobs += 1;
-                        }
+
+        let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
+
+        for id in referenced_ids {
+            match index.get(id) {
+                Some(blob_locator) => {
+                    if !existing_packs.contains(&blob_locator.pack_id) {
+                        bail!(
+                            "Pack {} referenced by blob {} is missing from storage",
+                            blob_locator.pack_id,
+                            id
+                        );
                     }
                 }
+                None => missing_blobs += 1,
             }
-            NodeType::Directory => {
-                // Directories refer to a subtree ID
-                if let Some(subtree_id) = &node.tree
-                    && index.get(subtree_id).is_none()
-                {
-                    missing_blobs += 1;
-                }
-            }
-            // Other types usually store data inline or in the node struct
-            _ => (),
         }
     }
 

@@ -124,14 +124,13 @@ mod tests {
             tolerance: 0.0_f32,
             tags_str: Some(String::new()),
             keep_tags_str: Some(String::new()),
-            verify: true,
         };
         commands::cmd_forget::run(&global, &forget_args).context("Failed to run cmd_forget")?;
 
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: false,
-            verify: true,
+
             no_repack: false,
         };
         commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
@@ -146,7 +145,7 @@ mod tests {
             exclude: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
-            no_verify: false,
+
             quit_on_error: true,
             delete: false,
             no_preserve_root: false,
@@ -284,7 +283,6 @@ mod tests {
             tolerance: 0.0_f32,
             tags_str: Some(String::new()),
             keep_tags_str: Some(String::new()),
-            verify: true,
         };
         commands::cmd_forget::run(&global, &forget_args).context("Failed to run cmd_forget")?;
 
@@ -294,7 +292,7 @@ mod tests {
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: true, // DRY-RUN !
-            verify: true,
+
             no_repack: false,
         };
         commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
@@ -306,7 +304,7 @@ mod tests {
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: false, // No dry-run
-            verify: true,
+
             no_repack: false,
         };
         commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;

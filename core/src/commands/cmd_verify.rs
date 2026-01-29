@@ -10,7 +10,6 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStream,
@@ -87,7 +86,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Physical Verification (Optional)
     // --------------------------------
     if args.read_packs {
-        ui::cli::log!("{}", "Verifying Pack Integrity (Physical)...".bold());
+        ui::cli::log!("{}", "Verifying Pack Integrity...".bold());
 
         let style = ProgressStyle::default_bar()
             .template("[{custom_elapsed}] [{bar:25.cyan/white}] {pos}/{len} packs ({msg})")
@@ -161,7 +160,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // ------------------------------------------
     // Logical Verification (Snapshot References)
     // ------------------------------------------
-    ui::cli::log!("{}", "Verifying Snapshots (Logical)...".bold());
+    ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
     let snapshot_stream = SnapshotStream::new(repo_arc.clone())?;
     let snapshots: Vec<_> = snapshot_stream.collect(); // Collect to know total count
@@ -170,12 +169,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut snapshots_corrupt = 0;
 
     for (i, (snapshot_id, _)) in snapshots.iter().enumerate() {
-        let short_id = snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
-
-        // Print progress
         let msg = format!(
-            "Snapshot {} {}",
-            short_id.bold().yellow(),
+            "{} {}",
+            snapshot_id.to_short_hex(12).bold().yellow(),
             format!("({}/{})", i + 1, num_snapshots).dimmed()
         );
 
@@ -224,6 +220,16 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             "{} Found {} (run 'prune' to clean up).",
             "[INFO]".yellow(),
             utils::format_count(dangling_count, "unreferenced blob", "unreferenced blobs")
+        );
+    }
+
+    if !args.read_packs {
+        ui::cli::log!(
+            "{} {} {}.\n",
+            "Note:".bold().dimmed(),
+            "Only references were checked. To verify data integrity, run this command with"
+                .dimmed(),
+            "--read-packs".dimmed().bold()
         );
     }
 

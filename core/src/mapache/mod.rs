@@ -252,7 +252,7 @@ pub(crate) fn rewrite_snapshot_tree(
     let mut encoding_context = repo.get_encoding_context()?;
 
     for (path, mut stream_node) in node_stream.flatten() {
-        progress_reporter.processing_node(&path, NodeDiff::Unchanged);
+        progress_reporter.processing_node(path.clone(), NodeDiff::Unchanged);
 
         if stream_node.node.is_file() {
             if !rechunk {
@@ -301,12 +301,12 @@ pub(crate) fn rewrite_snapshot_tree(
             snapshot.summary.processed_bytes += stream_node.node.metadata.size;
         }
 
-        progress_reporter.processed_node(&path, NodeDiff::Unchanged);
-        snapshot.summary.processed_items_count += 1;
-
         // The path is not excluded, so we add the node to the pending trees map.
 
         tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)?;
+
+        progress_reporter.processed_node(path, NodeDiff::Unchanged);
+        snapshot.summary.processed_items_count += 1;
     }
 
     tree_serializer.finalize_root(&mut encoding_context)?;

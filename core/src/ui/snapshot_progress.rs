@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -22,14 +22,14 @@ use crate::{
 };
 
 enum UiEvent {
-    Start(String),
-    Done(String),
+    Start(PathBuf),
+    Done(PathBuf),
     Shutdown,
 }
 
 fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<ProgressBar>) {
     let slots_limit = spinners.len();
-    let mut active: Vec<String> = Vec::with_capacity(slots_limit);
+    let mut active: Vec<PathBuf> = Vec::with_capacity(slots_limit);
 
     // Throttle UI updates
     let mut last_update = Instant::now();
@@ -53,8 +53,11 @@ fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<Progr
         // This ensures "snappy" updates when idle, but "batched" updates during bursts.
         if rx.is_empty() || last_update.elapsed() >= update_interval {
             for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
-                let msg = active.get(i).cloned().unwrap_or_default();
-                spinner.set_message(msg);
+                let path = active.get(i).cloned().unwrap_or_default();
+                spinner.set_message(utils::abbreviate_path(
+                    &path,
+                    crate::mapache::defaults::MAX_PATH_DISPLAY_LEN,
+                ));
             }
             last_update = Instant::now();
         }
@@ -353,17 +356,9 @@ impl SnapshotProgressReporter {
         let _ = self.mp.clear();
     }
 
-    fn abbr(path: &Path) -> String {
-        crate::utils::abbreviate_path(path, crate::mapache::defaults::MAX_PATH_DISPLAY_LEN)
-    }
-
-    pub fn processing_node(&self, path: &Path, diff: NodeDiff) {
+    pub fn processing_node(&self, path: PathBuf, diff: NodeDiff) {
         if self.ui_stop.load(Ordering::Relaxed) {
             return;
-        }
-
-        if !self.file_spinners.is_empty() && diff != NodeDiff::Deleted {
-            let _ = self.ui_tx.try_send(UiEvent::Start(Self::abbr(path)));
         }
 
         if self.verbosity >= 3 {
@@ -376,16 +371,20 @@ impl SnapshotProgressReporter {
             self.progress_bar
                 .println(format!("{}  {}", diff_mark, path.display()));
         }
+
+        if !self.file_spinners.is_empty() && diff != NodeDiff::Deleted {
+            let _ = self.ui_tx.try_send(UiEvent::Start(path));
+        }
     }
 
-    pub fn processed_node(&self, path: &Path, diff: NodeDiff) {
+    pub fn processed_node(&self, path: PathBuf, diff: NodeDiff) {
         if diff != NodeDiff::Deleted {
             self.processed_items_count.fetch_add(1, Ordering::Relaxed);
             self.companion_bar.inc(1);
         }
 
         if !self.ui_stop.load(Ordering::Relaxed) && !self.file_spinners.is_empty() {
-            let _ = self.ui_tx.send(UiEvent::Done(Self::abbr(path)));
+            let _ = self.ui_tx.send(UiEvent::Done(path));
         }
     }
 

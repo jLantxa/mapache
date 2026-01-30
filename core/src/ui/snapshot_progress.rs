@@ -14,7 +14,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::{Mutex, RwLock};
 
 use crate::{
-    fs::tree::NodeDiff,
+    fs::{abbreviate_path, tree::NodeDiff},
     mapache::global::GlobalOpts,
     repository::snapshot::{DiffCounts, DiffCountsAtomic},
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
@@ -54,7 +54,7 @@ fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<Progr
         if rx.is_empty() || last_update.elapsed() >= update_interval {
             for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
                 let path = active.get(i).cloned().unwrap_or_default();
-                spinner.set_message(utils::abbreviate_path(
+                spinner.set_message(abbreviate_path(
                     &path,
                     crate::mapache::defaults::MAX_PATH_DISPLAY_LEN,
                 ));

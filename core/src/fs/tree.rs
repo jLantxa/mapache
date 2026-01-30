@@ -9,10 +9,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    fs::{self, node::Node},
+    fs::{self, calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
     mapache::{BlobType, ID, SaveID},
     repository::{repo::Repository, storage::EncodingContext},
-    utils::{self, filter::PathFilter},
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -113,9 +112,8 @@ impl FSNodeStream {
         // Keep only allowed roots
         paths.retain(|p| filter.allow(p));
 
-        let common_root = utils::calculate_lcp(&paths, false);
-        let (_root_children_count, intermediate_map) =
-            utils::get_intermediate_paths(&common_root, &paths);
+        let common_root = calculate_lcp(&paths, false);
+        let (_root_children_count, intermediate_map) = get_intermediate_paths(&common_root, &paths);
 
         // Prefilter intermediate paths once (no need to re-check in next()).
         let mut intermediate_paths: Vec<(PathBuf, usize)> = intermediate_map

@@ -28,8 +28,12 @@ use crate::{
 )]
 pub struct CmdArgs {
     /// Read, decrypt, and hash ALL data in the repository (Slow but thorough)
-    #[clap(long = "read-packs", default_value_t = false)]
+    #[clap(long, default_value_t = false)]
     pub read_packs: bool,
+
+    /// Use local cache
+    #[clap(long, default_value_t = false)]
+    pub with_cache: bool,
 }
 
 struct VerifyStats {
@@ -57,9 +61,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
+        use_cache: args.with_cache,
         compression: global_args.compression_level,
     };
+
+    if global_args.no_cache {
+        ui::cli::warning!(
+            "--no-cache has no effect on this command. \
+            The local cache is disabled by default. \
+            Use --with-cache to enable it."
+        );
+    }
 
     // Open repository
     let (repo_arc, secure_storage, lock_handle) = Repository::try_open_with_lock(

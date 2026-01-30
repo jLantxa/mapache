@@ -14,6 +14,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
 
 use crate::{
+    fs::abbreviate_path,
     mapache::{defaults::MAX_PATH_DISPLAY_LEN, global::GlobalOpts},
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
@@ -203,7 +204,7 @@ impl RestoreProgressReporter {
 
     pub fn processing_node(&self, path: &Path) {
         if !self.ui_stop.load(Ordering::Relaxed) {
-            let abbr = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
+            let abbr = abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
             let _ = self.ui_tx.try_send(UiEvent::Start(abbr));
         }
     }
@@ -216,7 +217,7 @@ impl RestoreProgressReporter {
         }
 
         if !self.ui_stop.load(Ordering::Relaxed) {
-            let abbr = utils::abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
+            let abbr = abbreviate_path(path, MAX_PATH_DISPLAY_LEN);
             let _ = self.ui_tx.try_send(UiEvent::Done(abbr));
         }
     }

@@ -91,7 +91,10 @@ mod tests {
         commands::cmd_snapshot::run(&global, &snapshot_args)
             .context("Failed to run cmd_snapshot")?;
 
-        let verify_args = cmd_verify::CmdArgs { read_packs: false };
+        let verify_args = cmd_verify::CmdArgs {
+            read_packs: true,
+            with_cache: false,
+        };
         let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
         assert!(first_verify_result.is_ok(), "First verify should pass");
 
@@ -174,7 +177,10 @@ mod tests {
         commands::cmd_snapshot::run(&global, &snapshot_args)
             .context("Failed to run cmd_snapshot")?;
 
-        let verify_args = cmd_verify::CmdArgs { read_packs: false };
+        let verify_args = cmd_verify::CmdArgs {
+            read_packs: true,
+            with_cache: false,
+        };
         let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
         assert!(first_verify_result.is_ok(), "Verify should pass");
 
@@ -257,7 +263,10 @@ mod tests {
         commands::cmd_snapshot::run(&global, &snapshot_args)
             .context("Failed to run cmd_snapshot")?;
 
-        let verify_args = cmd_verify::CmdArgs { read_packs: true };
+        let verify_args = cmd_verify::CmdArgs {
+            read_packs: true,
+            with_cache: false,
+        };
         let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
         assert!(first_verify_result.is_ok(), "Verify should pass");
 

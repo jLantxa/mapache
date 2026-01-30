@@ -8,12 +8,12 @@ use anyhow::{Context, Result, ensure};
 
 use crate::{
     fs::{
+        extract_parent, get_intermediate_paths,
         node::Node,
         tree::{StreamNode, Tree},
     },
     mapache::ID,
     repository::{repo::Repository, storage::EncodingContext},
-    utils,
 };
 
 /// Represents the expected number of children for a directory node.
@@ -63,7 +63,7 @@ fn init_pending_trees(
 
     // We need to know ahead how many children the root is expecting, because the FSNodeStream
     // does not emit it (the root node).
-    let (root_children_count, _) = utils::get_intermediate_paths(snapshot_root_path, paths);
+    let (root_children_count, _) = get_intermediate_paths(snapshot_root_path, paths);
 
     // The tree root. It has no node.
     pending_trees.insert(
@@ -137,7 +137,7 @@ impl TreeSerializer {
         } else {
             // For non-directory nodes (Files, Symlinks, etc.), we finalize the item
             // and insert it into the parent's PendingTree.
-            let parent_path = utils::extract_parent(path)
+            let parent_path = extract_parent(path)
                 .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
 
             self.insert_finalized_node(&parent_path, stream_node.node);
@@ -190,7 +190,7 @@ impl TreeSerializer {
         }
 
         // Non-root case
-        let parent_path = utils::extract_parent(&dir_path).with_context(|| {
+        let parent_path = extract_parent(&dir_path).with_context(|| {
             format!(
                 "Could not extract parent path for finalized directory '{}'",
                 dir_path.display()

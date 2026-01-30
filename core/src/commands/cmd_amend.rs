@@ -10,13 +10,14 @@ use crate::{
         EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
         parse_tags,
     },
+    fs::filter::parse_relative_filter_paths,
     mapache::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self, snapshot_progress::SnapshotProgressReporter},
-    utils::{self, filter::parse_relative_filter_paths, size},
+    utils::{self, size},
 };
 
 #[derive(Args, Debug)]

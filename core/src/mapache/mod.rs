@@ -16,15 +16,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::{
     archiver::{processor::chunk_and_store_file, tree_serializer::TreeSerializer},
     fs::{
+        filter::{GlobRule, PathFilter},
         node::Node,
         tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
     },
     repository::{repo::Repository, snapshot::Snapshot},
     ui::snapshot_progress::SnapshotProgressReporter,
-    utils::{
-        self,
-        filter::{GlobRule, PathFilter},
-    },
+    utils::{self},
 };
 
 pub const ID_LENGTH: usize = 32;

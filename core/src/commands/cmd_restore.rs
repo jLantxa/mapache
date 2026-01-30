@@ -12,7 +12,12 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
-    fs::{get_absolute_normalized_path, tree::SerializedNodeStream},
+    fs::{
+        calculate_lcp,
+        filter::{expand_include_paths, parse_relative_filter_paths},
+        get_absolute_normalized_path,
+        tree::SerializedNodeStream,
+    },
     mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
     repository::repo::{RepoConfig, Repository},
     restorer::{self, RestoreOptions, Strategy},
@@ -20,11 +25,7 @@ use crate::{
         self, SPINNER_TICK_CHARS, default_bar_draw_target,
         restore_progress::RestoreProgressReporter,
     },
-    utils::{
-        self,
-        filter::{expand_include_paths, parse_relative_filter_paths},
-        format_size_binary, size,
-    },
+    utils::{self, format_size_binary, size},
 };
 
 impl std::fmt::Display for Strategy {
@@ -127,7 +128,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let common_prefix: Option<PathBuf> = if args.strip_prefix {
         parsed_includes
             .as_ref()
-            .map(|includes| utils::calculate_lcp(includes, false))
+            .map(|includes| calculate_lcp(includes, false))
     } else {
         None
     };

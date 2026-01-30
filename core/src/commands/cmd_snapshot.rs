@@ -8,7 +8,10 @@ use crate::{
     archiver::{self, SnapshotOptions},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
-    fs::{self},
+    fs::{
+        self, calculate_lcp,
+        filter::{PathFilter, normalized_exclude_paths},
+    },
     mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{RepoConfig, Repository},
@@ -19,11 +22,7 @@ use crate::{
         snapshot_progress::SnapshotProgressReporter,
         table::{Alignment, Table},
     },
-    utils::{
-        self,
-        filter::{PathFilter, normalized_exclude_paths},
-        size,
-    },
+    utils::{self, size},
 };
 
 use super::{GlobalArgs, UseSnapshot};
@@ -152,7 +151,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
 
     // Extract the snapshot root path
-    let snapshot_root_path = utils::calculate_lcp(&absolute_source_paths, false);
+    let snapshot_root_path = calculate_lcp(&absolute_source_paths, false);
 
     ui::cli::log!();
     if args.dry_run {

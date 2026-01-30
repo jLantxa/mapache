@@ -1,5 +1,12 @@
 # Changelog
 
+## Latest
+
+### Changes
+
+- `mapache verify` runs now doesn't use the local cache by default. Added a
+  `--with-cache` option to enable it.
+
 ## v0.1.7
 
 ### Fixes

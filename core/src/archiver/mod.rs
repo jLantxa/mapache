@@ -109,7 +109,9 @@ pub(crate) fn snapshot(
         None,
     ) {
         Ok(stream) => stream,
-        Err(e) => bail!(anyhow!("Failed to initialize previous tree stream: {e}")),
+        Err(e) => bail!(anyhow!(
+            "Failed to initialize previous snapshot tree stream: {e}"
+        )),
     };
 
     // Channels

@@ -12,8 +12,8 @@ use crate::{
 };
 
 pub mod cli;
-pub mod restore_progress;
-pub mod snapshot_progress;
+pub(crate) mod restore_progress;
+pub(crate) mod snapshot_progress;
 pub mod table;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";

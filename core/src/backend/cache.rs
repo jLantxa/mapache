@@ -44,7 +44,7 @@ impl CacheBackend {
     }
 
     pub fn default_dir() -> PathBuf {
-        BASE_DIRS.read().cache_dir().join(APP_NAME)
+        BASE_DIRS.cache_dir().join(APP_NAME)
     }
 
     /// Returns true if the storage handle is eligible for caching.

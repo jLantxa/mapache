@@ -1,7 +1,8 @@
-use std::{sync::LazyLock, time::Duration};
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::Duration;
 
 use directories::BaseDirs;
-use parking_lot::RwLock;
 
 use crate::{
     commands::GlobalArgs,
@@ -20,83 +21,51 @@ pub const THIS_MAPACHE_VERSION: &str =
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Base OS directories (cache, home, etc.)
-pub static BASE_DIRS: LazyLock<RwLock<BaseDirs>> = LazyLock::new(|| {
-    RwLock::new(
-        BaseDirs::new()
-            .expect("Expected to find a valid user home directory to initialize base paths"),
-    )
+pub static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {
+    BaseDirs::new().expect("Expected to find a valid user home directory to initialize base paths")
 });
 
-/// Global arguments that can be read at any time during the execution of the program.
-pub static GLOBAL_OPTS: LazyLock<RwLock<GlobalOpts>> =
-    LazyLock::new(|| RwLock::new(GlobalOpts::default()));
+/// Global Settings stored in Atomics for lock-free, thread-safe access.
+/// This allows logging macros to check verbosity without lock contention or deadlock risks.
+static VERBOSITY: AtomicU32 = AtomicU32::new(DEFAULT_VERBOSITY);
+static REFRESH_INTERVAL_MS: AtomicU64 =
+    AtomicU64::new((1000.0 / DEFAULT_PROGRESS_REFRESH_RATE_HZ) as u64);
 
-/// Global execution arguments parameters. This struct stores global configuration.
-/// These values may come from the CLI, program constants, environment variables,
-/// configuration file, etc.
-#[derive(Debug)]
-pub struct GlobalOpts {
-    pub verbosity: u32,
-    pub progress_refresh_interval: Duration,
-}
+pub struct GlobalOpts;
 
-// NOTE: Logging macros can't be used here, as they need to read the verbosity
-// value from the GLOBAL_OPTS, acquiring a lock.
 impl GlobalOpts {
-    fn get_refresh_interval() -> Duration {
-        let var_hz = get_envvar(REFRESH_RATE_ENVVAR);
-
-        let refresh_rate_hz = match var_hz {
-            Some(val) => match val.parse::<f32>() {
-                Ok(hz) => {
-                    if hz > 0.0 && hz <= 60.0 {
-                        hz
-                    } else {
-                        DEFAULT_PROGRESS_REFRESH_RATE_HZ
-                    }
-                }
-                Err(_) => DEFAULT_PROGRESS_REFRESH_RATE_HZ,
-            },
-            None => DEFAULT_PROGRESS_REFRESH_RATE_HZ,
-        };
-
-        calculate_refresh_interval(refresh_rate_hz)
-    }
-
     /// Returns the global verbosity setting.
+    #[inline]
     pub fn verbosity() -> u32 {
-        GLOBAL_OPTS.read().verbosity
+        VERBOSITY.load(Ordering::Relaxed)
     }
 
-    /// Returns the global progress refresh interval.
+    /// Returns the global progress refresh interval as a Duration.
     pub fn progress_refresh_interval() -> Duration {
-        GLOBAL_OPTS.read().progress_refresh_interval
+        Duration::from_millis(REFRESH_INTERVAL_MS.load(Ordering::Relaxed))
+    }
+
+    /// Internal logic to parse refresh rate and update the atomic storage.
+    fn init_refresh_interval() {
+        let hz = get_envvar(REFRESH_RATE_ENVVAR)
+            .and_then(|val| val.parse::<f32>().ok())
+            .filter(|&hz| hz > 0.0 && hz <= 60.0)
+            .unwrap_or(DEFAULT_PROGRESS_REFRESH_RATE_HZ);
+
+        let ms = (1000.0 / hz) as u64;
+        REFRESH_INTERVAL_MS.store(ms, Ordering::Relaxed);
     }
 }
 
-impl Default for GlobalOpts {
-    fn default() -> Self {
-        Self {
-            verbosity: DEFAULT_VERBOSITY,
-            progress_refresh_interval: Self::get_refresh_interval(),
-        }
-    }
-}
-
-/// Sets global options from the global args.
+/// Sets global options from CLI arguments and environment variables.
+/// This should be called once near the start of `main`.
 pub fn set_global_opts_with_args(global_args: &GlobalArgs) {
     let verbosity = if global_args.quiet {
         0
-    } else if let Some(v) = global_args.verbosity {
-        v
     } else {
-        DEFAULT_VERBOSITY
+        global_args.verbosity.unwrap_or(DEFAULT_VERBOSITY)
     };
 
-    let mut opts = GLOBAL_OPTS.write();
-    opts.verbosity = verbosity;
-}
-
-fn calculate_refresh_interval(hz: f32) -> Duration {
-    Duration::from_millis((1000.0 / hz) as u64)
+    VERBOSITY.store(verbosity, Ordering::Relaxed);
+    GlobalOpts::init_refresh_interval();
 }

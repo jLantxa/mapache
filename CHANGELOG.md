@@ -1,11 +1,13 @@
 # Changelog
 
-## Latest
+## [Unreleased]
 
 ### Changes
 
 - `mapache verify` runs now doesn't use the local cache by default. Added a
   `--with-cache` option to enable it.
+- Optimized `snapshot` performance by implementing `Packer` buffer recycling and
+  offloading packer flushing to the `PackSaver` threads.
 
 ## v0.1.7
 

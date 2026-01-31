@@ -7,7 +7,7 @@ use colored::Colorize;
 use crate::{
     backend::{Handle, new_backend_with_prompt},
     commands::GlobalArgs,
-    mapache::{ContentIdType, ID},
+    mapache::{ContentIdType, ID, defaults::DEFAULT_COMPRESSION},
     repository::{
         keys::{KeyFileStream, KeyManager},
         repo::{Auth, KEYS_DIR},
@@ -105,7 +105,7 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
     let new_key_file =
         KeyManager::generate_key_file(&new_auth, master_key).context("Could not generate key")?;
 
-    let ss = SecureStorage::new().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+    let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
     let new_keyfile_json = serde_json::to_string_pretty(&new_key_file)?;
     let new_keyfile_json = ss.compress(new_keyfile_json.as_bytes())?;

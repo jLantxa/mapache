@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{Handle, StorageBackend},
-    mapache::{self, ContentIdType, ID},
+    mapache::{self, ContentIdType, ID, defaults::DEFAULT_COMPRESSION},
     repository::{
         repo::{Auth, KEYS_DIR},
         storage::SecureStorage,
@@ -89,7 +89,7 @@ impl KeyManager {
         let intermediate_key =
             SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params())?;
         let ss = SecureStorage::new()
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&intermediate_key);
 
         ss.decrypt(&encrypted_key)
@@ -108,7 +108,7 @@ impl KeyManager {
             SecureStorage::derive_key::<32>(&auth.password, &salt, argon2_params.clone())?;
 
         let ss = SecureStorage::new()
-            .with_compression(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&intermediate_key);
 
         let encrypted_key = ss.encrypt(&master_key)?;
@@ -134,7 +134,7 @@ impl KeyManager {
     ) -> Result<(Option<ID>, Vec<u8>)> {
         match keyfile_path {
             Some(path) => {
-                let ss = SecureStorage::new().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+                let ss = SecureStorage::new();
 
                 let keyfile = std::fs::read(path)?;
                 let keyfile = ss.decompress(&keyfile)?;
@@ -171,7 +171,7 @@ impl KeyManager {
             return Ok(None);
         }
 
-        let ss = SecureStorage::new().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+        let ss = SecureStorage::new();
 
         let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
         let keyfile = self.backend.read(&handle, 0, 0)?;
@@ -220,7 +220,7 @@ impl KeyManager {
 
     /// Save a KeyFile
     pub fn save_keyfile(&self, keyfile: &KeyFile) -> Result<ID> {
-        let ss = SecureStorage::new().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+        let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
         let keyfile_json = serde_json::to_string(keyfile)?;
         let keyfile_json = ss.compress(keyfile_json.as_bytes())?;
@@ -316,7 +316,7 @@ impl Iterator for KeyFileStream {
                 Ok(id) => id,
             };
 
-            let ss = SecureStorage::new().with_compression(zstd::DEFAULT_COMPRESSION_LEVEL);
+            let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
             let keyfile_data = match self.backend.read(
                 &Handle::new_with_hint(&path, ContentIdType::Key, true),

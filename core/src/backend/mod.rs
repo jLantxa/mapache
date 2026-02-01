@@ -247,6 +247,25 @@ pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec
     Ok(nodes)
 }
 
+pub fn set_readonly_mode(mode: u32, readonly: bool, is_dir: bool) -> u32 {
+    let base = mode & !0o777; // Preserve special bits (setuid, etc.)
+    if is_dir {
+        // Directories need Execute bits to be listable/traversable
+        if readonly {
+            base | 0o500 // r-x------
+        } else {
+            base | 0o700 // rwx------
+        }
+    } else {
+        // Standard files
+        if readonly {
+            base | 0o400 // r---------
+        } else {
+            base | 0o600 // rw-------
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +386,42 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_set_readonly_mode() {
+        // --- FILE TESTS ---
+        // Start with loose permissions: -rw-r--r-- (0o644)
+        let initial_file = 0o100644;
+        let result = set_readonly_mode(initial_file, true, false);
+        // Should be strictly -r-------- (0o400)
+        assert_eq!(result, 0o100400);
+
+        // Toggle back to writable
+        let result = set_readonly_mode(0o100400, false, false);
+        // Should be -rw------- (0o600)
+        assert_eq!(result, 0o100600);
+
+        // --- DIRECTORY TESTS ---
+        // Start with a Directory (0o040000) and loose perms (0o755)
+        let initial_dir = 0o040755;
+
+        // Set Directory to Read-Only
+        let result = set_readonly_mode(initial_dir, true, true);
+        // Should be dr-x------ (0o500) - Execute bit is required to list/enter!
+        assert_eq!(result, 0o040500);
+        assert!(result & 0o040000 != 0, "Must remain a directory bitmask");
+
+        // Set Directory back to Writable
+        let result = set_readonly_mode(result, false, true);
+        // Should be drwx------ (0o700)
+        assert_eq!(result, 0o040700);
+
+        // --- SANITY CHECK ---
+        // Ensure high-order bits (like SUID/SGID) are stripped or handled
+        // if that is your helper's intent (current logic strips them)
+        let messy_file = 0o100777;
+        let result = set_readonly_mode(messy_file, true, false);
+        assert_eq!(result, 0o100400);
     }
 }

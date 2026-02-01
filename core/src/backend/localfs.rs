@@ -55,12 +55,10 @@ impl LocalFS {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut mode = perms.mode();
-            if readonly {
-                mode &= !0o222; // Remove all write bits
-            } else {
-                mode |= 0o600; // Restore owner read/write (rw-------)
-            }
+
+            use crate::backend::set_readonly_mode;
+
+            let mode = set_readonly_mode(perms.mode(), readonly, metadata.is_dir());
             perms.set_mode(mode);
         }
 
@@ -205,12 +203,14 @@ impl StorageBackend for LocalFS {
 
     fn create_dir(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
-        std::fs::create_dir_all(&full_path).with_context(|| {
-            format!(
-                "Could not create directory hierarchy '{}' in local backend",
-                path.display()
-            )
-        })
+        std::fs::create_dir_all(&full_path)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
     }
 
     fn remove(&self, path: &Path) -> Result<()> {
@@ -283,19 +283,29 @@ impl StorageBackend for LocalFS {
         let meta = std::fs::symlink_metadata(&full_path)
             .with_context(|| format!("lstat failed for {}", path.display()))?;
 
+        let (perm, uid, gid) = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                (
+                    Some(meta.permissions().mode()),
+                    Some(meta.uid()),
+                    Some(meta.gid()),
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                (None, None, None)
+            }
+        };
+
         Ok(NodeAttr {
             size: Some(meta.len()),
-            uid: None,
-            gid: None,
-            perm: None,
-            atime: Some(
-                meta.accessed()
-                    .context("Access time not supported on this platform")?,
-            ),
-            mtime: Some(
-                meta.modified()
-                    .context("Modification time not supported on this platform")?,
-            ),
+            uid,
+            gid,
+            perm,
+            atime: meta.accessed().ok(),
+            mtime: meta.modified().ok(),
         })
     }
 }

@@ -10,7 +10,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ssh2::{RenameFlags, Session, Sftp};
 
-use crate::{backend::Handle, repository::repo::REPO_TMP_EXTENSION, ui};
+use crate::{
+    backend::{Handle, set_readonly_mode},
+    repository::repo::REPO_TMP_EXTENSION,
+    ui,
+};
 
 use super::StorageBackend;
 
@@ -254,16 +258,13 @@ impl SftpBackend {
             Err(e) => return Err(anyhow!(e)).context("Failed to stat remote file"),
         };
 
+        let is_dir = stat.is_dir();
         if let Some(perm) = stat.perm.as_mut() {
-            if readonly {
-                *perm &= !0o222; // Strip all write bits (read-only)
-            } else {
-                *perm |= 0o600; // Add owner read/write (writable)
-            }
-
+            *perm = set_readonly_mode(*perm, readonly, is_dir);
             sftp.setstat(&full_path, stat)
                 .with_context(|| format!("Failed to update SFTP permissions for {path:?}"))?;
         }
+
         Ok(())
     }
 
@@ -314,17 +315,16 @@ impl SftpBackend {
         let full_from = self.full_path(from);
         let full_to = self.full_path(to);
 
-        // On many SFTP servers (especially Windows-based),
-        // the source must be writable to be moved.
-        let _ = self.set_readonly_status(sftp, &full_from, false);
+        let _ = self.set_readonly_status(sftp, from, false);
 
-        // Remove destination if it already exists, ensuring it's writable first.
         if sftp.stat(&full_to).is_ok() {
-            let _ = self.set_readonly_status(sftp, &full_to, true);
+            let _ = self.set_readonly_status(sftp, to, false);
             let _ = sftp.unlink(&full_to);
         }
+        sftp.rename(&full_from, &full_to, Some(RenameFlags::all()))
+            .with_context(|| format!("SFTP rename failed from {from:?} to {to:?}"))?;
 
-        sftp.rename(&full_from, &full_to, Some(RenameFlags::all()))?;
+        let _ = self.set_readonly_status(sftp, to, true);
 
         Ok(())
     }
@@ -410,8 +410,6 @@ impl StorageBackend for SftpBackend {
                 format!("Failed to rename {tmp_path:?}' to {path:?}' after write in sftp backend")
             })?;
 
-        let _ = self.set_readonly_status(sftp, path, true);
-
         Ok(())
     }
 
@@ -481,20 +479,30 @@ impl StorageBackend for SftpBackend {
     fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         let full_path = self.full_path(path);
 
-        let conn = self.pool.get().unwrap();
-        let meta = conn.sftp().lstat(&full_path)?;
+        let conn = self
+            .pool
+            .get()
+            .context("Failed to get SFTP connection for lstat")?;
+        let meta = conn
+            .sftp()
+            .lstat(&full_path)
+            .with_context(|| format!("lstat failed for remote path: {:?}", path))?;
+
+        let to_system_time = |t: u64| {
+            if t == 0 {
+                None
+            } else {
+                Some(UNIX_EPOCH + Duration::from_secs(t))
+            }
+        };
 
         Ok(super::NodeAttr {
             size: meta.size,
             uid: meta.uid,
             gid: meta.gid,
             perm: meta.perm,
-            atime: meta
-                .atime
-                .map(|time| UNIX_EPOCH + Duration::from_secs(time)),
-            mtime: meta
-                .mtime
-                .map(|time| UNIX_EPOCH + Duration::from_secs(time)),
+            atime: meta.atime.and_then(to_system_time),
+            mtime: meta.mtime.and_then(to_system_time),
         })
     }
 }

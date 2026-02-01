@@ -11,7 +11,7 @@ use crate::{
     repository::{
         repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
         retention::{RetentionRule, apply_retention_rules},
-        snapshot::{Snapshot, SnapshotStream},
+        snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
     utils::{self, collections::IdSet, size},
@@ -129,14 +129,18 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     // All sapshots, filter by tags and sorted by timestamp
-    let mut snapshots_sorted: Vec<(ID, Snapshot, bool)> = SnapshotStream::new(repo.clone())?
-        .map(|(id, snapshot)| (id, snapshot, true))
+    let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())?
+        .map(|(id, snapshot)| SnapshotEntry {
+            id,
+            snapshot,
+            active: true,
+        })
         .collect();
     if let Some(tags) = &args.tags_str {
         let tags = parse_tags(Some(tags));
-        snapshots_sorted.retain(|(_id, sn, _active)| sn.has_tags(&tags));
+        snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
     }
-    snapshots_sorted.sort_unstable_by_key(|(_id, snapshot, _active)| snapshot.timestamp);
+    snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
 
     let mut ids_to_keep: IdSet<ID> = IdSet::default();
 
@@ -147,9 +151,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             forget_ids.insert(id);
         }
 
-        for (id, _snapshot, _active) in &snapshots_sorted {
-            if !forget_ids.contains(id) {
-                ids_to_keep.insert(*id);
+        for e in &snapshots_sorted {
+            if !forget_ids.contains(&e.id) {
+                ids_to_keep.insert(e.id);
             }
         }
     } else {
@@ -187,11 +191,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let mut kept_snapshots = Vec::new();
     let mut removed_snapshots = Vec::new();
-    for (id, snapshot, active) in snapshots_sorted.into_iter() {
-        if !ids_to_keep.contains(&id) {
-            removed_snapshots.push((id, snapshot, active));
+    for entry in snapshots_sorted.into_iter() {
+        if !ids_to_keep.contains(&entry.id) {
+            removed_snapshots.push(entry);
         } else {
-            kept_snapshots.push((id, snapshot, active));
+            kept_snapshots.push(entry);
         };
     }
 
@@ -207,11 +211,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         if !args.dry_run {
             let num_removed_snapshots = removed_snapshots.len();
-            for (id, _, _active) in removed_snapshots {
+            for entry in removed_snapshots {
                 if args.force {
-                    repo.delete_file(ContentIdType::Snapshot, &id, None)?;
+                    repo.delete_file(ContentIdType::Snapshot, &entry.id, None)?;
                 } else {
-                    repo.set_extension(ContentIdType::Snapshot, &id, Some(REPO_DROPPED_EXTENSION))?;
+                    repo.set_extension(
+                        ContentIdType::Snapshot,
+                        &entry.id,
+                        Some(REPO_DROPPED_EXTENSION),
+                    )?;
                 }
             }
 
@@ -253,6 +261,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
 #[derive(Serialize)]
 struct MsgForget {
-    kept: Vec<(ID, Snapshot, bool)>,
-    removed: Vec<(ID, Snapshot, bool)>,
+    kept: SnapshotEntryList,
+    removed: SnapshotEntryList,
 }

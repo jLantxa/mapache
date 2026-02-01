@@ -5,7 +5,11 @@ use std::{
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
 
-use crate::{mapache::ID, repository::snapshot::Snapshot, utils::collections::IdSet};
+use crate::{
+    mapache::ID,
+    repository::snapshot::{Snapshot, SnapshotEntry},
+    utils::collections::IdSet,
+};
 
 // Snapshot retention rules.
 // The rules are applied as a union. Snapshots are kept as long as there is at least
@@ -36,7 +40,7 @@ pub enum RetentionRule {
 /// `policies`: A slice of `RetentionRule` to apply.
 /// `now`: The current time to use for `KeepWithin` policy.
 pub fn apply_retention_rules(
-    snapshots_sorted: &[(ID, Snapshot, bool)],
+    snapshots_sorted: &[SnapshotEntry],
     rules: &[RetentionRule],
     now: DateTime<Local>,
 ) -> IdSet<ID> {
@@ -55,7 +59,7 @@ pub fn apply_retention_rules(
                     .iter()
                     .rev()
                     .take(*n)
-                    .map(|(id, _, _active)| *id)
+                    .map(|e| e.id)
                     .collect()
             }
             RetentionRule::KeepWithin(duration) => {
@@ -63,8 +67,8 @@ pub fn apply_retention_rules(
                 let cutoff_time = now - *duration;
                 snapshots_sorted
                     .iter()
-                    .filter(|(_id, snapshot, _active)| snapshot.timestamp >= cutoff_time)
-                    .map(|(id, _, _active)| *id)
+                    .filter(|e| e.snapshot.timestamp >= cutoff_time)
+                    .map(|e| e.id)
                     .collect()
             }
             RetentionRule::KeepYearly(n) => {
@@ -149,8 +153,8 @@ pub fn apply_retention_rules(
                 // Keep all snapshots that match the required tags.
                 snapshots_sorted
                     .iter()
-                    .filter(|(_id, snapshot, _active)| snapshot.has_tags(tags))
-                    .map(|(id, _, _active)| *id)
+                    .filter(|e| e.snapshot.has_tags(tags))
+                    .map(|e| e.id)
                     .collect()
             }
         };
@@ -167,7 +171,7 @@ pub fn apply_retention_rules(
 /// It finds the latest snapshot for each unique period (defined by `key_extractor`)
 /// and then keeps the latest `n` of those periods.
 fn keep_latest_per_period<K, F>(
-    snapshots_sorted: &[(ID, Snapshot, bool)],
+    snapshots_sorted: &[SnapshotEntry],
     key_extractor: F,
     cut_off: DateTime<Local>,
 ) -> IdSet<ID>
@@ -177,11 +181,11 @@ where
 {
     let mut kept_periods: HashMap<K, ID> = HashMap::new();
 
-    for (id, snapshot, _active) in snapshots_sorted.iter().rev() {
-        let key = key_extractor(snapshot);
+    for entry in snapshots_sorted.iter().rev() {
+        let key = key_extractor(&entry.snapshot);
 
-        if snapshot.timestamp >= cut_off {
-            kept_periods.entry(key).or_insert(*id);
+        if entry.snapshot.timestamp >= cut_off {
+            kept_periods.entry(key).or_insert(entry.id);
         }
     }
 
@@ -193,6 +197,8 @@ mod tests {
     use std::{collections::HashSet, path::PathBuf};
 
     use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
+
+    use crate::repository::snapshot::SnapshotEntryList;
 
     use super::*;
 
@@ -219,15 +225,11 @@ mod tests {
     }
 
     /// Creates a standard mock snapshot (ID and Snapshot struct).
-    fn create_snapshot(
-        id_val: u32,
-        timestamp: DateTime<Local>,
-        tags: &[&str],
-    ) -> (ID, Snapshot, bool) {
+    fn create_snapshot(id_val: u32, timestamp: DateTime<Local>, tags: &[&str]) -> SnapshotEntry {
         let snapshot_id = create_id(id_val);
-        (
-            snapshot_id,
-            Snapshot {
+        SnapshotEntry {
+            id: snapshot_id,
+            snapshot: Snapshot {
                 timestamp,
                 parent: None,
                 tree: snapshot_id,
@@ -240,8 +242,8 @@ mod tests {
                 username: None,
                 version: None,
             },
-            true,
-        )
+            active: true,
+        }
     }
 
     fn test_now() -> DateTime<Local> {
@@ -249,7 +251,7 @@ mod tests {
         create_datetime((2025, 5, 25), (21, 58, 0), 0)
     }
 
-    fn create_mock_snapshots() -> Vec<(ID, Snapshot, bool)> {
+    fn create_mock_snapshots() -> SnapshotEntryList {
         let mut snapshots = vec![
             create_snapshot(0, create_datetime((2021, 12, 31), (23, 59, 59), 0), &[]),
             create_snapshot(1, create_datetime((2022, 1, 1), (0, 0, 0), 0), &[]),
@@ -282,15 +284,15 @@ mod tests {
 
         assert_no_duplicate_ids(&snapshots);
 
-        snapshots.sort_by_key(|(_, snapshot, _)| snapshot.timestamp);
+        snapshots.sort_by_key(|s| s.snapshot.timestamp);
 
         snapshots
     }
 
     /// Assert that the snapshots don't have duplicate IDs
-    fn assert_no_duplicate_ids(snapshots: &[(ID, Snapshot, bool)]) {
+    fn assert_no_duplicate_ids(snapshots: &[SnapshotEntry]) {
         let count = snapshots.len();
-        let unique_ids: HashSet<&ID> = snapshots.iter().map(|(id, _, _active)| id).collect();
+        let unique_ids: HashSet<&ID> = snapshots.iter().map(|s| &s.id).collect();
 
         assert_eq!(
             unique_ids.len(),

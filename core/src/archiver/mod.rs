@@ -22,7 +22,7 @@ use crate::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
     },
-    ui::snapshot_progress::SnapshotProgressReporter,
+    ui::snapshot::SnapshotProgressReporter,
     utils,
 };
 
@@ -44,11 +44,11 @@ struct PipelineStatus {
     fatal_error_flag: AtomicBool,
     /// Stores the first error that triggered the shutdown to report back to the user.
     first_error: Mutex<Option<anyhow::Error>>,
-    progress_reporter: Arc<SnapshotProgressReporter>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
 }
 
 impl PipelineStatus {
-    fn new(progress_reporter: Arc<SnapshotProgressReporter>) -> Self {
+    fn new(progress_reporter: Arc<dyn SnapshotProgressReporter>) -> Self {
         Self {
             fatal_error_flag: AtomicBool::new(false),
             first_error: Mutex::new(None),
@@ -82,7 +82,7 @@ pub(crate) fn snapshot(
     repo: Arc<Repository>,
     snapshot_options: SnapshotOptions,
     num_readers: usize,
-    progress_reporter: Arc<SnapshotProgressReporter>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
 ) -> Result<Snapshot> {
     let status = Arc::new(PipelineStatus::new(progress_reporter.clone()));
 

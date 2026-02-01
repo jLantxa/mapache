@@ -1,14 +1,15 @@
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{cleanup::CleanupHandler, parse_tags},
-    mapache::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    mapache::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
-        snapshot::{Snapshot, SnapshotStream},
+        snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
     utils::{self, size},
@@ -40,6 +41,8 @@ pub struct CmdArgs {
     #[arg(long = "tags", value_parser)]
     pub tags_str: Option<String>,
 }
+
+const LOG_MSG: &str = "log";
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
@@ -73,14 +76,22 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             if show_active {
                 let mut active_snapshots = SnapshotStream::new(repo.clone())?
-                    .map(|(id, snapshot)| (id, snapshot, true))
+                    .map(|(id, snapshot)| SnapshotEntry {
+                        id,
+                        snapshot,
+                        active: true,
+                    })
                     .collect();
                 snapshots.append(&mut active_snapshots);
             }
 
             if show_dropped {
                 let mut dropped_snapshots = SnapshotStream::dropped(repo.clone())?
-                    .map(|(id, snapshot)| (id, snapshot, false))
+                    .map(|(id, snapshot)| SnapshotEntry {
+                        id,
+                        snapshot,
+                        active: false,
+                    })
                     .collect();
                 snapshots.append(&mut dropped_snapshots);
             }
@@ -103,37 +114,54 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             };
 
             let snapshot = repo.load_snapshot(&id, ext)?;
-            vec![(id, snapshot, active)]
+            vec![SnapshotEntry {
+                id,
+                snapshot,
+                active,
+            }]
         }
     };
 
     if let Some(tags_str) = &args.tags_str {
         let tags = parse_tags(Some(tags_str));
-        snapshots_sorted.retain(|(_id, sn, _active)| sn.has_tags(&tags));
+        snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
     }
-    snapshots_sorted.sort_unstable_by_key(|(_id, snapshot, _active)| snapshot.timestamp);
+    snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
 
     if snapshots_sorted.is_empty() {
         ui::cli::log!("No snapshots found");
         return Ok(());
     }
 
-    ui::cli::log!();
-    if args.compact {
-        log_snapshots_compact(&snapshots_sorted);
-    } else {
-        log_snapshots_full(&snapshots_sorted);
-    }
+    if !global_args.json {
+        ui::cli::log!();
+        if args.compact {
+            log_snapshots_compact(&snapshots_sorted);
+        } else {
+            log_snapshots_full(&snapshots_sorted);
+        }
 
-    ui::cli::log!("{} snapshots", snapshots_sorted.len());
+        ui::cli::log!("{} snapshots", snapshots_sorted.len());
+    } else {
+        ui::json_reporter::emit_static(
+            LOG_MSG,
+            &MsgSnapshots {
+                snapshots: snapshots_sorted,
+            },
+        );
+    }
 
     Ok(())
 }
 
-fn log_snapshots_full(snapshots: &[(ID, Snapshot, bool)]) {
+fn log_snapshots_full(snapshots: &SnapshotEntryList) {
     let mut peekable_snapshots = snapshots.iter().peekable();
-    while let Some((id, snapshot, active)) = peekable_snapshots.next() {
-        if *active {
+    while let Some(entry) = peekable_snapshots.next() {
+        let id = &entry.id;
+        let snapshot = &entry.snapshot;
+        let active = entry.active;
+
+        if active {
             ui::cli::log!("{}", id.to_hex().bold().yellow());
         } else {
             ui::cli::log!("{}", (id.to_hex() + " (dropped)").bold().dimmed());
@@ -193,4 +221,9 @@ fn log_snapshots_full(snapshots: &[(ID, Snapshot, bool)]) {
     }
 
     ui::cli::log!();
+}
+
+#[derive(Serialize)]
+struct MsgSnapshots {
+    snapshots: SnapshotEntryList,
 }

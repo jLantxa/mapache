@@ -135,6 +135,10 @@ pub struct GlobalArgs {
     #[clap(long, group = "verbosity_group")]
     pub quiet: bool,
 
+    /// Enable json output
+    #[clap(long)]
+    pub json: bool,
+
     /// Set the verbosity level [0-3]
     #[clap(short, long, group = "verbosity_group")]
     pub verbosity: Option<u32>,

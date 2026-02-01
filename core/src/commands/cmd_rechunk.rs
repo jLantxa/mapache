@@ -12,7 +12,10 @@ use crate::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStream,
     },
-    ui::{self, snapshot_progress::SnapshotProgressReporter},
+    ui::{
+        self,
+        snapshot::{SnapshotProgressReporter, ui::UiSnapshotProgressReporter},
+    },
     utils::{self, size},
 };
 
@@ -63,11 +66,12 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             num_snapshots
         );
 
-        let progress_reporter = Arc::new(SnapshotProgressReporter::new(
-            Some(snapshot.summary.processed_items_count),
-            Some(snapshot.summary.processed_bytes),
-            1,
-        ));
+        let progress_reporter: Arc<dyn SnapshotProgressReporter> =
+            Arc::new(UiSnapshotProgressReporter::new(
+                Some(snapshot.summary.processed_items_count),
+                Some(snapshot.summary.processed_bytes),
+                1,
+            ));
 
         rewrite_snapshot_tree(
             repo.clone(),

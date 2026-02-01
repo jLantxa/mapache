@@ -8,6 +8,9 @@
   `--with-cache` option to enable it.
 - Optimized `snapshot` performance by implementing `Packer` buffer recycling and
   offloading packer flushing to the `PackSaver` threads.
+- Mapache can now print json output for selected commands using the`--json`
+  option. Initial support is still limited to `init`, `log`, `snapshot` and
+  `forget` commands.
 
 ## v0.1.7
 

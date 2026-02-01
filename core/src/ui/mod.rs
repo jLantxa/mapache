@@ -2,8 +2,8 @@ use colored::Colorize;
 use indicatif::ProgressDrawTarget;
 
 use crate::{
-    mapache::{self, ID, global::GlobalOpts},
-    repository::snapshot::Snapshot,
+    mapache::{self, global::GlobalOpts},
+    repository::snapshot::SnapshotEntryList,
     ui::{
         self,
         table::{Alignment, Table},
@@ -12,8 +12,9 @@ use crate::{
 };
 
 pub mod cli;
+pub(crate) mod json_reporter;
 pub(crate) mod restore_progress;
-pub(crate) mod snapshot_progress;
+pub(crate) mod snapshot;
 pub mod table;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -32,7 +33,7 @@ pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {
 }
 
 /// Logs a list of snapshots in the form of a compact table.
-pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot, bool)>) {
+pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {
     let mut table = Table::new_with_alignments(vec![
         Alignment::Left,
         Alignment::Right,
@@ -49,9 +50,11 @@ pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot, bool)>) {
         "Tags".bold().to_string(),
     ]);
 
-    for (id, snapshot, active) in snapshots {
-        let id_str = id.to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN);
-        let id_str = if *active {
+    for entry in snapshots {
+        let id_str = entry
+            .id
+            .to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN);
+        let id_str = if entry.active {
             id_str.bold().yellow().to_string()
         } else {
             (id_str + " (dropped)").bold().dimmed().to_string()
@@ -59,10 +62,11 @@ pub fn log_snapshots_compact(snapshots: &Vec<(ID, Snapshot, bool)>) {
 
         table.add_row(vec![
             id_str,
-            utils::pretty_print_timestamp(&snapshot.timestamp),
-            snapshot.hostname.clone().unwrap_or_default(),
-            utils::format_size_binary(snapshot.size(), 3),
-            snapshot
+            utils::pretty_print_timestamp(&entry.snapshot.timestamp),
+            entry.snapshot.hostname.clone().unwrap_or_default(),
+            utils::format_size_binary(entry.snapshot.size(), 3),
+            entry
+                .snapshot
                 .tags
                 .iter()
                 .map(|s| s.as_str())

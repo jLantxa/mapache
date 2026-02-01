@@ -11,7 +11,7 @@ use crate::{
     },
     mapache::{self, BlobType, ID, SaveID},
     repository::{repo::Repository, storage::EncodingContext},
-    ui::snapshot_progress::SnapshotProgressReporter,
+    ui::snapshot::SnapshotProgressReporter,
     utils::size,
 };
 
@@ -32,7 +32,7 @@ pub(crate) fn process_item(
     ),
     repo: Arc<Repository>,
     encoding_context: &mut EncodingContext,
-    progress_reporter: &SnapshotProgressReporter,
+    progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Option<StreamNode>> {
     progress_reporter.processing_node(path.to_path_buf(), diff_type);
 
@@ -101,7 +101,7 @@ pub(crate) fn process_item(
 fn report_node_diff(
     node: &Node,
     diff_type: NodeDiff,
-    progress_reporter: &SnapshotProgressReporter,
+    progress_reporter: &dyn SnapshotProgressReporter,
 ) {
     let is_dir = node.is_dir();
 
@@ -143,7 +143,7 @@ pub(crate) fn chunk_and_store_file<R: Read>(
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
-    progress_reporter: &SnapshotProgressReporter,
+    progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
         return store_small_file(repo, encoding_context, reader, node, progress_reporter);
@@ -177,7 +177,7 @@ fn store_small_file<R: Read>(
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
-    progress_reporter: &SnapshotProgressReporter,
+    progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     let size = node.metadata.size as usize;
 

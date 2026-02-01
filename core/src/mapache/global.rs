@@ -60,7 +60,7 @@ impl GlobalOpts {
 /// Sets global options from CLI arguments and environment variables.
 /// This should be called once near the start of `main`.
 pub fn set_global_opts_with_args(global_args: &GlobalArgs) {
-    let verbosity = if global_args.quiet {
+    let verbosity = if global_args.quiet || global_args.json {
         0
     } else {
         global_args.verbosity.unwrap_or(DEFAULT_VERBOSITY)

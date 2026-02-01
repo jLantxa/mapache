@@ -69,6 +69,15 @@ pub struct Snapshot {
     pub summary: SnapshotSummary,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotEntry {
+    pub id: ID,
+    pub snapshot: Snapshot,
+    pub active: bool,
+}
+
+pub type SnapshotEntryList = Vec<SnapshotEntry>;
+
 impl Snapshot {
     #[inline]
     pub fn size(&self) -> u64 {

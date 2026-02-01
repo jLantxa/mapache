@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Error, Result, anyhow, bail};
 use chrono::Duration;
 use clap::{ArgGroup, Parser, Subcommand};
+use serde::Serialize;
 
 use crate::{
     backend::BackendOptions,
@@ -18,6 +19,7 @@ use crate::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotStream},
     },
+    ui::{self},
     utils,
 };
 
@@ -297,11 +299,15 @@ fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 pub fn parse_and_run() -> Result<()> {
     let args = Cli::parse();
 
-    if let Some(global) = extract_global(&args.command) {
-        set_global_opts_with_args(global);
+    let json_enabled = extract_global(&args.command)
+        .map(|g| g.json)
+        .unwrap_or(false);
+
+    if let Some(global_ref) = extract_global(&args.command) {
+        set_global_opts_with_args(global_ref);
     }
 
-    match args.command {
+    let result = match args.command {
         Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args),
         Command::Cat(cmd) => cmd_cat::run(&cmd.global, &cmd.args),
         Command::Cache(cmd) => cmd_cache::run(&cmd),
@@ -325,7 +331,27 @@ pub fn parse_and_run() -> Result<()> {
         Command::Sync(cmd) => cmd_sync::run(&cmd.global, &cmd.args),
         Command::Unlock(cmd) => cmd_unlock::run(&cmd.global, &cmd.args),
         Command::Verify(cmd) => cmd_verify::run(&cmd.global, &cmd.args),
+    };
+
+    if let Err(ref e) = result {
+        if !json_enabled {
+            ui::cli::error!("{}", e);
+        } else {
+            #[derive(Serialize)]
+            struct ErrorMessage<'a> {
+                msg: &'a str,
+            }
+
+            ui::json_reporter::emit_static(
+                "exit_error",
+                &ErrorMessage {
+                    msg: &e.to_string(),
+                },
+            );
+        }
     }
+
+    result
 }
 
 macro_rules! extract_global {

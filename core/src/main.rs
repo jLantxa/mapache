@@ -1,13 +1,9 @@
-use anyhow::Result;
+use mapache::commands;
 
-use mapache::{commands, ui};
-
-fn main() -> Result<()> {
-    // Parse arguments and execute commands
-    if let Err(e) = commands::parse_and_run() {
-        ui::cli::error!("{}", e.to_string());
+fn main() {
+    // Parse arguments and execute commands.
+    // Intercept errors and exit with code 1 on failure.
+    if commands::parse_and_run().is_err() {
         std::process::exit(1);
     }
-
-    Ok(())
 }

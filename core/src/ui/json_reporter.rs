@@ -1,6 +1,12 @@
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::io::{BufWriter, Write};
+use std::{
+    io::{BufWriter, Write},
+    sync::LazyLock,
+};
+
+// A global instance to power the static helper
+static GLOBAL_JSON_REPORTER: LazyLock<JsonReporter> = LazyLock::new(|| JsonReporter::new(true));
 
 pub(crate) struct JsonReporter {
     auto_flush: bool,
@@ -23,15 +29,15 @@ impl JsonReporter {
             payload: &'a T,
         }
 
-        let envelope = Envelope {
-            msg_type,
-            payload: msg,
-        };
-
         let mut guard = self.writer.lock();
-
-        let res = (|| -> Result<(), std::io::Error> {
-            serde_json::to_writer(&mut *guard, &envelope)?;
+        let res = (|| -> Result<(), Box<dyn std::error::Error>> {
+            serde_json::to_writer(
+                &mut *guard,
+                &Envelope {
+                    msg_type,
+                    payload: msg,
+                },
+            )?;
             guard.write_all(b"\n")?;
             if self.auto_flush {
                 guard.flush()?;
@@ -50,27 +56,5 @@ impl JsonReporter {
 }
 
 pub(crate) fn emit_static<T: Serialize>(msg_type: &str, msg: &T) {
-    #[derive(Serialize)]
-    struct Envelope<'a, T: Serialize> {
-        msg_type: &'a str,
-        #[serde(flatten)]
-        payload: &'a T,
-    }
-
-    let envelope = Envelope {
-        msg_type,
-        payload: msg,
-    };
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock(); // Lock once for efficiency
-
-    let res = (|| -> Result<(), Box<dyn std::error::Error>> {
-        serde_json::to_writer(&mut handle, &envelope)?;
-        handle.write_all(b"\n")?;
-        Ok(())
-    })();
-
-    if let Err(e) = res {
-        debug_assert!(false, "JSON Static Reporter error: {e}");
-    }
+    GLOBAL_JSON_REPORTER.emit(msg_type, msg);
 }

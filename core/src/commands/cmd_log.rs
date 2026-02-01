@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -10,11 +11,13 @@ use crate::{
         repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
     },
-    ui::{self, log_snapshots_compact},
+    ui::{self, json_reporter::JsonReporter, log_snapshots_compact},
     utils::{self, size},
 };
 
 use super::GlobalArgs;
+
+type SnapshotList = Vec<(ID, Snapshot, bool)>;
 
 #[derive(Args, Debug)]
 #[clap(about = "Show all snapshots present in the repository")]
@@ -40,6 +43,8 @@ pub struct CmdArgs {
     #[arg(long = "tags", value_parser)]
     pub tags_str: Option<String>,
 }
+
+const LOG_MSG: &str = "log";
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
@@ -118,14 +123,23 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         return Ok(());
     }
 
-    ui::cli::log!();
-    if args.compact {
-        log_snapshots_compact(&snapshots_sorted);
-    } else {
-        log_snapshots_full(&snapshots_sorted);
-    }
+    if !global_args.json {
+        ui::cli::log!();
+        if args.compact {
+            log_snapshots_compact(&snapshots_sorted);
+        } else {
+            log_snapshots_full(&snapshots_sorted);
+        }
 
-    ui::cli::log!("{} snapshots", snapshots_sorted.len());
+        ui::cli::log!("{} snapshots", snapshots_sorted.len());
+    } else {
+        JsonReporter::emit_static(
+            LOG_MSG,
+            &MsgSnapshots {
+                snapshots: snapshots_sorted,
+            },
+        );
+    }
 
     Ok(())
 }
@@ -193,4 +207,9 @@ fn log_snapshots_full(snapshots: &[(ID, Snapshot, bool)]) {
     }
 
     ui::cli::log!();
+}
+
+#[derive(Serialize)]
+struct MsgSnapshots {
+    snapshots: SnapshotList,
 }

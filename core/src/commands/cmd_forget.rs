@@ -128,7 +128,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
-    // All sapshots, filter by tags and sorted by timestamp
     let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())?
         .map(|(id, snapshot)| SnapshotEntry {
             id,
@@ -136,6 +135,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             active: true,
         })
         .collect();
+
     if let Some(tags) = &args.tags_str {
         let tags = parse_tags(Some(tags));
         snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
@@ -150,7 +150,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
             forget_ids.insert(id);
         }
-
         for e in &snapshots_sorted {
             if !forget_ids.contains(&e.id) {
                 ids_to_keep.insert(e.id);
@@ -158,7 +157,6 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     } else {
         let mut retention_rules = Vec::new();
-
         if let Some(n) = args.keep_last {
             retention_rules.push(RetentionRule::KeepLast(n));
         }
@@ -199,7 +197,29 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         };
     }
 
-    if !global_args.json {
+    if !args.dry_run && !removed_snapshots.is_empty() {
+        for entry in &removed_snapshots {
+            if args.force {
+                repo.delete_file(ContentIdType::Snapshot, &entry.id, None)?;
+            } else {
+                repo.set_extension(
+                    ContentIdType::Snapshot,
+                    &entry.id,
+                    Some(REPO_DROPPED_EXTENSION),
+                )?;
+            }
+        }
+    }
+
+    if global_args.json {
+        ui::json_reporter::emit_static(
+            FORGET_MSG,
+            &MsgForget {
+                kept: kept_snapshots,
+                removed: removed_snapshots,
+            },
+        );
+    } else {
         ui::cli::log!();
         ui::cli::log!("{}", "Snapshots to keep:".bold());
         log_snapshots_compact(&kept_snapshots);
@@ -209,50 +229,24 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             log_snapshots_compact(&removed_snapshots);
         }
 
-        if !args.dry_run {
-            let num_removed_snapshots = removed_snapshots.len();
-            for entry in removed_snapshots {
-                if args.force {
-                    repo.delete_file(ContentIdType::Snapshot, &entry.id, None)?;
-                } else {
-                    repo.set_extension(
-                        ContentIdType::Snapshot,
-                        &entry.id,
-                        Some(REPO_DROPPED_EXTENSION),
-                    )?;
-                }
-            }
-
-            ui::cli::log!(
-                "Removed {}",
-                utils::format_count(num_removed_snapshots, "snapshot", "snapshots")
-            );
+        let count_str = utils::format_count(removed_snapshots.len(), "snapshot", "snapshots");
+        if args.dry_run {
+            ui::cli::log!("This would remove {}", count_str);
         } else {
-            ui::cli::log!(
-                "This would remove {}",
-                utils::format_count(removed_snapshots.len(), "snapshot", "snapshots")
-            );
+            ui::cli::log!("Removed {}", count_str);
         }
-    } else {
-        ui::json_reporter::emit_static(
-            FORGET_MSG,
-            &MsgForget {
-                kept: kept_snapshots.clone(),
-                removed: removed_snapshots.clone(),
-            },
-        );
     }
 
-    // Run the garbage collector
     if args.run_gc {
         let gc_args = commands::cmd_clean::CmdArgs {
             tolerance: args.tolerance,
             dry_run: args.dry_run,
             no_repack: false,
         };
-
-        ui::cli::log!();
-        ui::cli::log!("Running garbage collector...");
+        if !global_args.json {
+            ui::cli::log!();
+            ui::cli::log!("Running garbage collector...");
+        }
         commands::cmd_clean::run_with_repo(global_args, &gc_args, repo)?;
     }
 

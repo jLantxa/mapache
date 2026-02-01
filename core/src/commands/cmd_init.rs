@@ -3,11 +3,13 @@ use anyhow::bail;
 use clap::Args;
 use colored::Colorize;
 
-use crate::backend::new_backend_with_prompt;
-use crate::mapache::defaults::SHORT_REPO_ID_LEN;
-use crate::repository::repo::Repository;
-use crate::ui;
-use crate::utils;
+use crate::{
+    backend::new_backend_with_prompt,
+    mapache::defaults::SHORT_REPO_ID_LEN,
+    repository::repo::Repository,
+    ui::{self},
+    utils,
+};
 
 use super::GlobalArgs;
 

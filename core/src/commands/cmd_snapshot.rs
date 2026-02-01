@@ -20,8 +20,8 @@ use crate::{
     ui::{
         self,
         snapshot::{
-            SnapshotProgressReporter, json::JsonSnapshotProgressReporter,
-            ui::UiSnapshotProgressReporter,
+            SnapshotProgressReporter, cli::CliSnapshotProgressReporter,
+            json::JsonSnapshotProgressReporter,
         },
         table::{Alignment, Table},
     },
@@ -186,7 +186,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let progress_reporter: Arc<dyn SnapshotProgressReporter> = if global_args.json {
         Arc::new(JsonSnapshotProgressReporter::new(None, None))
     } else {
-        Arc::new(UiSnapshotProgressReporter::new(
+        Arc::new(CliSnapshotProgressReporter::new(
             None,
             None,
             args.num_readers,

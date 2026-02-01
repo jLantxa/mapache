@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use crate::fs::tree::NodeDiff;
 use crate::repository::snapshot::DiffCounts;
 
+pub(crate) mod cli;
 pub(crate) mod json;
-pub(crate) mod ui;
 
 /// Summary of snapshot processing statistics
 #[derive(Debug, Clone, serde::Serialize)]

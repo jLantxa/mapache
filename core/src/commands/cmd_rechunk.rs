@@ -14,7 +14,7 @@ use crate::{
     },
     ui::{
         self,
-        snapshot::{SnapshotProgressReporter, ui::UiSnapshotProgressReporter},
+        snapshot::{SnapshotProgressReporter, cli::CliSnapshotProgressReporter},
     },
     utils::{self, size},
 };
@@ -67,7 +67,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         );
 
         let progress_reporter: Arc<dyn SnapshotProgressReporter> =
-            Arc::new(UiSnapshotProgressReporter::new(
+            Arc::new(CliSnapshotProgressReporter::new(
                 Some(snapshot.summary.processed_items_count),
                 Some(snapshot.summary.processed_bytes),
                 1,

@@ -18,7 +18,7 @@ use crate::{
     },
     ui::{
         self,
-        snapshot::{SnapshotProgressReporter, ui::UiSnapshotProgressReporter},
+        snapshot::{SnapshotProgressReporter, cli::CliSnapshotProgressReporter},
     },
     utils::{self, size},
 };
@@ -152,7 +152,7 @@ fn amend(
     if parsed_excludes.is_some() {
         repo.init_pack_saver(1)?;
         let progress_reporter: Arc<dyn SnapshotProgressReporter> =
-            Arc::new(UiSnapshotProgressReporter::new(None, None, 1));
+            Arc::new(CliSnapshotProgressReporter::new(None, None, 1));
         rewrite_snapshot_tree(
             repo.clone(),
             snapshot,

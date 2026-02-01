@@ -66,7 +66,7 @@ fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<Progr
     }
 }
 
-pub struct UiSnapshotProgressReporter {
+pub struct CliSnapshotProgressReporter {
     // Hot-path counters
     processed_items_count: Arc<AtomicU64>,
     processed_bytes: Arc<AtomicU64>,
@@ -92,7 +92,7 @@ pub struct UiSnapshotProgressReporter {
     _ui_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl Drop for UiSnapshotProgressReporter {
+impl Drop for CliSnapshotProgressReporter {
     fn drop(&mut self) {
         // We call finalize to ensure the thread is joined and
         // the terminal is restored even if finalize wasn't called manually.
@@ -100,7 +100,7 @@ impl Drop for UiSnapshotProgressReporter {
     }
 }
 
-impl UiSnapshotProgressReporter {
+impl CliSnapshotProgressReporter {
     pub fn new(
         expected_items: Option<u64>,
         expected_size: Option<u64>,
@@ -456,7 +456,7 @@ impl UiSnapshotProgressReporter {
     }
 }
 
-impl SnapshotProgressReporter for UiSnapshotProgressReporter {
+impl SnapshotProgressReporter for CliSnapshotProgressReporter {
     fn processing_node(&self, path: PathBuf, diff: NodeDiff) {
         self.processing_node(path, diff);
     }
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn test_reporter_atomic_counters() {
         // GlobalOpts and utils are required by the reporter logic
-        let reporter = UiSnapshotProgressReporter::new(Some(10), Some(1000), 2);
+        let reporter = CliSnapshotProgressReporter::new(Some(10), Some(1000), 2);
 
         reporter.processed_bytes(500);
         reporter.new_file();
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_reporter_expected_updates() {
-        let reporter = UiSnapshotProgressReporter::new(None, None, 2);
+        let reporter = CliSnapshotProgressReporter::new(None, None, 2);
 
         // Initial state is undetermined
         assert_eq!(reporter.progress_bar.length(), None);

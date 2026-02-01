@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use chrono::{Duration, Local};
 use clap::{ArgGroup, Parser};
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -102,6 +103,8 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
     }
 }
 
+const FORGET_MSG: &str = "forget";
+
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run))?;
@@ -192,33 +195,43 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         };
     }
 
-    ui::cli::log!();
-    ui::cli::log!("{}", "Snapshots to keep:".bold());
-    log_snapshots_compact(&kept_snapshots);
+    if !global_args.json {
+        ui::cli::log!();
+        ui::cli::log!("{}", "Snapshots to keep:".bold());
+        log_snapshots_compact(&kept_snapshots);
 
-    if !removed_snapshots.is_empty() {
-        ui::cli::log!("{}", "Snapshots to remove:".bold());
-        log_snapshots_compact(&removed_snapshots);
-    }
-
-    if !args.dry_run {
-        let num_removed_snapshots = removed_snapshots.len();
-        for (id, _, _active) in removed_snapshots {
-            if args.force {
-                repo.delete_file(ContentIdType::Snapshot, &id, None)?;
-            } else {
-                repo.set_extension(ContentIdType::Snapshot, &id, Some(REPO_DROPPED_EXTENSION))?;
-            }
+        if !removed_snapshots.is_empty() {
+            ui::cli::log!("{}", "Snapshots to remove:".bold());
+            log_snapshots_compact(&removed_snapshots);
         }
 
-        ui::cli::log!(
-            "Removed {}",
-            utils::format_count(num_removed_snapshots, "snapshot", "snapshots")
-        );
+        if !args.dry_run {
+            let num_removed_snapshots = removed_snapshots.len();
+            for (id, _, _active) in removed_snapshots {
+                if args.force {
+                    repo.delete_file(ContentIdType::Snapshot, &id, None)?;
+                } else {
+                    repo.set_extension(ContentIdType::Snapshot, &id, Some(REPO_DROPPED_EXTENSION))?;
+                }
+            }
+
+            ui::cli::log!(
+                "Removed {}",
+                utils::format_count(num_removed_snapshots, "snapshot", "snapshots")
+            );
+        } else {
+            ui::cli::log!(
+                "This would remove {}",
+                utils::format_count(removed_snapshots.len(), "snapshot", "snapshots")
+            );
+        }
     } else {
-        ui::cli::log!(
-            "This would remove {}",
-            utils::format_count(removed_snapshots.len(), "snapshot", "snapshots")
+        ui::json_reporter::emit_static(
+            FORGET_MSG,
+            &MsgForget {
+                kept: kept_snapshots.clone(),
+                removed: removed_snapshots.clone(),
+            },
         );
     }
 
@@ -236,4 +249,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Serialize)]
+struct MsgForget {
+    kept: Vec<(ID, Snapshot, bool)>,
+    removed: Vec<(ID, Snapshot, bool)>,
 }

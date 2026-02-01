@@ -21,7 +21,7 @@ use crate::{
         tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
     },
     repository::{repo::Repository, snapshot::Snapshot},
-    ui::snapshot_progress::SnapshotProgressReporter,
+    ui::snapshot::SnapshotProgressReporter,
     utils::{self},
 };
 
@@ -214,7 +214,7 @@ pub(crate) fn rewrite_snapshot_tree(
     excludes: Option<&Vec<PathBuf>>,
     rechunk: bool,
     mut rechunked_blobs_list_map: Option<&mut HashMap<Vec<ID>, Vec<ID>>>,
-    progress_reporter: Arc<SnapshotProgressReporter>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
 ) -> Result<()> {
     // Cannonicalize the exclude paths and filter the source paths using the excludes
     // This is a simulated cannonical path, since we don't refer to a path in the host,

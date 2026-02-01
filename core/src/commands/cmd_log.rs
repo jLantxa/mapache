@@ -11,7 +11,7 @@ use crate::{
         repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
     },
-    ui::{self, json_reporter::JsonReporter, log_snapshots_compact},
+    ui::{self, log_snapshots_compact},
     utils::{self, size},
 };
 
@@ -133,7 +133,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         ui::cli::log!("{} snapshots", snapshots_sorted.len());
     } else {
-        JsonReporter::emit_static(
+        ui::json_reporter::emit_static(
             LOG_MSG,
             &MsgSnapshots {
                 snapshots: snapshots_sorted,

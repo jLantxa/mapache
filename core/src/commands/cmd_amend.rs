@@ -16,7 +16,10 @@ use crate::{
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
     },
-    ui::{self, snapshot_progress::SnapshotProgressReporter},
+    ui::{
+        self,
+        snapshot::{SnapshotProgressReporter, ui::UiSnapshotProgressReporter},
+    },
     utils::{self, size},
 };
 
@@ -148,7 +151,8 @@ fn amend(
 
     if parsed_excludes.is_some() {
         repo.init_pack_saver(1)?;
-        let progress_reporter = Arc::new(SnapshotProgressReporter::new(None, None, 1));
+        let progress_reporter: Arc<dyn SnapshotProgressReporter> =
+            Arc::new(UiSnapshotProgressReporter::new(None, None, 1));
         rewrite_snapshot_tree(
             repo.clone(),
             snapshot,

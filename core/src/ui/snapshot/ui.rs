@@ -16,10 +16,12 @@ use parking_lot::{Mutex, RwLock};
 use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     mapache::global::GlobalOpts,
-    repository::snapshot::{DiffCounts, DiffCountsAtomic},
+    repository::snapshot::DiffCountsAtomic,
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
-    utils::{self},
+    utils,
 };
+
+use super::{SnapshotProcessSummary, SnapshotProgressReporter};
 
 enum UiEvent {
     Start(PathBuf),
@@ -64,13 +66,7 @@ fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<Progr
     }
 }
 
-pub(crate) struct SnapshotProcessSummary {
-    pub processed_items_count: u64,
-    pub processed_bytes: u64,
-    pub diff_counts: DiffCounts,
-}
-
-pub struct SnapshotProgressReporter {
+pub struct UiSnapshotProgressReporter {
     // Hot-path counters
     processed_items_count: Arc<AtomicU64>,
     processed_bytes: Arc<AtomicU64>,
@@ -96,7 +92,7 @@ pub struct SnapshotProgressReporter {
     _ui_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl Drop for SnapshotProgressReporter {
+impl Drop for UiSnapshotProgressReporter {
     fn drop(&mut self) {
         // We call finalize to ensure the thread is joined and
         // the terminal is restored even if finalize wasn't called manually.
@@ -104,7 +100,7 @@ impl Drop for SnapshotProgressReporter {
     }
 }
 
-impl SnapshotProgressReporter {
+impl UiSnapshotProgressReporter {
     pub fn new(
         expected_items: Option<u64>,
         expected_size: Option<u64>,
@@ -460,6 +456,76 @@ impl SnapshotProgressReporter {
     }
 }
 
+impl SnapshotProgressReporter for UiSnapshotProgressReporter {
+    fn processing_node(&self, path: PathBuf, diff: NodeDiff) {
+        self.processing_node(path, diff);
+    }
+
+    fn processed_node(&self, path: PathBuf, diff: NodeDiff) {
+        self.processed_node(path, diff);
+    }
+
+    fn processed_bytes(&self, bytes: u64) {
+        self.processed_bytes(bytes);
+    }
+
+    fn add_expected_items(&self, val: u64) {
+        self.add_expected_items(val);
+    }
+
+    fn add_expected_bytes(&self, val: u64) {
+        self.add_expected_bytes(val);
+    }
+
+    fn scan_finished(&self) {
+        self.scan_finished();
+    }
+
+    fn new_file(&self) {
+        self.new_file();
+    }
+
+    fn changed_file(&self) {
+        self.changed_file();
+    }
+
+    fn unchanged_file(&self) {
+        self.unchanged_file();
+    }
+
+    fn deleted_file(&self) {
+        self.deleted_file();
+    }
+
+    fn new_dir(&self) {
+        self.new_dir();
+    }
+
+    fn changed_dir(&self) {
+        self.changed_dir();
+    }
+
+    fn deleted_dir(&self) {
+        self.deleted_dir();
+    }
+
+    fn unchanged_dir(&self) {
+        self.unchanged_dir();
+    }
+
+    fn error(&self, msg: &str) {
+        self.error(msg);
+    }
+
+    fn finalize(&self) {
+        self.finalize();
+    }
+
+    fn summary(&self) -> SnapshotProcessSummary {
+        self.summary()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,7 +589,7 @@ mod tests {
     #[test]
     fn test_reporter_atomic_counters() {
         // GlobalOpts and utils are required by the reporter logic
-        let reporter = SnapshotProgressReporter::new(Some(10), Some(1000), 2);
+        let reporter = UiSnapshotProgressReporter::new(Some(10), Some(1000), 2);
 
         reporter.processed_bytes(500);
         reporter.new_file();
@@ -541,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_reporter_expected_updates() {
-        let reporter = SnapshotProgressReporter::new(None, None, 2);
+        let reporter = UiSnapshotProgressReporter::new(None, None, 2);
 
         // Initial state is undetermined
         assert_eq!(reporter.progress_bar.length(), None);

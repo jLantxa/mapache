@@ -14,7 +14,7 @@ use crate::{
 pub mod cli;
 pub(crate) mod json_reporter;
 pub(crate) mod restore_progress;
-pub(crate) mod snapshot_progress;
+pub(crate) mod snapshot;
 pub mod table;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";

@@ -5,7 +5,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::mapache::ID;
-use crate::ui::json_reporter::JsonReporter;
+use crate::ui::json_reporter::emit_static;
 use crate::{
     backend::new_backend_with_prompt,
     mapache::defaults::SHORT_REPO_ID_LEN,
@@ -45,7 +45,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             "Don't forget it.".bold().green()
         );
     } else {
-        JsonReporter::emit_static(
+        emit_static(
             INIT_MSG,
             &MsgInit {
                 id: manifest.id(),

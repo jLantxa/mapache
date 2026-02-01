@@ -19,7 +19,10 @@ use crate::{
     },
     ui::{
         self,
-        snapshot_progress::SnapshotProgressReporter,
+        snapshot::{
+            SnapshotProgressReporter, json::JsonSnapshotProgressReporter,
+            ui::UiSnapshotProgressReporter,
+        },
         table::{Alignment, Table},
     },
     utils::{self, size},
@@ -180,7 +183,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     // Run Archiver
-    let progress_reporter = Arc::new(SnapshotProgressReporter::new(None, None, args.num_readers));
+    let progress_reporter: Arc<dyn SnapshotProgressReporter> = if global_args.json {
+        Arc::new(JsonSnapshotProgressReporter::new(None, None))
+    } else {
+        Arc::new(UiSnapshotProgressReporter::new(
+            None,
+            None,
+            args.num_readers,
+        ))
+    };
 
     // Init cleanup handlerf
     let repo_clone = repo.clone();
@@ -214,6 +225,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo_stats: crate::repository::repo::RepoStatsSnapshot =
         repo.flush_and_finalize_pack_saver()?;
     let snapshot_report_summary = progress_reporter.summary();
+    let snapshot_report_summary_clone = snapshot_report_summary.clone();
 
     // Fill snapshot summary
     new_snapshot.summary.processed_items_count = snapshot_report_summary.processed_items_count;
@@ -250,11 +262,37 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw;
         new_snapshot.summary.meta_encoded_bytes += new_snapshot_size.encoded;
 
+        // Emit snapshot_complete for JSON output (after snapshot is saved)
+        if global_args.json {
+            #[derive(serde::Serialize)]
+            struct SnapshotCompleteMsg {
+                summary: crate::ui::snapshot::SnapshotProcessSummary,
+                raw_bytes_data: u64,
+                compressed_bytes_data: u64,
+                raw_bytes_meta: u64,
+                compressed_bytes_meta: u64,
+                time_taken_seconds: f64,
+            }
+
+            ui::json_reporter::emit_static(
+                "snapshot_complete",
+                &SnapshotCompleteMsg {
+                    summary: snapshot_report_summary_clone,
+                    raw_bytes_data: repo_stats.data.raw,
+                    compressed_bytes_data: repo_stats.data.encoded,
+                    raw_bytes_meta: repo_stats.meta.raw + new_snapshot_size.raw,
+                    compressed_bytes_meta: repo_stats.meta.encoded + new_snapshot_size.encoded,
+                    time_taken_seconds: start.elapsed().as_secs_f64(),
+                },
+            );
+        }
+
         // Final report
         ui::cli::log!();
         show_final_report(&new_snapshot_id, &new_snapshot.summary, args);
     } else {
         progress_reporter.finalize();
+
         ui::cli::log!("No changes detected since parent. Skipping snapshot.");
     }
 

@@ -102,12 +102,10 @@ impl CliSnapshotProgressReporter {
         let refresh_interval = GlobalOpts::progress_refresh_interval();
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
 
-        // 1. Shared state for the dynamic UI keys
         let error_counter = Arc::new(AtomicU64::new(0));
         let expected_items = AtomicU64::new(expected_items_val.unwrap_or(0));
         let expected_bytes = AtomicU64::new(expected_size_val.unwrap_or(0));
 
-        // 2. Initialize Bars
         let progress_bar = match expected_size_val {
             Some(size) => mp.add(ProgressBar::new(size)),
             None => mp.add(ProgressBar::no_length()),
@@ -245,25 +243,22 @@ impl CliSnapshotProgressReporter {
 
 impl SnapshotProgressReporter for CliSnapshotProgressReporter {
     fn add_expected_items(&self, val: u64) {
-        self.expected_items.fetch_add(val, Ordering::Relaxed);
+        let new_total = self.expected_items.fetch_add(val, Ordering::Relaxed) + val;
+        self.companion_bar.set_length(new_total);
     }
 
     fn add_expected_bytes(&self, val: u64) {
-        self.expected_bytes.fetch_add(val, Ordering::Relaxed);
+        let new_total = self.expected_bytes.fetch_add(val, Ordering::Relaxed) + val;
+        self.progress_bar.set_length(new_total);
+
+        if new_total > 0 {
+            self.progress_bar.set_style(self.determined_style.clone());
+        }
     }
 
     fn scan_finished(&self) {
         let bytes = self.expected_bytes.load(Ordering::Relaxed);
-        let items = self.expected_items.load(Ordering::Relaxed);
-
-        if bytes > 0 {
-            self.progress_bar.set_length(bytes);
-            self.progress_bar.set_style(self.determined_style.clone());
-        }
-
-        if items > 0 {
-            self.companion_bar.set_length(items);
-        }
+        self.progress_bar.set_length(bytes);
     }
 
     fn finalize(&self) {

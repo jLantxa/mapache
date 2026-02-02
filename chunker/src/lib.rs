@@ -111,55 +111,48 @@ impl Chunker {
             return len;
         }
 
-        let max: usize = len.min(self.max_size);
-        let center: usize = self.normal_size.min(max);
+        let max = len.min(self.max_size);
+        let center = self.normal_size.min(max);
+        let mid = center & !1;
+        let end = max & !1;
+
+        let search_slice = &data[..end];
 
         let mut fp: u64 = 0;
-        let gear = self.gear;
-        let gear_ls = self.gear_ls;
-        let mask_s = self.mask_s;
-        let mask_s_ls = self.mask_s_ls;
-        let mask_l = self.mask_l;
-        let mask_l_ls = self.mask_l_ls;
-
         let mut n: usize = (self.min_size & !1).min(max);
-        let mid: usize = center & !1;
-        let end: usize = max & !1;
 
-        unsafe {
-            // Phase 1 (small masks) up to the normalization center
-            while n < mid {
-                let b0 = *data.get_unchecked(n);
-                fp = (fp << 2).wrapping_add(*gear_ls.get_unchecked(b0 as usize));
-                if fp & mask_s_ls == 0 {
-                    return n;
-                }
-
-                let b1 = *data.get_unchecked(n + 1);
-                fp = fp.wrapping_add(*gear.get_unchecked(b1 as usize));
-                if fp & mask_s == 0 {
-                    return n + 1;
-                }
-
-                n += 2;
+        // Phase 1 (small masks) up to the normalization center
+        while n < mid {
+            let b0 = search_slice[n];
+            fp = (fp << 2).wrapping_add(self.gear_ls[b0 as usize]);
+            if fp & self.mask_s_ls == 0 {
+                return n;
             }
 
-            // Phase 2 (large masks) up to the hard max
-            while n < end {
-                let b0 = *data.get_unchecked(n);
-                fp = (fp << 2).wrapping_add(*gear_ls.get_unchecked(b0 as usize));
-                if fp & mask_l_ls == 0 {
-                    return n;
-                }
-
-                let b1 = *data.get_unchecked(n + 1);
-                fp = fp.wrapping_add(*gear.get_unchecked(b1 as usize));
-                if fp & mask_l == 0 {
-                    return n + 1;
-                }
-
-                n += 2;
+            let b1 = search_slice[n + 1];
+            fp = fp.wrapping_add(self.gear[b1 as usize]);
+            if fp & self.mask_s == 0 {
+                return n + 1;
             }
+
+            n += 2;
+        }
+
+        // Phase 2 (large masks) up to the hard max
+        while n < end {
+            let b0 = search_slice[n];
+            fp = (fp << 2).wrapping_add(self.gear_ls[b0 as usize]);
+            if fp & self.mask_l_ls == 0 {
+                return n;
+            }
+
+            let b1 = search_slice[n + 1];
+            fp = fp.wrapping_add(self.gear[b1 as usize]);
+            if fp & self.mask_l == 0 {
+                return n + 1;
+            }
+
+            n += 2;
         }
 
         max
@@ -216,8 +209,12 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
             let spare = self.buffer.spare_capacity_mut();
             let to_read = needed.min(spare.len());
 
-            let buf =
-                unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, to_read) };
+            let buf = unsafe {
+                // SAFETY: We bypass Rust's default rule of filling new memory with zeros.
+                // Because we are immediately handing this memory to the OS to be filled
+                // with data from the file, zeroing it first would be a waste of CPU cycles.
+                std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, to_read)
+            };
 
             match self.source.read(buf) {
                 Ok(0) => {
@@ -226,6 +223,8 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                 }
                 Ok(n) => {
                     unsafe {
+                        // SAFETY: We now tell the Vector that 'n' bytes are no longer "junk"
+                        // memory but are now valid data bytes received from the reader.
                         self.buffer.set_len(cur_len + n);
                     }
 

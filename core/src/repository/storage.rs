@@ -81,13 +81,20 @@ impl SecureStorage {
         let data_start = out.len();
         if let Some(c) = ctx {
             let spare = out.spare_capacity_mut();
-            let dest =
-                unsafe { std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, bound) };
+            let dest = unsafe {
+                // SAFETY: We provide zstd with a raw pointer to the "unused" part of our
+                // Vector's memory. We have already reserved `bound` bytes via `with_capacity`,
+                // so this memory is owned by the Vector and safe to write to.
+                std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, bound)
+            };
             let n = c
                 .compressor
                 .compress_to_buffer(data, dest)
                 .map_err(|e| anyhow!("zstd failed: {e}"))?;
             unsafe {
+                // SAFETY: zstd reported that it wrote exactly `n` bytes into the buffer.
+                // We now update the Vector's length to include these newly written bytes,
+                // making them "official" and visible to the rest of the program.
                 out.set_len(data_start + n);
             }
         } else {

@@ -101,15 +101,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "Press {} to finish or unmount the filesystem manually.",
         "Ctrl+C".bold()
     );
-    unsafe {
-        MapacheFS::mount(
-            repo,
-            &cannonical_mountpoint,
-            args.allow_other,
-            args.metadata_only,
-            (args.data_cache_size_mib * size::MiB as f32) as u64,
-        )?;
-    }
+
+    MapacheFS::mount(
+        repo,
+        &cannonical_mountpoint,
+        args.allow_other,
+        args.metadata_only,
+        (args.data_cache_size_mib * size::MiB as f32) as u64,
+    )?;
 
     Ok(())
 }

@@ -30,7 +30,7 @@ pub struct MapacheFS {
 
 impl MapacheFS {
     /// Mounts a `Repository` in `mountpoint`
-    pub unsafe fn mount(
+    pub fn mount(
         repo: Arc<Repository>,
         mountpoint: &Path,
         allow_other: bool,

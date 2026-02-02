@@ -66,6 +66,8 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             num_snapshots
         );
 
+        let progress = Arc::new(crate::archiver::SnapshotProgress::new());
+
         let progress_reporter: Arc<dyn SnapshotProgressReporter> =
             Arc::new(CliSnapshotProgressReporter::new(
                 Some(snapshot.summary.processed_items_count),
@@ -79,6 +81,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             None,
             true,
             Some(&mut rechunked_blob_list_map),
+            progress.clone(),
             progress_reporter.clone(),
         )?;
 

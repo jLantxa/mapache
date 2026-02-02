@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use chunker::Chunker;
 
 use crate::{
+    archiver::SnapshotProgress,
     fs::{
         node::Node,
         tree::{NodeDiff, StreamNode},
@@ -32,6 +33,7 @@ pub(crate) fn process_item(
     ),
     repo: Arc<Repository>,
     encoding_context: &mut EncodingContext,
+    progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Option<StreamNode>> {
     progress_reporter.processing_node(path.to_path_buf(), diff_type);
@@ -41,7 +43,7 @@ pub(crate) fn process_item(
             let prev = prev_node.with_context(|| {
                 format!("Inconsistent state: Deleted diff but no prev_node for {path:?}")
             })?;
-            report_node_diff(&prev.node, diff_type, progress_reporter);
+            report_node_diff(&prev.node, diff_type, progress);
             None
         }
 
@@ -56,9 +58,11 @@ pub(crate) fn process_item(
             next.node.blobs = prev.node.blobs;
 
             if next.node.is_file() {
+                progress.processed_bytes(next.node.metadata.size);
+                // let reporter update UI (but progress owns counters)
                 progress_reporter.processed_bytes(next.node.metadata.size);
             }
-            report_node_diff(&next.node, diff_type, progress_reporter);
+            report_node_diff(&next.node, diff_type, progress);
             Some(next)
         }
 
@@ -80,6 +84,7 @@ pub(crate) fn process_item(
                     encoding_context,
                     &mut reader,
                     &next.node,
+                    progress,
                     progress_reporter,
                 )
                 .with_context(|| format!("Failed to process blobs for: {}", path.display()))?;
@@ -87,54 +92,21 @@ pub(crate) fn process_item(
                 next.node.blobs = Some(blobs_ids);
             }
 
-            report_node_diff(&next.node, diff_type, progress_reporter);
+            report_node_diff(&next.node, diff_type, progress);
             Some(next)
         }
     };
 
+    progress.processed_node();
     progress_reporter.processed_node(path.to_path_buf(), diff_type);
 
     Ok(out)
 }
 
 #[inline]
-fn report_node_diff(
-    node: &Node,
-    diff_type: NodeDiff,
-    progress_reporter: &dyn SnapshotProgressReporter,
-) {
+fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgress) {
     let is_dir = node.is_dir();
-
-    match diff_type {
-        NodeDiff::Deleted => {
-            if is_dir {
-                progress_reporter.deleted_dir();
-            } else {
-                progress_reporter.deleted_file();
-            }
-        }
-        NodeDiff::Unchanged => {
-            if is_dir {
-                progress_reporter.unchanged_dir();
-            } else {
-                progress_reporter.unchanged_file();
-            }
-        }
-        NodeDiff::New => {
-            if is_dir {
-                progress_reporter.new_dir();
-            } else {
-                progress_reporter.new_file();
-            }
-        }
-        NodeDiff::Changed => {
-            if is_dir {
-                progress_reporter.changed_dir();
-            } else {
-                progress_reporter.changed_file();
-            }
-        }
-    }
+    progress.increment_diff(is_dir, &diff_type);
 }
 
 /// Split file into chunks and store blobs.
@@ -143,10 +115,18 @@ pub(crate) fn chunk_and_store_file<R: Read>(
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
+    progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(repo, encoding_context, reader, node, progress_reporter);
+        return store_small_file(
+            repo,
+            encoding_context,
+            reader,
+            node,
+            progress,
+            progress_reporter,
+        );
     }
 
     let file_size = node.metadata.size;
@@ -155,6 +135,8 @@ pub(crate) fn chunk_and_store_file<R: Read>(
 
     for result in DEFAULT_CHUNKER.stream(reader) {
         let chunk = result.context("Failed to chunk file")?;
+        progress.processed_bytes(chunk.data.len() as u64);
+        // notify UI
         progress_reporter.processed_bytes(chunk.data.len() as u64);
 
         let id = repo
@@ -177,6 +159,7 @@ fn store_small_file<R: Read>(
     encoding_context: &mut EncodingContext,
     reader: &mut R,
     node: &Node,
+    progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     let size = node.metadata.size as usize;
@@ -187,6 +170,7 @@ fn store_small_file<R: Read>(
     let id =
         repo.encode_and_save_blob(encoding_context, BlobType::Data, data, SaveID::CalculateID)?;
 
+    progress.processed_bytes(node.metadata.size);
     progress_reporter.processed_bytes(node.metadata.size);
 
     Ok(vec![id])

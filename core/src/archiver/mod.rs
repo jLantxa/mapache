@@ -1,5 +1,7 @@
 pub(crate) mod processor;
+pub(crate) mod progress;
 pub(crate) mod tree_serializer;
+pub use progress::SnapshotProgress;
 
 use std::{
     collections::BTreeSet,
@@ -45,14 +47,19 @@ struct PipelineStatus {
     /// Stores the first error that triggered the shutdown to report back to the user.
     first_error: Mutex<Option<anyhow::Error>>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    progress: Arc<SnapshotProgress>,
 }
 
 impl PipelineStatus {
-    fn new(progress_reporter: Arc<dyn SnapshotProgressReporter>) -> Self {
+    fn new(
+        progress: Arc<SnapshotProgress>,
+        progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    ) -> Self {
         Self {
             fatal_error_flag: AtomicBool::new(false),
             first_error: Mutex::new(None),
             progress_reporter,
+            progress,
         }
     }
 
@@ -82,9 +89,10 @@ pub(crate) fn snapshot(
     repo: Arc<Repository>,
     snapshot_options: SnapshotOptions,
     num_readers: usize,
+    progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
 ) -> Result<Snapshot> {
-    let status = Arc::new(PipelineStatus::new(progress_reporter.clone()));
+    let status = Arc::new(PipelineStatus::new(progress, progress_reporter.clone()));
 
     // Extract parent snapshot tree id
     let parent_tree_id: Option<ID> = snapshot_options
@@ -128,6 +136,7 @@ pub(crate) fn snapshot(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
         status.clone(),
+        progress_reporter.clone(),
     );
     let diff_thread = spawn_diff_thread(status.clone(), previous_tree_stream, fs_stream, diff_tx);
     let processor_thread = spawn_processor_thread(
@@ -204,6 +213,7 @@ fn spawn_scanner_thread(
     absolute_source_paths: Vec<PathBuf>,
     exclude_paths: Vec<PathBuf>,
     status: Arc<PipelineStatus>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
 ) -> JoinHandle<Result<()>> {
     std::thread::spawn(move || {
         if no_scan {
@@ -221,11 +231,9 @@ fn spawn_scanner_thread(
             match item {
                 Ok((_path, stream_node)) => {
                     let node = stream_node.node;
-                    status.progress_reporter.add_expected_items(1);
+                    progress_reporter.add_expected_items(1);
                     if node.is_file() {
-                        status
-                            .progress_reporter
-                            .add_expected_bytes(node.metadata.size);
+                        progress_reporter.add_expected_bytes(node.metadata.size);
                     }
                 }
                 Err(e) => {
@@ -235,7 +243,7 @@ fn spawn_scanner_thread(
                 }
             }
         }
-        status.progress_reporter.scan_finished();
+        progress_reporter.scan_finished();
         Ok(())
     })
 }
@@ -316,6 +324,7 @@ fn spawn_processor_thread(
                         (path.as_path(), prev, next, diff),
                         repo.clone(),
                         &mut ctx,
+                        status.progress.as_ref(),
                         status.progress_reporter.as_ref(),
                     ) {
                         Ok(Some(stream_node)) => {

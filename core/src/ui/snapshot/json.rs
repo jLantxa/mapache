@@ -2,20 +2,19 @@ use parking_lot::RwLock;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use std::time::{Duration, Instant};
 
-use crate::ui::json_reporter::JsonReporter;
-use crate::{
-    fs::tree::NodeDiff, mapache::global::GlobalOpts, repository::snapshot::DiffCountsAtomic,
-};
+use crate::{fs::tree::NodeDiff, mapache::global::GlobalOpts, ui::json_reporter::JsonReporter};
 
-use super::{SnapshotProcessSummary, SnapshotProgressReporter};
+use super::SnapshotProgressReporter;
 
 #[derive(Serialize)]
 struct StatusUpdateMsg {
     processed_items: u64,
     processed_bytes: u64,
+    scan_finished: bool,
     total_items: Option<u64>,
     total_bytes: Option<u64>,
     active_files: Vec<String>,
@@ -29,9 +28,9 @@ struct ErrorMsg<'a> {
 
 pub(crate) struct JsonSnapshotProgressReporter {
     json_reporter: JsonReporter,
-    diff_counts: DiffCountsAtomic,
     processed_items: AtomicU64,
     processed_bytes: AtomicU64,
+    scan_finished: AtomicBool,
     expected_items: Arc<RwLock<Option<AtomicU64>>>,
     expected_bytes: Arc<RwLock<Option<AtomicU64>>>,
     active_files: Mutex<HashSet<PathBuf>>,
@@ -47,7 +46,6 @@ impl JsonSnapshotProgressReporter {
 
         Self {
             json_reporter,
-            diff_counts: DiffCountsAtomic::default(),
             processed_items: AtomicU64::new(0),
             processed_bytes: AtomicU64::new(0),
             expected_items: Arc::new(RwLock::new(expected_items.map(AtomicU64::new))),
@@ -56,6 +54,7 @@ impl JsonSnapshotProgressReporter {
             refresh_interval,
             last_update: Mutex::new(Instant::now()),
             start_time: Instant::now(),
+            scan_finished: AtomicBool::new(expected_bytes.is_some() && expected_items.is_some()),
         }
     }
 
@@ -97,6 +96,10 @@ impl JsonSnapshotProgressReporter {
 
         let elapsed_seconds = self.start_time.elapsed().as_secs_f64();
 
+        let scan_finished = self
+            .scan_finished
+            .load(std::sync::atomic::Ordering::Relaxed);
+
         self.json_reporter.emit(
             "status_update",
             &StatusUpdateMsg {
@@ -106,6 +109,7 @@ impl JsonSnapshotProgressReporter {
                 total_bytes,
                 active_files,
                 elapsed_seconds,
+                scan_finished,
             },
         );
     }
@@ -167,55 +171,8 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     }
 
     fn scan_finished(&self) {
-        // Could emit a message here if needed
-    }
-
-    fn new_file(&self) {
-        self.diff_counts
-            .new_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn changed_file(&self) {
-        self.diff_counts
-            .changed_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn unchanged_file(&self) {
-        self.diff_counts
-            .unchanged_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn deleted_file(&self) {
-        self.diff_counts
-            .deleted_files
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn new_dir(&self) {
-        self.diff_counts
-            .new_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn changed_dir(&self) {
-        self.diff_counts
-            .changed_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn deleted_dir(&self) {
-        self.diff_counts
-            .deleted_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn unchanged_dir(&self) {
-        self.diff_counts
-            .unchanged_dirs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.scan_finished
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn error(&self, msg: &str) {
@@ -226,17 +183,5 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
         // Emit final status update
         self.emit_status_update();
         self.json_reporter.flush();
-    }
-
-    fn summary(&self) -> SnapshotProcessSummary {
-        SnapshotProcessSummary {
-            processed_items_count: self
-                .processed_items
-                .load(std::sync::atomic::Ordering::Relaxed),
-            processed_bytes: self
-                .processed_bytes
-                .load(std::sync::atomic::Ordering::Relaxed),
-            diff_counts: self.diff_counts.snapshot(),
-        }
     }
 }

@@ -151,6 +151,7 @@ fn amend(
 
     if parsed_excludes.is_some() {
         repo.init_pack_saver(1)?;
+        let progress = Arc::new(crate::archiver::SnapshotProgress::new());
         let progress_reporter: Arc<dyn SnapshotProgressReporter> =
             Arc::new(CliSnapshotProgressReporter::new(None, None, 1));
         rewrite_snapshot_tree(
@@ -159,6 +160,7 @@ fn amend(
             parsed_excludes.as_ref(),
             false,
             None,
+            progress.clone(),
             progress_reporter.clone(),
         )?;
 

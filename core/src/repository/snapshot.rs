@@ -226,7 +226,6 @@ pub struct SnapshotSummary {
     pub total_encoded_bytes: u64, // Total bytes after encoding
     pub data_blobs: u64,
     pub meta_blobs: u64,
-    pub total_blobs: u64,
 
     #[serde(flatten)]
     pub diff_counts: DiffCounts,

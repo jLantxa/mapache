@@ -5,6 +5,7 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
+    archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
@@ -151,6 +152,7 @@ fn amend(
 
     if parsed_excludes.is_some() {
         repo.init_pack_saver(1)?;
+        let progress = Arc::new(SnapshotProgress::new());
         let progress_reporter: Arc<dyn SnapshotProgressReporter> =
             Arc::new(CliSnapshotProgressReporter::new(None, None, 1));
         rewrite_snapshot_tree(
@@ -159,6 +161,7 @@ fn amend(
             parsed_excludes.as_ref(),
             false,
             None,
+            progress.clone(),
             progress_reporter.clone(),
         )?;
 

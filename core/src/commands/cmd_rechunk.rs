@@ -5,6 +5,7 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
+    archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
     commands::{GlobalArgs, cleanup::CleanupHandler},
     mapache::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
@@ -66,6 +67,8 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             num_snapshots
         );
 
+        let progress = Arc::new(SnapshotProgress::new());
+
         let progress_reporter: Arc<dyn SnapshotProgressReporter> =
             Arc::new(CliSnapshotProgressReporter::new(
                 Some(snapshot.summary.processed_items_count),
@@ -79,6 +82,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             None,
             true,
             Some(&mut rechunked_blob_list_map),
+            progress.clone(),
             progress_reporter.clone(),
         )?;
 

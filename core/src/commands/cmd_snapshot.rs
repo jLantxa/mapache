@@ -5,7 +5,7 @@ use clap::{ArgGroup, Args};
 use colored::Colorize;
 
 use crate::{
-    archiver::{self, SnapshotOptions},
+    archiver::{self, SnapshotOptions, progress::SnapshotProgress},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
     fs::{
@@ -183,6 +183,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     // Run Archiver
+    let progress = Arc::new(SnapshotProgress::new());
     let progress_reporter: Arc<dyn SnapshotProgressReporter> = if global_args.json {
         Arc::new(JsonSnapshotProgressReporter::new(None, None))
     } else {
@@ -218,13 +219,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             no_scan: args.no_scan,
         },
         args.num_readers,
+        progress.clone(),
         progress_reporter.clone(),
     )?;
 
     // Flush repo and finalize pack saver
     let repo_stats: crate::repository::repo::RepoStatsSnapshot =
         repo.flush_and_finalize_pack_saver()?;
-    let snapshot_report_summary = progress_reporter.summary();
+    let snapshot_report_summary = progress.summary();
     let snapshot_report_summary_clone = snapshot_report_summary.clone();
 
     // Fill snapshot summary

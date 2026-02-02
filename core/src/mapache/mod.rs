@@ -14,7 +14,10 @@ use rand::{TryRngCore, rngs::OsRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    archiver::{processor::chunk_and_store_file, tree_serializer::TreeSerializer},
+    archiver::{
+        processor::chunk_and_store_file, progress::SnapshotProgress,
+        tree_serializer::TreeSerializer,
+    },
     fs::{
         filter::{GlobRule, PathFilter},
         node::Node,
@@ -214,6 +217,7 @@ pub(crate) fn rewrite_snapshot_tree(
     excludes: Option<&Vec<PathBuf>>,
     rechunk: bool,
     mut rechunked_blobs_list_map: Option<&mut HashMap<Vec<ID>, Vec<ID>>>,
+    progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
 ) -> Result<()> {
     // Cannonicalize the exclude paths and filter the source paths using the excludes
@@ -254,7 +258,8 @@ pub(crate) fn rewrite_snapshot_tree(
 
         if stream_node.node.is_file() {
             if !rechunk {
-                // If not rechunking, just report processed bytes
+                // If not rechunking, update central progress and notify UI
+                progress.processed_bytes(stream_node.node.metadata.size);
                 progress_reporter.processed_bytes(stream_node.node.metadata.size);
             } else {
                 let blobs = stream_node
@@ -270,6 +275,7 @@ pub(crate) fn rewrite_snapshot_tree(
                         &mut encoding_context,
                         &mut blob_data_reader,
                         &stream_node.node,
+                        progress.as_ref(),
                         progress_reporter.as_ref(),
                     )
                 };
@@ -278,6 +284,7 @@ pub(crate) fn rewrite_snapshot_tree(
                     match map.entry(blobs.clone()) {
                         std::collections::hash_map::Entry::Occupied(entry) => {
                             // The file was already rechunked, so we can skip.
+                            progress.processed_bytes(stream_node.node.metadata.size);
                             progress_reporter.processed_bytes(stream_node.node.metadata.size);
                             entry.get().clone()
                         }

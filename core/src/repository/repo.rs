@@ -105,6 +105,9 @@ pub struct RepoStats {
     pub meta_raw_bytes: AtomicU64,
     pub meta_encoded_bytes: AtomicU64,
     pub meta_blobs: AtomicU64,
+
+    pub index_raw_bytes: AtomicU64,
+    pub index_meta_bytes: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -114,6 +117,7 @@ pub struct RepoStatsSnapshot {
     pub total: SizePair,
     pub blobs: u64,
     pub meta_blobs: u64,
+    pub index: SizePair,
 }
 
 impl RepoStats {
@@ -122,15 +126,18 @@ impl RepoStats {
         let eb = self.encoded_bytes.load(Ordering::Relaxed);
         let mrb = self.meta_raw_bytes.load(Ordering::Relaxed);
         let meb = self.meta_encoded_bytes.load(Ordering::Relaxed);
-        let bc = self.data_blobs.load(Ordering::Relaxed);
-        let mbc = self.meta_blobs.load(Ordering::Relaxed);
+        let blobs = self.data_blobs.load(Ordering::Relaxed);
+        let meta_blobs = self.meta_blobs.load(Ordering::Relaxed);
+        let index_raw = self.index_raw_bytes.load(Ordering::Relaxed);
+        let index_meta = self.index_meta_bytes.load(Ordering::Relaxed);
 
         RepoStatsSnapshot {
             data: SizePair::new(rb, eb),
             meta: SizePair::new(mrb, meb),
             total: SizePair::new(rb + mrb, eb + meb),
-            blobs: bc,
-            meta_blobs: mbc,
+            blobs,
+            meta_blobs,
+            index: SizePair::new(index_raw, index_meta),
         }
     }
 }

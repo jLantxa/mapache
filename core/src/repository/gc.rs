@@ -170,7 +170,7 @@ impl Plan {
             self.repack()?;
             let repo_stats = self.repo.flush_and_finalize_pack_saver()?;
 
-            added_size += (repo_stats.data + repo_stats.meta).encoded as i64;
+            added_size += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded as i64;
 
             deleted_size += self.delete_old_indices()? as i64;
             deleted_size += self.delete_obsolete_packs()? as i64;

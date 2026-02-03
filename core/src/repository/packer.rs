@@ -13,7 +13,7 @@ use crate::{
     backend::{Handle, StorageBackend, StorageHint},
     mapache::{BlobType, ContentIdType, ID, SaveID, defaults::FOOTER_BLOB_MULTIPLE},
     repository::{
-        repo::Repository,
+        repo::{Repository, SizePair},
         storage::{EncodingContext, SecureStorage},
     },
 };
@@ -439,11 +439,14 @@ impl PackSaver {
                         }
 
                         // Index Update
-                        if let Err(e) = repo.index().add_pack(&repo, &result.id, result.descriptors)
-                        {
-                            *err_ptr.lock() = Some(e.context("Index update failed"));
-                            return Ok(());
-                        }
+                        let index_size =
+                            match repo.index().add_pack(&repo, &result.id, result.descriptors) {
+                                Ok(size) => size,
+                                Err(e) => {
+                                    *err_ptr.lock() = Some(e.context("Index update failed"));
+                                    return Ok(());
+                                }
+                            };
 
                         Self::update_stats(
                             &repo,
@@ -451,6 +454,7 @@ impl PackSaver {
                             stats_enc,
                             stats_meta,
                             stats_blobs,
+                            index_size,
                             blob_type,
                         );
 
@@ -561,6 +565,7 @@ impl PackSaver {
         encoded_size: u64,
         meta_size: u64,
         num_blobs: u64,
+        index: SizePair,
         blob_type: BlobType,
     ) {
         match blob_type {
@@ -593,6 +598,13 @@ impl PackSaver {
             }
             _ => {}
         }
+
+        repo.stats
+            .index_raw_bytes
+            .fetch_add(index.raw, Ordering::Relaxed);
+        repo.stats
+            .index_meta_bytes
+            .fetch_add(index.encoded, Ordering::Relaxed);
     }
 }
 

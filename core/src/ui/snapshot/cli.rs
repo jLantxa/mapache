@@ -138,19 +138,24 @@ impl CliSnapshotProgressReporter {
                 "processed_bytes_fmt",
                 |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                     let bytes = state.pos();
+                    let processed_bytes_str = utils::format_size_binary(bytes, 3);
+
                     match state.len() {
-                        // Scan phase: "1.234 MB"
                         None => {
-                            let _ = w.write_str(&utils::format_size_binary(bytes, 3));
+                            let _ = w.write_str(&processed_bytes_str);
                         }
-                        // Final phase: "1.234 MB / 10.552 GB"
                         Some(total) => {
-                            let _ = write!(
-                                w,
-                                "{} / {}",
-                                utils::format_size_binary(bytes, 3),
-                                utils::format_size_binary(total, 3)
-                            );
+                            if bytes >= total {
+                                // If the scanner fall behind the processed bytes, don't show it.
+                                let _ = w.write_str(&processed_bytes_str);
+                            } else {
+                                let _ = write!(
+                                    w,
+                                    "{} / {}",
+                                    &processed_bytes_str,
+                                    utils::format_size_binary(total, 3)
+                                );
+                            }
                         }
                     }
                 },
@@ -171,11 +176,7 @@ impl CliSnapshotProgressReporter {
             .template("[{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s]")
             .expect("template");
 
-        progress_bar.set_style(if expected_size_val.is_some() {
-            determined_style.clone()
-        } else {
-            undetermined_style
-        });
+        progress_bar.set_style(undetermined_style.clone());
 
         // Companion Bar: Dynamic Items and Errors
         let error_counter_for_style = Arc::clone(&error_counter);
@@ -185,12 +186,20 @@ impl CliSnapshotProgressReporter {
                 .expect("template")
                 .with_key(
                     "items_info",
-                    |state: &ProgressState, w: &mut dyn std::fmt::Write| match state.len() {
-                        None => {
-                            let _ = write!(w, "{} items", state.pos());
-                        }
-                        Some(len) => {
-                            let _ = write!(w, "{} / {} items", state.pos(), len);
+                    |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let pos: u64 = state.pos();
+                        match state.len() {
+                            None => {
+                                let _ = write!(w, "{} items", pos);
+                            }
+                            Some(len) => {
+                                if pos >= len {
+                                    // If the scanner fall behind the processed items, don't show it.
+                                    let _ = write!(w, "{} items", pos);
+                                } else {
+                                    let _ = write!(w, "{} / {} items", pos, len);
+                                }
+                            }
                         }
                     },
                 )
@@ -250,15 +259,15 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
     fn add_expected_bytes(&self, val: u64) {
         let new_total = self.expected_bytes.fetch_add(val, Ordering::Relaxed) + val;
         self.progress_bar.set_length(new_total);
-
-        if new_total > 0 {
-            self.progress_bar.set_style(self.determined_style.clone());
-        }
     }
 
     fn scan_finished(&self) {
-        let bytes = self.expected_bytes.load(Ordering::Relaxed);
-        self.progress_bar.set_length(bytes);
+        let total_bytes = self.expected_bytes.load(Ordering::Relaxed);
+
+        // Reset the position if needed, or just switch styles.
+        // Once this is called, the UI will jump from "Scan" mode to "Progress Bar" mode.
+        self.progress_bar.set_style(self.determined_style.clone());
+        self.progress_bar.set_length(total_bytes);
     }
 
     fn finalize(&self) {

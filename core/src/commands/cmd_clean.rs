@@ -60,6 +60,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
+    repo.reload_master_index()?;
+
     run_with_repo(global_args, args, repo)
 }
 
@@ -67,7 +69,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 pub fn run_with_repo(
     _global_args: &GlobalArgs,
     args: &CmdArgs,
-    repo: Arc<Repository>,
+    repo: Arc<Repository>, // The repository must have its master index loaded
 ) -> Result<()> {
     let tolerance = if args.no_repack {
         // No repack means a tolerance of 100 %.

@@ -96,6 +96,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     })?;
 
+    repo.reload_master_index()?;
+
     ui::cli::log!("Mounting repository in {}", cannonical_mountpoint.display());
     ui::cli::log!(
         "Press {} to finish or unmount the filesystem manually.",

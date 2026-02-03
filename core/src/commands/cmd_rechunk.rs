@@ -48,6 +48,7 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
+    repo.reload_master_index()?;
     repo.init_pack_saver(1)?;
 
     let start = Instant::now();

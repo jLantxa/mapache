@@ -50,6 +50,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         lock_handle_clone.write().unlock();
     })?;
 
+    repo.reload_master_index()?;
+
     let snapshots: Vec<(ID, Snapshot)> = if let Some(use_snap) = &args.snapshot {
         find_use_snapshot(repo.clone(), use_snap)?
             .into_iter()

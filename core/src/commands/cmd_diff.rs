@@ -53,6 +53,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         move || lock.write().unlock()
     })?;
 
+    repo.reload_master_index()?;
+
     let (src_id, _) = repo.find(ContentIdType::Snapshot, &args.source_snapshot_id)?;
     let (tgt_id, _) = repo.find(ContentIdType::Snapshot, &args.target_snapshot_id)?;
     let src_snap = repo.load_snapshot(&src_id, None)?;

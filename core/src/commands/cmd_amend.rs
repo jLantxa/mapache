@@ -88,6 +88,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
+    repo.reload_master_index()?;
+
     let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
 
     if args.all {

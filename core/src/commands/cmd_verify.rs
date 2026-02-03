@@ -78,7 +78,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     // Open repository
-    let (repo_arc, secure_storage, lock_handle) = Repository::try_open_with_lock(
+    let (repo, secure_storage, lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend_arc.clone(),
@@ -94,8 +94,11 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
 
     let start = Instant::now();
+
+    repo.reload_master_index()?;
+
     let stats = VerifyStats::new();
-    let packs = repo_arc.list_packs()?;
+    let packs = repo.list_packs()?;
     let mut physical_failed_early = false;
 
     // --------------------------------
@@ -119,7 +122,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         bar.set_draw_target(default_bar_draw_target());
         bar.set_style(style);
 
-        let repo_ref = repo_arc.as_ref();
+        let repo_ref = repo.as_ref();
         let backend_ref = backend_arc.as_ref();
         let secure_ref = secure_storage.as_ref();
 
@@ -200,7 +203,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if !physical_failed_early || !args.fail_early {
         ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
-        let snapshot_stream = SnapshotStream::new(repo_arc.clone())?;
+        let snapshot_stream = SnapshotStream::new(repo.clone())?;
         let snapshots: Vec<_> = snapshot_stream.collect();
         num_snapshots = snapshots.len();
 
@@ -211,7 +214,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 format!("({}/{})", i + 1, num_snapshots).dimmed()
             );
 
-            match verify_snapshot_refs(repo_arc.clone(), snapshot_id, &packs) {
+            match verify_snapshot_refs(repo.clone(), snapshot_id, &packs) {
                 Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
                 Err(e) => {
                     ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());

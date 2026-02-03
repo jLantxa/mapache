@@ -243,10 +243,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             dry_run: args.dry_run,
             no_repack: false,
         };
+
         if !global_args.json {
             ui::cli::log!();
             ui::cli::log!("Running garbage collector...");
         }
+
+        repo.reload_master_index()?; // We need to load the index for the garbage collector
         commands::cmd_clean::run_with_repo(global_args, &gc_args, repo)?;
     }
 

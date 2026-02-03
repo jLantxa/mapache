@@ -108,7 +108,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    repo.init_pack_saver(args.num_packers)?;
+    repo.reload_master_index()?;
 
     // Get source paths from arguments or readdir root path
     let source_paths = if !args.as_root {
@@ -194,7 +194,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ))
     };
 
-    // Init cleanup handlerf
+    // Init cleanup handler
     let repo_clone = repo.clone();
     let reporter_clone = progress_reporter.clone();
     let lock_handle_clone = lock_handle.clone();
@@ -205,6 +205,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         let _ = repo_clone.flush_and_finalize_pack_saver();
         lock_handle_clone.write().unlock();
     })?;
+
+    repo.init_pack_saver(args.num_packers)?;
 
     // Process and save new snapshot
     let mut new_snapshot = archiver::snapshot(

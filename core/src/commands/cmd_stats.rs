@@ -60,6 +60,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
     )?;
 
+    repo.reload_master_index()?;
+
     let lock_handle_clone = lock_handle.clone();
     let _cleanup_handler = CleanupHandler::new(move || {
         lock_handle_clone.write().unlock();

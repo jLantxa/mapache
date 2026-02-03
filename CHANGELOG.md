@@ -11,6 +11,8 @@
 - Mapache can now print json output for selected commands using the`--json`
   option. Initial support is still limited to `init`, `log`, `snapshot` and
   `forget` commands.
+- The repository master index is now only loaded when necessary, saving some
+  RAM for those commands that don't need to access the index.
 
 ## v0.1.7
 

@@ -372,6 +372,12 @@ impl MasterIndex {
         }
     }
 
+    pub fn clear(&self) {
+        let mut lock = self.inner.write();
+        lock.indices.clear();
+        lock.pending_blobs.clear();
+    }
+
     /// Returns `true` if the object ID is known either in a finalized index
     /// or is currently a pending blob.
     pub fn contains(&self, id: &ID) -> bool {

@@ -338,7 +338,7 @@ impl Repository {
 
         let master_index = Arc::new(MasterIndex::new());
 
-        let mut repo = Repository {
+        let repo = Repository {
             manifest,
             backend,
             objects_path: PathBuf::from(OBJECTS_DIR),
@@ -353,8 +353,6 @@ impl Repository {
             pack_saver_handle: Mutex::new(None),
             stats: RepoStats::default(),
         };
-
-        repo.load_master_index()?;
 
         Ok(Arc::new(repo))
     }
@@ -879,10 +877,11 @@ impl Repository {
     }
 
     /// Load the master index from file
-    fn load_master_index(&mut self) -> Result<()> {
+    pub fn reload_master_index(&self) -> Result<()> {
         let files = self.list_files(ContentIdType::Index)?;
-        let num_index_files = files.len();
+        self.master_index.clear();
 
+        let mut num_index_files = 0;
         for file_path in files {
             let file_name = file_path
                 .file_name()
@@ -906,6 +905,7 @@ impl Repository {
 
             let index = Index::from_index_file(index_file, id);
             self.master_index.add_index(index);
+            num_index_files += 1;
         }
 
         ui::cli::verbose_1!("Loaded {} index files", num_index_files);

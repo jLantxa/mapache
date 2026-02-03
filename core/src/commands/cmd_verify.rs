@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -34,6 +34,10 @@ pub struct CmdArgs {
     /// Use local cache
     #[clap(long, default_value_t = false)]
     pub with_cache: bool,
+
+    /// Fail early on first error encountered, but still show the final report
+    #[clap(long, default_value_t = false)]
+    pub fail_early: bool,
 }
 
 struct VerifyStats {
@@ -68,8 +72,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if global_args.no_cache {
         ui::cli::warning!(
             "--no-cache has no effect on this command. \
-            The local cache is disabled by default. \
-            Use --with-cache to enable it."
+             The local cache is disabled by default. \
+             Use --with-cache to enable it."
         );
     }
 
@@ -91,8 +95,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
     let stats = VerifyStats::new();
-
     let packs = repo_arc.list_packs()?;
+    let mut physical_failed_early = false;
 
     // --------------------------------
     // Physical Verification (Optional)
@@ -115,12 +119,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         bar.set_draw_target(default_bar_draw_target());
         bar.set_style(style);
 
-        // References for the closure
         let repo_ref = repo_arc.as_ref();
         let backend_ref = backend_arc.as_ref();
         let secure_ref = secure_storage.as_ref();
 
+        // Atomic flag to stop scheduling new work across threads if fail_early is set
+        let stop_flag = AtomicBool::new(false);
+
         packs.par_iter().for_each(|pack_id| {
+            // Check if another thread triggered fail_early
+            if stop_flag.load(Ordering::Relaxed) {
+                return;
+            }
+
             match verify_pack(repo_ref, backend_ref, secure_ref, pack_id) {
                 Ok(pack_stats) => {
                     stats.packs_processed.fetch_add(1, Ordering::Relaxed);
@@ -132,15 +143,18 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         .fetch_add(pack_stats.dangling, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    // Log IMMEDIATELY so user sees which pack failed
                     bar.suspend(|| {
                         ui::cli::error!("Pack {} CORRUPT: {}", pack_id, e);
                     });
                     stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
+
+                    if args.fail_early {
+                        stop_flag.store(true, Ordering::Relaxed);
+                    }
                 }
             }
 
-            // Update bar message with dynamic stats
+            // Update bar message
             let corrupt = stats.packs_corrupt.load(Ordering::Relaxed);
             if corrupt > 0 {
                 bar.set_message(
@@ -155,10 +169,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         });
 
         bar.finish();
+        physical_failed_early = stop_flag.load(Ordering::Relaxed);
 
         if stats.packs_corrupt.load(Ordering::Relaxed) > 0 {
             ui::cli::log!();
-            ui::cli::error!("Physical verification failed. The repository data is corrupt.");
+            if physical_failed_early {
+                ui::cli::warning!("Physical verification halted early due to errors.");
+            } else {
+                ui::cli::error!("Physical verification failed. The repository data is corrupt.");
+            }
         } else {
             ui::cli::log!(
                 "{} {} blobs verified.",
@@ -172,30 +191,39 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // ------------------------------------------
     // Logical Verification (Snapshot References)
     // ------------------------------------------
-    ui::cli::log!("{}", "Verifying Snapshot References...".bold());
-
-    let snapshot_stream = SnapshotStream::new(repo_arc.clone())?;
-    let snapshots: Vec<_> = snapshot_stream.collect(); // Collect to know total count
-    let num_snapshots = snapshots.len();
-
+    let mut logical_failed_early = false;
     let mut snapshots_corrupt = 0;
+    let mut num_snapshots = 0;
 
-    for (i, (snapshot_id, _)) in snapshots.iter().enumerate() {
-        let msg = format!(
-            "{} {}",
-            snapshot_id.to_short_hex(12).bold().yellow(),
-            format!("({}/{})", i + 1, num_snapshots).dimmed()
-        );
+    // Only run logical check if we haven't already failed early in physical check
+    // or if the user wants to see all errors regardless.
+    if !physical_failed_early || !args.fail_early {
+        ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
-        // Check refs
-        match verify_snapshot_refs(repo_arc.clone(), snapshot_id, &packs) {
-            Ok(_) => {
-                ui::cli::log!("{} {}", msg, "[OK]".bold().green());
-            }
-            Err(e) => {
-                ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
-                ui::cli::error!("{e}");
-                snapshots_corrupt += 1;
+        let snapshot_stream = SnapshotStream::new(repo_arc.clone())?;
+        let snapshots: Vec<_> = snapshot_stream.collect();
+        num_snapshots = snapshots.len();
+
+        for (i, (snapshot_id, _)) in snapshots.iter().enumerate() {
+            let msg = format!(
+                "{} {}",
+                snapshot_id.to_short_hex(12).bold().yellow(),
+                format!("({}/{})", i + 1, num_snapshots).dimmed()
+            );
+
+            match verify_snapshot_refs(repo_arc.clone(), snapshot_id, &packs) {
+                Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
+                Err(e) => {
+                    ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
+                    ui::cli::error!("{e}");
+                    snapshots_corrupt += 1;
+
+                    if args.fail_early {
+                        ui::cli::warning!("Logical verification halted early.");
+                        logical_failed_early = true;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -221,6 +249,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!(
                 "- {} with broken references.",
                 utils::format_count(snapshots_corrupt, "snapshot", "snapshots")
+            );
+        }
+        if physical_failed_early || logical_failed_early {
+            ui::cli::log!(
+                "{}",
+                "Note: Verification was partial due to --fail-early.".dimmed()
             );
         }
 

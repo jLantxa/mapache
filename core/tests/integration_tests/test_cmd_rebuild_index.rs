@@ -90,6 +90,7 @@ mod tests {
         let verify_args = cmd_verify::CmdArgs {
             read_packs: true,
             with_cache: false,
+            fail_early: true,
         };
         let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
         assert!(first_verify_result.is_ok(), "First verify should pass");

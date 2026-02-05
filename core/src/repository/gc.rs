@@ -166,7 +166,6 @@ impl Plan {
         if !self.obsolete_packs.is_empty() {
             self.repo
                 .init_pack_saver(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
-
             self.repack()?;
             let repo_stats = self.repo.flush_and_finalize_pack_saver()?;
 

@@ -262,9 +262,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         )?;
         progress_reporter.finalize();
 
-        // Add the size of the snapshot file for display (only after saving the snapshot)
-        new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw;
-        new_snapshot.summary.meta_encoded_bytes += new_snapshot_size.encoded;
+        // Add the size of the snapshot file and index for display (only after saving the snapshot).
+        new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw + repo_stats.index.raw;
+        new_snapshot.summary.meta_encoded_bytes +=
+            new_snapshot_size.encoded + repo_stats.index.encoded;
 
         // Emit snapshot_complete for JSON output (after snapshot is saved)
         if global_args.json {

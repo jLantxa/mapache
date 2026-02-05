@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.1.8
+
 ### Changes
 
 - `mapache verify` runs now doesn't use the local cache by default. Added a

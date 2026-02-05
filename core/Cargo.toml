@@ -6,13 +6,13 @@ rust-version = "1.91"
 
 [dependencies]
 aes-gcm-siv = "0.11.1"
-anyhow = "1.0.100"
+anyhow = "1.0.101"
 argon2 = "0.5.3"
 base64 = "0.22.1"
 blake3 = "1.8.3"
 chrono = { version = "0.4.43", features = ["serde"] }
 chunker = { path = "../chunker" }
-clap = { version = "4.5.56", features = ["derive", "wrap_help"] }
+clap = { version = "4.5.57", features = ["derive", "wrap_help"] }
 clap_complete = "4.5.65"
 colored = "3.1.1"
 crossbeam-channel = "0.5.15"

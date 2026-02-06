@@ -581,6 +581,26 @@ impl Repository {
         Ok(ids)
     }
 
+    pub(crate) fn list_index_ids(&self) -> Result<Vec<ID>> {
+        let index_paths = self.list_files(ContentIdType::Index)?;
+        let mut index_ids = Vec::with_capacity(index_paths.len());
+
+        for file_path in index_paths {
+            let file_name = file_path
+                .file_name()
+                .expect("Could not read index file name")
+                .to_string_lossy()
+                .clone();
+
+            match ID::from_hex(&file_name) {
+                Ok(id) => index_ids.push(id),
+                Err(_) => continue, // Ignore invalid ID names
+            }
+        }
+
+        Ok(index_ids)
+    }
+
     /// Lists all .dropped snapshot IDs
     pub(crate) fn list_dropped_snapshot_ids(&self) -> Result<Vec<ID>> {
         let ids = self

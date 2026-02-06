@@ -56,7 +56,7 @@ pub(crate) mod cleanup;
     name = "mapache",
     version,
     about = "🦝 mapache backup program",
-    long_about = "mapache is a fast, secure, efficient and deduplicated program\
+    long_about = "mapache is a fast, secure, efficient and deduplicated program \
         to make backup copies of your files."
 )]
 pub struct Cli {

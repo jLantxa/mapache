@@ -2,11 +2,16 @@
 
 ## [Unreleased]
 
+### Fixes
+
+- Fixed a bug that prevented old index files to be deleted by `mapache
+  rebuild-index`.
+
 ## v0.1.8
 
 ### Changes
 
-- `mapache verify` runs now doesn't use the local cache by default. Added a
+- `mapache verify` now doesn't use the local cache by default. Added a
   `--with-cache` option to enable it.
 - Optimized `snapshot` performance by implementing `Packer` buffer recycling and
   offloading packer flushing to the `PackSaver` threads.

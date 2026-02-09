@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use chrono::Duration;
 use parking_lot::{Mutex, RwLock};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, cache::CacheBackend},

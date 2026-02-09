@@ -1,7 +1,7 @@
 use aes_gcm_siv::{AeadInPlace, Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
-use rand::{TryRngCore, rngs::OsRng};
+use rand::{TryRng, rngs::SysRng};
 
 use crate::mapache::{self, defaults::DEFAULT_COMPRESSION};
 
@@ -74,7 +74,7 @@ impl SecureStorage {
 
         let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
         if has_cipher {
-            OsRng.try_fill_bytes(&mut nonce_bytes)?;
+            SysRng.try_fill_bytes(&mut nonce_bytes)?;
             out.extend_from_slice(&nonce_bytes);
         }
 
@@ -143,7 +143,7 @@ impl SecureStorage {
         let mut out = Vec::with_capacity(total);
 
         let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
-        OsRng
+        SysRng
             .try_fill_bytes(&mut nonce_bytes)
             .map_err(|e| anyhow!("rng failed: {e}"))?;
 
@@ -219,7 +219,7 @@ impl SecureStorage {
     /// Generate a cryptographically strong salt using the OS random source.
     pub fn generate_salt<const LENGTH: usize>() -> [u8; LENGTH] {
         let mut salt = [0u8; LENGTH];
-        OsRng.try_fill_bytes(&mut salt).expect("OS RNG failed");
+        SysRng.try_fill_bytes(&mut salt).expect("OS RNG failed");
         salt
     }
 }

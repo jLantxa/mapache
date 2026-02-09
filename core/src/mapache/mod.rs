@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use num_enum::FromPrimitive;
-use rand::{TryRngCore, rngs::OsRng};
+use rand::{TryRng, rngs::SysRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -39,7 +39,7 @@ impl ID {
     /// Creates a new, random ID.
     pub fn new_random() -> Self {
         let mut random_bytes: Hash256 = Default::default();
-        if let Err(e) = OsRng.try_fill_bytes(&mut random_bytes) {
+        if let Err(e) = SysRng.try_fill_bytes(&mut random_bytes) {
             panic!("Error: {e}");
         }
 

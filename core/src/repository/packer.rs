@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint},

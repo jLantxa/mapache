@@ -1,7 +1,7 @@
 use std::{io::Cursor, path::PathBuf};
 
 use anyhow::{Result, anyhow};
-use rand::TryRngCore;
+use rand::Rng;
 use rstest::rstest;
 
 use crate::{Chunker, Normalization, lookup::MASKS};
@@ -16,7 +16,7 @@ const TESTDATA: &str = "testdata";
 fn generate_random_data(length: usize) -> Vec<u8> {
     let mut rng = rand::rng();
     let mut data = vec![0u8; length];
-    let _ = rng.try_fill_bytes(&mut data);
+    rng.fill_bytes(&mut data);
     data
 }
 

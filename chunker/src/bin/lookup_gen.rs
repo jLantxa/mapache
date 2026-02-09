@@ -1,7 +1,5 @@
 use std::ops::RangeInclusive;
 
-use rand::Rng;
-
 const TAB: &str = "    ";
 
 fn main() {
@@ -72,12 +70,11 @@ fn generate_mask(num_ones: u8) -> u64 {
     );
 
     const ACTIVE_BIT_RANGE: std::ops::Range<usize> = 0..48;
-    let mut rng = rand::rng();
     let mut mask: u64 = 0;
     let mut chosen_bits: Vec<u8> = Vec::new();
 
     while chosen_bits.len() < num_ones as usize {
-        let bit_index = rng.random_range(ACTIVE_BIT_RANGE);
+        let bit_index = rand::random_range(ACTIVE_BIT_RANGE);
         if !chosen_bits.contains(&(bit_index as u8)) {
             chosen_bits.push(bit_index as u8);
         }

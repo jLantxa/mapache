@@ -6,6 +6,9 @@
 
 - Fixed a bug that prevented old index files to be deleted by `mapache
   rebuild-index`.
+- Cancel the scanning thread when `mapache snapshot` has finalized the tree in
+  the rare case that the snapshot process is faster than the scanner (which can
+  happen for small incremental snapshots).
 
 ## v0.1.8
 

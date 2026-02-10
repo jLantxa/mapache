@@ -40,11 +40,15 @@ pub struct SnapshotOptions<'a> {
 
 /// Internal state to coordinate graceful shutdowns and error reporting across threads.
 struct PipelineStatus {
+    /// Signal that the snapshot is finished.
+    finished_flag: AtomicBool,
+
     /// This error flag signals a fatal error to all running threads so they can
     /// abort execution early. Only fatal, unrecoverable errors should be signaled.
     fatal_error_flag: AtomicBool,
     /// Stores the first error that triggered the shutdown to report back to the user.
     first_error: Mutex<Option<anyhow::Error>>,
+
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     progress: Arc<SnapshotProgress>,
 }
@@ -55,11 +59,16 @@ impl PipelineStatus {
         progress_reporter: Arc<dyn SnapshotProgressReporter>,
     ) -> Self {
         Self {
+            finished_flag: AtomicBool::new(false),
             fatal_error_flag: AtomicBool::new(false),
             first_error: Mutex::new(None),
             progress_reporter,
             progress,
         }
+    }
+
+    fn signal_finished(&self) {
+        self.finished_flag.store(true, Ordering::SeqCst);
     }
 
     fn signal_fatal(&self, err: anyhow::Error) {
@@ -71,6 +80,10 @@ impl PipelineStatus {
                 *guard = Some(err);
             }
         }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished_flag.load(Ordering::Relaxed)
     }
 
     fn is_failed(&self) -> bool {
@@ -154,21 +167,19 @@ pub(crate) fn snapshot(
     );
 
     // Join threads and handle potential panics or errors
-    if let Ok(scanner_res) = scanner_thread.join() {
-        if let Err(e) = scanner_res {
-            status.signal_fatal(e.context("Archiver scanner thread encountered an error"));
-        }
-    } else {
-        status.signal_fatal(anyhow!("Archiver scanner thread panicked"));
-    }
-
-    if diff_thread.join().is_err() {
-        status.signal_fatal(anyhow!("Archiver diff thread panicked"));
-    }
-
-    if processor_thread.join().is_err() {
-        status.signal_fatal(anyhow!("Archiver processor thread panicked"));
-    }
+    scanner_thread
+        .join()
+        .unwrap_or_else(|_| Err(anyhow!("Archiver scanner thread panicked")))
+        .err()
+        .map(|e| status.signal_fatal(e.context("Archiver scanner thread error")));
+    diff_thread
+        .join()
+        .err()
+        .map(|_| status.signal_fatal(anyhow!("Archiver diff thread panicked")));
+    processor_thread
+        .join()
+        .err()
+        .map(|_| status.signal_fatal(anyhow!("Archiver processor thread panicked")));
 
     let root_tree_id = tree_serializer_thread
         .join()
@@ -224,9 +235,10 @@ fn spawn_scanner_thread(
         };
 
         for item in scan_stream {
-            if status.is_failed() {
+            if status.is_failed() || status.is_finished() {
                 break;
             }
+
             match item {
                 Ok((_path, stream_node)) => {
                     let node = stream_node.node;
@@ -401,7 +413,10 @@ fn spawn_serializer_thread(
         }
 
         match tree_serializer.finalize_root(&mut encoding_context) {
-            Ok(_) => tree_serializer.root_tree(),
+            Ok(_) => {
+                status.signal_finished(); // Signal completion to other threads (mainly the scanner)
+                tree_serializer.root_tree()
+            }
             Err(e) => {
                 status.signal_fatal(
                     e.context("Archiver serializer thread errored finalizing root tree"),

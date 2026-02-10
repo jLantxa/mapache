@@ -167,19 +167,19 @@ pub(crate) fn snapshot(
     );
 
     // Join threads and handle potential panics or errors
-    scanner_thread
+    if let Some(e) = scanner_thread
         .join()
         .unwrap_or_else(|_| Err(anyhow!("Archiver scanner thread panicked")))
         .err()
-        .map(|e| status.signal_fatal(e.context("Archiver scanner thread error")));
-    diff_thread
-        .join()
-        .err()
-        .map(|_| status.signal_fatal(anyhow!("Archiver diff thread panicked")));
-    processor_thread
-        .join()
-        .err()
-        .map(|_| status.signal_fatal(anyhow!("Archiver processor thread panicked")));
+    {
+        status.signal_fatal(e.context("Archiver scanner thread error"))
+    }
+    if diff_thread.join().err().is_some() {
+        status.signal_fatal(anyhow!("Archiver diff thread panicked"))
+    }
+    if processor_thread.join().err().is_some() {
+        status.signal_fatal(anyhow!("Archiver processor thread panicked"))
+    }
 
     let root_tree_id = tree_serializer_thread
         .join()

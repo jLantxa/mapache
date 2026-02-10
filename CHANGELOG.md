@@ -10,6 +10,10 @@
   the rare case that the snapshot process is faster than the scanner (which can
   happen for small incremental snapshots).
 
+### Changes
+
+- Added more stats to `mapache stats` and support for json output.
+
 ## v0.1.8
 
 ### Changes

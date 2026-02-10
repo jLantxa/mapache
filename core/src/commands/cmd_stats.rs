@@ -3,9 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
-use clap::{Args, ValueEnum};
+use anyhow::{Context, Result};
+use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Serialize;
 
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
@@ -13,33 +14,76 @@ use crate::{
     fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::{ContentIdType, global::GlobalOpts},
     repository::{
+        packer::Packer,
         repo::{MANIFEST_PATH, RepoConfig, Repository},
         snapshot::SnapshotStream,
+        storage::SecureStorage,
     },
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
-    utils::{self, collections::IdSet, size},
+    utils::{self, collections::IdSet},
 };
 
-#[derive(Debug, Clone, ValueEnum)]
-pub enum Mode {
-    Repository,
-    Snapshots,
-}
-
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Mode::Repository => write!(f, "repository"),
-            Mode::Snapshots => write!(f, "snapshots"),
-        }
-    }
-}
-
 #[derive(Args, Debug)]
-#[clap(about = "Display stats about the repository and its contents")]
+#[clap(about = "Show repository statistics")]
 pub struct CmdArgs {
-    #[clap(long = "mode", value_parser, default_value_t = Mode::Repository)]
-    pub mode: Mode,
+    /// Parse pack footers for physical statistics (expensive)
+    #[clap(long, default_value_t = false)]
+    pub full: bool,
+}
+
+#[derive(Serialize)]
+struct PacksOutput {
+    count: usize,
+    total_bytes: u64,
+    parsed_footer: bool,
+    footer_blob_count: Option<usize>,
+    footer_encoded_bytes: Option<u64>,
+    footer_raw_bytes: Option<u64>,
+    footer_dangling_blobs: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct IndicesOutput {
+    count: usize,
+    total_bytes: u64,
+    indexed_blobs: u64,
+    indexed_raw_bytes: u64,
+    indexed_encoded_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct SnapshotsOutput {
+    count: usize,
+    total_snapshot_bytes: u64,
+    referenced_blobs: u64,
+    referenced_data_blobs: u64,
+    referenced_tree_blobs: u64,
+    referenced_raw_bytes: u64,
+    referenced_encoded_bytes: u64,
+    referenced_raw_bytes_data: u64,
+    referenced_encoded_bytes_data: u64,
+    referenced_raw_bytes_tree: u64,
+    referenced_encoded_bytes_tree: u64,
+    compression_ratio_total: f32,
+    compression_ratio_data: f32,
+    compression_ratio_tree: f32,
+    total_restorable_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct KeysOutput {
+    count: usize,
+    total_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct StatsOutput {
+    packs: PacksOutput,
+    indices: IndicesOutput,
+    snapshots: SnapshotsOutput,
+    keys: KeysOutput,
+    manifest_bytes: u64,
+    total_repo_bytes: u64,
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -47,11 +91,12 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
+        pack_size: (global_args.pack_size_mib * utils::size::MiB as f32) as u64,
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+
+    let (repo, secure_storage, lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend.clone(),
@@ -60,20 +105,24 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
     )?;
 
-    repo.reload_master_index()?;
-
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
+    // Ensure repository is unlocked on panic/drop
+    let lock_clone = lock_handle.clone();
+    let _cleanup = CleanupHandler::new(move || {
+        lock_clone.write().unlock();
     })?;
 
-    match args.mode {
-        Mode::Repository => stats_repository(repo, backend),
-        Mode::Snapshots => stats_snapshots(repo),
-    }
+    repo.reload_master_index()?;
+
+    stats_repository(repo, secure_storage, backend, args, global_args.json)
 }
 
-fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> Result<()> {
+fn stats_repository(
+    repo: Arc<Repository>,
+    secure_storage: Arc<SecureStorage>,
+    backend: Arc<dyn StorageBackend>,
+    args: &CmdArgs,
+    json_out: bool,
+) -> Result<()> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
     spinner.set_style(
@@ -121,7 +170,6 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
     let num_keys = keys.len();
     let total_key_size = sum_sizes(&spinner, backend.as_ref(), "keys", &keys)?;
 
-    // Manifest
     spinner.set_message("manifest");
     let manifest_size = repo
         .backend()
@@ -137,65 +185,295 @@ fn stats_repository(repo: Arc<Repository>, backend: Arc<dyn StorageBackend>) -> 
 
     spinner.finish_and_clear();
 
-    ui::cli::log!("Packs:");
-    ui::cli::log!("\t{}", utils::format_count(num_packs, "pack", "packs"));
-    ui::cli::log!(
-        "\tTotal pack size: {}",
-        utils::format_size_binary(total_pack_size, 3)
-    );
-    ui::cli::log!();
-    ui::cli::log!("Index:");
-    ui::cli::log!(
-        "\t{}",
-        utils::format_count(num_indices, "index file", "index files")
-    );
-    ui::cli::log!(
-        "\tTotal index size: {}",
-        utils::format_size_binary(total_index_size, 3)
-    );
-    ui::cli::log!();
-    ui::cli::log!("Snapshots:");
-    ui::cli::log!(
-        "\t{}",
-        utils::format_count(num_snapshots, "snapshot", "snapshots")
-    );
-    ui::cli::log!(
-        "\tTotal snapshot size: {}",
-        utils::format_size_binary(total_snapshot_size, 3)
-    );
-    ui::cli::log!();
-    ui::cli::log!("Keys:");
-    ui::cli::log!("\t{}", utils::format_count(num_keys, "key", "keys"));
-    ui::cli::log!(
-        "\tTotal key size: {}",
-        utils::format_size_binary(total_key_size, 3)
-    );
-    ui::cli::log!();
-    ui::cli::log!(
-        "Manifest size: {}",
-        utils::format_size_binary(manifest_size, 3)
-    );
-    ui::cli::log!();
-    ui::cli::log!(
-        "Total repository size: {}",
-        utils::format_size_binary(total_size, 3)
-    );
+    // Index-level summary
+    let mut indexed_blobs = 0u64;
+    let mut indexed_encoded = 0u64;
+    let mut indexed_raw = 0u64;
+    repo.index().for_each_id(|_id, loc| {
+        indexed_blobs += 1;
+        indexed_encoded = indexed_encoded.saturating_add(loc.length as u64);
+        indexed_raw = indexed_raw.saturating_add(loc.raw_length as u64);
+    });
+
+    // Snapshot-derived summary (index-only)
+    let snap_stats = analyze_snapshots(repo.clone(), &spinner)?;
+
+    // If user requested full scan, parse pack footers to compute packed blob totals
+    let mut pack_footer_blob_count: Option<usize> = None;
+    let mut pack_footer_encoded_bytes: Option<u64> = None;
+    let mut pack_footer_raw_bytes: Option<u64> = None;
+    let mut pack_footer_dangling: Option<usize> = None;
+
+    if args.full {
+        spinner.set_message("parsing pack footers");
+        let pack_ids = repo.list_packs()?;
+        let mut total_descriptors_encoded = 0u64;
+        let mut total_descriptors_raw = 0u64;
+        let mut total_descriptors = 0usize;
+        let mut dangling = 0usize;
+
+        for pack_id in pack_ids.iter() {
+            let descriptors = Packer::parse_pack_footer(
+                repo.as_ref(),
+                backend.as_ref(),
+                secure_storage.as_ref(),
+                pack_id,
+            )
+            .with_context(|| format!("Failed to parse footer for pack {}", pack_id.to_hex()))?;
+
+            for d in descriptors.iter() {
+                total_descriptors += 1;
+                total_descriptors_encoded =
+                    total_descriptors_encoded.saturating_add(d.length as u64);
+                total_descriptors_raw = total_descriptors_raw.saturating_add(d.raw_length as u64);
+                if !repo.index().contains(&d.id) {
+                    dangling += 1;
+                }
+            }
+        }
+
+        pack_footer_blob_count = Some(total_descriptors);
+        pack_footer_encoded_bytes = Some(total_descriptors_encoded);
+        pack_footer_raw_bytes = Some(total_descriptors_raw);
+        pack_footer_dangling = Some(dangling);
+    }
+
+    if !json_out {
+        // Human readable output
+        ui::cli::log!("Packs:");
+        ui::cli::log!("\t{}", utils::format_count(num_packs, "pack", "packs"));
+        ui::cli::log!(
+            "\tTotal pack size: {}",
+            utils::format_size_binary(total_pack_size, 3)
+        );
+        if args.full {
+            ui::cli::log!("\tPack footers parsed: yes");
+            if let Some(cnt) = pack_footer_blob_count {
+                ui::cli::log!(
+                    "\tFooter blobs: {}",
+                    utils::format_count(cnt, "blob", "blobs")
+                );
+            }
+            if let Some(enc) = pack_footer_encoded_bytes {
+                ui::cli::log!(
+                    "\tFooter encoded bytes: {}",
+                    utils::format_size_binary(enc, 3)
+                );
+            }
+            if let Some(raw) = pack_footer_raw_bytes {
+                ui::cli::log!("\tFooter raw bytes: {}", utils::format_size_binary(raw, 3));
+            }
+            if let Some(dang) = pack_footer_dangling {
+                ui::cli::log!(
+                    "\tFooter dangling blobs: {}",
+                    utils::format_count(dang, "blob", "blobs")
+                );
+            }
+        }
+        ui::cli::log!();
+        ui::cli::log!("Index:");
+        ui::cli::log!(
+            "\t{}",
+            utils::format_count(num_indices, "index file", "index files")
+        );
+        ui::cli::log!(
+            "\tTotal index size: {}",
+            utils::format_size_binary(total_index_size, 3)
+        );
+        ui::cli::log!(
+            "\tIndexed blobs: {}",
+            utils::format_count(indexed_blobs as usize, "blob", "blobs")
+        );
+        ui::cli::log!(
+            "\tIndexed raw size: {}",
+            utils::format_size_binary(indexed_raw, 3)
+        );
+        ui::cli::log!(
+            "\tIndexed encoded size: {}",
+            utils::format_size_binary(indexed_encoded, 3)
+        );
+        ui::cli::log!();
+        ui::cli::log!("Snapshots:");
+        ui::cli::log!(
+            "\t{}",
+            utils::format_count(num_snapshots, "snapshot", "snapshots")
+        );
+        ui::cli::log!(
+            "\tTotal snapshot size: {}",
+            utils::format_size_binary(total_snapshot_size, 3)
+        );
+        ui::cli::log!();
+        ui::cli::log!("Snapshot reference summary:");
+        ui::cli::log!(
+            "\tReferenced blobs: {} (data: {}, tree: {})",
+            utils::format_count(snap_stats.num_referenced_blobs as usize, "blob", "blobs"),
+            utils::format_count(
+                snap_stats.num_referenced_data_blobs as usize,
+                "blob",
+                "blobs"
+            ),
+            utils::format_count(
+                snap_stats.num_referenced_tree_blobs as usize,
+                "blob",
+                "blobs"
+            ),
+        );
+        ui::cli::log!(
+            "\tTotal raw referenced size: {}",
+            utils::format_size_binary(snap_stats.total_raw_data_size, 3)
+        );
+        ui::cli::log!(
+            "\tTotal encoded referenced size: {}",
+            utils::format_size_binary(snap_stats.total_encoded_data_size, 3)
+        );
+        // Compression ratios = raw / encoded
+        let ratio_total = if snap_stats.total_encoded_data_size == 0 {
+            0.0
+        } else {
+            snap_stats.total_raw_data_size as f32 / snap_stats.total_encoded_data_size as f32
+        };
+        let ratio_data = if snap_stats.total_encoded_data_size_data == 0 {
+            0.0
+        } else {
+            snap_stats.total_raw_data_size_data as f32
+                / snap_stats.total_encoded_data_size_data as f32
+        };
+        let ratio_tree = if snap_stats.total_encoded_data_size_tree == 0 {
+            0.0
+        } else {
+            snap_stats.total_raw_data_size_tree as f32
+                / snap_stats.total_encoded_data_size_tree as f32
+        };
+        ui::cli::log!(
+            "\tData (raw / encoded): {} / {}",
+            utils::format_size_binary(snap_stats.total_raw_data_size_data, 3),
+            utils::format_size_binary(snap_stats.total_encoded_data_size_data, 3)
+        );
+        ui::cli::log!(
+            "\tTree (raw / encoded): {} / {}",
+            utils::format_size_binary(snap_stats.total_raw_data_size_tree, 3),
+            utils::format_size_binary(snap_stats.total_encoded_data_size_tree, 3)
+        );
+        ui::cli::log!(
+            "\tTotal restorable size: {}",
+            utils::format_size_binary(snap_stats.total_restorable_bytes, 3)
+        );
+        ui::cli::log!(
+            "\tCompression ratio (raw/encoded): total: {:.2}x (data: {:.2}x, tree: {:.2}x)",
+            ratio_total,
+            ratio_data,
+            ratio_tree
+        );
+        ui::cli::log!();
+        ui::cli::log!("Keys:");
+        ui::cli::log!("\t{}", utils::format_count(num_keys, "key", "keys"));
+        ui::cli::log!(
+            "\tTotal key size: {}",
+            utils::format_size_binary(total_key_size, 3)
+        );
+        ui::cli::log!();
+        ui::cli::log!(
+            "Manifest size: {}",
+            utils::format_size_binary(manifest_size, 3)
+        );
+        ui::cli::log!();
+        ui::cli::log!(
+            "Total repository size: {}",
+            utils::format_size_binary(total_size, 3)
+        );
+    } else {
+        // Output JSON if requested
+        let out = StatsOutput {
+            packs: PacksOutput {
+                count: num_packs,
+                total_bytes: total_pack_size,
+                parsed_footer: args.full,
+                footer_blob_count: pack_footer_blob_count,
+                footer_encoded_bytes: pack_footer_encoded_bytes,
+                footer_raw_bytes: pack_footer_raw_bytes,
+                footer_dangling_blobs: pack_footer_dangling,
+            },
+            indices: IndicesOutput {
+                count: num_indices,
+                total_bytes: total_index_size,
+                indexed_blobs,
+                indexed_raw_bytes: indexed_raw,
+                indexed_encoded_bytes: indexed_encoded,
+            },
+            snapshots: SnapshotsOutput {
+                count: num_snapshots,
+                total_snapshot_bytes: total_snapshot_size,
+                referenced_blobs: snap_stats.num_referenced_blobs,
+                referenced_data_blobs: snap_stats.num_referenced_data_blobs,
+                referenced_tree_blobs: snap_stats.num_referenced_tree_blobs,
+                referenced_raw_bytes: snap_stats.total_raw_data_size,
+                referenced_encoded_bytes: snap_stats.total_encoded_data_size,
+                referenced_raw_bytes_data: snap_stats.total_raw_data_size_data,
+                referenced_encoded_bytes_data: snap_stats.total_encoded_data_size_data,
+                referenced_raw_bytes_tree: snap_stats.total_raw_data_size_tree,
+                referenced_encoded_bytes_tree: snap_stats.total_encoded_data_size_tree,
+                compression_ratio_total: if snap_stats.total_encoded_data_size == 0 {
+                    0.0
+                } else {
+                    snap_stats.total_raw_data_size as f32
+                        / snap_stats.total_encoded_data_size as f32
+                },
+                compression_ratio_data: if snap_stats.total_encoded_data_size_data == 0 {
+                    0.0
+                } else {
+                    snap_stats.total_raw_data_size_data as f32
+                        / snap_stats.total_encoded_data_size_data as f32
+                },
+                compression_ratio_tree: if snap_stats.total_encoded_data_size_tree == 0 {
+                    0.0
+                } else {
+                    snap_stats.total_raw_data_size_tree as f32
+                        / snap_stats.total_encoded_data_size_tree as f32
+                },
+                total_restorable_bytes: snap_stats.total_restorable_bytes,
+            },
+            keys: KeysOutput {
+                count: num_keys,
+                total_bytes: total_key_size,
+            },
+            manifest_bytes: manifest_size,
+            total_repo_bytes: total_size,
+        };
+
+        ui::json_reporter::emit_static("stats", &out);
+        return Ok(());
+    }
 
     Ok(())
 }
 
-fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
-    let snapshot_stream = SnapshotStream::new(repo.clone())?;
-    let num_snapshots = snapshot_stream.len();
+struct SnapshotAnalysis {
+    total_raw_data_size: u64,
+    total_encoded_data_size: u64,
+    num_referenced_blobs: u64,
+    num_referenced_data_blobs: u64,
+    num_referenced_tree_blobs: u64,
 
-    let mut error_counter = 0usize;
-    let mut total_restore_size = 0u64;
+    total_raw_data_size_data: u64,
+    total_encoded_data_size_data: u64,
+    total_raw_data_size_tree: u64,
+    total_encoded_data_size_tree: u64,
+    total_restorable_bytes: u64,
+}
+
+fn analyze_snapshots(repo: Arc<Repository>, spinner: &ProgressBar) -> Result<SnapshotAnalysis> {
     let mut total_raw_data_size = 0u64;
     let mut total_encoded_data_size = 0u64;
-    let mut num_referenced_blobs = 0u64;
+    let mut num_referenced_blobs = 0u64; // total (data + tree)
+    let mut num_referenced_data_blobs = 0u64;
+    let mut num_referenced_tree_blobs = 0u64;
+    let mut total_raw_data_size_data = 0u64;
+    let mut total_encoded_data_size_data = 0u64;
+    let mut total_raw_data_size_tree = 0u64;
+    let mut total_encoded_data_size_tree = 0u64;
+    let mut total_restorable_bytes = 0u64;
     let mut visited_blobs = IdSet::default();
 
-    let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -205,8 +483,13 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
+    let snaps = repo.list_all_files(ContentIdType::Snapshot)?;
+    let num_snapshots = snaps.len();
+
     // Hold index read-lock once
     let index = repo.index();
+
+    let snapshot_stream = SnapshotStream::new(repo.clone())?;
 
     for (i, (_id, snapshot)) in snapshot_stream.enumerate() {
         spinner.set_message(format!(
@@ -214,7 +497,22 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
             i + 1,
             num_snapshots
         ));
-        total_restore_size = total_restore_size.saturating_add(snapshot.size());
+        // Accumulate restorable size (sum of snapshot raw bytes, not deduped)
+        total_restorable_bytes = total_restorable_bytes.saturating_add(snapshot.size());
+
+        // Count snapshot root tree blob
+        if visited_blobs.insert(snapshot.tree)
+            && let Some(locator) = index.get(&snapshot.tree)
+        {
+            total_raw_data_size = total_raw_data_size.saturating_add(locator.raw_length as u64);
+            total_encoded_data_size = total_encoded_data_size.saturating_add(locator.length as u64);
+            total_raw_data_size_tree =
+                total_raw_data_size_tree.saturating_add(locator.raw_length as u64);
+            total_encoded_data_size_tree =
+                total_encoded_data_size_tree.saturating_add(locator.length as u64);
+            num_referenced_blobs = num_referenced_blobs.saturating_add(1);
+            num_referenced_tree_blobs = num_referenced_tree_blobs.saturating_add(1);
+        }
 
         let stream = SerializedNodeStream::new(
             repo.clone(),
@@ -224,23 +522,43 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
             None,
         )?;
 
-        for (_path, stream_node) in stream.flatten() {
-            let node = stream_node.node;
+        for (_path, stream_node_res) in stream.flatten() {
+            let node = stream_node_res.node;
+
+            // Count tree blob if present
+            if let Some(tree_id) = &node.tree
+                && visited_blobs.insert(*tree_id)
+                && let Some(locator) = index.get(tree_id)
+            {
+                total_raw_data_size = total_raw_data_size.saturating_add(locator.raw_length as u64);
+                total_encoded_data_size =
+                    total_encoded_data_size.saturating_add(locator.length as u64);
+                total_raw_data_size_tree =
+                    total_raw_data_size_tree.saturating_add(locator.raw_length as u64);
+                total_encoded_data_size_tree =
+                    total_encoded_data_size_tree.saturating_add(locator.length as u64);
+                num_referenced_blobs = num_referenced_blobs.saturating_add(1);
+                num_referenced_tree_blobs = num_referenced_tree_blobs.saturating_add(1);
+            }
+
+            // Count file/data blobs
             if let NodeType::File = node.node_type
                 && let Some(blobs) = node.blobs
             {
                 for blob_id in blobs {
-                    // Single op membership check
-                    if visited_blobs.insert(blob_id) {
-                        if let Some(locator) = index.get(&blob_id) {
-                            total_raw_data_size =
-                                total_raw_data_size.saturating_add(locator.raw_length as u64);
-                            total_encoded_data_size =
-                                total_encoded_data_size.saturating_add(locator.length as u64);
-                            num_referenced_blobs = num_referenced_blobs.saturating_add(1);
-                        } else {
-                            error_counter = error_counter.saturating_add(1);
-                        }
+                    if visited_blobs.insert(blob_id)
+                        && let Some(locator) = index.get(&blob_id)
+                    {
+                        total_raw_data_size =
+                            total_raw_data_size.saturating_add(locator.raw_length as u64);
+                        total_encoded_data_size =
+                            total_encoded_data_size.saturating_add(locator.length as u64);
+                        total_raw_data_size_data =
+                            total_raw_data_size_data.saturating_add(locator.raw_length as u64);
+                        total_encoded_data_size_data =
+                            total_encoded_data_size_data.saturating_add(locator.length as u64);
+                        num_referenced_blobs = num_referenced_blobs.saturating_add(1);
+                        num_referenced_data_blobs = num_referenced_data_blobs.saturating_add(1);
                     }
                 }
             }
@@ -249,42 +567,16 @@ fn stats_snapshots(repo: Arc<Repository>) -> Result<()> {
 
     spinner.finish_and_clear();
 
-    ui::cli::log!(
-        "{}",
-        utils::format_count(num_snapshots, "snapshot", "snapshots")
-    );
-    ui::cli::log!(
-        "\t{}",
-        utils::format_count(
-            num_referenced_blobs as usize,
-            "referenced blob",
-            "referenced blobs"
-        )
-    );
-    ui::cli::log!(
-        "\tRestore size:       {:>12}",
-        utils::format_size_binary(total_restore_size, 3)
-    );
-    ui::cli::log!(
-        "\tTotal raw size:     {:>12}",
-        utils::format_size_binary(total_raw_data_size, 3)
-    );
-    ui::cli::log!(
-        "\tTotal encoded size: {:>12}",
-        utils::format_size_binary(total_encoded_data_size, 3)
-    );
-
-    let ratio = if total_encoded_data_size == 0 {
-        0.0
-    } else {
-        total_raw_data_size as f32 / total_encoded_data_size as f32
-    };
-    ui::cli::log!("\tCompression ratio: {:.2}x", ratio);
-
-    if error_counter > 0 {
-        ui::cli::log!();
-        ui::cli::warning!("Found {} blobs not indexed", error_counter);
-    }
-
-    Ok(())
+    Ok(SnapshotAnalysis {
+        total_raw_data_size,
+        total_encoded_data_size,
+        num_referenced_blobs,
+        num_referenced_data_blobs,
+        num_referenced_tree_blobs,
+        total_raw_data_size_data,
+        total_encoded_data_size_data,
+        total_raw_data_size_tree,
+        total_encoded_data_size_tree,
+        total_restorable_bytes,
+    })
 }

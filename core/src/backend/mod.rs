@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod dry;
 pub mod localfs;
+pub mod s3;
 pub mod sftp;
 
 use std::{
@@ -14,6 +15,7 @@ use crate::{backend::sftp::SftpBackend, mapache::ContentIdType};
 use anyhow::{Result, anyhow, bail};
 use dry::DryBackend;
 use localfs::LocalFS;
+use s3::S3Backend;
 
 use crate::{ui, utils::url::Url};
 
@@ -154,6 +156,37 @@ pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBa
                 auth_method,
             )?)
         }
+        BackendUrl::S3(bucket, prefix) => {
+            let endpoint = std::env::var("AWS_ENDPOINT_URL").ok().or_else(|| {
+                ui::cli::request_input("S3 Endpoint (leave empty for AWS): ")
+            });
+            let endpoint = if let Some(e) = endpoint {
+                if e.is_empty() { None } else { Some(e) }
+            } else {
+                None
+            };
+            
+            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| {
+                ui::cli::request_input("S3 Region: ").unwrap_or_else(|| "us-east-1".to_string())
+            });
+
+            let access_key = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_else(|_| {
+                 ui::cli::request_input("AWS Access Key ID: ").unwrap_or_else(|| "".to_string())
+            });
+
+            let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_else(|_| {
+                 ui::cli::request_password("AWS Secret Access Key")
+            });
+
+            Arc::new(S3Backend::new(
+                region,
+                bucket,
+                prefix,
+                endpoint,
+                access_key,
+                secret_key,
+            )?)
+        }
     };
 
     let backend = match opts.dry_backend {
@@ -169,6 +202,7 @@ pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBa
 pub enum BackendUrl {
     Local(PathBuf),
     Sftp(String, String, u16, PathBuf), // (user, host, port, path)
+    S3(String, PathBuf), // (bucket, prefix)
 }
 
 impl BackendUrl {
@@ -195,6 +229,19 @@ impl BackendUrl {
                 let path_buf = PathBuf::from(path_str);
 
                 Ok(BackendUrl::Sftp(user, host, port, path_buf))
+            }
+            "s3" => {
+                let bucket = parsed_url
+                    .host
+                    .ok_or_else(|| anyhow!("S3 URL '{url_str}' requires a bucket name (host)"))?
+                    .to_string();
+
+                let path_str: &str = &parsed_url.path.join("/");
+                // Strip leading slash if present to make it a clean prefix
+                let path_str = path_str.strip_prefix('/').unwrap_or(path_str);
+                let path_buf = PathBuf::from(path_str);
+
+                Ok(BackendUrl::S3(bucket, path_buf))
             }
             "file" => {
                 let path_str: &str = &parsed_url.path.join("/");

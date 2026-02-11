@@ -8,6 +8,20 @@ pub(crate) fn request_password(prompt: &str) -> String {
         .expect("Failed to read password")
 }
 
+pub(crate) fn request_input(prompt: &str) -> Option<String> {
+    let input: String = Input::new()
+        .with_prompt(prompt)
+        .allow_empty(true)
+        .interact()
+        .expect("Failed to read input");
+
+    if input.is_empty() {
+        None
+    } else {
+        Some(input)
+    }
+}
+
 /// Requests a password with a prompt and confirmation.
 pub(crate) fn request_new_password(prompt: &str, confirmation: &str) -> String {
     Password::new()

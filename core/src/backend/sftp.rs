@@ -336,11 +336,6 @@ impl StorageBackend for SftpBackend {
         self.create_dir_all_internal(&self.base_path, conn.sftp())
     }
 
-    fn root_exists(&self) -> bool {
-        let conn = self.pool.get().unwrap();
-        self.exists_exact(&self.base_path, conn.sftp())
-    }
-
     fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let path = handle.path;
         let full_path = self.full_path(path);

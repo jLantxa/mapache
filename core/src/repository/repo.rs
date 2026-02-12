@@ -264,10 +264,6 @@ impl Repository {
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
     ) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
-        if !backend.root_exists() {
-            bail!("Could not open a repository. The path does not exist.");
-        }
-
         let key_manager = KeyManager::new(backend.clone());
 
         const MAX_PASSWORD_RETRIES: u32 = 3;
@@ -275,24 +271,40 @@ impl Repository {
 
         let (_key_id, master_key) = {
             if let Some(a) = auth.take() {
-                key_manager
-                    .retrieve_master_key(a, key_file_path)
-                    .context("Incorrect password.")?
+                key_manager.retrieve_master_key(a, key_file_path)?
             } else {
+                // Before prompting for credentials, verify that keyfiles exist (when reading from repo)
+                if key_file_path.is_none() {
+                    key_manager.keyfiles_exist()?;
+                }
+
                 loop {
                     let auth_from_console = ui::cli::request_auth();
 
-                    if let Ok(key) =
-                        key_manager.retrieve_master_key(&auth_from_console, key_file_path)
-                    {
-                        break key;
-                    } else {
-                        password_try_count += 1;
-                        if password_try_count < MAX_PASSWORD_RETRIES {
-                            ui::cli::log!("Incorrect username or password. Try again.");
-                            continue;
-                        } else {
-                            bail!("Wrong password or no KeyFile found.");
+                    match key_manager.retrieve_master_key(&auth_from_console, key_file_path) {
+                        Ok(key) => break key,
+                        Err(e) => {
+                            // Check if this is a retryable error (wrong password)
+                            let is_retryable = e
+                                .chain()
+                                .find_map(|err| err.downcast_ref::<keys::KeyManagerError>())
+                                .map(|key_err| !key_err.is_fatal())
+                                .unwrap_or(false);
+
+                            if is_retryable {
+                                password_try_count += 1;
+                                if password_try_count < MAX_PASSWORD_RETRIES {
+                                    ui::cli::log!("Incorrect username or password. Try again.");
+                                    continue;
+                                } else {
+                                    bail!(
+                                        "Failed to retrieve master key after {MAX_PASSWORD_RETRIES} attempts."
+                                    );
+                                }
+                            } else {
+                                // Not retryable - it's a real error, fail immediately
+                                return Err(e);
+                            }
                         }
                     }
                 }
@@ -309,7 +321,7 @@ impl Repository {
 
         let manifest = backend
             .read(&Handle::new(manifest_path), 0, 0)
-            .context("Could not load manifest file")?;
+            .context("This is not a mapache repository.")?;
         let manifest = secure_storage
             .decode(&manifest)
             .context("Could not decode the manifest file")?;

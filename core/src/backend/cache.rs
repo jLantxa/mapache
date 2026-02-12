@@ -132,10 +132,6 @@ impl StorageBackend for CacheBackend {
         Ok(())
     }
 
-    fn root_exists(&self) -> bool {
-        self.backend.root_exists()
-    }
-
     fn path_exists(&self, path: &Path) -> bool {
         self.backend.path_exists(path)
     }

@@ -20,6 +20,59 @@ use crate::{
     ui,
 };
 
+/// Error types for KeyManager operations
+#[derive(Debug)]
+pub enum KeyManagerError {
+    /// No keyfiles found (repository may not be initialized)
+    NoKeyfilesFound,
+    /// Keyfiles exist but none match the provided password/username
+    NoMatchingKeyfile,
+    /// A keyfile is corrupted or invalid
+    InvalidKeyfile(String),
+    /// Other errors (I/O, decompression, etc.)
+    Other(anyhow::Error),
+}
+
+impl KeyManagerError {
+    /// Check if this is a wrong password error (retryable)
+    pub fn is_wrong_password(&self) -> bool {
+        matches!(self, KeyManagerError::NoMatchingKeyfile)
+    }
+
+    /// Check if this is a fatal error (not retryable)
+    pub fn is_fatal(&self) -> bool {
+        matches!(
+            self,
+            KeyManagerError::NoKeyfilesFound | KeyManagerError::InvalidKeyfile(_)
+        )
+    }
+}
+
+impl std::fmt::Display for KeyManagerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyManagerError::NoKeyfilesFound => {
+                write!(
+                    f,
+                    "No keyfiles found. This repository may not be properly initialized."
+                )
+            }
+            KeyManagerError::NoMatchingKeyfile => {
+                write!(
+                    f,
+                    "No valid KeyFile found for the provided password in the keys directory."
+                )
+            }
+            KeyManagerError::InvalidKeyfile(msg) => {
+                write!(f, "Invalid keyfile: {}", msg)
+            }
+            KeyManagerError::Other(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl std::error::Error for KeyManagerError {}
+
 mod argon2_defaults {
     pub(crate) const fn default_m() -> u32 {
         argon2::Params::DEFAULT_M_COST
@@ -132,20 +185,35 @@ impl KeyManager {
         auth: &Auth,
         keyfile_path: Option<&PathBuf>,
     ) -> Result<(Option<ID>, Vec<u8>)> {
+        self.retrieve_master_key_internal(auth, keyfile_path)
+            .map_err(anyhow::Error::new)
+    }
+
+    fn retrieve_master_key_internal(
+        &self,
+        auth: &Auth,
+        keyfile_path: Option<&PathBuf>,
+    ) -> std::result::Result<(Option<ID>, Vec<u8>), KeyManagerError> {
         match keyfile_path {
             Some(path) => {
                 let ss = SecureStorage::new();
 
-                let keyfile = std::fs::read(path)?;
-                let keyfile = ss.decompress(&keyfile)?;
-                let keyfile: KeyFile = serde_json::from_slice(&keyfile)
-                    .with_context(|| format!("KeyFile at {path:?} is invalid"))?;
+                let keyfile = std::fs::read(path).map_err(|e| KeyManagerError::Other(e.into()))?;
+                let keyfile = ss.decompress(&keyfile).map_err(KeyManagerError::Other)?;
+                let keyfile: KeyFile = serde_json::from_slice(&keyfile).map_err(|e| {
+                    KeyManagerError::InvalidKeyfile(format!("KeyFile at {path:?} is invalid: {e}"))
+                })?;
 
-                Ok((None, Self::decode_master_key(&auth.password, &keyfile)?))
+                Self::decode_master_key(&auth.password, &keyfile)
+                    .map(|key| (None, key))
+                    .map_err(KeyManagerError::Other)
             }
             None => {
-                let keyfile_stream = KeyFileStream::new(self.backend.clone())?;
+                let keyfile_stream = KeyFileStream::new(self.backend.clone())
+                    .map_err(|_| KeyManagerError::NoKeyfilesFound)?;
+                let mut found_any_keyfiles = false;
                 for (id, keyfile) in keyfile_stream.flatten() {
+                    found_any_keyfiles = true;
                     // Discard this key if it belongs to a different user
                     if keyfile.username != auth.username {
                         continue;
@@ -156,10 +224,31 @@ impl KeyManager {
                     }
                 }
 
-                Err(anyhow::anyhow!(
-                    "No valid KeyFile found for the provided password in the keys directory."
-                ))
+                if !found_any_keyfiles {
+                    Err(KeyManagerError::NoKeyfilesFound)
+                } else {
+                    Err(KeyManagerError::NoMatchingKeyfile)
+                }
             }
+        }
+    }
+
+    /// Check if any keyfiles exist in the repository
+    pub fn keyfiles_exist(&self) -> Result<()> {
+        match KeyFileStream::new(self.backend.clone()) {
+            Ok(stream) => {
+                // Check if there's at least one keyfile
+                if stream.into_iter().next().is_some() {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "No keyfiles found. This repository may not be properly initialized."
+                    ))
+                }
+            }
+            Err(_) => Err(anyhow::anyhow!(
+                "No keyfiles found. This repository may not be properly initialized."
+            )),
         }
     }
 

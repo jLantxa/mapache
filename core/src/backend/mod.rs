@@ -84,9 +84,6 @@ pub trait StorageBackend: Send + Sync {
     /// Creates the necessary structure (typically just the repo root directory) for the backend
     fn create(&self) -> Result<()>;
 
-    /// Returns true if the root of the backend exists.
-    fn root_exists(&self) -> bool;
-
     /// Returns true if a path exists.
     fn path_exists(&self, path: &Path) -> bool;
 
@@ -157,34 +154,24 @@ pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBa
             )?)
         }
         BackendUrl::S3(bucket, prefix) => {
-            let endpoint = std::env::var("AWS_ENDPOINT_URL").ok().or_else(|| {
-                ui::cli::request_input("S3 Endpoint (leave empty for AWS): ")
+            let endpoint = std::env::var("AWS_ENDPOINT_URL").unwrap_or_else(|_| {
+                ui::cli::request_input("S3 Endpoint (leave empty for AWS)")
+                    .unwrap_or("amazonaws.com".to_string())
             });
-            let endpoint = if let Some(e) = endpoint {
-                if e.is_empty() { None } else { Some(e) }
-            } else {
-                None
-            };
-            
-            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| {
-                ui::cli::request_input("S3 Region: ").unwrap_or_else(|| "us-east-1".to_string())
+
+            let region = std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| {
+                ui::cli::request_input("S3 Region").unwrap_or("us-east-1".to_string())
             });
 
             let access_key = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_else(|_| {
-                 ui::cli::request_input("AWS Access Key ID: ").unwrap_or_else(|| "".to_string())
+                ui::cli::request_input("AWS Access Key ID").unwrap_or_default()
             });
 
-            let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_else(|_| {
-                 ui::cli::request_password("AWS Secret Access Key")
-            });
+            let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY")
+                .unwrap_or_else(|_| ui::cli::request_password("AWS Secret Access Key"));
 
             Arc::new(S3Backend::new(
-                region,
-                bucket,
-                prefix,
-                endpoint,
-                access_key,
-                secret_key,
+                region, bucket, prefix, endpoint, access_key, secret_key,
             )?)
         }
     };
@@ -202,7 +189,7 @@ pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBa
 pub enum BackendUrl {
     Local(PathBuf),
     Sftp(String, String, u16, PathBuf), // (user, host, port, path)
-    S3(String, PathBuf), // (bucket, prefix)
+    S3(String, PathBuf),                // (bucket, prefix)
 }
 
 impl BackendUrl {

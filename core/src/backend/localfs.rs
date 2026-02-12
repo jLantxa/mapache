@@ -88,11 +88,6 @@ impl StorageBackend for LocalFS {
         })
     }
 
-    #[inline]
-    fn root_exists(&self) -> bool {
-        self.exists_exact(&self.base_path)
-    }
-
     fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let path = handle.path;
         let full_path = self.full_path(path);

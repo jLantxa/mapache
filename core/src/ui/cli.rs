@@ -15,11 +15,7 @@ pub(crate) fn request_input(prompt: &str) -> Option<String> {
         .interact()
         .expect("Failed to read input");
 
-    if input.is_empty() {
-        None
-    } else {
-        Some(input)
-    }
+    if input.is_empty() { None } else { Some(input) }
 }
 
 /// Requests a password with a prompt and confirmation.

@@ -8,22 +8,22 @@ rust-version = "1.91"
 aes-gcm-siv = "0.11.1"
 anyhow = "1.0.101"
 argon2 = "0.5.3"
-aws-config = { version = "1.5.15", features = ["behavior-version-latest"] }
-aws-sdk-s3 = "1.74.0"
+aws-config = { version = "1.8.14", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1.123.0"
 base64 = "0.22.1"
 blake3 = "1.8.3"
 chrono = { version = "0.4.43", features = ["serde"] }
 chunker = { path = "../chunker" }
-clap = { version = "4.5.57", features = ["derive", "wrap_help"] }
-clap_complete = "4.5.65"
+clap = { version = "4.5.58", features = ["derive", "wrap_help"] }
+clap_complete = "4.5.66"
 colored = "3.1.1"
 crossbeam-channel = "0.5.15"
 dialoguer = "0.12.0"
 directories = "6.0.0"
 filetime = "0.2.27"
 hostname = "0.4.2"
-indicatif = { version = "0.18.3", features = ["rayon"] }
-libc = { version = "0.2.180" }
+indicatif = { version = "0.18.4", features = ["rayon"] }
+libc = { version = "0.2.182" }
 num_cpus = "1.17.0"
 num_enum = "0.7.5"
 parking_lot = "0.12.5"
@@ -36,7 +36,7 @@ signal-hook = "0.4.3"
 signal-hook-registry = "1.4.8"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 threadpool = "1.8.1"
-tokio = { version = "1.43", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros"] }
 zstd = "0.13.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -48,7 +48,7 @@ mimalloc = { version = "0.1.48", features = ["override"] }
 [dev-dependencies]
 rstest = "0.26.1"
 tar = "0.4.44"
-tempfile = "3.24.0"
+tempfile = "3.25.0"
 xz2 = "0.1.7"
 
 [features]

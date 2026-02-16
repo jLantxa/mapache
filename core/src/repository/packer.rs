@@ -252,7 +252,7 @@ impl Packer {
         secure_storage: &SecureStorage,
         pack_id: &ID,
     ) -> Result<Vec<PackedBlobDescriptor>> {
-        let (_id, pack_path) = repo.find(ContentIdType::Pack, &pack_id.to_hex())?;
+        let pack_path = repo.get_path(ContentIdType::Pack, pack_id);
 
         // We don't know a priori if this pack contains metadata, so we cannot use a StorageHint.
         let handle = Handle::new(&pack_path);

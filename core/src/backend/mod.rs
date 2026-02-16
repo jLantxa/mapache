@@ -21,6 +21,7 @@ use crate::{ui, utils::url::Url};
 
 /// Represents the attributes (metadata) of a file or directory node.
 /// This information is typically retrieved via an `lstat` call on the backend.
+#[derive(Debug)]
 pub struct NodeAttr {
     pub size: Option<u64>,
     pub uid: Option<u32>,

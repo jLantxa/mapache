@@ -9,9 +9,11 @@
 - Cancel the scanning thread when `mapache snapshot` has finalized the tree in
   the rare case that the snapshot process is faster than the scanner (which can
   happen for small incremental snapshots).
+- Removed unnecessary directory listing when parsing a pack footer.
 
 ### Changes
 
+- Initial support for S3 backends.
 - Added more stats to `mapache stats` and support for json output.
 
 ## v0.1.8

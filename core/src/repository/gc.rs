@@ -46,6 +46,12 @@ pub struct Plan {
     pub index_ids: IdSet<ID>,      // Current index IDs
 }
 
+#[derive(Debug, Default)]
+pub struct GcSizes {
+    pub added_bytes: u64,
+    pub deleted_bytes: u64,
+}
+
 /// Scan the repository and make a plan of what needs to be cleaned.
 pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
@@ -144,13 +150,12 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
 impl Plan {
     /// Execute the plan. Calling this method consumes the plan so it cannot be
     /// executed more than once.
-    pub fn execute(mut self) -> Result<i64> {
-        let mut deleted_size: i64 = 0;
-        let mut added_size: i64 = 0;
+    pub fn execute(mut self) -> Result<GcSizes> {
+        let mut gc_sizes = GcSizes::default();
 
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
-        deleted_size += remove_expired_locks(&self.repo)? as i64;
+        gc_sizes.deleted_bytes += remove_expired_locks(&self.repo)?;
 
         delete_trash_files(self.repo.backend().as_ref())?;
 
@@ -160,7 +165,7 @@ impl Plan {
             self.obsolete_packs.extend(self.small_packs.drain());
         }
 
-        deleted_size += self.delete_unused_packs()? as i64;
+        gc_sizes.deleted_bytes += self.delete_unused_packs()?;
 
         // No need to repack and rewrite the indices if there are no obsolete packs
         if !self.obsolete_packs.is_empty() {
@@ -169,12 +174,12 @@ impl Plan {
             self.repack()?;
             let repo_stats = self.repo.flush_and_finalize_pack_saver()?;
 
-            added_size += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded as i64;
-            deleted_size += self.delete_old_indices()? as i64;
-            deleted_size += self.delete_obsolete_packs()? as i64;
+            gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
+            gc_sizes.deleted_bytes += self.delete_old_indices()?;
+            gc_sizes.deleted_bytes += self.delete_obsolete_packs()?;
         }
 
-        Ok(deleted_size - added_size)
+        Ok(gc_sizes)
     }
 
     /// Delete packs that contain no referenced blobs.

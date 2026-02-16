@@ -105,20 +105,33 @@ pub fn run_with_repo(
     if args.dry_run {
         ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
     } else {
-        let deleted_size = plan.execute()?;
+        let gc_sizes = plan.execute()?;
+        let net_deleted_bytes = gc_sizes.deleted_bytes as i64 - gc_sizes.added_bytes as i64;
 
-        // Report freed up space
-        if deleted_size >= 0 {
+        // Report the total written and deleted bytes.
+        // The net balance can be 0, but the user might like to know how much
+        // we are writing/deleting in the backend.
+        ui::cli::log!(
+            "Written new bytes: {}",
+            utils::format_size_binary(gc_sizes.added_bytes, 3)
+        );
+        ui::cli::log!(
+            "Deleted bytes: {}",
+            utils::format_size_binary(gc_sizes.deleted_bytes, 3)
+        );
+
+        // Report net freed/added space
+        if net_deleted_bytes >= 0 {
             ui::cli::log!(
-                "Freed space: {}",
-                utils::format_size_binary(deleted_size.unsigned_abs(), 3)
+                "Net freed space: {}",
+                utils::format_size_binary(net_deleted_bytes.unsigned_abs(), 3)
                     .bold()
                     .green()
             );
         } else {
             ui::cli::log!(
-                "Added space: {}",
-                utils::format_size_binary(deleted_size.unsigned_abs(), 3)
+                "Net added space: {}",
+                utils::format_size_binary(net_deleted_bytes.unsigned_abs(), 3)
                     .bold()
                     .yellow()
             );

@@ -37,6 +37,10 @@ pub struct CmdArgs {
 }
 
 pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    if global_args.repo == args.target {
+        ui::cli::warning!("The repo and target backend URLs are the same");
+    }
+
     let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false))?;
 

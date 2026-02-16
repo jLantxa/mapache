@@ -72,6 +72,7 @@ impl StorageBackend for DryBackend {
         self.backend.is_dir(path)
     }
 
+    #[inline]
     fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         self.backend.lstat(path)
     }

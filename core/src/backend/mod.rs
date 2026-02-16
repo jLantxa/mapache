@@ -48,7 +48,7 @@ impl<'a> Handle<'a> {
         Self { path, hint: None }
     }
 
-    /// Creates a new Handle with a StorageHint.
+    /// Creates a new Handle with a StorageHint, indicating the nature of the data.
     pub fn new_with_hint(path: &'a Path, file_type: ContentIdType, is_metadata: bool) -> Self {
         Self {
             path,
@@ -63,7 +63,7 @@ impl<'a> Handle<'a> {
 /// Provides additional context to the `StorageBackend` about the data
 /// associated with a `Handle` during read or write operations.
 ///
-/// This hint is typically used to optimize storage strategy for different
+/// This hint is typically used to optimize the storage strategy for different
 /// types of backup data (pure data vs. metadata files).
 #[derive(Debug)]
 pub struct StorageHint {
@@ -77,57 +77,59 @@ pub struct StorageHint {
 
 /// Abstraction of a storage backend.
 ///
-/// A backend is a filesystem that can be present in the local machine, a remote
-/// machine connected via SFTP, a cloud service, etc.
-///
-/// This trait provides an interface for file IO operations with the backend.
+/// A backend is a filesystem interface that can represent local storage,
+/// remote servers (SFTP), or cloud buckets (S3).
 pub trait StorageBackend: Send + Sync {
-    /// Creates the necessary structure (typically just the repo root directory) for the backend
+    /// Initializes the repository structure on the backend.
     fn create(&self) -> Result<()>;
 
-    /// Returns true if a path exists.
+    /// Returns true if the given path exists on the backend.
     fn path_exists(&self, path: &Path) -> bool;
 
-    /// Reads from file.
+    /// Reads data from a file.
     ///
-    /// If `length` is 0, it reads until the end. If `offset` is negative, it reads from the end of
-    /// the file.
+    /// * If `length` is 0, reads until EOF.
+    /// * If `offset` is negative, reads relative to the end of the file.
     fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>>;
 
-    /// Writes to file, creating the file if necessary.
+    /// Writes the provided buffer to a file, creating it if it doesn't exist.
     fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()>;
 
-    /// Renames a file. If the destination exists already, it is overwritten.
+    /// Renames (moves) a file. Atomicity depends on the specific implementation.
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;
 
-    // List all paths inside a directory.
+    /// Lists the immediate contents of a directory.
     fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
 
-    /// Creates a new, empty directory at the provided path.
-    /// The directory is created recursively, with all of its parent components.
+    /// Recursively creates a directory path.
     fn create_dir(&self, path: &Path) -> Result<()>;
 
-    /// Removes a path (directory or file) and all its contents recursively.
+    /// Deletes a file or directory (recursively).
     fn remove(&self, file_path: &Path) -> Result<()>;
 
-    // Returns true if the path is a file or an error if the path does not exist.
+    /// Returns true if the path points to a file.
     fn is_file(&self, path: &Path) -> bool;
 
-    // Returns true if the path is a directory or an error if the path does not exist.
+    /// Returns true if the path points to a directory.
     fn is_dir(&self, path: &Path) -> bool;
 
-    /// Query metadata without following symlinks.
+    /// Returns metadata for the path without following symbolic links.
     fn lstat(&self, path: &Path) -> Result<NodeAttr>;
 }
 
+/// Configuration used to initialize a backend.
 pub struct BackendOptions {
     pub repo_path: String,
     pub ssh_pubkey: Option<PathBuf>,
     pub ssh_privatekey: Option<PathBuf>,
+    /// If true, wraps the chosen backend in a `DryBackend` to prevent actual writes.
     pub dry_backend: bool,
 }
 
-/// Open a new backend and prompt for authentication credentials.
+/// Factory function to initialize a backend based on a URL string.
+///
+/// This will trigger interactive CLI prompts if environment variables
+/// for credentials (like S3 keys or SFTP passwords) are missing.
 pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBackend>> {
     let backend_url = BackendUrl::from(&opts.repo_path)?;
 
@@ -185,7 +187,7 @@ pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBa
     Ok(backend)
 }
 
-/// The URL to a backend. This could be a path to a directory, an SSH URL, or others.
+/// Identifies the protocol and connection parameters for a backend.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendUrl {
     Local(PathBuf),
@@ -194,7 +196,7 @@ pub enum BackendUrl {
 }
 
 impl BackendUrl {
-    /// Parses a URL string into a `BackendUrl` variant.
+    /// Parses a raw string (e.g., "s3://my-bucket/prefix") into a `BackendUrl`.
     pub fn from(url_str: &str) -> Result<Self> {
         if !url_str.contains("://") {
             return Ok(BackendUrl::Local(PathBuf::from(url_str)));
@@ -203,6 +205,11 @@ impl BackendUrl {
         let parsed_url = Url::from_str(url_str)?;
 
         match parsed_url.scheme.as_ref() {
+            "file" => {
+                let path_str: &str = &parsed_url.path.join("/");
+                let path_buf = PathBuf::from(path_str);
+                Ok(BackendUrl::Local(path_buf))
+            }
             "sftp" => {
                 let user = parsed_url.username.to_string();
 
@@ -225,16 +232,12 @@ impl BackendUrl {
                     .to_string();
 
                 let path_str: &str = &parsed_url.path.join("/");
+
                 // Strip leading slash if present to make it a clean prefix
                 let path_str = path_str.strip_prefix('/').unwrap_or(path_str);
                 let path_buf = PathBuf::from(path_str);
 
                 Ok(BackendUrl::S3(bucket, path_buf))
-            }
-            "file" => {
-                let path_str: &str = &parsed_url.path.join("/");
-                let path_buf = PathBuf::from(path_str);
-                Ok(BackendUrl::Local(path_buf))
             }
             _ => {
                 bail!(
@@ -247,7 +250,7 @@ impl BackendUrl {
     }
 }
 
-/// A directory or file in a backend with its path.
+/// Represents a generic filesystem node within a backend.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendNode {
     File(PathBuf),
@@ -255,7 +258,7 @@ pub enum BackendNode {
 }
 
 impl BackendNode {
-    /// Returns the path to the node.
+    /// Returns the inner path regardless of node type.
     pub fn path(&self) -> &Path {
         match self {
             BackendNode::File(path) => path,
@@ -264,7 +267,7 @@ impl BackendNode {
     }
 }
 
-/// Recursively list all files and directories in a backend.
+/// Helper function to perform a recursive crawl of a backend directory.
 pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec<BackendNode>> {
     let mut nodes = Vec::new();
 
@@ -282,6 +285,8 @@ pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec
     Ok(nodes)
 }
 
+/// Modifies a Unix mode bitmask to toggle readonly status while
+/// maintaining necessary traverse/list bits for directories.
 pub fn set_readonly_mode(mode: u32, readonly: bool, is_dir: bool) -> u32 {
     let base = mode & !0o777; // Preserve special bits (setuid, etc.)
     if is_dir {

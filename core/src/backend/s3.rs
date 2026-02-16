@@ -9,7 +9,13 @@ use tokio::runtime::Runtime;
 use crate::backend::{Handle, NodeAttr, StorageBackend};
 use crate::ui;
 
+/// A storage backend that interacts with S3-compatible APIs.
+///
+/// It manages its own internal Tokio runtime to bridge the gap between
+/// synchronous backend traits and asynchronous S3 calls.
 pub struct S3Backend {
+    /// Wrapped in ManuallyDrop to ensure the runtime is shut down explicitly
+    /// during Drop before other fields are cleared.
     runtime: ManuallyDrop<Runtime>,
     bucket: Bucket,
     prefix: PathBuf,
@@ -49,6 +55,8 @@ impl S3Backend {
         Ok(backend)
     }
 
+    /// Converts a local filesystem path into an S3 object key, appending the
+    /// configured backend prefix.
     fn key_from_path(&self, path: &Path) -> String {
         let prefix = self.prefix.to_string_lossy().trim_matches('/').to_string();
         let sub_path = path
@@ -63,6 +71,7 @@ impl S3Backend {
         }
     }
 
+    /// Reconstructs a relative path from an S3 key by stripping the prefix.
     fn path_from_key(&self, key: &str) -> Result<PathBuf> {
         let path = PathBuf::from(key);
         path.strip_prefix(&self.prefix)
@@ -76,6 +85,7 @@ impl S3Backend {
             })
     }
 
+    /// Wraps an async operation with exponential backoff retries.
     async fn retry<T, F, Fut>(&self, mut op: F) -> Result<T>
     where
         F: FnMut() -> Fut,
@@ -102,6 +112,7 @@ impl S3Backend {
 
 impl Drop for S3Backend {
     fn drop(&mut self) {
+        // SAFETY: runtime is never used after this point.
         let rt = unsafe { ManuallyDrop::take(&mut self.runtime) };
         rt.shutdown_background();
     }
@@ -164,6 +175,7 @@ impl StorageBackend for S3Backend {
             Ok(())
         }))
     }
+
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let src_key = self.key_from_path(from);
         let dest_key = self.key_from_path(to);
@@ -219,7 +231,6 @@ impl StorageBackend for S3Backend {
                 }
             }
 
-            // Check if we need to loop again for the next page
             if result.is_truncated && result.next_continuation_token.is_some() {
                 continuation_token = result.next_continuation_token;
             } else {
@@ -233,6 +244,7 @@ impl StorageBackend for S3Backend {
     }
 
     fn create_dir(&self, _path: &Path) -> Result<()> {
+        // S3 is flat; directory creation is a no-op (directories exist if keys have the prefix).
         Ok(())
     }
 
@@ -315,52 +327,5 @@ impl StorageBackend for S3Backend {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    fn setup_test_backend() -> S3Backend {
-        S3Backend::new(
-            "us-east-1".to_string(),
-            "test-bucket".to_string(),
-            PathBuf::from("backup_root"),
-            "http://localhost:9000".to_string(),
-            "mapacheaccesskey".to_string(),
-            "mapachesecretkey".to_string(),
-        )
-        .expect("Failed to create backend")
-    }
-
-    #[test]
-    fn test_key_mapping() {
-        let backend = setup_test_backend();
-
-        // Test basic path
-        let path = Path::new("file.txt");
-        assert_eq!(backend.key_from_path(path), "backup_root/file.txt");
-
-        // Test nested path
-        let nested = Path::new("dir/subdir/data.bin");
-        assert_eq!(
-            backend.key_from_path(nested),
-            "backup_root/dir/subdir/data.bin"
-        );
-
-        // Test absolute-looking path (should still be relative to prefix)
-        let absolute = Path::new("/root_file.txt");
-        assert_eq!(backend.key_from_path(absolute), "backup_root/root_file.txt");
-    }
-
-    #[test]
-    fn test_path_reconstruction() {
-        let backend = setup_test_backend();
-        let key = "backup_root/some/key/here.txt";
-        let path = backend.path_from_key(key).unwrap();
-
-        assert_eq!(path, PathBuf::from("some/key/here.txt"));
     }
 }

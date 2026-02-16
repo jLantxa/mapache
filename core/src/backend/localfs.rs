@@ -15,26 +15,36 @@ use crate::{
 use super::StorageBackend;
 
 /// A local file system backend.
+///
+/// This backend stores repository data directly on the host's disk. It implements
+/// specific logic to handle cross-platform permission differences and ensures
+/// "Atomic" writes by using temporary files and renames.
 #[derive(Default)]
 pub struct LocalFS {
     base_path: PathBuf,
 }
 
 impl LocalFS {
+    /// Creates a new `LocalFS` instance anchored at the given `base_path`.
     pub fn new(base_path: PathBuf) -> Self {
         Self { base_path }
     }
 
+    /// Helper to resolve a repository-relative path to an absolute path on disk.
     fn full_path(&self, path: &Path) -> PathBuf {
         self.base_path.join(path)
     }
 
+    #[inline(always)]
     fn exists_exact(&self, path: &Path) -> bool {
         fs::path_exists(path)
     }
 
     /// Safely sets or unsets the read-only flag on a file.
-    /// This is crucial for repository integrity and handling Windows rename constraints.
+    ///
+    /// This is used to make repository files immutable after they are written,
+    /// protecting them from accidental modification. On Windows, this is also
+    /// required before a file can be overwritten or renamed.
     fn set_readonly_status(&self, path: &Path, readonly: bool) -> Result<()> {
         let full_path = self.full_path(path);
 
@@ -54,9 +64,8 @@ impl LocalFS {
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-
             use crate::backend::set_readonly_mode;
+            use std::os::unix::fs::PermissionsExt;
 
             let mode = set_readonly_mode(perms.mode(), readonly, metadata.is_dir());
             perms.set_mode(mode);
@@ -79,7 +88,6 @@ impl LocalFS {
 
 impl StorageBackend for LocalFS {
     fn create(&self) -> Result<()> {
-        // Create the repo root folder
         std::fs::create_dir_all(&self.base_path).with_context(|| {
             format!(
                 "Could not create repository backend root at {}",
@@ -169,7 +177,7 @@ impl StorageBackend for LocalFS {
         self.rename(&tmp_path, path)
             .context("Failed to commit temporary write via rename")?;
 
-        // Finalize by locking the file
+        // Repository files are locked (readonly) after writing to prevent accidental corruption
         let _ = self.set_readonly_status(path, true);
 
         Ok(())
@@ -304,7 +312,6 @@ impl StorageBackend for LocalFS {
         })
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

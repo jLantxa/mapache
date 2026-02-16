@@ -10,6 +10,8 @@
   the rare case that the snapshot process is faster than the scanner (which can
   happen for small incremental snapshots).
 - Removed unnecessary directory listing when parsing a pack footer.
+- Fixed a bug that created the repository backend root before authenticating
+  the user in the init command.
 
 ### Changes
 

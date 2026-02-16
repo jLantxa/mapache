@@ -784,10 +784,10 @@ impl Repository {
         let index_size = self.index().persist(self)?;
 
         self.stats
-            .meta_raw_bytes
+            .index_raw_bytes
             .fetch_add(index_size.raw, Ordering::Relaxed);
         self.stats
-            .meta_encoded_bytes
+            .index_meta_bytes
             .fetch_add(index_size.encoded, Ordering::Relaxed);
 
         Ok(self.stats.snapshot())

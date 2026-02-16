@@ -49,7 +49,6 @@ impl S3Backend {
         Ok(backend)
     }
 
-    #[inline]
     fn key_from_path(&self, path: &Path) -> String {
         let prefix = self.prefix.to_string_lossy().trim_matches('/').to_string();
         let sub_path = path
@@ -63,6 +62,7 @@ impl S3Backend {
             format!("{}/{}", prefix, sub_path)
         }
     }
+
     fn path_from_key(&self, key: &str) -> Result<PathBuf> {
         let path = PathBuf::from(key);
         path.strip_prefix(&self.prefix)

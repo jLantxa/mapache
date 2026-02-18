@@ -169,7 +169,7 @@ pub struct Repository {
 
 impl Repository {
     /// Create and initialize a new repository
-    pub fn init(
+    pub async fn init(
         auth: Option<&Auth>,
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
@@ -181,10 +181,11 @@ impl Repository {
 
         backend
             .create()
+            .await
             .context("Could not create root directory")?;
 
         let keys_path = PathBuf::from(KEYS_DIR);
-        backend.create_dir(&keys_path)?;
+        backend.create_dir(&keys_path).await?;
 
         // Create new key
         let master_key = KeyManager::generate_new_master_key();
@@ -206,7 +207,7 @@ impl Repository {
             None => {
                 let p = keys_path.join(keyfile_id.to_hex());
                 let handle = Handle::new_with_hint(&p, ContentIdType::Key, true);
-                backend.write(&handle, &keyfile_json)?;
+                backend.write(&handle, &keyfile_json).await?;
             }
         }
 
@@ -222,17 +223,21 @@ impl Repository {
         let manifest_path = Path::new(MANIFEST_PATH);
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
-        backend.write(&Handle::new(manifest_path), &manifest_json)?;
+        backend
+            .write(&Handle::new(manifest_path), &manifest_json)
+            .await?;
 
-        backend.create_dir(&objects_path)?;
+        backend.create_dir(&objects_path).await?;
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
         for n in 0x00..num_folders {
-            backend.create_dir(&objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}")))?;
+            backend
+                .create_dir(&objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}")))
+                .await?;
         }
 
-        backend.create_dir(&snapshot_path)?;
-        backend.create_dir(&index_path)?;
-        backend.create_dir(&locks_path)?;
+        backend.create_dir(&snapshot_path).await?;
+        backend.create_dir(&index_path).await?;
+        backend.create_dir(&locks_path).await?;
 
         Ok(manifest)
     }
@@ -240,7 +245,7 @@ impl Repository {
     /// Try to open a repository and acquire a lock.
     /// This function prompts for a password to retrieve a master key.
     #[allow(clippy::type_complexity)]
-    pub fn try_open_with_lock(
+    pub async fn try_open_with_lock(
         auth: Option<&Auth>,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
@@ -248,8 +253,11 @@ impl Repository {
         exclusive_lock: bool,
         retry_duration: Option<Duration>,
     ) -> Result<(Arc<Repository>, Arc<SecureStorage>, Arc<RwLock<LockHandle>>)> {
-        let (repo, secure_storage) = Self::try_open_unlocked(auth, key_file_path, backend, config)?;
-        let lock = repo.try_acquire_lock_with_retry(exclusive_lock, retry_duration)?;
+        let (repo, secure_storage) =
+            Self::try_open_unlocked(auth, key_file_path, backend, config).await?;
+        let lock = repo
+            .try_acquire_lock_with_retry(exclusive_lock, retry_duration)
+            .await?;
         let lock_handle = Arc::new(RwLock::new(LockHandle::new(repo.clone(), lock)));
 
         Ok((repo, secure_storage, lock_handle))
@@ -258,7 +266,7 @@ impl Repository {
     /// Try to open a repository  without acquiring a lock.
     /// This function prompts for a password to retrieve a master key.
     #[allow(clippy::type_complexity)]
-    pub fn try_open_unlocked(
+    pub async fn try_open_unlocked(
         mut auth: Option<&Auth>,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
@@ -271,17 +279,20 @@ impl Repository {
 
         let (_key_id, master_key) = {
             if let Some(a) = auth.take() {
-                key_manager.retrieve_master_key(a, key_file_path)?
+                key_manager.retrieve_master_key(a, key_file_path).await?
             } else {
                 // Before prompting for credentials, verify that keyfiles exist (when reading from repo)
                 if key_file_path.is_none() {
-                    key_manager.keyfiles_exist()?;
+                    key_manager.keyfiles_exist().await?;
                 }
 
                 loop {
                     let auth_from_console = ui::cli::request_auth();
 
-                    match key_manager.retrieve_master_key(&auth_from_console, key_file_path) {
+                    match key_manager
+                        .retrieve_master_key(&auth_from_console, key_file_path)
+                        .await
+                    {
                         Ok(key) => break key,
                         Err(e) => {
                             // Check if this is a retryable error (wrong password)
@@ -321,6 +332,7 @@ impl Repository {
 
         let manifest = backend
             .read(&Handle::new(manifest_path), 0, 0)
+            .await
             .context("This is not a mapache repository.")?;
         let manifest = secure_storage
             .decode(&manifest)
@@ -332,18 +344,19 @@ impl Repository {
             bail!("Invalid repository version '{version}'");
         }
 
-        let repo = Repository::open(backend, secure_storage.clone(), config)?;
+        let repo = Repository::open(backend, secure_storage.clone(), config).await?;
 
         Ok((repo, secure_storage))
     }
 
     /// Open an existing repository from a directory
-    fn open(
+    async fn open(
         backend: Arc<dyn StorageBackend>,
         secure_storage: Arc<SecureStorage>,
         config: RepoConfig,
     ) -> Result<Arc<Self>> {
-        let manifest: Manifest = Self::load_manifest(secure_storage.clone(), backend.clone())?;
+        let manifest: Manifest =
+            Self::load_manifest(secure_storage.clone(), backend.clone()).await?;
 
         // If use cache, wrap the backend in a cache
         let backend = match config.use_cache {
@@ -388,63 +401,69 @@ impl Repository {
 
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in an pack file.
     /// Returns a tuple (`ID`, data_size, meta_size)
-    pub fn encode_and_save_blob(
+    pub async fn encode_and_save_blob(
         &self,
-        encoding_context: &mut EncodingContext,
         blob_type: BlobType,
         data: Vec<u8>,
         save_id: SaveID,
     ) -> Result<ID> {
-        let id = match save_id {
-            SaveID::CalculateID => ID::from_content(&data),
-            SaveID::WithID(id) => id,
+        let secure_storage = self.secure_storage.clone();
+        let master_index = self.master_index.clone();
+        let tx = {
+            let tx_guard = self.pack_saver_tx.lock();
+            tx_guard.as_ref().context("Packer is stopped")?.clone()
         };
 
-        let blob_exists =
-            self.master_index.contains(&id) || !self.master_index.add_pending_blob(id);
+        let id = tokio::task::spawn_blocking(move || {
+            let id = match save_id {
+                SaveID::CalculateID => ID::from_content(&data),
+                SaveID::WithID(id) => id,
+            };
 
-        if blob_exists {
-            return Ok(id);
-        }
+            let blob_exists = master_index.contains(&id) || !master_index.add_pending_blob(id);
 
-        //  Encrypt/Compress
-        let raw_length = data.len() as u64;
-        let encoded_data = self
-            .secure_storage
-            .encode_managed(encoding_context, &data)?
-            .to_vec();
+            if blob_exists {
+                return Ok::<_, anyhow::Error>(id);
+            }
 
-        let tx_guard = self.pack_saver_tx.lock();
-        let tx = tx_guard
-            .as_ref()
-            .context("Packer is stopped or not initialized")?;
+            let raw_length = data.len() as u64;
+            let encoded_data = secure_storage.encode(&data)?;
 
-        tx.send(PackSaverRequest::SaveBlob {
-            id,
-            blob_type,
-            data: encoded_data,
-            raw_length,
-        })?;
+            tx.send(PackSaverRequest::SaveBlob {
+                id,
+                blob_type,
+                data: encoded_data,
+                raw_length,
+            })
+            .map_err(|_| anyhow::anyhow!("Packer channel closed"))?;
+
+            Ok(id)
+        })
+        .await
+        .context("Blob processing task panicked")??;
 
         Ok(id)
     }
 
     /// Loads a blob from the repository.
-    pub fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
+    pub async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
         let blob_entry = self.master_index.get(id);
         match blob_entry {
-            Some(locator) => self.load_from_pack(
-                &locator.pack_id,
-                locator.blob_type,
-                locator.offset,
-                locator.length,
-            ),
+            Some(locator) => {
+                self.load_from_pack(
+                    &locator.pack_id,
+                    locator.blob_type,
+                    locator.offset,
+                    locator.length,
+                )
+                .await
+            }
             None => bail!("Could not find blob {id:?} in index"),
         }
     }
 
     /// Saves a file to the repository
-    pub fn save_file(
+    pub async fn save_file(
         &self,
         id: &SaveID,
         data: &[u8],
@@ -482,13 +501,13 @@ impl Repository {
             hint: Some(hint),
         };
 
-        self.backend.write(&handle, &data)?;
+        self.backend.write(&handle, &data).await?;
 
         Ok((*id, SizePair::new(raw_size, encoded_size)))
     }
 
     /// Loads a file to the repository
-    pub fn load_file(
+    pub async fn load_file(
         &self,
         id: &ID,
         hint: StorageHint,
@@ -502,7 +521,7 @@ impl Repository {
             path: &path,
             hint: Some(hint),
         };
-        let data = self.backend.read(&handle, 0, 0)?;
+        let data = self.backend.read(&handle, 0, 0).await?;
 
         match file_type {
             ContentIdType::Pack => Ok(data),
@@ -512,7 +531,7 @@ impl Repository {
     }
 
     /// Deletes a file from the repository
-    pub fn delete_file(
+    pub async fn delete_file(
         &self,
         file_type: ContentIdType,
         id: &ID,
@@ -521,14 +540,14 @@ impl Repository {
         let path = self
             .get_path(file_type, id)
             .with_extension(with_extension.unwrap_or_default());
-        let size = self.backend.lstat(&path)?.size;
-        self.backend.remove(&path)?;
+        let size = self.backend.lstat(&path).await?.size;
+        self.backend.remove(&path).await?;
 
         Ok(size.unwrap_or(0))
     }
 
     /// Sets an extension to a file.
-    pub fn set_extension(
+    pub async fn set_extension(
         &self,
         file_type: ContentIdType,
         id: &ID,
@@ -536,26 +555,27 @@ impl Repository {
     ) -> Result<()> {
         let path = self.get_path(file_type, id);
         let ext_path = path.with_extension(extension.unwrap_or_default());
-        self.backend.rename(&path, &ext_path)?;
+        self.backend.rename(&path, &ext_path).await?;
 
         Ok(())
     }
 
     /// Removes a snapshot from the repository, if it exists.
-    pub fn remove_snapshot(&self, id: &ID) -> Result<()> {
+    pub async fn remove_snapshot(&self, id: &ID) -> Result<()> {
         let snapshot_path = self.snapshot_path.join(id.to_hex());
 
-        if !self.backend.path_exists(&snapshot_path) {
+        if !self.backend.path_exists(&snapshot_path).await {
             bail!("Snapshot {id} doesn't exist")
         }
 
         self.backend
             .remove(&snapshot_path)
+            .await
             .with_context(|| format!("Could not remove snapshot {id}"))
     }
 
     /// Loads a snapshot by ID
-    pub fn load_snapshot(&self, id: &ID, extension: Option<&str>) -> Result<Snapshot> {
+    pub async fn load_snapshot(&self, id: &ID, extension: Option<&str>) -> Result<Snapshot> {
         let snapshot = self
             .load_file(
                 id,
@@ -565,22 +585,25 @@ impl Repository {
                 },
                 extension,
             )
+            .await
             .with_context(|| format!("No snapshot with ID '{id}' exists"))?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
         Ok(snapshot)
     }
 
     /// Recall a dropped snapshot with ID
-    pub fn recall_dropped_snapshot(&self, id: &ID) -> Result<()> {
+    pub async fn recall_dropped_snapshot(&self, id: &ID) -> Result<()> {
         let path = self.get_path(ContentIdType::Snapshot, id);
         let dropped_path = path.with_extension(REPO_DROPPED_EXTENSION);
-        self.backend.rename(&dropped_path, &path)
+        self.backend.rename(&dropped_path, &path).await?;
+        Ok(())
     }
 
     /// Lists all snapshot IDs
-    pub fn list_snapshot_ids(&self) -> Result<Vec<ID>> {
+    pub async fn list_snapshot_ids(&self) -> Result<Vec<ID>> {
         let ids = self
             .list_files(ContentIdType::Snapshot)
+            .await
             .context("Could not list snapshots")?
             .into_iter()
             .filter_map(|path| {
@@ -593,8 +616,8 @@ impl Repository {
         Ok(ids)
     }
 
-    pub(crate) fn list_index_ids(&self) -> Result<Vec<ID>> {
-        let index_paths = self.list_files(ContentIdType::Index)?;
+    pub(crate) async fn list_index_ids(&self) -> Result<Vec<ID>> {
+        let index_paths = self.list_files(ContentIdType::Index).await?;
         let mut index_ids = Vec::with_capacity(index_paths.len());
 
         for file_path in index_paths {
@@ -614,9 +637,10 @@ impl Repository {
     }
 
     /// Lists all .dropped snapshot IDs
-    pub(crate) fn list_dropped_snapshot_ids(&self) -> Result<Vec<ID>> {
+    pub(crate) async fn list_dropped_snapshot_ids(&self) -> Result<Vec<ID>> {
         let ids = self
             .list_files_with_extension(ContentIdType::Snapshot, Some(REPO_DROPPED_EXTENSION))
+            .await
             .context("Failed to list files with the dropped snapshot extension")?
             .into_iter()
             .filter_map(|path| {
@@ -630,7 +654,7 @@ impl Repository {
     }
 
     /// Loads a pack.
-    pub fn load_pack(&self, id: &ID) -> Result<Vec<u8>> {
+    pub async fn load_pack(&self, id: &ID) -> Result<Vec<u8>> {
         // We don't really know what kind of pack we are loading, so it is not metadata
         self.load_file(
             id,
@@ -640,10 +664,11 @@ impl Repository {
             },
             None,
         )
+        .await
     }
 
     /// Loads an index file.
-    pub fn load_index(&self, id: &ID) -> Result<IndexFile> {
+    pub async fn load_index(&self, id: &ID) -> Result<IndexFile> {
         let index: Vec<u8> = self
             .load_file(
                 id,
@@ -653,24 +678,27 @@ impl Repository {
                 },
                 None,
             )
+            .await
             .with_context(|| format!("Could not load index {}", id.to_hex()))?;
         let index = serde_json::from_slice(&index)?;
         Ok(index)
     }
 
     /// Loads the repository manifest.
-    fn load_manifest(
+    async fn load_manifest(
         secure_storage: Arc<SecureStorage>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<Manifest> {
-        let manifest = backend.read(&Handle::new(Path::new(MANIFEST_PATH)), 0, 0)?;
+        let manifest = backend
+            .read(&Handle::new(Path::new(MANIFEST_PATH)), 0, 0)
+            .await?;
         let manifest = secure_storage.decode(&manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
     }
 
     /// Loads a lock file.
-    pub fn load_lock(&self, id: &ID) -> Result<Lock> {
+    pub async fn load_lock(&self, id: &ID) -> Result<Lock> {
         let lock: Vec<u8> = self
             .load_file(
                 id,
@@ -680,27 +708,30 @@ impl Repository {
                 },
                 None,
             )
+            .await
             .with_context(|| format!("Could not load lock file {}", id.to_hex()))?;
         let lock = serde_json::from_slice(&lock)?;
         Ok(lock)
     }
 
     /// Loads a KeyFile.
-    pub fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
-        let key = self.load_file(
-            id,
-            StorageHint {
-                file_type: ContentIdType::Key,
-                is_metadata: true,
-            },
-            None,
-        )?;
+    pub async fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
+        let key = self
+            .load_file(
+                id,
+                StorageHint {
+                    file_type: ContentIdType::Key,
+                    is_metadata: true,
+                },
+                None,
+            )
+            .await?;
         let key = serde_json::from_slice(&key)?;
         Ok(key)
     }
 
     /// Finds a file in the repository using an ID prefix
-    pub(crate) fn find_with_extension(
+    pub(crate) async fn find_with_extension(
         &self,
         file_type: ContentIdType,
         prefix: &str,
@@ -719,7 +750,7 @@ impl Repository {
             bail!("Prefix cannot be empty");
         }
 
-        let type_files = self.list_files_with_extension(file_type, extension)?;
+        let type_files = self.list_files_with_extension(file_type, extension).await?;
         let mut matches = Vec::new();
 
         for file_path in type_files {
@@ -748,19 +779,29 @@ impl Repository {
     }
 
     /// Finds a file in the repository using an ID prefix
-    pub fn find(&self, file_type: ContentIdType, prefix: &str) -> Result<(ID, PathBuf)> {
-        self.find_with_extension(file_type, prefix, None)
+    pub async fn find(&self, file_type: ContentIdType, prefix: &str) -> Result<(ID, PathBuf)> {
+        self.find_with_extension(file_type, prefix, None).await
     }
 
     pub fn init_pack_saver(self: &Arc<Self>, num_packers: usize) -> Result<()> {
-        let (tx, rx) = crossbeam_channel::bounded(16 * num_packers);
+        let (tx, rx) = crossbeam_channel::bounded(2 * num_packers);
 
         let weak_self = Arc::downgrade(self);
         let storage = self.secure_storage.clone();
         let max_packer_size = self.max_packer_size;
 
+        // Capture the tokio runtime
+        let rt_handle = tokio::runtime::Handle::current();
+
         let handle = std::thread::spawn(move || {
-            let pack_saver = PackSaver::new(rx, weak_self, storage, max_packer_size, num_packers)?;
+            let pack_saver = PackSaver::new(
+                rx,
+                rt_handle,
+                weak_self,
+                storage,
+                max_packer_size,
+                num_packers,
+            )?;
             pack_saver.run()
         });
 
@@ -770,7 +811,7 @@ impl Repository {
         Ok(())
     }
 
-    pub fn flush_and_finalize_pack_saver(&self) -> Result<RepoStatsSnapshot> {
+    pub async fn flush_and_finalize_pack_saver(&self) -> Result<RepoStatsSnapshot> {
         // Signal PackSaver to stop by dropping the channel
         let tx = self.pack_saver_tx.lock().take();
         drop(tx);
@@ -781,7 +822,7 @@ impl Repository {
                 .map_err(|_| anyhow::anyhow!("Pack saver thread panicked"))??;
         }
 
-        let index_size = self.index().persist(self)?;
+        let index_size = self.index().persist(self).await?;
 
         self.stats
             .index_raw_bytes
@@ -803,7 +844,7 @@ impl Repository {
 
     /// Reads from a pack file with offset and length.
     /// This function decodes the data.
-    pub fn read_from_pack_and_decode(
+    pub async fn read_from_pack_and_decode(
         &self,
         blob_type: BlobType,
         id: &ID,
@@ -811,16 +852,19 @@ impl Repository {
         length: u64,
     ) -> Result<Vec<u8>> {
         let path = self.get_path(ContentIdType::Pack, id);
-        let data = self.backend.read(
-            &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
-            offset as isize,
-            length as usize,
-        )?;
+        let data = self
+            .backend
+            .read(
+                &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
+                offset as isize,
+                length as usize,
+            )
+            .await?;
         self.secure_storage.decode(&data)
     }
 
     /// Lists all packs in the repository.
-    pub fn list_packs(&self) -> Result<IdSet<ID>> {
+    pub async fn list_packs(&self) -> Result<IdSet<ID>> {
         let mut list = IdSet::default();
 
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
@@ -829,7 +873,7 @@ impl Repository {
                 .objects_path
                 .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-            let files = self.backend.list_dir(&dir)?;
+            let files = self.backend.list_dir(&dir).await?;
             for path in files {
                 let filename = path.file_name().unwrap().to_string_lossy().to_string();
                 if let Ok(id) = ID::from_hex(&filename) {
@@ -862,12 +906,12 @@ impl Repository {
 
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
     /// with all extensions included.
-    pub fn list_all_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
+    pub async fn list_all_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
         match file_type {
-            ContentIdType::Snapshot => self.backend.list_dir(&self.snapshot_path),
-            ContentIdType::Key => self.backend.list_dir(&self.keys_path),
-            ContentIdType::Index => self.backend.list_dir(&self.index_path),
-            ContentIdType::Lock => self.backend.list_dir(&self.locks_path),
+            ContentIdType::Snapshot => self.backend.list_dir(&self.snapshot_path).await,
+            ContentIdType::Key => self.backend.list_dir(&self.keys_path).await,
+            ContentIdType::Index => self.backend.list_dir(&self.index_path).await,
+            ContentIdType::Lock => self.backend.list_dir(&self.locks_path).await,
             ContentIdType::Pack => {
                 let mut files = Vec::new();
                 for n in 0x00..(1 << (4 * OBJECTS_DIR_FANOUT)) {
@@ -875,7 +919,7 @@ impl Repository {
                         .objects_path
                         .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-                    let sub_files = self.backend.list_dir(&dir_name)?;
+                    let sub_files = self.backend.list_dir(&dir_name).await?;
                     for file_path in sub_files.into_iter() {
                         files.push(file_path);
                     }
@@ -888,13 +932,14 @@ impl Repository {
 
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
     /// with extension.
-    pub fn list_files_with_extension(
+    pub async fn list_files_with_extension(
         &self,
         file_type: ContentIdType,
         extension: Option<&str>,
     ) -> Result<Vec<PathBuf>> {
         let paths = self
-            .list_all_files(file_type)?
+            .list_all_files(file_type)
+            .await?
             .into_iter()
             .filter(|p| {
                 let file_ext = p.extension();
@@ -911,13 +956,13 @@ impl Repository {
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
     /// with NO EXTENSION.
     #[inline]
-    pub fn list_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
-        self.list_files_with_extension(file_type, None)
+    pub async fn list_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
+        self.list_files_with_extension(file_type, None).await
     }
 
     /// Load the master index from file
-    pub fn reload_master_index(&self) -> Result<()> {
-        let files = self.list_files(ContentIdType::Index)?;
+    pub async fn reload_master_index(&self) -> Result<()> {
+        let files = self.list_files(ContentIdType::Index).await?;
         self.master_index.clear();
 
         let mut num_index_files = 0;
@@ -931,11 +976,14 @@ impl Repository {
                 Ok(id) => id,
                 Err(_) => continue, // Ignore invalid ID names
             };
-            let index_file = self.backend.read(
-                &Handle::new_with_hint(&file_path, ContentIdType::Index, true),
-                0,
-                0,
-            )?;
+            let index_file = self
+                .backend
+                .read(
+                    &Handle::new_with_hint(&file_path, ContentIdType::Index, true),
+                    0,
+                    0,
+                )
+                .await?;
             let index_file = self.secure_storage.decode(&index_file)?;
             let index_file = match serde_json::from_slice(&index_file) {
                 Ok(idx_file) => idx_file,
@@ -953,7 +1001,7 @@ impl Repository {
     }
 
     /// Load and decode data from a pack file
-    pub fn load_from_pack(
+    pub async fn load_from_pack(
         &self,
         id: &ID,
         blob_type: BlobType,
@@ -961,20 +1009,23 @@ impl Repository {
         length: u32,
     ) -> Result<Vec<u8>> {
         let object_path = Self::get_object_path(&self.objects_path, id);
-        let data = self.backend.read(
-            &Handle::new_with_hint(
-                &object_path,
-                ContentIdType::Pack,
-                blob_type == BlobType::Tree,
-            ),
-            offset as isize,
-            length as usize,
-        )?;
+        let data = self
+            .backend
+            .read(
+                &Handle::new_with_hint(
+                    &object_path,
+                    ContentIdType::Pack,
+                    blob_type == BlobType::Tree,
+                ),
+                offset as isize,
+                length as usize,
+            )
+            .await?;
         self.secure_storage.decode(&data)
     }
 
     /// Try to acquire a lock with a retry deadline
-    fn try_acquire_lock_with_retry(
+    async fn try_acquire_lock_with_retry(
         &self,
         exclusive: bool,
         retry_duration: Option<Duration>,
@@ -988,7 +1039,7 @@ impl Repository {
         let mut base_wait_interval_ms = MIN_BASE_WAIT_INTERVAL_MS;
 
         loop {
-            match self.try_acquire_lock_once(exclusive) {
+            match self.try_acquire_lock_once(exclusive).await {
                 Ok(lock) => return Ok(lock),
 
                 Err(e) => {
@@ -1021,19 +1072,22 @@ impl Repository {
     }
 
     /// Try to acquire a lock just once without retrying
-    fn try_acquire_lock_once(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
-        self.backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
+    async fn try_acquire_lock_once(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
+        self.backend.create_dir(&PathBuf::from(LOCKS_DIR)).await?;
         let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
 
         let new_lock_id = *new_lock.lock().id();
 
         self.save_lock(&new_lock)
+            .await
             .context("Failed to write new lock file")?;
 
-        let all_locks = match self.get_locks() {
+        let all_locks = match self.get_locks().await {
             Ok(locks) => locks,
             Err(e) => {
-                let _ = self.delete_file(ContentIdType::Lock, &new_lock_id, None);
+                let _ = self
+                    .delete_file(ContentIdType::Lock, &new_lock_id, None)
+                    .await;
                 return Err(e);
             }
         };
@@ -1046,14 +1100,16 @@ impl Repository {
 
             // Clean up expired locks from other processes
             if lock.is_expired() {
-                let _ = self.delete_file(ContentIdType::Lock, lock.id(), None);
+                let _ = self.delete_file(ContentIdType::Lock, lock.id(), None).await;
                 continue;
             }
 
             if exclusive || lock.is_exclusive() {
                 // A race condition occurred, or a conflict was already present.
                 // The NEWLY written lock must be cleaned up and the attempt must fail.
-                let _ = self.delete_file(ContentIdType::Lock, &new_lock_id, None);
+                let _ = self
+                    .delete_file(ContentIdType::Lock, &new_lock_id, None)
+                    .await;
 
                 bail!(
                     "Conflict detected with existing lock (ID: {}).",
@@ -1065,42 +1121,49 @@ impl Repository {
         Ok(new_lock)
     }
 
-    fn save_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
-        let lock_guard = lock.lock();
-
-        let lock_json = serde_json::to_string(&*lock_guard)?;
+    async fn save_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
+        let (lock_id, lock_bytes) = {
+            let lock_guard = lock.lock();
+            let id = *lock_guard.id();
+            let json = serde_json::to_string(&*lock_guard)?;
+            (id, json.into_bytes())
+        };
 
         self.save_file(
-            &SaveID::WithID(*lock_guard.id()),
-            lock_json.as_bytes(),
+            &SaveID::WithID(lock_id),
+            &lock_bytes,
             StorageHint {
                 file_type: ContentIdType::Lock,
                 is_metadata: true,
             },
             None,
-        )?;
+        )
+        .await?;
 
         Ok(())
     }
 
-    pub fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
+    pub async fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
         lock.lock().refresh();
-        self.save_lock(lock)
+        self.save_lock(lock).await
     }
 
     /// Get all locks in the repository. If a lock file cannot be read, decoded
     /// or deserialized, it will be ignored.
-    pub fn get_locks(&self) -> Result<Vec<Lock>> {
-        let all_lock_paths = self.list_files(ContentIdType::Lock)?;
+    pub async fn get_locks(&self) -> Result<Vec<Lock>> {
+        let all_lock_paths = self.list_files(ContentIdType::Lock).await?;
         let mut locks = Vec::new();
 
         for path in all_lock_paths {
             // Attempt to read the lock file
-            let lock_data_result = self.backend.read(
-                &Handle::new_with_hint(&path, ContentIdType::Lock, true),
-                0,
-                0,
-            );
+            let lock_data_result = self
+                .backend
+                .read(
+                    &Handle::new_with_hint(&path, ContentIdType::Lock, true),
+                    0,
+                    0,
+                )
+                .await;
 
             let lock = match lock_data_result {
                 Ok(data) => data,
@@ -1133,7 +1196,7 @@ impl Repository {
 
 impl Drop for Repository {
     fn drop(&mut self) {
-        let _ = self.flush_and_finalize_pack_saver();
+        let _ = futures::executor::block_on(self.flush_and_finalize_pack_saver());
     }
 }
 
@@ -1156,8 +1219,8 @@ mod tests {
     use super::*;
 
     /// Test init a repo with password and open it
-    #[test]
-    fn test_init_and_open_with_password() -> Result<()> {
+    #[tokio::test]
+    async fn test_init_and_open_with_password() -> Result<()> {
         let temp_repo_dir = tempdir()?;
         let temp_repo_path = temp_repo_dir.path().join("repo");
 
@@ -1167,22 +1230,16 @@ mod tests {
         });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        Repository::init(auth.as_ref(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(
-            auth.as_ref(),
-            None,
-            backend,
-            TEST_REPO_CONFIG,
-            false,
-            None,
-        )?;
+        Repository::init(auth.as_ref(), None, backend.to_owned()).await?;
+        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false, None)
+            .await?;
 
         Ok(())
     }
 
     /// Test init a repo with password and open it using a password stored in a file
-    #[test]
-    fn test_init_and_open_with_password_from_file() -> Result<()> {
+    #[tokio::test]
+    async fn test_init_and_open_with_password_from_file() -> Result<()> {
         let temp_dir = tempdir()?;
         let temp_path = temp_dir.path();
         let temp_repo_path = temp_path.join("repo");
@@ -1197,15 +1254,9 @@ mod tests {
         });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        Repository::init(auth.as_ref(), None, backend.to_owned())?;
-        Repository::try_open_with_lock(
-            auth.as_ref(),
-            None,
-            backend,
-            TEST_REPO_CONFIG,
-            false,
-            None,
-        )?;
+        Repository::init(auth.as_ref(), None, backend.to_owned()).await?;
+        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false, None)
+            .await?;
 
         Ok(())
     }
@@ -1236,12 +1287,13 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
     #[rstest]
     #[case(false, false)]
     #[case(false, true)]
     #[case(true, false)]
     #[case(true, true)]
-    fn test_acquire_lock_with_non_exclusive_lock(
+    async fn test_acquire_lock_with_non_exclusive_lock(
         #[case] own_lock_exclusive: bool,
         #[case] other_lock_exclusive: bool,
     ) -> Result<()> {
@@ -1283,15 +1335,18 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        commands::cmd_init::run(&global, &args).context("Failed to run cmd_init")?;
+        commands::cmd_init::run(&global, &args)
+            .await
+            .context("Failed to run cmd_init")?;
 
         let backend = Arc::new(LocalFS::new(repo_path));
 
         let (r0, _ss0) =
-            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)?;
+            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)
+                .await?;
 
         let other_lock = Arc::new(Mutex::new(Lock::new(other_lock_exclusive)));
-        r0.save_lock(&other_lock)?;
+        r0.save_lock(&other_lock).await?;
 
         let own_repo_open_result = Repository::try_open_with_lock(
             Some(&auth),
@@ -1300,7 +1355,8 @@ mod tests {
             TEST_REPO_CONFIG,
             own_lock_exclusive,
             None,
-        );
+        )
+        .await;
 
         match (
             own_repo_open_result.is_err(),
@@ -1318,8 +1374,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_acquire_lock_deletes_other_expired_lock() -> Result<()> {
+    #[tokio::test]
+    async fn test_acquire_lock_deletes_other_expired_lock() -> Result<()> {
         use crate::{
             commands::{self, GlobalArgs, cmd_init::CmdArgs},
             mapache::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
@@ -1358,18 +1414,21 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        commands::cmd_init::run(&global, &args).context("Failed to run cmd_init")?;
+        commands::cmd_init::run(&global, &args)
+            .await
+            .context("Failed to run cmd_init")?;
 
         let backend = Arc::new(LocalFS::new(repo_path));
 
         let (r0, _ss0) =
-            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)?;
+            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)
+                .await?;
 
         let other_lock = Arc::new(Mutex::new(Lock::new_for_test(
             true,
             Local::now() - LOCK_EXPIRE_TIMEOUT,
         )));
-        r0.save_lock(&other_lock)?;
+        r0.save_lock(&other_lock).await?;
 
         Repository::try_open_with_lock(
             Some(&auth),
@@ -1378,7 +1437,8 @@ mod tests {
             TEST_REPO_CONFIG,
             true,
             None,
-        )?; // The other expired lock should have been deleted
+        )
+        .await?; // The other expired lock should have been deleted
 
         Ok(())
     }

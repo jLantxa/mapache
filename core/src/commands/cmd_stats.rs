@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Args;
+use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 
@@ -86,7 +87,7 @@ struct StatsOutput {
     total_repo_bytes: u64,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -96,27 +97,24 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (repo, secure_storage, lock_handle) = Repository::try_open_with_lock(
+    let (repo, secure_storage, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend.clone(),
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    // Ensure repository is unlocked on panic/drop
-    let lock_clone = lock_handle.clone();
-    let _cleanup = CleanupHandler::new(move || {
-        lock_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
-    stats_repository(repo, secure_storage, backend, args, global_args.json)
+    stats_repository(repo, secure_storage, backend, args, global_args.json).await
 }
 
-fn stats_repository(
+async fn stats_repository(
     repo: Arc<Repository>,
     secure_storage: Arc<SecureStorage>,
     backend: Arc<dyn StorageBackend>,
@@ -133,7 +131,7 @@ fn stats_repository(
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    fn sum_sizes(
+    async fn sum_sizes(
         spinner: &ProgressBar,
         backend: &dyn StorageBackend,
         label: &str,
@@ -143,7 +141,7 @@ fn stats_repository(
         let len = files.len();
         for (i, path) in files.iter().enumerate() {
             spinner.set_message(format!("{label} {}/{}", i + 1, len));
-            if let Some(sz) = backend.lstat(path)?.size {
+            if let Some(sz) = backend.lstat(path).await?.size {
                 total = total.saturating_add(sz);
             }
         }
@@ -151,29 +149,30 @@ fn stats_repository(
     }
 
     // Packs
-    let packs = repo.list_all_files(ContentIdType::Pack)?;
+    let packs = repo.list_all_files(ContentIdType::Pack).await?;
     let num_packs = packs.len();
-    let total_pack_size = sum_sizes(&spinner, backend.as_ref(), "packs", &packs)?;
+    let total_pack_size = sum_sizes(&spinner, backend.as_ref(), "packs", &packs).await?;
 
     // Indices
-    let indices = repo.list_all_files(ContentIdType::Index)?;
+    let indices = repo.list_all_files(ContentIdType::Index).await?;
     let num_indices = indices.len();
-    let total_index_size = sum_sizes(&spinner, backend.as_ref(), "index", &indices)?;
+    let total_index_size = sum_sizes(&spinner, backend.as_ref(), "index", &indices).await?;
 
     // Snapshots
-    let snaps = repo.list_all_files(ContentIdType::Snapshot)?;
+    let snaps = repo.list_all_files(ContentIdType::Snapshot).await?;
     let num_snapshots = snaps.len();
-    let total_snapshot_size = sum_sizes(&spinner, backend.as_ref(), "snapshots", &snaps)?;
+    let total_snapshot_size = sum_sizes(&spinner, backend.as_ref(), "snapshots", &snaps).await?;
 
     // Keys
-    let keys = repo.list_all_files(ContentIdType::Key)?;
+    let keys = repo.list_all_files(ContentIdType::Key).await?;
     let num_keys = keys.len();
-    let total_key_size = sum_sizes(&spinner, backend.as_ref(), "keys", &keys)?;
+    let total_key_size = sum_sizes(&spinner, backend.as_ref(), "keys", &keys).await?;
 
     spinner.set_message("manifest");
     let manifest_size = repo
         .backend()
-        .lstat(Path::new(MANIFEST_PATH))?
+        .lstat(Path::new(MANIFEST_PATH))
+        .await?
         .size
         .unwrap_or(0);
 
@@ -196,7 +195,7 @@ fn stats_repository(
     });
 
     // Snapshot-derived summary (index-only)
-    let snap_stats = analyze_snapshots(repo.clone(), &spinner)?;
+    let snap_stats = analyze_snapshots(repo.clone(), &spinner).await?;
 
     // If user requested full scan, parse pack footers to compute packed blob totals
     let mut pack_footer_blob_count: Option<usize> = None;
@@ -206,7 +205,7 @@ fn stats_repository(
 
     if args.full {
         spinner.set_message("parsing pack footers");
-        let pack_ids = repo.list_packs()?;
+        let pack_ids = repo.list_packs().await?;
         let mut total_descriptors_encoded = 0u64;
         let mut total_descriptors_raw = 0u64;
         let mut total_descriptors = 0usize;
@@ -219,6 +218,7 @@ fn stats_repository(
                 secure_storage.as_ref(),
                 pack_id,
             )
+            .await
             .with_context(|| format!("Failed to parse footer for pack {}", pack_id.to_hex()))?;
 
             for d in descriptors.iter() {
@@ -461,7 +461,10 @@ struct SnapshotAnalysis {
     total_restorable_bytes: u64,
 }
 
-fn analyze_snapshots(repo: Arc<Repository>, spinner: &ProgressBar) -> Result<SnapshotAnalysis> {
+async fn analyze_snapshots(
+    repo: Arc<Repository>,
+    spinner: &ProgressBar,
+) -> Result<SnapshotAnalysis> {
     let mut total_raw_data_size = 0u64;
     let mut total_encoded_data_size = 0u64;
     let mut num_referenced_blobs = 0u64; // total (data + tree)
@@ -483,15 +486,16 @@ fn analyze_snapshots(repo: Arc<Repository>, spinner: &ProgressBar) -> Result<Sna
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    let snaps = repo.list_all_files(ContentIdType::Snapshot)?;
+    let snaps = repo.list_all_files(ContentIdType::Snapshot).await?;
     let num_snapshots = snaps.len();
 
     // Hold index read-lock once
     let index = repo.index();
 
-    let snapshot_stream = SnapshotStream::new(repo.clone())?;
+    let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
-    for (i, (_id, snapshot)) in snapshot_stream.enumerate() {
+    let mut enumerated_stream = snapshot_stream.enumerate();
+    while let Some((i, (_id, snapshot))) = enumerated_stream.next().await {
         spinner.set_message(format!(
             "Analyzing snapshots: {} / {}",
             i + 1,
@@ -514,15 +518,17 @@ fn analyze_snapshots(repo: Arc<Repository>, spinner: &ProgressBar) -> Result<Sna
             num_referenced_tree_blobs = num_referenced_tree_blobs.saturating_add(1);
         }
 
-        let stream = SerializedNodeStream::new(
+        let mut stream = SerializedNodeStream::new(
             repo.clone(),
             Some(snapshot.tree),
             PathBuf::new(),
             None,
             None,
-        )?;
+        )
+        .await?;
 
-        for (_path, stream_node_res) in stream.flatten() {
+        while let Some(res) = stream.next().await {
+            let (_path, stream_node_res) = res?;
             let node = stream_node_res.node;
 
             // Count tree blob if present

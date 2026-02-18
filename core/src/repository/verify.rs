@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
+use futures::StreamExt;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
@@ -23,7 +24,7 @@ pub struct PackStats {
 /// 1. Reads the pack footer (decrypts metadata).
 /// 2. Reads EVERY blob in the pack (decrypts data).
 /// 3. Hashes the plaintext and compares it to the ID.
-pub fn verify_pack(
+pub async fn verify_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
@@ -31,21 +32,26 @@ pub fn verify_pack(
 ) -> Result<PackStats> {
     // Verify Footer / Metadata
     let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, pack_id)
+        .await
         .context("Failed to parse pack footer")?;
 
     let index = repo.index();
+    let rt_handle = tokio::runtime::Handle::current();
 
     // Verify Data Integrity (Parallel)
     // We map-reduce to get stats and bubble up the first error encountered.
     let (verified_blobs, bytes_processed) = pack_header.par_iter().try_fold(
         || (0, 0),
         |acc, blob_desc| {
-            let data = repo.load_from_pack(
-                pack_id,
-                blob_desc.blob_type,
-                blob_desc.offset,
-                blob_desc.length,
-            ).with_context(|| format!("Failed to load/decrypt blob {}", blob_desc.id))?;
+            // Bridge the sync Rayon thread to the async backend
+            let data = rt_handle.block_on(async {
+                repo.load_from_pack(
+                    pack_id,
+                    blob_desc.blob_type,
+                    blob_desc.offset,
+                    blob_desc.length,
+                ).await
+            }).with_context(|| format!("Failed to load/decrypt blob {}", blob_desc.id))?;
 
             // Integrity Check: Hash(Plaintext) == ID
             let checksum = ID::from_content(&data);
@@ -54,7 +60,7 @@ pub fn verify_pack(
                     "Checksum Mismatch! Blob: {:?} | Pack: {:?} | Calculated: {} | Expected: {}",
                     blob_desc.id,
                     pack_id,
-                    checksum.to_hex(),
+                    checksum,
                     blob_desc.id
                 );
             }
@@ -66,11 +72,13 @@ pub fn verify_pack(
         |a, b| Ok((a.0 + b.0, a.1 + b.1))
     )?;
 
-    // Check for Dangling Blobs (Garbage Collection hints)
-    let num_dangling = pack_header
-        .iter()
-        .filter(|blob| !index.contains(&blob.id))
-        .count();
+    // Check for Dangling Blobs
+    let mut num_dangling = 0;
+    for blob in &pack_header {
+        if !index.contains(&blob.id) {
+            num_dangling += 1;
+        }
+    }
 
     Ok(PackStats {
         dangling: num_dangling,
@@ -80,12 +88,12 @@ pub fn verify_pack(
 }
 
 /// Verify that all blobs referenced by a snapshot are indexed.
-pub fn verify_snapshot_refs(
+pub async fn verify_snapshot_refs(
     repo: Arc<Repository>,
     snapshot_id: &ID,
     existing_packs: &IdSet<ID>,
 ) -> Result<usize> {
-    let snapshot = repo.load_snapshot(snapshot_id, None)?;
+    let snapshot = repo.load_snapshot(snapshot_id, None).await?;
     let tree_id = snapshot.tree;
 
     // Validate the root tree exists first
@@ -93,12 +101,12 @@ pub fn verify_snapshot_refs(
         bail!("Snapshot root tree {} is missing from index", tree_id);
     }
 
-    let stream =
-        SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
+    let mut stream =
+        SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None).await?;
     let index = repo.index();
     let mut missing_blobs = 0;
 
-    for (_path, stream_node) in stream.flatten() {
+    while let Some(Ok((_path, stream_node))) = stream.next().await {
         let node = stream_node.node;
 
         let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());

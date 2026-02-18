@@ -1,32 +1,27 @@
 use std::{
     collections::BTreeMap,
-    sync::Arc,
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Result, anyhow, bail};
 use fuser::{FileAttr, INodeNo};
 
 use crate::{
     fs::node::{Node, NodeType},
-    fuse::cache::{BlobCache, TreeCache},
     mapache::ID,
-    repository::repo::Repository,
 };
 
 pub(super) const BLKSIZE: u32 = 512;
 pub(super) const TTL: Duration = Duration::from_secs(60);
-pub(super) const TREE_CACHE_CAPACITY: usize = 512;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct FsNode {
-    inode: INodeNo,
-    parent: INodeNo,
-    attr: FileAttr,
-    kind: NodeKind,
+    pub inode: INodeNo,
+    pub parent: INodeNo,
+    pub attr: FileAttr,
+    pub kind: NodeKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum NodeKind {
     /// A directory we have fully loaded into memory
     Dir { children: BTreeMap<String, INodeNo> },
@@ -38,36 +33,21 @@ pub(super) enum NodeKind {
     Symlink { target: String },
 }
 
+/// A purely synchronous structure that manages the INode mapping and
+/// in-memory tree of FUSE nodes.
 pub(super) struct Stash {
-    repo: Arc<Repository>,
     ino_counter: u64,
     nodes: BTreeMap<INodeNo, FsNode>,
-
     path_cache: BTreeMap<(INodeNo, String), INodeNo>,
-    tree_cache: TreeCache,
-    blob_cache: BlobCache,
+    created_time: SystemTime,
 }
 
 impl Stash {
-    pub(super) fn new_root(repo: Arc<Repository>, data_cache_size: u64) -> Result<Self> {
-        let root_attr = simple_attr(
-            INodeNo::ROOT,
-            fuser::FileType::Directory,
-            0,
-            repo.manifest().created_time().into(),
-        );
+    pub(super) fn new(created_time: SystemTime) -> Self {
+        let root_attr = simple_attr(INodeNo::ROOT, fuser::FileType::Directory, 0, created_time);
 
-        let mut stash = Self {
-            repo: repo.clone(),
-            ino_counter: INodeNo::ROOT.0,
-            nodes: BTreeMap::new(),
-            path_cache: BTreeMap::new(),
-            tree_cache: TreeCache::new(repo.clone(), TREE_CACHE_CAPACITY),
-            blob_cache: BlobCache::new(repo.clone(), data_cache_size),
-        };
-
-        // Manually insert root
-        stash.nodes.insert(
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
             INodeNo::ROOT,
             FsNode {
                 inode: INodeNo::ROOT,
@@ -79,7 +59,12 @@ impl Stash {
             },
         );
 
-        Ok(stash)
+        Self {
+            ino_counter: INodeNo::ROOT.0,
+            nodes,
+            path_cache: BTreeMap::new(),
+            created_time,
+        }
     }
 
     pub(super) fn add_dir(&mut self, parent: INodeNo, name: String) -> INodeNo {
@@ -109,17 +94,10 @@ impl Stash {
         self.insert_entry(parent, name, attr, NodeKind::Symlink { target })
     }
 
-    pub(super) fn lookup(&mut self, parent: INodeNo, name: String) -> Option<&FileAttr> {
-        if let Some(&ino) = self.path_cache.get(&(parent, name.clone())) {
-            return self.nodes.get(&ino).map(|n| &n.attr);
+    pub(super) fn get_attr_by_name(&self, parent: INodeNo, name: &str) -> Option<FileAttr> {
+        if let Some(&ino) = self.path_cache.get(&(parent, name.to_string())) {
+            return self.get_attr(ino);
         }
-
-        if self.ensure_loaded(parent).is_ok()
-            && let Some(&ino) = self.path_cache.get(&(parent, name))
-        {
-            return self.nodes.get(&ino).map(|n| &n.attr);
-        }
-
         None
     }
 
@@ -127,14 +105,15 @@ impl Stash {
         self.nodes.get(&ino).map(|n| n.attr)
     }
 
+    pub(super) fn get_node(&self, ino: INodeNo) -> Option<FsNode> {
+        self.nodes.get(&ino).cloned()
+    }
+
     pub(super) fn read_dir(
-        &mut self,
+        &self,
         ino: INodeNo,
         offset: u64,
     ) -> Vec<(INodeNo, fuser::FileType, String)> {
-        // Ensure directory content is loaded
-        let _ = self.ensure_loaded(ino);
-
         let node = match self.nodes.get(&ino) {
             Some(n) => n,
             None => return Vec::new(),
@@ -149,142 +128,58 @@ impl Stash {
         // Append children if it is a Dir
         if let NodeKind::Dir { children } = &node.kind {
             for (name, &child_ino) in children {
-                // We use the name from the map key, and lookup the child to get its Kind
                 if let Some(child) = self.nodes.get(&child_ino) {
                     entries.push((child_ino, child.attr.kind, name.clone()));
                 }
             }
         }
 
-        // Simple skipping based on offset
         entries.into_iter().skip(offset as usize).collect()
     }
 
-    pub(super) fn read_link(&self, ino: INodeNo) -> Result<String> {
-        match self.nodes.get(&ino) {
-            Some(FsNode {
+    pub(super) fn read_link(&self, ino: INodeNo) -> Option<String> {
+        match self.nodes.get(&ino)? {
+            FsNode {
                 kind: NodeKind::Symlink { target },
                 ..
-            }) => Ok(target.clone()),
-            Some(_) => Err(anyhow!("INodeNo {ino} is not a symlink")),
-            None => Err(anyhow!("INodeNo {ino} not found")),
+            } => Some(target.clone()),
+            _ => None,
         }
     }
 
-    pub(super) fn read_from_file(
+    pub(super) fn upgrade_lazy_dir(
         &mut self,
         ino: INodeNo,
-        mut offset: u64,
-        mut size: u32,
-    ) -> Result<Option<Vec<u8>>> {
-        let blobs = match self.nodes.get(&ino) {
-            Some(FsNode {
-                kind: NodeKind::File { blobs },
-                ..
-            }) => blobs,
-            Some(_) => bail!("INodeNo {ino} is not a file"),
-            None => return Ok(None),
-        };
+        children_nodes: Vec<(String, NodeKind, FileAttr)>,
+    ) {
+        let mut children_map = BTreeMap::new();
 
-        let index = self.repo.index();
-
-        let mut buffer = Vec::with_capacity(size as usize);
-        let mut file_pos: u64 = 0;
-
-        for blob_id in blobs {
-            if size == 0 {
-                break;
-            }
-
-            let descriptor = index
-                .get(blob_id)
-                .ok_or_else(|| anyhow!("Missing blob descriptor for {blob_id}"))?;
-            let blob_len = descriptor.raw_length as u64;
-            let blob_end = file_pos + blob_len;
-
-            // Skip blobs that end before our offset
-            if blob_end <= offset {
-                file_pos += blob_len;
-                continue;
-            }
-
-            // Calculate overlap
-            let start_in_blob = offset.saturating_sub(file_pos) as usize;
-            let bytes_available = (blob_len as usize).saturating_sub(start_in_blob);
-            let bytes_to_read = bytes_available.min(size as usize);
-
-            if bytes_to_read > 0 {
-                let blob_data = self.blob_cache.load(blob_id)?;
-                buffer.extend_from_slice(&blob_data[start_in_blob..start_in_blob + bytes_to_read]);
-
-                size -= bytes_to_read as u32;
-                offset += bytes_to_read as u64;
-            }
-
-            file_pos += blob_len;
-        }
-
-        Ok(Some(buffer))
-    }
-
-    /// If a node is a LazyDir, load the tree from the repo, create child nodes,
-    /// and upgrade the node to a standard Dir.
-    fn ensure_loaded(&mut self, ino: INodeNo) -> Result<()> {
-        let (tree_id, parent_crtime) = match self.nodes.get(&ino) {
-            Some(FsNode {
-                kind: NodeKind::LazyDir { tree_id },
-                attr,
-                ..
-            }) => (*tree_id, attr.crtime),
-            _ => return Ok(()), // Already loaded or not a directory
-        };
-
-        let tree = self.tree_cache.load(&tree_id)?.clone();
-        let mut children = BTreeMap::new();
-
-        for node in tree.nodes {
-            let child_ino = self.next_ino();
-            let child_attr = node_to_fileattr(child_ino, parent_crtime, &node);
-
-            let kind = match node.node_type {
-                NodeType::Directory => NodeKind::LazyDir {
-                    tree_id: node.tree.unwrap(),
-                },
-                NodeType::Symlink => NodeKind::Symlink {
-                    target: node
-                        .symlink_info
-                        .map(|i| i.target_path.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                },
-                _ => NodeKind::File {
-                    blobs: node.blobs.unwrap_or_default(),
-                },
-            };
-
+        for (name, kind, attr) in children_nodes {
+            let child_ino = attr.ino;
             self.nodes.insert(
                 child_ino,
                 FsNode {
                     inode: child_ino,
                     parent: ino,
-                    attr: child_attr,
+                    attr,
                     kind,
                 },
             );
 
-            self.path_cache.insert((ino, node.name.clone()), child_ino);
-            children.insert(node.name, child_ino);
+            self.path_cache.insert((ino, name.clone()), child_ino);
+            children_map.insert(name, child_ino);
         }
 
         if let Some(node) = self.nodes.get_mut(&ino) {
-            let child_count = children.len();
-            node.kind = NodeKind::Dir { children };
+            let child_count = children_map.len();
+            node.kind = NodeKind::Dir {
+                children: children_map,
+            };
 
             if node.attr.kind == fuser::FileType::Directory {
                 node.attr.nlink = 2 + child_count as u32;
             }
         }
-
-        Ok(())
     }
 
     fn insert_entry(
@@ -319,17 +214,22 @@ impl Stash {
     }
 
     fn create_attr(&mut self, kind: fuser::FileType, size: u64) -> FileAttr {
-        let now = self.repo.manifest().created_time().into();
-        simple_attr(self.next_ino(), kind, size, now)
+        self.ino_counter += 1;
+        simple_attr(INodeNo(self.ino_counter), kind, size, self.created_time)
     }
 
-    fn next_ino(&mut self) -> INodeNo {
+    pub(super) fn next_ino(&mut self) -> INodeNo {
         self.ino_counter += 1;
         INodeNo(self.ino_counter)
     }
 }
 
-fn simple_attr(ino: INodeNo, kind: fuser::FileType, size: u64, time: SystemTime) -> FileAttr {
+pub(super) fn simple_attr(
+    ino: INodeNo,
+    kind: fuser::FileType,
+    size: u64,
+    time: SystemTime,
+) -> FileAttr {
     FileAttr {
         ino,
         size,
@@ -353,7 +253,7 @@ fn simple_attr(ino: INodeNo, kind: fuser::FileType, size: u64, time: SystemTime)
     }
 }
 
-fn node_to_fileattr(ino: INodeNo, parent_time: SystemTime, node: &Node) -> FileAttr {
+pub(super) fn node_to_fileattr(ino: INodeNo, parent_time: SystemTime, node: &Node) -> FileAttr {
     let kind = match node.node_type {
         NodeType::File => fuser::FileType::RegularFile,
         NodeType::Directory => fuser::FileType::Directory,

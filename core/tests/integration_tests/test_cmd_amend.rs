@@ -28,8 +28,8 @@ mod tests {
         test_utils::{self},
     };
 
-    #[test]
-    fn test_amend_exclude() -> Result<()> {
+    #[tokio::test]
+    async fn test_amend_exclude() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -66,7 +66,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -89,6 +89,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let excluded_paths = vec![
@@ -106,7 +107,9 @@ mod tests {
             clear_description: false,
             exclude: Some(excluded_paths.clone()),
         };
-        commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend")?;
+        commands::cmd_amend::run(&global, &amend_args)
+            .await
+            .context("Failed to run cmd_amend")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -123,7 +126,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -169,8 +174,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_amend_tags_and_description() -> Result<()> {
+    #[tokio::test]
+    async fn test_amend_tags_and_description() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -207,7 +212,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
         let (repo, _, test_repo_lock_handle) = Repository::try_open_with_lock(
             Some(&auth),
             None,
@@ -215,7 +220,8 @@ mod tests {
             TEST_REPO_CONFIG,
             false,
             None,
-        )?;
+        )
+        .await?;
         drop(test_repo_lock_handle);
 
         // Run snapshot twice
@@ -234,6 +240,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let amend_args = cmd_amend::CmdArgs {
@@ -246,11 +253,14 @@ mod tests {
             clear_description: true,
             exclude: None,
         };
-        commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend (1/2)")?;
+        commands::cmd_amend::run(&global, &amend_args)
+            .await
+            .context("Failed to run cmd_amend (1/2)")?;
 
-        let mut snapshot_stream = SnapshotStream::new(repo.clone())?;
+        let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
         let (_, snapshot) = snapshot_stream
             .latest()
+            .await
             .expect("There should be at least one snapshot");
 
         assert!(snapshot.tags.is_empty());
@@ -266,11 +276,14 @@ mod tests {
             clear_description: false,
             exclude: None,
         };
-        commands::cmd_amend::run(&global, &amend_args).context("Failed to run cmd_amend (2/2)")?;
+        commands::cmd_amend::run(&global, &amend_args)
+            .await
+            .context("Failed to run cmd_amend (2/2)")?;
 
-        let mut snapshot_stream = SnapshotStream::new(repo.clone())?;
+        let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
         let (_, snapshot) = snapshot_stream
             .latest()
+            .await
             .expect("There should be at least one snapshot");
 
         let expected_tags: BTreeSet<String> =

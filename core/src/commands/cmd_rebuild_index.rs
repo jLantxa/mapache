@@ -6,8 +6,8 @@ use std::{
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
+use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -30,7 +30,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
 
     let backend_options = global_args.backend_options(args.dry_run);
@@ -41,19 +41,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, secure_storage, lock_handle) = Repository::try_open_with_lock(
+    let (repo, secure_storage, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend.clone(),
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
     let start = Instant::now();
 
@@ -64,8 +62,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Discover packs and blobs
     ui::cli::log!("Discovering packs...");
 
-    let all_pack_ids = repo.list_packs()?;
-    let old_index_ids = repo.list_index_ids()?;
+    let all_pack_ids = repo.list_packs().await?;
+    let old_index_ids = repo.list_index_ids().await?;
     let mut new_master_index = MasterIndex::new();
     new_master_index.set_autosave(false);
     ui::cli::log!("Found {} packs", all_pack_ids.len());
@@ -79,19 +77,29 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .progress_chars("=> "),
             );
 
-    let results: Vec<_> = all_pack_ids
-        .par_iter()
+    let results: Vec<_> = futures::stream::iter(all_pack_ids.iter())
         .map(|pack_id| {
-            let res = Packer::parse_pack_footer(
-                repo.as_ref(),
-                backend.as_ref(),
-                secure_storage.as_ref(),
-                pack_id,
-            );
-            scan_bar.inc(1);
-            (pack_id, res)
+            let repo = repo.clone();
+            let backend = backend.clone();
+            let secure_storage = secure_storage.clone();
+            let scan_bar = scan_bar.clone();
+
+            async move {
+                let res = Packer::parse_pack_footer(
+                    repo.as_ref(),
+                    backend.as_ref(),
+                    secure_storage.as_ref(),
+                    pack_id,
+                )
+                .await;
+
+                scan_bar.inc(1);
+                (pack_id, res)
+            }
         })
-        .collect();
+        .buffer_unordered(8)
+        .collect()
+        .await;
 
     scan_bar.finish_and_clear();
 
@@ -103,7 +111,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         match res {
             Ok(descriptors) => {
                 blob_count += descriptors.len();
-                new_master_index.add_pack(repo.as_ref(), pack_id, descriptors)?;
+                new_master_index
+                    .add_pack(repo.as_ref(), pack_id, descriptors)
+                    .await?;
             }
             Err(e) => {
                 error_count += 1;
@@ -118,7 +128,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     // Save the new index
-    let new_index_size = new_master_index.persist(repo.as_ref())?;
+    let new_index_size = new_master_index.persist(repo.as_ref()).await?;
     ui::cli::log!("Persisted {} new indices", new_master_index.ids().len());
 
     // Delete the old index
@@ -134,12 +144,31 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             );
 
     let deleted_size = AtomicU64::new(0);
-    old_index_ids.par_iter().for_each(|id| {
-        let size_res = repo.delete_file(ContentIdType::Index, id, None);
-        deleted_size.fetch_add(size_res.unwrap_or(0), Ordering::AcqRel);
-        index_delete_bar.inc(1);
-    });
+
+    futures::stream::iter(old_index_ids.iter())
+        .map(|id| {
+            let repo = repo.clone();
+            let index_delete_bar = index_delete_bar.clone();
+            let deleted_size_ptr = &deleted_size;
+
+            async move {
+                match repo.delete_file(ContentIdType::Index, id, None).await {
+                    Ok(size) => {
+                        deleted_size_ptr.fetch_add(size, Ordering::AcqRel);
+                    }
+                    Err(e) => {
+                        ui::cli::error!("Failed to delete index {}: {}", id, e);
+                    }
+                }
+                index_delete_bar.inc(1);
+            }
+        })
+        .buffer_unordered(5)
+        .collect::<()>()
+        .await;
+
     index_delete_bar.finish_and_clear();
+
     ui::cli::log!(
         "Deleted {} obsolete index files",
         index_delete_bar.position()

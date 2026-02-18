@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Instant};
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
+use futures::StreamExt;
 
 use crate::{
     archiver::progress::SnapshotProgress,
@@ -63,7 +64,7 @@ pub struct CmdArgs {
     pub exclude: Option<Vec<String>>,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -72,32 +73,30 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         true,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
     let start = Instant::now();
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
     let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
 
     if args.all {
-        let snapshot_stream = SnapshotStream::new(repo.clone())?;
-        let mut all_snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect();
+        let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        let mut all_snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect().await;
         snapshots.append(&mut all_snapshots);
     } else {
-        match find_use_snapshot(repo.clone(), &args.snapshot) {
+        match find_use_snapshot(repo.clone(), &args.snapshot).await {
             Ok(Some((id, snap))) => snapshots.push((id, snap)),
             Ok(None) | Err(_) => bail!("Snapshot not found"),
         }
@@ -115,7 +114,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("{} ", amend_str);
         }
 
-        amend(repo.clone(), id, snapshot, args)?;
+        amend(repo.clone(), id, snapshot, args).await?;
         ui::cli::log!();
     }
 
@@ -127,7 +126,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-fn amend(
+async fn amend(
     repo: Arc<Repository>,
     origin_snapshot_id: &ID,
     snapshot: &mut Snapshot,
@@ -165,29 +164,33 @@ fn amend(
             None,
             progress.clone(),
             progress_reporter.clone(),
-        )?;
+        )
+        .await?;
 
-        repo.flush_and_finalize_pack_saver()?;
+        repo.flush_and_finalize_pack_saver().await?;
         progress_reporter.finalize();
     }
 
     // Save the amended snapshot and delete the old snapshot file
-    let (new_id, _meta_size) = repo.save_file(
-        &SaveID::CalculateID,
-        serde_json::to_string(&snapshot)?.as_bytes(),
-        StorageHint {
-            file_type: ContentIdType::Snapshot,
-            is_metadata: true,
-        },
-        None,
-    )?;
+    let (new_id, _meta_size) = repo
+        .save_file(
+            &SaveID::CalculateID,
+            serde_json::to_string(&snapshot)?.as_bytes(),
+            StorageHint {
+                file_type: ContentIdType::Snapshot,
+                is_metadata: true,
+            },
+            None,
+        )
+        .await?;
 
     // Delete the old snapshot ID if it changed
     // Note: To protect the repo from interruptions, we delete the snapshot only
     // after the new one is saved.
     if new_id != *origin_snapshot_id {
         if !args.keep_old {
-            repo.delete_file(ContentIdType::Snapshot, origin_snapshot_id, None)?;
+            repo.delete_file(ContentIdType::Snapshot, origin_snapshot_id, None)
+                .await?;
         }
 
         ui::cli::log!(

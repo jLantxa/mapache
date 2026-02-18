@@ -151,6 +151,64 @@ impl Metadata {
 }
 
 impl Node {
+    /// Build a `Node` from any path on disk asynchronously.
+    pub async fn from_path_async(path: &Path) -> Result<Self> {
+        let meta = tokio::fs::symlink_metadata(path).await.with_context(|| {
+            format!(
+                "Failed to get symlink metadata for path: {}",
+                path.display()
+            )
+        })?;
+
+        let node_type = get_node_type(&meta)?;
+
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
+
+        let mut node = Self {
+            name,
+            node_type,
+            metadata: Metadata::from_fs(&meta),
+            ..Default::default()
+        };
+
+        if node.is_symlink() {
+            node.populate_symlink_info_async(path).await?;
+        }
+
+        Ok(node)
+    }
+
+    async fn populate_symlink_info_async(&mut self, path: &Path) -> Result<()> {
+        let target = tokio::fs::read_link(path)
+            .await
+            .with_context(|| format!("Failed to read symlink target for: {}", path.display()))?;
+
+        let mut info = SymlinkInfo {
+            target_path: target.clone(),
+            target_type: None,
+        };
+
+        // Cross-Platform Support: Windows requires knowing if the target is a dir.
+        // We probe the target type only if it exists.
+        if let Some(parent) = path.parent() {
+            let full_target_path = parent.join(&target);
+            if let Ok(target_meta) = tokio::fs::metadata(&full_target_path).await {
+                info.target_type = Some(get_node_type(&target_meta).with_context(|| {
+                    format!(
+                        "Failed to resolve target type for symlink: {}",
+                        full_target_path.display()
+                    )
+                })?);
+            }
+        }
+
+        self.symlink_info = Some(info);
+        Ok(())
+    }
+
     /// Build a `Node` from any path on disk.
     pub fn from_path(path: &Path) -> Result<Self> {
         let meta = std::fs::symlink_metadata(path).with_context(|| {
@@ -181,15 +239,15 @@ impl Node {
         Ok(node)
     }
 
-    pub fn from_dir_entry(path: &Path, e: &std::fs::DirEntry) -> Result<Self> {
+    pub async fn from_dir_entry(path: &Path, e: &tokio::fs::DirEntry) -> Result<Self> {
         let ft = e
             .file_type()
+            .await
             .with_context(|| format!("Failed to get file type for entry: {}", path.display()))?;
 
         // Name is cheap: file_name is already an OsString
         let name = e.file_name().to_string_lossy().into_owned();
 
-        // Determine node_type without extra syscalls
         let node_type = if ft.is_dir() {
             NodeType::Directory
         } else if ft.is_file() {
@@ -219,14 +277,15 @@ impl Node {
             )
         };
 
-        // Metadata:
-        // - For non-symlinks, DirEntry::metadata is usually the best option.
-        // - For symlinks, keep same semantics as Node::from_path: symlink_metadata.
+        // Metadata semantics:
+        // - symlink -> symlink_metadata
+        // - otherwise -> entry.metadata
         let meta = if node_type == NodeType::Symlink {
-            std::fs::symlink_metadata(path)
+            tokio::fs::symlink_metadata(path)
+                .await
                 .with_context(|| format!("Failed to get symlink metadata: {}", path.display()))?
         } else {
-            e.metadata().with_context(|| {
+            e.metadata().await.with_context(|| {
                 format!(
                     "Failed to get metadata for directory entry: {}",
                     path.display()

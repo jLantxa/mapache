@@ -18,7 +18,7 @@ pub struct CmdArgs {
     pub force: bool,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -29,13 +29,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     let (repo, _) =
-        Repository::try_open_unlocked(auth.as_ref(), global_args.key.as_ref(), backend, config)?;
+        Repository::try_open_unlocked(auth.as_ref(), global_args.key.as_ref(), backend, config)
+            .await?;
 
-    let locks = repo.get_locks()?;
+    let locks = repo.get_locks().await?;
     let mut num_deleted_locks = 0;
     for lock in locks {
         if args.force || lock.is_expired() {
-            repo.delete_file(ContentIdType::Lock, lock.id(), None)?;
+            repo.delete_file(ContentIdType::Lock, lock.id(), None)
+                .await?;
             num_deleted_locks += 1;
         }
     }

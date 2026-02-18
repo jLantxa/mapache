@@ -7,8 +7,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ssh2::{RenameFlags, Session, Sftp};
+use tokio::task;
 
 use crate::{
     backend::{Handle, set_readonly_mode},
@@ -16,7 +18,7 @@ use crate::{
     ui,
 };
 
-use super::StorageBackend;
+use super::{NodeAttr, StorageBackend};
 
 /// Maximum number of concurrent SSH sessions to maintain in the pool.
 const MAX_CONNECTION_POOL_SIZE: usize = 5;
@@ -46,6 +48,7 @@ impl SftpConnection {
     pub fn new(username: &str, host: &str, port: u16, auth_method: &AuthMethod) -> Result<Self> {
         let addr = format!("{host}:{port}");
         let tcp = TcpStream::connect(&addr).context("Failed to connect to SFTP server")?;
+
         let mut session = Session::new().context("Failed to create SSH session")?;
         session.set_tcp_stream(tcp);
         session
@@ -54,7 +57,7 @@ impl SftpConnection {
 
         Self::authenticate(&session, username, auth_method)?;
 
-        // Enable keepalive to prevent timeouts during long-running backups
+        // Keepalive to prevent timeouts during long-running backups
         session.set_keepalive(true, 30);
         session.set_compress(false);
 
@@ -65,14 +68,8 @@ impl SftpConnection {
         })
     }
 
-    /// Borrows the SFTP client from the connection.
     pub fn sftp(&self) -> &Sftp {
         &self.sftp
-    }
-
-    /// Borrows the SFTP client mutably from the connection.
-    pub fn sftp_mut(&mut self) -> &mut Sftp {
-        &mut self.sftp
     }
 
     fn authenticate(session: &Session, username: &str, auth_method: &AuthMethod) -> Result<()> {
@@ -97,16 +94,12 @@ impl SftpConnection {
 }
 
 /// A thread-safe pool of SFTP connections.
-///
-/// Uses a bounded channel to distribute connections to worker threads.
-/// This prevents the overhead of re-authenticating for every file operation.
 pub struct SftpConnectionPool {
     sender: Sender<SftpConnection>,
     receiver: Receiver<SftpConnection>,
 }
 
 impl SftpConnectionPool {
-    /// Initializes the pool by attempting to open `capacity` connections.
     pub fn new(
         capacity: usize,
         username: String,
@@ -118,13 +111,11 @@ impl SftpConnectionPool {
 
         const MAX_CONNECTION_RETRIES: u32 = 3;
         let mut connection_retry_count = 0;
+
         for _ in 0..capacity {
             match SftpConnection::new(&username, &host, port, auth_method) {
                 Ok(conn) => connections.push(conn),
                 Err(e) => {
-                    // We could not establish a connection. That could mean that we reached a limit
-                    // on the server side or it was a punctual error. We can try again.
-
                     if connection_retry_count < MAX_CONNECTION_RETRIES {
                         ui::cli::warning!(
                             "Failed to establish SFTP connection: {}. Retrying...",
@@ -139,12 +130,12 @@ impl SftpConnectionPool {
             }
         }
 
-        let num_established_connections = connections.len();
-        if num_established_connections < 1 {
+        let established = connections.len();
+        if established < 1 {
             bail!("Failed to establish SFTP connections");
         }
 
-        let (sender, receiver) = bounded(num_established_connections);
+        let (sender, receiver) = bounded(established);
         for connection in connections {
             sender
                 .send(connection)
@@ -167,7 +158,7 @@ impl SftpConnectionPool {
     }
 }
 
-/// RAII guard that returns an `SftpConnection` to the pool when dropped.
+/// RAII guard that returns an SftpConnection to the pool when dropped.
 pub struct PooledSftpConnection {
     connection: Option<SftpConnection>,
     pool_sender: Sender<SftpConnection>,
@@ -177,13 +168,9 @@ impl std::ops::Deref for PooledSftpConnection {
     type Target = SftpConnection;
 
     fn deref(&self) -> &Self::Target {
-        self.connection.as_ref().unwrap()
-    }
-}
-
-impl std::ops::DerefMut for PooledSftpConnection {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.connection.as_mut().unwrap()
+        self.connection
+            .as_ref()
+            .expect("PooledSftpConnection missing conn")
     }
 }
 
@@ -196,6 +183,8 @@ impl Drop for PooledSftpConnection {
 }
 
 /// Storage backend implementation for SFTP.
+///
+/// Uses blocking ssh2 APIs but offloads work via tokio::task::spawn_blocking.
 pub struct SftpBackend {
     base_path: PathBuf,
     pool: Arc<SftpConnectionPool>,
@@ -221,251 +210,357 @@ impl SftpBackend {
     }
 
     #[inline]
-    fn full_path(&self, path: &Path) -> PathBuf {
-        self.base_path.join(path)
+    fn full_path(base_path: &Path, path: &Path) -> PathBuf {
+        base_path.join(path)
     }
 
-    /// Check existence using `lstat` to avoid following symlinks.
-    fn exists_exact(&self, path: &Path, sftp: &Sftp) -> bool {
-        sftp.lstat(path).is_ok()
+    /// Existence check using lstat (full remote path).
+    fn exists_exact_full(sftp: &Sftp, full_path: &Path) -> bool {
+        sftp.lstat(full_path).is_ok()
     }
 
-    /// Recursively ensures a directory path exists on the remote server.
-    fn create_dir_all_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
-        if self.exists_exact(path, sftp) {
-            let metadata = sftp.stat(path)?;
-            if metadata.is_dir() {
+    /// Recursively ensure directory exists (full remote path).
+    fn create_dir_all_full(sftp: &Sftp, full_path: &Path) -> Result<()> {
+        if Self::exists_exact_full(sftp, full_path) {
+            let meta = sftp.stat(full_path)?;
+            if meta.is_dir() {
                 return Ok(());
-            } else {
-                bail!("Path {path:?} exists but is not a directory");
             }
+            bail!("Path {full_path:?} exists but is not a directory");
         }
 
-        if let Some(parent) = path.parent()
-            && parent != Path::new("")
+        if let Some(parent) = full_path.parent()
+            && !parent.as_os_str().is_empty()
         {
-            self.create_dir_all_internal(parent, sftp)?;
+            Self::create_dir_all_full(sftp, parent)?;
         }
 
-        sftp.mkdir(path, 0o755)
-            .with_context(|| format!("Failed to create directory {path:?}' in sftp backend"))
+        sftp.mkdir(full_path, 0o755)
+            .with_context(|| format!("Failed to create directory {full_path:?} in sftp backend"))
     }
 
-    /// Adjusts remote file permissions.
-    /// Used to toggle write access before modification/deletion.
-    fn set_readonly_status(&self, sftp: &Sftp, path: &Path, readonly: bool) -> Result<()> {
-        let full_path = self.full_path(path);
-
-        let mut stat = match sftp.stat(&full_path) {
+    /// Toggle readonly permissions (full remote path).
+    fn set_readonly_status_full(sftp: &Sftp, full_path: &Path, readonly: bool) -> Result<()> {
+        let mut stat = match sftp.stat(full_path) {
             Ok(s) => s,
-            Err(_) if !readonly => {
-                // If we are trying to make it writable and it doesn't exist, we're done.
-                return Ok(());
-            }
+            Err(_) if !readonly => return Ok(()), // making writable and doesn't exist => ok
             Err(e) => return Err(anyhow!(e)).context("Failed to stat remote file"),
         };
 
         let is_dir = stat.is_dir();
         if let Some(perm) = stat.perm.as_mut() {
             *perm = set_readonly_mode(*perm, readonly, is_dir);
-            sftp.setstat(&full_path, stat)?;
+            sftp.setstat(full_path, stat)?;
         }
-
         Ok(())
     }
 
-    /// Internal recursive removal logic.
-    fn remove_recursively_internal(&self, path: &Path, sftp: &Sftp) -> Result<()> {
-        if !self.exists_exact(path, sftp) {
+    /// Recursive removal (full remote path).
+    fn remove_recursively_full(sftp: &Sftp, full_path: &Path) -> Result<()> {
+        if !Self::exists_exact_full(sftp, full_path) {
             return Ok(());
         }
 
-        // Ensure the item itself is writable before we try to remove it
-        let _ = self.set_readonly_status(sftp, path, false);
+        let _ = Self::set_readonly_status_full(sftp, full_path, false);
 
-        let metadata = sftp.lstat(path)?;
-        if metadata.is_file() {
+        let meta = sftp.lstat(full_path)?;
+        if meta.is_file() {
             return sftp
-                .unlink(path)
-                .with_context(|| format!("Failed to remove file {path:?}' in sftp backend"));
+                .unlink(full_path)
+                .with_context(|| format!("Failed to remove file {full_path:?} in sftp backend"));
         }
 
-        if metadata.is_dir() {
-            let entries = sftp.readdir(path)?;
-            for (entry_path, _) in entries {
-                self.remove_recursively_internal(&entry_path, sftp)?;
+        if meta.is_dir() {
+            let entries = sftp.readdir(full_path)?;
+            for (p, _) in entries {
+                if p.file_name().is_some_and(|n| n == "." || n == "..") {
+                    continue;
+                }
+                Self::remove_recursively_full(sftp, &p)?;
             }
-            return sftp
-                .rmdir(path)
-                .with_context(|| format!("Failed to remove directory {path:?}' in sftp backend"));
+            return sftp.rmdir(full_path).with_context(|| {
+                format!("Failed to remove directory {full_path:?} in sftp backend")
+            });
         }
 
-        sftp.unlink(path)
-            .or_else(|_| sftp.rmdir(path))
+        // Fallback for other node types
+        sftp.unlink(full_path)
+            .or_else(|_| sftp.rmdir(full_path))
             .map_err(|e| anyhow!(e))
     }
 
-    /// Internal rename logic.
-    /// Handles overwriting destination and permission toggling.
-    fn rename_internal(&self, sftp: &Sftp, from: &Path, to: &Path) -> Result<()> {
-        let full_from = self.full_path(from);
-        let full_to = self.full_path(to);
+    /// Rename with overwrite + permission toggling (full remote paths).
+    fn rename_full(sftp: &Sftp, full_from: &Path, full_to: &Path) -> Result<()> {
+        let _ = Self::set_readonly_status_full(sftp, full_from, false);
 
-        let _ = self.set_readonly_status(sftp, from, false);
-
-        if sftp.stat(&full_to).is_ok() {
-            let _ = self.set_readonly_status(sftp, to, false);
-            let _ = sftp.unlink(&full_to);
+        if sftp.stat(full_to).is_ok() {
+            let _ = Self::set_readonly_status_full(sftp, full_to, false);
+            let _ = sftp.unlink(full_to);
         }
 
-        sftp.rename(&full_from, &full_to, Some(RenameFlags::all()))?;
-        let _ = self.set_readonly_status(sftp, to, true);
+        sftp.rename(full_from, full_to, Some(RenameFlags::all()))?;
+        let _ = Self::set_readonly_status_full(sftp, full_to, true);
 
         Ok(())
     }
 }
 
+#[async_trait]
 impl StorageBackend for SftpBackend {
-    fn create(&self) -> Result<()> {
-        let conn = self.pool.get()?;
-        self.create_dir_all_internal(&self.base_path, conn.sftp())
-    }
+    async fn create(&self) -> Result<()> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
 
-    /// Reads a range of bytes from a remote file.
-    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
-        let path = handle.path;
-        let full_path = self.full_path(path);
-
-        let conn = self.pool.get()?;
-        let sftp = conn.sftp();
-        let mut file = sftp
-            .open(&full_path)
-            .with_context(|| format!("Failed to open file {path:?} in sftp backend for reading"))?;
-
-        let seek_from = if offset >= 0 {
-            SeekFrom::Start(offset as u64)
-        } else {
-            SeekFrom::End(offset as i64)
-        };
-
-        file.seek(seek_from)?;
-
-        let mut contents = Vec::new();
-        if length == 0 {
-            file.read_to_end(&mut contents)
-                .with_context(|| format!("Failed to read to end of sftp file {path:?}"))?;
-        } else {
-            let mut limited_reader = file.take(length as u64);
-            limited_reader.read_to_end(&mut contents).with_context(|| {
-                format!("Failed to read {length} bytes from sftp file {path:?}")
-            })?;
-        }
-
-        Ok(contents)
-    }
-
-    /// Atomic-style write: writes to a temporary file then renames.
-    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
-        let path = handle.path;
-        let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
-        let full_tmp_path = self.full_path(&tmp_path);
-        let conn = self.pool.get()?;
-        let sftp = conn.sftp();
-
-        let mut file = sftp.create(&full_tmp_path)?;
-
-        if file.write_all(contents).is_err() {
-            // Auto-create parent if it doesn't exist on first write failure
-            if let Some(parent) = path.parent() {
-                let _ = self.create_dir(parent);
-            }
-            file.write_all(contents)?;
-        }
-
-        let full_path = self.full_path(path);
-        let _ = self.set_readonly_status(sftp, &full_path, false);
-
-        self.rename_internal(sftp, &tmp_path, path)
-    }
-
-    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let conn = self.pool.get()?;
-        let sftp = conn.sftp();
-        self.rename_internal(sftp, from, to)
-            .with_context(|| format!("Failed to rename {from:?}' to {to:?}' in sftp backend"))
-    }
-
-    fn create_dir(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-        let conn = self.pool.get()?;
-        self.create_dir_all_internal(&full_path, conn.sftp())
-    }
-
-    fn remove(&self, path: &Path) -> Result<()> {
-        let full_path = self.full_path(path);
-        let conn = self.pool.get()?;
-        self.remove_recursively_internal(&full_path, conn.sftp())
-    }
-
-    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        let full_path = self.full_path(path);
-        let conn = self.pool.get()?;
-        let entries = conn
-            .sftp()
-            .readdir(full_path)
-            .with_context(|| format!("Could not list directory {path:?}' in sftp backend"))?;
-
-        Ok(entries
-            .iter()
-            .map(|(p, _)| p.strip_prefix(&self.base_path).unwrap().to_path_buf())
-            .collect())
-    }
-
-    fn path_exists(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
-        let conn = self.pool.get().unwrap();
-        self.exists_exact(&full_path, conn.sftp())
-    }
-
-    fn is_file(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
-        let conn = self.pool.get().unwrap();
-        conn.sftp()
-            .lstat(&full_path)
-            .map(|s| s.is_file())
-            .unwrap_or(false)
-    }
-
-    fn is_dir(&self, path: &Path) -> bool {
-        let full_path = self.full_path(path);
-        let conn = self.pool.get().unwrap();
-        conn.sftp()
-            .lstat(&full_path)
-            .map(|s| s.is_dir())
-            .unwrap_or(false)
-    }
-
-    /// Fetches file metadata from the remote server.
-    fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
-        let full_path = self.full_path(path);
-        let conn = self.pool.get()?;
-        let meta = conn.sftp().lstat(&full_path)?;
-
-        let to_system_time = |t: u64| {
-            if t == 0 {
-                None
-            } else {
-                Some(UNIX_EPOCH + Duration::from_secs(t))
-            }
-        };
-
-        Ok(super::NodeAttr {
-            size: meta.size,
-            uid: meta.uid,
-            gid: meta.gid,
-            perm: meta.perm,
-            atime: meta.atime.and_then(to_system_time),
-            mtime: meta.mtime.and_then(to_system_time),
+        task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            SftpBackend::create_dir_all_full(conn.sftp(), &base_path)
         })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP create task failed")?
+    }
+
+    async fn path_exists(&self, path: &Path) -> bool {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = match pool.get() {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            SftpBackend::exists_exact_full(conn.sftp(), &full)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = handle.path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = pool.get()?;
+            let sftp = conn.sftp();
+
+            let mut file = sftp.open(&full).with_context(|| {
+                format!("Failed to open file {path:?} in sftp backend for reading")
+            })?;
+
+            let seek_from = if offset >= 0 {
+                SeekFrom::Start(offset as u64)
+            } else {
+                SeekFrom::End(offset as i64)
+            };
+            file.seek(seek_from)?;
+
+            let mut contents = Vec::new();
+            if length == 0 {
+                file.read_to_end(&mut contents)
+                    .with_context(|| format!("Failed to read to end of sftp file {path:?}"))?;
+            } else {
+                let mut limited = file.take(length as u64);
+                limited.read_to_end(&mut contents).with_context(|| {
+                    format!("Failed to read {length} bytes from sftp file {path:?}")
+                })?;
+            }
+
+            Ok(contents)
+        })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP read task failed")?
+    }
+
+    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = handle.path.to_path_buf();
+        let data = contents.to_vec();
+
+        task::spawn_blocking(move || {
+            let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
+
+            let full_tmp = SftpBackend::full_path(&base_path, &tmp_path);
+            let full_dst = SftpBackend::full_path(&base_path, &path);
+
+            let conn = pool.get()?;
+            let sftp = conn.sftp();
+
+            // Ensure parent exists
+            if let Some(parent) = full_tmp.parent() {
+                let _ = SftpBackend::create_dir_all_full(sftp, parent);
+            }
+
+            // Write tmp
+            let mut file = sftp.create(&full_tmp).with_context(|| {
+                format!("Failed to create tmp file {tmp_path:?} in sftp backend")
+            })?;
+            file.write_all(&data).with_context(|| {
+                format!("Failed to write tmp file {tmp_path:?} in sftp backend")
+            })?;
+
+            // Commit tmp -> dst (atomic-ish)
+            let _ = SftpBackend::set_readonly_status_full(sftp, &full_dst, false);
+            SftpBackend::rename_full(sftp, &full_tmp, &full_dst)
+                .with_context(|| format!("Failed to commit tmp write {tmp_path:?} -> {path:?}"))
+        })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP write task failed")?
+    }
+
+    async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let from = from.to_path_buf();
+        let to = to.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full_from = SftpBackend::full_path(&base_path, &from);
+            let full_to = SftpBackend::full_path(&base_path, &to);
+
+            let conn = pool.get()?;
+            SftpBackend::rename_full(conn.sftp(), &full_from, &full_to)
+                .with_context(|| format!("Failed to rename {from:?} -> {to:?} in sftp backend"))
+        })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP rename task failed")?
+    }
+
+    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = pool.get()?;
+            let entries = conn
+                .sftp()
+                .readdir(&full)
+                .with_context(|| format!("Could not list directory {path:?} in sftp backend"))?;
+
+            let mut out = Vec::new();
+            for (p, _) in entries {
+                if p.file_name().is_some_and(|n| n == "." || n == "..") {
+                    continue;
+                }
+                if let Ok(rel) = p.strip_prefix(&base_path) {
+                    out.push(rel.to_path_buf());
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP list_dir task failed")?
+    }
+
+    async fn create_dir(&self, path: &Path) -> Result<()> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = pool.get()?;
+            SftpBackend::create_dir_all_full(conn.sftp(), &full)
+        })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP create_dir task failed")?
+    }
+
+    async fn remove(&self, file_path: &Path) -> Result<()> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = file_path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = pool.get()?;
+            SftpBackend::remove_recursively_full(conn.sftp(), &full)
+        })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP remove task failed")?
+    }
+
+    async fn is_file(&self, path: &Path) -> bool {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = match pool.get() {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            conn.sftp()
+                .lstat(&full)
+                .map(|s| s.is_file())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn is_dir(&self, path: &Path) -> bool {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = match pool.get() {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            conn.sftp()
+                .lstat(&full)
+                .map(|s| s.is_dir())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
+        let base_path = self.base_path.clone();
+        let pool = self.pool.clone();
+        let path = path.to_path_buf();
+
+        task::spawn_blocking(move || {
+            let full = SftpBackend::full_path(&base_path, &path);
+            let conn = pool.get()?;
+            let meta = conn.sftp().lstat(&full)?;
+
+            let to_system_time = |t: u64| {
+                if t == 0 {
+                    None
+                } else {
+                    Some(UNIX_EPOCH + Duration::from_secs(t))
+                }
+            };
+
+            Ok(NodeAttr {
+                size: meta.size,
+                uid: meta.uid,
+                gid: meta.gid,
+                perm: meta.perm,
+                atime: meta.atime.and_then(to_system_time),
+                mtime: meta.mtime.and_then(to_system_time),
+            })
+        })
+        .await
+        .map_err(|e| anyhow!(e))
+        .context("SFTP lstat task failed")?
     }
 }

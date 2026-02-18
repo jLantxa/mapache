@@ -4,14 +4,17 @@ pub mod vars;
 
 use std::{
     collections::HashMap,
+    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
+use futures::StreamExt;
 use num_enum::FromPrimitive;
 use rand::{TryRng, rngs::SysRng};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tokio::io::AsyncReadExt;
 
 use crate::{
     archiver::{
@@ -188,17 +191,18 @@ impl std::fmt::Display for ContentIdType {
 }
 
 /// Finds a terminal node in a snapshot tree by name or glob.
-pub fn find_in_snapshot(
+pub async fn find_in_snapshot(
     repo: Arc<Repository>,
     snapshot: &Snapshot,
     pattern: &str,
 ) -> Result<Vec<(PathBuf, Node)>> {
     let root_tree_id = snapshot.tree;
     let glob_rule = GlobRule::new(Path::new(pattern));
-    let stream = SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None)?;
+    let mut stream =
+        SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None).await?;
     let mut results = Vec::new();
 
-    for res in stream {
+    while let Some(res) = stream.next().await {
         let (node_path, stream_node) = res?;
 
         if glob_rule.is_strict_match(&node_path) {
@@ -209,9 +213,20 @@ pub fn find_in_snapshot(
     Ok(results)
 }
 
-/// Rewrite a snapshot tree. This function can remove exclude paths or rechunk
-/// files from already existing snapshots.
-pub(crate) fn rewrite_snapshot_tree(
+/// A bridge to convert AsyncRead into std::io::Read by blocking the thread.
+/// This must only be used inside spawn_blocking.
+struct BlockingBridge<R: tokio::io::AsyncRead + Unpin> {
+    inner: R,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> Read for BlockingBridge<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // Use the futures executor to block on the async read operation
+        futures::executor::block_on(async { self.inner.read(buf).await })
+    }
+}
+
+pub(crate) async fn rewrite_snapshot_tree(
     repo: Arc<Repository>,
     snapshot: &mut Snapshot,
     excludes: Option<&Vec<PathBuf>>,
@@ -220,45 +235,44 @@ pub(crate) fn rewrite_snapshot_tree(
     progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
 ) -> Result<()> {
-    // Cannonicalize the exclude paths and filter the source paths using the excludes
-    // This is a simulated cannonical path, since we don't refer to a path in the host,
-    // but rather a relative path in the snapshot tree. We can just append the relative path
-    // to the snapshot root.
-    let cannonical_excludes: Option<Vec<PathBuf>> = if let Some(exclude_paths) = excludes {
-        let mut canonicalized_vec = Vec::new();
-        for path in exclude_paths {
-            canonicalized_vec.push(snapshot.root.join(path));
-        }
-        Some(canonicalized_vec)
-    } else {
-        None
-    };
+    // Canonicalize exclude paths relative to snapshot root
+    let cannonical_excludes: Option<Vec<PathBuf>> = excludes.map(|exclude_paths| {
+        exclude_paths
+            .iter()
+            .map(|path| snapshot.root.join(path))
+            .collect()
+    });
 
     let path_filter = PathFilter::new(None, cannonical_excludes.clone());
 
+    // 2Filter paths to retain only those allowed
     let mut paths = snapshot.paths.clone();
     paths.retain(|p| path_filter.allow(p));
 
     let mut tree_serializer = TreeSerializer::new(repo.clone(), snapshot.root.clone(), &paths);
-    let node_stream = SerializedNodeStream::new(
+
+    // Initialize the stream of nodes from the existing snapshot
+    let mut node_stream = SerializedNodeStream::new(
         repo.clone(),
         Some(snapshot.tree),
         snapshot.root.clone(),
         None,
         cannonical_excludes,
-    )?;
+    )
+    .await?;
 
     snapshot.summary.processed_items_count = 0;
     snapshot.summary.processed_bytes = 0;
 
-    let mut encoding_context = repo.get_encoding_context()?;
+    // Iterate through the nodes in the tree
+    while let Some(res) = node_stream.next().await {
+        let (path, mut stream_node) = res?;
 
-    for (path, mut stream_node) in node_stream.flatten() {
         progress_reporter.processing_node(path.clone(), NodeDiff::Unchanged);
 
         if stream_node.node.is_file() {
             if !rechunk {
-                // If not rechunking, update central progress and notify UI
+                // Skip rechunking: just update progress
                 progress.processed_bytes(stream_node.node.metadata.size);
                 progress_reporter.processed_bytes(stream_node.node.metadata.size);
             } else {
@@ -266,63 +280,79 @@ pub(crate) fn rewrite_snapshot_tree(
                     .node
                     .blobs
                     .as_ref()
-                    .context("File Node must have contents (even if empty)")?;
+                    .context("File Node must have contents")?;
 
-                let mut rechunk_node = |node: &Node| -> Result<Vec<ID>> {
-                    let mut blob_data_reader = SerializedNodeDataReader::new(repo.clone(), node)?;
-                    chunk_and_store_file(
-                        repo.clone(),
-                        &mut encoding_context,
-                        &mut blob_data_reader,
-                        &stream_node.node,
-                        progress.as_ref(),
-                        progress_reporter.as_ref(),
-                    )
-                };
-
+                // Check if this file (set of blobs) has already been rechunked
                 let rechunked_blobs = if let Some(map) = rechunked_blobs_list_map.as_deref_mut() {
-                    match map.entry(blobs.clone()) {
-                        std::collections::hash_map::Entry::Occupied(entry) => {
-                            // The file was already rechunked, so we can skip.
-                            progress.processed_bytes(stream_node.node.metadata.size);
-                            progress_reporter.processed_bytes(stream_node.node.metadata.size);
-                            entry.get().clone()
-                        }
-                        std::collections::hash_map::Entry::Vacant(entry) => {
-                            // The file was not rechunked yet, so we do it and insert the lists to the map.
-                            let rechunked = rechunk_node(&stream_node.node)?;
-                            entry.insert(rechunked.clone());
-                            rechunked
-                        }
+                    if let Some(rechunked) = map.get(blobs) {
+                        progress.processed_bytes(stream_node.node.metadata.size);
+                        progress_reporter.processed_bytes(stream_node.node.metadata.size);
+                        rechunked.clone()
+                    } else {
+                        let rechunked = run_rechunk_task(
+                            repo.clone(),
+                            stream_node.node.clone(),
+                            progress.clone(),
+                            progress_reporter.clone(),
+                        )
+                        .await?;
+                        map.insert(blobs.clone(), rechunked.clone());
+                        rechunked
                     }
                 } else {
-                    rechunk_node(&stream_node.node)?
+                    run_rechunk_task(
+                        repo.clone(),
+                        stream_node.node.clone(),
+                        progress.clone(),
+                        progress_reporter.clone(),
+                    )
+                    .await?
                 };
 
-                // Finally rewrite blob list
+                // Update the node with the new rechunked blob IDs
                 stream_node.node.blobs = Some(rechunked_blobs);
-            } // Finished rechunking
+            }
 
             snapshot.summary.processed_bytes += stream_node.node.metadata.size;
         }
 
-        // The path is not excluded, so we add the node to the pending trees map.
-
-        tree_serializer.handle_processed_item((&path, stream_node), &mut encoding_context)?;
+        tree_serializer
+            .handle_processed_item((&path, stream_node))
+            .await?;
 
         progress_reporter.processed_node(path, NodeDiff::Unchanged);
         snapshot.summary.processed_items_count += 1;
     }
 
-    tree_serializer.finalize_root(&mut encoding_context)?;
-
-    let root_tree_id = tree_serializer.root_tree();
-    match root_tree_id {
-        Some(new_tree_id) => snapshot.tree = new_tree_id,
-        None => bail!("Failed to serialize new snapshot tree"),
-    }
+    tree_serializer.finalize_root().await?;
+    snapshot.tree = tree_serializer
+        .root_tree()
+        .context("Failed to serialize root tree")?;
 
     Ok(())
+}
+
+/// Bridge helper to run the synchronous chunker in a background thread pool.
+async fn run_rechunk_task(
+    repo: Arc<Repository>,
+    node: Node,
+    progress: Arc<SnapshotProgress>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
+) -> Result<Vec<ID>> {
+    let reader = SerializedNodeDataReader::new(repo.clone(), &node).await?;
+    let sync_reader = BlockingBridge { inner: reader };
+
+    // Threads in spawn_blocking need their own encoding context
+    let mut _thread_context = repo.get_encoding_context()?;
+
+    chunk_and_store_file(
+        repo,
+        &node,
+        sync_reader,
+        progress.as_ref(),
+        progress_reporter.as_ref(),
+    )
+    .await
 }
 
 pub enum SaveID {

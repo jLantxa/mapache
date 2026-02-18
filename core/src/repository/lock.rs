@@ -131,38 +131,44 @@ impl LockHandle {
     }
 
     fn start_refresh_handler(&self) {
-        let repo_clone = self.repo.clone();
-        let lock_clone = self.lock.clone();
-        let alive_flag_clone = self.alive_flag.clone();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(LOCK_REFRESH_PERIOD);
+        let repo = self.repo.clone();
+        let lock = self.lock.clone();
+        let alive_flag = self.alive_flag.clone();
 
-                if !alive_flag_clone.load(Ordering::Relaxed) {
-                    return;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(LOCK_REFRESH_PERIOD).await;
+
+                if !alive_flag.load(Ordering::Relaxed) {
+                    break;
                 }
 
-                if repo_clone.refresh_lock(&lock_clone).is_err() {
-                    ui::cli::warning!("Failed to refresh lock");
+                if let Err(e) = repo.refresh_lock(&lock).await {
+                    ui::cli::warning!("Failed to refresh lock: {}", e);
                 }
             }
         });
     }
 
-    pub fn unlock(&self) {
+    pub async fn unlock(&self) {
         // Changed to &self as it's not strictly a mutable operation
         self.alive_flag.store(false, Ordering::SeqCst);
+
+        let lock_id = *self.lock.lock().id();
 
         // If the lock does not exist or it was "created" by a dry backend,
         // this will fail, but it's OK anyway.
         let _ = self
             .repo
-            .delete_file(ContentIdType::Lock, self.lock.lock().id(), None);
+            .delete_file(ContentIdType::Lock, &lock_id, None)
+            .await;
     }
 }
 
 impl Drop for LockHandle {
     fn drop(&mut self) {
-        self.unlock();
+        futures::executor::block_on(async {
+            self.unlock().await;
+        });
     }
 }

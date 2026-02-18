@@ -21,10 +21,11 @@ pub struct CmdArgs {}
 
 const INIT_MSG: &str = "init";
 
-pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let manifest = Repository::init(auth.as_ref(), global_args.key.as_ref(), backend.clone())?;
+    let manifest =
+        Repository::init(auth.as_ref(), global_args.key.as_ref(), backend.clone()).await?;
 
     if !global_args.json {
         ui::cli::log!(

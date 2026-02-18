@@ -4,29 +4,28 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
-use crate::{
-    archiver::{self, SnapshotOptions, progress::SnapshotProgress},
-    backend::{StorageHint, new_backend_with_prompt},
-    commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags},
-    fs::{
-        self, calculate_lcp,
-        filter::{PathFilter, normalized_exclude_paths},
-    },
-    mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::{
-        repo::{RepoConfig, Repository},
-        snapshot::{SnapshotPair, SnapshotSummary},
-    },
-    ui::{
-        self,
-        snapshot::{
-            SnapshotProgressReporter, cli::CliSnapshotProgressReporter,
-            json::JsonSnapshotProgressReporter,
-        },
-        table::{Alignment, Table},
-    },
-    utils::{self, size},
+use crate::archiver::{self, SnapshotOptions, progress::SnapshotProgress};
+use crate::backend::{StorageHint, new_backend_with_prompt};
+use crate::commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags};
+use crate::fs::{
+    self, calculate_lcp,
+    filter::{PathFilter, normalized_exclude_paths},
 };
+use crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS;
+use crate::mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN};
+use crate::repository::{
+    repo::{RepoConfig, Repository},
+    snapshot::{SnapshotPair, SnapshotSummary},
+};
+use crate::ui::{
+    self,
+    snapshot::{
+        SnapshotProgressReporter, cli::CliSnapshotProgressReporter,
+        json::JsonSnapshotProgressReporter,
+    },
+    table::{Alignment, Table},
+};
+use crate::utils::{self, size};
 
 use super::{GlobalArgs, UseSnapshot};
 
@@ -72,7 +71,7 @@ pub struct CmdArgs {
     pub parent: UseSnapshot,
 
     /// Number of files to process in parallel.
-    #[clap(long = "readers", default_value_t = mapache::defaults::DEFAULT_SNAPSHOT_READERS)]
+    #[clap(long = "readers", default_value_t = DEFAULT_SNAPSHOT_READERS)]
     pub num_readers: usize,
 
     /// Number of writer threads.
@@ -84,7 +83,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if args.paths.is_empty() {
         bail!("No source paths provided.");
     };
@@ -97,18 +96,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
     let start = Instant::now();
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
     // Get source paths from arguments or readdir root path
     let source_paths = if !args.as_root {
@@ -133,8 +133,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut tags: BTreeSet<String> = parse_tags(Some(&args.tags_str));
     tags.retain(|tag| tag != EMPTY_TAG_MARK);
 
-    // Cannonicalize and deduplicate source paths
-    // Use a BTreeSet to remove duplicate paths and sort them alphabetically.
+    // Canonicalize and deduplicate source paths
     let mut absolute_source_paths = BTreeSet::new();
     for path in &source_paths {
         match fs::get_absolute_normalized_path(path) {
@@ -166,7 +165,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("Full scan");
             None
         }
-        false => match find_use_snapshot(repo.clone(), &args.parent) {
+        false => match find_use_snapshot(repo.clone(), &args.parent).await {
             Ok(Some((id, snapshot))) => {
                 ui::cli::log!(
                     "Using snapshot {} as parent",
@@ -195,21 +194,21 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     // Init cleanup handler
-    let repo_clone = repo.clone();
+    // We pass the reporter to the handler so it can clear the bars and print the message
+    // immediately upon signal reception, instead of waiting for the main thread loop.
     let reporter_clone = progress_reporter.clone();
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
+    let cleanup_handler = CleanupHandler::new_with_callback(move || {
         reporter_clone.finalize();
-        ui::cli::log!("Process interrupted. Cleaning up...");
-
-        let _ = repo_clone.flush_and_finalize_pack_saver();
-        lock_handle_clone.write().unlock();
+        ui::cli::log!(
+            "\n{}",
+            "Process interrupted. Cleaning up...".bold().yellow()
+        );
     })?;
 
     repo.init_pack_saver(args.num_packers)?;
 
     // Process and save new snapshot
-    let mut new_snapshot = archiver::snapshot(
+    let snapshot_result = archiver::snapshot(
         repo.clone(),
         SnapshotOptions {
             absolute_source_paths,
@@ -223,11 +222,26 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         args.num_readers,
         progress.clone(),
         progress_reporter.clone(),
-    )?;
+        cleanup_handler.interrupted.clone(),
+    )
+    .await;
 
     // Flush repo and finalize pack saver
-    let repo_stats: crate::repository::repo::RepoStatsSnapshot =
-        repo.flush_and_finalize_pack_saver()?;
+    let repo_stats = repo.flush_and_finalize_pack_saver().await?;
+
+    // Handle potential interruption or error
+    let mut new_snapshot = match snapshot_result {
+        Ok(s) => s,
+        Err(e) => {
+            if cleanup_handler.is_interrupted() {
+                return Ok(());
+            }
+
+            progress_reporter.finalize();
+            return Err(e);
+        }
+    };
+
     let snapshot_report_summary = progress.summary();
     let snapshot_report_summary_clone = snapshot_report_summary.clone();
 
@@ -251,23 +265,24 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
 
     if should_save_snapshot {
-        let (new_snapshot_id, new_snapshot_size) = repo.save_file(
-            &mapache::SaveID::CalculateID,
-            serde_json::to_string(&new_snapshot)?.as_bytes(),
-            StorageHint {
-                is_metadata: true,
-                file_type: ContentIdType::Snapshot,
-            },
-            None,
-        )?;
+        let (new_snapshot_id, new_snapshot_size) = repo
+            .save_file(
+                &mapache::SaveID::CalculateID,
+                serde_json::to_string(&new_snapshot)?.as_bytes(),
+                StorageHint {
+                    is_metadata: true,
+                    file_type: ContentIdType::Snapshot,
+                },
+                None,
+            )
+            .await?;
         progress_reporter.finalize();
 
-        // Add the size of the snapshot file and index for display (only after saving the snapshot).
+        // Add the size of the snapshot file and index for display
         new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw + repo_stats.index.raw;
         new_snapshot.summary.meta_encoded_bytes +=
             new_snapshot_size.encoded + repo_stats.index.encoded;
 
-        // Emit snapshot_complete for JSON output (after snapshot is saved)
         if global_args.json {
             #[derive(serde::Serialize)]
             struct SnapshotCompleteMsg {
@@ -292,12 +307,10 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             );
         }
 
-        // Final report
         ui::cli::log!();
         show_final_report(&new_snapshot_id, &new_snapshot.summary, args);
     } else {
         progress_reporter.finalize();
-
         ui::cli::log!("No changes detected since parent. Skipping snapshot.");
     }
 

@@ -34,7 +34,7 @@ pub enum Object {
     Lock(String),
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -43,21 +43,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
     match &args.object {
         Object::Manifest => {
@@ -66,55 +64,60 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         }
         Object::Pack(prefix) => {
-            let (id, _) = repo.find(ContentIdType::Pack, prefix)?;
-            let object = repo.load_pack(&id).context("Failed to load object")?;
+            let (id, _) = repo.find(ContentIdType::Pack, prefix).await?;
+            let object = repo.load_pack(&id).await.context("Failed to load object")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&object)?);
             Ok(())
         }
         Object::Tree(prefix) => {
             let index = repo.index();
-            let id = match index.search_prefix(prefix)? {
+            let id = match index.search_prefix(prefix).await? {
                 Some(val) => val,
                 None => bail!("No tree blobs found with prefix {prefix}"),
             };
-            let tree = repo.load_blob(&id).context("Failed to load tree blob")?;
+            let tree = repo
+                .load_blob(&id)
+                .await
+                .context("Failed to load tree blob")?;
+            println!("{}", String::from_utf8(tree.clone()).unwrap());
             let tree: Tree = serde_json::from_slice(&tree)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&tree)?);
             Ok(())
         }
         Object::Blob(prefix) => {
             let index = repo.index();
-            let id = match index.search_prefix(prefix)? {
+            let id = match index.search_prefix(prefix).await? {
                 Some(val) => val,
                 None => bail!("No blobs found with prefix {prefix}"),
             };
-            let blob = repo.load_blob(&id).context("Failed to load blob")?;
+            let blob = repo.load_blob(&id).await.context("Failed to load blob")?;
             ui::cli::log!("{}", String::from_utf8(blob)?);
             Ok(())
         }
         Object::Index(prefix) => {
-            let (id, _) = repo.find(ContentIdType::Index, prefix)?;
-            let index = repo.load_index(&id).context("Failed to load index")?;
+            let (id, _) = repo.find(ContentIdType::Index, prefix).await?;
+            let index = repo.load_index(&id).await.context("Failed to load index")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&index)?);
             Ok(())
         }
         Object::Key(prefix) => {
-            let (id, _) = repo.find(ContentIdType::Key, prefix)?;
-            let key = repo.load_key(&id).context("Failed to load key")?;
+            let (id, _) = repo.find(ContentIdType::Key, prefix).await?;
+            let key = repo.load_key(&id).await.context("Failed to load key")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&key)?);
             Ok(())
         }
         Object::Snapshot(prefix) => {
-            let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
             let snapshot = repo
                 .load_snapshot(&id, None)
+                .await
                 .context("Failed to load snapshot")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&snapshot)?);
             Ok(())
         }
         Object::Lock(prefix) => {
-            let (id, _) = repo.find(ContentIdType::Lock, prefix)?;
-            let lock = repo.load_lock(&id)?;
+            let (id, _) = repo.find(ContentIdType::Lock, prefix).await?;
+            let lock = repo.load_lock(&id).await.context("Failed to load lock")?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&lock)?);
             Ok(())
         }

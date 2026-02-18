@@ -4,8 +4,8 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
+use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -58,7 +58,7 @@ impl VerifyStats {
     }
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend_options = global_args.backend_options(false);
     let backend_arc = new_backend_with_prompt(backend_options)?;
@@ -78,27 +78,24 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     // Open repository
-    let (repo, secure_storage, lock_handle) = Repository::try_open_with_lock(
+    let (repo, secure_storage, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend_arc.clone(),
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    // Ensure unlock on panic/drop
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
     let start = Instant::now();
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
     let stats = VerifyStats::new();
-    let packs = repo.list_packs()?;
+    let packs = repo.list_packs().await?;
     let mut physical_failed_early = false;
 
     // --------------------------------
@@ -122,54 +119,62 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         bar.set_draw_target(default_bar_draw_target());
         bar.set_style(style);
 
-        let repo_ref = repo.as_ref();
-        let backend_ref = backend_arc.as_ref();
-        let secure_ref = secure_storage.as_ref();
-
-        // Atomic flag to stop scheduling new work across threads if fail_early is set
+        // Atomic flag to stop scheduling new work if fail_early is set
         let stop_flag = AtomicBool::new(false);
 
-        packs.par_iter().for_each(|pack_id| {
-            // Check if another thread triggered fail_early
-            if stop_flag.load(Ordering::Relaxed) {
-                return;
-            }
+        // Async stream replaces Rayon par_iter to allow .await inside verification
+        futures::stream::iter(packs.iter())
+            .take_while(|_| futures::future::ready(!stop_flag.load(Ordering::Relaxed)))
+            .map(|pack_id| {
+                let repo = repo.clone();
+                let backend = backend_arc.clone();
+                let secure = secure_storage.clone();
+                let bar = bar.clone();
+                let stats = &stats;
+                let stop_flag = &stop_flag;
 
-            match verify_pack(repo_ref, backend_ref, secure_ref, pack_id) {
-                Ok(pack_stats) => {
-                    stats.packs_processed.fetch_add(1, Ordering::Relaxed);
-                    stats
-                        .blobs_verified
-                        .fetch_add(pack_stats.verified_blobs, Ordering::Relaxed);
-                    stats
-                        .blobs_dangling
-                        .fetch_add(pack_stats.dangling, Ordering::Relaxed);
-                }
-                Err(e) => {
-                    bar.suspend(|| {
-                        ui::cli::error!("Pack {} CORRUPT: {}", pack_id, e);
-                    });
-                    stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    match verify_pack(repo.as_ref(), backend.as_ref(), secure.as_ref(), pack_id)
+                        .await
+                    {
+                        Ok(pack_stats) => {
+                            stats.packs_processed.fetch_add(1, Ordering::Relaxed);
+                            stats
+                                .blobs_verified
+                                .fetch_add(pack_stats.verified_blobs, Ordering::Relaxed);
+                            stats
+                                .blobs_dangling
+                                .fetch_add(pack_stats.dangling, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            bar.suspend(|| {
+                                ui::cli::error!("Pack {} CORRUPT: {}", pack_id, e);
+                            });
+                            stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
 
-                    if args.fail_early {
-                        stop_flag.store(true, Ordering::Relaxed);
+                            if args.fail_early {
+                                stop_flag.store(true, Ordering::Relaxed);
+                            }
+                        }
                     }
-                }
-            }
 
-            // Update bar message
-            let corrupt = stats.packs_corrupt.load(Ordering::Relaxed);
-            if corrupt > 0 {
-                bar.set_message(
-                    utils::format_count(corrupt, "ERROR", "ERRORS")
-                        .red()
-                        .to_string(),
-                );
-            } else {
-                bar.set_message("OK".to_string());
-            }
-            bar.inc(1);
-        });
+                    // Update bar message
+                    let corrupt = stats.packs_corrupt.load(Ordering::Relaxed);
+                    if corrupt > 0 {
+                        bar.set_message(
+                            utils::format_count(corrupt, "ERROR", "ERRORS")
+                                .red()
+                                .to_string(),
+                        );
+                    } else {
+                        bar.set_message("OK".to_string());
+                    }
+                    bar.inc(1);
+                }
+            })
+            .buffer_unordered(8)
+            .collect::<()>()
+            .await;
 
         bar.finish();
         physical_failed_early = stop_flag.load(Ordering::Relaxed);
@@ -203,18 +208,19 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if !physical_failed_early || !args.fail_early {
         ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
-        let snapshot_stream = SnapshotStream::new(repo.clone())?;
-        let snapshots: Vec<_> = snapshot_stream.collect();
-        num_snapshots = snapshots.len();
+        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        num_snapshots = snapshot_stream.len();
+        let mut i = 0;
 
-        for (i, (snapshot_id, _)) in snapshots.iter().enumerate() {
+        // Using while let to consume the stream without collecting into a Vec
+        while let Some((snapshot_id, _)) = snapshot_stream.next().await {
             let msg = format!(
                 "{} {}",
                 snapshot_id.to_short_hex(12).bold().yellow(),
                 format!("({}/{})", i + 1, num_snapshots).dimmed()
             );
 
-            match verify_snapshot_refs(repo.clone(), snapshot_id, &packs) {
+            match verify_snapshot_refs(repo.clone(), &snapshot_id, &packs).await {
                 Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
                 Err(e) => {
                     ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
@@ -228,6 +234,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                 }
             }
+            i += 1;
         }
     }
 

@@ -160,7 +160,7 @@ impl Chunker {
 
     /// Returns a stream of the chunks of a Read trait object.
     pub fn stream<R: Read>(&self, source: R) -> ChunkStream<'_, R> {
-        ChunkStream::new(source, self)
+        ChunkStream::new(source, self, self.max_size)
     }
 }
 
@@ -182,11 +182,11 @@ pub struct ChunkStream<'a, R: Read> {
 }
 
 impl<'a, R: Read> ChunkStream<'a, R> {
-    fn new(source: R, chunker: &'a Chunker) -> Self {
+    pub fn new(source: R, chunker: &'a Chunker, initial_capacity: usize) -> Self {
         Self {
             chunker,
             source,
-            buffer: Vec::with_capacity(chunker.max_size),
+            buffer: Vec::with_capacity(initial_capacity.min(chunker.max_size)),
             global_offset: 0,
         }
     }

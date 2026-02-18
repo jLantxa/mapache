@@ -36,7 +36,7 @@ pub struct CmdArgs {
     pub dst_ssh_privatekey: Option<PathBuf>,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if global_args.repo == args.target {
         ui::cli::warning!("The repo and target backend URLs are the same");
     }
@@ -44,7 +44,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false))?;
 
-    let (_repo, _secure_storage, lock_handle) = Repository::try_open_with_lock(
+    let (_repo, _secure_storage, _lock_handle) = Repository::try_open_with_lock(
         src_auth.as_ref(),
         global_args.key.as_ref(),
         src_backend.clone(),
@@ -55,7 +55,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
         true,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.target.clone(),
@@ -63,16 +64,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_privatekey: args.dst_ssh_privatekey.clone(),
         dry_backend: false,
     })?;
-    dst_backend.create()?; // Create the backend to create the directory if it doesn't exist.
+    dst_backend.create().await?; // Create the backend to create the directory if it doesn't exist.
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
     let start = Instant::now();
 
-    sync_backends(src_backend.as_ref(), dst_backend.as_ref(), args.delete)?;
+    sync_backends(src_backend.as_ref(), dst_backend.as_ref(), args.delete).await?;
 
     ui::cli::log!(
         "Finished in {}",
@@ -83,13 +81,13 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 /// Synchronize a repository to a destination backend.
-fn sync_backends(
+async fn sync_backends(
     src_backend: &dyn StorageBackend,
     dst_backend: &dyn StorageBackend,
     delete: bool,
 ) -> Result<()> {
     // Calculate diferences
-    let (to_copy, to_delete) = diff(src_backend, dst_backend)?;
+    let (to_copy, to_delete) = diff(src_backend, dst_backend).await?;
 
     ui::cli::log!(
         "{} {}",
@@ -131,11 +129,11 @@ fn sync_backends(
         // StorageBackend trait, so it is probably not worth it.
 
         match node {
-            BackendNode::Dir(path) => dst_backend.create_dir(&path)?,
+            BackendNode::Dir(path) => dst_backend.create_dir(&path).await?,
             BackendNode::File(path) => {
                 let handle = Handle::new(&path);
-                let data = src_backend.read(&handle, 0, 0)?;
-                dst_backend.write(&handle, &data)?;
+                let data = src_backend.read(&handle, 0, 0).await?;
+                dst_backend.write(&handle, &data).await?;
             }
         }
 
@@ -157,8 +155,8 @@ fn sync_backends(
 
         for node in to_delete {
             match node {
-                BackendNode::File(path) => dst_backend.remove(&path)?,
-                BackendNode::Dir(path) => dst_backend.remove(&path)?,
+                BackendNode::File(path) => dst_backend.remove(&path).await?,
+                BackendNode::Dir(path) => dst_backend.remove(&path).await?,
             }
 
             delete_progress_bar.inc(1);
@@ -168,14 +166,14 @@ fn sync_backends(
     }
 
     // Create locks folder (ignored by read_backend_dir)
-    dst_backend.create_dir(&PathBuf::from(LOCKS_DIR))?;
+    dst_backend.create_dir(&PathBuf::from(LOCKS_DIR)).await?;
 
     Ok(())
 }
 
 /// Calculate differences between the source backend and the destination backend.
 /// The results is a sorted list of nodes to copy and nodes to delete.
-fn diff(
+async fn diff(
     src_backend: &dyn StorageBackend,
     dst_backend: &dyn StorageBackend,
 ) -> Result<(Vec<BackendNode>, Vec<BackendNode>)> {
@@ -192,8 +190,8 @@ fn diff(
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
     spinner.set_message("Reading remote directories...");
 
-    let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new())?;
-    let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new())?;
+    let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new()).await?;
+    let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new()).await?;
 
     spinner.set_message("Comparing file trees...");
 

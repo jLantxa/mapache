@@ -270,15 +270,15 @@ impl std::fmt::Display for UseSnapshot {
     }
 }
 
-fn find_use_snapshot(
+async fn find_use_snapshot(
     repo: Arc<Repository>,
     use_snapshot: &UseSnapshot,
 ) -> Result<Option<(ID, Snapshot)>> {
     match use_snapshot {
-        UseSnapshot::Latest => Ok(SnapshotStream::new(repo.clone())?.latest()),
+        UseSnapshot::Latest => Ok(SnapshotStream::new(repo.clone()).await?.latest().await),
         UseSnapshot::SnapshotId(prefix) => {
-            let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
-            let snap = repo.load_snapshot(&id, None)?;
+            let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
+            let snap = repo.load_snapshot(&id, None).await?;
             Ok(Some((id, snap)))
         }
     }
@@ -296,7 +296,7 @@ fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 }
 
 /// CLI entry point
-pub fn parse_and_run() -> Result<()> {
+pub async fn parse_and_run() -> Result<()> {
     let args = Cli::parse();
 
     let json_enabled = extract_global(&args.command)
@@ -308,29 +308,29 @@ pub fn parse_and_run() -> Result<()> {
     }
 
     let result = match args.command {
-        Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args),
-        Command::Cat(cmd) => cmd_cat::run(&cmd.global, &cmd.args),
+        Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args).await,
+        Command::Cat(cmd) => cmd_cat::run(&cmd.global, &cmd.args).await,
         Command::Cache(cmd) => cmd_cache::run(&cmd),
         Command::Completion(cmd) => cmd_completion::run(&cmd),
-        Command::Clean(cmd) => cmd_clean::run(&cmd.global, &cmd.args),
-        Command::Diff(cmd) => cmd_diff::run(&cmd.global, &cmd.args),
-        Command::Find(cmd) => cmd_find::run(&cmd.global, &cmd.args),
-        Command::Forget(cmd) => cmd_forget::run(&cmd.global, &cmd.args),
-        Command::Init(cmd) => cmd_init::run(&cmd.global, &cmd.args),
-        Command::Key(cmd) => cmd_key::run(&cmd.global, &cmd.args),
-        Command::Log(cmd) => cmd_log::run(&cmd.global, &cmd.args),
-        Command::Ls(cmd) => cmd_ls::run(&cmd.global, &cmd.args),
+        Command::Clean(cmd) => cmd_clean::run(&cmd.global, &cmd.args).await,
+        Command::Diff(cmd) => cmd_diff::run(&cmd.global, &cmd.args).await,
+        Command::Find(cmd) => cmd_find::run(&cmd.global, &cmd.args).await,
+        Command::Forget(cmd) => cmd_forget::run(&cmd.global, &cmd.args).await,
+        Command::Init(cmd) => cmd_init::run(&cmd.global, &cmd.args).await,
+        Command::Key(cmd) => cmd_key::run(&cmd.global, &cmd.args).await,
+        Command::Log(cmd) => cmd_log::run(&cmd.global, &cmd.args).await,
+        Command::Ls(cmd) => cmd_ls::run(&cmd.global, &cmd.args).await,
         #[cfg(all(feature = "fuse", target_os = "linux"))]
-        Command::Mount(cmd) => cmd_mount::run(&cmd.global, &cmd.args),
-        Command::RebuildIndex(cmd) => cmd_rebuild_index::run(&cmd.global, &cmd.args),
-        Command::Recall(cmd) => cmd_recall::run(&cmd.global, &cmd.args),
-        Command::Rechunk(cmd) => cmd_rechunk::run(&cmd.global, &cmd.args),
-        Command::Restore(cmd) => cmd_restore::run(&cmd.global, &cmd.args),
-        Command::Snapshot(cmd) => cmd_snapshot::run(&cmd.global, &cmd.args),
-        Command::Stats(cmd) => cmd_stats::run(&cmd.global, &cmd.args),
-        Command::Sync(cmd) => cmd_sync::run(&cmd.global, &cmd.args),
-        Command::Unlock(cmd) => cmd_unlock::run(&cmd.global, &cmd.args),
-        Command::Verify(cmd) => cmd_verify::run(&cmd.global, &cmd.args),
+        Command::Mount(cmd) => cmd_mount::run(&cmd.global, &cmd.args).await,
+        Command::RebuildIndex(cmd) => cmd_rebuild_index::run(&cmd.global, &cmd.args).await,
+        Command::Recall(cmd) => cmd_recall::run(&cmd.global, &cmd.args).await,
+        Command::Rechunk(cmd) => cmd_rechunk::run(&cmd.global, &cmd.args).await,
+        Command::Restore(cmd) => cmd_restore::run(&cmd.global, &cmd.args).await,
+        Command::Snapshot(cmd) => cmd_snapshot::run(&cmd.global, &cmd.args).await,
+        Command::Stats(cmd) => cmd_stats::run(&cmd.global, &cmd.args).await,
+        Command::Sync(cmd) => cmd_sync::run(&cmd.global, &cmd.args).await,
+        Command::Unlock(cmd) => cmd_unlock::run(&cmd.global, &cmd.args).await,
+        Command::Verify(cmd) => cmd_verify::run(&cmd.global, &cmd.args).await,
     };
 
     if let Err(ref e) = result {

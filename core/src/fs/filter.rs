@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use futures::StreamExt;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -13,7 +14,7 @@ use crate::{
     repository::repo::Repository,
 };
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct TrieNode {
     /// Maps path components (e.g., "src") to the index of the child node.
     children: FxHashMap<OsString, usize>,
@@ -24,7 +25,7 @@ struct TrieNode {
 }
 
 /// A specialized Trie for file paths, optimized for prefix matching.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct PathTrie {
     nodes: Vec<TrieNode>,
 }
@@ -458,7 +459,7 @@ fn match_prefix_components(pattern: &[GlobToken], path: &[&OsStr]) -> bool {
     p == pattern.len()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathFilter {
     include_trie: Option<PathTrie>,
     exclude_trie: Option<PathTrie>,
@@ -566,7 +567,7 @@ pub(crate) fn parse_relative_filter_paths(iepaths: Option<&Vec<String>>) -> Opti
     iepaths.map(|paths| paths.iter().map(PathBuf::from).collect())
 }
 
-pub fn expand_include_paths(
+pub async fn expand_include_paths(
     repo: Arc<Repository>,
     tree_id: &ID,
     includes: Option<&[String]>,
@@ -588,10 +589,11 @@ pub fn expand_include_paths(
     }
 
     if !include_rules.is_empty() {
-        let stream =
-            SerializedNodeStream::new(repo, Some(*tree_id), PathBuf::new(), None, excludes)?;
+        let mut stream =
+            SerializedNodeStream::new(repo, Some(*tree_id), PathBuf::new(), None, excludes).await?;
 
-        for (path, stream_node) in stream.flatten() {
+        while let Some(res) = stream.next().await {
+            let (path, stream_node) = res?;
             if stream_node.node.is_file() && include_rules.iter().any(|g| g.is_strict_match(&path))
             {
                 fixed_includes.push(path);

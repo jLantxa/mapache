@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use futures::{FutureExt, future::BoxFuture};
 
 use crate::{
     fs::{
@@ -13,7 +14,7 @@ use crate::{
         tree::{StreamNode, Tree},
     },
     mapache::ID,
-    repository::{repo::Repository, storage::EncodingContext},
+    repository::repo::Repository,
 };
 
 /// Represents the expected number of children for a directory node.
@@ -105,10 +106,9 @@ impl TreeSerializer {
         self.root_tree_id
     }
 
-    pub(crate) fn handle_processed_item(
+    pub(crate) async fn handle_processed_item(
         &mut self,
         (path, stream_node): (&Path, StreamNode),
-        encoding_context: &mut EncodingContext,
     ) -> Result<()> {
         // Determine the directory path that will receive the finalized node.
         let target_dir_path = if stream_node.node.is_dir() {
@@ -144,17 +144,16 @@ impl TreeSerializer {
             parent_path
         };
 
-        self.finalize_if_complete(&target_dir_path, encoding_context)
+        self.finalize_if_complete(&target_dir_path).await
     }
 
     // Helper function to encapsulate the core finalization and serialization logic,
     // handling both root and non-root directories.
     #[allow(clippy::type_complexity)]
-    fn finalize_and_save(
+    async fn finalize_and_save(
         &mut self,
         dir_path: PathBuf,
         pending_tree: PendingTree,
-        encoding_context: &mut EncodingContext,
     ) -> Result<Option<(PathBuf, Node)>> {
         // Invariant check: Ensure we actually have the expected number of children
         if let ExpectedChildren::Known(expected) = pending_tree.num_expected_children {
@@ -179,7 +178,8 @@ impl TreeSerializer {
         let mut completed_tree = Tree::new(pending_tree.children);
 
         let tree_id = completed_tree
-            .save_to_repo(&self.repo, encoding_context)
+            .save_to_repo(&self.repo)
+            .await
             .with_context(|| format!("Failed to save tree for {}", dir_path.display()))?;
 
         let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
@@ -210,45 +210,50 @@ impl TreeSerializer {
         Ok(Some((parent_path, completed_dir_node)))
     }
 
-    pub(crate) fn finalize_if_complete(
-        &mut self,
-        dir_path: &Path,
-        encoding_context: &mut EncodingContext,
-    ) -> Result<()> {
-        // Check if the directory is present and complete.
-        let is_complete = self
-            .pending_trees
-            .get(dir_path)
-            .is_some_and(|tree| !tree.is_pending());
+    pub(crate) fn finalize_if_complete<'a>(
+        &'a mut self,
+        dir_path: &'a Path,
+    ) -> BoxFuture<'a, Result<()>> {
+        async move {
+            // Check if the directory is present and complete.
+            let is_complete = self
+                .pending_trees
+                .get(dir_path)
+                .is_some_and(|tree| !tree.is_pending());
 
-        if !is_complete {
-            return Ok(());
+            if !is_complete {
+                return Ok(());
+            }
+
+            // Now we know it's complete, remove and process.
+            let (dir_path_key, this_pending_tree) =
+                self.pending_trees.remove_entry(dir_path).with_context(|| {
+                    format!(
+                        "Completed tree for path '{}' not found in map during removal.",
+                        dir_path.display()
+                    )
+                })?;
+
+            let parent_info_opt = self
+                .finalize_and_save(dir_path_key, this_pending_tree)
+                .await?;
+
+            // Recursively handle the parent if it was not the root.
+            if let Some((parent_path, completed_dir_node)) = parent_info_opt {
+                self.insert_finalized_node(&parent_path, completed_dir_node);
+
+                // This is the fix: Call recursively and use .boxed()
+                self.finalize_if_complete(&parent_path).await?;
+            }
+
+            Ok(())
         }
-
-        // Now we know it's complete, remove and process.
-        let (dir_path_key, this_pending_tree) =
-            self.pending_trees.remove_entry(dir_path).with_context(|| {
-                format!(
-                    "Completed tree for path '{}' not found in map during removal.",
-                    dir_path.display()
-                )
-            })?;
-
-        let parent_info_opt =
-            self.finalize_and_save(dir_path_key, this_pending_tree, encoding_context)?;
-
-        // Recursively handle the parent if it was not the root.
-        if let Some((parent_path, completed_dir_node)) = parent_info_opt {
-            self.insert_finalized_node(&parent_path, completed_dir_node);
-            self.finalize_if_complete(&parent_path, encoding_context)?;
-        }
-
-        Ok(())
+        .boxed()
     }
 
-    pub(crate) fn finalize_root(&mut self, encoding_context: &mut EncodingContext) -> Result<()> {
+    pub(crate) async fn finalize_root(&mut self) -> Result<()> {
         let root = self.snapshot_root_path.clone();
-        self.finalize_if_complete(&root, encoding_context)
+        self.finalize_if_complete(&root).await
     }
 
     #[inline]

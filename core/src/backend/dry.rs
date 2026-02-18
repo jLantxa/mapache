@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
+use async_trait::async_trait;
 
 use crate::backend::Handle;
 
@@ -21,59 +22,60 @@ impl DryBackend {
     }
 }
 
+#[async_trait]
 impl StorageBackend for DryBackend {
     #[inline]
-    fn create(&self) -> Result<()> {
-        self.backend.create()
+    async fn create(&self) -> Result<()> {
+        self.backend.create().await
     }
 
     #[inline]
-    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
-        self.backend.read(handle, offset, length)
+    async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+        self.backend.read(handle, offset, length).await
     }
 
     #[inline]
-    fn write(&self, _handle: &Handle, _contents: &[u8]) -> Result<()> {
+    async fn write(&self, _handle: &Handle, _contents: &[u8]) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn rename(&self, _from: &Path, _to: &Path) -> Result<()> {
+    async fn rename(&self, _from: &Path, _to: &Path) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn create_dir(&self, _path: &Path) -> Result<()> {
+    async fn create_dir(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn remove(&self, _file_path: &Path) -> Result<()> {
+    async fn remove(&self, _file_path: &Path) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn path_exists(&self, path: &Path) -> bool {
-        self.backend.path_exists(path)
+    async fn path_exists(&self, path: &Path) -> bool {
+        self.backend.path_exists(path).await
     }
 
     #[inline]
-    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        self.backend.list_dir(path)
+    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.backend.list_dir(path).await
     }
 
     #[inline]
-    fn is_file(&self, path: &Path) -> bool {
-        self.backend.is_file(path)
+    async fn is_file(&self, path: &Path) -> bool {
+        self.backend.is_file(path).await
     }
 
     #[inline]
-    fn is_dir(&self, path: &Path) -> bool {
-        self.backend.is_dir(path)
+    async fn is_dir(&self, path: &Path) -> bool {
+        self.backend.is_dir(path).await
     }
 
     #[inline]
-    fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
-        self.backend.lstat(path)
+    async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
+        self.backend.lstat(path).await
     }
 }

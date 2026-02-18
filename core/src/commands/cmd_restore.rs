@@ -7,6 +7,7 @@ use std::{
 use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
+use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
@@ -94,7 +95,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run))?;
 
@@ -103,26 +104,21 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend.clone(),
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
-
-    // Init cleanup handler
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    )
+    .await?;
 
     let start = Instant::now();
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
-    let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot) {
+    let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot).await {
         Ok(Some((id, snap))) => (id, snap),
         Ok(None) | Err(_) => bail!("Snapshot not found"),
     };
@@ -133,7 +129,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         &snapshot_id,
         args.include.as_deref(),
         parsed_excludes.clone(),
-    )?;
+    )
+    .await?;
 
     let common_prefix: Option<PathBuf> = if args.strip_prefix {
         parsed_includes
@@ -160,13 +157,14 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_files = 0;
     let mut num_dirs = 0;
     let mut num_expected_items = 0;
-    let scan_node_stream = SerializedNodeStream::new(
+    let mut scan_node_stream = SerializedNodeStream::new(
         repo.clone(),
         Some(snapshot.tree),
         PathBuf::new(),
         parsed_includes.clone(),
         parsed_excludes.clone(),
-    )?;
+    )
+    .await?;
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
     spinner.set_style(
@@ -177,7 +175,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    for (_path, stream_node) in scan_node_stream.flatten() {
+    while let Some(res) = scan_node_stream.next().await {
+        let (_path, stream_node) = res?;
+
         let node = stream_node.node;
         num_expected_items += 1;
 
@@ -212,6 +212,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         NUM_SHOWN_PROCESSING_ITEMS,
     ));
 
+    let reporter_clone = progress_reporter.clone();
+    let _cleanup_handler = CleanupHandler::new_with_callback(move || {
+        reporter_clone.finalize();
+        ui::cli::log!(
+            "\n{}",
+            "Process interrupted. Cleaning up...".bold().yellow()
+        );
+    })?;
+
     let abs_normalized_target = get_absolute_normalized_path(&args.target)?;
 
     restorer::restore(
@@ -227,7 +236,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             strip_prefix: common_prefix,
         },
         progress_reporter.clone(),
-    )?;
+    )
+    .await?;
 
     progress_reporter.finalize();
     let warning_count = progress_reporter.warning_counter.load(Ordering::Relaxed);
@@ -243,7 +253,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             parsed_excludes,
             args.dry_run,
             args.no_preserve_root,
-        )?;
+        )
+        .await?;
         ui::cli::log!();
     }
 

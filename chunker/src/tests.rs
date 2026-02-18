@@ -94,7 +94,7 @@ fn test_chunker_masks(#[case] normalization: Normalization) {
     assert_eq!(chunker.mask_s, MASKS[14 + normalization.bits()]);
     assert_eq!(chunker.mask_l, MASKS[14 - normalization.bits()]);
 
-    let chunker = Chunker::new(1 * MiB, 4 * MiB, 16 * MiB, normalization);
+    let chunker = Chunker::new(MiB, 4 * MiB, 16 * MiB, normalization);
     assert_eq!(chunker.mask_s, MASKS[22 + normalization.bits()]);
     assert_eq!(chunker.mask_l, MASKS[22 - normalization.bits()]);
 }
@@ -135,7 +135,7 @@ fn test_cut_respects_min_size() {
 #[test]
 fn test_cut_hits_max_size_boundary() {
     let min_size = 128;
-    let normal_size = 1 * kiB;
+    let normal_size = kiB;
     let max_size = 4 * kiB;
     let chunker = Chunker::new(min_size, normal_size, max_size, Normalization::None);
 
@@ -229,7 +229,7 @@ fn test_normalization_spread_effect(#[case] normal_size: usize) -> Result<()> {
 fn test_deterministic_chunks_4k_l2() -> Result<()> {
     let data: Vec<u8> = std::fs::read(PathBuf::from(TESTDATA).join("mapache.png"))?;
     let size = data.len();
-    let chunker = Chunker::new(1 * kiB, 4 * kiB, 8 * kiB, Normalization::L2);
+    let chunker = Chunker::new(kiB, 4 * kiB, 8 * kiB, Normalization::L2);
 
     let expected_lens: Vec<usize> = vec![
         4390, 4154, 7076, 4405, 4660, 1450, 4980, 8192, 5097, 1044, 6644, 5231, 5991, 4368, 4232,
@@ -242,7 +242,6 @@ fn test_deterministic_chunks_4k_l2() -> Result<()> {
 
     let actual_lens: Vec<usize> = chunker
         .stream(cursor)
-        .into_iter()
         .map(|chunk| chunk.unwrap().length)
         .collect();
     let total_bytes_chunked: usize = actual_lens.iter().sum();
@@ -271,7 +270,6 @@ fn test_deterministic_chunks_32k_l2() -> Result<()> {
 
     let actual_lens: Vec<usize> = chunker
         .stream(cursor)
-        .into_iter()
         .map(|chunk| chunk.unwrap().length)
         .collect();
     let total_bytes_chunked: usize = actual_lens.iter().sum();
@@ -300,7 +298,6 @@ fn test_deterministic_chunks_32k_l0() -> Result<()> {
 
     let actual_lens: Vec<usize> = chunker
         .stream(cursor)
-        .into_iter()
         .map(|chunk| chunk.unwrap().length)
         .collect();
     let total_bytes_chunked: usize = actual_lens.iter().sum();

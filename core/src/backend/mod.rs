@@ -13,6 +13,7 @@ use std::{
 
 use crate::{backend::sftp::SftpBackend, mapache::ContentIdType};
 use anyhow::{Result, anyhow, bail};
+use async_trait::async_trait;
 use dry::DryBackend;
 use localfs::LocalFS;
 use s3::S3Backend;
@@ -79,42 +80,43 @@ pub struct StorageHint {
 ///
 /// A backend is a filesystem interface that can represent local storage,
 /// remote servers (SFTP), or cloud buckets (S3).
+#[async_trait]
 pub trait StorageBackend: Send + Sync {
     /// Initializes the repository structure on the backend.
-    fn create(&self) -> Result<()>;
+    async fn create(&self) -> Result<()>;
 
     /// Returns true if the given path exists on the backend.
-    fn path_exists(&self, path: &Path) -> bool;
+    async fn path_exists(&self, path: &Path) -> bool;
 
     /// Reads data from a file.
     ///
     /// * If `length` is 0, reads until EOF.
     /// * If `offset` is negative, reads relative to the end of the file.
-    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>>;
+    async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>>;
 
     /// Writes the provided buffer to a file, creating it if it doesn't exist.
-    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()>;
+    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()>;
 
     /// Renames (moves) a file. Atomicity depends on the specific implementation.
-    fn rename(&self, from: &Path, to: &Path) -> Result<()>;
+    async fn rename(&self, from: &Path, to: &Path) -> Result<()>;
 
     /// Lists the immediate contents of a directory.
-    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
+    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
 
     /// Recursively creates a directory path.
-    fn create_dir(&self, path: &Path) -> Result<()>;
+    async fn create_dir(&self, path: &Path) -> Result<()>;
 
     /// Deletes a file or directory (recursively).
-    fn remove(&self, file_path: &Path) -> Result<()>;
+    async fn remove(&self, file_path: &Path) -> Result<()>;
 
     /// Returns true if the path points to a file.
-    fn is_file(&self, path: &Path) -> bool;
+    async fn is_file(&self, path: &Path) -> bool;
 
     /// Returns true if the path points to a directory.
-    fn is_dir(&self, path: &Path) -> bool;
+    async fn is_dir(&self, path: &Path) -> bool;
 
     /// Returns metadata for the path without following symbolic links.
-    fn lstat(&self, path: &Path) -> Result<NodeAttr>;
+    async fn lstat(&self, path: &Path) -> Result<NodeAttr>;
 }
 
 /// Configuration used to initialize a backend.
@@ -268,17 +270,23 @@ impl BackendNode {
 }
 
 /// Helper function to perform a recursive crawl of a backend directory.
-pub fn read_backend_dir(backend: &dyn StorageBackend, path: &Path) -> Result<Vec<BackendNode>> {
+pub async fn read_backend_dir(
+    backend: &dyn StorageBackend,
+    path: &Path,
+) -> Result<Vec<BackendNode>> {
     let mut nodes = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![path.to_path_buf()];
 
-    let root_nodes = backend.list_dir(path)?;
-    for sub_path in root_nodes {
-        if backend.is_file(&sub_path) {
-            nodes.push(BackendNode::File(sub_path.to_path_buf()));
-        } else if backend.is_dir(&sub_path) {
-            nodes.push(BackendNode::Dir(sub_path.to_path_buf()));
-            let mut sub_nodes = read_backend_dir(backend, &sub_path)?;
-            nodes.append(&mut sub_nodes);
+    while let Some(current) = stack.pop() {
+        let entries = backend.list_dir(&current).await?;
+
+        for sub_path in entries {
+            if backend.is_file(&sub_path).await {
+                nodes.push(BackendNode::File(sub_path.to_path_buf()));
+            } else if backend.is_dir(&sub_path).await {
+                nodes.push(BackendNode::Dir(sub_path.to_path_buf()));
+                stack.push(sub_path.to_path_buf());
+            }
         }
     }
 

@@ -1,14 +1,14 @@
 use std::{
-    fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::SeekFrom,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow};
+use async_trait::async_trait;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{
     backend::{Handle, NodeAttr},
-    fs,
     repository::repo::REPO_TMP_EXTENSION,
 };
 
@@ -36,8 +36,8 @@ impl LocalFS {
     }
 
     #[inline(always)]
-    fn exists_exact(&self, path: &Path) -> bool {
-        fs::path_exists(path)
+    async fn exists_exact(&self, path: &Path) -> bool {
+        tokio::fs::symlink_metadata(path).await.is_ok()
     }
 
     /// Safely sets or unsets the read-only flag on a file.
@@ -45,11 +45,11 @@ impl LocalFS {
     /// This is used to make repository files immutable after they are written,
     /// protecting them from accidental modification. On Windows, this is also
     /// required before a file can be overwritten or renamed.
-    fn set_readonly_status(&self, path: &Path, readonly: bool) -> Result<()> {
+    async fn set_readonly_status(&self, path: &Path, readonly: bool) -> Result<()> {
         let full_path = self.full_path(path);
 
         // If unsetting read-only and file doesn't exist, just return Ok
-        let metadata = match std::fs::metadata(&full_path) {
+        let metadata = match tokio::fs::metadata(&full_path).await {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !readonly => return Ok(()),
             Err(e) => {
@@ -76,42 +76,46 @@ impl LocalFS {
             perms.set_readonly(readonly);
         }
 
-        std::fs::set_permissions(&full_path, perms).with_context(|| {
-            format!(
-                "Failed to set permissions (readonly={}) on {}",
-                readonly,
-                full_path.display()
-            )
-        })
+        tokio::fs::set_permissions(&full_path, perms)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to set permissions (readonly={}) on {}",
+                    readonly,
+                    full_path.display()
+                )
+            })
     }
 }
 
+#[async_trait]
 impl StorageBackend for LocalFS {
-    fn create(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.base_path).with_context(|| {
-            format!(
-                "Could not create repository backend root at {}",
-                self.base_path.display()
-            )
-        })
+    async fn create(&self) -> Result<()> {
+        tokio::fs::create_dir_all(&self.base_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Could not create repository backend root at {}",
+                    self.base_path.display()
+                )
+            })
     }
 
-    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+    async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let path = handle.path;
         let full_path = self.full_path(path);
 
-        let mut file = File::open(&full_path)
+        let mut file = tokio::fs::File::open(&full_path)
+            .await
             .with_context(|| format!("Could not open file for reading: '{}'", path.display()))?;
 
-        let file_size = file
-            .metadata()
-            .with_context(|| {
-                format!(
-                    "Could not get metadata for size calculation: '{}'",
-                    path.display()
-                )
-            })?
-            .len();
+        let metadata = file.metadata().await.with_context(|| {
+            format!(
+                "Could not get metadata for size calculation: '{}'",
+                path.display()
+            )
+        })?;
+        let file_size = metadata.len();
 
         let start_position: u64 = if offset >= 0 {
             offset as u64
@@ -121,6 +125,7 @@ impl StorageBackend for LocalFS {
         };
 
         file.seek(SeekFrom::Start(start_position))
+            .await
             .with_context(|| {
                 format!(
                     "Could not seek to {} in '{}'",
@@ -136,7 +141,8 @@ impl StorageBackend for LocalFS {
         };
 
         let mut data = vec![0; read_length];
-        file.read_exact(&mut data).with_context(|| {
+
+        file.read_exact(&mut data).await.with_context(|| {
             format!(
                 "Could not read {} bytes from '{}'",
                 read_length,
@@ -147,92 +153,101 @@ impl StorageBackend for LocalFS {
         Ok(data)
     }
 
-    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
         let path = handle.path;
         let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
         let full_tmp_path = self.full_path(&tmp_path);
 
         // Write to a tmp path. If we fail, the parent might be missing.
-        if let Err(e) = std::fs::write(&full_tmp_path, contents) {
+        if let Err(e) = tokio::fs::write(&full_tmp_path, contents).await {
             let parent_dir = path
                 .parent()
                 .ok_or_else(|| anyhow!("Path '{}' has no parent directory", path.display()))?;
 
             self.create_dir(parent_dir)
+                .await
                 .context("Failed to auto-create missing parent directory during write")?;
 
-            std::fs::write(&full_tmp_path, contents).with_context(|| {
-                format!(
-                    "Failed to write temporary file '{}' after creating parent: {}",
-                    tmp_path.display(),
-                    e
-                )
-            })?;
+            tokio::fs::write(&full_tmp_path, contents)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to write temporary file '{}' after creating parent: {}",
+                        tmp_path.display(),
+                        e
+                    )
+                })?;
         }
 
         // Renaming on Windows might fail if the destination already exists and is Read-Only
         let full_path_to = self.full_path(path);
-        let _ = self.set_readonly_status(&full_path_to, false);
+        let _ = self.set_readonly_status(&full_path_to, false).await;
 
         self.rename(&tmp_path, path)
+            .await
             .context("Failed to commit temporary write via rename")?;
 
         // Repository files are locked (readonly) after writing to prevent accidental corruption
-        let _ = self.set_readonly_status(path, true);
+        let _ = self.set_readonly_status(path, true).await;
 
         Ok(())
     }
 
-    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+    async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let fullpath_from = self.full_path(from);
         let fullpath_to = self.full_path(to);
 
         // On Windows, the source must be writable to be renamed/moved
-        let _ = self.set_readonly_status(from, false);
+        let _ = self.set_readonly_status(from, false).await;
 
-        std::fs::rename(&fullpath_from, &fullpath_to).with_context(|| {
-            format!(
-                "Could not rename '{}' to '{}' in local backend",
-                from.display(),
-                to.display()
-            )
-        })?;
+        tokio::fs::rename(&fullpath_from, &fullpath_to)
+            .await
+            .with_context(|| {
+                format!(
+                    "Could not rename '{}' to '{}' in local backend",
+                    from.display(),
+                    to.display()
+                )
+            })?;
 
         // Repository files are generally treated as immutable once written
-        let _ = self.set_readonly_status(to, true);
+        let _ = self.set_readonly_status(to, true).await;
 
         Ok(())
     }
 
-    fn create_dir(&self, path: &Path) -> Result<()> {
+    async fn create_dir(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
-        std::fs::create_dir_all(&full_path)?;
+        tokio::fs::create_dir_all(&full_path).await?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o700))?;
+            tokio::fs::set_permissions(&full_path, std::fs::Permissions::from_mode(0o700)).await?;
         }
         Ok(())
     }
 
-    fn remove(&self, path: &Path) -> Result<()> {
+    async fn remove(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
 
-        match std::fs::symlink_metadata(&full_path) {
+        match tokio::fs::symlink_metadata(&full_path).await {
             Ok(metadata) => {
                 // Unlock file so it can actually be deleted
-                let _ = self.set_readonly_status(path, false);
+                let _ = self.set_readonly_status(path, false).await;
 
                 if metadata.is_dir() {
-                    std::fs::remove_dir_all(&full_path).with_context(|| {
-                        format!(
-                            "Could not remove directory '{}' recursively",
-                            path.display()
-                        )
-                    })
+                    tokio::fs::remove_dir_all(&full_path)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Could not remove directory '{}' recursively",
+                                path.display()
+                            )
+                        })
                 } else {
-                    std::fs::remove_file(&full_path)
+                    tokio::fs::remove_file(&full_path)
+                        .await
                         .with_context(|| format!("Could not remove file '{}'", path.display()))
                 }
             }
@@ -244,21 +259,24 @@ impl StorageBackend for LocalFS {
         }
     }
 
-    fn path_exists(&self, path: &Path) -> bool {
+    async fn path_exists(&self, path: &Path) -> bool {
         let full_path = self.full_path(path);
-        self.exists_exact(&full_path)
+        self.exists_exact(&full_path).await
     }
 
-    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let full_path = self.full_path(path);
         let mut paths = Vec::new();
 
-        let read_dir = std::fs::read_dir(&full_path).with_context(|| {
+        let mut read_dir = tokio::fs::read_dir(&full_path).await.with_context(|| {
             format!("Could not list contents of directory '{}'", path.display())
         })?;
 
-        for entry in read_dir {
-            let entry = entry?;
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .with_context(|| format!("Failed while iterating directory '{}'", path.display()))?
+        {
             let entry_path = entry.path();
 
             // Strip the base_path to keep paths relative to the repo root
@@ -273,17 +291,18 @@ impl StorageBackend for LocalFS {
         Ok(paths)
     }
 
-    fn is_file(&self, path: &Path) -> bool {
+    async fn is_file(&self, path: &Path) -> bool {
         self.full_path(path).is_file()
     }
 
-    fn is_dir(&self, path: &Path) -> bool {
+    async fn is_dir(&self, path: &Path) -> bool {
         self.full_path(path).is_dir()
     }
 
-    fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
+    async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         let full_path = self.full_path(path);
-        let meta = std::fs::symlink_metadata(&full_path)
+        let meta = tokio::fs::symlink_metadata(&full_path)
+            .await
             .with_context(|| format!("lstat failed for {}", path.display()))?;
 
         let (perm, uid, gid) = {
@@ -317,35 +336,37 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_local_fs() -> Result<()> {
+    #[tokio::test]
+    async fn test_local_fs() -> Result<()> {
         let temp_dir = tempdir()?;
         let local_fs = LocalFS::new(temp_dir.path().to_path_buf());
 
         let write_handle = Handle::new(Path::new("file.txt"));
-        local_fs.write(&write_handle, b"Mapachito")?;
-        let read_content = local_fs.read(&write_handle, 0, 0)?;
+        local_fs.write(&write_handle, b"Mapachito").await?;
+        let read_content = local_fs.read(&write_handle, 0, 0).await?;
 
-        assert!(local_fs.path_exists(write_handle.path));
+        assert!(local_fs.path_exists(write_handle.path).await);
         assert_eq!(read_content, b"Mapachito");
 
         let dir0 = Path::new("dir0");
         let intermediate = dir0.join("intermediate");
         let dir1 = intermediate.join("dir1");
-        local_fs.create_dir(&dir1)?;
-        assert!(local_fs.path_exists(dir0));
-        assert!(local_fs.path_exists(&dir1));
+        local_fs.create_dir(&dir1).await?;
+        assert!(local_fs.path_exists(dir0).await);
+        assert!(local_fs.path_exists(&dir1).await);
 
-        local_fs.remove(dir0)?;
-        assert!(!local_fs.path_exists(dir0));
+        local_fs.remove(dir0).await?;
+        assert!(!local_fs.path_exists(dir0).await);
 
         // Read range test
         let seek_handle = Handle::new(Path::new("seek.txt"));
-        local_fs.write(
-            &seek_handle,
-            b"I am just looking for a word in this sentence.",
-        )?;
-        let range_str = local_fs.read(&seek_handle, 10, 7)?;
+        local_fs
+            .write(
+                &seek_handle,
+                b"I am just looking for a word in this sentence.",
+            )
+            .await?;
+        let range_str = local_fs.read(&seek_handle, 10, 7).await?;
         assert_eq!(range_str, b"looking");
 
         Ok(())

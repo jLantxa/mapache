@@ -102,7 +102,7 @@ impl Packer {
 
         Ok(Self {
             buffer: Vec::with_capacity(capacity),
-            descriptors: Vec::new(),
+            descriptors: Vec::with_capacity(FOOTER_BLOB_MULTIPLE),
             raw_size: 0,
             secure_storage,
             encoding_context,
@@ -246,7 +246,7 @@ impl Packer {
     ///
     /// This function performs two reads: one for the trailing 4-byte length
     /// and a second to retrieve the encrypted footer data.
-    pub fn parse_pack_footer(
+    pub async fn parse_pack_footer(
         repo: &Repository,
         backend: &dyn StorageBackend,
         secure_storage: &SecureStorage,
@@ -256,14 +256,17 @@ impl Packer {
 
         // We don't know a priori if this pack contains metadata, so we cannot use a StorageHint.
         let handle = Handle::new(&pack_path);
-        let footer_length_bytes: [u8; 4] = backend.read(&handle, -4, 4)?.as_slice().try_into()?;
+        let footer_length_bytes: [u8; 4] =
+            backend.read(&handle, -4, 4).await?.as_slice().try_into()?;
         let encoded_footer_length = u32::from_le_bytes(footer_length_bytes) as usize;
 
-        let footer_data = backend.read(
-            &handle,
-            -(4 + encoded_footer_length as isize),
-            4 + encoded_footer_length,
-        )?;
+        let footer_data = backend
+            .read(
+                &handle,
+                -(4 + encoded_footer_length as isize),
+                4 + encoded_footer_length,
+            )
+            .await?;
 
         Self::parse_footer(secure_storage, &footer_data)
     }
@@ -364,6 +367,7 @@ impl PackSaver {
     /// Creates a new `PackSaver` and initializes the background worker pool.
     pub(crate) fn new(
         rx: Receiver<PackSaverRequest>,
+        rt_handle: tokio::runtime::Handle,
         repo_weak: Weak<Repository>,
         secure_storage: Arc<SecureStorage>,
         max_packer_size: u64,
@@ -393,6 +397,7 @@ impl PackSaver {
                 let tx = empty_tx.clone(); // Path to return empty packers
                 let err_ptr = Arc::clone(&first_err);
                 let repo_ptr = worker_repo_weak.clone();
+                let rt = rt_handle.clone();
 
                 worker_threads.push(std::thread::spawn(move || -> Result<()> {
                     while let Ok((mut packer, blob_type)) = rx.recv() {
@@ -400,6 +405,7 @@ impl PackSaver {
                             return Ok(());
                         }
 
+                        // Perform CPU-intensive encryption/hashing
                         let result = match packer.finalize_and_extract() {
                             Ok(Some(res)) => res,
                             Ok(None) => {
@@ -412,41 +418,54 @@ impl PackSaver {
                             }
                         };
 
-                        let stats_raw = result.raw_size;
-                        let stats_enc = result.encoded_size;
-                        let stats_meta = result.meta_size;
-                        let stats_blobs = result.descriptors.len() as u64;
-
                         let repo = match repo_ptr.upgrade() {
                             Some(r) => r,
                             None => return Ok(()),
                         };
 
-                        let save_id = SaveID::WithID(result.id);
+                        // Capture stats before moving descriptors into the async block
+                        let stats_raw = result.raw_size;
+                        let stats_enc = result.encoded_size;
+                        let stats_meta = result.meta_size;
+                        let stats_blobs = result.descriptors.len() as u64;
+                        let pack_id = result.id;
+                        let pack_data = result.data;
+                        let descriptors = result.descriptors;
 
-                        // Upload
-                        if let Err(e) = repo.save_file(
-                            &save_id,
-                            &result.data,
-                            StorageHint {
-                                file_type: ContentIdType::Pack,
-                                is_metadata: blob_type == BlobType::Tree,
-                            },
-                            None,
-                        ) {
-                            *err_ptr.lock() = Some(e.context("Upload failed"));
-                            return Ok(());
-                        }
+                        // Bridge to Async Backend:
+                        // We use block_on to wait for the I/O to complete. This enforces
+                        // backpressure; if the upload is slow, the worker stays busy
+                        // and cannot recycle its buffer yet.
+                        let upload_and_index = rt.block_on(async {
+                            let save_id = SaveID::WithID(pack_id);
 
-                        // Index Update
-                        let index_size =
-                            match repo.index().add_pack(&repo, &result.id, result.descriptors) {
-                                Ok(size) => size,
-                                Err(e) => {
-                                    *err_ptr.lock() = Some(e.context("Index update failed"));
-                                    return Ok(());
-                                }
-                            };
+                            // Upload the pack file
+                            repo.save_file(
+                                &save_id,
+                                &pack_data,
+                                StorageHint {
+                                    file_type: ContentIdType::Pack,
+                                    is_metadata: blob_type == BlobType::Tree,
+                                },
+                                None,
+                            )
+                            .await
+                            .context("Upload failed")?;
+
+                            // Register with the index
+                            repo.index()
+                                .add_pack(&repo, &pack_id, descriptors)
+                                .await
+                                .context("Index update failed")
+                        });
+
+                        let index_size = match upload_and_index {
+                            Ok(size) => size,
+                            Err(e) => {
+                                *err_ptr.lock() = Some(e);
+                                return Ok(());
+                            }
+                        };
 
                         Self::update_stats(
                             &repo,
@@ -458,7 +477,8 @@ impl PackSaver {
                             blob_type,
                         );
 
-                        packer.recycle_buffer(result.data);
+                        // Restore buffer to the packer and return it to the empty pool for reuse
+                        packer.recycle_buffer(pack_data);
                         if tx.send(packer).is_err() {
                             return Ok(());
                         }
@@ -473,7 +493,7 @@ impl PackSaver {
             first_err.lock().take().map_or(Ok(()), Err)
         });
 
-        // Get initial packers for the main thread
+        // Get initial packers for the main thread active slots
         let data_packer = empty_rx
             .recv()
             .context("Failed to initialize data packer")?;
@@ -616,7 +636,7 @@ mod tests {
 
     fn add_blob(packer: &mut Packer, data: &[u8], secure_storage: &SecureStorage) -> Result<()> {
         let raw_size = data.len() as u64;
-        let encoded_data = secure_storage.encode(&data)?;
+        let encoded_data = secure_storage.encode(data)?;
         packer.add_blob(
             ID::from_content(&encoded_data),
             BlobType::Data,
@@ -636,7 +656,7 @@ mod tests {
         );
 
         let mut packer = Packer::new(1024, secure_storage.clone())?;
-        let blobs = vec![b"test1".to_vec(), b"test2".to_vec()];
+        let blobs = [b"test1".to_vec(), b"test2".to_vec()];
 
         // Add Data
         add_blob(&mut packer, &blobs[0], &secure_storage)?;
@@ -658,7 +678,7 @@ mod tests {
         assert_eq!(result.descriptors[0].blob_type, BlobType::Data);
         assert_eq!(result.descriptors[1].blob_type, BlobType::Data);
 
-        assert!(result.data.len() > 0);
+        assert!(!result.data.is_empty());
 
         // If you want to verify the "round-trip" through the parser:
         let parsed_descriptors = Packer::parse_footer(&secure_storage, &result.data)?;

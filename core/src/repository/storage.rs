@@ -5,6 +5,8 @@ use rand::{TryRng, rngs::SysRng};
 
 use crate::mapache::{self, defaults::DEFAULT_COMPRESSION};
 
+use parking_lot::Mutex;
+
 const AES_GCM_NONCE_LEN: usize = 12;
 const AES_GCM_TAG_LEN: usize = 16;
 
@@ -12,6 +14,7 @@ const AES_GCM_TAG_LEN: usize = 16;
 pub struct SecureStorage {
     compression_level: i32,
     cipher: Option<Aes256GcmSiv>,
+    compressor_pool: Mutex<Vec<EncodingContext>>,
 }
 
 impl Default for SecureStorage {
@@ -25,6 +28,7 @@ impl SecureStorage {
         Self {
             compression_level: DEFAULT_COMPRESSION.to_level(),
             cipher: None,
+            compressor_pool: Mutex::new(Vec::new()),
         }
     }
 
@@ -114,8 +118,10 @@ impl SecureStorage {
 
     /// Compresses data and returns an owned Vec.
     pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut ctx = self.get_encoding_context()?;
-        self.compress_managed(&mut ctx, data)
+        let mut ctx = self.take_encoding_context()?;
+        let res = self.compress_managed(&mut ctx, data);
+        self.return_encoding_context(ctx);
+        res
     }
 
     /// Compress using a reusable context. Returns owned Vec.
@@ -123,6 +129,7 @@ impl SecureStorage {
         let temp_ss = Self {
             compression_level: self.compression_level,
             cipher: None,
+            compressor_pool: Mutex::new(Vec::new()),
         };
         temp_ss.transform_into(Some(ctx), data)
     }
@@ -188,14 +195,27 @@ impl SecureStorage {
     }
 
     pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut ctx = self.get_encoding_context()?;
-        self.encode_managed(&mut ctx, data)
+        let mut ctx = self.take_encoding_context()?;
+        let res = self.encode_managed(&mut ctx, data);
+        self.return_encoding_context(ctx);
+        res
     }
 
     /// Encrypt with an EncodingContext
     #[inline]
     pub fn encode_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
         self.transform_into(Some(ctx), data)
+    }
+
+    pub fn take_encoding_context(&self) -> Result<EncodingContext> {
+        if let Some(ctx) = self.compressor_pool.lock().pop() {
+            return Ok(ctx);
+        }
+        self.get_encoding_context()
+    }
+
+    pub fn return_encoding_context(&self, ctx: EncodingContext) {
+        self.compressor_pool.lock().push(ctx);
     }
 
     pub fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {

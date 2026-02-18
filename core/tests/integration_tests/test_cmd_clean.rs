@@ -26,8 +26,8 @@ mod tests {
     /// This is to check against some early bugs in the garbage collector that
     /// removed files that it shouldn't.
     /// It does no harm keeping this test.
-    #[test]
-    fn test_gc_sanity_check() -> Result<()> {
+    #[tokio::test]
+    async fn test_gc_sanity_check() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -64,7 +64,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -87,6 +87,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot (1/2)")?;
 
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -108,6 +109,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot (2/2)")?;
 
         // Keep the last snapshot
@@ -126,7 +128,9 @@ mod tests {
             tags_str: Some(String::new()),
             keep_tags_str: Some(String::new()),
         };
-        commands::cmd_forget::run(&global, &forget_args).context("Failed to run cmd_forget")?;
+        commands::cmd_forget::run(&global, &forget_args)
+            .await
+            .context("Failed to run cmd_forget")?;
 
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
@@ -134,7 +138,9 @@ mod tests {
 
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
+        commands::cmd_clean::run(&global, &gc_args)
+            .await
+            .context("Failed to run cmd_gc")?;
 
         // Run restore
         let restore_path = tmp_path.join("restore");
@@ -151,7 +157,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -186,8 +194,8 @@ mod tests {
     }
 
     /// Run clean but dry-run. Nothing should change.
-    #[test]
-    fn test_clean_dry_run() -> Result<()> {
+    #[tokio::test]
+    async fn test_clean_dry_run() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -224,7 +232,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -247,6 +255,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot (1/2)")?;
 
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -268,6 +277,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot (2/2)")?;
 
         // Keep the last snapshot
@@ -286,31 +296,37 @@ mod tests {
             tags_str: Some(String::new()),
             keep_tags_str: Some(String::new()),
         };
-        commands::cmd_forget::run(&global, &forget_args).context("Failed to run cmd_forget")?;
+        commands::cmd_forget::run(&global, &forget_args)
+            .await
+            .context("Failed to run cmd_forget")?;
 
         // Run cmd_clean and compare the repositories (using backend readdir)
         let backend = Arc::new(LocalFS::new(repo_path.clone()));
-        let pre_clean_nodes = backend::read_backend_dir(backend.as_ref(), &PathBuf::new())?;
+        let pre_clean_nodes = backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: true, // DRY-RUN !
 
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
-        let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new())?;
+        commands::cmd_clean::run(&global, &gc_args)
+            .await
+            .context("Failed to run cmd_gc")?;
+        let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
         assert_eq!(pre_clean_nodes, post_clean_nodes);
 
         // Now the same, but without dry-run, the repo changes
-        let pre_clean_nodes = backend::read_backend_dir(backend.as_ref(), &PathBuf::new())?;
+        let pre_clean_nodes = backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
             dry_run: false, // No dry-run
 
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args).context("Failed to run cmd_gc")?;
-        let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new())?;
+        commands::cmd_clean::run(&global, &gc_args)
+            .await
+            .context("Failed to run cmd_gc")?;
+        let post_clean_nodes = read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
         assert_ne!(pre_clean_nodes, post_clean_nodes);
 
         Ok(())

@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
+use futures::StreamExt;
 
 use crate::{
     fs::{self, tree::SerializedNodeStream},
@@ -32,7 +33,7 @@ pub struct RestoreOptions {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn restore(
+pub async fn restore(
     repo: Arc<Repository>,
     snapshot: &Snapshot,
     target_path: &Path,
@@ -42,8 +43,9 @@ pub fn restore(
     progress_reporter: Arc<RestoreProgressReporter>,
 ) -> Result<()> {
     let tree = snapshot.tree;
-    let node_stream =
-        SerializedNodeStream::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)?;
+    let mut node_stream =
+        SerializedNodeStream::new(repo.clone(), Some(tree), PathBuf::new(), include, exclude)
+            .await?;
 
     // Create the restore target directory
     if !opts.dry_run {
@@ -53,7 +55,7 @@ pub fn restore(
     // Directories to restore file times later
     let mut restored_dir_times = HashMap::new();
 
-    for node_res in node_stream {
+    while let Some(node_res) = node_stream.next().await {
         let (mut path, stream_node) = node_res?;
         let node = &stream_node.node;
 
@@ -132,7 +134,9 @@ pub fn restore(
             node,
             &restore_path,
             opts.dry_run,
-        ) {
+        )
+        .await
+        {
             let error_msg = e.to_string();
             if opts.quit_on_error {
                 bail!(error_msg);

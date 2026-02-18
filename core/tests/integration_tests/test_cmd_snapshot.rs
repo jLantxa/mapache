@@ -21,8 +21,8 @@ mod tests {
         test_utils::{self},
     };
 
-    #[test]
-    fn test_snapshot() -> Result<()> {
+    #[tokio::test]
+    async fn test_snapshot() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -59,7 +59,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
         assert_eq!(utils::count_files(&snapshots_dir)?, 0);
@@ -87,6 +87,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
         assert_ne!(utils::count_files(&index_dir)?, 0);
@@ -106,7 +107,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -150,8 +153,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_snapshot_dry_run() -> Result<()> {
+    #[tokio::test]
+    async fn test_snapshot_dry_run() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -188,7 +191,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -211,6 +214,7 @@ mod tests {
             dry_run: true,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // `snapshots` directory should be empty
@@ -237,14 +241,14 @@ mod tests {
             no_preserve_root: false,
         };
 
-        let restore_result = commands::cmd_restore::run(&global, &restore_args);
+        let restore_result = commands::cmd_restore::run(&global, &restore_args).await;
         assert!(restore_result.is_err());
 
         Ok(())
     }
 
-    #[test]
-    fn test_snapshot_with_exclude() -> Result<()> {
+    #[tokio::test]
+    async fn test_snapshot_with_exclude() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -281,7 +285,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -313,6 +317,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
@@ -330,7 +335,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -375,8 +382,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_snapshot_twice() -> Result<()> {
+    #[tokio::test]
+    async fn test_snapshot_twice() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -413,7 +420,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
         assert_eq!(utils::count_files(&snapshots_dir)?, 0);
@@ -444,6 +451,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot 1")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
 
@@ -467,6 +475,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot 2")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 2);
 
@@ -484,7 +493,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -524,8 +535,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_snapshot_folder_as_root() -> Result<()> {
+    #[tokio::test]
+    async fn test_snapshot_folder_as_root() -> Result<()> {
         // Save a snapshot with a single snapshot --as-root
         // The single folder is taken as the snapshot root, with all its contents
         // being in the root folder, instead of adding the folder as a child of
@@ -567,7 +578,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -585,6 +596,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
@@ -602,7 +614,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("file0.txt"),
@@ -639,8 +653,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_snapshot_intermediate_paths() -> Result<()> {
+    #[tokio::test]
+    async fn test_snapshot_intermediate_paths() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -677,7 +691,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -700,6 +714,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
@@ -717,7 +732,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -757,8 +774,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_snapshot_skip_if_unchanged() -> Result<()> {
+    #[tokio::test]
+    async fn test_snapshot_skip_if_unchanged() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -795,7 +812,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
         assert_eq!(utils::count_files(&snapshots_dir)?, 0);
@@ -822,10 +839,12 @@ mod tests {
         };
 
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot 1")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
 
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot 2")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
 

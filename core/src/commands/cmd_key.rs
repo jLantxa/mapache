@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use colored::Colorize;
+use futures::StreamExt;
 
 use crate::{
     backend::{Handle, new_backend_with_prompt},
@@ -59,17 +60,17 @@ pub struct CmdArgs {
     subcommand: KeySubcommand,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     println!();
     match &args.subcommand {
-        KeySubcommand::List => run_list(global_args),
-        KeySubcommand::Add(args) => run_add(global_args, args),
-        KeySubcommand::Delete(args) => run_delete(global_args, args),
-        KeySubcommand::ChangePassword(args) => run_password_change(global_args, args),
+        KeySubcommand::List => run_list(global_args).await,
+        KeySubcommand::Add(args) => run_add(global_args, args).await,
+        KeySubcommand::Delete(args) => run_delete(global_args, args).await,
+        KeySubcommand::ChangePassword(args) => run_password_change(global_args, args).await,
     }
 }
 
-fn run_list(global_args: &GlobalArgs) -> Result<()> {
+async fn run_list(global_args: &GlobalArgs) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let mut table = Table::new();
@@ -79,8 +80,9 @@ fn run_list(global_args: &GlobalArgs) -> Result<()> {
         "Created".bold().yellow().to_string(),
     ]);
 
-    let keyfile_stream = KeyFileStream::new(backend.clone())?;
-    for (id, keyfile) in keyfile_stream.flatten() {
+    let mut keyfile_stream = KeyFileStream::new(backend.clone()).await?;
+    while let Some(res) = keyfile_stream.next().await {
+        let (id, keyfile) = res?;
         table.add_row(vec![
             keyfile.username,
             id.to_short_hex(6),
@@ -93,12 +95,14 @@ fn run_list(global_args: &GlobalArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
+async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
     let auth = request_auth();
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let key_manager = KeyManager::new(backend.clone());
-    let (_key_id, master_key) = key_manager.retrieve_master_key(&auth, global_args.key.as_ref())?;
+    let (_key_id, master_key) = key_manager
+        .retrieve_master_key(&auth, global_args.key.as_ref())
+        .await?;
 
     ui::cli::log!("\nCreating new user key...");
     let new_auth = request_new_auth();
@@ -118,27 +122,28 @@ fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
         None => {
             let path = Path::new(KEYS_DIR).join(new_keyfile_id.to_hex());
             let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
-            backend.write(&handle, &new_keyfile_json)?;
+            backend.write(&handle, &new_keyfile_json).await?;
         }
     }
 
     Ok(())
 }
 
-fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
+async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
     let key_manager = KeyManager::new(backend.clone());
-    let (_id, path) = key_manager.find_id_with_prefix(&args.id)?;
-    backend.remove(&path)
+    let (_id, path) = key_manager.find_id_with_prefix(&args.id).await?;
+    backend.remove(&path).await
 }
 
-fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> Result<()> {
+async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> Result<()> {
     let auth = request_auth();
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
     let key_manager = KeyManager::new(backend.clone());
     let (old_id, old_keyfile) = key_manager
-        .load_keyfile_with_username(&auth.username)?
+        .load_keyfile_with_username(&auth.username)
+        .await?
         .with_context(|| format!("No keyfile found for username {}", &auth.username))?;
     let master_key = KeyManager::decode_master_key(&auth.password, &old_keyfile)?;
 
@@ -148,8 +153,8 @@ fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> 
     };
 
     let new_keyfile = KeyManager::generate_key_file(&new_auth, master_key)?;
-    key_manager.save_keyfile(&new_keyfile)?;
-    key_manager.delete_keyfile_with_id(&old_id)?;
+    key_manager.save_keyfile(&new_keyfile).await?;
+    key_manager.delete_keyfile_with_id(&old_id).await?;
 
     Ok(())
 }

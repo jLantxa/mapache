@@ -57,18 +57,9 @@ mod tests {
 
     impl Drop for MountThreadGuard {
         fn drop(&mut self) {
-            if let Err(e) = unmount(&self.mountpoint) {
-                eprintln!(
-                    "Warning: Failed to unmount {}: {:?}",
-                    self.mountpoint.display(),
-                    e
-                );
-            }
-
-            if let Some(mount_thread) = self.mount_thread.take() {
-                if let Err(e) = mount_thread.join() {
-                    eprintln!("Warning: Failed to join mount thread: {:?}", e);
-                }
+            let _ = unmount(&self.mountpoint);
+            if let Some(handle) = self.mount_thread.take() {
+                let _ = handle.join();
             }
         }
     }
@@ -111,10 +102,11 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
     #[rstest]
     #[case(false)] // The mountpoint exists before mounting
     #[case(true)] // The mountpoint is created by the command
-    fn test_mount_one_snapshot(#[case] auto_mount: bool) -> Result<()> {
+    async fn test_mount_one_snapshot(#[case] auto_mount: bool) -> Result<()> {
         use std::{path::PathBuf, time::Instant};
 
         use mapache::fs;
@@ -157,7 +149,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -180,6 +172,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let mountpoint = tmp_path.join("mount");
@@ -196,10 +189,18 @@ mod tests {
         };
 
         let mount_thread = std::thread::spawn(move || {
-            let _ = commands::cmd_mount::run(&global, &mount_args);
-        });
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
 
-        let _mount_guard = MountThreadGuard {
+            rt.block_on(async {
+                if let Err(e) = commands::cmd_mount::run(&global, &mount_args).await {
+                    eprintln!("Background mount task failed: {}", e);
+                }
+            });
+        });
+        let _guard = MountThreadGuard {
             mountpoint: mountpoint.clone(),
             mount_thread: Some(mount_thread),
         };
@@ -250,8 +251,8 @@ mod tests {
         verify_paths(&paths, &backup_data_tmp_path, &snapshot_path)
     }
 
-    #[test]
-    fn test_mount_multiple_snapshots() -> Result<()> {
+    #[tokio::test]
+    async fn test_mount_multiple_snapshots() -> Result<()> {
         use std::{path::PathBuf, time::Instant};
 
         use mapache::fs;
@@ -292,7 +293,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshots
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -315,6 +316,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot 1")?;
 
         // Avoid timestamps within one second
@@ -340,6 +342,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot 2")?;
 
         let mountpoint = tmp_path.join("mount");
@@ -353,10 +356,18 @@ mod tests {
         };
 
         let mount_thread = std::thread::spawn(move || {
-            let _ = commands::cmd_mount::run(&global, &mount_args);
-        });
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
 
-        let _mount_guard = MountThreadGuard {
+            rt.block_on(async {
+                if let Err(e) = commands::cmd_mount::run(&global, &mount_args).await {
+                    eprintln!("Background mount task failed: {}", e);
+                }
+            });
+        });
+        let _guard = MountThreadGuard {
             mountpoint: mountpoint.clone(),
             mount_thread: Some(mount_thread),
         };
@@ -373,12 +384,7 @@ mod tests {
             }
         }
 
-        let num_snapshots = repo_path
-            .join("snapshots")
-            .read_dir()?
-            .flatten()
-            .map(|entry| entry.path())
-            .count();
+        let num_snapshots = repo_path.join("snapshots").read_dir()?.flatten().count();
         assert_eq!(num_snapshots, 2, "There should be two snapshots");
 
         // There are two snapshots, but we don't know the IDs. We access them
@@ -439,12 +445,12 @@ mod tests {
         verify_paths(
             &paths1,
             &backup_data_tmp_path,
-            &snapshot_paths.get(0).expect("Snapshot should exist"),
+            snapshot_paths.first().expect("Snapshot should exist"),
         )?;
         verify_paths(
             &paths2,
             &backup_data_tmp_path,
-            &snapshot_paths.get(1).expect("Snapshot should exist"),
+            snapshot_paths.get(1).expect("Snapshot should exist"),
         )?;
 
         Ok(())

@@ -2,16 +2,19 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use fuser::{
     Config, Errno, FileHandle, Filesystem, FopenFlags, Generation, INodeNo, KernelConfig,
     LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,
     Request, SessionACL,
 };
-use parking_lot::Mutex;
+use futures::StreamExt;
+use parking_lot::RwLock;
 
 use crate::{
-    fuse::stash::{Stash, TTL},
+    fs::node::NodeType,
+    fuse::cache::{BlobCache, TreeCache},
+    fuse::stash::{NodeKind, Stash, TTL, node_to_fileattr},
     mapache::ID,
     repository::{
         repo::Repository,
@@ -24,8 +27,11 @@ use crate::{
 /// in a mountpoint in the host OS.
 pub struct MapacheFS {
     repo: Arc<Repository>,
-    stash: Mutex<Stash>,
+    stash: RwLock<Stash>,
+    tree_cache: TreeCache,
+    blob_cache: BlobCache,
     metadata_only: bool, // Do not load file contents.
+    rt_handle: tokio::runtime::Handle,
 }
 
 impl MapacheFS {
@@ -37,12 +43,19 @@ impl MapacheFS {
         metadata_only: bool,
         data_cache_size: u64,
     ) -> Result<()> {
-        let stash = Stash::new_root(repo.clone(), data_cache_size)?;
+        let stash = Stash::new(repo.manifest().created_time().into());
+        let rt_handle = tokio::runtime::Handle::current();
+
+        let tree_cache = TreeCache::new(repo.clone(), 512);
+        let blob_cache = BlobCache::new(repo.clone(), data_cache_size);
 
         let filesystem = Self {
             repo: repo.clone(),
-            stash: Mutex::new(stash),
+            stash: RwLock::new(stash),
+            tree_cache,
+            blob_cache,
             metadata_only,
+            rt_handle,
         };
 
         let mut config = Config::default();
@@ -56,8 +69,8 @@ impl MapacheFS {
         config.clone_fd = false;
 
         if let Err(e) = fuser::mount2(filesystem, mountpoint, &config) {
-            ui::cli::error!("FUSE error: {}", e.to_string());
             Self::unmount(mountpoint).context("Failed to unmount after error.")?;
+            return Err(anyhow!("FUSE error: {}", e));
         }
 
         Ok(())
@@ -73,88 +86,133 @@ impl MapacheFS {
 
         Ok(())
     }
+
+    async fn ensure_loaded(&self, ino: INodeNo) -> Result<()> {
+        let (tree_id, parent_crtime) = {
+            let stash = self.stash.read();
+            let node = match stash.get_node(ino) {
+                Some(n) => n,
+                None => return Ok(()),
+            };
+            match node.kind {
+                NodeKind::LazyDir { tree_id } => (tree_id, node.attr.crtime),
+                _ => return Ok(()),
+            }
+        };
+
+        let tree = self.tree_cache.load(&tree_id).await?;
+
+        let mut children_nodes = Vec::new();
+        {
+            let mut stash = self.stash.write();
+            // Check again after lock
+            if let Some(node) = stash.get_node(ino)
+                && let NodeKind::LazyDir { .. } = node.kind
+            {
+                for n in &tree.nodes {
+                    let child_ino = stash.next_ino();
+                    let attr = node_to_fileattr(child_ino, parent_crtime, n);
+                    let kind = match n.node_type {
+                        NodeType::Directory => NodeKind::LazyDir {
+                            tree_id: n.tree.unwrap(),
+                        },
+                        NodeType::Symlink => NodeKind::Symlink {
+                            target: n
+                                .symlink_info
+                                .clone()
+                                .map(|i| i.target_path.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                        },
+                        _ => NodeKind::File {
+                            blobs: n.blobs.clone().unwrap_or_default(),
+                        },
+                    };
+                    children_nodes.push((n.name.clone(), kind, attr));
+                }
+                stash.upgrade_lazy_dir(ino, children_nodes);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Filesystem for MapacheFS {
     fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), std::io::Error> {
-        let snapshot_stream = SnapshotStream::new(self.repo.clone());
-        if let Err(e) = &snapshot_stream {
-            ui::cli::error!("Failed to read snapshots: {}", e.to_string());
-        }
-        let mut snapshots: Vec<(ID, Snapshot)> = snapshot_stream.unwrap().collect();
-        snapshots.sort_unstable_by_key(|(_, snapshot)| snapshot.timestamp);
+        self.rt_handle.block_on(async {
+            let snapshot_stream = SnapshotStream::new(self.repo.clone()).await;
+            let mut snapshots: Vec<(ID, Snapshot)> = match snapshot_stream {
+                Ok(stream) => stream.collect().await,
+                Err(e) => {
+                    ui::cli::error!("Failed to read snapshots: {}", e.to_string());
+                    Vec::new()
+                }
+            };
+            snapshots.sort_unstable_by_key(|(_, snapshot)| snapshot.timestamp);
 
-        // snapshots
-        let snapshots_ino = self
-            .stash
-            .lock()
-            .add_dir(INodeNo::ROOT, String::from("snapshots"));
+            let mut stash = self.stash.write();
 
-        // ids
-        let ids_ino = self
-            .stash
-            .lock()
-            .add_dir(snapshots_ino, String::from("ids"));
+            // snapshots
+            let snapshots_ino = stash.add_dir(INodeNo::ROOT, String::from("snapshots"));
 
-        for (id, snapshot) in &snapshots {
-            self.stash
-                .lock()
-                .add_snapshot_dir(ids_ino, id.to_hex(), snapshot.tree);
-        }
+            // ids
+            let ids_ino = stash.add_dir(snapshots_ino, String::from("ids"));
 
-        // by_date
-        let by_date_ino = self
-            .stash
-            .lock()
-            .add_dir(snapshots_ino, String::from("by_date"));
-        for (id, snapshot) in &snapshots {
-            let name = format!(
-                "{} - {}",
-                utils::pretty_print_timestamp(&snapshot.timestamp),
-                id.to_short_hex(4)
-            );
-            let target = format!("../ids/{}", id.to_hex());
-            self.stash
-                .lock()
-                .add_symlink(by_date_ino, name.clone(), target);
-        }
+            for (id, snapshot) in &snapshots {
+                stash.add_snapshot_dir(ids_ino, id.to_hex(), snapshot.tree);
+            }
 
-        // Links to the latest snapshot
-        if !snapshots.is_empty() {
-            let (latest_id, latest_snapshot) = snapshots.last().unwrap().clone();
+            // by_date
+            let by_date_ino = stash.add_dir(snapshots_ino, String::from("by_date"));
+            for (id, snapshot) in &snapshots {
+                let name = format!(
+                    "{} - {}",
+                    utils::pretty_print_timestamp(&snapshot.timestamp),
+                    id.to_short_hex(4)
+                );
+                let target = format!("../ids/{}", id.to_hex());
+                stash.add_symlink(by_date_ino, name.clone(), target);
+            }
 
-            self.stash
-                .lock()
-                .add_symlink(ids_ino, String::from("latest"), latest_id.to_hex());
+            // Links to the latest snapshot
+            if !snapshots.is_empty() {
+                let (latest_id, latest_snapshot) = snapshots.last().unwrap().clone();
 
-            let by_date_name = format!(
-                "{} - {}",
-                utils::pretty_print_timestamp(&latest_snapshot.timestamp),
-                latest_id.to_short_hex(4)
-            );
-            self.stash
-                .lock()
-                .add_symlink(by_date_ino, String::from("latest"), by_date_name);
-        }
+                stash.add_symlink(ids_ino, String::from("latest"), latest_id.to_hex());
+
+                let by_date_name = format!(
+                    "{} - {}",
+                    utils::pretty_print_timestamp(&latest_snapshot.timestamp),
+                    latest_id.to_short_hex(4)
+                );
+                stash.add_symlink(by_date_ino, String::from("latest"), by_date_name);
+            }
+        });
 
         Ok(())
     }
 
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        match self
-            .stash
-            .lock()
-            .lookup(parent, name.to_string_lossy().to_string())
-        {
-            None => {
-                reply.error(Errno::ENOENT);
-            }
-            Some(attr) => reply.entry(&TTL, attr, Generation(0)),
+        let name_str = name.to_string_lossy().to_string();
+
+        // Quick check
+        if let Some(attr) = self.stash.read().get_attr_by_name(parent, &name_str) {
+            return reply.entry(&TTL, &attr, Generation(0));
+        }
+
+        // If not found, load the directory.
+        let result = self.rt_handle.block_on(async {
+            self.ensure_loaded(parent).await?;
+            Ok::<_, anyhow::Error>(self.stash.read().get_attr_by_name(parent, &name_str))
+        });
+
+        match result {
+            Ok(Some(attr)) => reply.entry(&TTL, &attr, Generation(0)),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-        match self.stash.lock().get_attr(ino) {
+        match self.stash.read().get_attr(ino) {
             None => reply.error(Errno::ENOENT),
             Some(attr) => reply.attr(&TTL, &attr),
         }
@@ -168,7 +226,10 @@ impl Filesystem for MapacheFS {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let entries = self.stash.lock().read_dir(ino, offset);
+        let entries = self.rt_handle.block_on(async {
+            let _ = self.ensure_loaded(ino).await;
+            self.stash.read().read_dir(ino, offset)
+        });
 
         for (i, (child_ino, file_type, name)) in entries.into_iter().enumerate() {
             let next_offset = offset + (i as u64) + 1;
@@ -180,15 +241,8 @@ impl Filesystem for MapacheFS {
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
-        match self.stash.lock().get_attr(ino) {
+        match self.stash.read().get_attr(ino) {
             Some(attr) if attr.kind == fuser::FileType::RegularFile => {
-                // For a read-only filesystem, we don't need a file handle (fh).
-                // The kernel typically uses the 'ino' directly for read operations
-                // However, FUSE expects a non-zero fh if you intend to use it later.
-                // Since we're not maintaining per-file state, we can just return 0
-                // but for correctness in case FUSE expects it, using the ino itself
-                // as the fh is a common simple approach.
-
                 if self.metadata_only {
                     reply.error(Errno::EACCES); // Permission denied
                 } else {
@@ -219,20 +273,77 @@ impl Filesystem for MapacheFS {
             return reply.error(Errno::EACCES);
         }
 
-        match self.stash.lock().read_from_file(ino, offset, size) {
-            Ok(Some(data)) => reply.data(&data),
-            Ok(None) => reply.error(Errno::ENOENT),
+        let result = self.rt_handle.block_on(async {
+            let blobs = {
+                let stash = self.stash.read();
+                match stash.get_node(ino) {
+                    Some(n) => match n.kind {
+                        NodeKind::File { blobs } => blobs,
+                        _ => bail!("Not a file"),
+                    },
+                    None => bail!("Not found"),
+                }
+            };
+
+            let index = self.repo.index();
+            let mut buffer = Vec::with_capacity(size as usize);
+            let mut file_pos: u64 = 0;
+            let mut remaining_size = size;
+            let mut current_offset = offset;
+
+            for blob_id in &blobs {
+                if remaining_size == 0 {
+                    break;
+                }
+
+                let descriptor = index
+                    .get(blob_id)
+                    .ok_or_else(|| anyhow!("Missing blob descriptor for {blob_id}"))?;
+                let blob_len = descriptor.raw_length as u64;
+                let blob_end = file_pos + blob_len;
+
+                if blob_end <= current_offset {
+                    file_pos += blob_len;
+                    continue;
+                }
+
+                let start_in_blob = current_offset.saturating_sub(file_pos) as usize;
+                let bytes_available = (blob_len as usize).saturating_sub(start_in_blob);
+                let bytes_to_read = bytes_available.min(remaining_size as usize);
+
+                if bytes_to_read > 0 {
+                    let blob_data = self.blob_cache.load(blob_id).await?;
+                    buffer.extend_from_slice(
+                        &blob_data[start_in_blob..start_in_blob + bytes_to_read],
+                    );
+
+                    remaining_size -= bytes_to_read as u32;
+                    current_offset += bytes_to_read as u64;
+                }
+
+                file_pos += blob_len;
+            }
+
+            Ok(buffer)
+        });
+
+        match result {
+            Ok(data) => reply.data(&data),
             Err(e) => {
-                ui::cli::error!("Failed to read data for ino {}: {}", ino, e.to_string());
-                reply.error(Errno::EIO);
+                if e.to_string() == "Not found" {
+                    reply.error(Errno::ENOENT);
+                } else {
+                    ui::cli::error!("Failed to read data for ino {}: {}", ino, e.to_string());
+                    reply.error(Errno::EIO);
+                }
             }
         }
     }
 
     fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
-        match self.stash.lock().read_link(ino) {
-            Err(_) => reply.error(Errno::ENOENT),
-            Ok(target) => reply.data(target.as_bytes()),
+        match self.stash.read().read_link(ino) {
+            Some(target) => reply.data(target.as_bytes()),
+            None => reply.error(Errno::ENOENT),
         };
     }
 }

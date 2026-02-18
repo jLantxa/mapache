@@ -22,8 +22,8 @@ mod tests {
         test_utils,
     };
 
-    #[test]
-    fn test_restore_with_filter() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_with_filter() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -60,7 +60,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -88,6 +88,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
@@ -108,7 +109,9 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         let restored_paths = vec![
             PathBuf::from("0"),
@@ -153,8 +156,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_restore_dry_run() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_dry_run() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -191,7 +194,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -214,6 +217,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
@@ -231,15 +235,17 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).context("Failed to run cmd_restore")?;
+        commands::cmd_restore::run(&global, &restore_args)
+            .await
+            .context("Failed to run cmd_restore")?;
 
         assert!(!restore_path.exists());
 
         Ok(())
     }
 
-    #[test]
-    fn test_restore_strip_prefix() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_strip_prefix() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -276,7 +282,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -299,6 +305,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore 1
@@ -320,6 +327,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore 1")?;
 
         let restored_paths = vec![PathBuf::from("file0.txt"), PathBuf::from("00/file00.txt")];
@@ -344,6 +352,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore 2")?;
 
         let restored_paths = vec![PathBuf::from("file00.txt")];
@@ -355,8 +364,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_restore_delete_default() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_delete_default() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -393,7 +402,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -416,6 +425,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore to create base files
@@ -434,6 +444,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore (1/2)")?;
 
         // Create extra files
@@ -469,6 +480,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore (2/2)")?;
 
         let paths = vec![
@@ -505,8 +517,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_restore_delete_default_with_include() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_delete_default_with_include() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -543,7 +555,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -566,6 +578,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore to create base files
@@ -584,6 +597,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore (1/2)")?;
 
         // Create extra files
@@ -619,6 +633,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore (2/2)")?;
 
         let paths = vec![
@@ -651,8 +666,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_restore_delete_no_preserve_root() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_delete_no_preserve_root() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -689,7 +704,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -712,6 +727,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore to create base files
@@ -730,6 +746,7 @@ mod tests {
             no_preserve_root: true,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore (1/2)")?;
 
         // Create extra files
@@ -765,6 +782,7 @@ mod tests {
             no_preserve_root: true,
         };
         commands::cmd_restore::run(&global, &restore_args)
+            .await
             .context("Failed to run cmd_restore (2/2)")?;
 
         let paths = vec![
@@ -801,8 +819,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_restore_with_conflict_resolution() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_with_conflict_resolution() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -839,7 +857,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo and create Snapshot 1
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![backup_data_tmp_path.join("0")],
@@ -856,6 +874,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot S1")?;
 
         let restore_path = tmp_path.join("restore_conflicts");
@@ -873,6 +892,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args_initial)
+            .await
             .context("Failed to run initial cmd_restore")?;
 
         let file_to_overwrite = restore_path.join("0").join("file0.txt");
@@ -905,6 +925,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args_overwrite)
+            .await
             .context("Failed to run cmd_restore Overwrite")?;
 
         // Verify that the file was overwritten
@@ -927,6 +948,7 @@ mod tests {
             no_preserve_root: false,
         };
         commands::cmd_restore::run(&global, &restore_args_skip)
+            .await
             .context("Failed to run cmd_restore Skip")?;
 
         // Verify that the local change was kept (skipped)

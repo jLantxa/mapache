@@ -24,20 +24,22 @@ mod test_cmd_mount;
 
 const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
 
-fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
+async fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
     let backend = Arc::new(LocalFS::new(repo_path));
-    let _ = Repository::init(Some(auth), None, backend).context("Failed to init repo")?;
+    let _ = Repository::init(Some(auth), None, backend)
+        .await
+        .context("Failed to init repo")?;
     Ok(())
 }
 
 /// Remove all file nodes from a base directory. This is useful to remove all
 /// index files or packs from the repository, without deleting the directories.
-fn delete_all_files_from(backend: &dyn StorageBackend, dir: &Path) -> Result<()> {
-    let backend_objects = read_backend_dir(backend, &PathBuf::from(dir))?;
+async fn delete_all_files_from(backend: &dyn StorageBackend, dir: &Path) -> Result<()> {
+    let backend_objects = read_backend_dir(backend, &PathBuf::from(dir)).await?;
 
     for node in backend_objects {
         match node {
-            mapache::backend::BackendNode::File(path) => backend.remove(&path)?,
+            mapache::backend::BackendNode::File(path) => backend.remove(&path).await?,
             mapache::backend::BackendNode::Dir(_) => (),
         }
     }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
+use futures::StreamExt;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -30,7 +31,7 @@ pub struct CmdArgs {
     pub target_snapshot_id: String,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
     let config = RepoConfig {
@@ -39,42 +40,46 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (repo, _, lock) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let _cleanup = CleanupHandler::new({
-        let lock = lock.clone();
-        move || lock.write().unlock()
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
-    let (src_id, _) = repo.find(ContentIdType::Snapshot, &args.source_snapshot_id)?;
-    let (tgt_id, _) = repo.find(ContentIdType::Snapshot, &args.target_snapshot_id)?;
-    let src_snap = repo.load_snapshot(&src_id, None)?;
-    let tgt_snap = repo.load_snapshot(&tgt_id, None)?;
+    let (src_id, _) = repo
+        .find(ContentIdType::Snapshot, &args.source_snapshot_id)
+        .await?;
+    let (tgt_id, _) = repo
+        .find(ContentIdType::Snapshot, &args.target_snapshot_id)
+        .await?;
+    let src_snap = repo.load_snapshot(&src_id, None).await?;
+    let tgt_snap = repo.load_snapshot(&tgt_id, None).await?;
 
-    let stream = NodeDiffStream::new(
+    let mut stream = NodeDiffStream::new(
         SerializedNodeStream::new(
             repo.clone(),
             Some(src_snap.tree),
             PathBuf::new(),
             None,
             None,
-        )?,
+        )
+        .await?,
         SerializedNodeStream::new(
             repo.clone(),
             Some(tgt_snap.tree),
             PathBuf::new(),
             None,
             None,
-        )?,
+        )
+        .await?,
     );
 
     ui::cli::log!(
@@ -84,7 +89,9 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     );
 
     let mut counts = DiffCounts::default();
-    for (path, source, target, diff_type) in stream.flatten() {
+    while let Some(res) = stream.next().await {
+        let (path, source, target, diff_type) = res?;
+
         let node = target
             .as_ref()
             .or(source.as_ref())

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Args;
+use futures::StreamExt;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -27,7 +28,7 @@ pub struct CmdArgs {
     pub snapshot: Option<UseSnapshot>,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -36,28 +37,27 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
     let snapshots: Vec<(ID, Snapshot)> = if let Some(use_snap) = &args.snapshot {
-        find_use_snapshot(repo.clone(), use_snap)?
+        find_use_snapshot(repo.clone(), use_snap)
+            .await?
             .into_iter()
             .collect()
     } else {
-        SnapshotStream::new(repo.clone())?.collect()
+        SnapshotStream::new(repo.clone()).await?.collect().await
     };
 
     if snapshots.is_empty() {
@@ -66,7 +66,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     for (id, snap) in snapshots {
-        let found = find_in_snapshot(repo.clone(), &snap, &args.target)?;
+        let found = find_in_snapshot(repo.clone(), &snap, &args.target).await?;
         if !found.is_empty() {
             ui::cli::log!("Found in snapshot {}", id.to_hex());
             for (path, node) in found {

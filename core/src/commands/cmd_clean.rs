@@ -37,7 +37,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run))?;
 
@@ -46,27 +46,24 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         true,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
+    repo.reload_master_index().await?;
 
-    repo.reload_master_index()?;
-
-    run_with_repo(global_args, args, repo)
+    run_with_repo(global_args, args, repo).await
 }
 
 /// Run the command with an initialized repository object.
-pub fn run_with_repo(
+pub async fn run_with_repo(
     _global_args: &GlobalArgs,
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
@@ -81,7 +78,7 @@ pub fn run_with_repo(
     let start = Instant::now();
     ui::cli::log!();
 
-    let plan = gc::scan(repo.clone(), tolerance)?;
+    let plan = gc::scan(repo.clone(), tolerance).await?;
 
     ui::cli::log!();
     ui::cli::log!("Total packs: {}", plan.total_packs.to_string(),);
@@ -105,7 +102,7 @@ pub fn run_with_repo(
     if args.dry_run {
         ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
     } else {
-        let gc_sizes = plan.execute()?;
+        let gc_sizes = plan.execute().await?;
         let net_deleted_bytes = gc_sizes.deleted_bytes as i64 - gc_sizes.added_bytes as i64;
 
         // Report the total written and deleted bytes.

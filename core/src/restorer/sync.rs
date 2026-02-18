@@ -6,11 +6,12 @@ use std::{
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use futures::StreamExt;
 
 use crate::{fs::tree::SerializedTreeStream, mapache::ID, repository::repo::Repository, ui};
 
 /// Delete all local nodes not present in a snapshot tree
-pub fn delete_nodes(
+pub async fn delete_nodes(
     repo: Arc<Repository>,
     target_path: PathBuf,
     root_tree_id: &ID,
@@ -21,6 +22,7 @@ pub fn delete_nodes(
 ) -> Result<()> {
     let mut tree_stream =
         SerializedTreeStream::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
+            .await
             .with_context(|| {
                 format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
             })?;
@@ -28,10 +30,10 @@ pub fn delete_nodes(
     // If we preserve nodes at the root level, we skip the first node in the
     // stream, which corresponds to the root.
     if !no_preserve_root {
-        tree_stream.next();
+        let _ = tree_stream.next().await;
     }
 
-    for item_result in tree_stream {
+    while let Some(item_result) = tree_stream.next().await {
         // Handle potential errors from the stream itself.
         // If an error occurs, log a warning and skip to the next item,
         // rather than bailing out entirely, which seems to be the intended behavior.

@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Result;
+use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use crate::{
@@ -72,7 +73,7 @@ impl CacheBackend {
 
 impl CacheBackend {
     /// Cache a complete file into the local cache.
-    fn cache_file(&self, path: &Path) -> Result<()> {
+    async fn cache_file(&self, path: &Path) -> Result<()> {
         let path_buf = path.to_path_buf();
         let handle = Handle::new(path);
 
@@ -99,16 +100,17 @@ impl CacheBackend {
             }
         } // Lock is released here.
 
-        let result = (|| {
-            let data = self.backend.read(&handle, 0, 0)?;
+        let result = async {
+            let data = self.backend.read(&handle, 0, 0).await?;
 
             if let Some(parent) = path.parent() {
-                self.cache.create_dir(parent)?;
+                self.cache.create_dir(parent).await?;
             }
-            self.cache.write(&handle, &data)?;
+            self.cache.write(&handle, &data).await?;
 
             Ok(())
-        })();
+        }
+        .await;
 
         let mut queue = self.download_queue.lock();
 
@@ -125,69 +127,70 @@ impl CacheBackend {
     }
 }
 
+#[async_trait]
 impl StorageBackend for CacheBackend {
-    fn create(&self) -> Result<()> {
-        self.cache.create()?;
-        self.backend.create()?;
+    async fn create(&self) -> Result<()> {
+        self.cache.create().await?;
+        self.backend.create().await?;
         Ok(())
     }
 
-    fn path_exists(&self, path: &Path) -> bool {
-        self.backend.path_exists(path)
+    async fn path_exists(&self, path: &Path) -> bool {
+        self.backend.path_exists(path).await
     }
 
-    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+    async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         if !Self::should_cache(handle) {
             // If the handle is not eligible for caching, read directly from the primary.
-            let data = self.backend.read(handle, offset, length)?;
+            let data = self.backend.read(handle, offset, length).await?;
             return Ok(data);
         }
 
         // Try reading from the cache.
-        match self.cache.read(handle, offset, length) {
+        match self.cache.read(handle, offset, length).await {
             Ok(data) => Ok(data), // Cache Hit
             Err(_) => {
                 // Cache Miss: Cache the file and read again from cache.
-                self.cache_file(handle.path)?;
-                self.cache.read(handle, offset, length)
+                self.cache_file(handle.path).await?;
+                self.cache.read(handle, offset, length).await
             }
         }
     }
 
-    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
         // Write to the primary backend first
-        self.backend.write(handle, contents)?;
+        self.backend.write(handle, contents).await?;
 
         // Then write to the cache backend
         if Self::should_cache(handle) {
             if let Some(parent) = handle.path.parent() {
-                self.cache.create_dir(parent)?;
+                self.cache.create_dir(parent).await?;
             }
 
-            self.cache.write(handle, contents)?;
+            self.cache.write(handle, contents).await?;
         }
 
         Ok(())
     }
 
-    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+    async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         // Try to rename the cached path. If it failed, it didn't exist.
         // If this file should be cached, it will be next time it is read.
-        let _ = self.cache.rename(from, to);
+        let _ = self.cache.rename(from, to).await;
 
-        self.backend.rename(from, to)?;
+        self.backend.rename(from, to).await?;
         Ok(())
     }
 
-    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        self.backend.list_dir(path)
+    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.backend.list_dir(path).await
     }
 
-    fn create_dir(&self, path: &Path) -> Result<()> {
-        self.backend.create_dir(path)
+    async fn create_dir(&self, path: &Path) -> Result<()> {
+        self.backend.create_dir(path).await
     }
 
-    fn remove(&self, file_path: &Path) -> Result<()> {
+    async fn remove(&self, file_path: &Path) -> Result<()> {
         let path_buf = file_path.to_path_buf();
 
         loop {
@@ -213,21 +216,21 @@ impl StorageBackend for CacheBackend {
             }
         }
 
-        self.cache.remove(file_path)?;
-        self.backend.remove(file_path)?;
+        self.cache.remove(file_path).await?;
+        self.backend.remove(file_path).await?;
 
         Ok(())
     }
 
-    fn is_file(&self, path: &Path) -> bool {
-        self.backend.is_file(path)
+    async fn is_file(&self, path: &Path) -> bool {
+        self.backend.is_file(path).await
     }
 
-    fn is_dir(&self, path: &Path) -> bool {
-        self.backend.is_dir(path)
+    async fn is_dir(&self, path: &Path) -> bool {
+        self.backend.is_dir(path).await
     }
 
-    fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
-        self.backend.lstat(path)
+    async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
+        self.backend.lstat(path).await
     }
 }

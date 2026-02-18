@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use chrono::{Duration, Local};
 use clap::{ArgGroup, Parser};
 use colored::Colorize;
+use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
@@ -105,7 +106,7 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
 
 const FORGET_MSG: &str = "forget";
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run))?;
 
@@ -114,27 +115,27 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         true,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())?
+    let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
+        .await?
         .map(|(id, snapshot)| SnapshotEntry {
             id,
             snapshot,
             active: true,
         })
-        .collect();
+        .collect()
+        .await;
 
     if let Some(tags) = &args.tags_str {
         let tags = parse_tags(Some(tags));
@@ -147,7 +148,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if !args.forget.is_empty() {
         let mut forget_ids = IdSet::default();
         for prefix in &args.forget {
-            let (id, _) = repo.find(ContentIdType::Snapshot, prefix)?;
+            let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
             forget_ids.insert(id);
         }
         for e in &snapshots_sorted {
@@ -200,13 +201,15 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if !args.dry_run && !removed_snapshots.is_empty() {
         for entry in &removed_snapshots {
             if args.force {
-                repo.delete_file(ContentIdType::Snapshot, &entry.id, None)?;
+                repo.delete_file(ContentIdType::Snapshot, &entry.id, None)
+                    .await?;
             } else {
                 repo.set_extension(
                     ContentIdType::Snapshot,
                     &entry.id,
                     Some(REPO_DROPPED_EXTENSION),
-                )?;
+                )
+                .await?;
             }
         }
     }
@@ -249,8 +252,8 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("Running garbage collector...");
         }
 
-        repo.reload_master_index()?; // We need to load the index for the garbage collector
-        commands::cmd_clean::run_with_repo(global_args, &gc_args, repo)?;
+        repo.reload_master_index().await?; // We need to load the index for the garbage collector
+        commands::cmd_clean::run_with_repo(global_args, &gc_args, repo).await?;
     }
 
     Ok(())

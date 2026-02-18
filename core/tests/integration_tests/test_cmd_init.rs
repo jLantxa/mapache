@@ -18,8 +18,8 @@ mod tests {
 
     use crate::TEST_QUIET;
 
-    #[test]
-    fn test_init() -> Result<()> {
+    #[tokio::test]
+    async fn test_init() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -53,7 +53,9 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        commands::cmd_init::run(&global, &args).context("Failed to run cmd_init")?;
+        commands::cmd_init::run(&global, &args)
+            .await
+            .context("Failed to run cmd_init")?;
 
         // Assert layout
         assert!(repo_path.join("manifest").exists());
@@ -71,13 +73,14 @@ mod tests {
         // Try to open repo
         let backend = Arc::new(LocalFS::new(repo_path));
         Repository::try_open_with_lock(Some(&auth), None, backend, TEST_REPO_CONFIG, false, None)
+            .await
             .context("Failed to open repository")?;
 
         Ok(())
     }
 
-    #[test]
-    fn test_init_and_open_with_ext_keyfile() -> Result<()> {
+    #[tokio::test]
+    async fn test_init_and_open_with_ext_keyfile() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -112,7 +115,9 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        commands::cmd_init::run(&global, &args).context("Failed to run cmd_init")?;
+        commands::cmd_init::run(&global, &args)
+            .await
+            .context("Failed to run cmd_init")?;
 
         // Assert layout
         assert!(repo_path.join("manifest").exists());
@@ -138,6 +143,7 @@ mod tests {
             false,
             None,
         )
+        .await
         .context("Failed to open repository")?;
 
         Ok(())

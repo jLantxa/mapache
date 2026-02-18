@@ -1,16 +1,13 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
 };
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use colored::Colorize;
+use futures::{StreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::{StorageBackend, read_backend_dir},
@@ -53,10 +50,10 @@ pub struct GcSizes {
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
-pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
-    let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone())?;
+pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
+    let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone()).await?;
 
-    let mut keep_packs: IdSet<ID> = repo.list_packs()?;
+    let mut keep_packs: IdSet<ID> = repo.list_packs().await?;
     let mut unused_packs = keep_packs.clone();
 
     keep_packs.retain(|id| referenced_packs.contains(id));
@@ -106,6 +103,7 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
             spinner.inc(1);
         }
     });
+    spinner.finish_and_clear();
 
     // Find small packs to repack
     let current_pack_size = repo.pack_size();
@@ -150,40 +148,39 @@ pub fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
 impl Plan {
     /// Execute the plan. Calling this method consumes the plan so it cannot be
     /// executed more than once.
-    pub fn execute(mut self) -> Result<GcSizes> {
+    pub async fn execute(mut self) -> Result<GcSizes> {
         let mut gc_sizes = GcSizes::default();
 
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
-        gc_sizes.deleted_bytes += remove_expired_locks(&self.repo)?;
+        gc_sizes.deleted_bytes += remove_expired_locks(&self.repo).await?;
+        delete_trash_files(self.repo.backend().as_ref()).await?;
 
-        delete_trash_files(self.repo.backend().as_ref())?;
-
-        // Append small packs to the obsolete pack list. These will be repacked and deleted,
-        // which helps consolidate storage and eliminates duplicates that might be in them.
         if self.small_packs.len() > 1 {
             self.obsolete_packs.extend(self.small_packs.drain());
         }
 
-        gc_sizes.deleted_bytes += self.delete_unused_packs()?;
+        gc_sizes.deleted_bytes += self.delete_unused_packs().await?;
 
         // No need to repack and rewrite the indices if there are no obsolete packs
         if !self.obsolete_packs.is_empty() {
             self.repo
                 .init_pack_saver(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
-            self.repack()?;
-            let repo_stats = self.repo.flush_and_finalize_pack_saver()?;
+
+            self.repack().await?;
+
+            let repo_stats = self.repo.flush_and_finalize_pack_saver().await?;
 
             gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
-            gc_sizes.deleted_bytes += self.delete_old_indices()?;
-            gc_sizes.deleted_bytes += self.delete_obsolete_packs()?;
+            gc_sizes.deleted_bytes += self.delete_old_indices().await?;
+            gc_sizes.deleted_bytes += self.delete_obsolete_packs().await?;
         }
 
         Ok(gc_sizes)
     }
 
     /// Delete packs that contain no referenced blobs.
-    fn delete_unused_packs(&self) -> Result<u64> {
+    async fn delete_unused_packs(&self) -> Result<u64> {
         let unused_pack_delete_bar = ProgressBar::with_draw_target(
             Some(self.unused_packs.len() as u64),
             default_bar_draw_target(),
@@ -199,7 +196,7 @@ impl Plan {
 
         let mut deleted_size = 0;
         for id in &self.unused_packs {
-            deleted_size += self.repo.delete_file(ContentIdType::Pack, id, None)?;
+            deleted_size += self.repo.delete_file(ContentIdType::Pack, id, None).await?;
             unused_pack_delete_bar.inc(1);
         }
         unused_pack_delete_bar.finish_and_clear();
@@ -210,7 +207,7 @@ impl Plan {
 
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
-    fn repack(&mut self) -> Result<()> {
+    async fn repack(&mut self) -> Result<()> {
         // Collect information about ALL referenced blobs in obsolete packs.
         // We use iter_ids to find every single record (including duplicates)
         // that points into a pack scheduled for deletion.
@@ -258,60 +255,41 @@ impl Plan {
         // This is where the old, duplicate index entries are logically removed.
         self.repo.index().cleanup(Some(&self.obsolete_packs));
 
-        let repack_bar = ProgressBar::with_draw_target(
-            Some(repack_blob_info.len() as u64),
-            default_bar_draw_target(),
-        )
-        .with_style(
-            ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] Repacking blobs: ({pos} / {len})")
-                .unwrap()
-                .progress_chars("=> "),
-        );
-        repack_bar.tick();
+        let rt_handle = tokio::runtime::Handle::current();
+        let (tx, rx) = crossbeam_channel::unbounded();
 
-        const REPACK_CONCURRENCY: usize = 4;
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(REPACK_CONCURRENCY)
-            .build()
-            .expect("Failed to build thread pool");
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
 
-        let process_result: Result<()> = pool.install(|| {
-            repack_blob_info.into_par_iter().try_for_each_init(
-                || {
-                    self.repo
-                        .get_encoding_context()
-                        .expect("Failed to create thread context")
-                },
-                |ctx, (blob_id, (pack_id, blob_type, offset, _raw_length, length))| {
-                    // Read and decode the original data from the obsolete pack.
-                    let data = self.repo.read_from_pack_and_decode(
-                        blob_type,
-                        &pack_id,
-                        offset as u64,
-                        length as u64,
-                    )?;
+        pool.scope(|s| {
+            for (blob_id, (pack_id, blob_type, offset, _, length)) in repack_blob_info {
+                let repo = self.repo.clone();
+                let rt = rt_handle.clone();
+                let tx = tx.clone();
 
-                    // Re-encode and save the blob. SaveID::WithID ensures the same blob_id is used,
-                    // and its new location is recorded in the MasterIndex.
-                    // let (_id, data_size, meta_size) = self.repo.encode_and_save_blob(
-                    self.repo.encode_and_save_blob(
-                        ctx,
-                        blob_type,
-                        data,
-                        SaveID::WithID(blob_id),
-                    )?;
+                s.spawn(move |_| {
+                    let res = rt.block_on(async {
+                        let data = repo
+                            .read_from_pack_and_decode(
+                                blob_type,
+                                &pack_id,
+                                offset as u64,
+                                length as u64,
+                            )
+                            .await?;
 
-                    repack_bar.inc(1);
-                    Ok(())
-                },
-            )
+                        // Re-pack via the PackSaver (which is already handling its own threads)
+                        repo.encode_and_save_blob(blob_type, data, SaveID::WithID(blob_id))
+                            .await
+                    });
+                    let _ = tx.send(res);
+                });
+            }
         });
-        repack_bar.finish_and_clear();
-        ui::cli::log!("Repacked {} unique blobs", repack_bar.position());
 
-        if let Err(e) = process_result {
-            bail!("An error occurred during repacking: {e}");
+        // Check for errors in the channel
+        drop(tx);
+        for res in rx {
+            res?;
         }
 
         Ok(())
@@ -320,11 +298,14 @@ impl Plan {
     /// Delete old index files
     /// This operation must be performed after the master index has been cleaned up
     /// and all referenced packs have been repacked.
-    fn delete_old_indices(&mut self) -> Result<u64> {
-        // Delete obsolete index files
+    async fn delete_old_indices(&mut self) -> Result<u64> {
         // Make sure that the new index files don't overlap the files to delete.
         let new_index_ids = self.repo.index().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
+
+        if self.index_ids.is_empty() {
+            return Ok(0);
+        }
 
         let index_delete_bar = ProgressBar::with_draw_target(
             Some(self.index_ids.len() as u64),
@@ -339,58 +320,90 @@ impl Plan {
                 .progress_chars("=> "),
         );
 
-        let deleted_size = AtomicU64::new(0);
-        self.index_ids.par_iter().for_each(|id| {
-            let size_res = self.repo.delete_file(ContentIdType::Index, id, None);
-            deleted_size.fetch_add(size_res.unwrap_or(0), Ordering::AcqRel);
-            index_delete_bar.inc(1);
-        });
+        let deleted_size = stream::iter(&self.index_ids)
+            .map(|id| {
+                let repo = &self.repo;
+                let bar = &index_delete_bar;
+                async move {
+                    let size = repo
+                        .delete_file(ContentIdType::Index, id, None)
+                        .await
+                        .unwrap_or(0);
+                    bar.inc(1);
+                    size
+                }
+            })
+            .buffer_unordered(8)
+            .fold(0u64, |acc, size| async move { acc + size })
+            .await;
+
         index_delete_bar.finish_and_clear();
+
         ui::cli::log!(
             "Deleted {} obsolete index files",
             index_delete_bar.position()
         );
 
-        Ok(deleted_size.load(Ordering::Relaxed))
+        Ok(deleted_size)
     }
 
     /// Delete all pack files marked as obsolete.
-    fn delete_obsolete_packs(&self) -> Result<u64> {
-        // Delete obsolete pack files
-        let obsolete_pack_delete_bar = ProgressBar::with_draw_target(
-            Some(self.obsolete_packs.len() as u64),
-            default_bar_draw_target(),
-        )
-        .with_style(
-            ProgressStyle::default_bar()
-                .template("[{percent} %]  [{bar:20.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
-                .unwrap()
-                .progress_chars("=> "),
-        );
+    async fn delete_obsolete_packs(&self) -> Result<u64> {
+        if self.obsolete_packs.is_empty() {
+            return Ok(0);
+        }
 
-        let deleted_size = AtomicU64::new(0);
-        self.obsolete_packs.par_iter().for_each(|id| {
-            let size_res = self.repo.delete_file(ContentIdType::Pack, id, None);
-            deleted_size.fetch_add(size_res.unwrap_or(0), Ordering::AcqRel);
-            obsolete_pack_delete_bar.inc(1);
-        });
+        // Initialize progress bar
+        let obsolete_pack_delete_bar = ProgressBar::with_draw_target(
+        Some(self.obsolete_packs.len() as u64),
+        default_bar_draw_target(),
+    )
+    .with_style(
+        ProgressStyle::default_bar()
+            .template("[{percent} %]  [{bar:20.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
+            .unwrap()
+            .progress_chars("=> "),
+    );
+
+        // Convert the IdSet into an async stream.
+        // We map each ID to an async delete operation and process them in parallel.
+        let deleted_size = stream::iter(&self.obsolete_packs)
+            .map(|id| {
+                let repo = &self.repo;
+                let bar = &obsolete_pack_delete_bar;
+                async move {
+                    // Perform the async delete
+                    let size = repo
+                        .delete_file(ContentIdType::Pack, id, None)
+                        .await
+                        .unwrap_or(0);
+
+                    bar.inc(1);
+                    size
+                }
+            })
+            .buffer_unordered(8)
+            .fold(0u64, |acc, size| async move { acc + size })
+            .await;
+
         obsolete_pack_delete_bar.finish_and_clear();
+
         ui::cli::log!(
             "Deleted {} obsolete packs",
             obsolete_pack_delete_bar.position()
         );
 
-        Ok(deleted_size.load(Ordering::Relaxed))
+        Ok(deleted_size)
     }
 }
 
 /// Returns all blobs and packs referenced by all existing snapshots in the repository.
-fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, IdSet<ID>)> {
+async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, IdSet<ID>)> {
     let mut referenced_blobs: IdSet<ID> = IdSet::default();
     let mut referenced_packs: IdSet<ID> = IdSet::default();
     let index = repo.index();
 
-    let snapshot_stream = SnapshotStream::new(repo.clone())?;
+    let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -402,7 +415,7 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, I
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    for (_snapshot_id, snapshot) in snapshot_stream {
+    while let Some((_snapshot_id, snapshot)) = snapshot_stream.next().await {
         let tree_id = snapshot.tree;
 
         // Tree blob of the snapshot
@@ -423,13 +436,14 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, I
         }
 
         // Stream all nodes in the snapshot
-        let node_stream =
-            SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)?;
+        let mut node_stream =
+            SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)
+                .await?;
 
         let mut missing_tree_blobs = 0;
         let mut missing_data_blobs = 0;
 
-        for node_res in node_stream {
+        while let Some(node_res) = node_stream.next().await {
             match node_res {
                 Ok((_path, stream_node)) => {
                     let node = &stream_node.node;
@@ -500,14 +514,16 @@ fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, I
 }
 
 /// Remove all expired locks from the repository
-fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
-    let locks = repo.get_locks()?;
+async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
+    let locks = repo.get_locks().await?;
     let mut size_freed = 0;
     let mut num_deleted_locks = 0;
 
     for lock in locks {
         if lock.is_expired() {
-            size_freed += repo.delete_file(ContentIdType::Lock, lock.id(), None)?;
+            size_freed += repo
+                .delete_file(ContentIdType::Lock, lock.id(), None)
+                .await?;
             num_deleted_locks += 1;
         }
     }
@@ -521,8 +537,8 @@ fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
 }
 
 /// Remove all .tmp and .dropped files in the repository.
-fn delete_trash_files(backend: &dyn StorageBackend) -> Result<()> {
-    let nodes = read_backend_dir(backend, Path::new(""))?;
+async fn delete_trash_files(backend: &dyn StorageBackend) -> Result<()> {
+    let nodes = read_backend_dir(backend, Path::new("")).await?;
     let tmp_nodes = nodes
         .into_iter()
         .filter(|node| match node.path().extension() {
@@ -534,7 +550,7 @@ fn delete_trash_files(backend: &dyn StorageBackend) -> Result<()> {
         });
 
     for node in tmp_nodes {
-        if backend.remove(node.path()).is_err() {
+        if backend.remove(node.path()).await.is_err() {
             // Failing to delete one of these files is not a fatal error.
             ui::cli::warning!("Could not remove file {}", node.path().display())
         }

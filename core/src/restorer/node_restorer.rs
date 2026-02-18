@@ -20,7 +20,7 @@ use crate::{
 /// Restores a node to the specified destination path.
 /// This function does not restore file times for directory nodes. This must be
 /// done in a reparate pass.
-pub(crate) fn restore_node_to_path(
+pub(crate) async fn restore_node_to_path(
     repo: &Repository,
     progress_reporter: Arc<RestoreProgressReporter>,
     node: &Node,
@@ -57,7 +57,7 @@ pub(crate) fn restore_node_to_path(
             };
 
             for (index, blob_id) in blocks.iter().enumerate() {
-                let chunk_data = repo.load_blob(blob_id).with_context(|| {
+                let chunk_data = repo.load_blob(blob_id).await.with_context(|| {
                     format!(
                         "Could not load block #{} ({}) for restoring file {}",
                         index + 1,

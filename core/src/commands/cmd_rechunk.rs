@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
+use futures::StreamExt;
 
 use crate::{
     archiver::progress::SnapshotProgress,
@@ -25,7 +26,7 @@ use crate::{
 #[clap(long_about = "Rechunk all snapshots using the current chunker and parameters.")]
 pub struct CmdArgs {}
 
-pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -34,30 +35,29 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         true,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
     repo.init_pack_saver(1)?;
 
     let start = Instant::now();
 
-    let snapshot_stream = SnapshotStream::new(repo.clone())?;
+    let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
     let num_snapshots = snapshot_stream.len();
     let mut rechunked_blob_list_map = HashMap::new();
 
-    for (i, (snapshot_id, mut snapshot)) in snapshot_stream.enumerate() {
+    let mut enumerated_stream = snapshot_stream.enumerate();
+    while let Some((i, (snapshot_id, mut snapshot))) = enumerated_stream.next().await {
         ui::cli::log!(
             "Rechunking snapshot {} ({}/{})",
             snapshot_id
@@ -85,7 +85,8 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             Some(&mut rechunked_blob_list_map),
             progress.clone(),
             progress_reporter.clone(),
-        )?;
+        )
+        .await?;
 
         // Save the amended snapshot and delete the old snapshot file
         repo.save_file(
@@ -96,14 +97,16 @@ pub fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
                 is_metadata: true,
             },
             None,
-        )?;
+        )
+        .await?;
 
-        repo.delete_file(ContentIdType::Snapshot, &snapshot_id, None)?;
+        repo.delete_file(ContentIdType::Snapshot, &snapshot_id, None)
+            .await?;
 
         progress_reporter.finalize();
     }
 
-    repo.flush_and_finalize_pack_saver()?;
+    repo.flush_and_finalize_pack_saver().await?;
 
     ui::cli::log!(
         "Finished in {}",

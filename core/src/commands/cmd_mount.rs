@@ -39,7 +39,7 @@ pub struct CmdArgs {
     pub data_cache_size_mib: f32,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Check that mountpoint exists and is a directory, or create it if requested
     let actual_mountpoint = args.mountpoint.clone();
 
@@ -74,29 +74,20 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
     // Listen for CTRL + C to unmount.
-    let mpoint = cannonical_mountpoint.clone();
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        let _ = MapacheFS::unmount(&mpoint);
-        lock_handle_clone.write().unlock();
+    let cleanup_handler = CleanupHandler::new()?;
 
-        if created_mountpoint {
-            // Remove the mountpoint if it was created by us
-            let _ = std::fs::remove_dir_all(&mpoint);
-        }
-    })?;
-
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
     ui::cli::log!("Mounting repository in {}", cannonical_mountpoint.display());
     ui::cli::log!(
@@ -104,13 +95,46 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "Ctrl+C".bold()
     );
 
-    MapacheFS::mount(
-        repo,
-        &cannonical_mountpoint,
-        args.allow_other,
-        args.metadata_only,
-        (args.data_cache_size_mib * size::MiB as f32) as u64,
-    )?;
+    let mount_path = cannonical_mountpoint.clone();
+    let allow_other = args.allow_other;
+    let metadata_only = args.metadata_only;
+    let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
+
+    let mount_res = tokio::task::spawn_blocking(move || {
+        MapacheFS::mount(
+            repo,
+            &mount_path,
+            allow_other,
+            metadata_only,
+            data_cache_size,
+        )
+    });
+
+    tokio::select! {
+        res = mount_res => {
+            res.context("Mount task panicked")??;
+        }
+        _ = async {
+            loop {
+                if cleanup_handler.is_interrupted() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        } => {
+            ui::cli::log!("Interrupt received. Unmounting...");
+            let _ = MapacheFS::unmount(&cannonical_mountpoint);
+        }
+    }
+
+    if created_mountpoint {
+        ui::cli::verbose_1!(
+            "Removing created mountpoint {}",
+            cannonical_mountpoint.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&cannonical_mountpoint);
+    }
 
     Ok(())
 }

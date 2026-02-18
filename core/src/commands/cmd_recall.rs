@@ -17,7 +17,7 @@ pub struct CmdArgs {
     pub id: String,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -26,27 +26,27 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         true,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    let (id, _dropped_path) = repo.find_with_extension(
-        ContentIdType::Snapshot,
-        &args.id,
-        Some(REPO_DROPPED_EXTENSION),
-    )?;
+    let (id, _dropped_path) = repo
+        .find_with_extension(
+            ContentIdType::Snapshot,
+            &args.id,
+            Some(REPO_DROPPED_EXTENSION),
+        )
+        .await?;
 
-    repo.recall_dropped_snapshot(&id)?;
+    repo.recall_dropped_snapshot(&id).await?;
 
     Ok(())
 }

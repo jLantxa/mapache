@@ -1,7 +1,6 @@
-use std::{io::Read, path::Path, sync::Arc};
+use std::{io::Read, mem::MaybeUninit, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
-
 use chunker::Chunker;
 
 use crate::{
@@ -11,7 +10,7 @@ use crate::{
         tree::{NodeDiff, StreamNode},
     },
     mapache::{self, BlobType, ID, SaveID},
-    repository::{repo::Repository, storage::EncodingContext},
+    repository::repo::Repository,
     ui::snapshot::SnapshotProgressReporter,
     utils::size,
 };
@@ -24,7 +23,8 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::CHUNKER_NORMALIZATION,
 );
 
-pub(crate) fn process_item(
+/// Processes an item from the diff stream.
+pub(crate) async fn process_item(
     (path, prev_node, next_node, diff_type): (
         &Path,
         Option<StreamNode>,
@@ -32,7 +32,6 @@ pub(crate) fn process_item(
         NodeDiff,
     ),
     repo: Arc<Repository>,
-    encoding_context: &mut EncodingContext,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Option<StreamNode>> {
@@ -55,11 +54,11 @@ pub(crate) fn process_item(
                 format!("Inconsistent state: Unchanged diff but no prev_node for {path:?}")
             })?;
 
+            // Re-use blobs from the previous snapshot
             next.node.blobs = prev.node.blobs;
 
             if next.node.is_file() {
                 progress.processed_bytes(next.node.metadata.size);
-                // let reporter update UI (but progress owns counters)
                 progress_reporter.processed_bytes(next.node.metadata.size);
             }
             report_node_diff(&next.node, diff_type, progress);
@@ -77,17 +76,14 @@ pub(crate) fn process_item(
 
                 let file_size = next.node.metadata.size;
                 let capacity = (file_size as usize).min(size::MiB as usize);
-                let mut reader = std::io::BufReader::with_capacity(capacity, file);
+                let reader = std::io::BufReader::with_capacity(capacity, file);
 
-                let blobs_ids = chunk_and_store_file(
-                    repo,
-                    encoding_context,
-                    &mut reader,
-                    &next.node,
-                    progress,
-                    progress_reporter,
-                )
-                .with_context(|| format!("Failed to process blobs for: {}", path.display()))?;
+                let blobs_ids =
+                    chunk_and_store_file(repo, &next.node, reader, progress, progress_reporter)
+                        .await
+                        .with_context(|| {
+                            format!("Failed to process blobs for: {}", path.display())
+                        })?;
 
                 next.node.blobs = Some(blobs_ids);
             }
@@ -110,65 +106,71 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 }
 
 /// Split file into chunks and store blobs.
-pub(crate) fn chunk_and_store_file<R: Read>(
+pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
     repo: Arc<Repository>,
-    encoding_context: &mut EncodingContext,
-    reader: &mut R,
     node: &Node,
+    reader: R,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(
-            repo,
-            encoding_context,
-            reader,
-            node,
-            progress,
-            progress_reporter,
-        );
+        return store_small_file(repo, reader, node, progress, progress_reporter).await;
     }
 
-    let file_size = node.metadata.size;
-    let estimated_num_chunks = (file_size / mapache::defaults::NORMAL_CHUNK_SIZE).max(1) as usize;
-    let mut chunk_ids = Vec::with_capacity(estimated_num_chunks);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Vec<u8>, u64)>(2);
 
-    for result in DEFAULT_CHUNKER.stream(reader) {
-        let chunk = result.context("Failed to chunk file")?;
-        progress.processed_bytes(chunk.data.len() as u64);
-        // notify UI
-        progress_reporter.processed_bytes(chunk.data.len() as u64);
+    let file_size = node.metadata.size;
+    let chunker_handle = tokio::task::spawn_blocking(move || {
+        let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
+        for result in stream {
+            let chunk = result?;
+            let len = chunk.data.len() as u64;
+            if tx.blocking_send((chunk.data, len)).is_err() {
+                break;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let mut chunk_ids = Vec::new();
+
+    while let Some((data, chunk_len)) = rx.recv().await {
+        progress.processed_bytes(chunk_len);
+        progress_reporter.processed_bytes(chunk_len);
 
         let id = repo
-            .encode_and_save_blob(
-                encoding_context,
-                BlobType::Data,
-                chunk.data,
-                SaveID::CalculateID,
-            )
-            .context("Failed to save blob")?;
+            .encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)
+            .await?;
 
         chunk_ids.push(id);
     }
 
+    chunker_handle.await.context("Chunker panicked")??;
     Ok(chunk_ids)
 }
 
-fn store_small_file<R: Read>(
+async fn store_small_file<R: Read>(
     repo: Arc<Repository>,
-    encoding_context: &mut EncodingContext,
-    reader: &mut R,
+    mut reader: R,
     node: &Node,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
     let size = node.metadata.size as usize;
+    let mut data = Vec::with_capacity(size);
 
-    let mut data = vec![0u8; size];
-    reader.read_exact(&mut data)?;
+    unsafe {
+        // SAFETY: Memory is allocated but uninitialized; set_len is deferred until read_exact
+        // guarantees initialization, ensuring no UB if a panic or error occurs during I/O.
+        let slice = std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut MaybeUninit<u8>, size);
+        let buffer = &mut *(slice as *mut [MaybeUninit<u8>] as *mut [u8]);
+        reader.read_exact(buffer)?;
+        data.set_len(size);
+    }
 
-    let id =
-        repo.encode_and_save_blob(encoding_context, BlobType::Data, data, SaveID::CalculateID)?;
+    let id = repo
+        .encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)
+        .await?;
 
     progress.processed_bytes(node.metadata.size);
     progress_reporter.processed_bytes(node.metadata.size);

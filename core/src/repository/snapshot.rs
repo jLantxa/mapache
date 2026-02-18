@@ -1,14 +1,18 @@
 use std::{
     collections::BTreeSet,
     path::PathBuf,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    task::{Context, Poll},
 };
 
 use anyhow::Result;
+use async_stream::stream;
 use chrono::{DateTime, Local};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -88,13 +92,7 @@ impl Snapshot {
         if tags.contains(EMPTY_TAG_MARK) && self.tags.is_empty() {
             return true;
         }
-
-        for tag in &self.tags {
-            if tags.contains(tag) {
-                return true;
-            }
-        }
-        false
+        self.tags.iter().any(|tag| tags.contains(tag))
     }
 }
 
@@ -146,7 +144,7 @@ impl DiffCounts {
     }
 }
 
-/// Contadores concurrentes, lock-free.
+/// Concurrent counters. Lock-free.
 #[derive(Debug, Default)]
 pub struct DiffCountsAtomic {
     pub new_files: AtomicU64,
@@ -162,35 +160,33 @@ pub struct DiffCountsAtomic {
 impl DiffCountsAtomic {
     #[inline]
     pub fn increment(&self, is_dir: bool, diff_type: &NodeDiff) {
-        let o = Ordering::Relaxed;
-
         match diff_type {
             NodeDiff::New => {
                 if is_dir {
-                    self.new_dirs.fetch_add(1, o);
+                    self.new_dirs.fetch_add(1, Ordering::Relaxed);
                 } else {
-                    self.new_files.fetch_add(1, o);
+                    self.new_files.fetch_add(1, Ordering::Relaxed);
                 }
             }
             NodeDiff::Deleted => {
                 if is_dir {
-                    self.deleted_dirs.fetch_add(1, o);
+                    self.deleted_dirs.fetch_add(1, Ordering::Relaxed);
                 } else {
-                    self.deleted_files.fetch_add(1, o);
+                    self.deleted_files.fetch_add(1, Ordering::Relaxed);
                 }
             }
             NodeDiff::Changed => {
                 if is_dir {
-                    self.changed_dirs.fetch_add(1, o);
+                    self.changed_dirs.fetch_add(1, Ordering::Relaxed);
                 } else {
-                    self.changed_files.fetch_add(1, o);
+                    self.changed_files.fetch_add(1, Ordering::Relaxed);
                 }
             }
             NodeDiff::Unchanged => {
                 if is_dir {
-                    self.unchanged_dirs.fetch_add(1, o);
+                    self.unchanged_dirs.fetch_add(1, Ordering::Relaxed);
                 } else {
-                    self.unchanged_files.fetch_add(1, o);
+                    self.unchanged_files.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -231,90 +227,101 @@ pub struct SnapshotSummary {
     pub diff_counts: DiffCounts,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub amends: Option<ID>, // The ID of the snapshot amended by this one
+    pub amends: Option<ID>,
 }
 
-/// A snapshot stream.
-///
-/// This stream loads Snapshots on demand.
+/// A snapshot stream that loads Snapshots on demand.
+/// Implements `Stream` to allow for functional adapters like `map`, `filter`, etc.
 pub struct SnapshotStream {
-    snapshot_ids: Vec<ID>,
-    repo: Arc<Repository>,
+    inner: Pin<Box<dyn Stream<Item = (ID, Snapshot)> + Send>>,
     num_snapshots: usize,
-    ext: Option<String>,
+    remaining_count: Arc<AtomicU64>,
 }
 
 impl SnapshotStream {
-    /// Creates a new SnapshotStream for active snapshots.
-    pub fn new(repo: Arc<Repository>) -> Result<Self> {
-        let snapshot_ids = repo.list_snapshot_ids()?;
-        let num_snapshots = snapshot_ids.len();
+    pub async fn new(repo: Arc<Repository>) -> Result<Self> {
+        let snapshot_ids = repo.list_snapshot_ids().await?;
+        Ok(Self::make_stream(repo, snapshot_ids, None))
+    }
 
-        Ok(Self {
-            snapshot_ids,
+    pub async fn dropped(repo: Arc<Repository>) -> Result<Self> {
+        let snapshot_ids = repo.list_dropped_snapshot_ids().await?;
+        Ok(Self::make_stream(
             repo,
-            num_snapshots,
-            ext: None,
-        })
-    }
-
-    /// Creates a new SnapshotStream for dropped snapshots.
-    pub fn dropped(repo: Arc<Repository>) -> Result<Self> {
-        let snapshot_ids = repo.list_dropped_snapshot_ids()?;
-        let num_snapshots = snapshot_ids.len();
-
-        Ok(Self {
             snapshot_ids,
-            repo,
+            Some(REPO_DROPPED_EXTENSION.to_owned()),
+        ))
+    }
+
+    fn make_stream(repo: Arc<Repository>, mut ids: Vec<ID>, ext: Option<String>) -> Self {
+        let num_snapshots = ids.len();
+        let remaining_count = Arc::new(AtomicU64::new(num_snapshots as u64));
+        let remaining_ptr = remaining_count.clone();
+
+        // Use the stream! macro to generate the state machine automatically
+        let inner = stream! {
+            while let Some(id) = ids.pop() {
+                let res = repo.load_snapshot(&id, ext.as_deref()).await;
+
+                // Decrement the remaining counter regardless of success
+                remaining_ptr.fetch_sub(1, Ordering::Relaxed);
+
+                if let Ok(snapshot) = res {
+                    yield (id, snapshot);
+                } else {
+                    // Log error or skip corrupted snapshot silently
+                    continue;
+                }
+            }
+        };
+
+        Self {
+            inner: Box::pin(inner),
             num_snapshots,
-            ext: Some(REPO_DROPPED_EXTENSION.to_owned()),
-        })
+            remaining_count,
+        }
     }
 
-    /// The stream has no more Snapshot IDs to load. It is therefore empty.
-    pub fn is_empty(&self) -> bool {
-        self.snapshot_ids.is_empty()
-    }
-
-    /// Returns the total number of Snapshots without consuming the iterator
+    /// Returns total snapshots found at creation.
     pub fn len(&self) -> usize {
         self.num_snapshots
     }
 
-    /// Returns the number of Snapshot IDs remaining.
-    pub fn remaining(&self) -> usize {
-        self.snapshot_ids.len()
+    /// Returns true if no snapshots were found at creation.
+    pub fn is_empty(&self) -> bool {
+        self.num_snapshots == 0
     }
 
-    /// Consumes the iterator and returns the Snapshot with the latest ID.
-    pub fn latest(&mut self) -> Option<(ID, Snapshot)> {
-        self.snapshot_ids.sort_by_key(|id| {
-            // Load each snapshot just to get its timestamp
-            self.repo
-                .load_snapshot(id, self.ext.as_deref())
-                .ok()
-                .map(|s| s.timestamp)
-        });
+    /// Returns snapshots currently left in the stream buffer.
+    pub fn remaining(&self) -> usize {
+        self.remaining_count.load(Ordering::Relaxed) as usize
+    }
 
-        // Now the last ID in the sorted vector is the latest one.
-        // Pop it and load the snapshot one last time.
-        let latest_id = self.snapshot_ids.pop()?;
-        let latest_snapshot = self
-            .repo
-            .load_snapshot(&latest_id, self.ext.as_deref())
-            .ok()?;
+    pub async fn collect_entries(self, active: bool) -> SnapshotEntryList {
+        self.map(|(id, snapshot)| SnapshotEntry {
+            id,
+            snapshot,
+            active,
+        })
+        .collect()
+        .await
+    }
 
-        Some((latest_id, latest_snapshot))
+    pub async fn latest(self) -> Option<(ID, Snapshot)> {
+        self.fold::<Option<(ID, Snapshot)>, _, _>(None, |latest, (id, snap)| async move {
+            match latest {
+                Some((lid, lsnap)) if lsnap.timestamp > snap.timestamp => Some((lid, lsnap)),
+                _ => Some((id, snap)),
+            }
+        })
+        .await
     }
 }
 
-impl Iterator for SnapshotStream {
+impl Stream for SnapshotStream {
     type Item = (ID, Snapshot);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let id = self.snapshot_ids.pop()?;
-        self.repo
-            .load_snapshot(&id, self.ext.as_deref())
-            .map_or(None, |snapshot| Some((id, snapshot)))
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
     }
 }

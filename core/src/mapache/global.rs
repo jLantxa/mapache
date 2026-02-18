@@ -15,11 +15,6 @@ use crate::{
 pub const THIS_MAPACHE_VERSION: &str =
     concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO_PKG_VERSION"));
 
-/// Use mimalloc, but only on Windows. On Linux this leads to a higher RAM use.
-#[cfg(target_os = "windows")]
-#[global_allocator]
-static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 /// Base OS directories (cache, home, etc.)
 pub static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {
     BaseDirs::new().expect("Expected to find a valid user home directory to initialize base paths")

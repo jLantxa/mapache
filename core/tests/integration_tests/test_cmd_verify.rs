@@ -26,8 +26,8 @@ mod tests {
         test_utils,
     };
 
-    #[test]
-    fn test_verify_links() -> Result<()> {
+    #[tokio::test]
+    async fn test_verify_links() -> Result<()> {
         // Verify that all referenced objects are indexed.
         // A missing index would make it fail.
 
@@ -67,7 +67,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -90,6 +90,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let verify_args = cmd_verify::CmdArgs {
@@ -97,15 +98,16 @@ mod tests {
             with_cache: false,
             fail_early: true,
         };
-        let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "First verify should pass");
 
         let backend = Arc::new(LocalFS::new(repo_path.clone()));
 
         // Delete the index to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(INDEX_DIR))
+            .await
             .context("Failed to remove the index")?;
-        let second_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let second_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(
             second_verify_result.is_err(),
             "Verify should fail without an index"
@@ -114,8 +116,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_verify_snapshots() -> Result<()> {
+    #[tokio::test]
+    async fn test_verify_snapshots() -> Result<()> {
         // Verify that all snapshots refer to indexed objects, these objects exist
         // and the hash is correct. A missing pack would make it fail.
 
@@ -155,7 +157,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -178,6 +180,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let verify_args = cmd_verify::CmdArgs {
@@ -185,15 +188,16 @@ mod tests {
             with_cache: false,
             fail_early: true,
         };
-        let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "Verify should pass");
 
         let backend = Arc::new(LocalFS::new(repo_path.clone()));
 
         // Delete the packs to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(OBJECTS_DIR))
+            .await
             .context("Failed to remove the objects")?;
-        let second_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let second_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(
             second_verify_result.is_err(),
             "Verify should fail without the packs"
@@ -202,8 +206,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_verify_packs() -> Result<()> {
+    #[tokio::test]
+    async fn test_verify_packs() -> Result<()> {
         // Verify that all blobs in all packs have correct hashes, even if they
         // are not referenced in the index. A missing pack would make it fail.
 
@@ -243,7 +247,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -266,6 +270,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let verify_args = cmd_verify::CmdArgs {
@@ -273,14 +278,15 @@ mod tests {
             with_cache: false,
             fail_early: true,
         };
-        let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "Verify should pass");
 
         let backend = Arc::new(LocalFS::new(repo_path.clone()));
 
         // Bit flips should make it fail
         {
-            let backend_nodes = read_backend_dir(backend.as_ref(), &repo_path.join(OBJECTS_DIR))?;
+            let backend_nodes =
+                read_backend_dir(backend.as_ref(), &repo_path.join(OBJECTS_DIR)).await?;
 
             let first_pack_path = &repo_path.join(
                 backend_nodes
@@ -295,7 +301,7 @@ mod tests {
             let mut file = OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open(&first_pack_path)?;
+                .open(first_pack_path)?;
 
             let mut first_byte = [0u8; 1];
             file.read_exact(&mut first_byte)?;
@@ -303,7 +309,7 @@ mod tests {
             file.seek(SeekFrom::Start(0))?;
             file.write_all(&first_byte)?;
 
-            let bit_flip_verify_result = commands::cmd_verify::run(&global, &verify_args);
+            let bit_flip_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
             assert!(
                 bit_flip_verify_result.is_err(),
                 "Verify should fail because of bit-flip (decryption error)"
@@ -312,8 +318,9 @@ mod tests {
 
         // Delete the packs to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(OBJECTS_DIR))
+            .await
             .context("Failed to remove the objects")?;
-        let second_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let second_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(
             second_verify_result.is_err(),
             "Verify should fail without the packs (no root tree)"

@@ -41,7 +41,7 @@ pub struct CmdArgs {
     pub recursive: bool,
 }
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -50,39 +50,39 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
-    repo.reload_master_index()?;
+    repo.reload_master_index().await?;
 
-    let (_snapshot_id, snapshot) =
-        find_use_snapshot(repo.clone(), &args.snapshot)?.context("Snapshot not found")?;
+    let (_snapshot_id, snapshot) = find_use_snapshot(repo.clone(), &args.snapshot)
+        .await?
+        .context("Snapshot not found")?;
 
     let node = if let Some(p) = &args.path {
-        find_serialized_node(repo.as_ref(), &snapshot.tree, p)?
+        find_serialized_node(repo.as_ref(), &snapshot.tree, p)
+            .await?
             .with_context(|| format!("'{}' does not exist in snapshot", p.display()))?
     } else {
         Node::new_root(&snapshot.tree)
     };
 
-    ls(&args.path.clone().unwrap_or_default(), &node, &repo, args)?;
+    ls(&args.path.clone().unwrap_or_default(), &node, &repo, args).await?;
 
     Ok(())
 }
 
 /// List the contents of a node.
-fn ls(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+async fn ls(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
     if !node.is_dir() {
         ui::cli::log!(
             "{}",
@@ -95,17 +95,17 @@ fn ls(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()>
         ui::cli::log!("{}:", path.display());
     }
 
-    ls_recursive(path, node, repo, args)
+    ls_recursive(path, node, repo, args).await
 }
 
 /// List a snapshot tree.
-fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+async fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
     let mut stack: Vec<(PathBuf, Node)> = Vec::new();
 
     if node.is_dir() && args.recursive {
         stack.push((path.to_path_buf(), node.clone()));
     } else if node.is_dir() {
-        let mut tree = Tree::load_from_repo(repo, node.tree.as_ref().unwrap())?;
+        let mut tree = Tree::load_from_repo(repo, node.tree.as_ref().unwrap()).await?;
         tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         print_tree(&tree, args);
         return Ok(());
@@ -115,7 +115,7 @@ fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> 
         let tree_id = node.tree.as_ref().unwrap();
         let current_path = parent_path.join(&node.name);
 
-        let mut tree = Tree::load_from_repo(repo, tree_id)?;
+        let mut tree = Tree::load_from_repo(repo, tree_id).await?;
 
         if args.recursive {
             ui::cli::log!();

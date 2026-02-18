@@ -22,8 +22,8 @@ mod tests {
         test_utils::{self},
     };
 
-    #[test]
-    fn test_sync_no_delete() -> Result<()> {
+    #[tokio::test]
+    async fn test_sync_no_delete() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -60,7 +60,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -83,6 +83,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let dst_repo_path = tmp_path.join("sync_dst");
@@ -92,14 +93,18 @@ mod tests {
             dst_ssh_pubkey: None,
             dst_ssh_privatekey: None,
         };
-        cmd_sync::run(&global, &sync_args).context("Failed to run cmd_sync")?;
+        cmd_sync::run(&global, &sync_args)
+            .await
+            .context("Failed to run cmd_sync")?;
 
         let src_backend = Arc::new(LocalFS::new(repo_path));
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path));
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
-        let mut src_nodes = backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new())?;
-        let mut dst_nodes = backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())?;
+        let mut src_nodes =
+            backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new()).await?;
+        let mut dst_nodes =
+            backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new()).await?;
         src_nodes.sort_unstable_by(forward_cmp);
         dst_nodes.sort_unstable_by(forward_cmp);
 
@@ -108,8 +113,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_sync_with_delete() -> Result<()> {
+    #[tokio::test]
+    async fn test_sync_with_delete() -> Result<()> {
         let tmp_dir = tempdir()?;
         let tmp_path = tmp_dir.path();
         let auth = Auth {
@@ -146,7 +151,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -169,13 +174,14 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let dst_repo_path = tmp_path.join("sync_dst");
 
         let src_backend = Arc::new(LocalFS::new(repo_path));
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path.clone()));
-        dst_backend.create()?;
+        dst_backend.create().await?;
 
         // Add some dummy files to dst repo
         std::fs::create_dir_all(dst_repo_path.join("snapshots"))?;
@@ -200,11 +206,15 @@ mod tests {
             dst_ssh_pubkey: None,
             dst_ssh_privatekey: None,
         };
-        cmd_sync::run(&global, &sync_args).context("Failed to run cmd_sync")?;
+        cmd_sync::run(&global, &sync_args)
+            .await
+            .context("Failed to run cmd_sync")?;
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
-        let mut src_nodes = backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new())?;
-        let mut dst_nodes = backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())?;
+        let mut src_nodes =
+            backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new()).await?;
+        let mut dst_nodes =
+            backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new()).await?;
         src_nodes.sort_unstable_by(forward_cmp);
         dst_nodes.sort_unstable_by(forward_cmp);
 

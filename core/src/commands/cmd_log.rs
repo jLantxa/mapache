@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
+use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
@@ -44,7 +45,7 @@ pub struct CmdArgs {
 
 const LOG_MSG: &str = "log";
 
-pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false))?;
 
@@ -53,19 +54,17 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,
         false,
         global_args.retry_lock_duration,
-    )?;
+    )
+    .await?;
 
-    let lock_handle_clone = lock_handle.clone();
-    let _cleanup_handler = CleanupHandler::new(move || {
-        lock_handle_clone.write().unlock();
-    })?;
+    let _cleanup_handler = CleanupHandler::new()?;
 
     let show_active = args.all || !args.dropped;
     let show_dropped = args.all || args.dropped;
@@ -75,24 +74,28 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let mut snapshots = Vec::new();
 
             if show_active {
-                let mut active_snapshots = SnapshotStream::new(repo.clone())?
+                let mut active_snapshots = SnapshotStream::new(repo.clone())
+                    .await?
                     .map(|(id, snapshot)| SnapshotEntry {
                         id,
                         snapshot,
                         active: true,
                     })
-                    .collect();
+                    .collect()
+                    .await;
                 snapshots.append(&mut active_snapshots);
             }
 
             if show_dropped {
-                let mut dropped_snapshots = SnapshotStream::dropped(repo.clone())?
+                let mut dropped_snapshots = SnapshotStream::dropped(repo.clone())
+                    .await?
                     .map(|(id, snapshot)| SnapshotEntry {
                         id,
                         snapshot,
                         active: false,
                     })
-                    .collect();
+                    .collect()
+                    .await;
                 snapshots.append(&mut dropped_snapshots);
             }
 
@@ -101,6 +104,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Some(prefix) => {
             let (id, path) = repo
                 .find(ContentIdType::Snapshot, prefix)
+                .await
                 .with_context(|| format!("Could not find snapshot {prefix}"))?;
 
             let ext = path.extension().and_then(|s| s.to_str());
@@ -113,7 +117,7 @@ pub fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 ),
             };
 
-            let snapshot = repo.load_snapshot(&id, ext)?;
+            let snapshot = repo.load_snapshot(&id, ext).await?;
             vec![SnapshotEntry {
                 id,
                 snapshot,

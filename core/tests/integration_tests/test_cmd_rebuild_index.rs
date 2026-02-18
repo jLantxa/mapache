@@ -21,8 +21,8 @@ mod tests {
         test_utils,
     };
 
-    #[test]
-    fn test_rebuild_index() -> Result<()> {
+    #[tokio::test]
+    async fn test_rebuild_index() -> Result<()> {
         // Verify that all referenced objects are indexed.
         // A missing index would make it fail.
 
@@ -62,7 +62,7 @@ mod tests {
         set_global_opts_with_args(&global);
 
         // Init repo
-        init_repo(&auth, repo_path.clone())?;
+        init_repo(&auth, repo_path.clone()).await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -85,6 +85,7 @@ mod tests {
             dry_run: false,
         };
         commands::cmd_snapshot::run(&global, &snapshot_args)
+            .await
             .context("Failed to run cmd_snapshot")?;
 
         let verify_args = cmd_verify::CmdArgs {
@@ -92,7 +93,7 @@ mod tests {
             with_cache: false,
             fail_early: true,
         };
-        let first_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "First verify should pass");
 
         let backend = Arc::new(LocalFS::new(repo_path.clone()));
@@ -101,9 +102,10 @@ mod tests {
         // This time there is an old index that will be replaced.
         let rebuild_index_args = cmd_rebuild_index::CmdArgs { dry_run: false };
         commands::cmd_rebuild_index::run(&global, &rebuild_index_args)
+            .await
             .context("Failed to run cmd_rebuild_index")?;
 
-        let final_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let final_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(
             final_verify_result.is_ok(),
             "Verify should pass after index is rebuilt"
@@ -111,8 +113,9 @@ mod tests {
 
         // Delete the index to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(INDEX_DIR))
+            .await
             .context("Failed to remove the index")?;
-        let second_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let second_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(
             second_verify_result.is_err(),
             "Verify should fail without an index"
@@ -122,9 +125,10 @@ mod tests {
         // This time there's no old index.
         let rebuild_index_args = cmd_rebuild_index::CmdArgs { dry_run: false };
         commands::cmd_rebuild_index::run(&global, &rebuild_index_args)
+            .await
             .context("Failed to run cmd_rebuild_index")?;
 
-        let final_verify_result = commands::cmd_verify::run(&global, &verify_args);
+        let final_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(
             final_verify_result.is_ok(),
             "Verify should pass after index is rebuilt"

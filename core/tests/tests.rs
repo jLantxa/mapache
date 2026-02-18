@@ -7,7 +7,7 @@ mod integration_tests;
 /// Environment variable to set the --quiet global option during testing.
 const MAPACHE_TEST_QUIET: &str = "MAPACHE_TEST_QUIET";
 
-const TEST_QUIET: LazyLock<bool> = LazyLock::new(|| match std::env::var(MAPACHE_TEST_QUIET) {
+static TEST_QUIET: LazyLock<bool> = LazyLock::new(|| match std::env::var(MAPACHE_TEST_QUIET) {
     Ok(s) => s.parse::<bool>().unwrap_or(true),
     Err(_) => true,
 });

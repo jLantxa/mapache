@@ -13,11 +13,17 @@ impl Hasher for IdentityHasher {
     }
 
     fn write(&mut self, bytes: &[u8]) {
-        // We just take the first 8 bytes of the ID to use as the hash
-        let mut out = [0u8; 8];
-        let len = bytes.len().min(8);
-        out[..len].copy_from_slice(&bytes[..len]);
-        self.hash = u64::from_ne_bytes(out);
+        // IDs are already hashes (e.g. 32 bytes).
+        // We take the first 8 bytes as the u64 hash.
+        if bytes.len() >= 8 {
+            self.hash = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
+        } else {
+            let mut out = 0u64;
+            for (i, &b) in bytes.iter().enumerate() {
+                out |= (b as u64) << (i * 8);
+            }
+            self.hash = out;
+        }
     }
 }
 

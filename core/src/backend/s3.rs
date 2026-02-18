@@ -1,23 +1,17 @@
-use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use s3::creds::Credentials;
 use s3::{Bucket, Region};
-use tokio::runtime::Runtime;
 
 use crate::backend::{Handle, NodeAttr, StorageBackend};
 use crate::ui;
 
 /// A storage backend that interacts with S3-compatible APIs.
-///
-/// It manages its own internal Tokio runtime to bridge the gap between
-/// synchronous backend traits and asynchronous S3 calls.
 pub struct S3Backend {
-    /// Wrapped in ManuallyDrop to ensure the runtime is shut down explicitly
-    /// during Drop before other fields are cleared.
-    runtime: ManuallyDrop<Runtime>,
-    bucket: Bucket,
+    bucket: Box<Bucket>,
     prefix: PathBuf,
 }
 
@@ -30,11 +24,6 @@ impl S3Backend {
         access_key: String,
         secret_key: String,
     ) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create Tokio runtime for S3 backend")?;
-
         let credentials = Credentials::new(Some(&access_key), Some(&secret_key), None, None, None)?;
 
         let region = Region::Custom {
@@ -42,47 +31,56 @@ impl S3Backend {
             endpoint,
         };
 
-        let bucket = *Bucket::new(&bucket_name, region, credentials)?;
+        let mut bucket = Bucket::new(&bucket_name, region, credentials)
+            .context("Failed to create S3 bucket client")?;
 
-        let mut backend = Self {
-            runtime: ManuallyDrop::new(runtime),
-            bucket,
-            prefix,
-        };
+        bucket.set_path_style();
 
-        backend.bucket.set_path_style();
-
-        Ok(backend)
+        Ok(Self { bucket, prefix })
     }
 
-    /// Converts a local filesystem path into an S3 object key, appending the
-    /// configured backend prefix.
+    #[inline]
+    fn normalize_key(s: &str) -> String {
+        s.trim_matches('/').replace('\\', "/")
+    }
+
+    /// Converts a repository-relative path into an S3 object key (prefix + path).
     fn key_from_path(&self, path: &Path) -> String {
-        let prefix = self.prefix.to_string_lossy().trim_matches('/').to_string();
-        let sub_path = path
-            .to_string_lossy()
-            .trim_matches(|c| c == '/' || c == '\\')
-            .replace('\\', "/");
+        let prefix = Self::normalize_key(&self.prefix.to_string_lossy());
+        let sub = Self::normalize_key(&path.to_string_lossy());
 
         if prefix.is_empty() {
-            sub_path
+            sub
+        } else if sub.is_empty() {
+            prefix
         } else {
-            format!("{}/{}", prefix, sub_path)
+            format!("{}/{}", prefix, sub)
         }
     }
 
-    /// Reconstructs a relative path from an S3 key by stripping the prefix.
+    /// Converts an S3 key back into a repository-relative path by stripping the configured prefix.
+    ///
+    /// Done in string space for cross-platform correctness (S3 keys are always '/').
     fn path_from_key(&self, key: &str) -> Result<PathBuf> {
-        let path = PathBuf::from(key);
-        path.strip_prefix(&self.prefix)
-            .map(|p| p.to_path_buf())
-            .map_err(|_| {
-                anyhow!(
-                    "S3 backend: key '{}' is not under prefix '{}'",
-                    key,
-                    self.prefix.display()
-                )
-            })
+        let prefix = Self::normalize_key(&self.prefix.to_string_lossy());
+        let key_norm = key.replace('\\', "/").trim_matches('/').to_string();
+
+        let rel = if prefix.is_empty() {
+            key_norm
+        } else if key_norm == prefix {
+            // key points exactly to the prefix "directory marker"
+            String::new()
+        } else {
+            let prefix_slash = format!("{}/", prefix);
+            key_norm
+                .strip_prefix(&prefix_slash)
+                .ok_or_else(|| {
+                    anyhow!("S3 backend: key '{}' is not under prefix '{}'", key, prefix)
+                })?
+                .to_string()
+        };
+
+        Ok(PathBuf::from(rel))
     }
 
     /// Wraps an async operation with exponential backoff retries.
@@ -102,96 +100,139 @@ impl S3Backend {
                     attempts += 1;
                     let wait_ms = BASE_DELAY_MS * (2_u64.pow(attempts - 1));
                     ui::cli::warning!("S3 operation failed: {}. Retrying in {}ms...", e, wait_ms);
-                    tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
                 }
                 Err(e) => return Err(e.context("S3 operation failed after multiple retries")),
             }
         }
     }
-}
 
-impl Drop for S3Backend {
-    fn drop(&mut self) {
-        // SAFETY: runtime is never used after this point.
-        let rt = unsafe { ManuallyDrop::take(&mut self.runtime) };
-        rt.shutdown_background();
-    }
-}
+    /// Lightweight "connectivity + permission" check using a tiny listing.
+    async fn connectivity_check(&self) -> Result<()> {
+        // List at most 1 entry under the configured prefix (or bucket root).
+        let mut prefix = Self::normalize_key(&self.key_from_path(Path::new("")));
+        if !prefix.is_empty() && !prefix.ends_with('/') {
+            prefix.push('/');
+        }
 
-impl StorageBackend for S3Backend {
-    fn create(&self) -> Result<()> {
-        let (_head, status_code) = self
-            .runtime
-            .block_on(self.bucket.head_object(""))
+        let (_result, status) = self
+            .retry(|| async {
+                let (res, code) = self
+                    .bucket
+                    .list_page(
+                        prefix.clone(),
+                        Some("/".to_string()),
+                        None,
+                        Some("1".to_string()),
+                        None,
+                    )
+                    .await?;
+                Ok((res, code))
+            })
+            .await
             .context("S3 backend: connectivity check failed")?;
 
-        if status_code == 403 {
-            return Err(anyhow!("S3 backend: Access denied to bucket"));
+        if status == 403 {
+            bail!("S3 backend: Access denied to bucket");
+        }
+        if status >= 400 {
+            bail!("S3 backend: connectivity check failed (HTTP {})", status);
         }
         Ok(())
     }
+}
 
-    fn path_exists(&self, path: &Path) -> bool {
-        self.is_file(path) || self.is_dir(path)
+#[async_trait]
+impl StorageBackend for S3Backend {
+    async fn create(&self) -> Result<()> {
+        self.connectivity_check().await
     }
 
-    fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
+    async fn path_exists(&self, path: &Path) -> bool {
+        self.is_file(path).await || self.is_dir(path).await
+    }
+
+    async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let key = self.key_from_path(handle.path);
 
-        self.runtime.block_on(self.retry(|| async {
+        self.retry(|| async {
             let response = if offset == 0 && length == 0 {
                 self.bucket.get_object(&key).await?
             } else {
                 let start = if offset < 0 {
-                    let (head, _) = self.bucket.head_object(&key).await?;
+                    let (head, code) = self.bucket.head_object(&key).await?;
+                    if code >= 400 {
+                        bail!("S3 head failed for range read: HTTP {}", code);
+                    }
                     let size = head.content_length.unwrap_or(0) as u64;
                     size.saturating_sub(offset.unsigned_abs() as u64)
                 } else {
                     offset as u64
                 };
+
                 let end = if length > 0 {
                     Some(start + length as u64 - 1)
                 } else {
                     None
                 };
+
                 self.bucket.get_object_range(&key, start, end).await?
             };
 
             if response.status_code() >= 400 {
-                return Err(anyhow!("S3 read failed: HTTP {}", response.status_code()));
+                bail!("S3 read failed: HTTP {}", response.status_code());
             }
             Ok(response.bytes().to_vec())
-        }))
+        })
+        .await
     }
 
-    fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
         let key = self.key_from_path(handle.path);
 
-        self.runtime.block_on(self.retry(|| async {
+        self.retry(|| async {
             let response = self.bucket.put_object(&key, contents).await?;
             if response.status_code() >= 400 {
-                return Err(anyhow!("S3 write failed: HTTP {}", response.status_code()));
+                bail!("S3 write failed: HTTP {}", response.status_code());
             }
             Ok(())
-        }))
+        })
+        .await
     }
 
-    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+    async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let src_key = self.key_from_path(from);
         let dest_key = self.key_from_path(to);
 
-        let code = self
-            .runtime
-            .block_on(self.bucket.copy_object_internal(&src_key, &dest_key))?;
-        if code >= 400 {
-            return Err(anyhow!("S3 rename (copy phase) failed: HTTP {}", code));
-        }
+        // S3 rename is COPY + DELETE (not atomic).
+        self.retry(|| async {
+            let code = self
+                .bucket
+                .copy_object_internal(&src_key, &dest_key)
+                .await?;
+            if code >= 400 {
+                bail!("S3 rename (copy phase) failed: HTTP {}", code);
+            }
+            Ok(())
+        })
+        .await?;
 
-        self.runtime.block_on(self.bucket.delete_object(&src_key))?;
+        self.retry(|| async {
+            let resp = self.bucket.delete_object(&src_key).await?;
+            if resp.status_code() >= 400 {
+                bail!(
+                    "S3 rename (delete phase) failed: HTTP {}",
+                    resp.status_code()
+                );
+            }
+            Ok(())
+        })
+        .await?;
+
         Ok(())
     }
 
-    fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let mut prefix = self.key_from_path(path);
         if !prefix.is_empty() && !prefix.ends_with('/') {
             prefix.push('/');
@@ -201,32 +242,42 @@ impl StorageBackend for S3Backend {
         let mut continuation_token: Option<String> = None;
 
         loop {
-            let (result, status_code) = self.runtime.block_on(self.bucket.list_page(
-                prefix.clone(),
-                Some("/".to_string()),
-                continuation_token.clone(),
-                Some(1000.to_string()),
-                None,
-            ))?;
+            let (result, status_code) = self
+                .retry(|| async {
+                    let (res, code) = self
+                        .bucket
+                        .list_page(
+                            prefix.clone(),
+                            Some("/".to_string()),
+                            continuation_token.clone(),
+                            Some("1000".to_string()),
+                            None,
+                        )
+                        .await?;
+                    Ok((res, code))
+                })
+                .await?;
 
             if status_code >= 400 {
                 bail!("S3 list failed with status {}", status_code);
             }
 
-            // Process "Directories" (Common Prefixes)
+            // "Directories" (Common Prefixes)
             if let Some(prefixes) = result.common_prefixes {
                 for p in prefixes {
-                    if let Ok(rel) = self.path_from_key(p.prefix.trim_end_matches('/')) {
+                    let dir_key = p.prefix.trim_end_matches('/');
+                    if let Ok(rel) = self.path_from_key(dir_key) {
                         paths.push(rel);
                     }
                 }
             }
 
-            // Process Files
+            // Files
             for obj in result.contents {
-                if let Ok(rel) = self.path_from_key(&obj.key)
-                    && !obj.key.ends_with('/')
-                {
+                if obj.key.ends_with('/') {
+                    continue;
+                }
+                if let Ok(rel) = self.path_from_key(&obj.key) {
                     paths.push(rel);
                 }
             }
@@ -243,37 +294,82 @@ impl StorageBackend for S3Backend {
         Ok(paths)
     }
 
-    fn create_dir(&self, _path: &Path) -> Result<()> {
-        // S3 is flat; directory creation is a no-op (directories exist if keys have the prefix).
+    async fn create_dir(&self, _path: &Path) -> Result<()> {
+        // S3 is flat; directory creation is a no-op.
         Ok(())
     }
 
-    fn remove(&self, path: &Path) -> Result<()> {
+    async fn remove(&self, path: &Path) -> Result<()> {
+        // Try deleting the exact key (file case). Ignore errors.
         let key = self.key_from_path(path);
-        self.runtime.block_on(self.bucket.delete_object(&key)).ok();
+        let _ = self.bucket.delete_object(&key).await;
 
+        // Then delete anything under it as a prefix (dir case).
         let mut prefix = key;
         if !prefix.ends_with('/') {
             prefix.push('/');
         }
 
-        let list = self.runtime.block_on(self.bucket.list(prefix, None))?;
-        for result in list {
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let (result, status) = self
+                .retry(|| async {
+                    let (res, code) = self
+                        .bucket
+                        .list_page(
+                            prefix.clone(),
+                            None,
+                            continuation_token.clone(),
+                            Some("1000".to_string()),
+                            None,
+                        )
+                        .await?;
+                    Ok((res, code))
+                })
+                .await?;
+
+            if status >= 400 {
+                // If the "directory" doesn't exist, treat as success.
+                // You can tighten this if you want strict behavior.
+                break;
+            }
+
             for obj in result.contents {
-                self.runtime.block_on(self.bucket.delete_object(&obj.key))?;
+                let obj_key = obj.key.clone();
+                self.retry(|| async {
+                    let resp = self.bucket.delete_object(&obj_key).await?;
+                    if resp.status_code() >= 400 {
+                        bail!(
+                            "S3 delete failed for '{}': HTTP {}",
+                            obj_key,
+                            resp.status_code()
+                        );
+                    }
+                    Ok(())
+                })
+                .await?;
+            }
+
+            if result.is_truncated && result.next_continuation_token.is_some() {
+                continuation_token = result.next_continuation_token;
+            } else {
+                break;
             }
         }
+
         Ok(())
     }
 
-    fn is_file(&self, path: &Path) -> bool {
+    async fn is_file(&self, path: &Path) -> bool {
         let key = self.key_from_path(path);
-        let res = self.runtime.block_on(self.bucket.head_object(&key));
-        matches!(res, Ok((_, 200)))
+        matches!(self.bucket.head_object(&key).await, Ok((_, 200)))
     }
 
-    fn is_dir(&self, path: &Path) -> bool {
+    async fn is_dir(&self, path: &Path) -> bool {
         let mut prefix = self.key_from_path(path);
+
+        // Repo root always exists as a "directory"
         if prefix.is_empty() {
             return true;
         }
@@ -281,22 +377,31 @@ impl StorageBackend for S3Backend {
             prefix.push('/');
         }
 
+        // List a single entry under the prefix; if anything exists, treat as dir.
         let res = self
-            .runtime
-            .block_on(self.bucket.list(prefix, Some(1.to_string())));
+            .bucket
+            .list_page(
+                prefix,
+                Some("/".to_string()),
+                None,
+                Some("1".to_string()),
+                None,
+            )
+            .await;
+
         match res {
-            Ok(list) => list
-                .iter()
-                .any(|r| !r.contents.is_empty() || r.common_prefixes.is_some()),
+            Ok((list, code)) if code < 400 => {
+                !list.contents.is_empty()
+                    || list.common_prefixes.as_ref().is_some_and(|p| !p.is_empty())
+            }
             _ => false,
         }
     }
 
-    fn lstat(&self, path: &Path) -> Result<NodeAttr> {
+    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
         let key = self.key_from_path(path);
-        let res = self.runtime.block_on(self.bucket.head_object(&key));
 
-        match res {
+        match self.bucket.head_object(&key).await {
             Ok((head, 200)) => {
                 let mtime = head
                     .last_modified
@@ -313,7 +418,7 @@ impl StorageBackend for S3Backend {
                 })
             }
             _ => {
-                if self.is_dir(path) {
+                if self.is_dir(path).await {
                     Ok(NodeAttr {
                         size: Some(0),
                         uid: None,

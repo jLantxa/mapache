@@ -39,6 +39,7 @@ signal-hook = "0.4.3"
 signal-hook-registry = "1.4.8"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 threadpool = "1.8.1"
+tikv-jemallocator = "0.6.1"
 tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros"] }
 tokio-stream = "0.1.18"
 zstd = "0.13.3"

@@ -1,6 +1,14 @@
-use std::{io::Read, mem::MaybeUninit, path::Path, sync::Arc};
+use std::{
+    io::Read,
+    mem::MaybeUninit,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chunker::Chunker;
 
 use crate::{
@@ -35,6 +43,7 @@ pub(crate) async fn process_item(
     repo: Arc<Repository>,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Option<StreamNode>> {
     progress_reporter.processing_node(path, diff_type);
 
@@ -79,12 +88,16 @@ pub(crate) async fn process_item(
                 let capacity = (file_size as usize).min(size::MiB as usize);
                 let reader = std::io::BufReader::with_capacity(capacity, file);
 
-                let blobs_ids =
-                    chunk_and_store_file(repo, &next.node, reader, progress, progress_reporter)
-                        .await
-                        .with_context(|| {
-                            format!("Failed to process blobs for: {}", path.display())
-                        })?;
+                let blobs_ids = chunk_and_store_file(
+                    repo,
+                    &next.node,
+                    reader,
+                    progress,
+                    progress_reporter,
+                    shutdown_signal,
+                )
+                .await
+                .with_context(|| format!("Failed to process blobs for: {}", path.display()))?;
 
                 next.node.blobs = Some(blobs_ids);
             }
@@ -113,25 +126,28 @@ pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
     reader: R,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Vec<ID>> {
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
         return store_small_file(repo, reader, node, progress, progress_reporter).await;
     }
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<(WriteContents<'static>, u64)>(2);
-
     let file_size = node.metadata.size;
+
+    let shutdown_chunker = Arc::clone(&shutdown_signal);
     let chunker_handle = tokio::task::spawn_blocking(move || {
         let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
         for result in stream {
+            if shutdown_chunker.load(Ordering::Relaxed) {
+                return Err(anyhow!("Shutdown signal received"));
+            }
+
             let chunk = result?;
             let len = chunk.data.len() as u64;
-            if tx
-                .blocking_send((WriteContents::Owned(chunk.data), len))
-                .is_err()
-            {
-                break;
-            }
+
+            tx.blocking_send((WriteContents::Owned(chunk.data), len))
+                .context("Failed to send chunk: receiver dropped")?;
         }
         Ok::<(), anyhow::Error>(())
     });
@@ -139,6 +155,10 @@ pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
     let mut chunk_ids = Vec::new();
 
     while let Some((data, chunk_len)) = rx.recv().await {
+        if shutdown_signal.load(Ordering::Relaxed) {
+            return Err(anyhow!("Shutdown signal received during processing"));
+        }
+
         progress.processed_bytes(chunk_len);
         progress_reporter.processed_bytes(chunk_len);
 
@@ -150,6 +170,7 @@ pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
     }
 
     chunker_handle.await.context("Chunker panicked")??;
+
     Ok(chunk_ids)
 }
 

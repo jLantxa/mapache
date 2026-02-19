@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, atomic::AtomicBool},
+    time::Instant,
+};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
@@ -83,7 +87,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await?;
 
-    let _cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new()?;
 
     let start = Instant::now();
 
@@ -114,7 +118,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("{} ", amend_str);
         }
 
-        amend(repo.clone(), id, snapshot, args).await?;
+        amend(
+            repo.clone(),
+            id,
+            snapshot,
+            args,
+            cleanup_handler.interrupted.clone(),
+        )
+        .await?;
         ui::cli::log!();
     }
 
@@ -131,6 +142,7 @@ async fn amend(
     origin_snapshot_id: &ID,
     snapshot: &mut Snapshot,
     args: &CmdArgs,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     snapshot.summary.amends = Some(*origin_snapshot_id);
 
@@ -164,6 +176,7 @@ async fn amend(
             None,
             progress.clone(),
             progress_reporter.clone(),
+            shutdown_signal,
         )
         .await?;
 

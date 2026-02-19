@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use s3::creds::Credentials;
 use s3::{Bucket, Region};
 
-use crate::backend::{Handle, NodeAttr, StorageBackend};
+use crate::backend::{Handle, NodeAttr, StorageBackend, WriteContents};
 use crate::ui;
 
 /// A storage backend that interacts with S3-compatible APIs.
@@ -182,16 +182,16 @@ impl StorageBackend for S3Backend {
             if response.status_code() >= 400 {
                 bail!("S3 read failed: HTTP {}", response.status_code());
             }
-            Ok(response.bytes().to_vec())
+            Ok(response.into_bytes().to_vec())
         })
         .await
     }
 
-    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+    async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
         let key = self.key_from_path(handle.path);
 
         self.retry(|| async {
-            let response = self.bucket.put_object(&key, contents).await?;
+            let response = self.bucket.put_object(&key, &contents).await?;
             if response.status_code() >= 400 {
                 bail!("S3 write failed: HTTP {}", response.status_code());
             }

@@ -14,7 +14,7 @@ use rand::{TryRng, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    backend::{Handle, StorageBackend},
+    backend::{Handle, StorageBackend, WriteContents},
     mapache::{self, ContentIdType, ID, defaults::DEFAULT_COMPRESSION},
     repository::{
         repo::{Auth, KEYS_DIR},
@@ -152,6 +152,7 @@ impl KeyManager {
             .with_key(&intermediate_key);
 
         ss.decrypt(&encrypted_key)
+            .map(|c| c.into_owned())
             .context("Could not retrieve master key from this keyfile")
     }
 
@@ -335,7 +336,7 @@ impl KeyManager {
         self.backend
             .write(
                 &Handle::new_with_hint(&path, ContentIdType::Key, true),
-                &compressed_json,
+                WriteContents::Owned(compressed_json),
             )
             .await?;
 

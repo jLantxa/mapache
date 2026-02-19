@@ -10,7 +10,7 @@ use futures::{StreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
-    backend::{StorageBackend, read_backend_dir},
+    backend::{StorageBackend, WriteContents, read_backend_dir},
     fs::tree::SerializedNodeStream,
     mapache::{
         self, ContentIdType, ID, SaveID,
@@ -223,9 +223,9 @@ impl Plan {
         );
         repack_bar.tick();
 
-        // Key: Blob ID. Value: Tuple of (Pack ID, BlobType, Offset, Raw Length, Encoded Length)
+        // Key: Blob ID. Value: Tuple of (Pack ID, BlobType, Offset, Encoded Length)
         // HashMap ensures we only get one repack instruction per unique referenced blob ID.
-        let mut repack_blob_info = HashMap::<ID, (ID, mapache::BlobType, u32, u32, u32)>::new();
+        let mut repack_blob_info = HashMap::<ID, (ID, mapache::BlobType, u32, u32)>::new();
 
         self.repo
             .index()
@@ -242,7 +242,6 @@ impl Plan {
                             locator.pack_id,
                             locator.blob_type,
                             locator.offset,
-                            locator.raw_length,
                             locator.length,
                         ),
                     );
@@ -261,7 +260,7 @@ impl Plan {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
 
         pool.scope(|s| {
-            for (blob_id, (pack_id, blob_type, offset, _, length)) in repack_blob_info {
+            for (blob_id, (pack_id, blob_type, offset, length)) in repack_blob_info {
                 let repo = self.repo.clone();
                 let rt = rt_handle.clone();
                 let tx = tx.clone();
@@ -278,8 +277,12 @@ impl Plan {
                             .await?;
 
                         // Re-pack via the PackSaver (which is already handling its own threads)
-                        repo.encode_and_save_blob(blob_type, data, SaveID::WithID(blob_id))
-                            .await
+                        repo.encode_and_save_blob(
+                            blob_type,
+                            WriteContents::Owned(data),
+                            SaveID::WithID(blob_id),
+                        )
+                        .await
                     });
                     let _ = tx.send(res);
                 });

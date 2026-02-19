@@ -286,7 +286,7 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
         let _ = self.mp.clear();
     }
 
-    fn processing_node(&self, path: PathBuf, diff: NodeDiff) {
+    fn processing_node(&self, path: &std::path::Path, diff: NodeDiff) {
         if self.ui_stop.load(Ordering::Relaxed) {
             return;
         }
@@ -302,18 +302,24 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
                 .println(format!("{}  {}", diff_mark, path.display()));
         }
 
-        if !self.file_spinners.is_empty() && diff != NodeDiff::Deleted {
-            let _ = self.ui_tx.try_send(UiEvent::Start(path));
+        if !self.file_spinners.is_empty()
+            && diff != NodeDiff::Deleted
+            && diff != NodeDiff::Unchanged
+        {
+            let _ = self.ui_tx.try_send(UiEvent::Start(path.to_path_buf()));
         }
     }
 
-    fn processed_node(&self, path: PathBuf, diff: NodeDiff) {
+    fn processed_node(&self, path: &std::path::Path, diff: NodeDiff) {
         if diff != NodeDiff::Deleted {
             self.companion_bar.inc(1);
         }
 
-        if !self.ui_stop.load(Ordering::Relaxed) && !self.file_spinners.is_empty() {
-            let _ = self.ui_tx.send(UiEvent::Done(path));
+        if !self.ui_stop.load(Ordering::Relaxed)
+            && !self.file_spinners.is_empty()
+            && diff != NodeDiff::Deleted
+        {
+            let _ = self.ui_tx.try_send(UiEvent::Done(path.to_path_buf()));
         }
     }
 

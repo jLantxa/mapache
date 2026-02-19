@@ -133,7 +133,9 @@ async fn sync_backends(
             BackendNode::File(path) => {
                 let handle = Handle::new(&path);
                 let data = src_backend.read(&handle, 0, 0).await?;
-                dst_backend.write(&handle, &data).await?;
+                dst_backend
+                    .write(&handle, backend::WriteContents::Owned(data))
+                    .await?;
             }
         }
 

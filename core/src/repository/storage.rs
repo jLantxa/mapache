@@ -3,6 +3,7 @@ use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
 use rand::{TryRng, rngs::SysRng};
 
+use crate::backend::WriteContents;
 use crate::mapache::{self, defaults::DEFAULT_COMPRESSION};
 
 use parking_lot::Mutex;
@@ -173,9 +174,9 @@ impl SecureStorage {
         self.transform_into(None, data)
     }
 
-    pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+    pub fn decrypt<'a>(&self, data: &'a [u8]) -> Result<WriteContents<'a>> {
         let Some(cipher) = &self.cipher else {
-            return Ok(data.to_vec());
+            return Ok(WriteContents::Borrowed(data));
         };
 
         if data.len() < AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN {
@@ -183,9 +184,38 @@ impl SecureStorage {
         }
 
         let (nonce, ciphertext_and_tag) = data.split_at(AES_GCM_NONCE_LEN);
-        cipher
+        let decrypted = cipher
             .decrypt(Nonce::from_slice(nonce), ciphertext_and_tag)
-            .map_err(|_| anyhow!("decryption failed"))
+            .map_err(|_| anyhow!("decryption failed"))?;
+        Ok(WriteContents::Owned(decrypted))
+    }
+
+    /// Decrypts the given Vec in-place if possible.
+    pub fn decrypt_in_place(&self, mut data: Vec<u8>) -> Result<Vec<u8>> {
+        let Some(cipher) = &self.cipher else {
+            return Ok(data);
+        };
+
+        if data.len() < AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN {
+            bail!("invalid ciphertext");
+        }
+
+        let nonce = Nonce::clone_from_slice(&data[..AES_GCM_NONCE_LEN]);
+        let payload_len = data.len() - AES_GCM_NONCE_LEN - AES_GCM_TAG_LEN;
+
+        // Move payload to the beginning
+        data.copy_within(AES_GCM_NONCE_LEN..AES_GCM_NONCE_LEN + payload_len, 0);
+
+        let tag_offset = AES_GCM_NONCE_LEN + payload_len;
+        let tag = aes_gcm_siv::Tag::clone_from_slice(&data[tag_offset..]);
+
+        data.truncate(payload_len);
+
+        cipher
+            .decrypt_in_place_detached(&nonce, b"", &mut data, &tag)
+            .map_err(|_| anyhow!("decryption failed"))?;
+
+        Ok(data)
     }
 
     /// Encrypt using a context (though buffers are no longer held).
@@ -220,6 +250,11 @@ impl SecureStorage {
 
     pub fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {
         let decrypted = self.decrypt(data)?;
+        self.decompress(&decrypted)
+    }
+
+    pub fn decode_owned(&self, data: Vec<u8>) -> Result<Vec<u8>> {
+        let decrypted = self.decrypt_in_place(data)?;
         self.decompress(&decrypted)
     }
 
@@ -347,7 +382,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
             encrypted_data.len() - original_data.len(),
             AES_GCM_NONCE_LEN + 16
         );
-        assert_eq!(original_data, decrypted_data.as_slice());
+        assert_eq!(original_data, &*decrypted_data);
         Ok(())
     }
 
@@ -360,8 +395,8 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         let decrypted_data = ss.decrypt(&encrypted_data)?;
 
         // No key means no encryption, so data should be unchanged
-        assert_eq!(original_data, encrypted_data.as_slice());
-        assert_eq!(original_data, decrypted_data.as_slice());
+        assert_eq!(original_data, &*decrypted_data);
+        assert_eq!(original_data, &*decrypted_data);
 
         Ok(())
     }

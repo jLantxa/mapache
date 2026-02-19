@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::fs::tree::NodeDiff;
 use crate::repository::snapshot::DiffCounts;
 
@@ -18,10 +16,10 @@ pub struct SnapshotProcessSummary {
 /// like terminal UI, JSON output, or GUI updates.
 pub trait SnapshotProgressReporter: Send + Sync {
     /// Called when starting to process a node
-    fn processing_node(&self, path: PathBuf, diff: NodeDiff);
+    fn processing_node(&self, path: &std::path::Path, diff: NodeDiff);
 
     /// Called when a node has been processed
-    fn processed_node(&self, path: PathBuf, diff: NodeDiff);
+    fn processed_node(&self, path: &std::path::Path, diff: NodeDiff);
 
     /// Called when bytes have been processed
     fn processed_bytes(&self, bytes: u64);

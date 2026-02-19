@@ -6,7 +6,7 @@ use colored::Colorize;
 use futures::StreamExt;
 
 use crate::{
-    backend::{Handle, new_backend_with_prompt},
+    backend::{Handle, WriteContents, new_backend_with_prompt},
     commands::GlobalArgs,
     mapache::{ContentIdType, ID, defaults::DEFAULT_COMPRESSION},
     repository::{
@@ -122,7 +122,9 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
         None => {
             let path = Path::new(KEYS_DIR).join(new_keyfile_id.to_hex());
             let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
-            backend.write(&handle, &new_keyfile_json).await?;
+            backend
+                .write(&handle, WriteContents::Owned(new_keyfile_json))
+                .await?;
         }
     }
 

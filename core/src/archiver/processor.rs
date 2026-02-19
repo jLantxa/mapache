@@ -5,6 +5,7 @@ use chunker::Chunker;
 
 use crate::{
     archiver::SnapshotProgress,
+    backend::WriteContents,
     fs::{
         node::Node,
         tree::{NodeDiff, StreamNode},
@@ -35,7 +36,7 @@ pub(crate) async fn process_item(
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Option<StreamNode>> {
-    progress_reporter.processing_node(path.to_path_buf(), diff_type);
+    progress_reporter.processing_node(path, diff_type);
 
     let out = match diff_type {
         NodeDiff::Deleted => {
@@ -94,7 +95,7 @@ pub(crate) async fn process_item(
     };
 
     progress.processed_node();
-    progress_reporter.processed_node(path.to_path_buf(), diff_type);
+    progress_reporter.processed_node(path, diff_type);
 
     Ok(out)
 }
@@ -117,7 +118,7 @@ pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
         return store_small_file(repo, reader, node, progress, progress_reporter).await;
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Vec<u8>, u64)>(2);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(WriteContents<'static>, u64)>(2);
 
     let file_size = node.metadata.size;
     let chunker_handle = tokio::task::spawn_blocking(move || {
@@ -125,7 +126,10 @@ pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
         for result in stream {
             let chunk = result?;
             let len = chunk.data.len() as u64;
-            if tx.blocking_send((chunk.data, len)).is_err() {
+            if tx
+                .blocking_send((WriteContents::Owned(chunk.data), len))
+                .is_err()
+            {
                 break;
             }
         }
@@ -169,7 +173,11 @@ async fn store_small_file<R: Read>(
     }
 
     let id = repo
-        .encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)
+        .encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Owned(data),
+            SaveID::CalculateID,
+        )
         .await?;
 
     progress.processed_bytes(node.metadata.size);

@@ -16,6 +16,7 @@ use tokio::{
 };
 
 use crate::{
+    backend::WriteContents,
     fs::{calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
     mapache::{BlobType, ID, SaveID},
     repository::repo::Repository,
@@ -48,9 +49,13 @@ impl Tree {
 
         *self = owned_back; // Return ownership
 
-        repo.encode_and_save_blob(BlobType::Tree, serialized_data, SaveID::CalculateID)
-            .await
-            .context("Failed to save tree blob to repository")
+        repo.encode_and_save_blob(
+            BlobType::Tree,
+            WriteContents::Owned(serialized_data),
+            SaveID::CalculateID,
+        )
+        .await
+        .context("Failed to save tree blob to repository")
     }
 
     /// Load a tree from the repository.

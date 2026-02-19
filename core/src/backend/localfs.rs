@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{
-    backend::{Handle, NodeAttr},
+    backend::{Handle, NodeAttr, WriteContents},
     repository::repo::REPO_TMP_EXTENSION,
 };
 
@@ -86,6 +86,33 @@ impl LocalFS {
                 )
             })
     }
+
+    /// Synchronous version of set_readonly_status for use in blocking tasks.
+    fn set_readonly_status_sync(full_path: &Path, readonly: bool) -> std::io::Result<()> {
+        let metadata = match std::fs::metadata(full_path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !readonly => return Ok(()),
+            Err(e) => return Err(e),
+        };
+
+        let mut perms = metadata.permissions();
+
+        #[cfg(unix)]
+        {
+            use crate::backend::set_readonly_mode;
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = set_readonly_mode(perms.mode(), readonly, metadata.is_dir());
+            perms.set_mode(mode);
+        }
+
+        #[cfg(windows)]
+        {
+            perms.set_readonly(readonly);
+        }
+
+        std::fs::set_permissions(full_path, perms)
+    }
 }
 
 #[async_trait]
@@ -140,57 +167,57 @@ impl StorageBackend for LocalFS {
             _ => std::cmp::min(length, bytes_remaining),
         };
 
-        let mut data = vec![0; read_length];
+        let mut data = Vec::with_capacity(read_length);
 
-        file.read_exact(&mut data).await.with_context(|| {
-            format!(
-                "Could not read {} bytes from '{}'",
-                read_length,
-                path.display()
-            )
-        })?;
+        unsafe {
+            // SAFETY: Memory is allocated but uninitialized; set_len is deferred until read_exact
+            // guarantees initialization, ensuring no UB if a panic or error occurs during I/O.
+            let slice = std::slice::from_raw_parts_mut(data.as_mut_ptr(), read_length);
+            file.read_exact(slice).await.with_context(|| {
+                format!(
+                    "Could not read {} bytes from '{}'",
+                    read_length,
+                    path.display()
+                )
+            })?;
+            data.set_len(read_length);
+        }
 
         Ok(data)
     }
 
-    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
-        let path = handle.path;
-        let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
-        let full_tmp_path = self.full_path(&tmp_path);
+    async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
+        let path = handle.path.to_path_buf();
+        let full_base_path = self.base_path.clone();
+        let data = contents.into_owned();
 
-        // Write to a tmp path. If we fail, the parent might be missing.
-        if let Err(e) = tokio::fs::write(&full_tmp_path, contents).await {
-            let parent_dir = path
-                .parent()
-                .ok_or_else(|| anyhow!("Path '{}' has no parent directory", path.display()))?;
+        tokio::task::spawn_blocking(move || {
+            let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
+            let full_tmp_path = full_base_path.join(&tmp_path);
+            let full_path = full_base_path.join(&path);
 
-            self.create_dir(parent_dir)
-                .await
-                .context("Failed to auto-create missing parent directory during write")?;
+            // Write to temporary file
+            if let Err(e) = std::fs::write(&full_tmp_path, &data) {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    if let Some(parent) = full_tmp_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&full_tmp_path, &data)?;
+                } else {
+                    return Err(anyhow::Error::from(e));
+                }
+            }
 
-            tokio::fs::write(&full_tmp_path, contents)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to write temporary file '{}' after creating parent: {}",
-                        tmp_path.display(),
-                        e
-                    )
-                })?;
-        }
+            let _ = Self::set_readonly_status_sync(&full_path, false);
 
-        // Renaming on Windows might fail if the destination already exists and is Read-Only
-        let full_path_to = self.full_path(path);
-        let _ = self.set_readonly_status(&full_path_to, false).await;
+            std::fs::rename(&full_tmp_path, &full_path)?;
 
-        self.rename(&tmp_path, path)
-            .await
-            .context("Failed to commit temporary write via rename")?;
+            let _ = Self::set_readonly_status_sync(&full_path, true);
 
-        // Repository files are locked (readonly) after writing to prevent accidental corruption
-        let _ = self.set_readonly_status(path, true).await;
-
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| anyhow!("Blocking task failed: {}", e))?
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
@@ -342,7 +369,9 @@ mod tests {
         let local_fs = LocalFS::new(temp_dir.path().to_path_buf());
 
         let write_handle = Handle::new(Path::new("file.txt"));
-        local_fs.write(&write_handle, b"Mapachito").await?;
+        local_fs
+            .write(&write_handle, WriteContents::Borrowed(b"Mapachito"))
+            .await?;
         let read_content = local_fs.read(&write_handle, 0, 0).await?;
 
         assert!(local_fs.path_exists(write_handle.path).await);
@@ -363,7 +392,7 @@ mod tests {
         local_fs
             .write(
                 &seek_handle,
-                b"I am just looking for a word in this sentence.",
+                WriteContents::Borrowed(b"I am just looking for a word in this sentence."),
             )
             .await?;
         let range_str = local_fs.read(&seek_handle, 10, 7).await?;

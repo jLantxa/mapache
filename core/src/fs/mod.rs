@@ -315,7 +315,7 @@ mod tests {
             // Redundant slashes
             // Note: Components() collapses these, but we join properly for the test
             ("foo//bar///baz/", cwd.join("foo").join("bar").join("baz")),
-            // 4. Empty and dot paths
+            // Empty and dot paths
             (".", cwd.clone()),
             ("", cwd.clone()),
         ];

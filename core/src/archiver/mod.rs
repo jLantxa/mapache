@@ -193,6 +193,7 @@ pub(crate) async fn snapshot(
                         repo,
                         status.progress.as_ref(),
                         status.progress_reporter.as_ref(),
+                        status.shutdown_signal.clone(),
                     )
                     .await
                     {

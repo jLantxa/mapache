@@ -45,7 +45,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     )
     .await?;
 
-    let _cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new()?;
 
     repo.reload_master_index().await?;
     repo.init_pack_saver(1)?;
@@ -85,6 +85,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             Some(&mut rechunked_blob_list_map),
             progress.clone(),
             progress_reporter.clone(),
+            cleanup_handler.interrupted.clone(),
         )
         .await?;
 

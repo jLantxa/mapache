@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use anyhow::{Context, Result, bail};
@@ -226,6 +226,7 @@ impl<R: tokio::io::AsyncRead + Unpin> Read for BlockingBridge<R> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn rewrite_snapshot_tree(
     repo: Arc<Repository>,
     snapshot: &mut Snapshot,
@@ -234,6 +235,7 @@ pub(crate) async fn rewrite_snapshot_tree(
     mut rechunked_blobs_list_map: Option<&mut HashMap<Vec<ID>, Vec<ID>>>,
     progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     // Canonicalize exclude paths relative to snapshot root
     let cannonical_excludes: Option<Vec<PathBuf>> = excludes.map(|exclude_paths| {
@@ -245,7 +247,7 @@ pub(crate) async fn rewrite_snapshot_tree(
 
     let path_filter = PathFilter::new(None, cannonical_excludes.clone());
 
-    // 2Filter paths to retain only those allowed
+    // Filter paths to retain only those allowed
     let mut paths = snapshot.paths.clone();
     paths.retain(|p| path_filter.allow(p));
 
@@ -294,6 +296,7 @@ pub(crate) async fn rewrite_snapshot_tree(
                             stream_node.node.clone(),
                             progress.clone(),
                             progress_reporter.clone(),
+                            shutdown_signal.clone(),
                         )
                         .await?;
                         map.insert(blobs.clone(), rechunked.clone());
@@ -305,6 +308,7 @@ pub(crate) async fn rewrite_snapshot_tree(
                         stream_node.node.clone(),
                         progress.clone(),
                         progress_reporter.clone(),
+                        shutdown_signal.clone(),
                     )
                     .await?
                 };
@@ -338,6 +342,7 @@ async fn run_rechunk_task(
     node: Node,
     progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Vec<ID>> {
     let reader = SerializedNodeDataReader::new(repo.clone(), &node).await?;
     let sync_reader = BlockingBridge { inner: reader };
@@ -351,6 +356,7 @@ async fn run_rechunk_task(
         sync_reader,
         progress.as_ref(),
         progress_reporter.as_ref(),
+        shutdown_signal,
     )
     .await
 }

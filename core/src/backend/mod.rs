@@ -76,6 +76,10 @@ pub struct StorageHint {
     pub is_metadata: bool,
 }
 
+/// Alias for the data buffer passed to the backend during write operations.
+/// Using Cow allows backends to take ownership of the data without cloning.
+pub type WriteContents<'a> = std::borrow::Cow<'a, [u8]>;
+
 /// Abstraction of a storage backend.
 ///
 /// A backend is a filesystem interface that can represent local storage,
@@ -95,7 +99,7 @@ pub trait StorageBackend: Send + Sync {
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>>;
 
     /// Writes the provided buffer to a file, creating it if it doesn't exist.
-    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()>;
+    async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()>;
 
     /// Renames (moves) a file. Atomicity depends on the specific implementation.
     async fn rename(&self, from: &Path, to: &Path) -> Result<()>;

@@ -141,7 +141,7 @@ pub(crate) async fn snapshot(
     // ---------------------------------------------------------------------
     // Pipeline Channels
     // ---------------------------------------------------------------------
-    let (diff_tx, diff_rx) = mpsc::channel(2 * num_readers);
+    let (diff_tx, diff_rx) = mpsc::channel(4 * num_readers);
     let (processed_tx, mut processed_rx) = mpsc::channel(2 * num_readers);
 
     // ---------------------------------------------------------------------

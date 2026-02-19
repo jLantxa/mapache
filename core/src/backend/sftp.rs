@@ -13,7 +13,7 @@ use ssh2::{RenameFlags, Session, Sftp};
 use tokio::task;
 
 use crate::{
-    backend::{Handle, set_readonly_mode},
+    backend::{Handle, WriteContents, set_readonly_mode},
     repository::repo::REPO_TMP_EXTENSION,
     ui,
 };
@@ -358,15 +358,24 @@ impl StorageBackend for SftpBackend {
             };
             file.seek(seek_from)?;
 
-            let mut contents = Vec::new();
+            let mut contents = if length > 0 {
+                Vec::with_capacity(length)
+            } else {
+                Vec::new()
+            };
+
             if length == 0 {
                 file.read_to_end(&mut contents)
                     .with_context(|| format!("Failed to read to end of sftp file {path:?}"))?;
             } else {
-                let mut limited = file.take(length as u64);
-                limited.read_to_end(&mut contents).with_context(|| {
-                    format!("Failed to read {length} bytes from sftp file {path:?}")
-                })?;
+                unsafe {
+                    // SAFETY: set_len is called only after read_exact successfully populates the buffer.
+                    let slice = std::slice::from_raw_parts_mut(contents.as_mut_ptr(), length);
+                    file.read_exact(slice).with_context(|| {
+                        format!("Failed to read {length} bytes from sftp file {path:?}")
+                    })?;
+                    contents.set_len(length);
+                }
             }
 
             Ok(contents)
@@ -376,11 +385,11 @@ impl StorageBackend for SftpBackend {
         .context("SFTP read task failed")?
     }
 
-    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
+    async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
         let base_path = self.base_path.clone();
         let pool = self.pool.clone();
         let path = handle.path.to_path_buf();
-        let data = contents.to_vec();
+        let data = contents.into_owned();
 
         task::spawn_blocking(move || {
             let tmp_path = path.with_extension(REPO_TMP_EXTENSION);

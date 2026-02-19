@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::backend::Handle;
+use crate::backend::{Handle, WriteContents};
 
 use super::StorageBackend;
 
@@ -35,7 +35,7 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    async fn write(&self, _handle: &Handle, _contents: &[u8]) -> Result<()> {
+    async fn write(&self, _handle: &Handle, _contents: WriteContents<'_>) -> Result<()> {
         Ok(())
     }
 

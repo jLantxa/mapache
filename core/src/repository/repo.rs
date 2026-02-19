@@ -13,7 +13,7 @@ use parking_lot::{Mutex, RwLock};
 use rand::RngExt;
 
 use crate::{
-    backend::{Handle, StorageBackend, StorageHint, cache::CacheBackend},
+    backend::{Handle, StorageBackend, StorageHint, WriteContents, cache::CacheBackend},
     commands::Compression,
     mapache::{self, BlobType, ContentIdType, ID, SaveID},
     repository::{
@@ -207,7 +207,9 @@ impl Repository {
             None => {
                 let p = keys_path.join(keyfile_id.to_hex());
                 let handle = Handle::new_with_hint(&p, ContentIdType::Key, true);
-                backend.write(&handle, &keyfile_json).await?;
+                backend
+                    .write(&handle, WriteContents::Owned(keyfile_json))
+                    .await?;
             }
         }
 
@@ -224,7 +226,10 @@ impl Repository {
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
         backend
-            .write(&Handle::new(manifest_path), &manifest_json)
+            .write(
+                &Handle::new(manifest_path),
+                WriteContents::Owned(manifest_json),
+            )
             .await?;
 
         backend.create_dir(&objects_path).await?;
@@ -404,7 +409,7 @@ impl Repository {
     pub async fn encode_and_save_blob(
         &self,
         blob_type: BlobType,
-        data: Vec<u8>,
+        data: WriteContents<'_>,
         save_id: SaveID,
     ) -> Result<ID> {
         let secure_storage = self.secure_storage.clone();
@@ -413,6 +418,8 @@ impl Repository {
             let tx_guard = self.pack_saver_tx.lock();
             tx_guard.as_ref().context("Packer is stopped")?.clone()
         };
+
+        let data = data.into_owned();
 
         let id = tokio::task::spawn_blocking(move || {
             let id = match save_id {
@@ -473,23 +480,25 @@ impl Repository {
         let file_type = hint.file_type;
 
         let raw_size = data.len() as u64;
-        let (data, encoded_size) = match file_type {
-            ContentIdType::Pack => (data.to_vec(), raw_size),
+        let (encoded_data, encoded_size) = match file_type {
+            ContentIdType::Pack => (None, raw_size),
             ContentIdType::Key => {
                 let compressed_data = self.secure_storage.compress(data)?;
                 let size = compressed_data.len() as u64;
-                (compressed_data, size)
+                (Some(compressed_data), size)
             }
             _ => {
                 let encoded_data = self.secure_storage.encode(data)?;
                 let size = encoded_data.len() as u64;
-                (encoded_data, size)
+                (Some(encoded_data), size)
             }
         };
 
+        let bytes_to_write = encoded_data.as_deref().unwrap_or(data);
+
         // Assign ID after (potentially) encoding
         let id = match id {
-            SaveID::CalculateID => &ID::from_content(&data),
+            SaveID::CalculateID => &ID::from_content(bytes_to_write),
             SaveID::WithID(id) => id,
         };
 
@@ -501,7 +510,12 @@ impl Repository {
             hint: Some(hint),
         };
 
-        self.backend.write(&handle, &data).await?;
+        let cow_data = match encoded_data {
+            Some(d) => WriteContents::Owned(d),
+            None => WriteContents::Borrowed(data),
+        };
+
+        self.backend.write(&handle, cow_data).await?;
 
         Ok((*id, SizePair::new(raw_size, encoded_size)))
     }
@@ -526,7 +540,7 @@ impl Repository {
         match file_type {
             ContentIdType::Pack => Ok(data),
             ContentIdType::Key => self.secure_storage.decompress(&data),
-            _ => self.secure_storage.decode(&data),
+            _ => self.secure_storage.decode_owned(data),
         }
     }
 
@@ -860,7 +874,7 @@ impl Repository {
                 length as usize,
             )
             .await?;
-        self.secure_storage.decode(&data)
+        self.secure_storage.decode_owned(data)
     }
 
     /// Lists all packs in the repository.
@@ -1021,7 +1035,7 @@ impl Repository {
                 length as usize,
             )
             .await?;
-        self.secure_storage.decode(&data)
+        self.secure_storage.decode_owned(data)
     }
 
     /// Try to acquire a lock with a retry deadline
@@ -1280,7 +1294,7 @@ mod tests {
             .with_compression(Compression::Fast.to_level())
             .with_key(&intermediate_key);
 
-        let decrypted_key = ss.decrypt(&encrypted_key)?;
+        let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();
 
         assert_eq!(master_key, decrypted_key.as_slice());
 

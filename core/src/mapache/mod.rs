@@ -268,7 +268,7 @@ pub(crate) async fn rewrite_snapshot_tree(
     while let Some(res) = node_stream.next().await {
         let (path, mut stream_node) = res?;
 
-        progress_reporter.processing_node(path.clone(), NodeDiff::Unchanged);
+        progress_reporter.processing_node(&path, NodeDiff::Unchanged);
 
         if stream_node.node.is_file() {
             if !rechunk {
@@ -320,7 +320,7 @@ pub(crate) async fn rewrite_snapshot_tree(
             .handle_processed_item((&path, stream_node))
             .await?;
 
-        progress_reporter.processed_node(path, NodeDiff::Unchanged);
+        progress_reporter.processed_node(&path, NodeDiff::Unchanged);
         snapshot.summary.processed_items_count += 1;
     }
 

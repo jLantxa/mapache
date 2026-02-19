@@ -116,22 +116,22 @@ impl JsonSnapshotProgressReporter {
 }
 
 impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
-    fn processing_node(&self, path: PathBuf, _diff: NodeDiff) {
+    fn processing_node(&self, path: &std::path::Path, _diff: NodeDiff) {
         {
             let mut active = self.active_files.lock().unwrap();
-            active.insert(path);
+            active.insert(path.to_path_buf());
         }
         if self.should_emit_update() {
             self.emit_status_update();
         }
     }
 
-    fn processed_node(&self, path: PathBuf, _diff: NodeDiff) {
+    fn processed_node(&self, path: &std::path::Path, _diff: NodeDiff) {
         self.processed_items
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let mut active = self.active_files.lock().unwrap();
-            active.remove(&path);
+            active.remove(path);
         }
         if self.should_emit_update() {
             self.emit_status_update();

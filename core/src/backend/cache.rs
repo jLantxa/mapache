@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use crate::{
-    backend::{Handle, StorageBackend, localfs::LocalFS},
+    backend::{Handle, StorageBackend, WriteContents, localfs::LocalFS},
     mapache::{ContentIdType, defaults::APP_NAME, global::BASE_DIRS},
 };
 
@@ -106,7 +106,9 @@ impl CacheBackend {
             if let Some(parent) = path.parent() {
                 self.cache.create_dir(parent).await?;
             }
-            self.cache.write(&handle, &data).await?;
+            self.cache
+                .write(&handle, WriteContents::Owned(data))
+                .await?;
 
             Ok(())
         }
@@ -157,17 +159,21 @@ impl StorageBackend for CacheBackend {
         }
     }
 
-    async fn write(&self, handle: &Handle, contents: &[u8]) -> Result<()> {
-        // Write to the primary backend first
-        self.backend.write(handle, contents).await?;
-
-        // Then write to the cache backend
+    async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
         if Self::should_cache(handle) {
+            // Write to the primary backend with a reference to avoid moving ownership yet
+            self.backend
+                .write(handle, WriteContents::Borrowed(contents.as_ref()))
+                .await?;
+
+            // Then move ownership to the cache write
             if let Some(parent) = handle.path.parent() {
                 self.cache.create_dir(parent).await?;
             }
-
             self.cache.write(handle, contents).await?;
+        } else {
+            // No caching, just pass the data through
+            self.backend.write(handle, contents).await?;
         }
 
         Ok(())

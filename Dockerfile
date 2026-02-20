@@ -22,7 +22,7 @@ RUN dnf clean all && \
     dnf install -y \
     git vim \
     cargo \
-    perl openssl-devel fuse3-devel \
+    nasm openssl-devel fuse3-devel \
     mingw64-gcc mingw64-binutils mingw64-zlib mingw64-libssh2
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

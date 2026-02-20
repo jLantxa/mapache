@@ -31,6 +31,24 @@ use crate::{
 const MAX_SFTP_CONNECTIONS: usize = 3;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Errors specific to the SFTP backend.
+#[derive(Debug)]
+pub enum SftpError {
+    AuthenticationFailed(String),
+}
+
+impl std::fmt::Display for SftpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SftpError::AuthenticationFailed(user) => {
+                write!(f, "SFTP authentication failed for user: {}", user)
+            }
+        }
+    }
+}
+
+impl std::error::Error for SftpError {}
+
 /// Supported authentication methods for the SFTP backend.
 #[derive(Clone, Debug)]
 pub enum AuthMethod {
@@ -96,7 +114,9 @@ impl SftpConnection {
         };
 
         if !auth_res.success() {
-            bail!("SFTP authentication failed for user: {}", username);
+            return Err(anyhow!(SftpError::AuthenticationFailed(
+                username.to_string()
+            )));
         }
 
         let channel = session
@@ -162,36 +182,49 @@ impl SftpConnectionManager {
     ) -> Result<Self> {
         let mut connections = Vec::new();
 
-        // Establish connections in parallel for faster startup
-        let mut join_handles = Vec::new();
-        let auth_method_arc = Arc::new(auth_method.clone());
+        // Establish the first connection sequentially to verify credentials.
+        // This prevents multiple failed authentication attempts if the password is wrong.
+        let first_conn = timeout(
+            CONNECTION_TIMEOUT,
+            SftpConnection::new(&username, &host, port, &auth_method),
+        )
+        .await
+        .context("Timeout establishing initial SFTP connection")?
+        .context("Failed to establish initial SFTP connection")?;
 
-        for _ in 0..capacity {
-            let u = username.clone();
-            let h = host.clone();
-            let am = auth_method_arc.clone();
-            join_handles.push(tokio::spawn(async move {
-                timeout(CONNECTION_TIMEOUT, SftpConnection::new(&u, &h, port, &am)).await
-            }));
-        }
+        connections.push(Mutex::new(Arc::new(first_conn)));
 
-        for handle in join_handles {
-            match handle.await {
-                Ok(Ok(Ok(conn))) => connections.push(Mutex::new(Arc::new(conn))),
-                Ok(Ok(Err(e))) => {
-                    ui::cli::warning!("Failed to establish SFTP connection: {}", e);
-                }
-                Ok(Err(_)) => {
-                    ui::cli::warning!("Timeout establishing SFTP connection");
-                }
-                Err(e) => {
-                    ui::cli::warning!("Task panicked establishing SFTP connection: {}", e);
+        // Establish the remaining connections in parallel.
+        if capacity > 1 {
+            let mut join_handles = Vec::new();
+            let auth_method_arc = Arc::new(auth_method.clone());
+
+            for _ in 1..capacity {
+                let u = username.clone();
+                let h = host.clone();
+                let am = auth_method_arc.clone();
+                join_handles.push(tokio::spawn(async move {
+                    timeout(CONNECTION_TIMEOUT, SftpConnection::new(&u, &h, port, &am)).await
+                }));
+            }
+
+            for handle in join_handles {
+                match handle.await {
+                    Ok(Ok(Ok(conn))) => connections.push(Mutex::new(Arc::new(conn))),
+                    Ok(Ok(Err(e))) => {
+                        ui::cli::warning!("Failed to establish auxiliary SFTP connection: {}", e);
+                    }
+                    Ok(Err(_)) => {
+                        ui::cli::warning!("Timeout establishing auxiliary SFTP connection");
+                    }
+                    Err(e) => {
+                        ui::cli::warning!(
+                            "Task panicked establishing auxiliary SFTP connection: {}",
+                            e
+                        );
+                    }
                 }
             }
-        }
-
-        if connections.is_empty() {
-            bail!("Failed to establish any SFTP connections");
         }
 
         Ok(Self {

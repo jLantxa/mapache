@@ -18,6 +18,8 @@
 - Initial support for S3 backends.
 - Refactored StorageBackend to be async and removed mimalloc for Windows as it
   is no longer necessary with async.
+- Reimplemented the SFTP backend with russh. The backend is now fully async,
+  binary size has decreased and compilation times are now sane without openssl.
 - Many optimizations to avoid cloning data buffers.
 - The FSNodeStream now stats children in parallel.
 - Added more stats to `mapache stats` and support for json output.

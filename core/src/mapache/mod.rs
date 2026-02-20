@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use num_enum::FromPrimitive;
-use rand::{TryRng, rngs::SysRng};
+use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::io::AsyncReadExt;
 
@@ -42,10 +42,7 @@ impl ID {
     /// Creates a new, random ID.
     pub fn new_random() -> Self {
         let mut random_bytes: Hash256 = Default::default();
-        if let Err(e) = SysRng.try_fill_bytes(&mut random_bytes) {
-            panic!("Error: {e}");
-        }
-
+        rand::rngs::OsRng.fill_bytes(&mut random_bytes);
         Self(random_bytes)
     }
 

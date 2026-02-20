@@ -38,7 +38,6 @@ pub enum AuthMethod {
     Password(String),
     /// Public key authentication using a private key file.
     PubKey {
-        pubkey: Option<PathBuf>,
         private_key: PathBuf,
         passphrase: Option<String>,
     },
@@ -88,7 +87,6 @@ impl SftpConnection {
             AuthMethod::PubKey {
                 private_key,
                 passphrase,
-                ..
             } => {
                 let key = load_secret_key(private_key, passphrase.as_deref())
                     .context("Failed to load private key")?;

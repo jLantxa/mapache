@@ -113,10 +113,6 @@ pub struct GlobalArgs {
     #[clap(long)]
     pub no_cache: bool,
 
-    /// SSH public key
-    #[clap(long)]
-    pub ssh_pubkey: Option<PathBuf>,
-
     /// SSH private key
     #[clap(long)]
     pub ssh_privatekey: Option<PathBuf>,
@@ -159,7 +155,6 @@ impl GlobalArgs {
     pub fn backend_options(&self, dry: bool) -> BackendOptions {
         BackendOptions {
             repo_path: self.repo.clone(),
-            ssh_pubkey: self.ssh_pubkey.clone(),
             ssh_privatekey: self.ssh_privatekey.clone(),
             dry_backend: dry,
         }

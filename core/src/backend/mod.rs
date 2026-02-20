@@ -126,7 +126,6 @@ pub trait StorageBackend: Send + Sync {
 /// Configuration used to initialize a backend.
 pub struct BackendOptions {
     pub repo_path: String,
-    pub ssh_pubkey: Option<PathBuf>,
     pub ssh_privatekey: Option<PathBuf>,
     /// If true, wraps the chosen backend in a `DryBackend` to prevent actual writes.
     pub dry_backend: bool,
@@ -144,7 +143,6 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
         BackendUrl::Sftp(username, host, port, repo_path) => {
             let auth_method = if let Some(private_key) = &opts.ssh_privatekey {
                 sftp::AuthMethod::PubKey {
-                    pubkey: opts.ssh_pubkey,
                     private_key: private_key.to_path_buf(),
                     passphrase: None,
                 }

@@ -27,10 +27,6 @@ pub struct CmdArgs {
     #[clap(long)]
     pub delete: bool,
 
-    /// SSH public key
-    #[clap(long = "dst-ssh-pubkey", value_parser)]
-    pub dst_ssh_pubkey: Option<PathBuf>,
-
     /// SSH private key
     #[clap(long = "dst-ssh-privatekey", value_parser)]
     pub dst_ssh_privatekey: Option<PathBuf>,
@@ -60,7 +56,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.target.clone(),
-        ssh_pubkey: args.dst_ssh_pubkey.clone(),
         ssh_privatekey: args.dst_ssh_privatekey.clone(),
         dry_backend: false,
     })

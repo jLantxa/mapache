@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use chrono::Duration;
 use parking_lot::{Mutex, RwLock};
-use rand::RngExt;
+use rand::{Rng, thread_rng};
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, WriteContents, cache::CacheBackend},
@@ -1066,8 +1066,8 @@ impl Repository {
                         bail!("Timeout acquiring repository lock");
                     }
 
-                    let mut rng = rand::rng();
-                    let jitter_millis = rng.random_range(0..MAX_JITTER_MS);
+                    let mut rng = thread_rng();
+                    let jitter_millis = rng.gen_range(0..MAX_JITTER_MS);
                     let mean_wait_interval =
                         Duration::milliseconds(base_wait_interval_ms - (MAX_JITTER_MS / 2));
                     let wait_time = mean_wait_interval + Duration::milliseconds(jitter_millis);

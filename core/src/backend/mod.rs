@@ -136,7 +136,7 @@ pub struct BackendOptions {
 ///
 /// This will trigger interactive CLI prompts if environment variables
 /// for credentials (like S3 keys or SFTP passwords) are missing.
-pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBackend>> {
+pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBackend>> {
     let backend_url = BackendUrl::from(&opts.repo_path)?;
 
     let backend: Arc<dyn StorageBackend> = match backend_url {
@@ -154,13 +154,7 @@ pub fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBa
                 sftp::AuthMethod::Password(password)
             };
 
-            Arc::new(SftpBackend::new(
-                repo_path,
-                username,
-                host,
-                port,
-                auth_method,
-            )?)
+            Arc::new(SftpBackend::new(repo_path, username, host, port, auth_method).await?)
         }
         BackendUrl::S3(bucket, prefix) => {
             let endpoint = std::env::var("AWS_ENDPOINT_URL").unwrap_or_else(|_| {

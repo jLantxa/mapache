@@ -42,7 +42,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false))?;
+    let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let (_repo, _secure_storage, _lock_handle) = Repository::try_open_with_lock(
         src_auth.as_ref(),
@@ -63,7 +63,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ssh_pubkey: args.dst_ssh_pubkey.clone(),
         ssh_privatekey: args.dst_ssh_privatekey.clone(),
         dry_backend: false,
-    })?;
+    })
+    .await?;
     dst_backend.create().await?; // Create the backend to create the directory if it doesn't exist.
 
     let _cleanup_handler = CleanupHandler::new()?;

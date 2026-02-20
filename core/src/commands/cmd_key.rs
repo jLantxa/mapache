@@ -71,7 +71,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 async fn run_list(global_args: &GlobalArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let mut table = Table::new();
     table.set_headers(vec![
@@ -97,7 +97,7 @@ async fn run_list(global_args: &GlobalArgs) -> Result<()> {
 
 async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
     let auth = request_auth();
-    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let key_manager = KeyManager::new(backend.clone());
     let (_key_id, master_key) = key_manager
@@ -132,7 +132,7 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
 }
 
 async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
     let key_manager = KeyManager::new(backend.clone());
     let (_id, path) = key_manager.find_id_with_prefix(&args.id).await?;
     backend.remove(&path).await
@@ -140,7 +140,7 @@ async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
 
 async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> Result<()> {
     let auth = request_auth();
-    let backend = new_backend_with_prompt(global_args.backend_options(false))?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let key_manager = KeyManager::new(backend.clone());
     let (old_id, old_keyfile) = key_manager

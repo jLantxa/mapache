@@ -1,29 +1,38 @@
 use std::{
-    io::{Read, Seek, SeekFrom, Write},
-    net::TcpStream,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use crossbeam_channel::{Receiver, Sender, bounded};
-use ssh2::{RenameFlags, Session, Sftp};
-use tokio::task;
+use russh::{
+    client,
+    keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key},
+};
+use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::{
-    backend::{Handle, WriteContents, set_readonly_mode},
+    backend::{Handle, NodeAttr, StorageBackend, WriteContents, set_readonly_mode},
     repository::repo::REPO_TMP_EXTENSION,
     ui,
 };
 
-use super::{NodeAttr, StorageBackend};
-
-/// Maximum number of concurrent SSH sessions to maintain in the pool.
-const MAX_CONNECTION_POOL_SIZE: usize = 5;
+/// Maximum number of concurrent SFTP connections to maintain.
+/// Multiple connections provide better throughput over high-latency networks
+/// by using multiple TCP streams.
+const MAX_SFTP_CONNECTIONS: usize = 3;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Supported authentication methods for the SFTP backend.
+#[derive(Clone, Debug)]
 pub enum AuthMethod {
     /// Standard username/password authentication.
     Password(String),
@@ -35,271 +44,322 @@ pub enum AuthMethod {
     },
 }
 
-/// Represents a single active SFTP connection.
-///
-/// It encapsulates both the SSH session and the SFTP subsystem handle.
+#[derive(Clone)]
+struct MapacheSftpHandler;
+
+impl client::Handler for MapacheSftpHandler {
+    type Error = anyhow::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &PublicKey,
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
+/// A wrapper around an SFTP session to make it easier to use.
 pub struct SftpConnection {
-    _session: Arc<Session>,
-    sftp: Sftp,
+    sftp: SftpSession,
+    // We keep the session alive by holding it here.
+    _session: client::Handle<MapacheSftpHandler>,
 }
 
 impl SftpConnection {
-    /// Establishes a new TCP connection and performs SSH handshake and authentication.
-    pub fn new(username: &str, host: &str, port: u16, auth_method: &AuthMethod) -> Result<Self> {
-        let addr = format!("{host}:{port}");
-        let tcp = TcpStream::connect(&addr).context("Failed to connect to SFTP server")?;
+    pub async fn new(
+        username: &str,
+        host: &str,
+        port: u16,
+        auth_method: &AuthMethod,
+    ) -> Result<Self> {
+        let config = Arc::new(client::Config {
+            keepalive_interval: Some(Duration::from_secs(30)),
+            ..Default::default()
+        });
 
-        let mut session = Session::new().context("Failed to create SSH session")?;
-        session.set_tcp_stream(tcp);
-        session
-            .handshake()
-            .context("Failed to perform SSH handshake")?;
+        let mut session = client::connect(config, (host, port), MapacheSftpHandler)
+            .await
+            .context("Failed to connect to SFTP server")?;
 
-        Self::authenticate(&session, username, auth_method)?;
+        let auth_res = match auth_method {
+            AuthMethod::Password(password) => {
+                session.authenticate_password(username, password).await?
+            }
+            AuthMethod::PubKey {
+                private_key,
+                passphrase,
+                ..
+            } => {
+                let key = load_secret_key(private_key, passphrase.as_deref())
+                    .context("Failed to load private key")?;
+                let pk = PrivateKeyWithHashAlg::new(Arc::new(key), None);
+                session.authenticate_publickey(username, pk).await?
+            }
+        };
 
-        // Keepalive to prevent timeouts during long-running backups
-        session.set_keepalive(true, 30);
-        session.set_compress(false);
+        if !auth_res.success() {
+            bail!("SFTP authentication failed for user: {}", username);
+        }
 
-        let sftp = session.sftp().context("Failed to create SFTP session")?;
+        let channel = session
+            .channel_open_session()
+            .await
+            .context("Failed to open SSH channel")?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .context("Failed to request SFTP subsystem")?;
+
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .context("Failed to initialize SFTP session")?;
+
         Ok(Self {
-            _session: Arc::new(session),
             sftp,
+            _session: session,
         })
     }
 
-    pub fn sftp(&self) -> &Sftp {
-        &self.sftp
-    }
-
-    fn authenticate(session: &Session, username: &str, auth_method: &AuthMethod) -> Result<()> {
-        match auth_method {
-            AuthMethod::Password(password) => session
-                .userauth_password(username, password)
-                .context("Failed to authenticate with password"),
-            AuthMethod::PubKey {
-                pubkey,
-                private_key,
-                passphrase,
-            } => session
-                .userauth_pubkey_file(
-                    username,
-                    pubkey.as_deref(),
-                    private_key,
-                    passphrase.as_deref(),
-                )
-                .map_err(|e| anyhow!(format!("Failed to authenticate with pubkey: {e}"))),
-        }
+    pub fn is_alive(&self) -> bool {
+        !self._session.is_closed()
     }
 }
 
-/// A thread-safe pool of SFTP connections.
-pub struct SftpConnectionPool {
-    sender: Sender<SftpConnection>,
-    receiver: Receiver<SftpConnection>,
+#[allow(dead_code)]
+trait FileAttributesExt {
+    fn is_file(&self) -> bool;
+    fn is_dir(&self) -> bool;
 }
 
-impl SftpConnectionPool {
-    pub fn new(
+impl FileAttributesExt for FileAttributes {
+    fn is_file(&self) -> bool {
+        self.permissions.is_some_and(|p| (p & 0o170000) == 0o100000)
+    }
+    fn is_dir(&self) -> bool {
+        self.permissions.is_some_and(|p| (p & 0o170000) == 0o040000)
+    }
+}
+
+/// A high-performance collection of SFTP connections.
+///
+/// Unlike a traditional pool that limits concurrency by popping connections,
+/// this manager allows multiple concurrent operations on every connection,
+/// maximizing the asynchronous capabilities of russh-sftp.
+pub struct SftpConnectionManager {
+    connections: Vec<Mutex<Arc<SftpConnection>>>,
+    next_index: AtomicUsize,
+    username: String,
+    host: String,
+    port: u16,
+    auth_method: AuthMethod,
+}
+
+impl SftpConnectionManager {
+    pub async fn new(
         capacity: usize,
         username: String,
         host: String,
         port: u16,
-        auth_method: &AuthMethod,
+        auth_method: AuthMethod,
     ) -> Result<Self> {
         let mut connections = Vec::new();
 
-        const MAX_CONNECTION_RETRIES: u32 = 3;
-        let mut connection_retry_count = 0;
+        // Establish connections in parallel for faster startup
+        let mut join_handles = Vec::new();
+        let auth_method_arc = Arc::new(auth_method.clone());
 
         for _ in 0..capacity {
-            match SftpConnection::new(&username, &host, port, auth_method) {
-                Ok(conn) => connections.push(conn),
+            let u = username.clone();
+            let h = host.clone();
+            let am = auth_method_arc.clone();
+            join_handles.push(tokio::spawn(async move {
+                timeout(CONNECTION_TIMEOUT, SftpConnection::new(&u, &h, port, &am)).await
+            }));
+        }
+
+        for handle in join_handles {
+            match handle.await {
+                Ok(Ok(Ok(conn))) => connections.push(Mutex::new(Arc::new(conn))),
+                Ok(Ok(Err(e))) => {
+                    ui::cli::warning!("Failed to establish SFTP connection: {}", e);
+                }
+                Ok(Err(_)) => {
+                    ui::cli::warning!("Timeout establishing SFTP connection");
+                }
                 Err(e) => {
-                    if connection_retry_count < MAX_CONNECTION_RETRIES {
-                        ui::cli::warning!(
-                            "Failed to establish SFTP connection: {}. Retrying...",
-                            e.to_string()
-                        );
-                        connection_retry_count += 1;
-                    } else {
-                        ui::cli::warning!("Max connection retries exceeded.");
-                        break;
-                    }
+                    ui::cli::warning!("Task panicked establishing SFTP connection: {}", e);
                 }
             }
         }
 
-        let established = connections.len();
-        if established < 1 {
-            bail!("Failed to establish SFTP connections");
+        if connections.is_empty() {
+            bail!("Failed to establish any SFTP connections");
         }
 
-        let (sender, receiver) = bounded(established);
-        for connection in connections {
-            sender
-                .send(connection)
-                .expect("Failed to populate connection pool");
-        }
-
-        Ok(Self { sender, receiver })
-    }
-
-    /// Acquires a connection from the pool. Blocks if all connections are in use.
-    pub fn get(&self) -> Result<PooledSftpConnection> {
-        let conn = self
-            .receiver
-            .recv()
-            .context("Failed to get connection from pool")?;
-        Ok(PooledSftpConnection {
-            connection: Some(conn),
-            pool_sender: self.sender.clone(),
+        Ok(Self {
+            connections,
+            next_index: AtomicUsize::new(0),
+            username,
+            host,
+            port,
+            auth_method,
         })
     }
-}
 
-/// RAII guard that returns an SftpConnection to the pool when dropped.
-pub struct PooledSftpConnection {
-    connection: Option<SftpConnection>,
-    pool_sender: Sender<SftpConnection>,
-}
+    /// Picks a connection using a round-robin strategy and reconnects if dead.
+    /// Since SftpSession is thread-safe and async, we can use the same
+    /// connection for many concurrent requests.
+    pub async fn get_connection(&self) -> Result<Arc<SftpConnection>> {
+        let idx = self.next_index.fetch_add(1, Ordering::Relaxed) % self.connections.len();
+        let mut guard = self.connections[idx].lock().await;
 
-impl std::ops::Deref for PooledSftpConnection {
-    type Target = SftpConnection;
-
-    fn deref(&self) -> &Self::Target {
-        self.connection
-            .as_ref()
-            .expect("PooledSftpConnection missing conn")
-    }
-}
-
-impl Drop for PooledSftpConnection {
-    fn drop(&mut self) {
-        if let Some(conn) = self.connection.take() {
-            let _ = self.pool_sender.send(conn);
+        if !guard.is_alive() {
+            // Reconnect
+            let conn = timeout(
+                CONNECTION_TIMEOUT,
+                SftpConnection::new(&self.username, &self.host, self.port, &self.auth_method),
+            )
+            .await
+            .context("Timeout re-establishing SFTP connection")?
+            .context("Failed to re-establish SFTP connection")?;
+            *guard = Arc::new(conn);
         }
+
+        Ok(guard.clone())
     }
 }
 
-/// Storage backend implementation for SFTP.
-///
-/// Uses blocking ssh2 APIs but offloads work via tokio::task::spawn_blocking.
+/// Storage backend implementation for SFTP using russh-sftp.
 pub struct SftpBackend {
     base_path: PathBuf,
-    pool: Arc<SftpConnectionPool>,
+    manager: Arc<SftpConnectionManager>,
 }
 
 impl SftpBackend {
-    pub fn new(
+    pub async fn new(
         base_path: PathBuf,
         username: String,
         host: String,
         port: u16,
         auth_method: AuthMethod,
     ) -> Result<Self> {
-        let pool = Arc::new(SftpConnectionPool::new(
-            MAX_CONNECTION_POOL_SIZE,
-            username,
-            host,
-            port,
-            &auth_method,
-        )?);
+        let manager = Arc::new(
+            SftpConnectionManager::new(MAX_SFTP_CONNECTIONS, username, host, port, auth_method)
+                .await?,
+        );
 
-        Ok(Self { base_path, pool })
+        Ok(Self { base_path, manager })
     }
 
     #[inline]
-    fn full_path(base_path: &Path, path: &Path) -> PathBuf {
-        base_path.join(path)
+    fn full_path(&self, path: &Path) -> PathBuf {
+        self.base_path.join(path)
     }
 
-    /// Existence check using lstat (full remote path).
-    fn exists_exact_full(sftp: &Sftp, full_path: &Path) -> bool {
-        sftp.lstat(full_path).is_ok()
+    async fn exists_exact_full(sftp: &SftpSession, full_path: &Path) -> bool {
+        sftp.metadata(full_path.to_string_lossy()).await.is_ok()
     }
 
-    /// Recursively ensure directory exists (full remote path).
-    fn create_dir_all_full(sftp: &Sftp, full_path: &Path) -> Result<()> {
-        if Self::exists_exact_full(sftp, full_path) {
-            let meta = sftp.stat(full_path)?;
+    async fn create_dir_all_full(sftp: &SftpSession, full_path: &Path) -> Result<()> {
+        let path_str = full_path.to_string_lossy().to_string();
+        if Self::exists_exact_full(sftp, full_path).await {
+            let meta = sftp.metadata(&path_str).await?;
             if meta.is_dir() {
                 return Ok(());
             }
-            bail!("Path {full_path:?} exists but is not a directory");
+            bail!("Path {:?} exists but is not a directory", full_path);
         }
 
         if let Some(parent) = full_path.parent()
             && !parent.as_os_str().is_empty()
         {
-            Self::create_dir_all_full(sftp, parent)?;
+            Box::pin(Self::create_dir_all_full(sftp, parent)).await?;
         }
 
-        sftp.mkdir(full_path, 0o755)
-            .with_context(|| format!("Failed to create directory {full_path:?} in sftp backend"))
+        sftp.create_dir(&path_str)
+            .await
+            .with_context(|| format!("Failed to create directory {:?} in sftp backend", full_path))
     }
 
-    /// Toggle readonly permissions (full remote path).
-    fn set_readonly_status_full(sftp: &Sftp, full_path: &Path, readonly: bool) -> Result<()> {
-        let mut stat = match sftp.stat(full_path) {
+    async fn set_readonly_status_full(
+        sftp: &SftpSession,
+        full_path: &Path,
+        readonly: bool,
+    ) -> Result<()> {
+        let path_str = full_path.to_string_lossy().to_string();
+        let mut stat = match sftp.metadata(&path_str).await {
             Ok(s) => s,
-            Err(_) if !readonly => return Ok(()), // making writable and doesn't exist => ok
+            Err(_) if !readonly => return Ok(()),
             Err(e) => return Err(anyhow!(e)).context("Failed to stat remote file"),
         };
 
         let is_dir = stat.is_dir();
-        if let Some(perm) = stat.perm.as_mut() {
-            *perm = set_readonly_mode(*perm, readonly, is_dir);
-            sftp.setstat(full_path, stat)?;
+        if let Some(perm) = stat.permissions {
+            let new_perm = set_readonly_mode(perm, readonly, is_dir);
+            if new_perm != perm {
+                stat.permissions = Some(new_perm);
+                sftp.set_metadata(&path_str, stat).await?;
+            }
         }
         Ok(())
     }
 
-    /// Recursive removal (full remote path).
-    fn remove_recursively_full(sftp: &Sftp, full_path: &Path) -> Result<()> {
-        if !Self::exists_exact_full(sftp, full_path) {
+    async fn remove_recursively_full(sftp: &SftpSession, full_path: &Path) -> Result<()> {
+        if !Self::exists_exact_full(sftp, full_path).await {
             return Ok(());
         }
 
-        let _ = Self::set_readonly_status_full(sftp, full_path, false);
+        let path_str = full_path.to_string_lossy().to_string();
+        let _ = Self::set_readonly_status_full(sftp, full_path, false).await;
 
-        let meta = sftp.lstat(full_path)?;
+        let meta = sftp.symlink_metadata(&path_str).await?;
         if meta.is_file() {
             return sftp
-                .unlink(full_path)
-                .with_context(|| format!("Failed to remove file {full_path:?} in sftp backend"));
+                .remove_file(&path_str)
+                .await
+                .with_context(|| format!("Failed to remove file {:?} in sftp backend", full_path));
         }
 
         if meta.is_dir() {
-            let entries = sftp.readdir(full_path)?;
-            for (p, _) in entries {
-                if p.file_name().is_some_and(|n| n == "." || n == "..") {
+            let entries = sftp.read_dir(&path_str).await?;
+            for entry in entries {
+                let name = entry.file_name();
+                if name == "." || name == ".." {
                     continue;
                 }
-                Self::remove_recursively_full(sftp, &p)?;
+                let p = full_path.join(name);
+                Box::pin(Self::remove_recursively_full(sftp, &p)).await?;
             }
-            return sftp.rmdir(full_path).with_context(|| {
-                format!("Failed to remove directory {full_path:?} in sftp backend")
+            return sftp.remove_dir(&path_str).await.with_context(|| {
+                format!("Failed to remove directory {:?} in sftp backend", full_path)
             });
         }
 
-        // Fallback for other node types
-        sftp.unlink(full_path)
-            .or_else(|_| sftp.rmdir(full_path))
-            .map_err(|e| anyhow!(e))
+        // Fallback
+        if let Err(e) = sftp.remove_file(&path_str).await
+            && let Err(_e2) = sftp.remove_dir(&path_str).await
+        {
+            return Err(anyhow!(e));
+        }
+        Ok(())
     }
 
-    /// Rename with overwrite + permission toggling (full remote paths).
-    fn rename_full(sftp: &Sftp, full_from: &Path, full_to: &Path) -> Result<()> {
-        let _ = Self::set_readonly_status_full(sftp, full_from, false);
+    async fn rename_full(sftp: &SftpSession, full_from: &Path, full_to: &Path) -> Result<()> {
+        let from_str = full_from.to_string_lossy().to_string();
+        let to_str = full_to.to_string_lossy().to_string();
 
-        if sftp.stat(full_to).is_ok() {
-            let _ = Self::set_readonly_status_full(sftp, full_to, false);
-            let _ = sftp.unlink(full_to);
+        let _ = Self::set_readonly_status_full(sftp, full_from, false).await;
+
+        if Self::exists_exact_full(sftp, full_to).await {
+            let _ = Self::set_readonly_status_full(sftp, full_to, false).await;
+            let _ = sftp.remove_file(&to_str).await;
         }
 
-        sftp.rename(full_from, full_to, Some(RenameFlags::all()))?;
-        let _ = Self::set_readonly_status_full(sftp, full_to, true);
+        sftp.rename(&from_str, &to_str)
+            .await
+            .with_context(|| format!("Failed to rename {:?} -> {:?}", full_from, full_to))?;
+
+        let _ = Self::set_readonly_status_full(sftp, full_to, true).await;
 
         Ok(())
     }
@@ -308,268 +368,180 @@ impl SftpBackend {
 #[async_trait]
 impl StorageBackend for SftpBackend {
     async fn create(&self) -> Result<()> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-
-        task::spawn_blocking(move || {
-            let conn = pool.get()?;
-            SftpBackend::create_dir_all_full(conn.sftp(), &base_path)
-        })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP create task failed")?
+        let conn = self.manager.get_connection().await?;
+        Self::create_dir_all_full(&conn.sftp, &self.base_path).await
     }
 
     async fn path_exists(&self, path: &Path) -> bool {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = path.to_path_buf();
-
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = match pool.get() {
-                Ok(c) => c,
-                Err(_) => return false,
-            };
-            SftpBackend::exists_exact_full(conn.sftp(), &full)
-        })
-        .await
-        .unwrap_or(false)
+        let full = self.full_path(path);
+        if let Ok(conn) = self.manager.get_connection().await {
+            Self::exists_exact_full(&conn.sftp, &full).await
+        } else {
+            false
+        }
     }
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = handle.path.to_path_buf();
+        let full = self.full_path(handle.path);
+        let conn = self.manager.get_connection().await?;
+        let path_str = full.to_string_lossy().to_string();
 
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = pool.get()?;
-            let sftp = conn.sftp();
+        let mut file = conn.sftp.open(&path_str).await.with_context(|| {
+            format!(
+                "Failed to open file {:?} in sftp backend for reading",
+                handle.path
+            )
+        })?;
 
-            let mut file = sftp.open(&full).with_context(|| {
-                format!("Failed to open file {path:?} in sftp backend for reading")
-            })?;
-
-            let seek_from = if offset >= 0 {
-                SeekFrom::Start(offset as u64)
+        let real_offset = if offset >= 0 {
+            offset as u64
+        } else {
+            let meta = file.metadata().await?;
+            let size = meta.size.unwrap_or(0);
+            if (offset.unsigned_abs() as u64) > size {
+                0
             } else {
-                SeekFrom::End(offset as i64)
-            };
-            file.seek(seek_from)?;
-
-            let mut contents = if length > 0 {
-                Vec::with_capacity(length)
-            } else {
-                Vec::new()
-            };
-
-            if length == 0 {
-                file.read_to_end(&mut contents)
-                    .with_context(|| format!("Failed to read to end of sftp file {path:?}"))?;
-            } else {
-                unsafe {
-                    // SAFETY: set_len is called only after read_exact successfully populates the buffer.
-                    let slice = std::slice::from_raw_parts_mut(contents.as_mut_ptr(), length);
-                    file.read_exact(slice).with_context(|| {
-                        format!("Failed to read {length} bytes from sftp file {path:?}")
-                    })?;
-                    contents.set_len(length);
-                }
+                size - (offset.unsigned_abs() as u64)
             }
+        };
 
-            Ok(contents)
-        })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP read task failed")?
+        file.seek(std::io::SeekFrom::Start(real_offset)).await?;
+
+        let mut contents = if length > 0 {
+            vec![0u8; length]
+        } else {
+            Vec::new()
+        };
+
+        if length == 0 {
+            file.read_to_end(&mut contents).await?;
+        } else {
+            file.read_exact(&mut contents).await?;
+        }
+
+        Ok(contents)
     }
 
     async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = handle.path.to_path_buf();
-        let data = contents.into_owned();
+        let tmp_path = handle.path.with_extension(REPO_TMP_EXTENSION);
+        let full_tmp = self.full_path(&tmp_path);
+        let full_dst = self.full_path(handle.path);
 
-        task::spawn_blocking(move || {
-            let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
+        let conn = self.manager.get_connection().await?;
 
-            let full_tmp = SftpBackend::full_path(&base_path, &tmp_path);
-            let full_dst = SftpBackend::full_path(&base_path, &path);
+        // Ensure parent exists
+        if let Some(parent) = full_tmp.parent() {
+            let _ = Self::create_dir_all_full(&conn.sftp, parent).await;
+        }
 
-            let conn = pool.get()?;
-            let sftp = conn.sftp();
+        // Write tmp
+        let mut file = conn
+            .sftp
+            .open_with_flags(
+                full_tmp.to_string_lossy(),
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+            )
+            .await
+            .with_context(|| format!("Failed to create tmp file {:?} in sftp backend", tmp_path))?;
 
-            // Ensure parent exists
-            if let Some(parent) = full_tmp.parent() {
-                let _ = SftpBackend::create_dir_all_full(sftp, parent);
-            }
+        file.write_all(&contents)
+            .await
+            .with_context(|| format!("Failed to write tmp file {:?} in sftp backend", tmp_path))?;
 
-            // Write tmp
-            let mut file = sftp.create(&full_tmp).with_context(|| {
-                format!("Failed to create tmp file {tmp_path:?} in sftp backend")
-            })?;
-            file.write_all(&data).with_context(|| {
-                format!("Failed to write tmp file {tmp_path:?} in sftp backend")
-            })?;
+        file.shutdown().await?;
 
-            // Commit tmp -> dst (atomic-ish)
-            let _ = SftpBackend::set_readonly_status_full(sftp, &full_dst, false);
-            SftpBackend::rename_full(sftp, &full_tmp, &full_dst)
-                .with_context(|| format!("Failed to commit tmp write {tmp_path:?} -> {path:?}"))
-        })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP write task failed")?
+        // Commit tmp -> dst
+        Self::rename_full(&conn.sftp, &full_tmp, &full_dst).await
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let from = from.to_path_buf();
-        let to = to.to_path_buf();
+        let full_from = self.full_path(from);
+        let full_to = self.full_path(to);
 
-        task::spawn_blocking(move || {
-            let full_from = SftpBackend::full_path(&base_path, &from);
-            let full_to = SftpBackend::full_path(&base_path, &to);
-
-            let conn = pool.get()?;
-            SftpBackend::rename_full(conn.sftp(), &full_from, &full_to)
-                .with_context(|| format!("Failed to rename {from:?} -> {to:?} in sftp backend"))
-        })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP rename task failed")?
+        let conn = self.manager.get_connection().await?;
+        Self::rename_full(&conn.sftp, &full_from, &full_to).await
     }
 
     async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = path.to_path_buf();
+        let full = self.full_path(path);
+        let conn = self.manager.get_connection().await?;
 
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = pool.get()?;
-            let entries = conn
-                .sftp()
-                .readdir(&full)
-                .with_context(|| format!("Could not list directory {path:?} in sftp backend"))?;
+        let entries = conn
+            .sftp
+            .read_dir(full.to_string_lossy())
+            .await
+            .with_context(|| format!("Could not list directory {:?} in sftp backend", path))?;
 
-            let mut out = Vec::new();
-            for (p, _) in entries {
-                if p.file_name().is_some_and(|n| n == "." || n == "..") {
-                    continue;
-                }
-                if let Ok(rel) = p.strip_prefix(&base_path) {
-                    out.push(rel.to_path_buf());
-                }
+        let mut out = Vec::new();
+        for entry in entries {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
             }
-            Ok(out)
-        })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP list_dir task failed")?
+            out.push(path.join(name));
+        }
+
+        Ok(out)
     }
 
     async fn create_dir(&self, path: &Path) -> Result<()> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = path.to_path_buf();
-
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = pool.get()?;
-            SftpBackend::create_dir_all_full(conn.sftp(), &full)
-        })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP create_dir task failed")?
+        let full = self.full_path(path);
+        let conn = self.manager.get_connection().await?;
+        Self::create_dir_all_full(&conn.sftp, &full).await
     }
 
     async fn remove(&self, file_path: &Path) -> Result<()> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = file_path.to_path_buf();
-
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = pool.get()?;
-            SftpBackend::remove_recursively_full(conn.sftp(), &full)
-        })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP remove task failed")?
+        let full = self.full_path(file_path);
+        let conn = self.manager.get_connection().await?;
+        Self::remove_recursively_full(&conn.sftp, &full).await
     }
 
     async fn is_file(&self, path: &Path) -> bool {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = path.to_path_buf();
-
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = match pool.get() {
-                Ok(c) => c,
-                Err(_) => return false,
-            };
-            conn.sftp()
-                .lstat(&full)
+        let full = self.full_path(path);
+        if let Ok(conn) = self.manager.get_connection().await {
+            conn.sftp
+                .metadata(full.to_string_lossy())
+                .await
                 .map(|s| s.is_file())
                 .unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false)
+        } else {
+            false
+        }
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = path.to_path_buf();
-
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = match pool.get() {
-                Ok(c) => c,
-                Err(_) => return false,
-            };
-            conn.sftp()
-                .lstat(&full)
+        let full = self.full_path(path);
+        if let Ok(conn) = self.manager.get_connection().await {
+            conn.sftp
+                .metadata(full.to_string_lossy())
+                .await
                 .map(|s| s.is_dir())
                 .unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false)
+        } else {
+            false
+        }
     }
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
-        let base_path = self.base_path.clone();
-        let pool = self.pool.clone();
-        let path = path.to_path_buf();
+        let full = self.full_path(path);
+        let conn = self.manager.get_connection().await?;
+        let meta = conn.sftp.symlink_metadata(full.to_string_lossy()).await?;
 
-        task::spawn_blocking(move || {
-            let full = SftpBackend::full_path(&base_path, &path);
-            let conn = pool.get()?;
-            let meta = conn.sftp().lstat(&full)?;
+        let to_system_time = |t: u32| {
+            if t == 0 {
+                None
+            } else {
+                Some(UNIX_EPOCH + Duration::from_secs(t as u64))
+            }
+        };
 
-            let to_system_time = |t: u64| {
-                if t == 0 {
-                    None
-                } else {
-                    Some(UNIX_EPOCH + Duration::from_secs(t))
-                }
-            };
-
-            Ok(NodeAttr {
-                size: meta.size,
-                uid: meta.uid,
-                gid: meta.gid,
-                perm: meta.perm,
-                atime: meta.atime.and_then(to_system_time),
-                mtime: meta.mtime.and_then(to_system_time),
-            })
+        Ok(NodeAttr {
+            size: meta.size,
+            uid: meta.uid,
+            gid: meta.gid,
+            perm: meta.permissions,
+            atime: meta.atime.and_then(to_system_time),
+            mtime: meta.mtime.and_then(to_system_time),
         })
-        .await
-        .map_err(|e| anyhow!(e))
-        .context("SFTP lstat task failed")?
     }
 }

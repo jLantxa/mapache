@@ -61,7 +61,7 @@ impl VerifyStats {
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let backend_options = global_args.backend_options(false);
-    let backend_arc = new_backend_with_prompt(backend_options)?;
+    let backend_arc = new_backend_with_prompt(backend_options).await?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,

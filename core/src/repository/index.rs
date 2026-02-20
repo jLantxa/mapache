@@ -429,6 +429,36 @@ impl MasterIndex {
         lock.indices.iter().rev().find_map(|idx| idx.get(id))
     }
 
+    /// Retrieves all blob entries associated with a specific pack ID.
+    pub fn get_pack_locators(&self, pack_id: &ID) -> Option<IdMap<ID, BlobLocator>> {
+        let lock = self.inner.read();
+        let mut locators = IdMap::default();
+
+        for idx in &lock.indices {
+            if let Some(&pack_array_idx) = idx.pack_ids.get_index(pack_id) {
+                let p_idx_u32 = pack_array_idx as u32;
+
+                // Scan both data and tree maps for blobs matching this pack index
+                for (id, loc) in idx.data_ids.iter() {
+                    if loc.pack_array_index == p_idx_u32 {
+                        locators.insert(*id, idx.resolve_location(loc, BlobType::Data));
+                    }
+                }
+                for (id, loc) in idx.tree_ids.iter() {
+                    if loc.pack_array_index == p_idx_u32 {
+                        locators.insert(*id, idx.resolve_location(loc, BlobType::Tree));
+                    }
+                }
+            }
+        }
+
+        if locators.is_empty() {
+            None
+        } else {
+            Some(locators)
+        }
+    }
+
     /// Adds a fully constructed `Index` to the master index.
     /// This is typically used for adding loaded, finalized indices.
     pub fn add_index(&self, index: Index) {

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -7,6 +9,7 @@ use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
+use crate::fs::tree::SerializedNodeStream;
 use crate::mapache::global::GlobalOpts;
 use crate::{
     backend::new_backend_with_prompt,
@@ -44,6 +47,25 @@ pub struct CmdArgs {
     /// Fail early on first error encountered, but still show the final report
     #[clap(long, default_value_t = false)]
     pub fail_early: bool,
+
+    /// Verify only a random percentage of packs (e.g. 10.5%)
+    #[clap(long, value_parser = parse_sample_percentage)]
+    pub sample: Option<f64>,
+}
+
+fn parse_sample_percentage(s: &str) -> Result<f64, String> {
+    if !s.ends_with('%') {
+        return Err("Sample percentage must end with '%' (e.g. 10.5%)".to_string());
+    }
+    let num_str = &s[..s.len() - 1];
+    let val = num_str
+        .parse::<f64>()
+        .map_err(|_| format!("'{}' is not a valid number", num_str))?;
+
+    if !(0.0..=100.0).contains(&val) {
+        return Err("Sample percentage must be between 0 and 100".to_string());
+    }
+    Ok(val)
 }
 
 struct VerifyStats {
@@ -107,8 +129,31 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     repo.reload_master_index().await?;
 
     let stats = VerifyStats::new();
-    let packs = repo.list_packs().await?;
+    let packs_all = repo.list_packs().await?;
+
+    // ------------------------------------------
+    // Sampling (Optional)
+    // ------------------------------------------
+    let mut packs_to_verify = packs_all.iter().cloned().collect::<Vec<_>>();
+    if let Some(sample_pct) = args.sample {
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        let target_count = ((packs_to_verify.len() as f64) * (sample_pct / 100.0)).round() as usize;
+        let target_count = target_count.clamp(1, packs_to_verify.len());
+
+        ui::cli::log!(
+            "{} verifying {} out of {} packs ({:.2}% of the packs).\n",
+            "Sampling:".bold().cyan(),
+            target_count.to_string().bold(),
+            packs_to_verify.len(),
+            sample_pct
+        );
+        packs_to_verify.shuffle(&mut rng);
+        packs_to_verify.truncate(target_count);
+    }
+
     let mut physical_failed_early = false;
+    let corrupt_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
     // ------------------------------------------
     // Index Consistency (Blobs -> Packs)
@@ -116,7 +161,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     ui::cli::log!("{}", "Verifying Index Consistency...".bold());
     let mut missing_packs = IdSet::default();
     repo.index().for_each_id(|_id, locator| {
-        if !packs.contains(&locator.pack_id) {
+        if !packs_all.contains(&locator.pack_id) {
             missing_packs.insert(locator.pack_id);
         }
     });
@@ -145,7 +190,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Physical Verification (Optional)
     // --------------------------------
     if args.read_packs {
-        ui::cli::log!("{}", "Verifying Pack Integrity...".bold());
+        let suffix = if args.sample.is_none() {
+            ""
+        } else {
+            " (sampled)"
+        };
+        ui::cli::log!("{}", format!("Verifying Pack Integrity{suffix}...").bold());
 
         let style = ProgressStyle::default_bar()
             .template("[{custom_elapsed}] [{bar:25.cyan/white}] {pos}/{len} packs ({msg})")
@@ -158,7 +208,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 },
             );
 
-        let bar = ProgressBar::new(packs.len() as u64);
+        let bar = ProgressBar::new(packs_to_verify.len() as u64);
         bar.set_draw_target(default_bar_draw_target());
         bar.enable_steady_tick(GlobalOpts::progress_refresh_interval());
         bar.set_style(style);
@@ -166,11 +216,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         // Atomic flag to stop scheduling new work if fail_early is set
         let stop_flag = AtomicBool::new(false);
-
         let interrupted_flag = cleanup_handler.interrupted.clone();
 
-        // Async stream replaces Rayon par_iter to allow .await inside verification
-        futures::stream::iter(packs.iter())
+        // I/O & CPU Pipelining:
+        // buffer_unordered(N) effectively pipelines up to N packs.
+        // Some will be in the 'await backend.read()' stage (I/O bound),
+        // while others will be in the 'Rayon par_iter' stage (CPU bound).
+        futures::stream::iter(packs_to_verify.iter())
             .take_while(|_| {
                 futures::future::ready(
                     !stop_flag.load(Ordering::Relaxed) && !interrupted_flag.load(Ordering::Relaxed),
@@ -183,31 +235,60 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 let bar = bar.clone();
                 let stats = &stats;
                 let stop_flag = &stop_flag;
+                let corrupt_blobs = corrupt_blobs.clone();
 
-                async move {
-                    match verify_pack(repo.as_ref(), backend.as_ref(), secure.as_ref(), pack_id)
-                        .await
-                    {
-                        Ok(pack_stats) => {
-                            stats.packs_processed.fetch_add(1, Ordering::Relaxed);
-                            stats
-                                .blobs_verified
-                                .fetch_add(pack_stats.verified_blobs, Ordering::Relaxed);
-                            stats
-                                .blobs_dangling
-                                .fetch_add(pack_stats.dangling, Ordering::Relaxed);
-                        }
-                        Err(e) => {
-                            bar.suspend(|| {
-                                ui::cli::error!("Pack {} CORRUPT: {}", pack_id, e);
-                            });
-                            stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
+                                async move {
+                                    match verify_pack(repo.as_ref(), backend.as_ref(), secure.as_ref(), pack_id).await {
+                                        Ok(pack_stats) => {
+                                            stats.packs_processed.fetch_add(1, Ordering::Relaxed);
+                                            stats
+                                                .blobs_verified
+                                                .fetch_add(pack_stats.verified_blobs, Ordering::Relaxed);
+                                            stats
+                                                .blobs_dangling
+                                                .fetch_add(pack_stats.dangling, Ordering::Relaxed);
 
-                            if args.fail_early {
-                                stop_flag.store(true, Ordering::Relaxed);
-                            }
-                        }
-                    }
+                                            if pack_stats.bit_rot || !pack_stats.corrupt_blobs.is_empty() {
+                                                bar.suspend(|| {
+                                                    if pack_stats.bit_rot {
+                                                        ui::cli::error!(
+                                                            "Pack {} CORRUPT: Bit-rot detected (file hash mismatch).",
+                                                            pack_id
+                                                        );
+                                                    }
+                                                    if !pack_stats.corrupt_blobs.is_empty() {
+                                                        ui::cli::error!(
+                                                            "Pack {} CORRUPT: {} found.",
+                                                            pack_id,
+                                                            utils::format_count(pack_stats.corrupt_blobs.len(), "damaged blob", "damaged blobs")
+                                                        );
+                                                    }
+                                                });
+                                                stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
+
+                                                if !pack_stats.corrupt_blobs.is_empty() {
+                                                    let mut corrupt_set = corrupt_blobs.lock();
+                                                    for id in pack_stats.corrupt_blobs {
+                                                        corrupt_set.insert(id);
+                                                    }
+                                                }
+
+                                                if args.fail_early {
+                                                    stop_flag.store(true, Ordering::Relaxed);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            bar.suspend(|| {
+                                                ui::cli::error!("Failed to process pack {}: {}", pack_id, e);
+                                            });
+                                            stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
+
+                                            if args.fail_early {
+                                                stop_flag.store(true, Ordering::Relaxed);
+                                            }
+                                        }
+                                    }
 
                     // Update bar message
                     let corrupt = stats.packs_corrupt.load(Ordering::Relaxed);
@@ -258,6 +339,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut logical_failed_early = false;
     let snapshots_corrupt = AtomicUsize::new(0);
     let mut num_snapshots_total = 0;
+    let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
     if (!physical_failed_early || !args.fail_early) && !cleanup_handler.is_interrupted() {
         ui::cli::log!("{}", "Verifying Snapshot References...".bold());
@@ -277,10 +359,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             })
             .map(|(i, snapshot_id): (usize, ID)| {
                 let repo = repo.clone();
-                let packs = &packs;
+                let packs = &packs_all;
                 let snapshots_corrupt = &snapshots_corrupt;
                 let stop_flag = &stop_flag;
                 let num_total = num_snapshots_total;
+                let verified_trees = verified_trees.clone();
 
                 async move {
                     let msg = format!(
@@ -289,7 +372,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         format!("({}/{})", i + 1, num_total).dimmed()
                     );
 
-                    match verify_snapshot_refs(repo.clone(), &snapshot_id, packs).await {
+                    match verify_snapshot_refs(repo.clone(), &snapshot_id, packs, verified_trees)
+                        .await
+                    {
                         Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
                         Err(e) => {
                             ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
@@ -303,11 +388,49 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                 }
             })
-            .buffer_unordered(4) // Parallelize logical check too
+            .buffer_unordered(4)
             .collect::<()>()
             .await;
 
         logical_failed_early = stop_flag.load(Ordering::Relaxed);
+    }
+
+    // ------------------------------------------
+    // Back-referencing Corruption
+    // ------------------------------------------
+    if !corrupt_blobs.lock().is_empty() {
+        ui::cli::log!();
+        ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
+
+        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        while let Some((snapshot_id, _)) = snapshot_stream.next().await {
+            let mut stream = SerializedNodeStream::new(
+                repo.clone(),
+                Some(repo.load_snapshot(&snapshot_id, None).await?.tree),
+                PathBuf::new(),
+                None,
+                None,
+            )
+            .await?;
+
+            while let Some(res) = stream.next().await {
+                let (path, sn_node) = res?;
+                let node = sn_node.node;
+                if let Some(blobs) = node.blobs {
+                    let corrupt_ids = corrupt_blobs.lock();
+                    for blob_id in blobs {
+                        if corrupt_ids.contains(&blob_id) {
+                            ui::cli::error!(
+                                "Corrupt blob {} affects file \"{}\" in snapshot {}",
+                                blob_id.to_short_hex(8).red(),
+                                path.display().to_string().bold(),
+                                snapshot_id.to_short_hex(12).yellow()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // -------------

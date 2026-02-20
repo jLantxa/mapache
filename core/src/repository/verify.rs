@@ -1,12 +1,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use futures::StreamExt;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::StorageBackend,
-    fs::tree::SerializedNodeStream,
     mapache::ID,
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils::collections::IdSet,
@@ -15,7 +13,9 @@ use crate::{
 pub struct PackStats {
     pub dangling: usize,
     pub verified_blobs: usize,
+    pub corrupt_blobs: Vec<ID>,
     pub bytes_processed: u64,
+    pub bit_rot: bool,
 }
 
 /// Verify the checksum and contents of a pack.
@@ -41,54 +41,56 @@ pub async fn verify_pack(
         .context("Failed to read pack file for bit-rot check")?;
 
     let file_hash = ID::from_content(&raw_data);
-    if file_hash != *pack_id {
-        bail!(
-            "Pack ID Mismatch (Bit-rot)! Filename: {} | Calculated: {}",
-            pack_id,
-            file_hash
-        );
-    }
+    let bit_rot = file_hash != *pack_id;
 
     // Verify Footer / Metadata
-    let pack_header = Packer::parse_footer(secure_storage, &raw_data)
-        .context("Failed to parse pack footer")?;
+    let pack_header =
+        Packer::parse_footer(secure_storage, &raw_data).context("Failed to parse pack footer")?;
 
     let index = repo.index();
 
     // Verify Data Integrity (Parallel)
     // This is now purely CPU bound (decryption + hashing) since we have raw_data in memory.
-    let (verified_blobs, bytes_processed) = pack_header
+    let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
         .par_iter()
-        .try_fold(
-            || (0, 0),
-            |acc, blob_desc| {
+        .fold(
+            || (0, Vec::new(), 0),
+            |(mut v_count, mut corrupt, mut bytes), blob_desc| {
                 let start = blob_desc.offset as usize;
                 let end = (blob_desc.offset + blob_desc.length) as usize;
 
                 if end > raw_data.len() {
-                    bail!("Blob offset out of bounds for pack {}", pack_id);
+                    corrupt.push(blob_desc.id);
+                    return (v_count, corrupt, bytes);
                 }
 
-                let data = secure_storage
-                    .decode(&raw_data[start..end])
-                    .with_context(|| format!("Failed to decrypt blob {}", blob_desc.id))?;
+                let data_res = secure_storage.decode(&raw_data[start..end]);
 
-                // Integrity Check: Hash(Plaintext) == ID
-                let checksum = ID::from_content(&data);
-                if checksum != blob_desc.id {
-                    bail!(
-                        "Checksum Mismatch! Blob: {:?} | Pack: {:?} | Calculated: {} | Expected: {}",
-                        blob_desc.id,
-                        pack_id,
-                        checksum,
-                        blob_desc.id
-                    );
+                match data_res {
+                    Ok(data) => {
+                        let checksum = ID::from_content(&data);
+                        if checksum != blob_desc.id {
+                            corrupt.push(blob_desc.id);
+                        } else {
+                            v_count += 1;
+                        }
+                    }
+                    Err(_) => {
+                        corrupt.push(blob_desc.id);
+                    }
                 }
 
-                Ok((acc.0 + 1, acc.1 + blob_desc.length as u64))
+                bytes += blob_desc.length as u64;
+                (v_count, corrupt, bytes)
             },
         )
-        .try_reduce(|| (0, 0), |a, b| Ok((a.0 + b.0, a.1 + b.1)))?;
+        .reduce(
+            || (0, Vec::new(), 0),
+            |mut a, mut b| {
+                a.1.append(&mut b.1);
+                (a.0 + b.0, a.1, a.2 + b.2)
+            },
+        );
 
     // Check for Dangling Blobs
     let mut num_dangling = 0;
@@ -101,7 +103,9 @@ pub async fn verify_pack(
     Ok(PackStats {
         dangling: num_dangling,
         verified_blobs,
+        corrupt_blobs,
         bytes_processed,
+        bit_rot,
     })
 }
 
@@ -110,6 +114,7 @@ pub async fn verify_snapshot_refs(
     repo: Arc<Repository>,
     snapshot_id: &ID,
     existing_packs: &IdSet<ID>,
+    verified_trees: Arc<parking_lot::Mutex<IdSet<ID>>>,
 ) -> Result<usize> {
     let snapshot = repo.load_snapshot(snapshot_id, None).await?;
     let tree_id = snapshot.tree;
@@ -119,36 +124,50 @@ pub async fn verify_snapshot_refs(
         bail!("Snapshot root tree {} is missing from index", tree_id);
     }
 
-    let mut stream =
-        SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None).await?;
+    let mut stack = vec![(PathBuf::new(), tree_id)];
     let index = repo.index();
 
-    while let Some(node_res) = stream.next().await {
-        let (path, stream_node) =
-            node_res.with_context(|| "Error streaming snapshot nodes during verification")?;
-        let node = stream_node.node;
+    while let Some((path, current_tree_id)) = stack.pop() {
+        // Global Deduplication: Skip if this tree has already been verified by any snapshot task
+        {
+            let mut seen = verified_trees.lock();
+            if seen.contains(&current_tree_id) {
+                continue;
+            }
+            seen.insert(current_tree_id);
+        }
 
-        let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
+        let tree = crate::fs::tree::Tree::load_from_repo(repo.as_ref(), &current_tree_id).await?;
 
-        for id in referenced_ids {
-            match index.get(id) {
-                Some(blob_locator) => {
-                    if !existing_packs.contains(&blob_locator.pack_id) {
+        for node in tree.nodes {
+            let node_path = path.join(&node.name);
+            let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
+
+            for id in referenced_ids {
+                match index.get(id) {
+                    Some(blob_locator) => {
+                        if !existing_packs.contains(&blob_locator.pack_id) {
+                            bail!(
+                                "Broken Reference at {:?}: Pack {} referenced by blob {} is missing from storage",
+                                node_path,
+                                blob_locator.pack_id,
+                                id
+                            );
+                        }
+                    }
+                    None => {
                         bail!(
-                            "Broken Reference at {:?}: Pack {} referenced by blob {} is missing from storage",
-                            path,
-                            blob_locator.pack_id,
+                            "Broken Reference at {:?}: Blob {} is missing from index",
+                            node_path,
                             id
                         );
                     }
                 }
-                None => {
-                    bail!(
-                        "Broken Reference at {:?}: Blob {} is missing from index",
-                        path,
-                        id
-                    );
-                }
+            }
+
+            // If it's a directory, push to stack for recursive verification
+            if let Some(subtree_id) = node.tree {
+                stack.push((node_path, subtree_id));
             }
         }
     }

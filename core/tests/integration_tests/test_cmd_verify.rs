@@ -97,6 +97,7 @@ mod tests {
             parallel: 8,
             with_cache: false,
             fail_early: true,
+            sample: None,
         };
         let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "First verify should pass");
@@ -187,6 +188,7 @@ mod tests {
             parallel: 8,
             with_cache: false,
             fail_early: true,
+            sample: None,
         };
         let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "Verify should pass");
@@ -277,6 +279,7 @@ mod tests {
             parallel: 8,
             with_cache: false,
             fail_early: true,
+            sample: None,
         };
         let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "Verify should pass");

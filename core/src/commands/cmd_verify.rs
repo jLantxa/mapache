@@ -7,6 +7,7 @@ use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
+use crate::mapache::global::GlobalOpts;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler},
@@ -159,7 +160,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
         let bar = ProgressBar::new(packs.len() as u64);
         bar.set_draw_target(default_bar_draw_target());
+        bar.enable_steady_tick(GlobalOpts::progress_refresh_interval());
         bar.set_style(style);
+        bar.set_message("OK");
 
         // Atomic flag to stop scheduling new work if fail_early is set
         let stop_flag = AtomicBool::new(false);

@@ -275,7 +275,7 @@ impl Packer {
     ///
     /// This function validates the trailer length, decrypts the footer,
     /// and filters out any "Padding" blobs used during the packing process.
-    fn parse_footer(
+    pub fn parse_footer(
         secure_storage: &SecureStorage,
         footer_data: &[u8],
     ) -> Result<Vec<PackedBlobDescriptor>> {

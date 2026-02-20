@@ -22,8 +22,8 @@ pub struct PackStats {
 ///
 /// This performs a "Physical Verification":
 /// 1. Reads the ENTIRE file from the backend to verify the file-level ID (bit-rot check).
-/// 2. Reads the pack footer (decrypts metadata).
-/// 3. Reads EVERY blob in the pack (decrypts data).
+/// 2. Parses the pack footer from the memory-resident data.
+/// 3. Decrypts and verifies EVERY blob in the pack in parallel (CPU-bound).
 /// 4. Hashes the plaintext and compares it to the ID.
 pub async fn verify_pack(
     repo: &Repository,
@@ -34,6 +34,7 @@ pub async fn verify_pack(
     let pack_path = repo.get_path(crate::mapache::ContentIdType::Pack, pack_id);
 
     // Bit-rot check: Verify full-file hash matches the filename (ID)
+    // By reading the entire file once, we avoid subsequent I/O during blob verification.
     let raw_data = backend
         .read(&crate::backend::Handle::new(&pack_path), 0, 0)
         .await
@@ -49,46 +50,45 @@ pub async fn verify_pack(
     }
 
     // Verify Footer / Metadata
-    let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, pack_id)
-        .await
+    let pack_header = Packer::parse_footer(secure_storage, &raw_data)
         .context("Failed to parse pack footer")?;
 
     let index = repo.index();
-    let rt_handle = tokio::runtime::Handle::current();
 
     // Verify Data Integrity (Parallel)
-    // We map-reduce to get stats and bubble up the first error encountered.
-    let (verified_blobs, bytes_processed) = pack_header.par_iter().try_fold(
-        || (0, 0),
-        |acc, blob_desc| {
-            // Bridge the sync Rayon thread to the async backend
-            let data = rt_handle.block_on(async {
-                repo.load_from_pack(
-                    pack_id,
-                    blob_desc.blob_type,
-                    blob_desc.offset,
-                    blob_desc.length,
-                ).await
-            }).with_context(|| format!("Failed to load/decrypt blob {}", blob_desc.id))?;
+    // This is now purely CPU bound (decryption + hashing) since we have raw_data in memory.
+    let (verified_blobs, bytes_processed) = pack_header
+        .par_iter()
+        .try_fold(
+            || (0, 0),
+            |acc, blob_desc| {
+                let start = blob_desc.offset as usize;
+                let end = (blob_desc.offset + blob_desc.length) as usize;
 
-            // Integrity Check: Hash(Plaintext) == ID
-            let checksum = ID::from_content(&data);
-            if checksum != blob_desc.id {
-                bail!(
-                    "Checksum Mismatch! Blob: {:?} | Pack: {:?} | Calculated: {} | Expected: {}",
-                    blob_desc.id,
-                    pack_id,
-                    checksum,
-                    blob_desc.id
-                );
-            }
+                if end > raw_data.len() {
+                    bail!("Blob offset out of bounds for pack {}", pack_id);
+                }
 
-            Ok((acc.0 + 1, acc.1 + blob_desc.length as u64))
-        }
-    ).try_reduce(
-        || (0, 0),
-        |a, b| Ok((a.0 + b.0, a.1 + b.1))
-    )?;
+                let data = secure_storage
+                    .decode(&raw_data[start..end])
+                    .with_context(|| format!("Failed to decrypt blob {}", blob_desc.id))?;
+
+                // Integrity Check: Hash(Plaintext) == ID
+                let checksum = ID::from_content(&data);
+                if checksum != blob_desc.id {
+                    bail!(
+                        "Checksum Mismatch! Blob: {:?} | Pack: {:?} | Calculated: {} | Expected: {}",
+                        blob_desc.id,
+                        pack_id,
+                        checksum,
+                        blob_desc.id
+                    );
+                }
+
+                Ok((acc.0 + 1, acc.1 + blob_desc.length as u64))
+            },
+        )
+        .try_reduce(|| (0, 0), |a, b| Ok((a.0 + b.0, a.1 + b.1)))?;
 
     // Check for Dangling Blobs
     let mut num_dangling = 0;

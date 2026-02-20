@@ -52,7 +52,6 @@ mod tests {
             quiet: *TEST_QUIET,
             json: false,
             verbosity: Some(3),
-            ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,

@@ -50,7 +50,6 @@ mod tests {
             quiet: *TEST_QUIET,
             json: false,
             verbosity: Some(3),
-            ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
@@ -90,7 +89,6 @@ mod tests {
         let sync_args = cmd_sync::CmdArgs {
             target: dst_repo_path.to_string_lossy().to_string(),
             delete: false,
-            dst_ssh_pubkey: None,
             dst_ssh_privatekey: None,
         };
         cmd_sync::run(&global, &sync_args)
@@ -141,7 +139,6 @@ mod tests {
             quiet: *TEST_QUIET,
             json: false,
             verbosity: Some(3),
-            ssh_pubkey: None,
             ssh_privatekey: None,
             pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
@@ -203,7 +200,6 @@ mod tests {
         let sync_args = cmd_sync::CmdArgs {
             target: dst_repo_path.to_string_lossy().to_string(),
             delete: true,
-            dst_ssh_pubkey: None,
             dst_ssh_privatekey: None,
         };
         cmd_sync::run(&global, &sync_args)

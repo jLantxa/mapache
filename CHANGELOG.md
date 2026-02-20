@@ -21,6 +21,10 @@
 - Many optimizations to avoid cloning data buffers.
 - The FSNodeStream now stats children in parallel.
 - Added more stats to `mapache stats` and support for json output.
+- Enhanced Repository Verification:
+  - Bit-rot detection via full-file hashing of pack files.
+  - Index-to-pack consistency checks to ensure all indexed blobs physically
+    exist.
 
 ## v0.1.8
 

@@ -21,15 +21,33 @@ pub struct PackStats {
 /// Verify the checksum and contents of a pack.
 ///
 /// This performs a "Physical Verification":
-/// 1. Reads the pack footer (decrypts metadata).
-/// 2. Reads EVERY blob in the pack (decrypts data).
-/// 3. Hashes the plaintext and compares it to the ID.
+/// 1. Reads the ENTIRE file from the backend to verify the file-level ID (bit-rot check).
+/// 2. Reads the pack footer (decrypts metadata).
+/// 3. Reads EVERY blob in the pack (decrypts data).
+/// 4. Hashes the plaintext and compares it to the ID.
 pub async fn verify_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
     secure_storage: &SecureStorage,
     pack_id: &ID,
 ) -> Result<PackStats> {
+    let pack_path = repo.get_path(crate::mapache::ContentIdType::Pack, pack_id);
+
+    // Bit-rot check: Verify full-file hash matches the filename (ID)
+    let raw_data = backend
+        .read(&crate::backend::Handle::new(&pack_path), 0, 0)
+        .await
+        .context("Failed to read pack file for bit-rot check")?;
+
+    let file_hash = ID::from_content(&raw_data);
+    if file_hash != *pack_id {
+        bail!(
+            "Pack ID Mismatch (Bit-rot)! Filename: {} | Calculated: {}",
+            pack_id,
+            file_hash
+        );
+    }
+
     // Verify Footer / Metadata
     let pack_header = Packer::parse_pack_footer(repo, backend, secure_storage, pack_id)
         .await
@@ -104,9 +122,10 @@ pub async fn verify_snapshot_refs(
     let mut stream =
         SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None).await?;
     let index = repo.index();
-    let mut missing_blobs = 0;
 
-    while let Some(Ok((_path, stream_node))) = stream.next().await {
+    while let Some(node_res) = stream.next().await {
+        let (path, stream_node) =
+            node_res.with_context(|| "Error streaming snapshot nodes during verification")?;
         let node = stream_node.node;
 
         let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
@@ -116,22 +135,22 @@ pub async fn verify_snapshot_refs(
                 Some(blob_locator) => {
                     if !existing_packs.contains(&blob_locator.pack_id) {
                         bail!(
-                            "Pack {} referenced by blob {} is missing from storage",
+                            "Broken Reference at {:?}: Pack {} referenced by blob {} is missing from storage",
+                            path,
                             blob_locator.pack_id,
                             id
                         );
                     }
                 }
-                None => missing_blobs += 1,
+                None => {
+                    bail!(
+                        "Broken Reference at {:?}: Blob {} is missing from index",
+                        path,
+                        id
+                    );
+                }
             }
         }
-    }
-
-    if missing_blobs > 0 {
-        bail!(
-            "Snapshot contains {} missing references (index entries not found)",
-            missing_blobs
-        );
     }
 
     Ok(0) // 0 errors

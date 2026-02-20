@@ -141,18 +141,41 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
     let backend: Arc<dyn StorageBackend> = match backend_url {
         BackendUrl::Local(repo_path) => Arc::new(LocalFS::new(repo_path)),
         BackendUrl::Sftp(username, host, port, repo_path) => {
-            let auth_method = if let Some(private_key) = &opts.ssh_privatekey {
-                sftp::AuthMethod::PubKey {
-                    private_key: private_key.to_path_buf(),
-                    passphrase: None,
-                }
-            } else {
-                let password_prompt = format!("{username}@{host}'s password");
-                let password = ui::cli::request_password(&password_prompt);
-                sftp::AuthMethod::Password(password)
-            };
+            const MAX_PASSWORD_RETRIES: usize = 3;
+            let mut password_try_count = 0;
+            loop {
+                let auth_method = match &opts.ssh_privatekey {
+                    Some(pk) => sftp::AuthMethod::PubKey {
+                        private_key: pk.clone(),
+                        passphrase: None,
+                    },
+                    None => {
+                        let prompt = format!("{username}@{host}'s password");
+                        sftp::AuthMethod::Password(ui::cli::request_password(&prompt))
+                    }
+                };
 
-            Arc::new(SftpBackend::new(repo_path, username, host, port, auth_method).await?)
+                match SftpBackend::new(
+                    repo_path.clone(),
+                    username.clone(),
+                    host.clone(),
+                    port,
+                    auth_method,
+                )
+                .await
+                {
+                    Ok(backend) => break Arc::new(backend),
+                    Err(e)
+                        if opts.ssh_privatekey.is_none()
+                            && password_try_count < MAX_PASSWORD_RETRIES - 1
+                            && e.chain().any(|err| err.is::<sftp::SftpError>()) =>
+                    {
+                        password_try_count += 1;
+                        ui::cli::log!("Incorrect password. Try again.");
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
         }
         BackendUrl::S3(bucket, prefix) => {
             let endpoint = std::env::var("AWS_ENDPOINT_URL").unwrap_or_else(|_| {

@@ -89,6 +89,7 @@ mod tests {
 
         let verify_args = cmd_verify::CmdArgs {
             read_packs: true,
+            parallel: 8,
             with_cache: false,
             fail_early: true,
         };

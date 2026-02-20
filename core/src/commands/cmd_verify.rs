@@ -32,6 +32,10 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub read_packs: bool,
 
+    /// Number of packs to process in parallel
+    #[clap(short, long, default_value_t = 8, requires = "read_packs")]
+    pub parallel: usize,
+
     /// Use local cache
     #[clap(long, default_value_t = false)]
     pub with_cache: bool,
@@ -216,7 +220,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     bar.inc(1);
                 }
             })
-            .buffer_unordered(8)
+            .buffer_unordered(args.parallel)
             .collect::<()>()
             .await;
 

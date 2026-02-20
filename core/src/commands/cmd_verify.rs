@@ -89,7 +89,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await?;
 
-    let _cleanup_handler = CleanupHandler::new()?;
+    // Init cleanup handler
+    let cleanup_handler = CleanupHandler::new_with_callback(move || {
+        ui::cli::log!(
+            "\n{}",
+            "Process interrupted. Cleaning up...".bold().yellow()
+        );
+    })?;
 
     let start = Instant::now();
 
@@ -154,9 +160,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         // Atomic flag to stop scheduling new work if fail_early is set
         let stop_flag = AtomicBool::new(false);
 
+        let interrupted_flag = cleanup_handler.interrupted.clone();
+
         // Async stream replaces Rayon par_iter to allow .await inside verification
         futures::stream::iter(packs.iter())
-            .take_while(|_| futures::future::ready(!stop_flag.load(Ordering::Relaxed)))
+            .take_while(|_| {
+                futures::future::ready(
+                    !stop_flag.load(Ordering::Relaxed) && !interrupted_flag.load(Ordering::Relaxed),
+                )
+            })
             .map(|pack_id| {
                 let repo = repo.clone();
                 let backend = backend_arc.clone();
@@ -208,6 +220,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .collect::<()>()
             .await;
 
+        if cleanup_handler.is_interrupted() {
+            bar.abandon();
+            return Ok(());
+        }
+
         bar.finish();
         physical_failed_early = stop_flag.load(Ordering::Relaxed);
 
@@ -235,7 +252,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let snapshots_corrupt = AtomicUsize::new(0);
     let mut num_snapshots_total = 0;
 
-    if !physical_failed_early || !args.fail_early {
+    if (!physical_failed_early || !args.fail_early) && !cleanup_handler.is_interrupted() {
         ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
         let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
@@ -243,9 +260,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         num_snapshots_total = snapshots.len();
 
         let stop_flag = AtomicBool::new(false);
+        let interrupted_flag = cleanup_handler.interrupted.clone();
 
         futures::stream::iter(snapshots.into_iter().enumerate())
-            .take_while(|_| futures::future::ready(!stop_flag.load(Ordering::Relaxed)))
+            .take_while(|_| {
+                futures::future::ready(
+                    !stop_flag.load(Ordering::Relaxed) && !interrupted_flag.load(Ordering::Relaxed),
+                )
+            })
             .map(|(i, snapshot_id): (usize, ID)| {
                 let repo = repo.clone();
                 let packs = &packs;
@@ -284,6 +306,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // -------------
     // FINAL REPORT
     // -------------
+    if cleanup_handler.is_interrupted() {
+        return Ok(());
+    }
+
     ui::cli::log!();
 
     let packs_corrupt_count = stats.packs_corrupt.load(Ordering::Relaxed);

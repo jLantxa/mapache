@@ -19,6 +19,7 @@
 - Refactored StorageBackend to be async and removed mimalloc for Windows as it
   is no longer necessary with async.
 - Many optimizations to avoid cloning data buffers.
+- The FSNodeStream now stats children in parallel.
 - Added more stats to `mapache stats` and support for json output.
 
 ## v0.1.8

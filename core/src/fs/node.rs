@@ -307,6 +307,33 @@ impl Node {
         Ok(node)
     }
 
+    pub fn from_std_dir_entry(e: &std::fs::DirEntry) -> Result<Self> {
+        let path = e.path();
+        let meta = e.metadata().with_context(|| {
+            format!(
+                "Failed to get metadata for directory entry: {}",
+                path.display()
+            )
+        })?;
+
+        let node_type = get_node_type(&meta)?;
+
+        let name = e.file_name().to_string_lossy().into_owned();
+
+        let mut node = Self {
+            name,
+            node_type,
+            metadata: Metadata::from_fs(&meta),
+            ..Default::default()
+        };
+
+        if node.is_symlink() {
+            node.populate_symlink_info(&path)?;
+        }
+
+        Ok(node)
+    }
+
     fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
         let target = std::fs::read_link(path)
             .with_context(|| format!("Failed to read symlink target for: {}", path.display()))?;

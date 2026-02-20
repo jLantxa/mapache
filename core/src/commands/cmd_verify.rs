@@ -10,13 +10,14 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler},
+    mapache::ID,
     repository::{
         repo::{RepoConfig, Repository},
         snapshot::SnapshotStream,
         verify::{verify_pack, verify_snapshot_refs},
     },
     ui::{self, default_bar_draw_target},
-    utils::{self, size},
+    utils::{self, collections::IdSet, size},
 };
 
 #[derive(Args, Debug)]
@@ -97,6 +98,37 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let stats = VerifyStats::new();
     let packs = repo.list_packs().await?;
     let mut physical_failed_early = false;
+
+    // ------------------------------------------
+    // Index Consistency (Blobs -> Packs)
+    // ------------------------------------------
+    ui::cli::log!("{}", "Verifying Index Consistency...".bold());
+    let mut missing_packs = IdSet::default();
+    repo.index().for_each_id(|_id, locator| {
+        if !packs.contains(&locator.pack_id) {
+            missing_packs.insert(locator.pack_id);
+        }
+    });
+
+    if !missing_packs.is_empty() {
+        ui::cli::error!(
+            "Index refers to {} missing packs!",
+            missing_packs.len().to_string().bold().red()
+        );
+        for p in missing_packs {
+            ui::cli::log!("  - Missing Pack: {}", p);
+        }
+        if args.fail_early {
+            bail!("Index consistency check failed.");
+        }
+    } else {
+        ui::cli::log!(
+            "{} {}",
+            "Index consistency check passed.".bold().green(),
+            "All indexed blobs point to existing packs."
+        );
+    }
+    ui::cli::log!();
 
     // --------------------------------
     // Physical Verification (Optional)
@@ -200,42 +232,53 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Logical Verification (Snapshot References)
     // ------------------------------------------
     let mut logical_failed_early = false;
-    let mut snapshots_corrupt = 0;
-    let mut num_snapshots = 0;
+    let snapshots_corrupt = AtomicUsize::new(0);
+    let mut num_snapshots_total = 0;
 
-    // Only run logical check if we haven't already failed early in physical check
-    // or if the user wants to see all errors regardless.
     if !physical_failed_early || !args.fail_early {
         ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
-        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        num_snapshots = snapshot_stream.len();
-        let mut i = 0;
+        let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        let snapshots: Vec<ID> = snapshot_stream.map(|(id, _)| id).collect::<Vec<_>>().await;
+        num_snapshots_total = snapshots.len();
 
-        // Using while let to consume the stream without collecting into a Vec
-        while let Some((snapshot_id, _)) = snapshot_stream.next().await {
-            let msg = format!(
-                "{} {}",
-                snapshot_id.to_short_hex(12).bold().yellow(),
-                format!("({}/{})", i + 1, num_snapshots).dimmed()
-            );
+        let stop_flag = AtomicBool::new(false);
 
-            match verify_snapshot_refs(repo.clone(), &snapshot_id, &packs).await {
-                Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
-                Err(e) => {
-                    ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
-                    ui::cli::error!("{e}");
-                    snapshots_corrupt += 1;
+        futures::stream::iter(snapshots.into_iter().enumerate())
+            .take_while(|_| futures::future::ready(!stop_flag.load(Ordering::Relaxed)))
+            .map(|(i, snapshot_id): (usize, ID)| {
+                let repo = repo.clone();
+                let packs = &packs;
+                let snapshots_corrupt = &snapshots_corrupt;
+                let stop_flag = &stop_flag;
+                let num_total = num_snapshots_total;
 
-                    if args.fail_early {
-                        ui::cli::warning!("Logical verification halted early.");
-                        logical_failed_early = true;
-                        break;
+                async move {
+                    let msg = format!(
+                        "{} {}",
+                        snapshot_id.to_short_hex(12).bold().yellow(),
+                        format!("({}/{})", i + 1, num_total).dimmed()
+                    );
+
+                    match verify_snapshot_refs(repo.clone(), &snapshot_id, packs).await {
+                        Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
+                        Err(e) => {
+                            ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
+                            ui::cli::error!("{e}");
+                            snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
+
+                            if args.fail_early {
+                                stop_flag.store(true, Ordering::Relaxed);
+                            }
+                        }
                     }
                 }
-            }
-            i += 1;
-        }
+            })
+            .buffer_unordered(4) // Parallelize logical check too
+            .collect::<()>()
+            .await;
+
+        logical_failed_early = stop_flag.load(Ordering::Relaxed);
     }
 
     // -------------
@@ -245,8 +288,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let packs_corrupt_count = stats.packs_corrupt.load(Ordering::Relaxed);
     let dangling_count = stats.blobs_dangling.load(Ordering::Relaxed);
+    let snapshots_corrupt_count = snapshots_corrupt.load(Ordering::Relaxed);
 
-    if packs_corrupt_count > 0 || snapshots_corrupt > 0 {
+    if packs_corrupt_count > 0 || snapshots_corrupt_count > 0 {
         ui::cli::log!("{}", "VERIFICATION FAILED".bold().on_red());
 
         if packs_corrupt_count > 0 {
@@ -255,10 +299,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 utils::format_count(packs_corrupt_count, "pack", "packs")
             );
         }
-        if snapshots_corrupt > 0 {
+        if snapshots_corrupt_count > 0 {
             ui::cli::log!(
                 "- {} with broken references.",
-                utils::format_count(snapshots_corrupt, "snapshot", "snapshots")
+                utils::format_count(snapshots_corrupt_count, "snapshot", "snapshots")
             );
         }
         if physical_failed_early || logical_failed_early {
@@ -292,7 +336,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     ui::cli::log!(
         "{} Verified {} and {} in {}",
         "[SUCCESS]".bold().green(),
-        utils::format_count(num_snapshots, "snapshot", "snapshots"),
+        utils::format_count(num_snapshots_total, "snapshot", "snapshots"),
         utils::format_count(
             stats.packs_processed.load(Ordering::Relaxed),
             "pack",

@@ -17,7 +17,7 @@ use crate::{
     mapache::ID,
     repository::{
         repo::{RepoConfig, Repository},
-        snapshot::SnapshotStream,
+        snapshot::{Snapshot, SnapshotStream},
         verify::{verify_pack, verify_snapshot_refs},
     },
     ui::{self, default_bar_draw_target},
@@ -345,52 +345,54 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
         let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        let snapshots: Vec<ID> = snapshot_stream.map(|(id, _)| id).collect::<Vec<_>>().await;
+        let mut snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect().await;
+        // Sort snapshots by timestamp (oldest first)
+        snapshots.sort_by_key(|(_, s)| s.timestamp);
         num_snapshots_total = snapshots.len();
 
         let stop_flag = AtomicBool::new(false);
         let interrupted_flag = cleanup_handler.interrupted.clone();
 
-        futures::stream::iter(snapshots.into_iter().enumerate())
+        let mut stream = futures::stream::iter(snapshots.into_iter().enumerate())
             .take_while(|_| {
                 futures::future::ready(
                     !stop_flag.load(Ordering::Relaxed) && !interrupted_flag.load(Ordering::Relaxed),
                 )
             })
-            .map(|(i, snapshot_id): (usize, ID)| {
+            .map(|(i, (snapshot_id, _snapshot))| {
                 let repo = repo.clone();
                 let packs = &packs_all;
-                let snapshots_corrupt = &snapshots_corrupt;
-                let stop_flag = &stop_flag;
-                let num_total = num_snapshots_total;
                 let verified_trees = verified_trees.clone();
 
                 async move {
-                    let msg = format!(
-                        "{} {}",
-                        snapshot_id.to_short_hex(12).bold().yellow(),
-                        format!("({}/{})", i + 1, num_total).dimmed()
-                    );
-
-                    match verify_snapshot_refs(repo.clone(), &snapshot_id, packs, verified_trees)
-                        .await
-                    {
-                        Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
-                        Err(e) => {
-                            ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
-                            ui::cli::error!("{e}");
-                            snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
-
-                            if args.fail_early {
-                                stop_flag.store(true, Ordering::Relaxed);
-                            }
-                        }
-                    }
+                    let res =
+                        verify_snapshot_refs(repo.clone(), &snapshot_id, packs, verified_trees)
+                            .await;
+                    (i, snapshot_id, res)
                 }
             })
-            .buffer_unordered(4)
-            .collect::<()>()
-            .await;
+            .buffered(4);
+
+        while let Some((i, snapshot_id, res)) = stream.next().await {
+            let msg = format!(
+                "{} {}",
+                snapshot_id.to_short_hex(12).bold().yellow(),
+                format!("({}/{})", i + 1, num_snapshots_total).dimmed()
+            );
+
+            match res {
+                Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
+                Err(e) => {
+                    ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
+                    ui::cli::error!("{e}");
+                    snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
+
+                    if args.fail_early {
+                        stop_flag.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
 
         logical_failed_early = stop_flag.load(Ordering::Relaxed);
     }

@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -9,7 +8,6 @@ use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
-use crate::fs::tree::SerializedNodeStream;
 use crate::mapache::global::GlobalOpts;
 use crate::{
     backend::new_backend_with_prompt,
@@ -405,29 +403,78 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
 
         let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        while let Some((snapshot_id, _)) = snapshot_stream.next().await {
-            let mut stream = SerializedNodeStream::new(
-                repo.clone(),
-                Some(repo.load_snapshot(&snapshot_id, None).await?.tree),
-                PathBuf::new(),
-                None,
-                None,
-            )
-            .await?;
 
-            while let Some(res) = stream.next().await {
-                let (path, sn_node) = res?;
-                let node = sn_node.node;
-                if let Some(blobs) = node.blobs {
-                    let corrupt_ids = corrupt_blobs.lock();
-                    for blob_id in blobs {
-                        if corrupt_ids.contains(&blob_id) {
-                            ui::cli::error!(
-                                "Corrupt blob {} affects file \"{}\" in snapshot {}",
-                                blob_id.to_short_hex(8).red(),
-                                path.display().to_string().bold(),
-                                snapshot_id.to_short_hex(12).yellow()
-                            );
+        // Map tree ID -> list of snapshot IDs that reference it
+        let mut tree_to_snapshots = std::collections::HashMap::<ID, Vec<ID>>::new();
+        let mut pending_trees = Vec::new();
+        let mut visited_trees = IdSet::default();
+        let mut loading_trees = futures::stream::FuturesUnordered::new();
+
+        while let Some((snapshot_id, snapshot)) = snapshot_stream.next().await {
+            let tree_id = snapshot.tree;
+            tree_to_snapshots
+                .entry(tree_id)
+                .or_default()
+                .push(snapshot_id);
+            if visited_trees.insert(tree_id) {
+                pending_trees.push(tree_id);
+            }
+        }
+
+        const CONCURRENCY_LIMIT: usize = 8;
+
+        loop {
+            while !pending_trees.is_empty() && loading_trees.len() < CONCURRENCY_LIMIT {
+                let tree_id = pending_trees.pop().unwrap();
+                let repo = repo.clone();
+                loading_trees.push(async move {
+                    let tree_res = crate::fs::tree::Tree::load_from_repo(&repo, &tree_id).await;
+                    (tree_id, tree_res)
+                });
+            }
+
+            if loading_trees.is_empty() {
+                break;
+            }
+
+            if let Some((tree_id, tree_res)) = loading_trees.next().await {
+                let tree = match tree_res {
+                    Ok(t) => t,
+                    Err(e) => {
+                        ui::cli::warning!("Failed to load tree {}: {}", tree_id, e);
+                        continue;
+                    }
+                };
+
+                let affected_snapshots = tree_to_snapshots.remove(&tree_id).unwrap_or_default();
+
+                for node in tree.nodes {
+                    // Check if this node references any corrupt blobs
+                    if let Some(blobs) = &node.blobs {
+                        let corrupt_ids = corrupt_blobs.lock();
+                        for blob_id in blobs {
+                            if corrupt_ids.contains(blob_id) {
+                                for snap_id in &affected_snapshots {
+                                    ui::cli::error!(
+                                        "Corrupt blob {} affects file \"{}\" in snapshot {}",
+                                        blob_id.to_short_hex(8).red(),
+                                        node.name.bold(),
+                                        snap_id.to_short_hex(12).yellow()
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // If it's a directory, propagate affected snapshots to subtree
+                    if let Some(subtree_id) = node.tree {
+                        tree_to_snapshots
+                            .entry(subtree_id)
+                            .or_default()
+                            .extend(affected_snapshots.clone());
+
+                        if visited_trees.insert(subtree_id) {
+                            pending_trees.push(subtree_id);
                         }
                     }
                 }

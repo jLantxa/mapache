@@ -258,19 +258,28 @@ impl SnapshotStream {
         let remaining_count = Arc::new(AtomicU64::new(num_snapshots as u64));
         let remaining_ptr = remaining_count.clone();
 
-        // Use the stream! macro to generate the state machine automatically
+        const CONCURRENCY_LIMIT: usize = 8;
+
         let inner = stream! {
-            while let Some(id) = ids.pop() {
-                let res = repo.load_snapshot(&id, ext.as_deref()).await;
+            let mut loading = futures::stream::FuturesUnordered::new();
 
-                // Decrement the remaining counter regardless of success
-                remaining_ptr.fetch_sub(1, Ordering::Relaxed);
+            while !ids.is_empty() || !loading.is_empty() {
+                // Fill loading queue
+                while !ids.is_empty() && loading.len() < CONCURRENCY_LIMIT {
+                    let id = ids.pop().unwrap();
+                    let repo = repo.clone();
+                    let ext = ext.clone();
+                    loading.push(async move {
+                        let res = repo.load_snapshot(&id, ext.as_deref()).await;
+                        (id, res)
+                    });
+                }
 
-                if let Ok(snapshot) = res {
-                    yield (id, snapshot);
-                } else {
-                    // Log error or skip corrupted snapshot silently
-                    continue;
+                if let Some((id, res)) = loading.next().await {
+                    remaining_ptr.fetch_sub(1, Ordering::Relaxed);
+                    if let Ok(snapshot) = res {
+                        yield (id, snapshot);
+                    }
                 }
             }
         };

@@ -1,17 +1,15 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use anyhow::Result;
-use colored::Colorize;
-use futures::{StreamExt, stream};
+use futures::{
+    StreamExt,
+    stream::{self, FuturesUnordered},
+};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::{StorageBackend, WriteContents, read_backend_dir},
-    fs::tree::SerializedNodeStream,
+    fs::tree::Tree,
     mapache::{
         self, ContentIdType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
@@ -418,91 +416,82 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    while let Some((_snapshot_id, snapshot)) = snapshot_stream.next().await {
-        let tree_id = snapshot.tree;
+    // Track which trees we've already traversed to avoid redundant work.
+    let mut visited_trees = IdSet::default();
+    let mut pending_trees = Vec::new();
+    let mut loading_trees = FuturesUnordered::new();
 
-        // Tree blob of the snapshot
-        if referenced_blobs.insert(tree_id) {
-            spinner.set_position(referenced_blobs.len() as u64);
+    // Concurrency limit for tree loading
+    const CONCURRENCY_LIMIT: usize = 8;
+
+    loop {
+        // Fill loading_trees up to the limit from pending_trees
+        while !pending_trees.is_empty() && loading_trees.len() < CONCURRENCY_LIMIT {
+            let tree_id = pending_trees.pop().unwrap();
+            let repo = repo.clone();
+            loading_trees.push(async move {
+                let tree_res = Tree::load_from_repo(&repo, &tree_id).await;
+                (tree_id, tree_res)
+            });
         }
 
-        match index.get(&tree_id) {
-            Some(locator) => {
+        // Try to get more snapshots if we have capacity in loading_trees
+        if loading_trees.len() < CONCURRENCY_LIMIT
+            && let Some((_snapshot_id, snapshot)) = snapshot_stream.next().await
+        {
+            let root_tree_id = snapshot.tree;
+            if visited_trees.insert(root_tree_id) {
+                pending_trees.push(root_tree_id);
+            }
+            // Continue to fill loading_trees in the next iteration
+            continue;
+        }
+
+        // If nothing is loading and nothing is pending, and no more snapshots, we are done
+        if loading_trees.is_empty() {
+            break;
+        }
+
+        // Wait for at least one tree to finish loading
+        if let Some((tree_id, tree_res)) = loading_trees.next().await {
+            // Tree blob itself is referenced
+            referenced_blobs.insert(tree_id);
+            if let Some(locator) = index.get(&tree_id) {
                 referenced_packs.insert(locator.pack_id);
+            } else {
+                ui::cli::warning!("Tree blob {} is referenced but not found in index", tree_id);
             }
-            None => {
-                ui::cli::warning!(
-                    "Snapshot tree {} is referenced but not found in index",
-                    tree_id
-                );
-            }
-        }
 
-        // Stream all nodes in the snapshot
-        let mut node_stream =
-            SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)
-                .await?;
+            let tree = match tree_res {
+                Ok(t) => t,
+                Err(e) => {
+                    ui::cli::warning!("Failed to load tree {}: {}", tree_id, e);
+                    continue;
+                }
+            };
 
-        let mut missing_tree_blobs = 0;
-        let mut missing_data_blobs = 0;
+            for node in tree.nodes {
+                // If this is a directory, add its tree ID if not visited
+                if let Some(subtree_id) = node.tree
+                    && visited_trees.insert(subtree_id)
+                {
+                    pending_trees.push(subtree_id);
+                }
 
-        while let Some(node_res) = node_stream.next().await {
-            match node_res {
-                Ok((_path, stream_node)) => {
-                    let node = &stream_node.node;
-
-                    // Tree blobs
-                    if let Some(tree) = &node.tree {
-                        if referenced_blobs.insert(*tree) {
+                // Add all data blobs referenced by this node
+                if let Some(blobs) = node.blobs {
+                    for blob_id in blobs {
+                        if referenced_blobs.insert(blob_id) {
                             spinner.set_position(referenced_blobs.len() as u64);
                         }
 
-                        match index.get(tree) {
-                            Some(locator) => {
-                                referenced_packs.insert(locator.pack_id);
-                            }
-                            None => {
-                                missing_tree_blobs += 1;
-                            }
+                        if let Some(locator) = index.get(&blob_id) {
+                            referenced_packs.insert(locator.pack_id);
                         }
                     }
-
-                    // Data blobs
-                    if let Some(blobs) = &node.blobs {
-                        for blob_id in blobs {
-                            if referenced_blobs.insert(*blob_id) {
-                                spinner.set_position(referenced_blobs.len() as u64);
-                            }
-
-                            match index.get(blob_id) {
-                                Some(locator) => {
-                                    referenced_packs.insert(locator.pack_id);
-                                }
-                                None => {
-                                    missing_data_blobs += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    ui::cli::warning!("Error parsing node: {e}");
                 }
             }
-        }
-
-        if missing_tree_blobs > 0 {
-            ui::cli::warning!(
-                "{} tree blobs referenced in snapshot are missing in the index",
-                missing_tree_blobs.to_string().bold()
-            );
-        }
-
-        if missing_data_blobs > 0 {
-            ui::cli::warning!(
-                "{} data blobs referenced in snapshot are missing in the index",
-                missing_data_blobs.to_string().bold()
-            );
+            spinner.set_position(referenced_blobs.len() as u64);
         }
     }
 

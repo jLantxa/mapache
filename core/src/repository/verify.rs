@@ -1,6 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use futures::StreamExt;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
@@ -117,60 +118,78 @@ pub async fn verify_snapshot_refs(
     verified_trees: Arc<parking_lot::Mutex<IdSet<ID>>>,
 ) -> Result<usize> {
     let snapshot = repo.load_snapshot(snapshot_id, None).await?;
-    let tree_id = snapshot.tree;
+    let root_tree_id = snapshot.tree;
 
-    // Validate the root tree exists first
-    if repo.index().get(&tree_id).is_none() {
-        bail!("Snapshot root tree {} is missing from index", tree_id);
-    }
-
-    let mut stack = vec![(PathBuf::new(), tree_id)];
     let index = repo.index();
 
-    while let Some((path, current_tree_id)) = stack.pop() {
-        // Global Deduplication: Skip if this tree has already been verified by any snapshot task
-        {
-            let mut seen = verified_trees.lock();
-            if seen.contains(&current_tree_id) {
-                continue;
+    // Check root tree exists
+    if index.get(&root_tree_id).is_none() {
+        bail!("Snapshot root tree {} is missing from index", root_tree_id);
+    }
+
+    let mut pending_trees = vec![root_tree_id];
+    let mut loading_trees = futures::stream::FuturesUnordered::new();
+    const CONCURRENCY_LIMIT: usize = 8;
+
+    loop {
+        // Pop from stack and load if not verified
+        while !pending_trees.is_empty() && loading_trees.len() < CONCURRENCY_LIMIT {
+            let tree_id = pending_trees.pop().unwrap();
+
+            // Atomic check+insert using our shared mutex
+            {
+                let mut seen = verified_trees.lock();
+                if seen.contains(&tree_id) {
+                    continue;
+                }
+                seen.insert(tree_id);
             }
-            seen.insert(current_tree_id);
+
+            let repo_clone = repo.clone();
+            loading_trees.push(async move {
+                let res = crate::fs::tree::Tree::load_from_repo(&repo_clone, &tree_id).await;
+                (tree_id, res)
+            });
         }
 
-        let tree = crate::fs::tree::Tree::load_from_repo(repo.as_ref(), &current_tree_id).await?;
+        if loading_trees.is_empty() {
+            break;
+        }
 
-        for node in tree.nodes {
-            let node_path = path.join(&node.name);
-            let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
+        if let Some((tree_id, tree_res)) = loading_trees.next().await {
+            let tree = tree_res.with_context(|| format!("Failed to load tree {tree_id}"))?;
 
-            for id in referenced_ids {
-                match index.get(id) {
-                    Some(blob_locator) => {
-                        if !existing_packs.contains(&blob_locator.pack_id) {
+            for node in tree.nodes {
+                let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
+
+                for id in referenced_ids {
+                    match index.get(id) {
+                        Some(blob_locator) => {
+                            if !existing_packs.contains(&blob_locator.pack_id) {
+                                bail!(
+                                    "Broken Reference: Pack {} referenced by blob {} is missing from storage (found in node '{}')",
+                                    blob_locator.pack_id,
+                                    id,
+                                    node.name
+                                );
+                            }
+                        }
+                        None => {
                             bail!(
-                                "Broken Reference at {:?}: Pack {} referenced by blob {} is missing from storage",
-                                node_path,
-                                blob_locator.pack_id,
-                                id
+                                "Broken Reference: Blob {} is missing from index (found in node '{}')",
+                                id,
+                                node.name
                             );
                         }
                     }
-                    None => {
-                        bail!(
-                            "Broken Reference at {:?}: Blob {} is missing from index",
-                            node_path,
-                            id
-                        );
-                    }
                 }
-            }
 
-            // If it's a directory, push to stack for recursive verification
-            if let Some(subtree_id) = node.tree {
-                stack.push((node_path, subtree_id));
+                if let Some(subtree_id) = node.tree {
+                    pending_trees.push(subtree_id);
+                }
             }
         }
     }
 
-    Ok(0) // 0 errors
+    Ok(0)
 }

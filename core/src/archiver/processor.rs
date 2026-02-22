@@ -1,6 +1,5 @@
 use std::{
     io::Read,
-    mem::MaybeUninit,
     path::Path,
     sync::{
         Arc,
@@ -41,8 +40,8 @@ pub(crate) async fn process_item(
         NodeDiff,
     ),
     repo: Arc<Repository>,
-    progress: &SnapshotProgress,
-    progress_reporter: &dyn SnapshotProgressReporter,
+    progress: Arc<SnapshotProgress>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Option<StreamNode>> {
     progress_reporter.processing_node(path, diff_type);
@@ -52,7 +51,7 @@ pub(crate) async fn process_item(
             let prev = prev_node.with_context(|| {
                 format!("Inconsistent state: Deleted diff but no prev_node for {path:?}")
             })?;
-            report_node_diff(&prev.node, diff_type, progress);
+            report_node_diff(&prev.node, diff_type, progress.as_ref());
             None
         }
 
@@ -71,7 +70,7 @@ pub(crate) async fn process_item(
                 progress.processed_bytes(next.node.metadata.size);
                 progress_reporter.processed_bytes(next.node.metadata.size);
             }
-            report_node_diff(&next.node, diff_type, progress);
+            report_node_diff(&next.node, diff_type, progress.as_ref());
             Some(next)
         }
 
@@ -92,8 +91,8 @@ pub(crate) async fn process_item(
                     repo,
                     &next.node,
                     reader,
-                    progress,
-                    progress_reporter,
+                    progress.clone(),
+                    progress_reporter.clone(),
                     shutdown_signal,
                 )
                 .await
@@ -102,7 +101,7 @@ pub(crate) async fn process_item(
                 next.node.blobs = Some(blobs_ids);
             }
 
-            report_node_diff(&next.node, diff_type, progress);
+            report_node_diff(&next.node, diff_type, progress.as_ref());
             Some(next)
         }
     };
@@ -124,52 +123,48 @@ pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
     repo: Arc<Repository>,
     node: &Node,
     reader: R,
-    progress: &SnapshotProgress,
-    progress_reporter: &dyn SnapshotProgressReporter,
+    progress: Arc<SnapshotProgress>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Vec<ID>> {
     if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(repo, reader, node, progress, progress_reporter).await;
+        return store_small_file(
+            repo,
+            reader,
+            node,
+            progress.as_ref(),
+            progress_reporter.as_ref(),
+        )
+        .await;
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(WriteContents<'static>, u64)>(2);
     let file_size = node.metadata.size;
+    let progress_blocking = progress.clone();
+    let reporter_blocking = progress_reporter.clone();
 
-    let shutdown_chunker = Arc::clone(&shutdown_signal);
-    let chunker_handle = tokio::task::spawn_blocking(move || {
+    let chunk_ids = tokio::task::spawn_blocking(move || {
         let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
+        let mut ids = Vec::new();
+
         for result in stream {
-            if shutdown_chunker.load(Ordering::Relaxed) {
+            if shutdown_signal.load(Ordering::Relaxed) {
                 return Err(anyhow!("Shutdown signal received"));
             }
 
             let chunk = result?;
-            let len = chunk.data.len() as u64;
+            let chunk_len = chunk.data.len() as u64;
 
-            tx.blocking_send((WriteContents::Owned(chunk.data), len))
-                .context("Failed to send chunk: receiver dropped")?;
+            let id =
+                repo.encode_and_save_blob_sync(BlobType::Data, chunk.data, SaveID::CalculateID)?;
+
+            ids.push(id);
+            progress_blocking.processed_bytes(chunk_len);
+            reporter_blocking.processed_bytes(chunk_len);
         }
-        Ok::<(), anyhow::Error>(())
-    });
-
-    let mut chunk_ids = Vec::new();
-
-    while let Some((data, chunk_len)) = rx.recv().await {
-        if shutdown_signal.load(Ordering::Relaxed) {
-            return Err(anyhow!("Shutdown signal received during processing"));
-        }
-
-        progress.processed_bytes(chunk_len);
-        progress_reporter.processed_bytes(chunk_len);
-
-        let id = repo
-            .encode_and_save_blob(BlobType::Data, data, SaveID::CalculateID)
-            .await?;
-
-        chunk_ids.push(id);
-    }
-
-    chunker_handle.await.context("Chunker panicked")??;
+        Ok::<Vec<ID>, anyhow::Error>(ids)
+    })
+    .await
+    .context("Chunker panicked")??;
 
     Ok(chunk_ids)
 }
@@ -187,8 +182,11 @@ async fn store_small_file<R: Read>(
     unsafe {
         // SAFETY: Memory is allocated but uninitialized; set_len is deferred until read_exact
         // guarantees initialization, ensuring no UB if a panic or error occurs during I/O.
-        let slice = std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut MaybeUninit<u8>, size);
-        let buffer = &mut *(slice as *mut [MaybeUninit<u8>] as *mut [u8]);
+        let slice = std::slice::from_raw_parts_mut(
+            data.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
+            size,
+        );
+        let buffer = &mut *(slice as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]);
         reader.read_exact(buffer)?;
         data.set_len(size);
     }

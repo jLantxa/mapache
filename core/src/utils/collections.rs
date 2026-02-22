@@ -1,34 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash};
 
-/// A simple hasher for types that are already hashes.
-#[derive(Default)]
-pub struct IdentityHasher {
-    hash: u64,
-}
-
-impl Hasher for IdentityHasher {
-    fn finish(&self) -> u64 {
-        self.hash
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        // IDs are already hashes (e.g. 32 bytes).
-        // We take the first 8 bytes as the u64 hash.
-        if bytes.len() >= 8 {
-            self.hash = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
-        } else {
-            let mut out = 0u64;
-            for (i, &b) in bytes.iter().enumerate() {
-                out |= (b as u64) << (i * 8);
-            }
-            self.hash = out;
-        }
-    }
-}
-
-pub type IdSet<K> = HashSet<K, BuildHasherDefault<IdentityHasher>>;
-pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdentityHasher>>;
+pub type IdSet<K> = HashSet<K, BuildHasherDefault<rustc_hash::FxHasher>>;
+pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<rustc_hash::FxHasher>>;
 
 /// IndexSet is a set that can be enumerated by index.
 #[derive(Debug, Clone)]
@@ -62,7 +36,7 @@ where
     }
 }
 
-pub type IdIndexSet<T> = IndexSet<T, BuildHasherDefault<IdentityHasher>>;
+pub type IdIndexSet<T> = IndexSet<T, BuildHasherDefault<rustc_hash::FxHasher>>;
 
 impl<T> IdIndexSet<T>
 where

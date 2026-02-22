@@ -20,7 +20,9 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::{
-    backend::{Handle, NodeAttr, StorageBackend, WriteContents, set_readonly_mode},
+    backend::{
+        Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry, set_readonly_mode,
+    },
     repository::repo::REPO_TMP_EXTENSION,
     ui,
 };
@@ -264,6 +266,7 @@ impl SftpConnectionManager {
 pub struct SftpBackend {
     base_path: PathBuf,
     manager: Arc<SftpConnectionManager>,
+    retry_opts: RetryOptions,
 }
 
 impl SftpBackend {
@@ -279,7 +282,26 @@ impl SftpBackend {
                 .await?,
         );
 
-        Ok(Self { base_path, manager })
+        let retry_opts = RetryOptions {
+            max_attempts: 4,
+            base_delay: Duration::from_millis(200),
+            request_timeout: Duration::from_secs(60),
+        };
+
+        Ok(Self {
+            base_path,
+            manager,
+            retry_opts,
+        })
+    }
+
+    /// Wraps an async operation with exponential backoff retries and timeouts.
+    async fn retry<T, F, Fut>(&self, op: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        retry("SFTP", &self.retry_opts, op).await
     }
 
     #[inline]
@@ -399,58 +421,68 @@ impl SftpBackend {
 #[async_trait]
 impl StorageBackend for SftpBackend {
     async fn create(&self) -> Result<()> {
-        let conn = self.manager.get_connection().await?;
-        Self::create_dir_all_full(&conn.sftp, &self.base_path).await
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
+            Self::create_dir_all_full(&conn.sftp, &self.base_path).await
+        })
+        .await
     }
 
     async fn path_exists(&self, path: &Path) -> bool {
         let full = self.full_path(path);
-        if let Ok(conn) = self.manager.get_connection().await {
-            Self::exists_exact_full(&conn.sftp, &full).await
-        } else {
-            false
-        }
+        let res = self
+            .retry(|| async {
+                let conn = self.manager.get_connection().await?;
+                Ok(Self::exists_exact_full(&conn.sftp, &full).await)
+            })
+            .await;
+
+        res.unwrap_or(false)
     }
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let full = self.full_path(handle.path);
-        let conn = self.manager.get_connection().await?;
-        let path_str = full.to_string_lossy().to_string();
 
-        let mut file = conn.sftp.open(&path_str).await.with_context(|| {
-            format!(
-                "Failed to open file {:?} in sftp backend for reading",
-                handle.path
-            )
-        })?;
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
+            let path_str = full.to_string_lossy().to_string();
 
-        let real_offset = if offset >= 0 {
-            offset as u64
-        } else {
-            let meta = file.metadata().await?;
-            let size = meta.size.unwrap_or(0);
-            if (offset.unsigned_abs() as u64) > size {
-                0
+            let mut file = conn.sftp.open(&path_str).await.with_context(|| {
+                format!(
+                    "Failed to open file {:?} in sftp backend for reading",
+                    handle.path
+                )
+            })?;
+
+            let real_offset = if offset >= 0 {
+                offset as u64
             } else {
-                size - (offset.unsigned_abs() as u64)
+                let meta = file.metadata().await?;
+                let size = meta.size.unwrap_or(0);
+                if (offset.unsigned_abs() as u64) > size {
+                    0
+                } else {
+                    size - (offset.unsigned_abs() as u64)
+                }
+            };
+
+            file.seek(std::io::SeekFrom::Start(real_offset)).await?;
+
+            let mut contents = if length > 0 {
+                vec![0u8; length]
+            } else {
+                Vec::new()
+            };
+
+            if length == 0 {
+                file.read_to_end(&mut contents).await?;
+            } else {
+                file.read_exact(&mut contents).await?;
             }
-        };
 
-        file.seek(std::io::SeekFrom::Start(real_offset)).await?;
-
-        let mut contents = if length > 0 {
-            vec![0u8; length]
-        } else {
-            Vec::new()
-        };
-
-        if length == 0 {
-            file.read_to_end(&mut contents).await?;
-        } else {
-            file.read_exact(&mut contents).await?;
-        }
-
-        Ok(contents)
+            Ok(contents)
+        })
+        .await
     }
 
     async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
@@ -458,121 +490,145 @@ impl StorageBackend for SftpBackend {
         let full_tmp = self.full_path(&tmp_path);
         let full_dst = self.full_path(handle.path);
 
-        let conn = self.manager.get_connection().await?;
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
 
-        // Ensure parent exists
-        if let Some(parent) = full_tmp.parent() {
-            let _ = Self::create_dir_all_full(&conn.sftp, parent).await;
-        }
+            // Ensure parent exists
+            if let Some(parent) = full_tmp.parent() {
+                let _ = Self::create_dir_all_full(&conn.sftp, parent).await;
+            }
 
-        // Write tmp
-        let mut file = conn
-            .sftp
-            .open_with_flags(
-                full_tmp.to_string_lossy(),
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-            )
-            .await
-            .with_context(|| format!("Failed to create tmp file {:?} in sftp backend", tmp_path))?;
+            // Write tmp
+            let mut file = conn
+                .sftp
+                .open_with_flags(
+                    full_tmp.to_string_lossy(),
+                    OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                )
+                .await
+                .with_context(|| {
+                    format!("Failed to create tmp file {:?} in sftp backend", tmp_path)
+                })?;
 
-        file.write_all(&contents)
-            .await
-            .with_context(|| format!("Failed to write tmp file {:?} in sftp backend", tmp_path))?;
+            file.write_all(&contents).await.with_context(|| {
+                format!("Failed to write tmp file {:?} in sftp backend", tmp_path)
+            })?;
 
-        file.shutdown().await?;
+            file.shutdown().await?;
 
-        // Commit tmp -> dst
-        Self::rename_full(&conn.sftp, &full_tmp, &full_dst).await
+            // Commit tmp -> dst
+            Self::rename_full(&conn.sftp, &full_tmp, &full_dst).await
+        })
+        .await
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let full_from = self.full_path(from);
         let full_to = self.full_path(to);
 
-        let conn = self.manager.get_connection().await?;
-        Self::rename_full(&conn.sftp, &full_from, &full_to).await
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
+            Self::rename_full(&conn.sftp, &full_from, &full_to).await
+        })
+        .await
     }
 
     async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
         let full = self.full_path(path);
-        let conn = self.manager.get_connection().await?;
 
-        let entries = conn
-            .sftp
-            .read_dir(full.to_string_lossy())
-            .await
-            .with_context(|| format!("Could not list directory {:?} in sftp backend", path))?;
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
 
-        let mut out = Vec::new();
-        for entry in entries {
-            let name = entry.file_name();
-            if name == "." || name == ".." {
-                continue;
+            let entries = conn
+                .sftp
+                .read_dir(full.to_string_lossy())
+                .await
+                .with_context(|| format!("Could not list directory {:?} in sftp backend", path))?;
+
+            let mut out = Vec::new();
+            for entry in entries {
+                let name = entry.file_name();
+                if name == "." || name == ".." {
+                    continue;
+                }
+                out.push(path.join(name));
             }
-            out.push(path.join(name));
-        }
 
-        Ok(out)
+            Ok(out)
+        })
+        .await
     }
 
     async fn create_dir(&self, path: &Path) -> Result<()> {
         let full = self.full_path(path);
-        let conn = self.manager.get_connection().await?;
-        Self::create_dir_all_full(&conn.sftp, &full).await
+
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
+            Self::create_dir_all_full(&conn.sftp, &full).await
+        })
+        .await
     }
 
     async fn remove(&self, file_path: &Path) -> Result<()> {
         let full = self.full_path(file_path);
-        let conn = self.manager.get_connection().await?;
-        Self::remove_recursively_full(&conn.sftp, &full).await
+
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
+            Self::remove_recursively_full(&conn.sftp, &full).await
+        })
+        .await
     }
 
     async fn is_file(&self, path: &Path) -> bool {
         let full = self.full_path(path);
-        if let Ok(conn) = self.manager.get_connection().await {
-            conn.sftp
-                .metadata(full.to_string_lossy())
-                .await
-                .map(|s| s.is_file())
-                .unwrap_or(false)
-        } else {
-            false
-        }
+        let res = self
+            .retry(|| async {
+                let conn = self.manager.get_connection().await?;
+                let meta = conn.sftp.metadata(full.to_string_lossy()).await;
+                Ok(meta.map(|s| s.is_file()).unwrap_or(false))
+            })
+            .await;
+
+        res.unwrap_or(false)
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
         let full = self.full_path(path);
-        if let Ok(conn) = self.manager.get_connection().await {
-            conn.sftp
-                .metadata(full.to_string_lossy())
-                .await
-                .map(|s| s.is_dir())
-                .unwrap_or(false)
-        } else {
-            false
-        }
+        let res = self
+            .retry(|| async {
+                let conn = self.manager.get_connection().await?;
+                let meta = conn.sftp.metadata(full.to_string_lossy()).await;
+                Ok(meta.map(|s| s.is_dir()).unwrap_or(false))
+            })
+            .await;
+
+        res.unwrap_or(false)
     }
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
         let full = self.full_path(path);
-        let conn = self.manager.get_connection().await?;
-        let meta = conn.sftp.symlink_metadata(full.to_string_lossy()).await?;
 
-        let to_system_time = |t: u32| {
-            if t == 0 {
-                None
-            } else {
-                Some(UNIX_EPOCH + Duration::from_secs(t as u64))
-            }
-        };
+        self.retry(|| async {
+            let conn = self.manager.get_connection().await?;
+            let meta = conn.sftp.symlink_metadata(full.to_string_lossy()).await?;
 
-        Ok(NodeAttr {
-            size: meta.size,
-            uid: meta.uid,
-            gid: meta.gid,
-            perm: meta.permissions,
-            atime: meta.atime.and_then(to_system_time),
-            mtime: meta.mtime.and_then(to_system_time),
+            let to_system_time = |t: u32| {
+                if t == 0 {
+                    None
+                } else {
+                    Some(UNIX_EPOCH + Duration::from_secs(t as u64))
+                }
+            };
+
+            Ok(NodeAttr {
+                size: meta.size,
+                uid: meta.uid,
+                gid: meta.gid,
+                perm: meta.permissions,
+                atime: meta.atime.and_then(to_system_time),
+                mtime: meta.mtime.and_then(to_system_time),
+            })
         })
+        .await
     }
 }

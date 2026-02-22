@@ -172,8 +172,12 @@ impl StorageBackend for LocalFS {
         unsafe {
             // SAFETY: Memory is allocated but uninitialized; set_len is deferred until read_exact
             // guarantees initialization, ensuring no UB if a panic or error occurs during I/O.
-            let slice = std::slice::from_raw_parts_mut(data.as_mut_ptr(), read_length);
-            file.read_exact(slice).await.with_context(|| {
+            let slice = std::slice::from_raw_parts_mut(
+                data.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
+                read_length,
+            );
+            let buffer = &mut *(slice as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]);
+            file.read_exact(buffer).await.with_context(|| {
                 format!(
                     "Could not read {} bytes from '{}'",
                     read_length,
@@ -182,7 +186,6 @@ impl StorageBackend for LocalFS {
             })?;
             data.set_len(read_length);
         }
-
         Ok(data)
     }
 

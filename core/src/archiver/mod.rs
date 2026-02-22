@@ -141,9 +141,8 @@ pub(crate) async fn snapshot(
     // ---------------------------------------------------------------------
     // Pipeline Channels
     // ---------------------------------------------------------------------
-    // Allow the producer to work significantly further ahead of the processors
-    let (diff_tx, diff_rx) = mpsc::channel(16 * num_readers);
-    let (processed_tx, mut processed_rx) = mpsc::channel(16 * num_readers);
+    let (diff_tx, diff_rx) = mpsc::channel(num_readers * 2);
+    let (processed_tx, mut processed_rx) = mpsc::channel(num_readers);
 
     // ---------------------------------------------------------------------
     // Stage 1: Diff Producer Task
@@ -192,8 +191,8 @@ pub(crate) async fn snapshot(
                     match processor::process_item(
                         (path.as_path(), prev, next, diff),
                         repo,
-                        status.progress.as_ref(),
-                        status.progress_reporter.as_ref(),
+                        status.progress.clone(),
+                        status.progress_reporter.clone(),
                         status.shutdown_signal.clone(),
                     )
                     .await

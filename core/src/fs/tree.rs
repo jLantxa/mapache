@@ -15,7 +15,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::{
     backend::WriteContents,
     fs::{calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
-    mapache::{BlobType, ID, SaveID, defaults::DEFAULT_FSNODESTREAM_PARALLEL_STATS},
+    mapache::{BlobType, ID, SaveID, global::GlobalOpts},
     repository::repo::Repository,
 };
 
@@ -141,13 +141,16 @@ impl FSNodeStream {
             filter,
         };
 
+        let fs_stat_concurrency = GlobalOpts::fs_stat_concurrency();
+
         Ok(Self {
-            inner: Self::make_inner_stream(state),
+            inner: Self::make_inner_stream(state, fs_stat_concurrency),
         })
     }
 
     fn make_inner_stream(
         mut state: FSNodeState,
+        fs_stat_concurrency: usize,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamNodeInfo>> + Send>> {
         try_stream! {
             while state.intermediate_paths.last().is_some() || state.stack.last().is_some() {
@@ -220,7 +223,7 @@ impl FSNodeStream {
                                     Ok::<_, anyhow::Error>((name, node))
                                 }
                             })
-                            .buffered(DEFAULT_FSNODESTREAM_PARALLEL_STATS); // Process stats in parallel.
+                            .buffered(fs_stat_concurrency);
 
                         let mut results = Vec::with_capacity(num_children);
                         while let Some(res) = stat_stream.next().await {

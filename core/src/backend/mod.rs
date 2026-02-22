@@ -20,6 +20,54 @@ use s3::S3Backend;
 
 use crate::{ui, utils::url::Url};
 
+/// Configuration for retry logic.
+pub struct RetryOptions {
+    pub max_attempts: u32,
+    pub base_delay: std::time::Duration,
+    pub request_timeout: std::time::Duration,
+}
+
+/// A generic retry wrapper with exponential backoff and per-request timeouts.
+pub async fn retry<T, F, Fut>(name: &str, opts: &RetryOptions, mut op: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut attempts = 0;
+    loop {
+        let attempt_res = tokio::time::timeout(opts.request_timeout, op()).await;
+
+        match attempt_res {
+            Ok(Ok(val)) => return Ok(val),
+            Ok(Err(e)) if attempts < opts.max_attempts => {
+                attempts += 1;
+                let wait = opts.base_delay * (2_u32.pow(attempts - 1));
+                ui::cli::warning!(
+                    "{} operation failed: {}. Retrying in {}ms...",
+                    name,
+                    e,
+                    wait.as_millis()
+                );
+                tokio::time::sleep(wait).await;
+            }
+            Err(_) if attempts < opts.max_attempts => {
+                attempts += 1;
+                let wait = opts.base_delay * (2_u32.pow(attempts - 1));
+                ui::cli::warning!(
+                    "{} operation timed out. Retrying in {}ms...",
+                    name,
+                    wait.as_millis()
+                );
+                tokio::time::sleep(wait).await;
+            }
+            Ok(Err(e)) => {
+                return Err(e.context(format!("{} operation failed after multiple retries", name)));
+            }
+            Err(_) => bail!("{} operation timed out after multiple retries", name),
+        }
+    }
+}
+
 /// Represents the attributes (metadata) of a file or directory node.
 /// This information is typically retrieved via an `lstat` call on the backend.
 #[derive(Debug)]

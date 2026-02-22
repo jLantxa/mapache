@@ -206,14 +206,21 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
             let cur_len = self.buffer.len();
             let needed = max_size - cur_len;
 
-            let spare = self.buffer.spare_capacity_mut();
-            let to_read = needed.min(spare.len());
+            if self.buffer.capacity() < max_size {
+                self.buffer.reserve(needed);
+            }
+
+            let to_read = needed.min(self.buffer.capacity() - cur_len);
 
             let buf = unsafe {
                 // SAFETY: We bypass Rust's default rule of filling new memory with zeros.
                 // Because we are immediately handing this memory to the OS to be filled
                 // with data from the file, zeroing it first would be a waste of CPU cycles.
-                std::slice::from_raw_parts_mut(spare.as_mut_ptr() as *mut u8, to_read)
+                let spare = std::slice::from_raw_parts_mut(
+                    self.buffer.as_mut_ptr().add(cur_len) as *mut std::mem::MaybeUninit<u8>,
+                    to_read,
+                );
+                &mut *(spare as *mut [std::mem::MaybeUninit<u8>] as *mut [u8])
             };
 
             match self.source.read(buf) {

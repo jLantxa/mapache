@@ -421,7 +421,7 @@ impl Repository {
 
         let data = data.into_owned();
 
-        let id = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let id = match save_id {
                 SaveID::CalculateID => ID::from_content(&data),
                 SaveID::WithID(id) => id,
@@ -447,7 +447,43 @@ impl Repository {
             Ok(id)
         })
         .await
-        .context("Blob processing task panicked")??;
+        .context("Blob processing task panicked")?
+    }
+
+    /// Synchronous version of encode_and_save_blob.
+    pub fn encode_and_save_blob_sync(
+        &self,
+        blob_type: BlobType,
+        data: Vec<u8>,
+        save_id: SaveID,
+    ) -> Result<ID> {
+        let id = match save_id {
+            SaveID::CalculateID => ID::from_content(&data),
+            SaveID::WithID(id) => id,
+        };
+
+        let blob_exists =
+            self.master_index.contains(&id) || !self.master_index.add_pending_blob(id);
+
+        if blob_exists {
+            return Ok(id);
+        }
+
+        let raw_length = data.len() as u64;
+        let encoded_data = self.secure_storage.encode(&data)?;
+
+        let tx = {
+            let tx_guard = self.pack_saver_tx.lock();
+            tx_guard.as_ref().context("Packer is stopped")?.clone()
+        };
+
+        tx.send(PackSaverRequest::SaveBlob {
+            id,
+            blob_type,
+            data: encoded_data,
+            raw_length,
+        })
+        .map_err(|_| anyhow::anyhow!("Packer channel closed"))?;
 
         Ok(id)
     }

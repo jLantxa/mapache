@@ -351,8 +351,8 @@ async fn run_rechunk_task(
         repo,
         &node,
         sync_reader,
-        progress.as_ref(),
-        progress_reporter.as_ref(),
+        progress,
+        progress_reporter,
         shutdown_signal,
     )
     .await

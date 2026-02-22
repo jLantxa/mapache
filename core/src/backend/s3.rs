@@ -6,13 +6,13 @@ use async_trait::async_trait;
 use s3::creds::Credentials;
 use s3::{Bucket, Region};
 
-use crate::backend::{Handle, NodeAttr, StorageBackend, WriteContents};
-use crate::ui;
+use crate::backend::{Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry};
 
 /// A storage backend that interacts with S3-compatible APIs.
 pub struct S3Backend {
     bucket: Box<Bucket>,
     prefix: PathBuf,
+    retry_opts: RetryOptions,
 }
 
 impl S3Backend {
@@ -36,7 +36,17 @@ impl S3Backend {
 
         bucket.set_path_style();
 
-        Ok(Self { bucket, prefix })
+        let retry_opts = RetryOptions {
+            max_attempts: 4,
+            base_delay: Duration::from_millis(100),
+            request_timeout: Duration::from_secs(30),
+        };
+
+        Ok(Self {
+            bucket,
+            prefix,
+            retry_opts,
+        })
     }
 
     #[inline]
@@ -83,28 +93,13 @@ impl S3Backend {
         Ok(PathBuf::from(rel))
     }
 
-    /// Wraps an async operation with exponential backoff retries.
-    async fn retry<T, F, Fut>(&self, mut op: F) -> Result<T>
+    /// Wraps an async operation with exponential backoff retries and timeouts.
+    async fn retry<T, F, Fut>(&self, op: F) -> Result<T>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
-        const MAX_ATTEMPTS: u32 = 4;
-        const BASE_DELAY_MS: u64 = 100;
-
-        let mut attempts = 0;
-        loop {
-            match op().await {
-                Ok(val) => return Ok(val),
-                Err(e) if attempts < MAX_ATTEMPTS => {
-                    attempts += 1;
-                    let wait_ms = BASE_DELAY_MS * (2_u64.pow(attempts - 1));
-                    ui::cli::warning!("S3 operation failed: {}. Retrying in {}ms...", e, wait_ms);
-                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-                }
-                Err(e) => return Err(e.context("S3 operation failed after multiple retries")),
-            }
-        }
+        retry("S3", &self.retry_opts, op).await
     }
 
     /// Lightweight "connectivity + permission" check using a tiny listing.
@@ -300,9 +295,12 @@ impl StorageBackend for S3Backend {
     }
 
     async fn remove(&self, path: &Path) -> Result<()> {
-        // Try deleting the exact key (file case). Ignore errors.
         let key = self.key_from_path(path);
-        let _ = self.bucket.delete_object(&key).await;
+
+        // Try deleting the exact key (file case). Ignore errors.
+        let _ = self
+            .retry(|| async { Ok(self.bucket.delete_object(&key).await) })
+            .await;
 
         // Then delete anything under it as a prefix (dir case).
         let mut prefix = key;
@@ -330,8 +328,6 @@ impl StorageBackend for S3Backend {
                 .await?;
 
             if status >= 400 {
-                // If the "directory" doesn't exist, treat as success.
-                // You can tighten this if you want strict behavior.
                 break;
             }
 
@@ -363,7 +359,11 @@ impl StorageBackend for S3Backend {
 
     async fn is_file(&self, path: &Path) -> bool {
         let key = self.key_from_path(path);
-        matches!(self.bucket.head_object(&key).await, Ok((_, 200)))
+        let res = self
+            .retry(|| async { Ok(self.bucket.head_object(&key).await) })
+            .await;
+
+        matches!(res, Ok(Ok((_, 200))))
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
@@ -379,14 +379,19 @@ impl StorageBackend for S3Backend {
 
         // List a single entry under the prefix; if anything exists, treat as dir.
         let res = self
-            .bucket
-            .list_page(
-                prefix,
-                Some("/".to_string()),
-                None,
-                Some("1".to_string()),
-                None,
-            )
+            .retry(|| async {
+                let (list, code) = self
+                    .bucket
+                    .list_page(
+                        prefix.clone(),
+                        Some("/".to_string()),
+                        None,
+                        Some("1".to_string()),
+                        None,
+                    )
+                    .await?;
+                Ok((list, code))
+            })
             .await;
 
         match res {
@@ -401,7 +406,11 @@ impl StorageBackend for S3Backend {
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
         let key = self.key_from_path(path);
 
-        match self.bucket.head_object(&key).await {
+        let res = self
+            .retry(|| async { Ok(self.bucket.head_object(&key).await) })
+            .await?;
+
+        match res {
             Ok((head, 200)) => {
                 let mtime = head
                     .last_modified

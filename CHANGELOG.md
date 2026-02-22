@@ -1,26 +1,38 @@
 # Changelog
 
-## [Unreleased]
+## v0.2.0
 
 ### Fixes
 
+- **Critical**: Fixed a bug in `ChunkStream` where it would fail to grow its
+  buffer before reading, resulting in sub-optimal chunking and degraded
+  deduplication when the initial buffer capacity was small.
+- **Critical**: Fixed several potential Undefined Behavior (UB) cases where
+  uninitialized memory was being passed to I/O and compression functions. All
+  `unsafe` memory management has been replaced with safe, high-performance
+  alternatives like `Vec::resize` and `read_buf`.
 - Fixed a bug that prevented old index files to be deleted by `mapache
   rebuild-index`.
 - Cancel the scanning thread when `mapache snapshot` has finalized the tree in
-  the rare case that the snapshot process is faster than the scanner (which can
-  happen for small incremental snapshots).
+  the rare case that the snapshot process is faster than the scanner.
 - Removed unnecessary directory listing when parsing a pack footer.
 - Fixed a bug that created the repository backend root before authenticating
   the user in the init command.
 
 ### Changes
 
-- Initial support for S3 backends.
-- Refactored StorageBackend to be async and removed mimalloc for Windows as it
-  is no longer necessary with async.
-- Reimplemented the SFTP backend with russh. The backend is now fully async,
-  binary size has decreased and compilation times are now sane without openssl.
-- Many optimizations to avoid cloning data buffers.
+- **Async Refactor**: The entire core has been refactored to use `tokio` for
+  asynchronous I/O and concurrency. This improves performance and provides
+  better resource management under high load.
+- **S3 Backend**: Initial support for S3-compatible storage backends using
+  `rust-s3`.
+- **SFTP Backend**: Reimplemented the SFTP backend using `russh`. The new
+  implementation is fully async, more reliable, and supports connection pooling
+  with backpressure.
+- **Memory Optimizations**: Heavy optimizations to the archiver and packer
+  pipelines to bound memory usage and implement zero-copy buffer recycling.
+- **Performance**: Optimized `LocalFS` to use `read_buf` for efficient, safe I/O
+  without zero-initialization overhead where possible.
 - The FSNodeStream now stats children in parallel.
 - Added more stats to `mapache stats` and support for json output.
 - Enhanced Repository Verification:

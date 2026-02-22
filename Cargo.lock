@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "chunker"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1971,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "mapache"
-version = "0.1.8"
+version = "0.2.0-beta.1"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",

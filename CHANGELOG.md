@@ -6,11 +6,6 @@
 
 - **Critical**: Fixed a bug in `ChunkStream` where it would fail to grow its
   buffer before reading, resulting in sub-optimal chunking and degraded
-  deduplication when the initial buffer capacity was small.
-- **Critical**: Fixed several potential Undefined Behavior (UB) cases where
-  uninitialized memory was being passed to I/O and compression functions. All
-  `unsafe` memory management has been replaced with safe, high-performance
-  alternatives like `Vec::resize` and `read_buf`.
 - Fixed a bug that prevented old index files to be deleted by `mapache
   rebuild-index`.
 - Cancel the scanning thread when `mapache snapshot` has finalized the tree in

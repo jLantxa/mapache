@@ -2,7 +2,7 @@
 
 ![Badge](https://github.com/jlantxa/mapache/workflows/main/badge.svg)
 
-Mapache is a **fast, secure, de-duplicating, incremental **backup** tool**
+Mapache is a **fast, secure, deduplicating, incremental backup tool**
 written in Rust.
 
 You can find more [in-depth documentation](doc/mapache.md).
@@ -19,10 +19,9 @@ You can find more [in-depth documentation](doc/mapache.md).
 
 ## About
 
-`mapache` is a program that helps you to make backups of your data. It is
-designed to be fast, efficient and secure.
+`mapache` is a backup utility designed for speed, efficiency, and security.
 
-`mapache` is inspired in its design by other similar tools like `git` and
+mapache's design is inspired by other similar tools like `git` and
 [`restic`](https://restic.net/). It implements a content-addressable repository
 to store and retrieve binary objects and `content-defined chunking` to
 de-duplicate the contents of files. It uses a custom implementation of the
@@ -59,44 +58,47 @@ The development of `mapache` is guided by the following core principles:
 
 ## Roadmap
 
-### v0.1.0 (_we are here_)
+### v0.1.0
 
 mapache 0.1.0 was the first public stable release. It was meant to be a first
 stable prototype with all core features after 8 months of work.
 
-The repository format can suffer small changes in the next few versions as it
-converges to a final solution. The archiver pipeline (backup) is already very
-efficient, but the restore needs a redesign to optimize the performance and
-minimize I/O operations.
+The v0.1.x series brought bug fixes, optimizations and minor new features.
+The main goal was to optimize the Archiver performance.
 
-The v0.1.x series will bring bug fixes, optimizations and new little features.
-The main goal is to optimize the Archiver performance.
+### v0.2.0 (_we are here_)
 
-### v0.2.0
+The v0.2.0 marks the finalization of the Archiver. The complete engine was
+refactored to make the backend code async. An initial S3 backend implementation
+was added and the SFTP backend was reimplemented with a rust-native async crate.
+The async refactor had the additional challenge of tuning parallelism to trim
+down memory usage while maintaining performance.
 
-The main goal for the v0.2.0 is to redesign the restorer. The current restorer
+### v0.3.0
+
+The main goal for the v0.3.0 is to redesign the restorer. The current restorer
 is file-centric and performs one backend IO read per blob. While this was
 perfectly functional for a v0.1.0, we need to redesign it to improve run-time
 and IO efficiency.
 
-- [ ] `restore` redesign,
+- [ ] `restore` redesign
 
-### v0.3.0
+### Future
 
-All other planned features which will not make it into v0.2.x.
+All other planned features:
 
 - [ ] configuration files,
 - [ ] master key rotation,
 - [ ] reimplement SFTP backend with a pure rust crate,
 - [ ] return codes for commands,
 
-and other internal refactors, optimizations and bug fixing.
+and more.
 
 ## Getting Started
 
 ### Building mapache
 
-To compile `mapache` from source you just need to install `Rust` on and build
+To compile `mapache` from source you just need to install `Rust` and build
 with cargo:
 
 ```bash
@@ -108,8 +110,6 @@ cargo build --release
 
 ### Dependencies
 
-- You need to install `perl` in your system in order to compile the `openssl`
-  sources.
 - Some systems require a development version of the fuse library. FUSE, which is
   used for the `mount` command, is only available on Unix-like systems.
   To build mapache without fuse support, use the `--no-default-features` when
@@ -124,7 +124,7 @@ cargo build --release --no-default-features
 If you run the executable, you will be greeted by something like this:
 
 ```text
-mapache backup tool
+🦝 mapache backup program
 
 Usage: mapache <COMMAND>
 
@@ -147,14 +147,14 @@ Commands:
   rechunk        Rechunk all snapshots
   restore        Restore a snapshot in a target path
   snapshot       Create a new snapshot
-  stats          Display stats about the repository and its contents
+  stats          Show repository statistics
   sync           Synchronize a repository in a different location
   unlock         Remove existing locks
   verify         Verify the integrity of the data stored in the repository
   help           Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help     Print help
+  -h, --help     Print help (see more with '--help')
   -V, --version  Print version
 ```
 

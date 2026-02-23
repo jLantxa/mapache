@@ -668,4 +668,43 @@ mod tests {
         assert!(!filter.allow(Path::new("/a/b/c/d")));
         assert!(filter.allow(Path::new("/a/b/d")));
     }
+
+    #[test]
+    fn test_wildmatch_bytes() {
+        assert!(wildmatch_bytes(b"a*b", b"ab"));
+        assert!(wildmatch_bytes(b"a*b", b"axb"));
+        assert!(wildmatch_bytes(b"a*b", b"axxxb"));
+        assert!(!wildmatch_bytes(b"a*b", b"ax"));
+        assert!(wildmatch_bytes(b"a?b", b"axb"));
+        assert!(!wildmatch_bytes(b"a?b", b"ab"));
+        assert!(wildmatch_bytes(b"*.txt", b"foo.txt"));
+        assert!(!wildmatch_bytes(b"*.txt", b"foo.png"));
+        assert!(wildmatch_bytes(b"**", b"anything"));
+    }
+
+    #[test]
+    fn test_glob_rule_strict_match() {
+        let rule = GlobRule::new(Path::new("src/**/*.rs"));
+        assert!(rule.is_strict_match(Path::new("src/main.rs")));
+        assert!(rule.is_strict_match(Path::new("src/utils/mod.rs")));
+        assert!(!rule.is_strict_match(Path::new("src/main.c")));
+        assert!(!rule.is_strict_match(Path::new("tests/test.rs")));
+
+        let rule2 = GlobRule::new(Path::new("a/*/c"));
+        assert!(rule2.is_strict_match(Path::new("a/b/c")));
+        assert!(!rule2.is_strict_match(Path::new("a/c")));
+        assert!(!rule2.is_strict_match(Path::new("a/b/d/c")));
+    }
+
+    #[test]
+    fn test_path_trie_basic() {
+        let mut trie = PathTrie::with_capacity(10);
+        trie.insert(Path::new("a/b/c"));
+        trie.finalize();
+
+        assert!(trie.contains_prefix_of(Path::new("a/b/c")));
+        assert!(trie.contains_prefix_of(Path::new("a/b/c/d")));
+        assert!(!trie.contains_prefix_of(Path::new("a/b")));
+        assert!(!trie.contains_prefix_of(Path::new("x")));
+    }
 }

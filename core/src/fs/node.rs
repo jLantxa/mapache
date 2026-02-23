@@ -494,3 +494,102 @@ pub(crate) fn node_to_string(
         node_name_str
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn test_node_type_predicates() {
+        let mut node = Node::default();
+
+        node.node_type = NodeType::Directory;
+        assert!(node.is_dir());
+        assert!(!node.is_file());
+
+        node.node_type = NodeType::File;
+        assert!(node.is_file());
+        assert!(!node.is_dir());
+
+        node.node_type = NodeType::Symlink;
+        assert!(node.is_symlink());
+
+        node.node_type = NodeType::BlockDevice;
+        assert!(node.is_block_device());
+
+        node.node_type = NodeType::CharDevice;
+        assert!(node.is_char_device());
+
+        node.node_type = NodeType::Fifo;
+        assert!(node.is_fifo());
+
+        node.node_type = NodeType::Socket;
+        assert!(node.is_socket());
+    }
+
+    #[test]
+    fn test_metadata_is_modified() {
+        let m1 = Metadata {
+            size: 100,
+            modified_time: Some(SystemTime::UNIX_EPOCH),
+            ..Default::default()
+        };
+        let mut m2 = m1.clone();
+        assert!(!m1.is_modified(&m2));
+
+        m2.size = 200;
+        assert!(m1.is_modified(&m2));
+    }
+
+    #[test]
+    fn test_node_to_string_short() {
+        let node = Node {
+            name: "test_file".to_string(),
+            node_type: NodeType::File,
+            ..Default::default()
+        };
+        // Short mode doesn't use metadata, only name (and colorization if it were a dir/symlink)
+        assert_eq!(node_to_string(&node, None, false, false), "test_file");
+    }
+
+    #[test]
+    fn test_node_to_string_long() {
+        let node = Node {
+            name: "test_file".to_string(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 1024,
+                mode: Some(0o100644),
+                owner_uid: Some(1000),
+                owner_gid: Some(1000),
+                nlink: Some(1),
+                modified_time: Some(SystemTime::UNIX_EPOCH),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = node_to_string(&node, None, true, false);
+        // "-rw-r--r--   1 1000     1000              1024  1970-01-01 00:00:00  test_file"
+        assert!(s.contains("-rw-r--r--"));
+        assert!(s.contains("1024"));
+        assert!(s.contains("test_file"));
+    }
+
+    #[test]
+    fn test_node_to_string_human_readable() {
+        let node = Node {
+            name: "test_file".to_string(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 1024 * 1024,
+                mode: Some(0o100644),
+                modified_time: Some(SystemTime::UNIX_EPOCH),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = node_to_string(&node, None, true, true);
+        assert!(s.contains("1.000 MiB"));
+    }
+}

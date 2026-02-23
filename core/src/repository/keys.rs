@@ -376,6 +376,58 @@ impl KeyManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_master_key_generation() {
+        let k1 = KeyManager::generate_new_master_key();
+        let k2 = KeyManager::generate_new_master_key();
+        assert_eq!(k1.len(), 32);
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn test_key_file_roundtrip() -> Result<()> {
+        let auth = Auth {
+            username: "test_user".to_string(),
+            password: "test_password".to_string(),
+        };
+        let master_key = KeyManager::generate_new_master_key();
+
+        let key_file = KeyManager::generate_key_file(&auth, master_key.clone())?;
+        assert_eq!(key_file.username, "test_user");
+
+        let decoded_master_key = KeyManager::decode_master_key(&auth.password, &key_file)?;
+        assert_eq!(master_key, decoded_master_key);
+
+        // Test with wrong password
+        let wrong_password_res = KeyManager::decode_master_key("wrong_password", &key_file);
+        assert!(wrong_password_res.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_argon2_params() {
+        let kf = KeyFile {
+            created: Local::now(),
+            username: "test".to_string(),
+            m: 1024,
+            t: 1,
+            p: 1,
+            salt: "".to_string(),
+            encrypted_key: "".to_string(),
+        };
+
+        let params = kf.argon2_params();
+        assert_eq!(params.m_cost(), 1024);
+        assert_eq!(params.t_cost(), 1);
+        assert_eq!(params.p_cost(), 1);
+    }
+}
+
 /// A KeyFile stream loading files on demand asynchronously.
 pub struct KeyFileStream {
     backend: Arc<dyn StorageBackend>,

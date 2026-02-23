@@ -454,4 +454,30 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         assert_eq!(TEXT, decoded_plaintext.as_slice());
         Ok(())
     }
+
+    #[test]
+    fn test_decrypt_in_place() -> Result<()> {
+        let key = TEST_KEY;
+        let ss = SecureStorage::new().with_key(&key);
+
+        let encrypted_data = ss.encrypt(TEXT)?;
+        let decrypted_data = ss.decrypt_in_place(encrypted_data)?;
+
+        assert_eq!(TEXT.as_slice(), decrypted_data.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_owned() -> Result<()> {
+        let key = TEST_KEY;
+        let ss = SecureStorage::new()
+            .with_compression(DEFAULT_COMPRESSION.to_level())
+            .with_key(&key);
+
+        let encoded_data = ss.encode(TEXT)?;
+        let decoded_data = ss.decode_owned(encoded_data)?;
+
+        assert_eq!(TEXT.as_slice(), decoded_data.as_slice());
+        Ok(())
+    }
 }

@@ -325,3 +325,91 @@ impl Stream for SnapshotStream {
         self.inner.as_mut().poll_next(cx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diff_counts_increment() {
+        let mut counts = DiffCounts::default();
+
+        counts.increment(false, &NodeDiff::New);
+        assert_eq!(counts.new_files, 1);
+        assert_eq!(counts.new_dirs, 0);
+
+        counts.increment(true, &NodeDiff::New);
+        assert_eq!(counts.new_dirs, 1);
+
+        counts.increment(false, &NodeDiff::Deleted);
+        assert_eq!(counts.deleted_files, 1);
+
+        counts.increment(true, &NodeDiff::Deleted);
+        assert_eq!(counts.deleted_dirs, 1);
+
+        counts.increment(false, &NodeDiff::Changed);
+        assert_eq!(counts.changed_files, 1);
+
+        counts.increment(true, &NodeDiff::Changed);
+        assert_eq!(counts.changed_dirs, 1);
+
+        counts.increment(false, &NodeDiff::Unchanged);
+        assert_eq!(counts.unchanged_files, 1);
+
+        counts.increment(true, &NodeDiff::Unchanged);
+        assert_eq!(counts.unchanged_dirs, 1);
+    }
+
+    #[test]
+    fn test_diff_counts_atomic_increment() {
+        let counts_atomic = DiffCountsAtomic::default();
+
+        counts_atomic.increment(false, &NodeDiff::New);
+        counts_atomic.increment(true, &NodeDiff::New);
+        counts_atomic.increment(false, &NodeDiff::Deleted);
+        counts_atomic.increment(true, &NodeDiff::Deleted);
+        counts_atomic.increment(false, &NodeDiff::Changed);
+        counts_atomic.increment(true, &NodeDiff::Changed);
+        counts_atomic.increment(false, &NodeDiff::Unchanged);
+        counts_atomic.increment(true, &NodeDiff::Unchanged);
+
+        let counts = counts_atomic.snapshot();
+        assert_eq!(counts.new_files, 1);
+        assert_eq!(counts.new_dirs, 1);
+        assert_eq!(counts.deleted_files, 1);
+        assert_eq!(counts.deleted_dirs, 1);
+        assert_eq!(counts.changed_files, 1);
+        assert_eq!(counts.changed_dirs, 1);
+        assert_eq!(counts.unchanged_files, 1);
+        assert_eq!(counts.unchanged_dirs, 1);
+    }
+
+    #[test]
+    fn test_snapshot_has_tags() {
+        let mut snapshot = Snapshot::default();
+        snapshot.tags.insert("tag1".to_string());
+        snapshot.tags.insert("tag2".to_string());
+
+        let mut search_tags = BTreeSet::new();
+        search_tags.insert("tag1".to_string());
+        assert!(snapshot.has_tags(&search_tags));
+
+        search_tags.clear();
+        search_tags.insert("tag3".to_string());
+        assert!(!snapshot.has_tags(&search_tags));
+
+        search_tags.clear();
+        search_tags.insert(EMPTY_TAG_MARK.to_string());
+        assert!(!snapshot.has_tags(&search_tags));
+
+        let empty_snapshot = Snapshot::default();
+        assert!(empty_snapshot.has_tags(&search_tags));
+    }
+
+    #[test]
+    fn test_snapshot_size() {
+        let mut snapshot = Snapshot::default();
+        snapshot.summary.processed_bytes = 12345;
+        assert_eq!(snapshot.size(), 12345);
+    }
+}

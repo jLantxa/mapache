@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
-use rand::{Rng, thread_rng};
+use rand::{Rng, rng};
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint},
@@ -214,7 +214,7 @@ impl Packer {
         // blob[id (256 bits), lenght (u32), type (u8)] + footer length (u32);
         let mut pack_footer = Vec::with_capacity(FOOTER_BLOB_LEN * descriptors.len());
         let mut cursor = std::io::Cursor::new(&mut pack_footer);
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         if !descriptors.len().is_multiple_of(FOOTER_BLOB_MULTIPLE) {
             let num_padding_blobs =
@@ -224,9 +224,9 @@ impl Packer {
                 descriptors.push(PackedBlobDescriptor {
                     id: ID::new_random(),
                     blob_type: BlobType::Padding,
-                    offset: rng.r#gen::<u32>(),
-                    length: rng.r#gen::<u32>(),
-                    raw_length: rng.r#gen::<u32>(),
+                    offset: rng.random::<u32>(),
+                    length: rng.random::<u32>(),
+                    raw_length: rng.random::<u32>(),
                 });
             }
         }

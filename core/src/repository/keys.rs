@@ -10,7 +10,6 @@ use argon2;
 use base64::Engine;
 use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt, future::BoxFuture};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -133,9 +132,7 @@ impl KeyManager {
     }
 
     pub fn generate_new_master_key() -> Vec<u8> {
-        let mut new_random_key = vec![0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut new_random_key);
-        new_random_key
+        rand::random::<[u8; 32]>().to_vec()
     }
 
     pub fn decode_master_key(password: &str, keyfile: &KeyFile) -> Result<Vec<u8>> {

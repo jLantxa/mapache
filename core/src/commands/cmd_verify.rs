@@ -137,7 +137,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut packs_to_verify = packs_all.iter().cloned().collect::<Vec<_>>();
     if let Some(sample_pct) = args.sample {
         use rand::seq::SliceRandom;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let target_count = ((packs_to_verify.len() as f64) * (sample_pct / 100.0)).round() as usize;
         let target_count = target_count.clamp(1, packs_to_verify.len());
 

@@ -14,7 +14,7 @@ const MiB: usize = 1024 * kiB;
 const TESTDATA: &str = "testdata";
 
 fn generate_random_data(length: usize) -> Vec<u8> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut data = vec![0u8; length];
     rng.fill_bytes(&mut data);
     data

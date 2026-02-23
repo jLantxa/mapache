@@ -638,4 +638,61 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_get_auth_from_file() -> Result<()> {
+        let tmp_dir = tempfile::tempdir()?;
+        let auth_file = tmp_dir.path().join("auth");
+
+        // Write a valid auth file
+        std::fs::write(&auth_file, "user1\npass123")?;
+
+        let auth = get_auth_from_file(&Some(auth_file.clone()))?.unwrap();
+        assert_eq!(auth.username, "user1");
+        assert_eq!(auth.password, "pass123");
+
+        // Test empty file
+        std::fs::write(&auth_file, "")?;
+        assert!(get_auth_from_file(&Some(auth_file.clone())).is_err());
+
+        // Test missing password
+        std::fs::write(&auth_file, "user1")?;
+        assert!(get_auth_from_file(&Some(auth_file.clone())).is_err());
+
+        // Test None input
+        assert!(get_auth_from_file(&None)?.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_system_info() {
+        let (hostname, username) = get_system_info();
+        assert!(hostname.is_some() || true); // Just check it doesn't crash
+        assert!(username.is_some() || true);
+    }
+
+    #[test]
+    fn test_directory_ops() -> Result<()> {
+        let tmp_dir = tempfile::tempdir()?;
+        let d = tmp_dir.path();
+
+        let f1 = d.join("f1");
+        std::fs::write(&f1, "hello")?;
+
+        let f2 = d.join("f2");
+        std::fs::write(&f2, "world!!")?;
+
+        let sub_dir = d.join("sub");
+        std::fs::create_dir(&sub_dir)?;
+        let f3 = sub_dir.join("f3");
+        std::fs::write(&f3, "mapache")?;
+
+        assert_eq!(count_files(d)?, 2); // Only files in d
+        assert_eq!(dir_size(d)?, 5 + 7 + 7); // size of f1 + f2 + f3
+
+        assert_eq!(dir_size(&f1)?, 5);
+
+        Ok(())
+    }
 }

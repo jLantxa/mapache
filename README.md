@@ -89,7 +89,6 @@ All other planned features:
 
 - [ ] configuration files,
 - [ ] master key rotation,
-- [ ] reimplement SFTP backend with a pure rust crate,
 - [ ] return codes for commands,
 
 and more.

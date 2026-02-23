@@ -795,4 +795,82 @@ mod tests {
         assert!(ids.contains(&data_blob.id));
         assert!(ids.contains(&tree_blob.id));
     }
+
+    #[test]
+    fn test_index_status_transitions() {
+        let mut index = Index::new();
+        assert!(index.is_pending());
+        assert!(!index.is_finalized());
+        assert!(!index.is_persisted());
+        assert!(index.id().is_none());
+
+        index.finalize();
+        assert!(!index.is_pending());
+        assert!(index.is_finalized());
+        assert!(!index.is_persisted());
+
+        let persisted_id = mock_id("persisted_index");
+        index.set_status(IndexStatus::Persisted(persisted_id));
+        assert!(!index.is_pending());
+        assert!(!index.is_finalized());
+        assert!(index.is_persisted());
+        assert_eq!(index.id(), Some(persisted_id));
+    }
+
+    #[test]
+    fn test_index_remove_pack() {
+        let mut index = Index::new();
+        let pack_id_1 = mock_id("pack1");
+        let pack_id_2 = mock_id("pack2");
+
+        let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
+        let b2 = mock_blob_desc("b2", BlobType::Data, 100, 100);
+        let b3 = mock_blob_desc("b3", BlobType::Data, 0, 100);
+
+        index.add_pack(&pack_id_1, vec![b1.clone(), b2.clone()]);
+        index.add_pack(&pack_id_2, vec![b3.clone()]);
+
+        assert_eq!(index.num_blobs(), 3);
+        assert_eq!(index.num_packs(), 2);
+
+        index.remove_pack(&pack_id_1);
+        assert_eq!(index.num_blobs(), 1);
+        assert_eq!(index.num_packs(), 1);
+        assert!(!index.contains(&b1.id));
+        assert!(!index.contains(&b2.id));
+        assert!(index.contains(&b3.id));
+
+        // Verify pack_id_2 is still accessible and its internal index was updated if needed
+        let loc = index.get(&b3.id).unwrap();
+        assert_eq!(loc.pack_id, pack_id_2);
+    }
+
+    #[test]
+    fn test_master_index_basic() {
+        let mi = MasterIndex::new();
+        let id1 = mock_id("blob1");
+        let id2 = mock_id("blob2");
+
+        assert!(!mi.contains(&id1));
+
+        // Add pending blob
+        assert!(mi.add_pending_blob(id1));
+        assert!(mi.contains(&id1));
+        assert!(!mi.add_pending_blob(id1)); // Already exists
+
+        // Add an index
+        let mut idx = Index::new();
+        let pack_id = mock_id("pack1");
+        let b2 = mock_blob_desc("blob2", BlobType::Data, 0, 100);
+        idx.add_pack(&pack_id, vec![b2.clone()]);
+        mi.add_index(idx);
+
+        assert!(mi.contains(&id2));
+        let loc = mi.get(&id2).unwrap();
+        assert_eq!(loc.pack_id, pack_id);
+
+        mi.clear();
+        assert!(!mi.contains(&id1));
+        assert!(!mi.contains(&id2));
+    }
 }

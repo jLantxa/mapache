@@ -172,3 +172,49 @@ impl Drop for LockHandle {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration as ChronoDuration, Local};
+
+    #[test]
+    fn test_lock_basic_properties() {
+        let lock = Lock::new(true);
+        assert!(lock.exclusive);
+        assert!(!lock.hostname.is_empty());
+        assert!(!lock.username.is_empty());
+        assert_eq!(lock.pid, std::process::id());
+    }
+
+    #[test]
+    fn test_lock_expiration() {
+        let now = Local::now();
+        let mut lock = Lock::new(false);
+
+        // New lock should not be expired
+        assert!(!lock.is_expired());
+
+        let expire_threshold = ChronoDuration::from_std(LOCK_EXPIRE_TIMEOUT).unwrap();
+
+        // Lock within expiration threshold (e.g., half the timeout)
+        lock.timestamp = now - (expire_threshold / 2);
+        assert!(!lock.is_expired());
+
+        // Lock past expiration threshold
+        lock.timestamp = now - expire_threshold - ChronoDuration::seconds(10);
+        assert!(lock.is_expired());
+
+        // Refresh should make it not expired
+        lock.refresh();
+        assert!(!lock.is_expired());
+    }
+
+    #[test]
+    fn test_lock_new_for_test() {
+        let past = Local::now() - ChronoDuration::hours(1);
+        let lock = Lock::new_for_test(true, past);
+        assert_eq!(*lock.timestamp(), past);
+        assert!(lock.is_expired());
+    }
+}

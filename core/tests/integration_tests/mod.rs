@@ -11,11 +11,22 @@ use mapache::{
 };
 
 mod test_cmd_amend;
+mod test_cmd_cat;
 mod test_cmd_clean;
+mod test_cmd_completion;
+mod test_cmd_diff;
+mod test_cmd_find;
+mod test_cmd_forget;
 mod test_cmd_init;
+mod test_cmd_key;
+mod test_cmd_lock;
+mod test_cmd_log;
+mod test_cmd_ls;
 mod test_cmd_rebuild_index;
+mod test_cmd_rechunk;
 mod test_cmd_restore;
 mod test_cmd_snapshot;
+mod test_cmd_stats;
 mod test_cmd_sync;
 mod test_cmd_verify;
 
@@ -54,4 +65,17 @@ fn set_write_permission<P: AsRef<Path>>(path: P, writable: bool) -> std::io::Res
     perms.set_readonly(!writable);
 
     std::fs::set_permissions(&path, perms)
+}
+
+pub fn run_bin(args: &[&str]) -> Result<std::process::Output> {
+    let bin_path = env!("CARGO_BIN_EXE_mapache");
+    let mut cmd = std::process::Command::new(bin_path);
+    cmd.args(args);
+    let output = cmd.output().context("Failed to execute mapache binary")?;
+    if !output.status.success() {
+        eprintln!("Command failed with status: {}", output.status);
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(output)
 }

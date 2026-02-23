@@ -313,3 +313,77 @@ fn test_deterministic_chunks_32k_l0() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_chunk_very_small_data() {
+    let data = vec![1, 2, 3];
+    let chunker = Chunker::new(64, 256, 1024, Normalization::None);
+
+    let cursor = Cursor::new(data.clone());
+    let chunks: Vec<_> = chunker.stream(cursor).map(|c| c.unwrap()).collect();
+
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].data, data);
+    assert_eq!(chunks[0].offset, 0);
+}
+
+#[test]
+fn test_chunk_exactly_min_size() {
+    let min_size = 64;
+    let data = vec![0u8; min_size];
+    let chunker = Chunker::new(min_size, 256, 1024, Normalization::None);
+
+    let cursor = Cursor::new(data.clone());
+    let chunks: Vec<_> = chunker.stream(cursor).map(|c| c.unwrap()).collect();
+
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].length, min_size);
+}
+
+#[test]
+fn test_chunk_large_repeated_data() {
+    // Repeated data often hits max_size if no anchor is found
+    let max_size = 1024;
+    let data = vec![0u8; max_size * 3];
+    let chunker = Chunker::new(64, 256, max_size, Normalization::None);
+
+    let cursor = Cursor::new(data);
+    let chunks: Vec<_> = chunker.stream(cursor).map(|c| c.unwrap()).collect();
+
+    assert_eq!(chunks.len(), 3);
+    for chunk in chunks {
+        assert_eq!(chunk.length, max_size);
+    }
+}
+
+struct SlowReader<R: std::io::Read> {
+    inner: R,
+}
+
+impl<R: std::io::Read> std::io::Read for SlowReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // Only read 1 byte at a time to test the Chunker's buffering/EOF logic
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.inner.read(&mut buf[..1])
+    }
+}
+
+#[test]
+fn test_chunk_slow_reader() {
+    let data = generate_random_data(500);
+    let chunker = Chunker::new(64, 128, 256, Normalization::None);
+
+    let slow_reader = SlowReader {
+        inner: Cursor::new(data.clone()),
+    };
+    let chunks: Vec<_> = chunker.stream(slow_reader).map(|c| c.unwrap()).collect();
+
+    let mut reconstructed = Vec::new();
+    for chunk in chunks {
+        reconstructed.extend_from_slice(&chunk.data);
+    }
+
+    assert_eq!(reconstructed, data);
+}

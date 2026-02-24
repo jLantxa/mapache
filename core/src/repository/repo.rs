@@ -1282,12 +1282,6 @@ impl Repository {
     }
 }
 
-impl Drop for Repository {
-    fn drop(&mut self) {
-        let _ = futures::executor::block_on(self.flush_and_finalize_pack_saver());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

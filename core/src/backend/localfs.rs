@@ -365,7 +365,41 @@ impl StorageBackend for LocalFS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::BackendUrl;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_local_backend_url() {
+        assert_eq!(
+            BackendUrl::from("/home/target").unwrap(),
+            BackendUrl::Local(PathBuf::from("/home/target"))
+        );
+        assert_eq!(
+            BackendUrl::from("base/dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("base/dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("dir").unwrap(),
+            BackendUrl::Local(PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from(".").unwrap(),
+            BackendUrl::Local(PathBuf::from("."))
+        );
+
+        // Standard absolute file URLs
+        #[cfg(not(windows))]
+        assert_eq!(
+            BackendUrl::from("file:///home/target").unwrap(),
+            BackendUrl::Local(PathBuf::from("/home/target"))
+        );
+
+        #[cfg(windows)]
+        assert_eq!(
+            BackendUrl::from("file:///C:/path/to/repo").unwrap(),
+            BackendUrl::Local(PathBuf::from("C:\\path\\to\\repo"))
+        );
+    }
 
     #[tokio::test]
     async fn test_local_fs() -> Result<()> {

@@ -632,3 +632,56 @@ impl StorageBackend for SftpBackend {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::BackendUrl;
+
+    #[test]
+    fn test_sftp_backend_url() -> Result<()> {
+        let user = String::from("user");
+        let host = String::from("host");
+
+        // Absolute path (starts with // in standard URL logic)
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22//home/target")?,
+            BackendUrl::Sftp(
+                user.clone(),
+                host.clone(),
+                22,
+                PathBuf::from("/home/target")
+            )
+        );
+        // Relative path (starts with / in standard URL logic)
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/base/dir")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("base/dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/dir")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir"))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22/")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from(""))
+        );
+        assert_eq!(
+            BackendUrl::from("sftp://user@host:22")?,
+            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from(""))
+        );
+
+        // Encoding test
+        assert_eq!(
+            BackendUrl::from("sftp://user%20name@host/path%20with%20spaces")?,
+            BackendUrl::Sftp(
+                "user name".to_string(),
+                host,
+                22,
+                PathBuf::from("path with spaces")
+            )
+        );
+
+        Ok(())
+    }
+}

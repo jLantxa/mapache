@@ -1,5 +1,4 @@
 pub mod collections;
-pub mod url;
 
 use std::{
     path::{Path, PathBuf},

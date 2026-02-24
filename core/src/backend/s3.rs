@@ -443,3 +443,29 @@ impl StorageBackend for S3Backend {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::BackendUrl;
+
+    #[test]
+    fn test_s3_backend_url() -> Result<()> {
+        assert_eq!(
+            BackendUrl::from("s3://my-bucket/prefix/path")?,
+            BackendUrl::S3("my-bucket".to_string(), PathBuf::from("prefix/path"))
+        );
+
+        assert_eq!(
+            BackendUrl::from("s3://bucket-only")?,
+            BackendUrl::S3("bucket-only".to_string(), PathBuf::from(""))
+        );
+
+        assert_eq!(
+            BackendUrl::from("s3://bucket/with%20spaces")?,
+            BackendUrl::S3("bucket".to_string(), PathBuf::from("with spaces"))
+        );
+
+        Ok(())
+    }
+}

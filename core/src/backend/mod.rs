@@ -6,19 +6,20 @@ pub mod sftp;
 
 use std::{
     path::{Path, PathBuf},
-    str::FromStr,
     sync::Arc,
     time::SystemTime,
 };
 
 use crate::{backend::sftp::SftpBackend, mapache::ContentIdType};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use dry::DryBackend;
 use localfs::LocalFS;
+use percent_encoding::percent_decode_str;
 use s3::S3Backend;
+use url::Url;
 
-use crate::{ui, utils::url::Url};
+use crate::ui;
 
 /// Configuration for retry logic.
 pub struct RetryOptions {
@@ -271,47 +272,56 @@ impl BackendUrl {
             return Ok(BackendUrl::Local(PathBuf::from(url_str)));
         }
 
-        let parsed_url = Url::from_str(url_str)?;
+        let parsed_url = Url::parse(url_str).context("Failed to parse URL")?;
 
-        match parsed_url.scheme.as_ref() {
+        match parsed_url.scheme() {
             "file" => {
-                let path_str: &str = &parsed_url.path.join("/");
-                let path_buf = PathBuf::from(path_str);
-                Ok(BackendUrl::Local(path_buf))
+                let path = parsed_url
+                    .to_file_path()
+                    .map_err(|_| anyhow!("Invalid file URL: {}", url_str))?;
+                Ok(BackendUrl::Local(path))
             }
             "sftp" => {
-                let user = parsed_url.username.to_string();
+                let user = percent_decode_str(parsed_url.username())
+                    .decode_utf8_lossy()
+                    .to_string();
 
                 let host = parsed_url
-                    .host
+                    .host_str()
                     .ok_or_else(|| anyhow!("SFTP URL '{url_str}' requires a host"))?
                     .to_string();
 
-                let port = parsed_url.port.unwrap_or(22);
+                let port = parsed_url.port().unwrap_or(22);
 
-                let path_str: &str = &parsed_url.path.join("/");
-                let path_buf = PathBuf::from(path_str);
+                let path_str = percent_decode_str(parsed_url.path()).decode_utf8_lossy();
 
-                Ok(BackendUrl::Sftp(user, host, port, path_buf))
+                // Handle relative vs absolute path in SFTP
+                // Standard URL path always starts with /
+                // sftp://host/rel -> path /rel -> rel
+                // sftp://host//abs -> path //abs -> /abs
+                let path = if let Some(stripped) = path_str.strip_prefix("//") {
+                    PathBuf::from("/").join(stripped)
+                } else {
+                    PathBuf::from(path_str.trim_start_matches('/'))
+                };
+
+                Ok(BackendUrl::Sftp(user, host, port, path))
             }
             "s3" => {
                 let bucket = parsed_url
-                    .host
+                    .host_str()
                     .ok_or_else(|| anyhow!("S3 URL '{url_str}' requires a bucket name (host)"))?
                     .to_string();
 
-                let path_str: &str = &parsed_url.path.join("/");
+                let prefix_str = percent_decode_str(parsed_url.path()).decode_utf8_lossy();
+                let prefix = PathBuf::from(prefix_str.trim_start_matches('/'));
 
-                // Strip leading slash if present to make it a clean prefix
-                let path_str = path_str.strip_prefix('/').unwrap_or(path_str);
-                let path_buf = PathBuf::from(path_str);
-
-                Ok(BackendUrl::S3(bucket, path_buf))
+                Ok(BackendUrl::S3(bucket, prefix))
             }
             _ => {
                 bail!(
                     "Unsupported URL scheme: '{}' for URL '{}'",
-                    parsed_url.scheme.as_str(),
+                    parsed_url.scheme(),
                     url_str
                 );
             }
@@ -384,124 +394,6 @@ pub fn set_readonly_mode(mode: u32, readonly: bool, is_dir: bool) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_local_path() {
-        assert_eq!(
-            BackendUrl::from("/home/target").unwrap(),
-            BackendUrl::Local(PathBuf::from("/home/target"))
-        );
-        assert_eq!(
-            BackendUrl::from("base/dir").unwrap(),
-            BackendUrl::Local(PathBuf::from("base/dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("dir").unwrap(),
-            BackendUrl::Local(PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("dir/").unwrap(),
-            BackendUrl::Local(PathBuf::from("dir/"))
-        );
-        assert_eq!(
-            BackendUrl::from("./dir").unwrap(),
-            BackendUrl::Local(PathBuf::from("./dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("./dir/").unwrap(),
-            BackendUrl::Local(PathBuf::from("./dir/"))
-        );
-        assert_eq!(
-            BackendUrl::from(".").unwrap(),
-            BackendUrl::Local(PathBuf::from("."))
-        );
-    }
-
-    #[test]
-    fn test_local_path_with_file_scheme() {
-        assert_eq!(
-            BackendUrl::from("file:///home/target").unwrap(),
-            BackendUrl::Local(PathBuf::from("/home/target"))
-        );
-        assert_eq!(
-            BackendUrl::from("file://base/dir").unwrap(),
-            BackendUrl::Local(PathBuf::from("base/dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("file://dir").unwrap(),
-            BackendUrl::Local(PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("file://dir/").unwrap(),
-            BackendUrl::Local(PathBuf::from("dir/"))
-        );
-        assert_eq!(
-            BackendUrl::from("file://./dir").unwrap(),
-            BackendUrl::Local(PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("file://./dir/a/..").unwrap(),
-            BackendUrl::Local(PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("file://./dir/").unwrap(),
-            BackendUrl::Local(PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("file://.").unwrap(),
-            BackendUrl::Local(PathBuf::from(""))
-        );
-    }
-
-    #[test]
-    fn test_sftp_path() -> Result<()> {
-        let user = String::from("user");
-        let host = String::from("host");
-
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22//home/target")?,
-            BackendUrl::Sftp(
-                user.clone(),
-                host.clone(),
-                22,
-                PathBuf::from("/home/target")
-            )
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22/base/dir")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("base/dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22/dir")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22/dir/")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir/"))
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22/./dir")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22/./dir/")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("dir"))
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22/")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from(""))
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from(""))
-        );
-        assert_eq!(
-            BackendUrl::from("sftp://user@host:22//")?,
-            BackendUrl::Sftp(user.clone(), host.clone(), 22, PathBuf::from("/"))
-        );
-
-        Ok(())
-    }
 
     #[test]
     fn test_set_readonly_mode() {

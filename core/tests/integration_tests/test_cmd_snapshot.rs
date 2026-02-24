@@ -5,64 +5,27 @@ mod tests {
 
     use anyhow::{Context, Result};
     use mapache::{
-        commands::{self, Compression, GlobalArgs, UseSnapshot, cmd_restore, cmd_snapshot},
+        commands::{self, UseSnapshot, cmd_restore, cmd_snapshot},
         fs,
-        mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
-        repository::repo::{Auth, SNAPSHOTS_DIR},
+        repository::repo::SNAPSHOTS_DIR,
         restorer::Strategy,
         utils,
     };
 
-    use tempfile::tempdir;
-
-    use crate::{
-        TEST_QUIET,
-        integration_tests::{BACKUP_DATA_PATH, init_repo, run_bin},
-        test_utils::{self},
-    };
+    use crate::integration_tests::{TestContext, run_bin};
 
     #[tokio::test]
     async fn test_snapshot() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
-        let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
         assert_eq!(utils::count_files(&snapshots_dir)?, 0);
-        let index_dir = repo_path.join("index");
+        let index_dir = ctx.repo_path.join("index");
         assert_eq!(utils::count_files(&index_dir)?, 0);
 
         // Run snapshot
@@ -85,14 +48,14 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
         assert_ne!(utils::count_files(&index_dir)?, 0);
 
         // Run restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -106,7 +69,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
+        commands::cmd_restore::run(&ctx.global, &restore_args)
             .await
             .context("Failed to run cmd_restore")?;
 
@@ -154,42 +117,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_dry_run() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -211,20 +144,20 @@ mod tests {
             num_packers: 2,
             dry_run: true,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
         // `snapshots` directory should be empty
-        let snapshots_dir = repo_path.join("snapshots");
+        let snapshots_dir = ctx.repo_path.join("snapshots");
         assert_eq!(utils::count_files(&snapshots_dir)?, 0);
 
         // `index` directory should be empty
-        let index_dir = repo_path.join("index");
+        let index_dir = ctx.repo_path.join("index");
         assert_eq!(utils::count_files(&index_dir)?, 0);
 
         // Run restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -239,7 +172,7 @@ mod tests {
             no_preserve_root: false,
         };
 
-        let restore_result = commands::cmd_restore::run(&global, &restore_args).await;
+        let restore_result = commands::cmd_restore::run(&ctx.global, &restore_args).await;
         assert!(restore_result.is_err());
 
         Ok(())
@@ -247,42 +180,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_with_exclude() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -313,12 +216,12 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -332,7 +235,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
+        commands::cmd_restore::run(&ctx.global, &restore_args)
             .await
             .context("Failed to run cmd_restore")?;
 
@@ -381,44 +284,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_twice() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
-        let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
         assert_eq!(utils::count_files(&snapshots_dir)?, 0);
 
         // Run snapshot (1st)
@@ -446,7 +319,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot 1")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
@@ -470,12 +343,12 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot 2")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 2);
 
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -489,7 +362,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
+        commands::cmd_restore::run(&ctx.global, &restore_args)
             .await
             .context("Failed to run cmd_restore")?;
 
@@ -533,47 +406,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_folder_as_root() -> Result<()> {
-        // Save a snapshot with a single snapshot --as-root
-        // The single folder is taken as the snapshot root, with all its contents
-        // being in the root folder, instead of adding the folder as a child of
-        // the snapshot root.
-
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -590,12 +428,12 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -609,7 +447,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
+        commands::cmd_restore::run(&ctx.global, &restore_args)
             .await
             .context("Failed to run cmd_restore")?;
 
@@ -650,42 +488,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_intermediate_paths() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -707,12 +515,12 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
         // Run restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -726,7 +534,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
+        commands::cmd_restore::run(&ctx.global, &restore_args)
             .await
             .context("Failed to run cmd_restore")?;
 
@@ -770,44 +578,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_snapshot_skip_if_unchanged() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
-        let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
         assert_eq!(utils::count_files(&snapshots_dir)?, 0);
 
         // Run snapshot (1st)
@@ -831,12 +609,12 @@ mod tests {
             dry_run: false,
         };
 
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot 1")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
 
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot 2")?;
         assert_eq!(utils::count_files(&snapshots_dir)?, 1);
@@ -846,39 +624,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_snapshot_metadata_and_check_log() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_tmp_path = tmp_path.join("backup");
+        let mut ctx = TestContext::new().await?;
+        let backup_data_tmp_path = ctx._tmp_dir.path().join("backup");
         std::fs::create_dir(&backup_data_tmp_path)?;
         std::fs::write(backup_data_tmp_path.join("test.txt"), "content")?;
 
-        let repo_path = tmp_path.join("repo");
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path.clone()),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(1),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        ctx.global.verbosity = Some(1);
+        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
 
         // Run snapshot with tags and description
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -895,15 +649,15 @@ mod tests {
             num_packers: 1,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args).await?;
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
 
         // Verify via binary log output
         let output = run_bin(&[
             "log",
             "--repo",
-            &repo_path.to_string_lossy(),
+            &ctx.repo_path.to_string_lossy(),
             "--auth-file",
-            &auth_file_path.to_string_lossy(),
+            &ctx.auth_file_path.to_string_lossy(),
         ])?;
 
         assert!(output.status.success());
@@ -916,39 +670,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_snapshot_empty_dirs_and_restore() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_path = tmp_path.join("backup");
+        let mut ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
         let empty_dir = backup_path.join("empty_folder");
         std::fs::create_dir_all(&empty_dir)?;
 
-        let repo_path = tmp_path.join("repo");
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path.clone()),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(1),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        ctx.global.verbosity = Some(1);
+        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
 
         let snapshot_args = cmd_snapshot::CmdArgs {
             paths: vec![backup_path.clone()],
@@ -964,10 +694,10 @@ mod tests {
             num_packers: 1,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args).await?;
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
 
         // Restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -980,7 +710,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).await?;
+        commands::cmd_restore::run(&ctx.global, &restore_args).await?;
 
         assert!(restore_path.join("empty_folder").is_dir());
 
@@ -989,43 +719,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_snapshot_manual_parent() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_path = tmp_path.join("backup");
+        let mut ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
         std::fs::create_dir_all(&backup_path)?;
         std::fs::write(backup_path.join("f1.txt"), "v1")?;
 
-        let repo_path = tmp_path.join("repo");
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path.clone()),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(1),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        ctx.global.verbosity = Some(1);
+        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
 
         // Snapshot 1
         commands::cmd_snapshot::run(
-            &global,
+            &ctx.global,
             &cmd_snapshot::CmdArgs {
                 paths: vec![backup_path.clone()],
                 as_root: true,
@@ -1043,7 +749,7 @@ mod tests {
         )
         .await?;
 
-        let snapshots_dir = repo_path.join(SNAPSHOTS_DIR);
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
         let snapshots = std::fs::read_dir(&snapshots_dir)?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -1056,7 +762,7 @@ mod tests {
 
         // Snapshot 2 with manual parent
         commands::cmd_snapshot::run(
-            &global,
+            &ctx.global,
             &cmd_snapshot::CmdArgs {
                 paths: vec![backup_path.clone()],
                 as_root: true,
@@ -1077,17 +783,17 @@ mod tests {
         // Verify parent ID via cat
         let _output = run_bin(&[
             "cat",
-            "snapshot:latest", // This won't work, cat expects real ID
+            "snapshot:latest",
             "--repo",
-            &repo_path.to_string_lossy(),
+            &ctx.repo_path.to_string_lossy(),
             "--auth-file",
-            &auth_file_path.to_string_lossy(),
+            &ctx.auth_file_path.to_string_lossy(),
         ]);
 
-        // Wait, I need the ID of the second snapshot to cat it.
         let snapshots = std::fs::read_dir(&snapshots_dir)?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, _>>()?;
+
         // Find the one that is NOT first_id
         let second_id = snapshots
             .iter()
@@ -1099,9 +805,9 @@ mod tests {
             "cat",
             &format!("snapshot:{}", second_id),
             "--repo",
-            &repo_path.to_string_lossy(),
+            &ctx.repo_path.to_string_lossy(),
             "--auth-file",
-            &auth_file_path.to_string_lossy(),
+            &ctx.auth_file_path.to_string_lossy(),
         ])?;
 
         assert!(output.status.success());

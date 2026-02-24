@@ -6,66 +6,22 @@ mod tests {
     use anyhow::{Context, Result};
     use mapache::{
         backend::localfs::LocalFS,
-        commands::{
-            self, Compression, GlobalArgs, UseSnapshot, cmd_amend, cmd_restore, cmd_snapshot,
-        },
-        mapache::{
-            defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
-            global::set_global_opts_with_args,
-        },
-        repository::{
-            repo::{Auth, Repository},
-            snapshot::SnapshotStream,
-        },
+        commands::{self, UseSnapshot, cmd_amend, cmd_restore, cmd_snapshot},
+        mapache::defaults::TEST_REPO_CONFIG,
+        repository::{repo::Repository, snapshot::SnapshotStream},
         restorer::Strategy,
     };
 
-    use tempfile::tempdir;
-
-    use crate::{
-        TEST_QUIET,
-        integration_tests::{BACKUP_DATA_PATH, init_repo},
-        test_utils::{self},
-    };
+    use crate::integration_tests::TestContext;
 
     #[tokio::test]
     async fn test_amend_exclude() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -87,7 +43,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
@@ -106,12 +62,12 @@ mod tests {
             clear_description: false,
             exclude: Some(excluded_paths.clone()),
         };
-        commands::cmd_amend::run(&global, &amend_args)
+        commands::cmd_amend::run(&ctx.global, &amend_args)
             .await
             .context("Failed to run cmd_amend")?;
 
         // Run restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -125,7 +81,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
+        commands::cmd_restore::run(&ctx.global, &restore_args)
             .await
             .context("Failed to run cmd_restore")?;
 
@@ -175,44 +131,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_amend_tags_and_description() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo_path = tmp_path.join(String::from("repo"));
-        let backend = Arc::new(LocalFS::new(repo_path.clone()));
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
         let (repo, _, test_repo_lock_handle) = Repository::try_open_with_lock(
-            Some(&auth),
+            Some(&ctx.auth),
             None,
             backend,
             TEST_REPO_CONFIG,
@@ -237,7 +165,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
@@ -251,7 +179,7 @@ mod tests {
             clear_description: true,
             exclude: None,
         };
-        commands::cmd_amend::run(&global, &amend_args)
+        commands::cmd_amend::run(&ctx.global, &amend_args)
             .await
             .context("Failed to run cmd_amend (1/2)")?;
 
@@ -274,7 +202,7 @@ mod tests {
             clear_description: false,
             exclude: None,
         };
-        commands::cmd_amend::run(&global, &amend_args)
+        commands::cmd_amend::run(&ctx.global, &amend_args)
             .await
             .context("Failed to run cmd_amend (2/2)")?;
 

@@ -6,68 +6,22 @@ mod tests {
     use anyhow::{Context, Result};
     use mapache::{
         backend::localfs::LocalFS,
-        commands::{
-            self, Compression, GlobalArgs, UseSnapshot, cmd_clean, cmd_restore, cmd_snapshot,
-            cmd_verify,
-        },
-        mapache::{
-            defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
-            global::set_global_opts_with_args,
-        },
-        repository::repo::{Auth, Repository},
+        commands::{self, UseSnapshot, cmd_clean, cmd_restore, cmd_snapshot},
+        mapache::defaults::TEST_REPO_CONFIG,
+        repository::repo::Repository,
         restorer::Strategy,
     };
 
-    use tempfile::tempdir;
+    use crate::integration_tests::TestContext;
 
-    use crate::{
-        TEST_QUIET,
-        integration_tests::{BACKUP_DATA_PATH, init_repo},
-        test_utils::{self},
-    };
-
-    /// Just a very basic test to verify that GC does not break the repository.
-    /// This is to check against some early bugs in the garbage collector that
-    /// removed files that it shouldn't.
-    /// It does no harm keeping this test.
     #[tokio::test]
     async fn test_gc_sanity_check() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -89,7 +43,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot (1/2)")?;
 
@@ -111,7 +65,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot (2/2)")?;
 
@@ -131,7 +85,7 @@ mod tests {
             tags_str: Some(String::new()),
             keep_tags_str: Some(String::new()),
         };
-        commands::cmd_forget::run(&global, &forget_args)
+        commands::cmd_forget::run(&ctx.global, &forget_args)
             .await
             .context("Failed to run cmd_forget")?;
 
@@ -141,12 +95,12 @@ mod tests {
 
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args)
+        commands::cmd_clean::run(&ctx.global, &gc_args)
             .await
             .context("Failed to run cmd_gc")?;
 
         // Run restore
-        let restore_path = tmp_path.join("restore");
+        let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
@@ -160,7 +114,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args)
+        commands::cmd_restore::run(&ctx.global, &restore_args)
             .await
             .context("Failed to run cmd_restore")?;
 
@@ -201,42 +155,12 @@ mod tests {
     /// Run clean but dry-run. Nothing should change.
     #[tokio::test]
     async fn test_clean_dry_run() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -258,7 +182,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot (1/2)")?;
 
@@ -280,7 +204,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot (2/2)")?;
 
@@ -300,12 +224,12 @@ mod tests {
             tags_str: Some(String::new()),
             keep_tags_str: Some(String::new()),
         };
-        commands::cmd_forget::run(&global, &forget_args)
+        commands::cmd_forget::run(&ctx.global, &forget_args)
             .await
             .context("Failed to run cmd_forget")?;
 
         // Run cmd_clean and compare the repositories (using backend readdir)
-        let backend = Arc::new(LocalFS::new(repo_path.clone()));
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let pre_clean_nodes =
             mapache::backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
         let gc_args = cmd_clean::CmdArgs {
@@ -314,7 +238,7 @@ mod tests {
 
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args)
+        commands::cmd_clean::run(&ctx.global, &gc_args)
             .await
             .context("Failed to run cmd_gc")?;
         let post_clean_nodes =
@@ -330,7 +254,7 @@ mod tests {
 
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args)
+        commands::cmd_clean::run(&ctx.global, &gc_args)
             .await
             .context("Failed to run cmd_gc")?;
         let post_clean_nodes =
@@ -342,38 +266,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_gc_repacks_and_removes_garbage() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let repo_path = tmp_path.join("repo");
-        init_repo(&auth, repo_path.clone()).await?;
+        let mut ctx = TestContext::new().await?;
 
         // Set a small pack size to force multiple packs and repacking
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path.clone()),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(1),
-            ssh_privatekey: None,
-            pack_size_mib: 1.0, // 1MiB packs
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        ctx.global.pack_size_mib = 1.0; // 1MiB packs
+        ctx.global.verbosity = Some(1);
+        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
 
-        let backup_path = tmp_path.join("backup");
+        ctx.init_repo().await?;
+
+        let backup_path = ctx._tmp_dir.path().join("backup");
         std::fs::create_dir(&backup_path)?;
 
         // Create file A (512KiB) and file B (512KiB). Total ~1MiB, should fit in one or two packs.
@@ -385,7 +287,7 @@ mod tests {
         std::fs::write(&file_b, &data_b)?;
 
         commands::cmd_snapshot::run(
-            &global,
+            &ctx.global,
             &cmd_snapshot::CmdArgs {
                 paths: vec![backup_path.clone()],
                 as_root: true,
@@ -403,7 +305,7 @@ mod tests {
         )
         .await?;
 
-        let snapshots_dir = repo_path.join("snapshots");
+        let snapshots_dir = ctx.repo_path.join("snapshots");
         let snapshots = std::fs::read_dir(&snapshots_dir)?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -422,7 +324,7 @@ mod tests {
         std::fs::write(&file_c, &data_c)?;
 
         commands::cmd_snapshot::run(
-            &global,
+            &ctx.global,
             &cmd_snapshot::CmdArgs {
                 paths: vec![backup_path.clone()],
                 as_root: true,
@@ -456,10 +358,10 @@ mod tests {
             run_gc: false,
             tolerance: 0.0,
         };
-        commands::cmd_forget::run(&global, &forget_args).await?;
+        commands::cmd_forget::run(&ctx.global, &forget_args).await?;
 
         // After forgetting Snapshot 1, file_b's blobs are now garbage.
-        let objects_dir = repo_path.join("objects");
+        let objects_dir = ctx.repo_path.join("objects");
         let pre_gc_size = mapache::utils::dir_size(&objects_dir)?;
 
         // Run GC.
@@ -468,7 +370,7 @@ mod tests {
             dry_run: false,
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args).await?;
+        commands::cmd_clean::run(&ctx.global, &gc_args).await?;
 
         let post_gc_size = mapache::utils::dir_size(&objects_dir)?;
 
@@ -481,19 +383,19 @@ mod tests {
         );
 
         // Verify Snapshot 2 is still valid and restorable.
-        let verify_args = cmd_verify::CmdArgs {
+        let verify_args = commands::cmd_verify::CmdArgs {
             read_packs: true,
             parallel: 1,
             with_cache: false,
             fail_early: false,
             sample: None,
         };
-        commands::cmd_verify::run(&global, &verify_args)
+        commands::cmd_verify::run(&ctx.global, &verify_args)
             .await
             .context("Verify failed after GC")?;
 
-        let restore_path = tmp_path.join("restore");
-        let restore_args = cmd_restore::CmdArgs {
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        let restore_args = commands::cmd_restore::CmdArgs {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -505,7 +407,7 @@ mod tests {
             delete: false,
             no_preserve_root: false,
         };
-        commands::cmd_restore::run(&global, &restore_args).await?;
+        commands::cmd_restore::run(&ctx.global, &restore_args).await?;
 
         assert!(restore_path.join("file_a.bin").exists());
         assert!(restore_path.join("file_c.bin").exists());
@@ -519,37 +421,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_gc_tolerance() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
+        let mut ctx = TestContext::new().await?;
 
-        let repo_path = tmp_path.join("repo");
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.global.pack_size_mib = 16.0;
+        ctx.global.verbosity = Some(1);
+        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
 
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path.clone()),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(1),
-            ssh_privatekey: None,
-            pack_size_mib: 16.0,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        ctx.init_repo().await?;
 
-        let backup_path = tmp_path.join("backup");
+        let backup_path = ctx._tmp_dir.path().join("backup");
         std::fs::create_dir(&backup_path)?;
 
         // Create file A (1MiB) and file B (1MiB).
@@ -562,7 +442,7 @@ mod tests {
 
         // Snapshot 1: {A, B}
         commands::cmd_snapshot::run(
-            &global,
+            &ctx.global,
             &cmd_snapshot::CmdArgs {
                 paths: vec![backup_path.clone()],
                 as_root: true,
@@ -580,7 +460,7 @@ mod tests {
         )
         .await?;
 
-        let snapshots_dir = repo_path.join("snapshots");
+        let snapshots_dir = ctx.repo_path.join("snapshots");
         let snapshots = std::fs::read_dir(&snapshots_dir)?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -594,7 +474,7 @@ mod tests {
         // Create Snapshot 2: {A} (B is deleted)
         std::fs::remove_file(&file_b)?;
         commands::cmd_snapshot::run(
-            &global,
+            &ctx.global,
             &cmd_snapshot::CmdArgs {
                 paths: vec![backup_path.clone()],
                 as_root: true,
@@ -628,13 +508,13 @@ mod tests {
             run_gc: false,
             tolerance: 0.0,
         };
-        commands::cmd_forget::run(&global, &forget_args).await?;
+        commands::cmd_forget::run(&ctx.global, &forget_args).await?;
 
         // GC Logic: Ratio = garbage / 16MiB = 1MiB / 16MiB = 0.0625.
 
-        let backend = Arc::new(LocalFS::new(repo_path.clone()));
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let (repo, _) =
-            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)
+            Repository::try_open_unlocked(Some(&ctx.auth), None, backend.clone(), TEST_REPO_CONFIG)
                 .await?;
         let initial_packs = repo.list_packs().await?.len();
 
@@ -645,10 +525,10 @@ mod tests {
             dry_run: false,
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args_high).await?;
+        commands::cmd_clean::run(&ctx.global, &gc_args_high).await?;
 
         let (repo, _) =
-            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)
+            Repository::try_open_unlocked(Some(&ctx.auth), None, backend.clone(), TEST_REPO_CONFIG)
                 .await?;
         let post_gc_high_packs = repo.list_packs().await?.len();
 
@@ -665,16 +545,16 @@ mod tests {
             dry_run: false,
             no_repack: false,
         };
-        commands::cmd_clean::run(&global, &gc_args_low).await?;
+        commands::cmd_clean::run(&ctx.global, &gc_args_low).await?;
 
-        let verify_args = cmd_verify::CmdArgs {
+        let verify_args = commands::cmd_verify::CmdArgs {
             read_packs: true,
             parallel: 1,
             with_cache: false,
             fail_early: false,
             sample: None,
         };
-        commands::cmd_verify::run(&global, &verify_args)
+        commands::cmd_verify::run(&ctx.global, &verify_args)
             .await
             .context("Verify failed after low tolerance GC")?;
 

@@ -9,64 +9,23 @@ mod tests {
     };
 
     use anyhow::{Context, Ok, Result};
-    use tempfile::tempdir;
 
     use mapache::{
         backend::{BackendNode, localfs::LocalFS, read_backend_dir},
-        commands::{self, Compression, GlobalArgs, UseSnapshot, cmd_snapshot, cmd_verify},
-        mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
-        repository::repo::{Auth, INDEX_DIR, OBJECTS_DIR},
+        commands::{self, UseSnapshot, cmd_snapshot, cmd_verify},
+        repository::repo::{INDEX_DIR, OBJECTS_DIR},
     };
 
-    use crate::{
-        TEST_QUIET,
-        integration_tests::{
-            BACKUP_DATA_PATH, delete_all_files_from, init_repo, set_write_permission,
-        },
-        test_utils,
-    };
+    use crate::integration_tests::{TestContext, delete_all_files_from, set_write_permission};
 
     #[tokio::test]
     async fn test_verify_links() -> Result<()> {
-        // Verify that all referenced objects are indexed.
-        // A missing index would make it fail.
-
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -88,7 +47,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
@@ -99,16 +58,16 @@ mod tests {
             fail_early: true,
             sample: None,
         };
-        let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+        let first_verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "First verify should pass");
 
-        let backend = Arc::new(LocalFS::new(repo_path.clone()));
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
 
         // Delete the index to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(INDEX_DIR))
             .await
             .context("Failed to remove the index")?;
-        let second_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+        let second_verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
         assert!(
             second_verify_result.is_err(),
             "Verify should fail without an index"
@@ -119,45 +78,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_snapshots() -> Result<()> {
-        // Verify that all snapshots refer to indexed objects, these objects exist
-        // and the hash is correct. A missing pack would make it fail.
-
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -179,7 +105,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
@@ -190,16 +116,16 @@ mod tests {
             fail_early: true,
             sample: None,
         };
-        let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+        let first_verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "Verify should pass");
 
-        let backend = Arc::new(LocalFS::new(repo_path.clone()));
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
 
         // Delete the packs to make it fail the next time.
         delete_all_files_from(backend.as_ref(), &PathBuf::from(OBJECTS_DIR))
             .await
             .context("Failed to remove the objects")?;
-        let second_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+        let second_verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
         assert!(
             second_verify_result.is_err(),
             "Verify should fail without the packs"
@@ -210,45 +136,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_packs() -> Result<()> {
-        // Verify that all blobs in all packs have correct hashes, even if they
-        // are not referenced in the index. A missing pack would make it fail.
-
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
-
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
         // Init repo
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -270,7 +163,7 @@ mod tests {
             num_packers: 2,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args)
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
             .await
             .context("Failed to run cmd_snapshot")?;
 
@@ -281,17 +174,17 @@ mod tests {
             fail_early: true,
             sample: None,
         };
-        let first_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+        let first_verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
         assert!(first_verify_result.is_ok(), "Verify should pass");
 
-        let backend = Arc::new(LocalFS::new(repo_path.clone()));
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
 
         // Bit flips should make it fail
         {
             let backend_nodes =
-                read_backend_dir(backend.as_ref(), &repo_path.join(OBJECTS_DIR)).await?;
+                read_backend_dir(backend.as_ref(), &ctx.repo_path.join(OBJECTS_DIR)).await?;
 
-            let first_pack_path = &repo_path.join(
+            let first_pack_path = &ctx.repo_path.join(
                 backend_nodes
                     .iter()
                     .find(|&node| matches!(node, BackendNode::File(_)))
@@ -312,7 +205,7 @@ mod tests {
             file.seek(SeekFrom::Start(0))?;
             file.write_all(&first_byte)?;
 
-            let bit_flip_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+            let bit_flip_verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
             assert!(
                 bit_flip_verify_result.is_err(),
                 "Verify should fail because of bit-flip (decryption error)"
@@ -323,7 +216,7 @@ mod tests {
         delete_all_files_from(backend.as_ref(), &PathBuf::from(OBJECTS_DIR))
             .await
             .context("Failed to remove the objects")?;
-        let second_verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+        let second_verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
         assert!(
             second_verify_result.is_err(),
             "Verify should fail without the packs (no root tree)"
@@ -334,40 +227,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_sample() -> Result<()> {
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
-        let auth = Auth {
-            username: "mapachito".to_string(),
-            password: "password".to_string(),
-        };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
-        )?;
+        let mut ctx = TestContext::new().await?;
+        ctx.setup_backup_data()?;
+        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
 
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
-        let backup_data_tmp_path = tmp_path.join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
+        ctx.global.verbosity = Some(1);
+        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
 
-        let repo_path = tmp_path.join("repo");
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: *TEST_QUIET,
-            json: false,
-            verbosity: Some(1),
-            ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-        };
-        set_global_opts_with_args(&global);
-
-        init_repo(&auth, repo_path.clone()).await?;
+        ctx.init_repo().await?;
 
         // Run snapshot
         let snapshot_args = cmd_snapshot::CmdArgs {
@@ -384,7 +251,7 @@ mod tests {
             num_packers: 1,
             dry_run: false,
         };
-        commands::cmd_snapshot::run(&global, &snapshot_args).await?;
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
 
         // Verify with 50% sample
         let verify_args = cmd_verify::CmdArgs {
@@ -394,7 +261,7 @@ mod tests {
             fail_early: true,
             sample: Some(50.0),
         };
-        let verify_result = commands::cmd_verify::run(&global, &verify_args).await;
+        let verify_result = commands::cmd_verify::run(&ctx.global, &verify_args).await;
         assert!(verify_result.is_ok(), "Verify with sample should pass");
 
         Ok(())

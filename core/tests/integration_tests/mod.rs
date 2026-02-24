@@ -4,11 +4,16 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use tempfile::tempdir;
 
 use mapache::{
     backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
+    commands::{Compression, GlobalArgs},
+    mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
     repository::repo::{Auth, Repository},
 };
+
+use crate::{TEST_QUIET, test_utils};
 
 mod test_cmd_amend;
 mod test_cmd_cat;
@@ -34,6 +39,69 @@ mod test_cmd_verify;
 mod test_cmd_mount;
 
 const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
+
+pub struct TestContext {
+    pub _tmp_dir: tempfile::TempDir,
+    pub repo_path: PathBuf,
+    pub auth: Auth,
+    pub auth_file_path: PathBuf,
+    pub global: GlobalArgs,
+    pub backup_data_path: Option<PathBuf>,
+}
+
+impl TestContext {
+    pub async fn new() -> Result<Self> {
+        let tmp_dir = tempdir()?;
+        let tmp_path = tmp_dir.path();
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: "password".to_string(),
+        };
+        let auth_file_path = tmp_path.join("auth");
+        std::fs::write(
+            &auth_file_path,
+            format!("{}\n{}", auth.username, auth.password),
+        )?;
+
+        let repo_path = tmp_path.join("repo");
+
+        let global = GlobalArgs {
+            repo: repo_path.to_string_lossy().to_string(),
+            auth_file: Some(auth_file_path.clone()),
+            key: None,
+            quiet: *TEST_QUIET,
+            json: false,
+            verbosity: Some(3),
+            ssh_privatekey: None,
+            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            no_cache: true,
+            retry_lock_duration: None,
+            compression_level: Compression::Fastest,
+        };
+        set_global_opts_with_args(&global);
+
+        Ok(Self {
+            _tmp_dir: tmp_dir,
+            repo_path,
+            auth,
+            auth_file_path,
+            global,
+            backup_data_path: None,
+        })
+    }
+
+    pub fn setup_backup_data(&mut self) -> Result<()> {
+        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
+        let backup_data_tmp_path = self._tmp_dir.path().join("backup");
+        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
+        self.backup_data_path = Some(backup_data_tmp_path);
+        Ok(())
+    }
+
+    pub async fn init_repo(&self) -> Result<()> {
+        init_repo(&self.auth, self.repo_path.clone()).await
+    }
+}
 
 async fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
     let backend = Arc::new(LocalFS::new(repo_path));
@@ -71,6 +139,20 @@ pub fn run_bin(args: &[&str]) -> Result<std::process::Output> {
     let bin_path = env!("CARGO_BIN_EXE_mapache");
     let mut cmd = std::process::Command::new(bin_path);
     cmd.args(args);
+
+    // Set --no-cache for commands requiring it.
+    if !args.is_empty() {
+        match args[0] {
+            // These commands don't accept --no-cache
+            "cache" | "completion" | "key" => (),
+            _ => {
+                let _ = cmd.arg("--no-cache");
+            }
+        }
+    }
+
+    println!("{cmd:?}");
+
     let output = cmd.output().context("Failed to execute mapache binary")?;
     if !output.status.success() {
         eprintln!("Command failed with status: {}", output.status);

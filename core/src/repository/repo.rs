@@ -1153,7 +1153,7 @@ impl Repository {
                         wait_time.as_seconds_f32()
                     );
 
-                    std::thread::sleep(wait_time.to_std()?);
+                    tokio::time::sleep(wait_time.to_std()?).await;
                 }
             }
         }

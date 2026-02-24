@@ -167,25 +167,15 @@ impl StorageBackend for LocalFS {
             _ => std::cmp::min(length, bytes_remaining),
         };
 
-        let mut data = Vec::with_capacity(read_length);
-
-        unsafe {
-            // SAFETY: Memory is allocated but uninitialized; set_len is deferred until read_exact
-            // guarantees initialization, ensuring no UB if a panic or error occurs during I/O.
-            let slice = std::slice::from_raw_parts_mut(
-                data.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
+        let mut data = vec![0u8; read_length];
+        file.read_exact(&mut data).await.with_context(|| {
+            format!(
+                "Could not read {} bytes from '{}'",
                 read_length,
-            );
-            let buffer = &mut *(slice as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]);
-            file.read_exact(buffer).await.with_context(|| {
-                format!(
-                    "Could not read {} bytes from '{}'",
-                    read_length,
-                    path.display()
-                )
-            })?;
-            data.set_len(read_length);
-        }
+                path.display()
+            )
+        })?;
+
         Ok(data)
     }
 
@@ -199,13 +189,24 @@ impl StorageBackend for LocalFS {
             let full_tmp_path = full_base_path.join(&tmp_path);
             let full_path = full_base_path.join(&path);
 
-            // Write to temporary file
-            if let Err(e) = std::fs::write(&full_tmp_path, &data) {
+            // Write to temporary file with durability guarantee
+            let write_result = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                let mut file = std::fs::File::create(&full_tmp_path)?;
+                file.write_all(&data)?;
+                file.sync_all()?;
+                Ok(())
+            })();
+
+            if let Err(e) = write_result {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     if let Some(parent) = full_tmp_path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
-                    std::fs::write(&full_tmp_path, &data)?;
+                    use std::io::Write;
+                    let mut file = std::fs::File::create(&full_tmp_path)?;
+                    file.write_all(&data)?;
+                    file.sync_all()?;
                 } else {
                     return Err(anyhow::Error::from(e));
                 }

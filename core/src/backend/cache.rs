@@ -77,28 +77,32 @@ impl CacheBackend {
         let path_buf = path.to_path_buf();
         let handle = Handle::new(path);
 
-        {
-            let mut queue = self.download_queue.lock();
+        loop {
+            let should_wait = {
+                let mut queue = self.download_queue.lock();
 
-            loop {
                 match queue.get(&path_buf) {
-                    Some(DownloadState::Downloading) => {
-                        parking_lot::MutexGuard::unlock_fair(queue);
-                        std::thread::sleep(DOWNLOAD_WAIT_TIME);
-                        queue = self.download_queue.lock();
-                        continue;
-                    }
-                    Some(DownloadState::Failed) => {
-                        queue.remove(&path_buf);
-                        break;
-                    }
-                    None => {
+                    Some(DownloadState::Downloading) => true,
+                    _ => {
                         queue.insert(path_buf.clone(), DownloadState::Downloading);
-                        break;
+                        false
                     }
                 }
+            };
+
+            if should_wait {
+                tokio::time::sleep(DOWNLOAD_WAIT_TIME).await;
+            } else {
+                break;
             }
-        } // Lock is released here.
+        }
+
+        // After waiting, check if another thread finished the download
+        if self.cache.path_exists(path).await {
+            let mut queue = self.download_queue.lock();
+            queue.remove(&path_buf);
+            return Ok(());
+        }
 
         let result = async {
             let data = self.backend.read(&handle, 0, 0).await?;
@@ -214,7 +218,7 @@ impl StorageBackend for CacheBackend {
 
             match state {
                 Some(DownloadState::Downloading) => {
-                    std::thread::sleep(DOWNLOAD_WAIT_TIME);
+                    tokio::time::sleep(DOWNLOAD_WAIT_TIME).await;
                 }
                 _ => {
                     break;

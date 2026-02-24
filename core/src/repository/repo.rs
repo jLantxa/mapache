@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use chrono::Duration;
+use futures::{StreamExt, stream};
 use parking_lot::{Mutex, RwLock};
 use rand::{Rng, rng};
 
@@ -915,24 +916,39 @@ impl Repository {
 
     /// Lists all packs in the repository.
     pub async fn list_packs(&self) -> Result<IdSet<ID>> {
-        let mut list = IdSet::default();
-
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
-        for n in 0..num_folders {
-            let dir = self
-                .objects_path
-                .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-            let files = self.backend.list_dir(&dir).await?;
-            for path in files {
-                let filename = path.file_name().unwrap().to_string_lossy().to_string();
-                if let Ok(id) = ID::from_hex(&filename) {
-                    list.insert(id);
+        let results = stream::iter(0..num_folders)
+            .map(|n| {
+                let repo = self;
+                async move {
+                    let mut list = Vec::new();
+                    let dir = repo
+                        .objects_path
+                        .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
+
+                    let files = repo.backend.list_dir(&dir).await?;
+                    for path in files {
+                        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+                        if let Ok(id) = ID::from_hex(&filename) {
+                            list.push(id);
+                        }
+                    }
+                    Ok::<Vec<ID>, anyhow::Error>(list)
                 }
+            })
+            .buffer_unordered(8) // Process 8 directories in parallel
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut final_list = IdSet::default();
+        for res in results {
+            for id in res? {
+                final_list.insert(id);
             }
         }
 
-        Ok(list)
+        Ok(final_list)
     }
 
     /// Returns the path to an object with a given hash in the repository.
@@ -1012,37 +1028,59 @@ impl Repository {
 
     /// Load the master index from file
     pub async fn reload_master_index(&self) -> Result<()> {
-        let files = self.list_files(ContentIdType::Index).await?;
+        let mut files = self.list_files(ContentIdType::Index).await?;
+        files.sort_unstable(); // Ensure deterministic order
+
         self.master_index.clear();
 
-        let mut num_index_files = 0;
-        for file_path in files {
-            let file_name = file_path
-                .file_name()
-                .expect("Could not read index file name")
-                .to_string_lossy()
-                .clone();
-            let id = match ID::from_hex(&file_name) {
-                Ok(id) => id,
-                Err(_) => continue, // Ignore invalid ID names
-            };
-            let index_file = self
-                .backend
-                .read(
-                    &Handle::new_with_hint(&file_path, ContentIdType::Index, true),
-                    0,
-                    0,
-                )
-                .await?;
-            let index_file = self.secure_storage.decode(&index_file)?;
-            let index_file = match serde_json::from_slice(&index_file) {
-                Ok(idx_file) => idx_file,
-                Err(e) => bail!("Failed to load index file {}: {}", id.to_short_hex(4), e),
-            };
+        let indices = stream::iter(files)
+            .map(|file_path| {
+                let backend = self.backend.clone();
+                let secure_storage = self.secure_storage.clone();
 
-            let index = Index::from_index_file(index_file, id);
-            self.master_index.add_index(index);
-            num_index_files += 1;
+                async move {
+                    let file_name = file_path
+                        .file_name()
+                        .expect("Could not read index file name")
+                        .to_string_lossy()
+                        .to_string();
+
+                    let id = match ID::from_hex(&file_name) {
+                        Ok(id) => id,
+                        Err(_) => return Ok(None), // Ignore invalid ID names
+                    };
+
+                    let index_data = backend
+                        .read(
+                            &Handle::new_with_hint(&file_path, ContentIdType::Index, true),
+                            0,
+                            0,
+                        )
+                        .await?;
+
+                    let index = tokio::task::spawn_blocking(move || {
+                        let index_file = secure_storage.decode(&index_data)?;
+                        let index_file: IndexFile = serde_json::from_slice(&index_file)
+                            .with_context(|| {
+                                format!("Failed to load index file {}", id.to_short_hex(4))
+                            })?;
+                        Ok::<_, anyhow::Error>(Index::from_index_file(index_file, id))
+                    })
+                    .await??;
+
+                    Ok(Some(index))
+                }
+            })
+            .buffered(16)
+            .collect::<Vec<Result<Option<Index>>>>()
+            .await;
+
+        let mut num_index_files = 0;
+        for res in indices {
+            if let Some(index) = res? {
+                self.master_index.add_index(index);
+                num_index_files += 1;
+            }
         }
 
         ui::cli::verbose_1!("Loaded {} index files", num_index_files);

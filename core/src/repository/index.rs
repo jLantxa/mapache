@@ -1,4 +1,5 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -45,12 +46,15 @@ pub(crate) enum IndexStatus {
     Persisted(ID),
 }
 
-type ReverseMap = HashMap<u32, Vec<ID>>;
+static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Manages the mapping of blob IDs to their locations within pack files.
 /// An `Index` can be in a 'pending' state, indicating it's still being built.
 #[derive(Debug, Clone)]
 pub struct Index {
+    /// Unique internal ID to identify this specific instance in memory.
+    instance_id: u64,
+
     /// blob ID -> BlobLocationInternal map. This is the core lookup table.
     data_ids: IdMap<ID, BlobLocationInternal>,
     tree_ids: IdMap<ID, BlobLocationInternal>,
@@ -75,21 +79,13 @@ impl Default for Index {
 impl Index {
     pub fn new() -> Self {
         Self {
+            instance_id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
             data_ids: IdMap::default(),
             tree_ids: IdMap::default(),
             pack_ids: IdIndexSet::new_id_set(),
             status: IndexStatus::Pending,
             create_time: Instant::now(),
         }
-    }
-
-    /// Helper to generate a temporary reverse map for management operations.
-    fn get_reverse_map(&self) -> ReverseMap {
-        let mut rev: ReverseMap = HashMap::with_capacity(self.pack_ids.len());
-        for (id, loc) in self.data_ids.iter().chain(self.tree_ids.iter()) {
-            rev.entry(loc.pack_array_index).or_default().push(*id);
-        }
-        rev
     }
 
     /// Returns `true` if the index is currently pending (still receiving entries).
@@ -243,38 +239,35 @@ impl Index {
             return Ok(SizePair::zero());
         }
 
-        let reverse = self.get_reverse_map();
-        let mut pack_entries = Vec::with_capacity(self.pack_ids.len());
+        let mut pack_entries: Vec<IndexFilePack> = self
+            .pack_ids
+            .iter()
+            .map(|pack_id| IndexFilePack {
+                id: *pack_id,
+                blobs: Vec::new(),
+            })
+            .collect();
 
-        for (p_idx, pack_id) in self.pack_ids.iter().enumerate() {
-            let p_idx_u32 = p_idx as u32;
-
-            if let Some(blob_ids) = reverse.get(&p_idx_u32) {
-                let mut blobs = Vec::with_capacity(blob_ids.len());
-
-                for id in blob_ids {
-                    let (loc, b_type) = self
-                        .data_ids
-                        .get(id)
-                        .map(|l| (l, BlobType::Data))
-                        .or_else(|| self.tree_ids.get(id).map(|l| (l, BlobType::Tree)))
-                        .expect("ID from reverse map must exist in data/tree maps");
-
-                    blobs.push(IndexFileBlob {
+        // Helper to avoid duplication
+        let mut add_to_entries = |map: &IdMap<ID, BlobLocationInternal>, b_type: BlobType| {
+            for (id, loc) in map {
+                pack_entries[loc.pack_array_index as usize]
+                    .blobs
+                    .push(IndexFileBlob {
                         id: *id,
                         blob_type: b_type,
                         offset: loc.offset,
                         length: loc.length,
                         raw_length: loc.raw_length,
                     });
-                }
-
-                pack_entries.push(IndexFilePack {
-                    id: *pack_id,
-                    blobs,
-                });
             }
-        }
+        };
+
+        add_to_entries(&self.data_ids, BlobType::Data);
+        add_to_entries(&self.tree_ids, BlobType::Tree);
+
+        // Filter out empty packs (though there shouldn't be any in a healthy index)
+        pack_entries.retain(|p| !p.blobs.is_empty());
 
         let serialized = serde_json::to_vec(&IndexFile {
             packs: pack_entries,
@@ -324,29 +317,43 @@ impl Index {
         data.chain(trees)
     }
 
-    fn remove_pack(&mut self, target_pack_id: &ID) {
-        if let Some(&pack_index) = self.pack_ids.get_index(target_pack_id) {
-            let p_idx_u32 = pack_index as u32;
+    /// Returns a map of Pack ID -> List of descriptors for all packs in this index.
+    fn get_pack_descriptors(
+        &self,
+        obsolete_packs: Option<&IdSet<ID>>,
+    ) -> IdMap<ID, Vec<PackedBlobDescriptor>> {
+        let mut pack_descriptors = IdMap::default();
 
-            // Linear scan to remove blobs belonging to the target pack.
-            self.data_ids
-                .retain(|_, loc| loc.pack_array_index != p_idx_u32);
-            self.tree_ids
-                .retain(|_, loc| loc.pack_array_index != p_idx_u32);
+        let mut process_map = |map: &IdMap<ID, BlobLocationInternal>, b_type: BlobType| {
+            for (id, loc) in map {
+                let pack_id = self
+                    .pack_ids
+                    .get_value(loc.pack_array_index as usize)
+                    .expect("Index invariant violated");
 
-            let last_idx = (self.pack_ids.len() - 1) as u32;
-            self.pack_ids.remove(target_pack_id);
-
-            // If the removed pack wasn't the last one, IndexSet moves the last pack
-            // to fill the gap. We must update the index of all affected blobs.
-            if p_idx_u32 != last_idx {
-                for loc in self.data_ids.values_mut().chain(self.tree_ids.values_mut()) {
-                    if loc.pack_array_index == last_idx {
-                        loc.pack_array_index = p_idx_u32;
-                    }
+                if let Some(obsolete) = obsolete_packs
+                    && obsolete.contains(pack_id)
+                {
+                    continue;
                 }
+
+                pack_descriptors
+                    .entry(*pack_id)
+                    .or_insert_with(Vec::new)
+                    .push(PackedBlobDescriptor {
+                        id: *id,
+                        blob_type: b_type,
+                        offset: loc.offset,
+                        length: loc.length,
+                        raw_length: loc.raw_length,
+                    });
             }
-        }
+        };
+
+        process_map(&self.data_ids, BlobType::Data);
+        process_map(&self.tree_ids, BlobType::Tree);
+
+        pack_descriptors
     }
 }
 
@@ -427,36 +434,6 @@ impl MasterIndex {
         let lock = self.inner.read();
 
         lock.indices.iter().rev().find_map(|idx| idx.get(id))
-    }
-
-    /// Retrieves all blob entries associated with a specific pack ID.
-    pub fn get_pack_locators(&self, pack_id: &ID) -> Option<IdMap<ID, BlobLocator>> {
-        let lock = self.inner.read();
-        let mut locators = IdMap::default();
-
-        for idx in &lock.indices {
-            if let Some(&pack_array_idx) = idx.pack_ids.get_index(pack_id) {
-                let p_idx_u32 = pack_array_idx as u32;
-
-                // Scan both data and tree maps for blobs matching this pack index
-                for (id, loc) in idx.data_ids.iter() {
-                    if loc.pack_array_index == p_idx_u32 {
-                        locators.insert(*id, idx.resolve_location(loc, BlobType::Data));
-                    }
-                }
-                for (id, loc) in idx.tree_ids.iter() {
-                    if loc.pack_array_index == p_idx_u32 {
-                        locators.insert(*id, idx.resolve_location(loc, BlobType::Tree));
-                    }
-                }
-            }
-        }
-
-        if locators.is_empty() {
-            None
-        } else {
-            Some(locators)
-        }
     }
 
     /// Adds a fully constructed `Index` to the master index.
@@ -571,12 +548,11 @@ impl MasterIndex {
 
             // Update the status in the master index
             let mut lock = self.inner.write();
-            if let Some(actual_idx) = lock.indices.iter_mut().find(|i| {
-                // Weak matching for simplification
-                !i.is_persisted()
-                    && i.num_blobs() == idx.num_blobs()
-                    && i.create_time == idx.create_time
-            }) {
+            if let Some(actual_idx) = lock
+                .indices
+                .iter_mut()
+                .find(|i| i.instance_id == idx.instance_id)
+            {
                 actual_idx.status = idx.status;
             }
         }
@@ -608,61 +584,47 @@ impl MasterIndex {
 
     pub fn cleanup(&self, obsolete_packs: Option<&IdSet<ID>>) {
         let mut lock = self.inner.write();
-
-        if let Some(packs) = obsolete_packs {
-            for idx in &mut lock.indices {
-                if packs.iter().any(|p| idx.pack_ids.contains(p)) {
-                    idx.set_status(IndexStatus::Pending);
-                    for p in packs {
-                        idx.remove_pack(p);
-                    }
-                }
-            }
-        }
-
-        self.merge_index(&mut lock);
+        self.merge_index(&mut lock, obsolete_packs);
     }
 
     /// Merges all current indices into a new collection of full indices.
-    fn merge_index(&self, lock: &mut MasterIndexInner) {
-        let old_indices = std::mem::take(&mut lock.indices);
+    fn merge_index(&self, lock: &mut MasterIndexInner, obsolete_packs: Option<&IdSet<ID>>) {
+        let mut old_indices = std::mem::take(&mut lock.indices);
+        // Sort by instance_id to ensure deterministic merge order.
+        old_indices.sort_by_key(|idx| idx.instance_id);
+
+        // Gather descriptors for all packs from all indices.
+        // We use a sequential fold to maintain perfect determinism.
+        let all_pack_descriptors: IdMap<ID, IdMap<ID, PackedBlobDescriptor>> =
+            old_indices.iter().fold(IdMap::default(), |mut acc, idx| {
+                let pack_map = idx.get_pack_descriptors(obsolete_packs);
+                for (pack_id, descriptors) in pack_map {
+                    let entry = acc.entry(pack_id).or_default();
+                    for desc in descriptors {
+                        entry.insert(desc.id, desc);
+                    }
+                }
+                acc
+            });
+
+        // Convert to sorted vector of (pack_id, descriptors) for deterministic index building
+        let mut sorted_packs: Vec<_> = all_pack_descriptors.into_iter().collect();
+        sorted_packs.sort_by_key(|(pack_id, _)| *pack_id);
+
         let mut new_indices = Vec::new();
         let mut current_index = Index::new();
-        let mut seen_packs = IdSet::default();
 
-        for idx in old_indices {
-            let reverse = idx.get_reverse_map();
-            for (&pack_array_idx, blob_ids) in &reverse {
-                let pack_id = idx
-                    .pack_ids
-                    .get_value(pack_array_idx as usize)
-                    .expect("Index invariant violated");
+        // Rebuild indices sequentially
+        for (pack_id, descriptors_map) in sorted_packs {
+            let mut descriptors: Vec<_> = descriptors_map.into_values().collect();
+            descriptors.sort_by_key(|d| d.offset); // Deterministic blob order within pack
 
-                if seen_packs.contains(pack_id) {
-                    continue;
-                }
+            current_index.add_pack(&pack_id, descriptors);
 
-                let descriptor_stream = blob_ids.iter().filter_map(|id| {
-                    idx.get(id).map(|loc| PackedBlobDescriptor {
-                        id: *id,
-                        blob_type: loc.blob_type,
-                        offset: loc.offset,
-                        length: loc.length,
-                        raw_length: loc.raw_length,
-                    })
-                });
-
-                current_index.add_pack(pack_id, descriptor_stream);
-
-                if current_index.is_full() {
-                    current_index.set_status(IndexStatus::Finalized);
-                    new_indices.push(current_index);
-                    current_index = Index::new();
-                }
-            }
-
-            for p_id in idx.pack_ids.iter() {
-                seen_packs.insert(*p_id);
+            if current_index.is_full() {
+                current_index.set_status(IndexStatus::Finalized);
+                new_indices.push(current_index);
+                current_index = Index::new();
             }
         }
 
@@ -818,34 +780,6 @@ mod tests {
     }
 
     #[test]
-    fn test_index_remove_pack() {
-        let mut index = Index::new();
-        let pack_id_1 = mock_id("pack1");
-        let pack_id_2 = mock_id("pack2");
-
-        let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
-        let b2 = mock_blob_desc("b2", BlobType::Data, 100, 100);
-        let b3 = mock_blob_desc("b3", BlobType::Data, 0, 100);
-
-        index.add_pack(&pack_id_1, vec![b1.clone(), b2.clone()]);
-        index.add_pack(&pack_id_2, vec![b3.clone()]);
-
-        assert_eq!(index.num_blobs(), 3);
-        assert_eq!(index.num_packs(), 2);
-
-        index.remove_pack(&pack_id_1);
-        assert_eq!(index.num_blobs(), 1);
-        assert_eq!(index.num_packs(), 1);
-        assert!(!index.contains(&b1.id));
-        assert!(!index.contains(&b2.id));
-        assert!(index.contains(&b3.id));
-
-        // Verify pack_id_2 is still accessible and its internal index was updated if needed
-        let loc = index.get(&b3.id).unwrap();
-        assert_eq!(loc.pack_id, pack_id_2);
-    }
-
-    #[test]
     fn test_master_index_basic() {
         let mi = MasterIndex::new();
         let id1 = mock_id("blob1");
@@ -872,5 +806,103 @@ mod tests {
         mi.clear();
         assert!(!mi.contains(&id1));
         assert!(!mi.contains(&id2));
+    }
+
+    #[test]
+    fn test_master_index_cleanup_and_merge() {
+        let mi = MasterIndex::new();
+
+        // Setup: Multiple small indices with various packs
+        let pack1 = mock_id("pack1");
+        let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
+        let b2 = mock_blob_desc("b2", BlobType::Data, 100, 100);
+
+        let pack2 = mock_id("pack2");
+        let b3 = mock_blob_desc("b3", BlobType::Data, 0, 100);
+
+        let pack3 = mock_id("pack3");
+        let b4 = mock_blob_desc("b4", BlobType::Data, 0, 100);
+
+        // Index A: Pack 1, Pack 2
+        let mut idx_a = Index::new();
+        idx_a.add_pack(&pack1, vec![b1.clone(), b2.clone()]);
+        idx_a.add_pack(&pack2, vec![b3.clone()]);
+        mi.add_index(idx_a);
+
+        // Index B: Pack 3
+        let mut idx_b = Index::new();
+        idx_b.add_pack(&pack3, vec![b4.clone()]);
+        mi.add_index(idx_b);
+
+        // Verify initial state
+        assert_eq!(mi.inner.read().indices.len(), 2);
+        assert!(mi.contains(&b1.id));
+        assert!(mi.contains(&b3.id));
+        assert!(mi.contains(&b4.id));
+
+        // Perform cleanup with pack2 as obsolete
+        let mut obsolete = IdSet::default();
+        obsolete.insert(pack2);
+
+        mi.cleanup(Some(&obsolete));
+
+        // Verify results
+        let inner = mi.inner.read();
+        // Since we merged, it should now be 1 index (they were small)
+        assert_eq!(inner.indices.len(), 1);
+        let merged_idx = &inner.indices[0];
+
+        // pack1 and pack3 should remain
+        assert!(merged_idx.pack_ids.contains(&pack1));
+        assert!(merged_idx.pack_ids.contains(&pack3));
+        // pack2 should be gone
+        assert!(!merged_idx.pack_ids.contains(&pack2));
+
+        // Blobs from pack1 and pack3 must be present
+        assert!(merged_idx.contains(&b1.id));
+        assert!(merged_idx.contains(&b2.id));
+        assert!(merged_idx.contains(&b4.id));
+        // Blob from pack2 must be gone
+        assert!(!merged_idx.contains(&b3.id));
+
+        // Verify locations are still correct
+        let loc1 = merged_idx.get(&b1.id).unwrap();
+        assert_eq!(loc1.pack_id, pack1);
+        assert_eq!(loc1.offset, b1.offset);
+
+        let loc4 = merged_idx.get(&b4.id).unwrap();
+        assert_eq!(loc4.pack_id, pack3);
+    }
+
+    #[test]
+    fn test_master_index_merge_deduplication() {
+        let mi = MasterIndex::new();
+
+        let pack1 = mock_id("pack1");
+        let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
+
+        // Index A contains pack1
+        let mut idx_a = Index::new();
+        idx_a.add_pack(&pack1, vec![b1.clone()]);
+        mi.add_index(idx_a);
+
+        // Index B ALSO contains pack1 (e.g. from an interrupted operation or overlapping indices)
+        let mut idx_b = Index::new();
+        idx_b.add_pack(&pack1, vec![b1.clone()]);
+        mi.add_index(idx_b);
+
+        assert_eq!(mi.inner.read().indices.len(), 2);
+
+        // Merge indices
+        mi.cleanup(None);
+
+        let inner = mi.inner.read();
+        assert_eq!(inner.indices.len(), 1);
+        let merged = &inner.indices[0];
+
+        // Should only have pack1 ONCE
+        assert_eq!(merged.num_packs(), 1);
+        assert_eq!(merged.num_blobs(), 1);
+        assert!(merged.contains(&b1.id));
     }
 }

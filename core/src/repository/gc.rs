@@ -1,17 +1,11 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use anyhow::Result;
-use colored::Colorize;
-use futures::{StreamExt, stream};
+use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::{StorageBackend, WriteContents, read_backend_dir},
-    fs::tree::SerializedNodeStream,
     mapache::{
         self, ContentIdType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
@@ -181,6 +175,10 @@ impl Plan {
 
     /// Delete packs that contain no referenced blobs.
     async fn delete_unused_packs(&self) -> Result<u64> {
+        if self.unused_packs.is_empty() {
+            return Ok(0);
+        }
+
         let unused_pack_delete_bar = ProgressBar::with_draw_target(
             Some(self.unused_packs.len() as u64),
             default_bar_draw_target(),
@@ -194,11 +192,20 @@ impl Plan {
                 .progress_chars("=> "),
         );
 
-        let mut deleted_size = 0;
-        for id in &self.unused_packs {
-            deleted_size += self.repo.delete_file(ContentIdType::Pack, id, None).await?;
-            unused_pack_delete_bar.inc(1);
-        }
+        let deleted_size = stream::iter(&self.unused_packs)
+            .map(|id| {
+                let repo = &self.repo;
+                let bar = &unused_pack_delete_bar;
+                Ok(async move {
+                    let size = repo.delete_file(ContentIdType::Pack, id, None).await?;
+                    bar.inc(1);
+                    Ok::<u64, anyhow::Error>(size)
+                })
+            })
+            .try_buffer_unordered(16)
+            .try_fold(0, |acc, size| async move { Ok(acc + size) })
+            .await?;
+
         unused_pack_delete_bar.finish_and_clear();
         ui::cli::log!("Deleted {} unused packs", unused_pack_delete_bar.position());
 
@@ -402,11 +409,12 @@ impl Plan {
 
 /// Returns all blobs and packs referenced by all existing snapshots in the repository.
 async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, IdSet<ID>)> {
-    let mut referenced_blobs: IdSet<ID> = IdSet::default();
-    let mut referenced_packs: IdSet<ID> = IdSet::default();
-    let index = repo.index();
+    let referenced_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
+    let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
+    let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
-    let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+    let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+    let snapshots: Vec<_> = snapshot_stream.collect().await;
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -418,102 +426,117 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    while let Some((_snapshot_id, snapshot)) = snapshot_stream.next().await {
-        let tree_id = snapshot.tree;
+    let results = stream::iter(snapshots)
+        .map(|(_snapshot_id, snapshot)| {
+            let repo = repo.clone();
+            let spinner = spinner.clone();
+            let referenced_blobs = referenced_blobs.clone();
+            let referenced_packs = referenced_packs.clone();
+            let verified_trees = verified_trees.clone();
 
-        // Tree blob of the snapshot
-        if referenced_blobs.insert(tree_id) {
-            spinner.set_position(referenced_blobs.len() as u64);
-        }
+            async move {
+                let index = repo.index();
+                let mut stack = vec![snapshot.tree];
 
-        match index.get(&tree_id) {
-            Some(locator) => {
-                referenced_packs.insert(locator.pack_id);
-            }
-            None => {
-                ui::cli::warning!(
-                    "Snapshot tree {} is referenced but not found in index",
-                    tree_id
-                );
-            }
-        }
-
-        // Stream all nodes in the snapshot
-        let mut node_stream =
-            SerializedNodeStream::new(repo.clone(), Some(tree_id), PathBuf::new(), None, None)
-                .await?;
-
-        let mut missing_tree_blobs = 0;
-        let mut missing_data_blobs = 0;
-
-        while let Some(node_res) = node_stream.next().await {
-            match node_res {
-                Ok((_path, stream_node)) => {
-                    let node = &stream_node.node;
-
-                    // Tree blobs
-                    if let Some(tree) = &node.tree {
-                        if referenced_blobs.insert(*tree) {
-                            spinner.set_position(referenced_blobs.len() as u64);
-                        }
-
-                        match index.get(tree) {
-                            Some(locator) => {
-                                referenced_packs.insert(locator.pack_id);
+                while !stack.is_empty() {
+                    let to_fetch: Vec<_> = std::mem::take(&mut stack);
+                    let mut fetch_stream = futures::stream::iter(to_fetch)
+                        .map(|tree_id| {
+                            // Global Deduplication
+                            let mut seen = verified_trees.lock();
+                            if seen.contains(&tree_id) {
+                                return futures::future::ready(Ok(None)).left_future();
                             }
-                            None => {
-                                missing_tree_blobs += 1;
-                            }
-                        }
-                    }
+                            seen.insert(tree_id);
+                            drop(seen);
 
-                    // Data blobs
-                    if let Some(blobs) = &node.blobs {
-                        for blob_id in blobs {
-                            if referenced_blobs.insert(*blob_id) {
-                                spinner.set_position(referenced_blobs.len() as u64);
+                            // Mark tree blob as referenced
+                            {
+                                let mut blobs = referenced_blobs.lock();
+                                if blobs.insert(tree_id) {
+                                    spinner.set_position(blobs.len() as u64);
+                                }
                             }
 
-                            match index.get(blob_id) {
+                            match index.get(&tree_id) {
                                 Some(locator) => {
-                                    referenced_packs.insert(locator.pack_id);
+                                    referenced_packs.lock().insert(locator.pack_id);
                                 }
                                 None => {
-                                    missing_data_blobs += 1;
+                                    ui::cli::warning!(
+                                        "Snapshot tree {} is referenced but not found in index",
+                                        tree_id
+                                    );
+                                }
+                            }
+
+                            let repo = repo.clone();
+                            async move {
+                                let tree =
+                                    crate::fs::tree::Tree::load_from_repo(repo.as_ref(), &tree_id)
+                                        .await?;
+                                Ok::<_, anyhow::Error>(Some(tree))
+                            }
+                            .right_future()
+                        })
+                        .buffer_unordered(8);
+
+                    while let Some(tree_res) = fetch_stream.next().await {
+                        let maybe_tree = tree_res?;
+                        if let Some(tree) = maybe_tree {
+                            for node in tree.nodes {
+                                // Tree blobs (subdirectories)
+                                if let Some(subtree_id) = node.tree {
+                                    stack.push(subtree_id);
+                                }
+
+                                // Data blobs
+                                if let Some(blobs) = node.blobs {
+                                    let mut ref_blobs = referenced_blobs.lock();
+                                    let mut ref_packs = referenced_packs.lock();
+
+                                    for blob_id in blobs {
+                                        if ref_blobs.insert(blob_id) {
+                                            spinner.set_position(ref_blobs.len() as u64);
+                                        }
+
+                                        match index.get(&blob_id) {
+                                            Some(locator) => {
+                                                ref_packs.insert(locator.pack_id);
+                                            }
+                                            None => {
+                                                // Handle missing data blobs if needed
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                Err(e) => {
-                    ui::cli::warning!("Error parsing node: {e}");
-                }
+                Ok::<(), anyhow::Error>(())
             }
-        }
+        })
+        .buffer_unordered(4) // Parallelism factor for snapshots
+        .collect::<Vec<_>>()
+        .await;
 
-        if missing_tree_blobs > 0 {
-            ui::cli::warning!(
-                "{} tree blobs referenced in snapshot are missing in the index",
-                missing_tree_blobs.to_string().bold()
-            );
-        }
-
-        if missing_data_blobs > 0 {
-            ui::cli::warning!(
-                "{} data blobs referenced in snapshot are missing in the index",
-                missing_data_blobs.to_string().bold()
-            );
-        }
+    for res in results {
+        res?;
     }
 
     spinner.finish_and_clear();
+
+    let final_blobs = Arc::try_unwrap(referenced_blobs).unwrap().into_inner();
+    let final_packs = Arc::try_unwrap(referenced_packs).unwrap().into_inner();
+
     ui::cli::log!(
         "Found {} referenced blobs and {} packs",
-        referenced_blobs.len(),
-        referenced_packs.len()
+        final_blobs.len(),
+        final_packs.len()
     );
 
-    Ok((referenced_blobs, referenced_packs))
+    Ok((final_blobs, final_packs))
 }
 
 /// Remove all expired locks from the repository

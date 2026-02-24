@@ -238,7 +238,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 let corrupt_blobs = corrupt_blobs.clone();
 
                                 async move {
-                                    match verify_pack(repo.as_ref(), backend.as_ref(), secure.as_ref(), pack_id).await {
+                                    match verify_pack(repo.clone(), backend.clone(), secure.clone(), *pack_id).await {
                                         Ok(pack_stats) => {
                                             stats.packs_processed.fetch_add(1, Ordering::Relaxed);
                                             stats
@@ -384,7 +384,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
                 Err(e) => {
                     ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
-                    ui::cli::error!("{e}");
+                    ui::cli::error!("{:?}", e);
                     snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
 
                     if args.fail_early {
@@ -404,35 +404,46 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!();
         ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
 
-        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        while let Some((snapshot_id, _)) = snapshot_stream.next().await {
-            let mut stream = SerializedNodeStream::new(
-                repo.clone(),
-                Some(repo.load_snapshot(&snapshot_id, None).await?.tree),
-                PathBuf::new(),
-                None,
-                None,
-            )
-            .await?;
+        let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        let snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect().await;
 
-            while let Some(res) = stream.next().await {
-                let (path, sn_node) = res?;
-                let node = sn_node.node;
-                if let Some(blobs) = node.blobs {
-                    let corrupt_ids = corrupt_blobs.lock();
-                    for blob_id in blobs {
-                        if corrupt_ids.contains(&blob_id) {
-                            ui::cli::error!(
-                                "Corrupt blob {} affects file \"{}\" in snapshot {}",
-                                blob_id.to_short_hex(8).red(),
-                                path.display().to_string().bold(),
-                                snapshot_id.to_short_hex(12).yellow()
-                            );
+        futures::stream::iter(snapshots)
+            .map(|(snapshot_id, _)| {
+                let repo = repo.clone();
+                let corrupt_blobs = corrupt_blobs.clone();
+                async move {
+                    let mut stream = SerializedNodeStream::new(
+                        repo.clone(),
+                        Some(repo.load_snapshot(&snapshot_id, None).await?.tree),
+                        PathBuf::new(),
+                        None,
+                        None,
+                    )
+                    .await?;
+
+                    while let Some(res) = stream.next().await {
+                        let (path, sn_node) = res?;
+                        let node = sn_node.node;
+                        if let Some(blobs) = node.blobs {
+                            let corrupt_ids = corrupt_blobs.lock();
+                            for blob_id in blobs {
+                                if corrupt_ids.contains(&blob_id) {
+                                    ui::cli::error!(
+                                        "Corrupt blob {} affects file \"{}\" in snapshot {}",
+                                        blob_id.to_short_hex(8).red(),
+                                        path.display().to_string().bold(),
+                                        snapshot_id.to_short_hex(12).yellow()
+                                    );
+                                }
+                            }
                         }
                     }
+                    Ok::<(), anyhow::Error>(())
                 }
-            }
-        }
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
     }
 
     // -------------

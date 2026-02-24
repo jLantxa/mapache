@@ -102,7 +102,7 @@ pub struct WithGlobal<T: clap::Args> {
 }
 
 /// Global options
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 pub struct GlobalArgs {
     /// Repository path

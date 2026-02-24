@@ -97,7 +97,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 (pack_id, res)
             }
         })
-        .buffer_unordered(8)
+        .buffered(8)
         .collect()
         .await;
 

@@ -502,9 +502,11 @@ mod tests {
 
     #[test]
     fn test_node_type_predicates() {
-        let mut node = Node::default();
+        let mut node = Node {
+            node_type: NodeType::Directory,
+            ..Default::default()
+        };
 
-        node.node_type = NodeType::Directory;
         assert!(node.is_dir());
         assert!(!node.is_file());
 

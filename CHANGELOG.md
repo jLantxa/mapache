@@ -6,6 +6,7 @@
 
 - **Critical**: Fixed a bug in `ChunkStream` where it would fail to grow its
   buffer before reading, resulting in sub-optimal chunking and degraded
+  performance.
 - Fixed a bug that prevented old index files to be deleted by `mapache
   rebuild-index`.
 - Cancel the scanning thread when `mapache snapshot` has finalized the tree in

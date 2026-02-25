@@ -122,6 +122,77 @@ impl KeyFile {
     }
 }
 
+/// A KeyFile stream loading files on demand asynchronously.
+pub struct KeyFileStream {
+    backend: Arc<dyn StorageBackend>,
+    entries: Vec<PathBuf>,
+    loading_future: Option<BoxFuture<'static, Result<(ID, KeyFile)>>>,
+}
+
+impl KeyFileStream {
+    pub async fn new(backend: Arc<dyn StorageBackend>) -> Result<Self> {
+        let entries = backend.list_dir(Path::new(KEYS_DIR)).await?;
+        Ok(Self {
+            backend,
+            entries,
+            loading_future: None,
+        })
+    }
+}
+
+impl Stream for KeyFileStream {
+    type Item = Result<(ID, KeyFile)>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Start a new future if none is currently active
+        if self.loading_future.is_none()
+            && let Some(path) = self.entries.pop()
+        {
+            let backend = self.backend.clone();
+
+            self.loading_future = Some(Box::pin(async move {
+                if !backend.is_file(&path).await {
+                    bail!("Not a file");
+                }
+
+                let id_str = path.file_name().context("No filename")?.to_string_lossy();
+                let id = ID::from_hex(&id_str)?;
+
+                let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
+                let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
+
+                let keyfile_data = backend.read(&handle, 0, 0).await?;
+                let decompressed = ss.decompress(&keyfile_data)?;
+                let kf: KeyFile = serde_json::from_slice(&decompressed)?;
+
+                Ok((id, kf))
+            }));
+        }
+
+        // Poll the existing future
+        if let Some(mut fut) = self.loading_future.take() {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(Ok(res)) => Poll::Ready(Some(Ok(res))),
+                Poll::Ready(Err(e)) => {
+                    // Log error for parse failures like the original, but allow stream to continue
+                    if e.to_string().contains("serde_json") {
+                        ui::cli::warning!("Failed to parse keyfile: {}", e);
+                        self.loading_future = None;
+                        return self.poll_next(cx);
+                    }
+                    Poll::Ready(Some(Err(e)))
+                }
+                Poll::Pending => {
+                    self.loading_future = Some(fut);
+                    Poll::Pending
+                }
+            }
+        } else {
+            Poll::Ready(None)
+        }
+    }
+}
+
 pub struct KeyManager {
     backend: Arc<dyn StorageBackend>,
 }
@@ -425,76 +496,5 @@ mod tests {
         assert_eq!(params.m_cost(), 1024);
         assert_eq!(params.t_cost(), 1);
         assert_eq!(params.p_cost(), 1);
-    }
-}
-
-/// A KeyFile stream loading files on demand asynchronously.
-pub struct KeyFileStream {
-    backend: Arc<dyn StorageBackend>,
-    entries: Vec<PathBuf>,
-    loading_future: Option<BoxFuture<'static, Result<(ID, KeyFile)>>>,
-}
-
-impl KeyFileStream {
-    pub async fn new(backend: Arc<dyn StorageBackend>) -> Result<Self> {
-        let entries = backend.list_dir(Path::new(KEYS_DIR)).await?;
-        Ok(Self {
-            backend,
-            entries,
-            loading_future: None,
-        })
-    }
-}
-
-impl Stream for KeyFileStream {
-    type Item = Result<(ID, KeyFile)>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Start a new future if none is currently active
-        if self.loading_future.is_none()
-            && let Some(path) = self.entries.pop()
-        {
-            let backend = self.backend.clone();
-
-            self.loading_future = Some(Box::pin(async move {
-                if !backend.is_file(&path).await {
-                    bail!("Not a file");
-                }
-
-                let id_str = path.file_name().context("No filename")?.to_string_lossy();
-                let id = ID::from_hex(&id_str)?;
-
-                let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
-                let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
-
-                let keyfile_data = backend.read(&handle, 0, 0).await?;
-                let decompressed = ss.decompress(&keyfile_data)?;
-                let kf: KeyFile = serde_json::from_slice(&decompressed)?;
-
-                Ok((id, kf))
-            }));
-        }
-
-        // Poll the existing future
-        if let Some(mut fut) = self.loading_future.take() {
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(Ok(res)) => Poll::Ready(Some(Ok(res))),
-                Poll::Ready(Err(e)) => {
-                    // Log error for parse failures like the original, but allow stream to continue
-                    if e.to_string().contains("serde_json") {
-                        ui::cli::warning!("Failed to parse keyfile: {}", e);
-                        self.loading_future = None;
-                        return self.poll_next(cx);
-                    }
-                    Poll::Ready(Some(Err(e)))
-                }
-                Poll::Pending => {
-                    self.loading_future = Some(fut);
-                    Poll::Pending
-                }
-            }
-        } else {
-            Poll::Ready(None)
-        }
     }
 }

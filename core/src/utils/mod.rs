@@ -666,9 +666,7 @@ mod tests {
 
     #[test]
     fn test_get_system_info() {
-        let (hostname, username) = get_system_info();
-        assert!(hostname.is_some() || true); // Just check it doesn't crash
-        assert!(username.is_some() || true);
+        let _ = get_system_info();
     }
 
     #[test]

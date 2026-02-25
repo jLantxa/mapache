@@ -867,10 +867,14 @@ impl Repository {
         let tx = self.pack_saver_tx.lock().take();
         drop(tx);
 
-        if let Some(handle) = self.pack_saver_handle.lock().take() {
-            handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("Pack saver thread panicked"))??;
+        let handle = self.pack_saver_handle.lock().take();
+        if let Some(handle) = handle {
+            tokio::task::spawn_blocking(move || {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("Pack saver thread panicked"))?
+            })
+            .await??;
         }
 
         let index_size = self.index().persist(self).await?;

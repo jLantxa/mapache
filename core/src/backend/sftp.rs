@@ -329,9 +329,14 @@ impl SftpBackend {
             Box::pin(Self::create_dir_all_full(sftp, parent)).await?;
         }
 
-        sftp.create_dir(&path_str)
-            .await
-            .with_context(|| format!("Failed to create directory {:?} in sftp backend", full_path))
+        sftp.create_dir(&path_str).await.with_context(|| {
+            format!("Failed to create directory {:?} in sftp backend", full_path)
+        })?;
+
+        // Set default permissions for new directory (e.g. 0o700)
+        let _ = Self::set_readonly_status_full(sftp, full_path, false).await;
+
+        Ok(())
     }
 
     async fn set_readonly_status_full(

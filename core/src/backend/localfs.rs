@@ -125,7 +125,15 @@ impl StorageBackend for LocalFS {
                     "Could not create repository backend root at {}",
                     self.base_path.display()
                 )
-            })
+            })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&self.base_path, std::fs::Permissions::from_mode(0o700))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
@@ -230,6 +238,8 @@ impl StorageBackend for LocalFS {
 
         // On Windows, the source must be writable to be renamed/moved
         let _ = self.set_readonly_status(from, false).await;
+        // The destination must also be writable if it exists and we want to overwrite it
+        let _ = self.set_readonly_status(to, false).await;
 
         tokio::fs::rename(&fullpath_from, &fullpath_to)
             .await
@@ -435,6 +445,56 @@ mod tests {
             .await?;
         let range_str = local_fs.read(&seek_handle, 10, 7).await?;
         assert_eq!(range_str, b"looking");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_local_fs_readonly() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let local_fs = LocalFS::new(temp_dir.path().to_path_buf());
+
+        let write_handle = Handle::new(Path::new("readonly_file.txt"));
+        local_fs
+            .write(&write_handle, WriteContents::Borrowed(b"Immutable data"))
+            .await?;
+
+        let full_path = temp_dir.path().join("readonly_file.txt");
+        let metadata = std::fs::metadata(&full_path)?;
+        let perms = metadata.permissions();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Should be 0o400 (readonly)
+            assert_eq!(perms.mode() & 0o777, 0o400);
+        }
+
+        #[cfg(windows)]
+        {
+            assert!(perms.readonly());
+        }
+
+        // Test that we can overwrite it (it should unlock and then relock)
+        local_fs
+            .write(&write_handle, WriteContents::Borrowed(b"New data"))
+            .await?;
+
+        let metadata = std::fs::metadata(&full_path)?;
+        let perms = metadata.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(perms.mode() & 0o777, 0o400);
+        }
+        #[cfg(windows)]
+        {
+            assert!(perms.readonly());
+        }
+
+        // Test removal (it should unlock and then delete)
+        local_fs.remove(Path::new("readonly_file.txt")).await?;
+        assert!(!local_fs.path_exists(Path::new("readonly_file.txt")).await);
 
         Ok(())
     }

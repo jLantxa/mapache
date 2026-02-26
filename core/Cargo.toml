@@ -12,7 +12,7 @@ async-stream = "0.3.6"
 async-trait = "0.1.89"
 base64 = "0.22.1"
 blake3 = "1.8.3"
-chrono = { version = "0.4.43", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 chunker = { path = "../chunker" }
 clap = { version = "4.5.60", features = ["derive", "wrap_help"] }
 clap_complete = "4.5.66"
@@ -54,7 +54,7 @@ tikv-jemallocator = "0.6.1"
 [dev-dependencies]
 rstest = "0.26.1"
 tar = "0.4.44"
-tempfile = "3.25.0"
+tempfile = "3.26.0"
 xz2 = "0.1.7"
 
 [features]

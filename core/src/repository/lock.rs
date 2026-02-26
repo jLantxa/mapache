@@ -150,14 +150,21 @@ impl LockHandle {
         });
     }
 
-    pub async fn unlock(&self) {
-        // Changed to &self as it's not strictly a mutable operation
+    pub async fn unlock(self) {
+        // We consume self so drop isn't called normally,
+        // or we use a flag to prevent double-unlocking.
+        self.perform_unlock().await;
+    }
+
+    async fn perform_unlock(&self) {
         self.alive_flag.store(false, Ordering::SeqCst);
 
-        let lock_id = *self.lock.lock().id();
+        // Get the ID without holding the lock across an await point
+        let lock_id = {
+            let lock_guard = self.lock.lock();
+            *lock_guard.id()
+        };
 
-        // If the lock does not exist or it was "created" by a dry backend,
-        // this will fail, but it's OK anyway.
         let _ = self
             .repo
             .delete_file(ContentIdType::Lock, &lock_id, None)
@@ -167,8 +174,20 @@ impl LockHandle {
 
 impl Drop for LockHandle {
     fn drop(&mut self) {
-        futures::executor::block_on(async {
-            self.unlock().await;
+        // Immediately signal the refresh loop to stop
+        self.alive_flag.store(false, Ordering::SeqCst);
+
+        // Spawn the cleanup task instead of blocking the thread
+        let repo = self.repo.clone();
+        let lock = self.lock.clone();
+
+        tokio::spawn(async move {
+            let lock_id = {
+                let lock_guard = lock.lock();
+                *lock_guard.id()
+            };
+
+            let _ = repo.delete_file(ContentIdType::Lock, &lock_id, None).await;
         });
     }
 }

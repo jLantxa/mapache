@@ -12,49 +12,49 @@ You can find more [in-depth documentation](doc/mapache.md).
 ## Table of Contents
 
 - [About](#about)
-- [Getting started](#getting-started)
+- [Key Features](#key-features)
 - [Roadmap](#roadmap)
+- [Getting Started](#getting-started)
+- [Why Mapache?](#why-mapache)
 
 ---
 
 ## About
 
-`mapache` is a backup utility designed for speed, efficiency, and security.
+`mapache` (Spanish for raccoon 🦝) is a high-performance, deduplicating backup
+tool designed for speed, reliability, and uncompromising security. Inspired by
+[`restic`](https://restic.net/) and built with Rust, it provides a modern
+approach to incremental backups.
 
-mapache's design is inspired by other similar tools like `git` and
-[`restic`](https://restic.net/). It implements a content-addressable repository
-to store and retrieve binary objects and `content-defined chunking` to
-de-duplicate the contents of files. It uses a custom implementation of the
-FastCDC algorithm for chunking and de-duplication. Each 'backup' is saved as a
-`Snapshot`. `Snapshots` are independent of each other and they describe the
-status of your file system when you did the backup (files, directories and their
-metadata). Although the `snapshots` are independent, every new `snapshot` only
-appends the new information that was different from the already existing
-`snapshots`.
+At its core, `mapache` operates on a content-addressable repository model. Every
+file, directory, and piece of metadata is decomposed into binary objects
+identified by their BLAKE3 cryptographic hash. This architecture naturally
+enables global deduplication: if multiple files share the same content—even
+across different snapshots or machines — `mapache` stores that data only once.
+To ensure storage efficiency and high I/O throughput, these objects are bundled
+into "pack files" and tracked via a central index that allows for near-instant
+lookups and atomic repository updates.
 
-To provide data protection, all data stored in the repository are encrypted and
-authenticated using 256-bit AES-GCM-SIV, with Argon2 for key derivation.
-Encryption is non-negotiable and cannot be disabled.
+Each backup is captured as a "Snapshot" representing a complete, point-in-time
+state of your file system. Unlike traditional backup tools that rely on complex
+"full vs. incremental" chains, every `mapache` snapshot is technically
+independent but shares underlying data blobs with others. This means you can
+delete any old snapshot at any time without risking the integrity of newer
+ones. All data, from file contents to directory structures, is compressed with
+`zstd` and protected by AES-GCM-SIV authenticated encryption, ensuring your
+repository remains a "black box" to anyone without the master key.
 
-### Guiding Principles
+## Key Features
 
-The development of `mapache` is guided by the following core principles:
-
-- **Generality**: The tool should function effectively across various contexts,
-  from small to large repositories and diverse machine specifications.
-- **Efficiency**: It must use host resources optimally, completing backups
-  quickly without exhaustion and minimizing storage footprint.
-- **Robustness**: The tool needs to resume operations seamlessly after
-  interruptions, ensuring repository integrity and data reliability.
-- **Security**: All data in the repository must be encrypted and authenticated.
-  No one but you should be able to access the data even if others get access to
-  the storage medium.
-- **Self-Containment**: I'm aiming for `mapache` to be entirely self-contained,
-  with all dependencies statically linked. Even if this means longer compilation
-  times and a larger executable, it offers the significant benefit of being
-  executable from a USB stick on a fresh installation without an internet
-  connection in a hard time. This is a soft requirement that could be lost in
-  favour of the others.
+- **Deduplication:** FastCDC (Content-Defined Chunking) identifies shifted
+  data to minimize storage footprint.
+- **Security:** Mandatory AES-GCM-SIV encryption and Argon2 KDF — your data is
+  never stored or transmitted in the clear.
+- **Compression:** Zstd compression with adjustable levels to balance backup
+  speed and storage usage.
+- **Backends:** Native support for Local FS, SFTP, and S3 (experimental).
+- **Portable:** A single, statically linked binary with zero external
+  dependencies.
 
 ## Roadmap
 
@@ -95,66 +95,50 @@ and more.
 
 ## Getting Started
 
-### Building mapache
+### Installation
 
-To compile `mapache` from source you just need to install `Rust` and build
-with cargo:
+To compile `mapache` from source, ensure you have the [Rust toolchain] installed,
+then build and install the binary:
+
+[Rust toolchain]: https://rustup.rs/
 
 ```bash
-cargo build
-
-# Or, for an optimized and faster executable:
+# Build the optimized release binary
 cargo build --release
+
+# Install it to your cargo bin path
+cargo install --path core
 ```
 
-### Dependencies
+> **Note for Linux users:** The `mount` command requires FUSE development
+> headers (e.g., `libfuse-dev`). To build without FUSE support, use
+> `--no-default-features`.
 
-- Some systems require a development version of the fuse library. FUSE, which is
-  used for the `mount` command, is only available on Unix-like systems.
-  To build mapache without fuse support, use the `--no-default-features` when
-  building.
+### Quick Start
 
-```bash
-cargo build --release --no-default-features
-```
+1. **Initialize a repository** (local, S3, or SFTP):
+  ```bash
+  # Local directory
+  mapache init -r /path/to/repo
 
-### Running
+  # SFTP server
+  mapache init -r sftp://user@host/backup-folder
 
-If you run the executable, you will be greeted by something like this:
+  # S3 Bucket
+  mapache init -r s3://my-bucket/backup-folder
+  ```
 
-```text
-🦝 mapache backup program
+2. **Create your first snapshot**:
+  ```bash
+  mapache snapshot ~/Documents -r /path/to/repo
+  ```
 
-Usage: mapache <COMMAND>
+3. **List snapshots**:
+  ```bash
+  mapache log -c -r /path/to/repo
+  ```
 
-Commands:
-  amend          Amend an existing snapshot
-  cache          List and cleanup cache directories
-  cat            Print repository objects
-  clean          Clean up the repository
-  completion     Generate autocompletion scripts
-  diff           Show differences between snapshots
-  find           Find files and directories in the repository
-  forget         Remove snapshots from the repository
-  init           Initialize a new repository
-  key            Create and manage keys
-  log            Show all snapshots present in the repository
-  ls             List nodes in the repository
-  mount          Mount the repository as a file system
-  rebuild-index  Rebuild the index by scanning all existing packs
-  recall         Recall forgotten snapshots
-  rechunk        Rechunk all snapshots
-  restore        Restore a snapshot in a target path
-  snapshot       Create a new snapshot
-  stats          Show repository statistics
-  sync           Synchronize a repository in a different location
-  unlock         Remove existing locks
-  verify         Verify the integrity of the data stored in the repository
-  help           Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help (see more with '--help')
-  -V, --version  Print version
-```
-
-You can use the `-h` or `--help` option to show help for every command.
+4. **Restore data**:
+  ```bash
+  mapache restore --target /tmp/restore-folder -r /path/to/repo
+  ```

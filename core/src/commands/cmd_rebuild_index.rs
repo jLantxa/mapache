@@ -12,7 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler},
-    mapache::ContentIdType,
+    mapache::{ContentIdType, ID},
     repository::{
         index::MasterIndex,
         packer::Packer,
@@ -129,9 +129,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     // Save the new index
     let new_index_size = new_master_index.persist(repo.as_ref()).await?;
-    ui::cli::log!("Persisted {} new indices", new_master_index.ids().len());
+    let new_index_ids = new_master_index.ids();
+    ui::cli::log!("Persisted {} new indices", new_index_ids.len());
 
     // Delete the old index
+    // We must ensure we don't delete any of the NEW indices if they happen to have
+    // the same ID as an old one.
+    let old_index_ids: Vec<ID> = old_index_ids
+        .into_iter()
+        .filter(|id| !new_index_ids.contains(id))
+        .collect();
+
     let index_delete_bar =
         ProgressBar::with_draw_target(Some(old_index_ids.len() as u64), default_bar_draw_target())
             .with_style(

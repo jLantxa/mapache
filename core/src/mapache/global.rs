@@ -15,8 +15,12 @@ use crate::{
     },
 };
 
-pub const THIS_MAPACHE_VERSION: &str =
-    concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO_PKG_VERSION"));
+pub const THIS_MAPACHE_VERSION: &str = match option_env!("MAPACHE_RELEASE_BUILD") {
+    Some(_) => {
+        concat!("v", env!("CARGO_PKG_VERSION"))
+    }
+    None => concat!("v", env!("CARGO_PKG_VERSION"), "+dev"),
+};
 
 /// Base OS directories (cache, home, etc.)
 pub static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {

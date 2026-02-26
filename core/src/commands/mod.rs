@@ -13,7 +13,7 @@ use crate::{
             DEFAULT_COMPRESSION, DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
             MIN_CONFIGURABLE_PACK_SIZE_MIB,
         },
-        global::set_global_opts_with_args,
+        global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
     },
     repository::{
         repo::Repository,
@@ -54,7 +54,7 @@ pub(crate) mod cleanup;
 #[derive(Parser, Debug)]
 #[command(
     name = "mapache",
-    version,
+    version = THIS_MAPACHE_VERSION,
     about = "🦝 mapache backup program",
     long_about = "mapache is a fast, secure, efficient and deduplicated program \
         to make backup copies of your files."

@@ -234,10 +234,6 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                         // memory but are now valid data bytes received from the reader.
                         self.buffer.set_len(cur_len + n);
                     }
-
-                    if n < to_read {
-                        eof = true;
-                    }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     continue;

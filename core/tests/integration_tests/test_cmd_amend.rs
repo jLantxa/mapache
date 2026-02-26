@@ -139,7 +139,7 @@ mod tests {
 
         // Init repo
         ctx.init_repo().await?;
-        let (repo, _, test_repo_lock_handle) = Repository::try_open_with_lock(
+        let (repo, _, mut test_repo_lock_handle) = Repository::try_open_with_lock(
             Some(&ctx.auth),
             None,
             backend,
@@ -148,7 +148,7 @@ mod tests {
             None,
         )
         .await?;
-        drop(test_repo_lock_handle);
+        test_repo_lock_handle.unlock().await;
 
         // Run snapshot twice
         let snapshot_args = cmd_snapshot::CmdArgs {

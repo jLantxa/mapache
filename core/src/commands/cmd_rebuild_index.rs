@@ -41,7 +41,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, secure_storage, _lock_handle) = Repository::try_open_with_lock(
+    let (repo, secure_storage, mut lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend.clone(),
@@ -212,6 +212,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         prefix,
         utils::pretty_print_duration(start.elapsed(),),
     );
+
+    lock_handle.unlock().await;
 
     Ok(())
 }

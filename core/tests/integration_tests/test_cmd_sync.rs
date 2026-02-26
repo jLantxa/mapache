@@ -10,6 +10,7 @@ mod tests {
             self, UseSnapshot, cmd_snapshot,
             cmd_sync::{self},
         },
+        repository::repo::LOCKS_DIR,
     };
 
     use crate::integration_tests::TestContext;
@@ -61,10 +62,18 @@ mod tests {
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path));
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
-        let mut src_nodes =
-            backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new()).await?;
-        let mut dst_nodes =
-            backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new()).await?;
+        let mut src_nodes: Vec<BackendNode> =
+            backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new())
+                .await?
+                .into_iter()
+                .filter(|n| !n.path().starts_with(LOCKS_DIR))
+                .collect();
+        let mut dst_nodes: Vec<BackendNode> =
+            backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())
+                .await?
+                .into_iter()
+                .filter(|n| !n.path().starts_with(LOCKS_DIR))
+                .collect();
         src_nodes.sort_unstable_by(forward_cmp);
         dst_nodes.sort_unstable_by(forward_cmp);
 
@@ -139,10 +148,18 @@ mod tests {
             .context("Failed to run cmd_sync")?;
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
-        let mut src_nodes =
-            backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new()).await?;
-        let mut dst_nodes =
-            backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new()).await?;
+        let mut src_nodes: Vec<BackendNode> =
+            backend::read_backend_dir(src_backend.as_ref(), &PathBuf::new())
+                .await?
+                .into_iter()
+                .filter(|n| !n.path().starts_with(LOCKS_DIR))
+                .collect();
+        let mut dst_nodes: Vec<BackendNode> =
+            backend::read_backend_dir(dst_backend.as_ref(), &PathBuf::new())
+                .await?
+                .into_iter()
+                .filter(|n| !n.path().starts_with(LOCKS_DIR))
+                .collect();
         src_nodes.sort_unstable_by(forward_cmp);
         dst_nodes.sort_unstable_by(forward_cmp);
 

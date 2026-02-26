@@ -26,7 +26,7 @@ mod tests {
         ));
 
         // Open with lock and KEEP the handle alive to maintain the lock
-        let (_repo, _, _lock_handle) = Repository::try_open_with_lock(
+        let (_repo, _, mut lock_handle) = Repository::try_open_with_lock(
             Some(&ctx.auth),
             None,
             backend,
@@ -52,6 +52,8 @@ mod tests {
             .await
             .context("cmd_unlock force failed")?;
         assert_eq!(mapache::utils::count_files(&locks_dir)?, 0);
+
+        lock_handle.unlock().await;
 
         Ok(())
     }

@@ -97,7 +97,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (repo, secure_storage, _lock_handle) = Repository::try_open_with_lock(
+    let (repo, secure_storage, mut lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend.clone(),
@@ -111,7 +111,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     repo.reload_master_index().await?;
 
-    stats_repository(repo, secure_storage, backend, args, global_args.json).await
+    let res = stats_repository(repo, secure_storage, backend, args, global_args.json).await;
+
+    lock_handle.unlock().await;
+
+    res
 }
 
 async fn stats_repository(

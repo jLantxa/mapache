@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use chrono::Duration;
 use futures::{StreamExt, stream};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use rand::{Rng, rng};
 
 use crate::{
@@ -258,13 +258,13 @@ impl Repository {
         config: RepoConfig,
         exclusive_lock: bool,
         retry_duration: Option<Duration>,
-    ) -> Result<(Arc<Repository>, Arc<SecureStorage>, Arc<RwLock<LockHandle>>)> {
+    ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
         let (repo, secure_storage) =
             Self::try_open_unlocked(auth, key_file_path, backend, config).await?;
         let lock = repo
             .try_acquire_lock_with_retry(exclusive_lock, retry_duration)
             .await?;
-        let lock_handle = Arc::new(RwLock::new(LockHandle::new(repo.clone(), lock)));
+        let lock_handle = LockHandle::new(repo.clone(), lock);
 
         Ok((repo, secure_storage, lock_handle))
     }
@@ -1317,8 +1317,16 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref(), None, backend.to_owned()).await?;
-        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false, None)
-            .await?;
+        let (_, _, mut lock_handle) = Repository::try_open_with_lock(
+            auth.as_ref(),
+            None,
+            backend,
+            TEST_REPO_CONFIG,
+            false,
+            None,
+        )
+        .await?;
+        lock_handle.unlock().await;
 
         Ok(())
     }
@@ -1341,8 +1349,16 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref(), None, backend.to_owned()).await?;
-        Repository::try_open_with_lock(auth.as_ref(), None, backend, TEST_REPO_CONFIG, false, None)
-            .await?;
+        let (_, _, mut lock_handle) = Repository::try_open_with_lock(
+            auth.as_ref(),
+            None,
+            backend,
+            TEST_REPO_CONFIG,
+            false,
+            None,
+        )
+        .await?;
+        lock_handle.unlock().await;
 
         Ok(())
     }
@@ -1443,11 +1459,12 @@ mod tests {
         )
         .await;
 
-        match (
-            own_repo_open_result.is_err(),
-            own_lock_exclusive,
-            other_lock_exclusive,
-        ) {
+        let is_err = own_repo_open_result.is_err();
+        if let Ok((_, _, mut lock)) = own_repo_open_result {
+            lock.unlock().await;
+        }
+
+        match (is_err, own_lock_exclusive, other_lock_exclusive) {
             (true, true, true)
             | (true, true, false)
             | (true, false, true)
@@ -1514,7 +1531,7 @@ mod tests {
         )));
         r0.save_lock(&other_lock).await?;
 
-        Repository::try_open_with_lock(
+        let (_, _, mut lock_handle) = Repository::try_open_with_lock(
             Some(&auth),
             None,
             backend.clone(),
@@ -1523,6 +1540,8 @@ mod tests {
             None,
         )
         .await?; // The other expired lock should have been deleted
+
+        lock_handle.unlock().await;
 
         Ok(())
     }

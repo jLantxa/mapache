@@ -40,7 +40,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false)).await?;
 
-    let (_repo, _secure_storage, _lock_handle) = Repository::try_open_with_lock(
+    let (_repo, _secure_storage, mut lock_handle) = Repository::try_open_with_lock(
         src_auth.as_ref(),
         global_args.key.as_ref(),
         src_backend.clone(),
@@ -72,6 +72,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "Finished in {}",
         utils::pretty_print_duration(start.elapsed())
     );
+
+    lock_handle.unlock().await;
 
     Ok(())
 }
@@ -163,9 +165,6 @@ async fn sync_backends(
         delete_progress_bar.finish_and_clear();
     }
 
-    // Create locks folder (ignored by read_backend_dir)
-    dst_backend.create_dir(&PathBuf::from(LOCKS_DIR)).await?;
-
     Ok(())
 }
 
@@ -188,13 +187,18 @@ async fn diff(
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
     spinner.set_message("Reading remote directories...");
 
-    let mut src_nodes = backend::read_backend_dir(src_backend, &PathBuf::new()).await?;
-    let mut dst_nodes = backend::read_backend_dir(dst_backend, &PathBuf::new()).await?;
+    let mut src_nodes: Vec<BackendNode> = backend::read_backend_dir(src_backend, &PathBuf::new())
+        .await?
+        .into_iter()
+        .filter(|n| !n.path().starts_with(LOCKS_DIR))
+        .collect();
+    let mut dst_nodes: Vec<BackendNode> = backend::read_backend_dir(dst_backend, &PathBuf::new())
+        .await?
+        .into_iter()
+        .filter(|n| !n.path().starts_with(LOCKS_DIR))
+        .collect();
 
     spinner.set_message("Comparing file trees...");
-
-    src_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
-    dst_nodes.retain(|node| !node.path().starts_with(LOCKS_DIR));
 
     src_nodes.sort_unstable_by(forward_cmp);
     dst_nodes.sort_unstable_by(forward_cmp);

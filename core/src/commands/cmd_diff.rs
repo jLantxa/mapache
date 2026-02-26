@@ -40,7 +40,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
@@ -134,6 +134,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "{}",
         render_summary_table(&src_id, &tgt_id, src_snap.size(), tgt_snap.size())
     );
+
+    lock_handle.unlock().await;
 
     Ok(())
 }

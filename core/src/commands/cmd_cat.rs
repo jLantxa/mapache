@@ -43,7 +43,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, _lock_handle) = Repository::try_open_with_lock(
+    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
         auth.as_ref(),
         global_args.key.as_ref(),
         backend,
@@ -57,7 +57,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     repo.reload_master_index().await?;
 
-    match &args.object {
+    let res = match &args.object {
         Object::Manifest => {
             let manifest = repo.manifest();
             ui::cli::log!("{}", serde_json::to_string_pretty(&manifest)?);
@@ -121,7 +121,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("{}", serde_json::to_string_pretty(&lock)?);
             Ok(())
         }
-    }
+    };
+
+    lock_handle.unlock().await;
+    res
 }
 
 impl FromStr for Object {

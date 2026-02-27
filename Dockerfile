@@ -17,6 +17,7 @@ WORKDIR /mapache
 ARG GIT_REF="main"
 ARG FEATURES="default"
 
+ARG CACHE_BUST=1
 RUN git clone https://github.com/jLantxa/mapache.git /mapache && \
     cd /mapache && \
     git checkout $GIT_REF

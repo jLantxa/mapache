@@ -82,12 +82,7 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     // for (id, locator) in repo.index().read().iter_ids() {
 
     repo.index().for_each_id(|id, locator| {
-        kept_pack_size
-            .entry(locator.pack_id)
-            .and_modify(|size| {
-                *size += locator.length as u64;
-            })
-            .or_default();
+        *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
 
         if !plan.referenced_blobs.contains(id) {
             pack_garbage
@@ -505,7 +500,10 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                                                 ref_packs.insert(locator.pack_id);
                                             }
                                             None => {
-                                                // Handle missing data blobs if needed
+                                                ui::cli::warning!(
+                                                    "Data blob {} is referenced but not found in index",
+                                                    blob_id
+                                                );
                                             }
                                         }
                                     }

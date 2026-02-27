@@ -266,8 +266,16 @@ impl Index {
         add_to_entries(&self.data_ids, BlobType::Data);
         add_to_entries(&self.tree_ids, BlobType::Tree);
 
+        // Sort blobs within each pack for deterministic serialization
+        for pack in &mut pack_entries {
+            pack.blobs.sort_unstable_by_key(|b| b.id);
+        }
+
         // Filter out empty packs (though there shouldn't be any in a healthy index)
         pack_entries.retain(|p| !p.blobs.is_empty());
+
+        // Sort packs themselves
+        pack_entries.sort_unstable_by_key(|p| p.id);
 
         let serialized = serde_json::to_vec(&IndexFile {
             packs: pack_entries,
@@ -474,6 +482,7 @@ impl MasterIndex {
         descriptors: Vec<PackedBlobDescriptor>,
     ) -> Result<SizePair> {
         let mut index_to_persist = None;
+        let mut target_instance_id = 0;
 
         {
             let mut lock = self.inner.write();
@@ -503,6 +512,7 @@ impl MasterIndex {
                 // we'll take it out of the list or mark it as non-pending.
                 // Simplified approach: just finalize it and keep it in the list.
                 pending_index.finalize();
+                target_instance_id = pending_index.instance_id;
                 index_to_persist = Some(pending_index.clone());
             } else if is_full {
                 pending_index.finalize();
@@ -513,13 +523,11 @@ impl MasterIndex {
             let size = idx.persist(repo).await?;
             // Update the status in the actual list
             let mut lock = self.inner.write();
-            if let Some(actual_idx) = lock.indices.iter_mut().find(|i| {
-                // Find by pointer or some other way?
-                // Since we just added it and finalized it, it's likely the one with the same content.
-                // But Index doesn't have a unique ID until persisted.
-                // Let's use the created_time and num_blobs as a weak heuristic for this simple implementation.
-                i.is_finalized() && !i.is_persisted()
-            }) {
+            if let Some(actual_idx) = lock
+                .indices
+                .iter_mut()
+                .find(|i| i.instance_id == target_instance_id)
+            {
                 actual_idx.status = idx.status;
             }
             Ok(size)
@@ -534,9 +542,10 @@ impl MasterIndex {
         // Collect all indices that need persisting
         let mut indices_to_persist = Vec::new();
         {
-            let lock = self.inner.read();
-            for idx in &lock.indices {
+            let mut lock = self.inner.write();
+            for idx in &mut lock.indices {
                 if !matches!(idx.status, IndexStatus::Persisted(_)) && !idx.is_empty() {
+                    idx.finalize();
                     indices_to_persist.push(idx.clone());
                 }
             }

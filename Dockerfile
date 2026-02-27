@@ -1,38 +1,19 @@
-# mapache is a secure, de-duplicating, incremental backup tool.
-# Copyright (C) 2025  Leuqar
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+# mapache builder for Linux and Windows
 FROM fedora:43 AS builder
 LABEL "Author"="Leuqar"
 
-RUN dnf clean all && \
-    dnf update -y && \
+RUN dnf update -y && \
     dnf install -y \
-    git vim \
-    cargo \
-    nasm openssl-devel fuse3-devel \
-    mingw64-gcc mingw64-binutils mingw64-zlib mingw64-libssh2
+    git clang lld llvm nasm cmake \
+    openssl-devel fuse3-devel
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN rustup target add x86_64-pc-windows-gnu
+RUN rustup target add x86_64-pc-windows-msvc
+RUN cargo install cargo-xwin
 
 WORKDIR /mapache
-
-ARG CACHE_BREAKER
 ARG GIT_REF="main"
 ARG FEATURES="default"
 
@@ -40,20 +21,33 @@ RUN git clone https://github.com/jLantxa/mapache.git /mapache && \
     cd /mapache && \
     git checkout $GIT_REF
 
+# Run tests
 RUN cargo test --features $FEATURES -- --skip integration_tests::test_cmd_mount
-RUN cargo build --features $FEATURES --release
-RUN cargo build --features $FEATURES --release --target x86_64-pc-windows-gnu
 
+# Build Linux Native x64
+RUN cargo build --features $FEATURES --release
+
+# Build Windows MSVC x64
+ENV CC_x86_64_pc_windows_msvc=clang
+ENV CXX_x86_64_pc_windows_msvc=clang++
+ENV AR_x86_64_pc_windows_msvc=llvm-ar
+
+RUN cargo xwin build --features $FEATURES --release --target x86_64-pc-windows-msvc
 
 FROM alpine:latest
 LABEL "Author"="Leuqar"
 
+WORKDIR /artifacts
+
+# Copy Linux binary
 COPY --from=builder \
     /mapache/target/release/mapache \
-    /usr/local/bin/mapache_linux_x64
+    /artifacts/mapache_linux_x64
 
+# Copy Windows binary
 COPY --from=builder \
-    /mapache/target/x86_64-pc-windows-gnu/release/mapache.exe \
-    /usr/local/bin/mapache_win_x64.exe
+    /mapache/target/x86_64-pc-windows-msvc/release/mapache.exe \
+    /artifacts/mapache_win_x64.exe
 
+# Keep the container alive or exit cleanly
 CMD ["/bin/true"]

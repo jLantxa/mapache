@@ -45,8 +45,9 @@ LINUX_FILENAME="mapache_${REF}_linux_x64"
 WIN_FILENAME="mapache_${REF}_win_x64.exe"
 WIN_PKGNAME="mapache_${REF}_win_x64"
 
-docker cp "$CONTAINER_NAME:/usr/local/bin/mapache_linux_x64" "$BUILD_PATH/$LINUX_FILENAME"
-docker cp "$CONTAINER_NAME:/usr/local/bin/mapache_win_x64.exe" "$BUILD_PATH/$WIN_FILENAME"
+ARTIFACTS="/artifacts"
+docker cp "$CONTAINER_NAME:$ARTIFACTS/mapache_linux_x64" "$BUILD_PATH/$LINUX_FILENAME"
+docker cp "$CONTAINER_NAME:$ARTIFACTS/mapache_win_x64.exe" "$BUILD_PATH/$WIN_FILENAME"
 
 chmod 755 "$BUILD_PATH/$LINUX_FILENAME"
 chmod 644 "$BUILD_PATH/$WIN_FILENAME"

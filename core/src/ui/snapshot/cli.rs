@@ -291,7 +291,13 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
             return;
         }
 
-        if self.verbosity >= 3 {
+        let should_print_node = match self.verbosity {
+            v if v >= 3 => true,              // Print everything at v3+
+            2 => diff != NodeDiff::Unchanged, // Print everything EXCEPT unchanged at v2
+            _ => false,                       // v1 or lower prints nothing here
+        };
+
+        if should_print_node {
             let diff_mark = match diff {
                 NodeDiff::New => "+".bold().green(),
                 NodeDiff::Deleted => "-".bold().red(),

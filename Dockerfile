@@ -17,8 +17,9 @@ WORKDIR /mapache
 ARG GIT_REF="main"
 ARG FEATURES="default"
 
-ARG CACHE_BUST=1
-RUN git clone https://github.com/jLantxa/mapache.git /mapache && \
+ARG CACHE_BREAKER
+RUN echo "Fetching source at: $CACHE_BREAKER" && \
+    git clone https://github.com/jLantxa/mapache.git /mapache && \
     cd /mapache && \
     git checkout $GIT_REF
 

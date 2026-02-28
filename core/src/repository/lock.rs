@@ -112,6 +112,7 @@ impl Lock {
     }
 }
 
+#[derive(Clone)]
 pub struct LockHandle {
     repo: Arc<Repository>,
     lock: Arc<Mutex<Lock>>,
@@ -168,11 +169,8 @@ impl LockHandle {
                 .await;
         }
     }
-}
 
-impl Drop for LockHandle {
-    fn drop(&mut self) {
-        // Only spawn the cleanup task if it hasn't been unlocked yet
+    pub fn trigger_unlock(&self) {
         if self.alive_flag.swap(false, Ordering::SeqCst) {
             // Spawn the cleanup task instead of blocking the thread
             let repo = self.repo.clone();
@@ -187,6 +185,12 @@ impl Drop for LockHandle {
                 let _ = repo.delete_file(ContentIdType::Lock, &lock_id, None).await;
             });
         }
+    }
+}
+
+impl Drop for LockHandle {
+    fn drop(&mut self) {
+        self.trigger_unlock();
     }
 }
 

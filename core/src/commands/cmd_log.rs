@@ -64,7 +64,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await?;
 
-    let _cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new()?;
+    cleanup_handler.add_lock(lock_handle.clone());
 
     let show_active = args.all || !args.dropped;
     let show_dropped = args.all || args.dropped;

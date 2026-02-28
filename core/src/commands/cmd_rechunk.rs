@@ -46,6 +46,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     .await?;
 
     let cleanup_handler = CleanupHandler::new()?;
+    cleanup_handler.add_lock(lock_handle.clone());
 
     repo.reload_master_index().await?;
     repo.init_pack_saver(1)?;

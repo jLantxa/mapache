@@ -56,7 +56,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await?;
 
-    let _cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new()?;
+    cleanup_handler.add_lock(lock_handle.clone());
     repo.reload_master_index().await?;
 
     let res = run_with_repo(global_args, args, repo).await;

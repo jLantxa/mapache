@@ -62,7 +62,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     .await?;
     dst_backend.create().await?; // Create the backend to create the directory if it doesn't exist.
 
-    let _cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new()?;
+    cleanup_handler.add_lock(lock_handle.clone());
 
     let start = Instant::now();
 

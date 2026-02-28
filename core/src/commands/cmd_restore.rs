@@ -213,13 +213,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     ));
 
     let reporter_clone = progress_reporter.clone();
-    let _cleanup_handler = CleanupHandler::new_with_callback(move || {
+    let cleanup_handler = CleanupHandler::new_with_callback(move || {
         reporter_clone.finalize();
         ui::cli::log!(
             "\n{}",
             "Process interrupted. Cleaning up...".bold().yellow()
         );
     })?;
+    cleanup_handler.add_lock(lock_handle.clone());
 
     let abs_normalized_target = get_absolute_normalized_path(&args.target)?;
 

@@ -88,6 +88,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     .await?;
 
     let cleanup_handler = CleanupHandler::new()?;
+    cleanup_handler.add_lock(lock_handle.clone());
 
     let start = Instant::now();
 

@@ -48,7 +48,7 @@ pub mod cmd_sync;
 pub mod cmd_unlock;
 pub mod cmd_verify;
 
-pub(crate) mod cleanup;
+pub mod cleanup;
 
 /// mapache CLI definition
 #[derive(Parser, Debug)]

@@ -15,7 +15,6 @@ You can find more [in-depth documentation](doc/mapache.md).
 - [Key Features](#key-features)
 - [Roadmap](#roadmap)
 - [Getting Started](#getting-started)
-- [Why Mapache?](#why-mapache)
 
 ---
 
@@ -116,7 +115,8 @@ cargo install --path core
 
 ### Quick Start
 
-1. **Initialize a repository** (local, S3, or SFTP):
+#### **Initialize a repository** (local, S3, or SFTP)
+
   ```bash
   # Local directory
   mapache init -r /path/to/repo
@@ -128,17 +128,20 @@ cargo install --path core
   mapache init -r s3://my-bucket/backup-folder
   ```
 
-2. **Create your first snapshot**:
+#### **Create your first snapshot**
+
   ```bash
   mapache snapshot ~/Documents -r /path/to/repo
   ```
 
-3. **List snapshots**:
+#### **List snapshots**
+
   ```bash
   mapache log -c -r /path/to/repo
   ```
 
-4. **Restore data**:
+#### **Restore data**
+
   ```bash
   mapache restore --target /tmp/restore-folder -r /path/to/repo
   ```

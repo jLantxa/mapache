@@ -257,7 +257,10 @@ mod tests {
             }
         }
 
-        assert!(corrupted_count > 0, "At least one pack should have been corrupted");
+        assert!(
+            corrupted_count > 0,
+            "At least one pack should have been corrupted"
+        );
 
         let verify_args = cmd_verify::CmdArgs {
             read_packs: true,

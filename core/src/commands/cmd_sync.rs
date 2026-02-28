@@ -1,6 +1,13 @@
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -67,7 +74,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    sync_backends(src_backend.as_ref(), dst_backend.as_ref(), args.delete).await?;
+    sync_backends(
+        src_backend.as_ref(),
+        dst_backend.as_ref(),
+        args.delete,
+        cleanup_handler.interrupted.clone(),
+    )
+    .await?;
 
     ui::cli::log!(
         "Finished in {}",
@@ -84,6 +97,7 @@ async fn sync_backends(
     src_backend: &dyn StorageBackend,
     dst_backend: &dyn StorageBackend,
     delete: bool,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     // Calculate diferences
     let (to_copy, to_delete) = diff(src_backend, dst_backend).await?;
@@ -123,6 +137,10 @@ async fn sync_backends(
 
     // Copy files from src to dst.
     for node in to_copy {
+        if shutdown_signal.load(Ordering::Relaxed) {
+            bail!("Interrupted")
+        }
+
         // TODO: For better performance, we could implement buffered I/O in the
         // backend and transfer the files in small chunks. This would complicate the
         // StorageBackend trait, so it is probably not worth it.
@@ -155,6 +173,10 @@ async fn sync_backends(
                 );
 
         for node in to_delete {
+            if shutdown_signal.load(Ordering::Relaxed) {
+                bail!("Interrupted")
+            }
+
             match node {
                 BackendNode::File(path) => dst_backend.remove(&path).await?,
                 BackendNode::Dir(path) => dst_backend.remove(&path).await?,

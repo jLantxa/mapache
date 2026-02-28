@@ -230,10 +230,13 @@ pub struct SnapshotSummary {
     pub amends: Option<ID>,
 }
 
+/// A stream of Snapshot Results.
+type PinnedSnapshotStream = Pin<Box<dyn Stream<Item = Result<(ID, Snapshot)>> + Send>>;
+
 /// A snapshot stream that loads Snapshots on demand.
 /// Implements `Stream` to allow for functional adapters like `map`, `filter`, etc.
 pub struct SnapshotStream {
-    inner: Pin<Box<dyn Stream<Item = Result<(ID, Snapshot)>> + Send>>,
+    inner: PinnedSnapshotStream,
     num_snapshots: usize,
     remaining_count: Arc<AtomicU64>,
 }

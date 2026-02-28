@@ -122,7 +122,7 @@ impl Chunker {
         let mut n: usize = self.min_size.min(max);
 
         // If n is odd, check the first byte to align the loop to even indices
-        if n < end && n % 2 != 0 {
+        if n < end && !n.is_multiple_of(2) {
             let b = search_slice[n];
             fp = (fp << 1).wrapping_add(self.gear[b as usize]);
             if fp & self.mask_s == 0 {

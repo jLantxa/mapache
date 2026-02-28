@@ -1,0 +1,8 @@
+# Fuzzer artifacts (crashing inputs)
+artifacts/
+
+# Fuzzer corpus (generated interesting inputs)
+corpus/
+
+# Fuzz-specific build directory
+target/

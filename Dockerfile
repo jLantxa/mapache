@@ -23,6 +23,8 @@ RUN echo "Fetching source at: $CACHE_BREAKER" && \
     cd /mapache && \
     git checkout $GIT_REF
 
+ENV MAPACHE_RELEASE_BUILD=true
+
 # Run tests
 RUN cargo test --features $FEATURES -- --skip integration_tests::test_cmd_mount
 

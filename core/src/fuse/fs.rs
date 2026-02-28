@@ -139,12 +139,18 @@ impl MapacheFS {
 impl Filesystem for MapacheFS {
     fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), std::io::Error> {
         self.rt_handle.block_on(async {
-            let snapshot_stream = SnapshotStream::new(self.repo.clone()).await;
-            let mut snapshots: Vec<(ID, Snapshot)> = match snapshot_stream {
-                Ok(stream) => stream.collect().await,
+            let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
+            match SnapshotStream::new(self.repo.clone()).await {
+                Ok(mut stream) => {
+                    while let Some(res) = stream.next().await {
+                        match res {
+                            Ok(pair) => snapshots.push(pair),
+                            Err(e) => ui::cli::error!("Failed to load snapshot: {}", e),
+                        }
+                    }
+                }
                 Err(e) => {
                     ui::cli::error!("Failed to read snapshots: {}", e.to_string());
-                    Vec::new()
                 }
             };
             snapshots.sort_unstable_by_key(|(_, snapshot)| snapshot.timestamp);

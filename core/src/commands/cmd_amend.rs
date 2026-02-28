@@ -97,9 +97,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
 
     if args.all {
-        let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        let mut all_snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect().await;
-        snapshots.append(&mut all_snapshots);
+        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        while let Some(res) = snapshot_stream.next().await {
+            snapshots.push(res?);
+        }
     } else {
         match find_use_snapshot(repo.clone(), &args.snapshot).await {
             Ok(Some((id, snap))) => snapshots.push((id, snap)),

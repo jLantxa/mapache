@@ -2,5 +2,6 @@
 resolver = "3"
 members = [
     "core",
-    "chunker"
+    "chunker",
+    "chunker/fuzz"
 ]

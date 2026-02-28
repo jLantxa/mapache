@@ -270,7 +270,7 @@ async fn find_use_snapshot(
     use_snapshot: &UseSnapshot,
 ) -> Result<Option<(ID, Snapshot)>> {
     match use_snapshot {
-        UseSnapshot::Latest => Ok(SnapshotStream::new(repo.clone()).await?.latest().await),
+        UseSnapshot::Latest => SnapshotStream::new(repo.clone()).await?.latest().await,
         UseSnapshot::SnapshotId(prefix) => {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
             let snap = repo.load_snapshot(&id, None).await?;

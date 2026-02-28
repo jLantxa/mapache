@@ -497,15 +497,17 @@ async fn analyze_snapshots(
     // Hold index read-lock once
     let index = repo.index();
 
-    let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+    let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
-    let mut enumerated_stream = snapshot_stream.enumerate();
-    while let Some((i, (_id, snapshot))) = enumerated_stream.next().await {
+    let mut i = 0;
+    while let Some(res) = snapshot_stream.next().await {
+        let (_id, snapshot) = res?;
         spinner.set_message(format!(
             "Analyzing snapshots: {} / {}",
             i + 1,
             num_snapshots
         ));
+        i += 1;
         // Accumulate restorable size (sum of snapshot raw bytes, not deduped)
         total_restorable_bytes = total_restorable_bytes.saturating_add(snapshot.size());
 

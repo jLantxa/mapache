@@ -233,7 +233,7 @@ pub struct SnapshotSummary {
 /// A snapshot stream that loads Snapshots on demand.
 /// Implements `Stream` to allow for functional adapters like `map`, `filter`, etc.
 pub struct SnapshotStream {
-    inner: Pin<Box<dyn Stream<Item = (ID, Snapshot)> + Send>>,
+    inner: Pin<Box<dyn Stream<Item = Result<(ID, Snapshot)>> + Send>>,
     num_snapshots: usize,
     remaining_count: Arc<AtomicU64>,
 }
@@ -266,11 +266,9 @@ impl SnapshotStream {
                 // Decrement the remaining counter regardless of success
                 remaining_ptr.fetch_sub(1, Ordering::Relaxed);
 
-                if let Ok(snapshot) = res {
-                    yield (id, snapshot);
-                } else {
-                    // Log error or skip corrupted snapshot silently
-                    continue;
+                match res {
+                    Ok(snapshot) => yield Ok((id, snapshot)),
+                    Err(e) => yield Err(e),
                 }
             }
         };
@@ -297,21 +295,25 @@ impl SnapshotStream {
         self.remaining_count.load(Ordering::Relaxed) as usize
     }
 
-    pub async fn collect_entries(self, active: bool) -> SnapshotEntryList {
-        self.map(|(id, snapshot)| SnapshotEntry {
-            id,
-            snapshot,
-            active,
-        })
-        .collect()
-        .await
+    pub async fn collect_entries(mut self, active: bool) -> Result<SnapshotEntryList> {
+        let mut entries = Vec::new();
+        while let Some(res) = self.next().await {
+            let (id, snapshot) = res?;
+            entries.push(SnapshotEntry {
+                id,
+                snapshot,
+                active,
+            });
+        }
+        Ok(entries)
     }
 
-    pub async fn latest(self) -> Option<(ID, Snapshot)> {
-        self.fold::<Option<(ID, Snapshot)>, _, _>(None, |latest, (id, snap)| async move {
-            match latest {
-                Some((lid, lsnap)) if lsnap.timestamp > snap.timestamp => Some((lid, lsnap)),
-                _ => Some((id, snap)),
+    pub async fn latest(self) -> Result<Option<(ID, Snapshot)>> {
+        self.fold::<Result<Option<(ID, Snapshot)>>, _, _>(Ok(None), |latest, res| async move {
+            let (id, snap) = res?;
+            match latest? {
+                Some((lid, lsnap)) if lsnap.timestamp > snap.timestamp => Ok(Some((lid, lsnap))),
+                _ => Ok(Some((id, snap))),
             }
         })
         .await
@@ -319,7 +321,7 @@ impl SnapshotStream {
 }
 
 impl Stream for SnapshotStream {
-    type Item = (ID, Snapshot);
+    type Item = Result<(ID, Snapshot)>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)

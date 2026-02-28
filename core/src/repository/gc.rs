@@ -408,8 +408,11 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
     let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
-    let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-    let snapshots: Vec<_> = snapshot_stream.collect().await;
+    let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+    let mut snapshots = Vec::new();
+    while let Some(res) = snapshot_stream.next().await {
+        snapshots.push(res?);
+    }
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());

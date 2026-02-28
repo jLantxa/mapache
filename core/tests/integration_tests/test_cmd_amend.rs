@@ -186,7 +186,7 @@ mod tests {
         let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
         let (_, snapshot) = snapshot_stream
             .latest()
-            .await
+            .await?
             .expect("There should be at least one snapshot");
 
         assert!(snapshot.tags.is_empty());
@@ -209,7 +209,7 @@ mod tests {
         let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
         let (_, snapshot) = snapshot_stream
             .latest()
-            .await
+            .await?
             .expect("There should be at least one snapshot");
 
         let expected_tags: BTreeSet<String> =

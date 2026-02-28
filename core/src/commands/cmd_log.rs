@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
-use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
@@ -77,26 +76,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             if show_active {
                 let mut active_snapshots = SnapshotStream::new(repo.clone())
                     .await?
-                    .map(|(id, snapshot)| SnapshotEntry {
-                        id,
-                        snapshot,
-                        active: true,
-                    })
-                    .collect()
-                    .await;
+                    .collect_entries(true)
+                    .await?;
                 snapshots.append(&mut active_snapshots);
             }
 
             if show_dropped {
                 let mut dropped_snapshots = SnapshotStream::dropped(repo.clone())
                     .await?
-                    .map(|(id, snapshot)| SnapshotEntry {
-                        id,
-                        snapshot,
-                        active: false,
-                    })
-                    .collect()
-                    .await;
+                    .collect_entries(false)
+                    .await?;
                 snapshots.append(&mut dropped_snapshots);
             }
 

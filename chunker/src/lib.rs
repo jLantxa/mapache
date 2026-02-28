@@ -119,7 +119,17 @@ impl Chunker {
         let search_slice = &data[..end];
 
         let mut fp: u64 = 0;
-        let mut n: usize = (self.min_size & !1).min(max);
+        let mut n: usize = self.min_size.min(max);
+
+        // If n is odd, check the first byte to align the loop to even indices
+        if n < end && n % 2 != 0 {
+            let b = search_slice[n];
+            fp = (fp << 1).wrapping_add(self.gear[b as usize]);
+            if fp & self.mask_s == 0 {
+                return n + 1;
+            }
+            n += 1;
+        }
 
         // Phase 1 (small masks) up to the normalization center
         while n < mid {

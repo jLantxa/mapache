@@ -58,7 +58,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .into_iter()
             .collect()
     } else {
-        SnapshotStream::new(repo.clone()).await?.collect().await
+        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        let mut snaps = Vec::new();
+        while let Some(res) = snapshot_stream.next().await {
+            snaps.push(res?);
+        }
+        snaps
     };
 
     if snapshots.is_empty() {

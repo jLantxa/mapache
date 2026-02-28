@@ -53,12 +53,13 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+    let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
     let num_snapshots = snapshot_stream.len();
     let mut rechunked_blob_list_map = HashMap::new();
 
-    let mut enumerated_stream = snapshot_stream.enumerate();
-    while let Some((i, (snapshot_id, mut snapshot))) = enumerated_stream.next().await {
+    let mut i = 0;
+    while let Some(res) = snapshot_stream.next().await {
+        let (snapshot_id, mut snapshot) = res?;
         ui::cli::log!(
             "Rechunking snapshot {} ({}/{})",
             snapshot_id
@@ -68,6 +69,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             i + 1,
             num_snapshots
         );
+        i += 1;
 
         let progress = Arc::new(SnapshotProgress::new());
 

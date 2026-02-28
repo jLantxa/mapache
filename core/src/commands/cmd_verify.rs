@@ -346,7 +346,21 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
         let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        let mut snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect().await;
+        let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
+        let mut stream = snapshot_stream;
+        while let Some(res) = stream.next().await {
+            match res {
+                Ok(pair) => snapshots.push(pair),
+                Err(e) => {
+                    ui::cli::error!("Failed to load snapshot: {:?}", e);
+                    snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
+                    if args.fail_early {
+                        bail!("Verification halted due to corrupted snapshot.");
+                    }
+                }
+            }
+        }
+
         // Sort snapshots by timestamp (oldest first)
         snapshots.sort_by_key(|(_, s)| s.timestamp);
         num_snapshots_total = snapshots.len();
@@ -405,8 +419,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!();
         ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
 
-        let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        let snapshots: Vec<(ID, Snapshot)> = snapshot_stream.collect().await;
+        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+        let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
+        while let Some(res) = snapshot_stream.next().await {
+            match res {
+                Ok(pair) => snapshots.push(pair),
+                Err(e) => {
+                    ui::cli::error!("Failed to load snapshot for corruption analysis: {:?}", e);
+                }
+            }
+        }
 
         futures::stream::iter(snapshots)
             .map(|(snapshot_id, _)| {

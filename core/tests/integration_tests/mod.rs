@@ -34,6 +34,7 @@ mod test_cmd_snapshot;
 mod test_cmd_stats;
 mod test_cmd_sync;
 mod test_cmd_verify;
+mod test_corrupt_repo;
 mod test_lock_cleanup;
 
 #[cfg(all(feature = "fuse", target_os = "linux"))]

@@ -2,7 +2,6 @@ use anyhow::{Result, bail};
 use chrono::{Duration, Local};
 use clap::{ArgGroup, Parser};
 use colored::Colorize;
-use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     repository::{
         repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
         retention::{RetentionRule, apply_retention_rules},
-        snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
+        snapshot::{SnapshotEntryList, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
     utils::{self, collections::IdSet, size},
@@ -130,13 +129,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
         .await?
-        .map(|(id, snapshot)| SnapshotEntry {
-            id,
-            snapshot,
-            active: true,
-        })
-        .collect()
-        .await;
+        .collect_entries(true)
+        .await?;
 
     if let Some(tags) = &args.tags_str {
         let tags = parse_tags(Some(tags));

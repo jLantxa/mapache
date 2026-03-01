@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "chunker-fuzz"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chunker",
  "libfuzzer-sys",

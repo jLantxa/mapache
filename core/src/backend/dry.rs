@@ -26,7 +26,7 @@ impl DryBackend {
 impl StorageBackend for DryBackend {
     #[inline]
     async fn create(&self) -> Result<()> {
-        self.backend.create().await
+        Ok(())
     }
 
     #[inline]

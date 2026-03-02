@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
 use futures::StreamExt;
@@ -51,7 +51,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await?;
 
-    let cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new_with_callback(move || {
+        ui::cli::log!(
+            "\n{}",
+            "Process interrupted. Cleaning up...".bold().yellow()
+        );
+    })?;
     cleanup_handler.add_lock(lock_handle.clone());
 
     let start = Instant::now();
@@ -109,6 +114,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut error_count = 0;
 
     for (pack_id, res) in results {
+        if cleanup_handler.is_interrupted() {
+            bail!("Interrupted");
+        }
+
         match res {
             Ok(descriptors) => {
                 blob_count += descriptors.len();

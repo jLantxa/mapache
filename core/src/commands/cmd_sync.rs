@@ -69,7 +69,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     .await?;
     dst_backend.create().await?; // Create the backend to create the directory if it doesn't exist.
 
-    let cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new_with_callback(move || {
+        ui::cli::log!(
+            "\n{}",
+            "Process interrupted. Cleaning up...".bold().yellow()
+        );
+    })?;
     cleanup_handler.add_lock(lock_handle.clone());
 
     let start = Instant::now();
@@ -138,7 +143,7 @@ async fn sync_backends(
     // Copy files from src to dst.
     for node in to_copy {
         if shutdown_signal.load(Ordering::Relaxed) {
-            bail!("Interrupted")
+            bail!("Interrupted");
         }
 
         // TODO: For better performance, we could implement buffered I/O in the
@@ -174,7 +179,7 @@ async fn sync_backends(
 
         for node in to_delete {
             if shutdown_signal.load(Ordering::Relaxed) {
-                bail!("Interrupted")
+                bail!("Interrupted");
             }
 
             match node {

@@ -1,6 +1,6 @@
 [package]
 name = "mapache"
-version = "0.2.0-beta.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.91"
 
@@ -41,7 +41,14 @@ russh = "0.57.1"
 russh-keys = "0.49.2"
 russh-sftp = "2.1.1"
 threadpool = "1.8.1"
-tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio = { version = "1.49", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "io-util",
+  "time",
+] }
 tokio-stream = "0.1.18"
 zstd = "0.13.3"
 url = "2.5.8"

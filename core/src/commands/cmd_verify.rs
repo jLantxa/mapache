@@ -199,13 +199,23 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::log!("{}", format!("Verifying Pack Integrity{suffix}...").bold());
 
         let style = ProgressStyle::default_bar()
-            .template("[{custom_elapsed}] [{bar:25.cyan/white}] {pos}/{len} packs ({msg})")
+            .template(
+                "[{custom_elapsed}] [{bar:25.cyan/white}] [ETA: {custom_eta}] {pos}/{len} packs ({msg})",
+            )
             .unwrap()
             .progress_chars("=> ")
             .with_key(
                 "custom_elapsed",
                 |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                     write!(w, "{}", utils::pretty_print_duration(state.elapsed())).unwrap()
+                },
+            )
+            .with_key(
+                "custom_eta",
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let eta = state.eta();
+                    let custom_eta = utils::pretty_print_duration(eta);
+                    let _ = w.write_str(&custom_eta);
                 },
             );
 
@@ -238,58 +248,58 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 let stop_flag = &stop_flag;
                 let corrupt_blobs = corrupt_blobs.clone();
 
-                                async move {
-                                    match verify_pack(repo.clone(), backend.clone(), secure.clone(), *pack_id).await {
-                                        Ok(pack_stats) => {
-                                            stats.packs_processed.fetch_add(1, Ordering::Relaxed);
-                                            stats
-                                                .blobs_verified
-                                                .fetch_add(pack_stats.verified_blobs, Ordering::Relaxed);
-                                            stats
-                                                .blobs_dangling
-                                                .fetch_add(pack_stats.dangling, Ordering::Relaxed);
+                async move {
+                    match verify_pack(repo.clone(), backend.clone(), secure.clone(), *pack_id).await {
+                        Ok(pack_stats) => {
+                            stats.packs_processed.fetch_add(1, Ordering::Relaxed);
+                            stats
+                                .blobs_verified
+                                .fetch_add(pack_stats.verified_blobs, Ordering::Relaxed);
+                            stats
+                                .blobs_dangling
+                                .fetch_add(pack_stats.dangling, Ordering::Relaxed);
 
-                                            if pack_stats.bit_rot || !pack_stats.corrupt_blobs.is_empty() {
-                                                bar.suspend(|| {
-                                                    if pack_stats.bit_rot {
-                                                        ui::cli::error!(
-                                                            "Pack {} CORRUPT: Bit-rot detected (file hash mismatch).",
-                                                            pack_id
-                                                        );
-                                                    }
-                                                    if !pack_stats.corrupt_blobs.is_empty() {
-                                                        ui::cli::error!(
-                                                            "Pack {} CORRUPT: {} found.",
-                                                            pack_id,
-                                                            utils::format_count(pack_stats.corrupt_blobs.len(), "damaged blob", "damaged blobs")
-                                                        );
-                                                    }
-                                                });
-                                                stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
-
-                                                if !pack_stats.corrupt_blobs.is_empty() {
-                                                    let mut corrupt_set = corrupt_blobs.lock();
-                                                    for id in pack_stats.corrupt_blobs {
-                                                        corrupt_set.insert(id);
-                                                    }
-                                                }
-
-                                                if args.fail_early {
-                                                    stop_flag.store(true, Ordering::Relaxed);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            bar.suspend(|| {
-                                                ui::cli::error!("Failed to process pack {}: {}", pack_id, e);
-                                            });
-                                            stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
-
-                                            if args.fail_early {
-                                                stop_flag.store(true, Ordering::Relaxed);
-                                            }
-                                        }
+                            if pack_stats.bit_rot || !pack_stats.corrupt_blobs.is_empty() {
+                                bar.suspend(|| {
+                                    if pack_stats.bit_rot {
+                                        ui::cli::error!(
+                                            "Pack {} CORRUPT: Bit-rot detected (file hash mismatch).",
+                                            pack_id
+                                        );
                                     }
+                                    if !pack_stats.corrupt_blobs.is_empty() {
+                                        ui::cli::error!(
+                                            "Pack {} CORRUPT: {} found.",
+                                            pack_id,
+                                            utils::format_count(pack_stats.corrupt_blobs.len(), "damaged blob", "damaged blobs")
+                                        );
+                                    }
+                                });
+                                stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
+
+                                if !pack_stats.corrupt_blobs.is_empty() {
+                                    let mut corrupt_set = corrupt_blobs.lock();
+                                    for id in pack_stats.corrupt_blobs {
+                                        corrupt_set.insert(id);
+                                    }
+                                }
+
+                                if args.fail_early {
+                                    stop_flag.store(true, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            bar.suspend(|| {
+                                ui::cli::error!("Failed to process pack {}: {}", pack_id, e);
+                            });
+                            stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
+
+                            if args.fail_early {
+                                stop_flag.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    }
 
                     // Update bar message
                     let corrupt = stats.packs_corrupt.load(Ordering::Relaxed);

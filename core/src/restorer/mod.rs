@@ -56,7 +56,8 @@ pub async fn restore(
     let mut restored_dir_times = HashMap::new();
 
     while let Some(node_res) = node_stream.next().await {
-        let (mut path, stream_node) = node_res?;
+        let (mut path, stream_node_res) = node_res?;
+        let stream_node = stream_node_res?;
         let node = &stream_node.node;
 
         if let Some(prefix) = &opts.strip_prefix {
@@ -148,8 +149,8 @@ pub async fn restore(
     }
 
     if !opts.dry_run {
-        for (path, (atime, mtime)) in restored_dir_times.into_iter() {
-            node_restorer::restore_times(&path, atime.as_ref(), mtime.as_ref())?;
+        for (dir_path, (atime, mtime)) in restored_dir_times.into_iter() {
+            node_restorer::restore_times(&dir_path, atime.as_ref(), mtime.as_ref())?;
         }
     }
 

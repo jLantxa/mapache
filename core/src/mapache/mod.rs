@@ -197,7 +197,8 @@ pub async fn find_in_snapshot(
     let mut results = Vec::new();
 
     while let Some(res) = stream.next().await {
-        let (node_path, stream_node) = res?;
+        let (node_path, stream_node_res) = res?;
+        let stream_node = stream_node_res?;
 
         if glob_rule.is_strict_match(&node_path) {
             results.push((node_path, stream_node.node));
@@ -262,7 +263,8 @@ pub(crate) async fn rewrite_snapshot_tree(
 
     // Iterate through the nodes in the tree
     while let Some(res) = node_stream.next().await {
-        let (path, mut stream_node) = res?;
+        let (path, stream_node_res) = res?;
+        let mut stream_node = stream_node_res?;
 
         progress_reporter.processing_node(&path, NodeDiff::Unchanged);
 

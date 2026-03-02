@@ -593,7 +593,8 @@ pub async fn expand_include_paths(
             SerializedNodeStream::new(repo, Some(*tree_id), PathBuf::new(), None, excludes).await?;
 
         while let Some(res) = stream.next().await {
-            let (path, stream_node) = res?;
+            let (path, stream_node_res) = res?;
+            let stream_node = stream_node_res?;
             if stream_node.node.is_file() && include_rules.iter().any(|g| g.is_strict_match(&path))
             {
                 fixed_includes.push(path);

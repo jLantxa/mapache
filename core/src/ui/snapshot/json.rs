@@ -179,6 +179,11 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
         self.json_reporter.emit("error", &ErrorMsg { message: msg });
     }
 
+    fn warning(&self, msg: &str) {
+        self.json_reporter
+            .emit("warning", &ErrorMsg { message: msg });
+    }
+
     fn finalize(&self) {
         // Emit final status update
         self.emit_status_update();

@@ -75,7 +75,7 @@ pub struct StreamNode {
     pub num_children: usize,
 }
 
-pub type StreamNodeInfo = (PathBuf, StreamNode);
+pub type StreamNodeInfo = (PathBuf, Result<StreamNode>);
 
 /// Internal traversal state for FSNodeStream.
 #[derive(Debug)]
@@ -164,12 +164,16 @@ impl FSNodeStream {
                 if take_intermediate {
                     let (path, num_children, maybe_node) = state.intermediate_paths.pop().unwrap();
                     if state.filter.allow(&path) {
-                        let node = if let Some(n) = maybe_node {
-                            n
+                        let node_res = if let Some(n) = maybe_node {
+                            Ok(n)
                         } else {
-                            Node::from_path_async(&path).await?
+                            Node::from_path_async(&path).await
                         };
-                        yield (path, StreamNode { node, num_children });
+
+                        match node_res {
+                            Ok(node) => yield (path, Ok(StreamNode { node, num_children })),
+                            Err(e) => yield (path, Err(e)),
+                        }
                     }
                     continue;
                 }
@@ -180,11 +184,20 @@ impl FSNodeStream {
                     continue;
                 }
 
-                let node = if let Some(n) = maybe_node {
-                    n
+                let node_res = if let Some(n) = maybe_node {
+                    Ok(n)
                 } else {
-                    Node::from_path_async(&path).await?
+                    Node::from_path_async(&path).await
                 };
+
+                let node = match node_res {
+                    Ok(n) => n,
+                    Err(e) => {
+                        yield (path, Err(e));
+                        continue;
+                    }
+                };
+
                 let mut num_children = 0;
 
                 if node.is_dir() {
@@ -192,7 +205,7 @@ impl FSNodeStream {
                     let filter_clone = Arc::clone(&state.filter);
 
                     // Read entries to get names.
-                    let children_names = tokio::task::spawn_blocking(move || {
+                    let children_names_res = tokio::task::spawn_blocking(move || {
                         let mut names = Vec::new();
                         for entry in std::fs::read_dir(&path_clone)? {
                             let entry = entry?;
@@ -203,13 +216,28 @@ impl FSNodeStream {
                         }
                         names.sort_unstable();
                         Ok::<Vec<_>, anyhow::Error>(names)
-                    }).await.context("Directory read panicked")??;
+                    }).await.context("Directory read panicked");
+
+                    let children_names = match children_names_res {
+                        Ok(Ok(names)) => names,
+                        Ok(Err(e)) => {
+                            // If we can't read the directory, we still yield the directory node but with 0 children
+                            // and then yield an error for the traversal failure.
+                            yield (path.clone(), Ok(StreamNode { node, num_children: 0 }));
+                            yield (path, Err(e.context("Failed to read directory entries")));
+                            continue;
+                        }
+                        Err(e) => {
+                            yield (path.clone(), Ok(StreamNode { node, num_children: 0 }));
+                            yield (path, Err(anyhow!(e).context("Panic while reading directory entries")));
+                            continue;
+                        }
+                    };
 
                     num_children = children_names.len();
 
                     // Yield the directory node NOW.
-                    // This allows the pipeline to start processing the directory while we stat children.
-                    yield (path.clone(), StreamNode { node: node.clone(), num_children });
+                    yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children }));
 
                     if num_children > 0 {
                         // Parallelize stats for all siblings using buffered stream.
@@ -219,26 +247,38 @@ impl FSNodeStream {
                                 let parent = shared_parent.clone();
                                 async move {
                                     let child_path = parent.join(&name);
-                                    let node = Node::from_path_async(&child_path).await?;
-                                    Ok::<_, anyhow::Error>((name, node))
+                                    let node_res = Node::from_path_async(&child_path).await;
+                                    Ok::<_, anyhow::Error>((name, node_res))
                                 }
                             })
                             .buffered(fs_stat_concurrency);
 
-                        let mut results = Vec::with_capacity(num_children);
+                        let mut results: Vec<Result<(std::ffi::OsString, Node), anyhow::Error>> = Vec::with_capacity(num_children);
                         while let Some(res) = stat_stream.next().await {
-                            results.push(res?);
+                            // res is Result<(OsString, Result<Node>)>
+                            match res {
+                                Ok((name, Ok(node))) => results.push(Ok((name, node))),
+                                Ok((name, Err(e))) => {
+                                    // Yield error for individual child but don't stop the whole sibling batch
+                                    let child_path = path.join(&name);
+                                    yield (child_path, Err(e));
+                                }
+                                Err(e) => {
+                                    // This is a task error (unexpected)
+                                    yield (path.clone(), Err(e));
+                                }
+                            }
                         }
 
-                        // Push to stack in reverse order.
-                        for (child_name, child_node) in results.into_iter().rev() {
+                        // Push successfully stated nodes to stack in reverse order.
+                        for (child_name, child_node) in results.into_iter().rev().flatten() {
                             state.stack.push((shared_parent.clone(), child_name, Some(child_node)));
                         }
                     }
                     continue;
                 }
 
-                yield (path, StreamNode { node, num_children });
+                yield (path, Ok(StreamNode { node, num_children }));
             }
         }.boxed()
     }
@@ -322,7 +362,7 @@ impl SerializedNodeStream {
                     }
                 }
 
-                yield (path, StreamNode { node, num_children });
+                yield (path, Ok(StreamNode { node, num_children }));
             }
         }
         .boxed()
@@ -399,49 +439,59 @@ where
             (Some(Ok((path_p, _))), Some(Ok((path_n, _)))) => match path_p.cmp(path_n) {
                 Ordering::Less => {
                     let item = futures::ready!(Pin::new(&mut this.prev).poll_next(cx));
-                    let (path, node) = item.expect("peeked Some").expect("peeked Ok");
-                    Poll::Ready(Some(Ok((path, Some(node), None, NodeDiff::Deleted))))
+                    let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                    Poll::Ready(Some(Ok((path, Some(node_res), None, NodeDiff::Deleted))))
                 }
                 Ordering::Greater => {
                     let item = futures::ready!(Pin::new(&mut this.next).poll_next(cx));
-                    let (path, node) = item.expect("peeked Some").expect("peeked Ok");
-                    Poll::Ready(Some(Ok((path, None, Some(node), NodeDiff::New))))
+                    let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                    Poll::Ready(Some(Ok((path, None, Some(node_res), NodeDiff::New))))
                 }
                 Ordering::Equal => {
                     let p_item = futures::ready!(Pin::new(&mut this.prev).poll_next(cx));
                     let n_item = futures::ready!(Pin::new(&mut this.next).poll_next(cx));
 
-                    let (path, node_p) = p_item.expect("peeked Some").expect("peeked Ok");
-                    let (_, node_n) = n_item.expect("peeked Some").expect("peeked Ok");
+                    let (path, node_p_res) = p_item.expect("peeked Some").expect("peeked Ok");
+                    let (_, node_n_res) = n_item.expect("peeked Some").expect("peeked Ok");
 
-                    let diff = if node_p.node.metadata.is_modified(&node_n.node.metadata) {
-                        NodeDiff::Changed
-                    } else {
-                        NodeDiff::Unchanged
+                    let diff = match (&node_p_res, &node_n_res) {
+                        (Ok(node_p), Ok(node_n)) => {
+                            if node_p.node.metadata.is_modified(&node_n.node.metadata) {
+                                NodeDiff::Changed
+                            } else {
+                                NodeDiff::Unchanged
+                            }
+                        }
+                        _ => NodeDiff::Changed,
                     };
 
-                    Poll::Ready(Some(Ok((path, Some(node_p), Some(node_n), diff))))
+                    Poll::Ready(Some(Ok((path, Some(node_p_res), Some(node_n_res), diff))))
                 }
             },
 
             // only prev left
             (Some(Ok(_)), None) => {
                 let item = futures::ready!(Pin::new(&mut this.prev).poll_next(cx));
-                let (path, node) = item.expect("peeked Some").expect("peeked Ok");
-                Poll::Ready(Some(Ok((path, Some(node), None, NodeDiff::Deleted))))
+                let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                Poll::Ready(Some(Ok((path, Some(node_res), None, NodeDiff::Deleted))))
             }
 
             // only next left
             (None, Some(Ok(_))) => {
                 let item = futures::ready!(Pin::new(&mut this.next).poll_next(cx));
-                let (path, node) = item.expect("peeked Some").expect("peeked Ok");
-                Poll::Ready(Some(Ok((path, None, Some(node), NodeDiff::New))))
+                let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                Poll::Ready(Some(Ok((path, None, Some(node_res), NodeDiff::New))))
             }
         }
     }
 }
 
-pub type DiffTuple = (PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff);
+pub type DiffTuple = (
+    PathBuf,
+    Option<Result<StreamNode>>,
+    Option<Result<StreamNode>>,
+    NodeDiff,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeDiff {
@@ -714,7 +764,7 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> =
+        let nodes: Vec<Result<(PathBuf, Result<StreamNode>)>> =
             FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())
                 .await?
                 .collect()
@@ -722,26 +772,32 @@ mod tests {
 
         assert_eq!(nodes.len(), 6);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
+        assert!(nodes[0].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[1].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir0")
         );
+        assert!(nodes[1].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[2].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir1")
         );
+        assert!(nodes[2].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[3].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2")
         );
+        assert!(nodes[3].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[4].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2").join("file1")
         );
+        assert!(nodes[4].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[5].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("file0")
         );
+        assert!(nodes[5].as_ref().unwrap().1.is_ok());
 
         Ok(())
     }
@@ -752,7 +808,7 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> = FSNodeStream::from_paths(
+        let nodes: Vec<Result<(PathBuf, Result<StreamNode>)>> = FSNodeStream::from_paths(
             vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
             Vec::new(),
         )
@@ -762,31 +818,39 @@ mod tests {
 
         assert_eq!(nodes.len(), 8);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
+        assert!(nodes[0].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[1].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir0")
         );
+        assert!(nodes[1].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[2].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir1")
         );
+        assert!(nodes[2].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[3].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2")
         );
+        assert!(nodes[3].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[4].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2").join("file1")
         );
+        assert!(nodes[4].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[5].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("file0")
         );
+        assert!(nodes[5].as_ref().unwrap().1.is_ok());
         assert_eq!(nodes[6].as_ref().unwrap().0, tmp_path.join("dir_b"));
+        assert!(nodes[6].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[7].as_ref().unwrap().0,
             tmp_path.join("dir_b").join("file2")
         );
+        assert!(nodes[7].as_ref().unwrap().1.is_ok());
 
         Ok(())
     }
@@ -797,7 +861,7 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> = FSNodeStream::from_paths(
+        let nodes: Vec<Result<(PathBuf, Result<StreamNode>)>> = FSNodeStream::from_paths(
             vec![
                 tmp_path.join("dir_a").join("file0"),
                 tmp_path.join("dir_a").join("dir2").join("file1"),
@@ -813,14 +877,17 @@ mod tests {
             nodes[0].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2")
         );
+        assert!(nodes[0].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[1].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2").join("file1")
         );
+        assert!(nodes[1].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[2].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("file0")
         );
+        assert!(nodes[2].as_ref().unwrap().1.is_ok());
 
         Ok(())
     }
@@ -888,7 +955,7 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let nodes: Vec<Result<(PathBuf, StreamNode)>> = FSNodeStream::from_paths(
+        let nodes: Vec<Result<(PathBuf, Result<StreamNode>)>> = FSNodeStream::from_paths(
             vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
             vec![tmp_path.join("dir_b")],
         )
@@ -898,26 +965,32 @@ mod tests {
 
         assert_eq!(nodes.len(), 6);
         assert_eq!(nodes[0].as_ref().unwrap().0, tmp_path.join("dir_a"));
+        assert!(nodes[0].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[1].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir0")
         );
+        assert!(nodes[1].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[2].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir1")
         );
+        assert!(nodes[2].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[3].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2")
         );
+        assert!(nodes[3].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[4].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("dir2").join("file1")
         );
+        assert!(nodes[4].as_ref().unwrap().1.is_ok());
         assert_eq!(
             nodes[5].as_ref().unwrap().0,
             tmp_path.join("dir_a").join("file0")
         );
+        assert!(nodes[5].as_ref().unwrap().1.is_ok());
 
         Ok(())
     }

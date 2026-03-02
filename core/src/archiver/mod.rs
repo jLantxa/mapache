@@ -301,12 +301,15 @@ fn spawn_scanner_task(
             }
 
             match item {
-                Ok((_path, stream_node)) => {
+                Ok((_path, Ok(stream_node))) => {
                     let node = stream_node.node;
                     progress_reporter.add_expected_items(1);
                     if node.is_file() {
                         progress_reporter.add_expected_bytes(node.metadata.size);
                     }
+                }
+                Ok((path, Err(e))) => {
+                    progress_reporter.warning(&format!("Error scanning {}: {}", path.display(), e));
                 }
                 Err(e) => {
                     status.signal_fatal(

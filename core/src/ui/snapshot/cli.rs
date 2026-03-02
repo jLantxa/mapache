@@ -270,22 +270,6 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
         self.progress_bar.set_length(total_bytes);
     }
 
-    fn finalize(&self) {
-        self.ui_stop.store(true, Ordering::Relaxed);
-        let _ = self.ui_tx.try_send(UiEvent::Shutdown);
-
-        if let Some(h) = self._ui_thread.lock().take() {
-            let _ = h.join();
-        }
-
-        for sp in self.file_spinners.iter() {
-            sp.finish_and_clear();
-        }
-        self.companion_bar.finish_and_clear();
-        self.progress_bar.finish_and_clear();
-        let _ = self.mp.clear();
-    }
-
     fn processing_node(&self, path: &std::path::Path, diff: NodeDiff) {
         if self.ui_stop.load(Ordering::Relaxed) {
             return;
@@ -337,6 +321,29 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
     fn error(&self, msg: &str) {
         self.error_counter.fetch_add(1, Ordering::Relaxed);
         let _ = self.mp.println(format!("{} {msg}", "Error:".bold().red()));
+    }
+
+    fn warning(&self, msg: &str) {
+        self.error_counter.fetch_add(1, Ordering::Relaxed);
+        let _ = self
+            .mp
+            .println(format!("{} {msg}", "Warning:".bold().yellow()));
+    }
+
+    fn finalize(&self) {
+        self.ui_stop.store(true, Ordering::Relaxed);
+        let _ = self.ui_tx.try_send(UiEvent::Shutdown);
+
+        if let Some(h) = self._ui_thread.lock().take() {
+            let _ = h.join();
+        }
+
+        for sp in self.file_spinners.iter() {
+            sp.finish_and_clear();
+        }
+        self.companion_bar.finish_and_clear();
+        self.progress_bar.finish_and_clear();
+        let _ = self.mp.clear();
     }
 }
 

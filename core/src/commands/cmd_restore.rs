@@ -176,7 +176,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     while let Some(res) = scan_node_stream.next().await {
-        let (_path, stream_node) = res?;
+        let (_path, stream_node_res) = res?;
+        let stream_node = stream_node_res?;
 
         let node = stream_node.node;
         num_expected_items += 1;

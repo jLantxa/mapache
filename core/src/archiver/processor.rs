@@ -33,10 +33,10 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
 
 /// Processes an item from the diff stream.
 pub(crate) async fn process_item(
-    (path, prev_node, next_node, diff_type): (
+    (path, prev_node_res, next_node_res, diff_type): (
         &Path,
-        Option<StreamNode>,
-        Option<StreamNode>,
+        Option<Result<StreamNode>>,
+        Option<Result<StreamNode>>,
         NodeDiff,
     ),
     repo: Arc<Repository>,
@@ -44,6 +44,21 @@ pub(crate) async fn process_item(
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Option<StreamNode>> {
+    // Check if next_node has an error. If so, report it and skip the node.
+    if let Some(Err(e)) = next_node_res {
+        progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
+        progress.processed_node();
+        return Ok(None);
+    }
+
+    // From here on, next_node_res is either None or Some(Ok(next_node)).
+    let next_node = next_node_res.map(|r| r.unwrap());
+    let prev_node = match prev_node_res {
+        Some(Ok(n)) => Some(n),
+        Some(Err(_)) => None, // Should not happen in practice for SerializedNodeStream
+        None => None,
+    };
+
     progress_reporter.processing_node(path, diff_type);
 
     let out = match diff_type {
@@ -80,14 +95,25 @@ pub(crate) async fn process_item(
             })?;
 
             if next.node.is_file() {
-                let file = open_for_sequential_read(path)
-                    .with_context(|| format!("Failed to open: {}", path.display()))?;
+                let file_res = open_for_sequential_read(path);
+                let file = match file_res {
+                    Ok(f) => f,
+                    Err(e) => {
+                        progress_reporter.warning(&format!(
+                            "Failed to open file {}: {}",
+                            path.display(),
+                            e
+                        ));
+                        progress.processed_node();
+                        return Ok(None);
+                    }
+                };
 
                 let file_size = next.node.metadata.size;
                 let capacity = (file_size as usize).min(size::MiB as usize);
                 let reader = std::io::BufReader::with_capacity(capacity, file);
 
-                let blobs_ids = chunk_and_store_file(
+                let blobs_ids = match chunk_and_store_file(
                     repo,
                     &next.node,
                     reader,
@@ -96,7 +122,18 @@ pub(crate) async fn process_item(
                     shutdown_signal,
                 )
                 .await
-                .with_context(|| format!("Failed to process blobs for: {}", path.display()))?;
+                {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        progress_reporter.warning(&format!(
+                            "Failed to process blobs for {}: {}",
+                            path.display(),
+                            e
+                        ));
+                        progress.processed_node();
+                        return Ok(None);
+                    }
+                };
 
                 next.node.blobs = Some(blobs_ids);
             }

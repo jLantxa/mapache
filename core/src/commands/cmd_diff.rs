@@ -91,7 +91,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let mut counts = DiffCounts::default();
     while let Some(res) = stream.next().await {
-        let (path, source, target, diff_type) = res?;
+        let (path, source_res, target_res, diff_type) = res?;
+
+        let source = source_res.map(|r| r.unwrap());
+        let target = target_res.map(|r| r.unwrap());
 
         let node = target
             .as_ref()

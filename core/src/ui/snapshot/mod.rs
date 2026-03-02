@@ -36,6 +36,9 @@ pub trait SnapshotProgressReporter: Send + Sync {
     /// Called when an error occurs
     fn error(&self, msg: &str);
 
+    /// Called when a warning occurs
+    fn warning(&self, msg: &str);
+
     /// Finalize the reporter (cleanup resources)
     fn finalize(&self);
 }

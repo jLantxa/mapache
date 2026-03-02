@@ -455,7 +455,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .await?;
 
                     while let Some(res) = stream.next().await {
-                        let (path, sn_node) = res?;
+                        let (path, sn_node_res) = res?;
+                        let sn_node = sn_node_res?;
                         let node = sn_node.node;
                         if let Some(blobs) = node.blobs {
                             let corrupt_ids = corrupt_blobs.lock();

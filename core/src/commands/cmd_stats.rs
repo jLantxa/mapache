@@ -535,8 +535,9 @@ async fn analyze_snapshots(
         .await?;
 
         while let Some(res) = stream.next().await {
-            let (_path, stream_node_res) = res?;
-            let node = stream_node_res.node;
+            let (_path, stream_node_res_outer) = res?;
+            let stream_node = stream_node_res_outer?;
+            let node = stream_node.node;
 
             // Count tree blob if present
             if let Some(tree_id) = &node.tree

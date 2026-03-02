@@ -2032,6 +2032,7 @@ dependencies = [
  "russh-sftp",
  "rust-s3",
  "rustc-hash",
+ "scopeguard",
  "serde",
  "serde_json",
  "signal-hook",

@@ -1,7 +1,12 @@
-#![no_main]
+#![cfg_attr(fuzzing, no_main)]
 use chunker::{Chunker, Normalization};
 use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
+
+#[cfg(not(fuzzing))]
+fn main() {
+    println!("This is a fuzzer target. Run it with cargo-fuzz.");
+}
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 4 {

@@ -16,3 +16,6 @@ name = "chunker_stream"
 path = "fuzz_targets/chunker_stream.rs"
 test = false
 doc = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

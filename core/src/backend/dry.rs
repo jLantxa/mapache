@@ -78,4 +78,8 @@ impl StorageBackend for DryBackend {
     async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         self.backend.lstat(path).await
     }
+
+    fn is_dry_run(&self) -> bool {
+        true
+    }
 }

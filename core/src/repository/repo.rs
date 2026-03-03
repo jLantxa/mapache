@@ -259,12 +259,13 @@ impl Repository {
         exclusive_lock: bool,
         retry_duration: Option<Duration>,
     ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
+        let dry_run = backend.is_dry_run();
         let (repo, secure_storage) =
             Self::try_open_unlocked(auth, key_file_path, backend, config).await?;
         let lock = repo
             .try_acquire_lock_with_retry(exclusive_lock, retry_duration)
             .await?;
-        let lock_handle = LockHandle::new(repo.clone(), lock);
+        let lock_handle = LockHandle::new(repo.clone(), lock, dry_run);
 
         Ok((repo, secure_storage, lock_handle))
     }

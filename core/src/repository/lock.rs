@@ -117,17 +117,22 @@ pub struct LockHandle {
     repo: Arc<Repository>,
     lock: Arc<Mutex<Lock>>,
     alive_flag: Arc<AtomicBool>,
+    dry_run: bool,
 }
 
 impl LockHandle {
-    pub fn new(repo: Arc<Repository>, lock: Arc<Mutex<Lock>>) -> Self {
+    pub fn new(repo: Arc<Repository>, lock: Arc<Mutex<Lock>>, dry_run: bool) -> Self {
         let handle = Self {
             repo: repo.clone(),
             lock,
             alive_flag: Arc::new(AtomicBool::new(true)),
+            dry_run,
         };
 
-        handle.start_refresh_handler();
+        if !dry_run {
+            handle.start_refresh_handler();
+        }
+
         handle
     }
 
@@ -156,7 +161,7 @@ impl LockHandle {
     }
 
     async fn perform_unlock(&self) {
-        if self.alive_flag.swap(false, Ordering::SeqCst) {
+        if self.alive_flag.swap(false, Ordering::SeqCst) && !self.dry_run {
             // Get the ID without holding the lock across an await point
             let lock_id = {
                 let lock_guard = self.lock.lock();
@@ -171,7 +176,7 @@ impl LockHandle {
     }
 
     pub fn trigger_unlock(&self) {
-        if self.alive_flag.swap(false, Ordering::SeqCst) {
+        if self.alive_flag.swap(false, Ordering::SeqCst) && !self.dry_run {
             // Spawn the cleanup task instead of blocking the thread
             let repo = self.repo.clone();
             let lock = self.lock.clone();

@@ -243,4 +243,8 @@ impl StorageBackend for CacheBackend {
     async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
         self.backend.lstat(path).await
     }
+
+    fn is_dry_run(&self) -> bool {
+        self.backend.is_dry_run()
+    }
 }

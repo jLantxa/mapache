@@ -40,25 +40,14 @@ where
 
         match attempt_res {
             Ok(Ok(val)) => return Ok(val),
-            Ok(Err(e)) if attempts < opts.max_attempts => {
+            Ok(Err(_)) if attempts < opts.max_attempts => {
                 attempts += 1;
                 let wait = opts.base_delay * (2_u32.pow(attempts - 1));
-                ui::cli::warning!(
-                    "{} operation failed: {}. Retrying in {}ms...",
-                    name,
-                    e,
-                    wait.as_millis()
-                );
                 tokio::time::sleep(wait).await;
             }
             Err(_) if attempts < opts.max_attempts => {
                 attempts += 1;
                 let wait = opts.base_delay * (2_u32.pow(attempts - 1));
-                ui::cli::warning!(
-                    "{} operation timed out. Retrying in {}ms...",
-                    name,
-                    wait.as_millis()
-                );
                 tokio::time::sleep(wait).await;
             }
             Ok(Err(e)) => {
@@ -170,6 +159,11 @@ pub trait StorageBackend: Send + Sync {
 
     /// Returns metadata for the path without following symbolic links.
     async fn lstat(&self, path: &Path) -> Result<NodeAttr>;
+
+    /// Returns true if the backend is a dry-run backend (ignoring writes).
+    fn is_dry_run(&self) -> bool {
+        false
+    }
 }
 
 /// Configuration used to initialize a backend.

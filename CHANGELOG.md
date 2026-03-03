@@ -1,5 +1,19 @@
 # Changelog
 
+## [[unreleased]]
+
+### Fixes
+
+- The LockHandle will no longer try to refresh or delete a lock in a dry
+  backend as there is no lock file to delete, sparing some operations and
+  retries in the backend.
+- Dry backends no longer try to create the backend.
+
+### Changes
+
+- When `mapache snapshot` cannot open a directory or file, it will print a
+  warning but still continue with the snapshot.
+
 ## v0.2.0
 
 ### Fixes

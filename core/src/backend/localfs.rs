@@ -333,11 +333,19 @@ impl StorageBackend for LocalFS {
     }
 
     async fn is_file(&self, path: &Path) -> bool {
-        self.full_path(path).is_file()
+        let full_path = self.full_path(path);
+        match tokio::fs::symlink_metadata(&full_path).await {
+            Ok(meta) => meta.is_file(),
+            Err(_) => false,
+        }
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
-        self.full_path(path).is_dir()
+        let full_path = self.full_path(path);
+        match tokio::fs::symlink_metadata(&full_path).await {
+            Ok(meta) => meta.is_dir(),
+            Err(_) => false,
+        }
     }
 
     async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
@@ -372,6 +380,7 @@ impl StorageBackend for LocalFS {
         })
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

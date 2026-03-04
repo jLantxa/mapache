@@ -78,7 +78,7 @@ pub async fn restore(
         progress_reporter.processing_node(&path);
 
         let mut should_restore = true;
-        if fs::path_exists(&restore_path) {
+        if fs::path_exists(&restore_path).await {
             match opts.strategy {
                 Strategy::Overwrite => (),
                 Strategy::Skip => {

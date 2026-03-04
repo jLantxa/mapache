@@ -50,7 +50,7 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    async fn remove(&self, _file_path: &Path) -> Result<()> {
+    async fn remove(&self, _path: &Path) -> Result<()> {
         Ok(())
     }
 

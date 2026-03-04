@@ -466,7 +466,7 @@ mod tests {
             // The source folder still has the "0" folder
             let backup_path = backup_data_tmp_path.join("0").join(path);
             let restored_path = restore_path.join(path);
-            assert!(fs::path_exists(&restored_path));
+            assert!(fs::path_exists(&restored_path).await);
 
             let restored_meta = restored_path.symlink_metadata()?;
             let backup_meta = backup_path.symlink_metadata()?;

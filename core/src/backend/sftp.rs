@@ -30,7 +30,7 @@ use crate::{
 /// Maximum number of concurrent SFTP connections to maintain.
 /// Multiple connections provide better throughput over high-latency networks
 /// by using multiple TCP streams.
-const MAX_SFTP_CONNECTIONS: usize = 3;
+const MAX_SFTP_CONNECTIONS: usize = 5;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Errors specific to the SFTP backend.

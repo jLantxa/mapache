@@ -11,8 +11,8 @@ pub mod filter;
 pub mod node;
 pub mod tree;
 
-pub fn path_exists(path: &Path) -> bool {
-    path.symlink_metadata().is_ok()
+pub async fn path_exists(path: &Path) -> bool {
+    tokio::fs::symlink_metadata(path).await.is_ok()
 }
 
 /// Returns the absolute, normalized path of a node without following symlinks.

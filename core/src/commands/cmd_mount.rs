@@ -46,7 +46,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // The mountpoint was created by us and should be deleted when we finish.
     let mut created_mountpoint = false;
 
-    if !fs::path_exists(&actual_mountpoint) {
+    if !fs::path_exists(&actual_mountpoint).await {
         if args.create_mountpoint {
             std::fs::create_dir_all(&actual_mountpoint).context("Could not create mount point")?;
             created_mountpoint = true;

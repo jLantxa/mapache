@@ -259,7 +259,9 @@ impl Plan {
         let rt_handle = tokio::runtime::Handle::current();
         let (tx, rx) = crossbeam_channel::unbounded();
 
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_cpus::get())
+            .build()?;
 
         pool.scope(|s| {
             for (blob_id, (pack_id, blob_type, offset, length)) in repack_blob_info {
@@ -278,7 +280,6 @@ impl Plan {
                             )
                             .await?;
 
-                        // Re-pack via the PackSaver (which is already handling its own threads)
                         repo.encode_and_save_blob(
                             blob_type,
                             WriteContents::Owned(data),

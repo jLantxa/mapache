@@ -191,8 +191,12 @@ pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
             let chunk = result?;
             let chunk_len = chunk.data.len() as u64;
 
-            let id =
-                repo.encode_and_save_blob_sync(BlobType::Data, chunk.data, SaveID::CalculateID)?;
+            let rt = tokio::runtime::Handle::current();
+            let id = rt.block_on(repo.encode_and_save_blob(
+                BlobType::Data,
+                WriteContents::Owned(chunk.data),
+                SaveID::CalculateID,
+            ))?;
 
             ids.push(id);
             progress_blocking.processed_bytes(chunk_len);

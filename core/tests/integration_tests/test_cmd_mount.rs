@@ -55,7 +55,7 @@ mod tests {
         }
     }
 
-    fn verify_paths(
+    async fn verify_paths(
         paths: &[PathBuf],
         backup_data_tmp_path: &Path,
         snapshot_path: &Path,
@@ -67,7 +67,7 @@ mod tests {
             let mounted_path = snapshot_path.join(path);
 
             assert!(
-                fs::path_exists(&mounted_path),
+                fs::path_exists(&mounted_path).await,
                 "{:?} does not exist",
                 mounted_path
             );
@@ -168,8 +168,8 @@ mod tests {
         let snapshot_path = mountpoint.join("snapshots/ids/latest");
         let wait_start = Instant::now();
         let max_wait = Duration::from_secs(5);
-        while !fs::path_exists(&snapshot_path) {
-            std::thread::sleep(Duration::from_millis(250));
+        while !fs::path_exists(&snapshot_path).await {
+            tokio::time::sleep(Duration::from_millis(250)).await;
 
             if wait_start.elapsed() > max_wait {
                 bail!("Waiting for FS to mount timeout ({:?})", max_wait);
@@ -207,7 +207,7 @@ mod tests {
             PathBuf::from("file.txt"),
         ];
 
-        verify_paths(&paths, backup_data_tmp_path, &snapshot_path)
+        verify_paths(&paths, backup_data_tmp_path, &snapshot_path).await
     }
 
     #[tokio::test]
@@ -305,8 +305,8 @@ mod tests {
         let latest_snapshot_path = mountpoint.join("snapshots/by_date/latest");
         let wait_start = Instant::now();
         let max_wait = Duration::from_secs(5);
-        while !fs::path_exists(&latest_snapshot_path) {
-            std::thread::sleep(Duration::from_millis(250));
+        while !fs::path_exists(&latest_snapshot_path).await {
+            tokio::time::sleep(Duration::from_millis(250)).await;
 
             if wait_start.elapsed() > max_wait {
                 bail!("Waiting for FS to mount timeout ({:?})", max_wait);
@@ -380,12 +380,14 @@ mod tests {
             &paths1,
             backup_data_tmp_path,
             snapshot_paths.first().expect("Snapshot should exist"),
-        )?;
+        )
+        .await?;
         verify_paths(
             &paths2,
             backup_data_tmp_path,
             snapshot_paths.get(1).expect("Snapshot should exist"),
-        )?;
+        )
+        .await?;
 
         Ok(())
     }

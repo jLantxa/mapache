@@ -22,10 +22,21 @@ use url::Url;
 use crate::ui;
 
 /// Configuration for retry logic.
+#[derive(Debug, Clone)]
 pub struct RetryOptions {
     pub max_attempts: u32,
     pub base_delay: std::time::Duration,
     pub request_timeout: std::time::Duration,
+}
+
+impl Default for RetryOptions {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            base_delay: std::time::Duration::from_millis(200),
+            request_timeout: std::time::Duration::from_secs(30),
+        }
+    }
 }
 
 /// A generic retry wrapper with exponential backoff and per-request timeouts.
@@ -104,7 +115,7 @@ impl<'a> Handle<'a> {
 ///
 /// This hint is typically used to optimize the storage strategy for different
 /// types of backup data (pure data vs. metadata files).
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct StorageHint {
     /// The type of content ID (e.g., data chunk, index, or configuration file).
     pub file_type: ContentIdType,
@@ -337,6 +348,19 @@ impl BackendNode {
             BackendNode::File(path) => path,
             BackendNode::Dir(path) => path,
         }
+    }
+
+    /// Consumes the node and returns the inner path.
+    pub fn into_path(self) -> PathBuf {
+        match self {
+            BackendNode::File(path) => path,
+            BackendNode::Dir(path) => path,
+        }
+    }
+
+    /// Returns the file name of the inner path.
+    pub fn file_name(&self) -> Option<&std::ffi::OsStr> {
+        self.path().file_name()
     }
 }
 

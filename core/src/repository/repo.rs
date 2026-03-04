@@ -406,8 +406,8 @@ impl Repository {
         self.backend.clone()
     }
 
-    /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in an pack file.
-    /// Returns a tuple (`ID`, data_size, meta_size)
+    /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in a pack file.
+    /// Returns the ID of the saved blob.
     pub async fn encode_and_save_blob(
         &self,
         blob_type: BlobType,
@@ -418,7 +418,10 @@ impl Repository {
         let master_index = self.master_index.clone();
         let tx = {
             let tx_guard = self.pack_saver_tx.lock();
-            tx_guard.as_ref().context("Packer is stopped")?.clone()
+            tx_guard
+                .as_ref()
+                .context("Packer is stopped or not initialized")?
+                .clone()
         };
 
         let data = data.into_owned();
@@ -429,8 +432,8 @@ impl Repository {
                 SaveID::WithID(id) => id,
             };
 
+            // Fast path for existing blobs
             let blob_exists = master_index.contains(&id) || !master_index.add_pending_blob(id);
-
             if blob_exists {
                 return Ok::<_, anyhow::Error>(id);
             }
@@ -450,44 +453,6 @@ impl Repository {
         })
         .await
         .context("Blob processing task panicked")?
-    }
-
-    /// Synchronous version of encode_and_save_blob.
-    pub fn encode_and_save_blob_sync(
-        &self,
-        blob_type: BlobType,
-        data: Vec<u8>,
-        save_id: SaveID,
-    ) -> Result<ID> {
-        let id = match save_id {
-            SaveID::CalculateID => ID::from_content(&data),
-            SaveID::WithID(id) => id,
-        };
-
-        let blob_exists =
-            self.master_index.contains(&id) || !self.master_index.add_pending_blob(id);
-
-        if blob_exists {
-            return Ok(id);
-        }
-
-        let raw_length = data.len() as u64;
-        let encoded_data = self.secure_storage.encode(&data)?;
-
-        let tx = {
-            let tx_guard = self.pack_saver_tx.lock();
-            tx_guard.as_ref().context("Packer is stopped")?.clone()
-        };
-
-        tx.send(PackSaverRequest::SaveBlob {
-            id,
-            blob_type,
-            data: encoded_data,
-            raw_length,
-        })
-        .map_err(|_| anyhow::anyhow!("Packer channel closed"))?;
-
-        Ok(id)
     }
 
     /// Loads a blob from the repository.

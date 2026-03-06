@@ -12,7 +12,7 @@ mod tests {
         utils,
     };
 
-    use crate::integration_tests::{TestContext, run_bin};
+    use crate::integration_tests::{TestContext, assert_times_equal, run_bin};
 
     #[tokio::test]
     async fn test_snapshot() -> Result<()> {
@@ -389,7 +389,7 @@ mod tests {
             let backup_meta = backup_path.symlink_metadata()?;
 
             assert_eq!(restored_meta.len(), backup_meta.len());
-            assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            assert_times_equal(restored_meta.modified()?, backup_meta.modified()?);
 
             if restored_path.is_file() {
                 assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);

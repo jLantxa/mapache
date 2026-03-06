@@ -43,6 +43,25 @@ mod test_cmd_mount;
 
 const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
 
+pub fn assert_times_equal(t1: std::time::SystemTime, t2: std::time::SystemTime) {
+    if t1 == t2 {
+        return;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::time::UNIX_EPOCH;
+        let d1 = t1.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let d2 = t2.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let diff = if d1 > d2 { d1 - d2 } else { d2 - d1 };
+        if diff.as_secs() < 1 {
+            return;
+        }
+    }
+
+    assert_eq!(t1, t2);
+}
+
 pub struct TestContext {
     pub _tmp_dir: tempfile::TempDir,
     pub repo_path: PathBuf,

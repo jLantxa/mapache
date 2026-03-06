@@ -13,7 +13,7 @@ mod tests {
         restorer::Strategy,
     };
 
-    use crate::integration_tests::TestContext;
+    use crate::integration_tests::{TestContext, assert_times_equal};
 
     #[tokio::test]
     async fn test_restore_with_filter() -> Result<()> {
@@ -102,7 +102,7 @@ mod tests {
             let restored_meta = restored_path.symlink_metadata()?;
             let backup_meta = backup_path.symlink_metadata()?;
 
-            assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+            assert_times_equal(restored_meta.modified()?, backup_meta.modified()?);
 
             if restored_path.is_file() {
                 assert_eq!(std::fs::read(&restored_path)?, std::fs::read(&backup_path)?);

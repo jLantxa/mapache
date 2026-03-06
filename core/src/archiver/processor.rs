@@ -78,14 +78,20 @@ pub(crate) async fn process_item(
                 format!("Inconsistent state: Unchanged diff but no prev_node for {path:?}")
             })?;
 
-            // Re-use blobs from the previous snapshot
-            next.node.blobs = prev.node.blobs;
-
             if next.node.is_file() {
                 progress.processed_bytes(next.node.metadata.size);
                 progress_reporter.processed_bytes(next.node.metadata.size);
             }
             report_node_diff(&next.node, diff_type, progress.as_ref());
+
+            // Use the previous node's metadata to ensure bit-identical trees,
+            // but keep the current structure (like next.num_children) to allow
+            // correctly building the tree even if excludes changed.
+            next.node.metadata = prev.node.metadata;
+            // Also keep blobs if it's a file
+            if next.node.is_file() {
+                next.node.blobs = prev.node.blobs;
+            }
             Some(next)
         }
 

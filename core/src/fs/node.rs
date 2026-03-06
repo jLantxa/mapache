@@ -146,7 +146,54 @@ impl Metadata {
     /// node contents have changed or the node has been replaced.
     #[inline]
     pub fn is_modified(&self, other: &Self) -> bool {
-        self != other
+        if self.size != other.size {
+            return true;
+        }
+
+        // Check times with tolerance
+        if !self.times_match(self.modified_time, other.modified_time) {
+            return true;
+        }
+
+        if !self.times_match(self.created_time, other.created_time) {
+            return true;
+        }
+
+        // Compare other fields
+        self.mode != other.mode
+            || self.owner_uid != other.owner_uid
+            || self.owner_gid != other.owner_gid
+            || self.inode != other.inode
+            || self.nlink != other.nlink
+            || self.rdev != other.rdev
+    }
+
+    #[inline]
+    fn times_match(&self, t1: Option<SystemTime>, t2: Option<SystemTime>) -> bool {
+        match (t1, t2) {
+            (None, None) => true,
+            (Some(t1), Some(t2)) => {
+                if t1 == t2 {
+                    return true;
+                }
+
+                #[cfg(windows)]
+                {
+                    // On Windows, mtime can have some precision issues or small updates
+                    // from the OS (like 100ns vs 1ms vs 15.6ms).
+                    // We use a 1-second tolerance, which is common for backup tools on Windows.
+                    let d1 = t1.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                    let d2 = t2.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                    let diff = d1.abs_diff(d2);
+                    diff.as_secs() < 1
+                }
+                #[cfg(not(windows))]
+                {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 }
 

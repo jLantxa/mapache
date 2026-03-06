@@ -12,7 +12,7 @@ mod tests {
         restorer::Strategy,
     };
 
-    use crate::integration_tests::TestContext;
+    use crate::integration_tests::{TestContext, assert_times_equal};
 
     #[tokio::test]
     async fn test_amend_exclude() -> Result<()> {
@@ -108,7 +108,7 @@ mod tests {
             let backup_meta = backup_path.symlink_metadata()?;
 
             if !restored_path.is_symlink() {
-                assert_eq!(restored_meta.modified()?, backup_meta.modified()?);
+                assert_times_equal(restored_meta.modified()?, backup_meta.modified()?);
             }
 
             // We excluded some paths, so the size of directories will not be consistent

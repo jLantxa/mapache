@@ -8,11 +8,15 @@
   backend as there is no lock file to delete, sparing some operations and
   retries in the backend.
 - Dry backends no longer try to create the backend.
+- Updated aws-lc-sys dependencies solving some security vulnerabilities.
 
 ### Changes
 
 - When `mapache snapshot` cannot open a directory or file, it will print a
   warning but still continue with the snapshot.
+- Replaced some sync utility functions with fully async versions.
+- Improved scanning of node metadata, making the processing of small files
+  a bit faster.
 
 ## v0.2.0
 

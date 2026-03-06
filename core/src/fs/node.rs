@@ -151,8 +151,8 @@ impl Metadata {
 }
 
 impl Node {
-    /// Build a `Node` from any path on disk asynchronously.
-    pub async fn from_path_async(path: &Path) -> Result<Self> {
+    /// Build a `Node` from any path on disk.
+    pub async fn from_path(path: &Path) -> Result<Self> {
         let meta = tokio::fs::symlink_metadata(path).await.with_context(|| {
             format!(
                 "Failed to get symlink metadata for path: {}",
@@ -175,13 +175,13 @@ impl Node {
         };
 
         if node.is_symlink() {
-            node.populate_symlink_info_async(path).await?;
+            node.populate_symlink_info(path).await?;
         }
 
         Ok(node)
     }
 
-    async fn populate_symlink_info_async(&mut self, path: &Path) -> Result<()> {
+    async fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
         let target = tokio::fs::read_link(path)
             .await
             .with_context(|| format!("Failed to read symlink target for: {}", path.display()))?;
@@ -209,34 +209,39 @@ impl Node {
         Ok(())
     }
 
-    /// Build a `Node` from any path on disk.
-    pub fn from_path(path: &Path) -> Result<Self> {
-        let meta = std::fs::symlink_metadata(path).with_context(|| {
-            format!(
-                "Failed to get symlink metadata for path: {}",
-                path.display()
-            )
-        })?;
+    #[inline]
+    pub fn is_dir(&self) -> bool {
+        matches!(self.node_type, NodeType::Directory)
+    }
 
-        let node_type = get_node_type(&meta)?;
+    #[inline]
+    pub fn is_file(&self) -> bool {
+        matches!(self.node_type, NodeType::File)
+    }
 
-        let name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".to_string());
+    #[inline]
+    pub fn is_symlink(&self) -> bool {
+        matches!(self.node_type, NodeType::Symlink)
+    }
 
-        let mut node = Self {
-            name,
-            node_type,
-            metadata: Metadata::from_fs(&meta),
-            ..Default::default()
-        };
+    #[inline]
+    pub fn is_block_device(&self) -> bool {
+        matches!(self.node_type, NodeType::BlockDevice)
+    }
 
-        if node.is_symlink() {
-            node.populate_symlink_info(path)?;
-        }
+    #[inline]
+    pub fn is_char_device(&self) -> bool {
+        matches!(self.node_type, NodeType::CharDevice)
+    }
 
-        Ok(node)
+    #[inline]
+    pub fn is_fifo(&self) -> bool {
+        matches!(self.node_type, NodeType::Fifo)
+    }
+
+    #[inline]
+    pub fn is_socket(&self) -> bool {
+        matches!(self.node_type, NodeType::Socket)
     }
 
     pub async fn from_dir_entry(path: &Path, e: &tokio::fs::DirEntry) -> Result<Self> {
@@ -301,99 +306,10 @@ impl Node {
         };
 
         if node.is_symlink() {
-            node.populate_symlink_info(path)?;
+            node.populate_symlink_info(path).await?;
         }
 
         Ok(node)
-    }
-
-    pub fn from_std_dir_entry(e: &std::fs::DirEntry) -> Result<Self> {
-        let path = e.path();
-        let meta = e.metadata().with_context(|| {
-            format!(
-                "Failed to get metadata for directory entry: {}",
-                path.display()
-            )
-        })?;
-
-        let node_type = get_node_type(&meta)?;
-
-        let name = e.file_name().to_string_lossy().into_owned();
-
-        let mut node = Self {
-            name,
-            node_type,
-            metadata: Metadata::from_fs(&meta),
-            ..Default::default()
-        };
-
-        if node.is_symlink() {
-            node.populate_symlink_info(&path)?;
-        }
-
-        Ok(node)
-    }
-
-    fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
-        let target = std::fs::read_link(path)
-            .with_context(|| format!("Failed to read symlink target for: {}", path.display()))?;
-
-        let mut info = SymlinkInfo {
-            target_path: target.clone(),
-            target_type: None,
-        };
-
-        // Cross-Platform Support: Windows requires knowing if the target is a dir.
-        // We probe the target type only if it exists.
-        if let Some(parent) = path.parent() {
-            let full_target_path = parent.join(&target);
-            if let Ok(target_meta) = std::fs::metadata(&full_target_path) {
-                info.target_type = Some(get_node_type(&target_meta).with_context(|| {
-                    format!(
-                        "Failed to resolve target type for symlink: {}",
-                        full_target_path.display()
-                    )
-                })?);
-            }
-        }
-
-        self.symlink_info = Some(info);
-        Ok(())
-    }
-
-    #[inline]
-    pub fn is_dir(&self) -> bool {
-        matches!(self.node_type, NodeType::Directory)
-    }
-
-    #[inline]
-    pub fn is_file(&self) -> bool {
-        matches!(self.node_type, NodeType::File)
-    }
-
-    #[inline]
-    pub fn is_symlink(&self) -> bool {
-        matches!(self.node_type, NodeType::Symlink)
-    }
-
-    #[inline]
-    pub fn is_block_device(&self) -> bool {
-        matches!(self.node_type, NodeType::BlockDevice)
-    }
-
-    #[inline]
-    pub fn is_char_device(&self) -> bool {
-        matches!(self.node_type, NodeType::CharDevice)
-    }
-
-    #[inline]
-    pub fn is_fifo(&self) -> bool {
-        matches!(self.node_type, NodeType::Fifo)
-    }
-
-    #[inline]
-    pub fn is_socket(&self) -> bool {
-        matches!(self.node_type, NodeType::Socket)
     }
 }
 

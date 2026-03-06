@@ -15,7 +15,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::{
     backend::WriteContents,
     fs::{calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
-    mapache::{BlobType, ID, SaveID, global::GlobalOpts},
+    mapache::{BlobType, ID, SaveID},
     repository::repo::Repository,
 };
 
@@ -103,7 +103,7 @@ impl FSNodeStream {
         let mut allowed_paths = Vec::with_capacity(paths.len());
         for path in paths {
             if filter.allow(&path) {
-                let node = Node::from_path_async(&path).await.with_context(|| {
+                let node = Node::from_path(&path).await.with_context(|| {
                     format!("Path {} does not exist or is inaccessible", path.display())
                 })?;
                 allowed_paths.push((path, node));
@@ -141,16 +141,13 @@ impl FSNodeStream {
             filter,
         };
 
-        let fs_stat_concurrency = GlobalOpts::fs_stat_concurrency();
-
         Ok(Self {
-            inner: Self::make_inner_stream(state, fs_stat_concurrency),
+            inner: Self::make_inner_stream(state),
         })
     }
 
     fn make_inner_stream(
         mut state: FSNodeState,
-        fs_stat_concurrency: usize,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamNodeInfo>> + Send>> {
         try_stream! {
             while state.intermediate_paths.last().is_some() || state.stack.last().is_some() {
@@ -167,7 +164,7 @@ impl FSNodeStream {
                         let node_res = if let Some(n) = maybe_node {
                             Ok(n)
                         } else {
-                            Node::from_path_async(&path).await
+                            Node::from_path(&path).await
                         };
 
                         match node_res {
@@ -187,7 +184,7 @@ impl FSNodeStream {
                 let node_res = if let Some(n) = maybe_node {
                     Ok(n)
                 } else {
-                    Node::from_path_async(&path).await
+                    Node::from_path(&path).await
                 };
 
                 let node = match node_res {
@@ -201,77 +198,40 @@ impl FSNodeStream {
                 let mut num_children = 0;
 
                 if node.is_dir() {
-                    let path_clone = path.clone();
-                    let filter_clone = Arc::clone(&state.filter);
-
-                    // Read entries to get names.
-                    let children_names_res = tokio::task::spawn_blocking(move || {
-                        let mut names = Vec::new();
-                        for entry in std::fs::read_dir(&path_clone)? {
-                            let entry = entry?;
-                            let child_path = entry.path();
-                            if filter_clone.allow(&child_path) {
-                                names.push(entry.file_name());
+                    // Read entries and create nodes asynchronously.
+                    let mut children = Vec::new();
+                    match tokio::fs::read_dir(&path).await {
+                        Ok(mut read_dir) => {
+                            while let Ok(Some(entry)) = read_dir.next_entry().await {
+                                let child_path = entry.path();
+                                if state.filter.allow(&child_path) {
+                                    match Node::from_dir_entry(&child_path, &entry).await {
+                                        Ok(node) => children.push((entry.file_name(), node)),
+                                        Err(e) => {
+                                            yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children: 0 }));
+                                            yield (path.clone(), Err(e.context("Failed to build node from entry")));
+                                        }
+                                    }
+                                }
                             }
-                        }
-                        names.sort_unstable();
-                        Ok::<Vec<_>, anyhow::Error>(names)
-                    }).await.context("Directory read panicked");
-
-                    let children_names = match children_names_res {
-                        Ok(Ok(names)) => names,
-                        Ok(Err(e)) => {
-                            // If we can't read the directory, we still yield the directory node but with 0 children
-                            // and then yield an error for the traversal failure.
-                            yield (path.clone(), Ok(StreamNode { node, num_children: 0 }));
-                            yield (path, Err(e.context("Failed to read directory entries")));
-                            continue;
                         }
                         Err(e) => {
                             yield (path.clone(), Ok(StreamNode { node, num_children: 0 }));
-                            yield (path, Err(anyhow!(e).context("Panic while reading directory entries")));
+                            yield (path, Err(anyhow::Error::from(e).context("Failed to read directory entries")));
                             continue;
                         }
-                    };
+                    }
+                    children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
 
-                    num_children = children_names.len();
+                    num_children = children.len();
 
                     // Yield the directory node NOW.
                     yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children }));
 
                     if num_children > 0 {
-                        // Parallelize stats for all siblings using buffered stream.
                         let shared_parent = Arc::new(path.clone());
-                        let mut stat_stream = futures::stream::iter(children_names)
-                            .map(|name| {
-                                let parent = shared_parent.clone();
-                                async move {
-                                    let child_path = parent.join(&name);
-                                    let node_res = Node::from_path_async(&child_path).await;
-                                    Ok::<_, anyhow::Error>((name, node_res))
-                                }
-                            })
-                            .buffered(fs_stat_concurrency);
-
-                        let mut results: Vec<Result<(std::ffi::OsString, Node), anyhow::Error>> = Vec::with_capacity(num_children);
-                        while let Some(res) = stat_stream.next().await {
-                            // res is Result<(OsString, Result<Node>)>
-                            match res {
-                                Ok((name, Ok(node))) => results.push(Ok((name, node))),
-                                Ok((name, Err(e))) => {
-                                    // Yield error for individual child but don't stop the whole sibling batch
-                                    let child_path = path.join(&name);
-                                    yield (child_path, Err(e));
-                                }
-                                Err(e) => {
-                                    // This is a task error (unexpected)
-                                    yield (path.clone(), Err(e));
-                                }
-                            }
-                        }
-
                         // Push successfully stated nodes to stack in reverse order.
-                        for (child_name, child_node) in results.into_iter().rev().flatten() {
+                        for (child_name, child_node) in children.into_iter().rev() {
                             state.stack.push((shared_parent.clone(), child_name, Some(child_node)));
                         }
                     }

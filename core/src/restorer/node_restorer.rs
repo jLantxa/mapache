@@ -331,8 +331,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_restore_mtime() -> Result<()> {
+    #[tokio::test]
+    async fn test_restore_mtime() -> Result<()> {
         use std::fs::File;
 
         use tempfile::tempdir;
@@ -341,7 +341,7 @@ mod tests {
         let file_path = temp_dir.path().join("file.txt");
 
         std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
-        let mut node = Node::from_path(&file_path)?;
+        let mut node = Node::from_path(&file_path).await?;
 
         // Change mtime to 1 day before now
         let prev_mtime: SystemTime = (Local::now() - Duration::days(1)).into();

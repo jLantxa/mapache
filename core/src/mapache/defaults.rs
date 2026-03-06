@@ -9,7 +9,6 @@ pub(crate) const APP_NAME: &str = "mapache";
 // --- Concurrency ---
 pub(crate) const DEFAULT_SNAPSHOT_READERS: usize = 4;
 pub(crate) const DEFAULT_SNAPSHOT_PACKERS: usize = 4;
-pub(crate) const DEFAULT_FSNODESTREAM_PARALLEL_STATS: usize = 4;
 
 // --- Index ---
 pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);

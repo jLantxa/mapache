@@ -44,9 +44,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::warning!("The repo and target backend URLs are the same");
     }
 
-    let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false)).await?;
 
+    let dst_backend = backend::new_backend_with_prompt(BackendOptions {
+        repo_path: args.target.clone(),
+        ssh_privatekey: args.dst_ssh_privatekey.clone(),
+        dry_backend: false,
+    })
+    .await?;
+
+    let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
     let (_repo, _secure_storage, mut lock_handle) = Repository::try_open_with_lock(
         src_auth.as_ref(),
         global_args.key.as_ref(),
@@ -61,12 +68,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await?;
 
-    let dst_backend = backend::new_backend_with_prompt(BackendOptions {
-        repo_path: args.target.clone(),
-        ssh_privatekey: args.dst_ssh_privatekey.clone(),
-        dry_backend: false,
-    })
-    .await?;
     dst_backend.create().await?; // Create the backend to create the directory if it doesn't exist.
 
     let cleanup_handler = CleanupHandler::new_with_callback(move || {

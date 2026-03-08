@@ -238,6 +238,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             strip_prefix: common_prefix,
         },
         progress_reporter.clone(),
+        cleanup_handler.interrupted.clone(),
     )
     .await?;
 
@@ -255,6 +256,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             parsed_excludes,
             args.dry_run,
             args.no_preserve_root,
+            cleanup_handler.interrupted.clone(),
         )
         .await?;
         ui::cli::log!();

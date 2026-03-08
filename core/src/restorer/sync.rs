@@ -1,16 +1,20 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use futures::StreamExt;
 
 use crate::{fs::tree::SerializedTreeStream, mapache::ID, repository::repo::Repository, ui};
 
 /// Delete all local nodes not present in a snapshot tree
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_nodes(
     repo: Arc<Repository>,
     target_path: PathBuf,
@@ -19,6 +23,7 @@ pub async fn delete_nodes(
     exclude: Option<Vec<PathBuf>>,
     dry_run: bool,
     no_preserve_root: bool,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     let mut tree_stream =
         SerializedTreeStream::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
@@ -34,6 +39,10 @@ pub async fn delete_nodes(
     }
 
     while let Some(item_result) = tree_stream.next().await {
+        if shutdown_signal.load(Ordering::Relaxed) {
+            bail!("Interrupted");
+        }
+
         // Handle potential errors from the stream itself.
         // If an error occurs, log a warning and skip to the next item,
         // rather than bailing out entirely, which seems to be the intended behavior.

@@ -4,7 +4,10 @@ pub(crate) mod sync;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, bail};
@@ -41,6 +44,7 @@ pub async fn restore(
     exclude: Option<Vec<PathBuf>>,
     opts: RestoreOptions,
     progress_reporter: Arc<RestoreProgressReporter>,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     let tree = snapshot.tree;
     let mut node_stream =
@@ -56,6 +60,10 @@ pub async fn restore(
     let mut restored_dir_times = HashMap::new();
 
     while let Some(node_res) = node_stream.next().await {
+        if shutdown_signal.load(Ordering::Relaxed) {
+            bail!("Interrupted");
+        }
+
         let (mut path, stream_node_res) = node_res?;
         let stream_node = stream_node_res?;
         let node = &stream_node.node;
@@ -150,6 +158,10 @@ pub async fn restore(
 
     if !opts.dry_run {
         for (dir_path, (atime, mtime)) in restored_dir_times.into_iter() {
+            if shutdown_signal.load(Ordering::Relaxed) {
+                bail!("Interrupted");
+            }
+
             node_restorer::restore_times(&dir_path, atime.as_ref(), mtime.as_ref())?;
         }
     }

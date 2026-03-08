@@ -59,7 +59,7 @@ impl MapacheFS {
         };
 
         let mut config = Config::default();
-        config.mount_options = vec![MountOption::RO, MountOption::DefaultPermissions];
+        config.mount_options = vec![MountOption::RO];
         config.acl = if allow_other {
             SessionACL::All
         } else {

@@ -9,6 +9,8 @@
   retries in the backend.
 - Dry backends no longer try to create the backend.
 - Updated aws-lc-sys dependencies solving some security vulnerabilities.
+- Disable permission checking in mounted snapshot. This would prevent the user
+  from accessing snapshot nodes if the UID and GID differ from the user's.
 
 ### Changes
 

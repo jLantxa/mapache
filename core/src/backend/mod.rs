@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod dry;
+pub mod limiter;
 pub mod localfs;
 pub mod s3;
 pub mod sftp;
@@ -10,16 +11,16 @@ use std::{
     time::SystemTime,
 };
 
-use crate::{backend::sftp::SftpBackend, mapache::ContentIdType};
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use dry::DryBackend;
+use limiter::ThrottledBackend;
 use localfs::LocalFS;
 use percent_encoding::percent_decode_str;
 use s3::S3Backend;
 use url::Url;
 
-use crate::ui;
+use crate::{backend::sftp::SftpBackend, mapache::ContentIdType, ui};
 
 /// Configuration for retry logic.
 #[derive(Debug, Clone)]
@@ -183,6 +184,8 @@ pub struct BackendOptions {
     pub ssh_privatekey: Option<PathBuf>,
     /// If true, wraps the chosen backend in a `DryBackend` to prevent actual writes.
     pub dry_backend: bool,
+    pub limit_upload: Option<u64>,
+    pub limit_download: Option<u64>,
 }
 
 /// Factory function to initialize a backend based on a URL string.
@@ -192,8 +195,8 @@ pub struct BackendOptions {
 pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn StorageBackend>> {
     let backend_url = BackendUrl::from(&opts.repo_path)?;
 
-    let backend: Arc<dyn StorageBackend> = match backend_url {
-        BackendUrl::Local(repo_path) => Arc::new(LocalFS::new(repo_path)),
+    let backend: Arc<dyn StorageBackend> = match &backend_url {
+        BackendUrl::Local(repo_path) => Arc::new(LocalFS::new(repo_path.to_path_buf())),
         BackendUrl::Sftp(username, host, port, repo_path) => {
             const MAX_PASSWORD_RETRIES: usize = 3;
             let mut password_try_count = 0;
@@ -213,8 +216,9 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                     repo_path.clone(),
                     username.clone(),
                     host.clone(),
-                    port,
+                    *port,
                     auth_method,
+                    &opts,
                 )
                 .await
                 {
@@ -249,14 +253,37 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                 .unwrap_or_else(|_| ui::cli::request_password("AWS Secret Access Key"));
 
             Arc::new(S3Backend::new(
-                region, bucket, prefix, endpoint, access_key, secret_key,
+                region,
+                bucket.clone(),
+                prefix.clone(),
+                endpoint,
+                access_key,
+                secret_key,
             )?)
         }
     };
 
+    // Dry backend wrapper
     let backend = match opts.dry_backend {
         true => Arc::new(DryBackend::new(backend.clone())),
         false => backend,
+    };
+
+    // Rate limiter wrapper
+    let backend: Arc<dyn StorageBackend> = match &backend_url {
+        BackendUrl::Sftp(..) => backend, // SftpBackend has native interleaved throttling.
+        _ => {
+            // S3 and LocalFS use the generic wrapper (Wait-then-Burst).
+            if opts.limit_upload.is_some() || opts.limit_download.is_some() {
+                Arc::new(ThrottledBackend::new(
+                    backend,
+                    opts.limit_upload,
+                    opts.limit_download,
+                ))
+            } else {
+                backend
+            }
+        }
     };
 
     Ok(backend)

@@ -13,15 +13,21 @@ use russh::{
     client,
     keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key},
 };
-use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::{FileAttributes, OpenFlags};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::Mutex;
-use tokio::time::timeout;
+use russh_sftp::{
+    client::SftpSession,
+    protocol::{FileAttributes, OpenFlags},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::Mutex,
+    time::timeout,
+};
 
 use crate::{
     backend::{
-        Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry, set_readonly_mode,
+        Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents,
+        limiter::{RateLimiter, THROTTLED_CHUNK_SIZE},
+        retry, set_readonly_mode,
     },
     repository::repo::REPO_TMP_EXTENSION,
     ui,
@@ -267,6 +273,8 @@ pub struct SftpBackend {
     base_path: PathBuf,
     manager: Arc<SftpConnectionManager>,
     retry_opts: RetryOptions,
+    upload_limiter: Option<Arc<RateLimiter>>,
+    download_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl SftpBackend {
@@ -276,6 +284,7 @@ impl SftpBackend {
         host: String,
         port: u16,
         auth_method: AuthMethod,
+        opts: &crate::backend::BackendOptions,
     ) -> Result<Self> {
         let manager = Arc::new(
             SftpConnectionManager::new(MAX_SFTP_CONNECTIONS, username, host, port, auth_method)
@@ -292,6 +301,8 @@ impl SftpBackend {
             base_path,
             manager,
             retry_opts,
+            upload_limiter: opts.limit_upload.map(|l| Arc::new(RateLimiter::new(l))),
+            download_limiter: opts.limit_download.map(|l| Arc::new(RateLimiter::new(l))),
         })
     }
 
@@ -447,6 +458,7 @@ impl StorageBackend for SftpBackend {
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let full = self.full_path(handle.path);
+        let limiter: Option<Arc<RateLimiter>> = self.download_limiter.clone();
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
@@ -473,19 +485,44 @@ impl StorageBackend for SftpBackend {
 
             file.seek(std::io::SeekFrom::Start(real_offset)).await?;
 
-            let mut contents = if length > 0 {
-                vec![0u8; length]
-            } else {
-                Vec::new()
-            };
+            let mut final_contents = Vec::with_capacity(if length > 0 { length } else { 0 });
+            let mut remaining = if length > 0 { Some(length) } else { None };
 
-            if length == 0 {
-                file.read_to_end(&mut contents).await?;
-            } else {
-                file.read_exact(&mut contents).await?;
+            // Interleaved read + wait
+            loop {
+                if let Some(0) = remaining {
+                    break;
+                }
+
+                let chunk_limit = match remaining {
+                    Some(rem) => std::cmp::min(rem, THROTTLED_CHUNK_SIZE),
+                    None => THROTTLED_CHUNK_SIZE,
+                };
+
+                let mut chunk = vec![0u8; chunk_limit];
+                let n = if remaining.is_some() {
+                    file.read_exact(&mut chunk).await?;
+                    chunk_limit
+                } else {
+                    file.read(&mut chunk).await?
+                };
+
+                if n == 0 {
+                    break;
+                }
+
+                chunk.truncate(n);
+                if let Some(l) = &limiter {
+                    l.wait(n as u64).await;
+                }
+                final_contents.extend_from_slice(&chunk);
+
+                if let Some(ref mut rem) = remaining {
+                    *rem -= n;
+                }
             }
 
-            Ok(contents)
+            Ok(final_contents)
         })
         .await
     }
@@ -494,6 +531,7 @@ impl StorageBackend for SftpBackend {
         let tmp_path = handle.path.with_extension(REPO_TMP_EXTENSION);
         let full_tmp = self.full_path(&tmp_path);
         let full_dst = self.full_path(handle.path);
+        let limiter: Option<Arc<RateLimiter>> = self.upload_limiter.clone();
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
@@ -515,9 +553,15 @@ impl StorageBackend for SftpBackend {
                     format!("Failed to create tmp file {:?} in sftp backend", tmp_path)
                 })?;
 
-            file.write_all(&contents).await.with_context(|| {
-                format!("Failed to write tmp file {:?} in sftp backend", tmp_path)
-            })?;
+            // Interleaved write + wait
+            for chunk in contents.chunks(THROTTLED_CHUNK_SIZE) {
+                if let Some(l) = &limiter {
+                    l.wait(chunk.len() as u64).await;
+                }
+                file.write_all(chunk).await.with_context(|| {
+                    format!("Failed to write tmp file {:?} in sftp backend", tmp_path)
+                })?;
+            }
 
             file.shutdown().await?;
 

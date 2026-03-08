@@ -50,6 +50,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo_path: args.target.clone(),
         ssh_privatekey: args.dst_ssh_privatekey.clone(),
         dry_backend: false,
+        limit_upload: global_args.limit_upload,
+        limit_download: global_args.limit_download,
     })
     .await?;
 

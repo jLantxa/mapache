@@ -1397,6 +1397,8 @@ mod tests {
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
+            limit_upload: None,
+            limit_download: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -1476,6 +1478,8 @@ mod tests {
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
+            limit_upload: None,
+            limit_download: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);

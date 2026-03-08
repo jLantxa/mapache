@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use s3::creds::Credentials;
-use s3::{Bucket, Region};
+use s3::{Bucket, Region, creds::Credentials};
 
 use crate::backend::{Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry};
 
@@ -11,27 +10,35 @@ use crate::backend::{Handle, NodeAttr, RetryOptions, StorageBackend, WriteConten
 pub struct S3Backend {
     bucket: Box<Bucket>,
     prefix: PathBuf,
+    retry_opts: RetryOptions,
 }
 
 impl S3Backend {
     pub fn new(
         region: String,
-        bucket: String,
+        bucket_name: String,
         prefix: PathBuf,
         endpoint: String,
         access_key: String,
         secret_key: String,
     ) -> Result<Self> {
         let region = if endpoint == "amazonaws.com" {
-            region.parse()?
+            region.parse::<Region>().map_err(|e| anyhow::anyhow!(e))?
         } else {
             Region::Custom { region, endpoint }
         };
 
-        let credentials = Credentials::new(Some(&access_key), Some(&secret_key), None, None, None)?;
-        let bucket = Bucket::new(&bucket, region, credentials)?;
+        let credentials = Credentials::new(Some(&access_key), Some(&secret_key), None, None, None)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let bucket = Bucket::new(&bucket_name, region, credentials)
+            .map_err(|e| anyhow::anyhow!(e))?
+            .with_path_style();
 
-        Ok(Self { bucket, prefix })
+        Ok(Self {
+            bucket,
+            prefix,
+            retry_opts: RetryOptions::default(),
+        })
     }
 
     fn key_from_path(&self, path: &Path) -> String {
@@ -84,7 +91,7 @@ impl S3Backend {
         F: FnMut() -> Fut + Send + Sync,
         Fut: std::future::Future<Output = Result<T>> + Send,
     {
-        retry("S3 operation", &RetryOptions::default(), f).await
+        retry("S3", &self.retry_opts, f).await
     }
 }
 

@@ -1,11 +1,11 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
-    backend::{StorageBackend, WriteContents, read_backend_dir},
+    backend::WriteContents,
     mapache::{
         self, ContentIdType, ID, SaveID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
@@ -143,7 +143,7 @@ impl Plan {
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
         gc_sizes.deleted_bytes += remove_expired_locks(&self.repo).await?;
-        delete_trash_files(self.repo.backend().as_ref()).await?;
+        delete_trash_files(&self.repo).await?;
 
         if self.small_packs.len() > 1 {
             self.obsolete_packs.extend(self.small_packs.drain());
@@ -256,47 +256,47 @@ impl Plan {
         // This is where the old, duplicate index entries are logically removed.
         self.repo.index().cleanup(Some(&self.obsolete_packs));
 
-        let rt_handle = tokio::runtime::Handle::current();
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let repack_bar = ProgressBar::with_draw_target(
+            Some(repack_blob_info.len() as u64),
+            default_bar_draw_target(),
+        )
+        .with_style(
+            ProgressStyle::default_bar()
+                .template("[{percent} %] [{bar:20.cyan/white}] Repacking blobs: {pos} / {len}")
+                .unwrap()
+                .progress_chars("=> "),
+        );
 
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()?;
-
-        pool.scope(|s| {
-            for (blob_id, (pack_id, blob_type, offset, length)) in repack_blob_info {
+        stream::iter(repack_blob_info)
+            .map(|(blob_id, (pack_id, blob_type, offset, length))| {
                 let repo = self.repo.clone();
-                let rt = rt_handle.clone();
-                let tx = tx.clone();
-
-                s.spawn(move |_| {
-                    let res = rt.block_on(async {
-                        let data = repo
-                            .read_from_pack_and_decode(
-                                blob_type,
-                                &pack_id,
-                                offset as u64,
-                                length as u64,
-                            )
-                            .await?;
-
-                        repo.encode_and_save_blob(
+                let bar = repack_bar.clone();
+                async move {
+                    let data = repo
+                        .read_from_pack_and_decode(
                             blob_type,
-                            WriteContents::Owned(data),
-                            SaveID::WithID(blob_id),
+                            &pack_id,
+                            offset as u64,
+                            length as u64,
                         )
-                        .await
-                    });
-                    let _ = tx.send(res);
-                });
-            }
-        });
+                        .await?;
 
-        // Check for errors in the channel
-        drop(tx);
-        for res in rx {
-            res?;
-        }
+                    repo.encode_and_save_blob(
+                        blob_type,
+                        WriteContents::Owned(data),
+                        SaveID::WithID(blob_id),
+                    )
+                    .await?;
+
+                    bar.inc(1);
+                    Ok::<(), anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(8)
+            .try_collect::<Vec<()>>()
+            .await?;
+
+        repack_bar.finish_and_clear();
 
         Ok(())
     }
@@ -565,22 +565,55 @@ async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
 }
 
 /// Remove all .tmp and .dropped files in the repository.
-async fn delete_trash_files(backend: &dyn StorageBackend) -> Result<()> {
-    let nodes = read_backend_dir(backend, Path::new("")).await?;
-    let tmp_nodes = nodes
-        .into_iter()
-        .filter(|node| match node.path().extension() {
-            Some(ext) => {
-                ext.to_string_lossy() == REPO_TMP_EXTENSION
-                    || ext.to_string_lossy() == REPO_DROPPED_EXTENSION
-            }
-            None => false,
-        });
+///
+/// This function avoids a full recursive crawl by targeting only the specific
+/// directories where temporary files are created (index, snapshots, keys, locks, and data fanout).
+async fn delete_trash_files(repo: &Arc<Repository>) -> Result<()> {
+    let mut target_dirs = vec![
+        repo.snapshot_path().to_path_buf(),
+        repo.index_path().to_path_buf(),
+        repo.keys_path().to_path_buf(),
+        repo.locks_path().to_path_buf(),
+    ];
 
-    for node in tmp_nodes {
-        if backend.remove(node.path()).await.is_err() {
-            // Failing to delete one of these files is not a fatal error.
-            ui::cli::warning!("Could not remove file {}", node.path().display())
+    // Add all 256 data fanout subdirectories
+    for n in 0..256 {
+        target_dirs.push(repo.objects_path().join(format!("{n:0>2x}")));
+    }
+
+    let backend = repo.backend();
+
+    // Use a stream with limited concurrency to avoid saturating the runtime
+    // and preventing deadlocks in block_on contexts.
+    let trash_files: Vec<PathBuf> = stream::iter(target_dirs)
+        .map(|dir| {
+            let backend = backend.clone();
+            async move {
+                let mut found = Vec::new();
+                if let Ok(entries) = backend.list_dir(&dir).await {
+                    for entry in entries {
+                        if let Some(ext) = entry.extension() {
+                            let ext_str = ext.to_string_lossy();
+                            if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
+                                found.push(entry);
+                            }
+                        }
+                    }
+                }
+                Ok::<Vec<PathBuf>, anyhow::Error>(found)
+            }
+        })
+        .buffer_unordered(4) // Use a small concurrency factor to stay safe
+        .try_collect::<Vec<Vec<PathBuf>>>()
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    // Delete found trash files
+    for path in trash_files {
+        if backend.remove(&path).await.is_err() {
+            ui::cli::warning!("Could not remove trash file {}", path.display());
         }
     }
 

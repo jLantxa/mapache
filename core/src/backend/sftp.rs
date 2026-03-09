@@ -13,18 +13,25 @@ use russh::{
     client,
     keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key},
 };
-use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::{FileAttributes, OpenFlags};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::Mutex;
-use tokio::time::timeout;
+use russh_sftp::{
+    client::SftpSession,
+    protocol::{FileAttributes, OpenFlags},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter},
+    sync::Mutex,
+    time::timeout,
+};
 
 use crate::{
     backend::{
-        Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry, set_readonly_mode,
+        Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents,
+        limiter::{RateLimiter, ThrottledReader, ThrottledWriter},
+        retry, set_readonly_mode,
     },
     repository::repo::REPO_TMP_EXTENSION,
     ui,
+    utils::size,
 };
 
 /// Maximum number of concurrent SFTP connections to maintain.
@@ -267,6 +274,8 @@ pub struct SftpBackend {
     base_path: PathBuf,
     manager: Arc<SftpConnectionManager>,
     retry_opts: RetryOptions,
+    upload_limiter: Option<Arc<RateLimiter>>,
+    download_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl SftpBackend {
@@ -276,6 +285,7 @@ impl SftpBackend {
         host: String,
         port: u16,
         auth_method: AuthMethod,
+        opts: &crate::backend::BackendOptions,
     ) -> Result<Self> {
         let manager = Arc::new(
             SftpConnectionManager::new(MAX_SFTP_CONNECTIONS, username, host, port, auth_method)
@@ -285,13 +295,15 @@ impl SftpBackend {
         let retry_opts = RetryOptions {
             max_attempts: 4,
             base_delay: Duration::from_millis(200),
-            request_timeout: Duration::from_secs(60),
+            request_timeout: Duration::from_secs(300),
         };
 
         Ok(Self {
             base_path,
             manager,
             retry_opts,
+            upload_limiter: opts.limit_upload.map(|l| Arc::new(RateLimiter::new(l))),
+            download_limiter: opts.limit_download.map(|l| Arc::new(RateLimiter::new(l))),
         })
     }
 
@@ -447,30 +459,25 @@ impl StorageBackend for SftpBackend {
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let full = self.full_path(handle.path);
+        let limiter = self.download_limiter.clone();
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
-            let path_str = full.to_string_lossy().to_string();
+            let mut file = conn
+                .sftp
+                .open(full.to_string_lossy().to_string())
+                .await
+                .with_context(|| format!("Failed to open file {:?} for reading", handle.path))?;
 
-            let mut file = conn.sftp.open(&path_str).await.with_context(|| {
-                format!(
-                    "Failed to open file {:?} in sftp backend for reading",
-                    handle.path
-                )
-            })?;
-
-            let real_offset = if offset >= 0 {
-                offset as u64
-            } else {
-                let meta = file.metadata().await?;
-                let size = meta.size.unwrap_or(0);
-                if (offset.unsigned_abs() as u64) > size {
-                    0
-                } else {
-                    size - (offset.unsigned_abs() as u64)
-                }
+            let real_offset = match offset {
+                o if o >= 0 => o as u64,
+                _ => file
+                    .metadata()
+                    .await?
+                    .size
+                    .unwrap_or(0)
+                    .saturating_sub(offset.unsigned_abs() as u64),
             };
-
             file.seek(std::io::SeekFrom::Start(real_offset)).await?;
 
             let mut contents = if length > 0 {
@@ -479,10 +486,19 @@ impl StorageBackend for SftpBackend {
                 Vec::new()
             };
 
-            if length == 0 {
-                file.read_to_end(&mut contents).await?;
+            if let Some(l) = &limiter {
+                let mut reader = ThrottledReader::new(file, l.clone());
+                if length > 0 {
+                    reader.read_exact(&mut contents).await?;
+                } else {
+                    reader.read_to_end(&mut contents).await?;
+                }
             } else {
-                file.read_exact(&mut contents).await?;
+                if length > 0 {
+                    file.read_exact(&mut contents).await?;
+                } else {
+                    file.read_to_end(&mut contents).await?;
+                }
             }
 
             Ok(contents)
@@ -494,34 +510,41 @@ impl StorageBackend for SftpBackend {
         let tmp_path = handle.path.with_extension(REPO_TMP_EXTENSION);
         let full_tmp = self.full_path(&tmp_path);
         let full_dst = self.full_path(handle.path);
+        let limiter = self.upload_limiter.clone();
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
 
-            // Ensure parent exists
             if let Some(parent) = full_tmp.parent() {
                 let _ = Self::create_dir_all_full(&conn.sftp, parent).await;
             }
 
-            // Write tmp
-            let mut file = conn
+            let file = conn
                 .sftp
                 .open_with_flags(
                     full_tmp.to_string_lossy(),
                     OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
                 )
                 .await
-                .with_context(|| {
-                    format!("Failed to create tmp file {:?} in sftp backend", tmp_path)
-                })?;
+                .with_context(|| format!("Failed to create tmp file {:?}", tmp_path))?;
 
-            file.write_all(&contents).await.with_context(|| {
-                format!("Failed to write tmp file {:?} in sftp backend", tmp_path)
-            })?;
+            if let Some(l) = &limiter {
+                // Stack: BufWriter -> ThrottledWriter -> SftpFile
+                // This ensures that we buffer large amounts of data (e.g. 1 MiB)
+                // but shape the traffic as it is sent to the underlying network
+                // in smaller SFTP chunks.
+                let throttled = ThrottledWriter::new(file, l.clone());
+                let mut writer = BufWriter::with_capacity(size::MiB as usize, throttled);
+                writer.write_all(&contents).await?;
+                writer.flush().await?;
+                writer.shutdown().await?;
+            } else {
+                let mut writer = BufWriter::with_capacity(size::MiB as usize, file);
+                writer.write_all(&contents).await?;
+                writer.flush().await?;
+                writer.shutdown().await?;
+            }
 
-            file.shutdown().await?;
-
-            // Commit tmp -> dst
             Self::rename_full(&conn.sftp, &full_tmp, &full_dst).await
         })
         .await

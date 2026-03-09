@@ -99,6 +99,8 @@ impl TestContext {
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
+            limit_upload: None,
+            limit_download: None,
         };
         set_global_opts_with_args(&global);
 

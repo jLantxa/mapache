@@ -65,7 +65,7 @@ impl MapacheFS {
         } else {
             SessionACL::Owner
         };
-        config.n_threads = None;
+        config.n_threads = Some(1);
         config.clone_fd = false;
 
         if let Err(e) = fuser::mount2(filesystem, mountpoint, &config) {

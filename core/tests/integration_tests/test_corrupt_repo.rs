@@ -54,13 +54,12 @@ mod tests {
         let objects_path = ctx.repo_path.join(OBJECTS_DIR);
         for entry in fs::read_dir(objects_path)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                for subentry in fs::read_dir(entry.path())? {
-                    let subentry = subentry?;
-                    fs::remove_file(subentry.path())?;
-                    deleted = true;
-                    break;
-                }
+            if entry.file_type()?.is_dir()
+                && let Some(subentry) = fs::read_dir(entry.path())?.next()
+            {
+                let subentry = subentry?;
+                fs::remove_file(subentry.path())?;
+                deleted = true;
             }
             if deleted {
                 break;
@@ -106,7 +105,7 @@ mod tests {
             let entry = entry?;
             let mut content = fs::read(entry.path())?;
             if !content.is_empty() {
-                set_write_permission(&entry.path(), true)?;
+                set_write_permission(entry.path(), true)?;
                 content[0] = !content[0]; // Flip bits to break JSON/encrytion
                 fs::write(entry.path(), content)?;
                 corrupted = true;
@@ -163,7 +162,7 @@ mod tests {
             let entry = entry?;
             let mut content = fs::read(entry.path())?;
             if content.len() > 10 {
-                set_write_permission(&entry.path(), true)?;
+                set_write_permission(entry.path(), true)?;
                 content[10] = content[10].wrapping_add(1);
                 fs::write(entry.path(), content)?;
                 corrupted = true;

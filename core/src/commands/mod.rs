@@ -20,7 +20,7 @@ use crate::{
         snapshot::{Snapshot, SnapshotStream},
     },
     ui::{self},
-    utils,
+    utils::{self, size},
 };
 
 // Subcommands
@@ -149,6 +149,14 @@ pub struct GlobalArgs {
     /// string like 5m, 30s or 5m30s.
     #[clap(long = "retry-lock", value_parser = utils::parse_duration_string)]
     pub retry_lock_duration: Option<Duration>,
+
+    /// Limit upload speed (e.g. 10MB/s, 500KB/s)
+    #[clap(long = "limit-upload", value_parser = parse_bandwidth)]
+    pub limit_upload: Option<u64>,
+
+    /// Limit download speed (e.g. 10MB/s, 500KB/s)
+    #[clap(long = "limit-download", value_parser = parse_bandwidth)]
+    pub limit_download: Option<u64>,
 }
 
 impl GlobalArgs {
@@ -157,8 +165,38 @@ impl GlobalArgs {
             repo_path: self.repo.clone(),
             ssh_privatekey: self.ssh_privatekey.clone(),
             dry_backend: dry,
+            limit_upload: self.limit_upload,
+            limit_download: self.limit_download,
         }
     }
+}
+
+fn parse_bandwidth(s: &str) -> Result<u64, String> {
+    let s = s.to_uppercase();
+    let (num_str, unit) = if let Some(idx) = s.find(|c: char| !c.is_ascii_digit() && c != '.') {
+        s.split_at(idx)
+    } else {
+        (s.as_str(), "")
+    };
+
+    let num: f64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid number: {}", num_str))?;
+
+    let multiplier = match unit.trim() {
+        "" | "B" | "B/S" => 1u64,
+        "K" | "KIB" | "KIB/S" => size::KiB,
+        "KB" | "KB/S" => size::kB,
+        "M" | "MIB" | "MIB/S" => size::MiB,
+        "MB" | "MB/S" => size::MB,
+        "G" | "GIB" | "GIB/S" => size::GiB,
+        "GB" | "GB/S" => size::GB,
+        "T" | "TIB" | "TIB/S" => size::TiB,
+        "TB" | "TB/S" => size::TB,
+        _ => return Err(format!("Invalid unit: {}", unit)),
+    };
+
+    Ok((num * multiplier as f64) as u64)
 }
 
 fn pack_size_parser(s: &str) -> Result<f32> {
@@ -391,6 +429,22 @@ fn extract_global(command: &Command) -> Option<&GlobalArgs> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_bandwidth() {
+        assert_eq!(parse_bandwidth("1000").unwrap(), 1000);
+        assert_eq!(parse_bandwidth("1K").unwrap(), 1024);
+        assert_eq!(parse_bandwidth("1KB").unwrap(), 1000);
+        assert_eq!(parse_bandwidth("1M").unwrap(), 1024 * 1024);
+        assert_eq!(parse_bandwidth("1MB").unwrap(), 1000 * 1000);
+        assert_eq!(parse_bandwidth("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_bandwidth("1GB").unwrap(), 1000 * 1000 * 1000);
+        assert_eq!(
+            parse_bandwidth("1.5M").unwrap(),
+            (1.5 * 1024.0 * 1024.0) as u64
+        );
+        assert_eq!(parse_bandwidth("10MiB/s").unwrap(), 10 * 1024 * 1024);
+    }
 
     #[test]
     fn test_pack_size_parser() {

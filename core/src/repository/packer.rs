@@ -414,13 +414,17 @@ impl PackSaver {
                             }
                             Err(e) => {
                                 *err_ptr.lock() = Some(e);
+                                let _ = tx.send(packer); // Return packer to avoid leak
                                 return Ok(());
                             }
                         };
 
                         let repo = match repo_ptr.upgrade() {
                             Some(r) => r,
-                            None => return Ok(()),
+                            None => {
+                                let _ = tx.send(packer); // Return packer to avoid leak
+                                return Ok(());
+                            }
                         };
 
                         // Capture stats before moving descriptors into the async block
@@ -463,6 +467,8 @@ impl PackSaver {
                             Ok(size) => size,
                             Err(e) => {
                                 *err_ptr.lock() = Some(e);
+                                packer.recycle_buffer(pack_data);
+                                let _ = tx.send(packer); // Return packer to avoid leak
                                 return Ok(());
                             }
                         };

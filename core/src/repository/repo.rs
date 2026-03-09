@@ -859,6 +859,26 @@ impl Repository {
         self.master_index.clone()
     }
 
+    pub fn objects_path(&self) -> &Path {
+        &self.objects_path
+    }
+
+    pub fn snapshot_path(&self) -> &Path {
+        &self.snapshot_path
+    }
+
+    pub fn index_path(&self) -> &Path {
+        &self.index_path
+    }
+
+    pub fn keys_path(&self) -> &Path {
+        &self.keys_path
+    }
+
+    pub fn locks_path(&self) -> &Path {
+        &self.locks_path
+    }
+
     pub fn get_encoding_context(&self) -> Result<EncodingContext> {
         self.secure_storage.get_encoding_context()
     }
@@ -949,15 +969,29 @@ impl Repository {
             ContentIdType::Index => self.backend.list_dir(&self.index_path).await,
             ContentIdType::Lock => self.backend.list_dir(&self.locks_path).await,
             ContentIdType::Pack => {
-                let mut files = Vec::new();
-                for n in 0x00..(1 << (4 * OBJECTS_DIR_FANOUT)) {
-                    let dir_name = self
-                        .objects_path
-                        .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
+                use futures::stream::{self, StreamExt};
 
-                    let sub_files = self.backend.list_dir(&dir_name).await?;
-                    for file_path in sub_files.into_iter() {
-                        files.push(file_path);
+                let backend = self.backend.clone();
+                let objects_path = self.objects_path.clone();
+
+                let results = stream::iter(0..(1 << (4 * OBJECTS_DIR_FANOUT)))
+                    .map(|n| {
+                        let backend = backend.clone();
+                        let dir = objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
+
+                        async move {
+                            let files = backend.list_dir(&dir).await?;
+                            Ok::<Vec<PathBuf>, anyhow::Error>(files)
+                        }
+                    })
+                    .buffer_unordered(4) // Use conservative concurrency
+                    .collect::<Vec<_>>()
+                    .await;
+
+                let mut files = Vec::new();
+                for res in results {
+                    for path in res? {
+                        files.push(path);
                     }
                 }
 
@@ -1397,6 +1431,8 @@ mod tests {
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
+            limit_upload: None,
+            limit_download: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);
@@ -1476,6 +1512,8 @@ mod tests {
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
+            limit_upload: None,
+            limit_download: None,
         };
         let args = CmdArgs {};
         set_global_opts_with_args(&global);

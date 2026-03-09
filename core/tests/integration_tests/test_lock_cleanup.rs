@@ -51,7 +51,7 @@ async fn test_commands_lock_cleanup() -> Result<()> {
     ctx.init_repo().await?;
     let locks_dir = ctx.repo_path.join(LOCKS_DIR);
 
-    // 1. Snapshot
+    // Snapshot
     ctx.setup_backup_data()?;
     let snapshot_args = cmd_snapshot::CmdArgs {
         paths: vec![ctx.backup_data_path.as_ref().unwrap().clone()],
@@ -83,7 +83,7 @@ async fn test_commands_lock_cleanup() -> Result<()> {
             .to_hex()
     };
 
-    // 2. Log
+    // Log
     let log_args = cmd_log::CmdArgs {
         snapshot: None,
         dropped: false,
@@ -94,12 +94,12 @@ async fn test_commands_lock_cleanup() -> Result<()> {
     cmd_log::run(&ctx.global, &log_args).await?;
     wait_for_no_locks(&locks_dir).await?;
 
-    // 3. Stats
+    // Stats
     let stats_args = cmd_stats::CmdArgs { full: false };
     cmd_stats::run(&ctx.global, &stats_args).await?;
     wait_for_no_locks(&locks_dir).await?;
 
-    // 4. Verify
+    // Verify
     let verify_args = cmd_verify::CmdArgs {
         read_packs: false,
         parallel: 1,
@@ -110,7 +110,7 @@ async fn test_commands_lock_cleanup() -> Result<()> {
     cmd_verify::run(&ctx.global, &verify_args).await?;
     wait_for_no_locks(&locks_dir).await?;
 
-    // 5. Cat
+    // Cat
     let cat_args = cmd_cat::CmdArgs {
         object: cmd_cat::Object::Snapshot(snapshot_id_hex.clone()),
     };

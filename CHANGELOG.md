@@ -1,5 +1,16 @@
 # Changelog
 
+## Latest
+
+### Changes
+
+- Added a rate limiter for all backends. The upload and download rates can now
+  be selected with the `--limit-upload` and `--limit-download` options.
+  For backends that do not support streaming (local and S3), the upload and
+  downloads will be done in bursts, with an targetting the limit as an average
+  rate. SFTP implements native throttling by sending chunks of dynamic size,
+  targetting the limit as an average rate.
+
 ## v0.2.1
 
 ### Fixes

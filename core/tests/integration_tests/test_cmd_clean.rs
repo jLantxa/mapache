@@ -230,7 +230,7 @@ mod tests {
 
         // Run cmd_clean and compare the repositories (using backend readdir)
         let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
-        let pre_clean_nodes =
+        let mut pre_clean_nodes =
             mapache::backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
         let gc_args = cmd_clean::CmdArgs {
             tolerance: 0.0_f32,
@@ -241,8 +241,11 @@ mod tests {
         commands::cmd_clean::run(&ctx.global, &gc_args)
             .await
             .context("Failed to run cmd_gc")?;
-        let post_clean_nodes =
+        let mut post_clean_nodes =
             mapache::backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
+
+        pre_clean_nodes.sort();
+        post_clean_nodes.sort();
         assert_eq!(pre_clean_nodes, post_clean_nodes);
 
         // Now the same, but without dry-run, the repo changes

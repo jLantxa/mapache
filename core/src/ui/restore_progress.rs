@@ -292,6 +292,8 @@ mod tests {
 
     #[test]
     fn test_restore_reporter_counters() {
+        GlobalOpts::set_verbosity(0);
+
         // Mock restorer with 100 items and 5000 bytes expected
         let reporter = RestoreProgressReporter::new(100, 5000, 2);
 
@@ -329,6 +331,8 @@ mod tests {
 
     #[test]
     fn test_restore_finalize_cleans_up() {
+        GlobalOpts::set_verbosity(0);
+
         let reporter = RestoreProgressReporter::new(10, 100, 1);
 
         // This should trigger the UI thread Shutdown and join the handle

@@ -44,6 +44,11 @@ impl GlobalOpts {
         Duration::from_millis(REFRESH_INTERVAL_MS.load(Ordering::Relaxed))
     }
 
+    /// Sets the global verbosity level.
+    pub fn set_verbosity(verbosity: u32) {
+        VERBOSITY.store(verbosity, Ordering::Relaxed);
+    }
+
     /// Internal logic to parse refresh rate and update the atomic storage.
     fn init_refresh_interval() {
         let hz = get_envvar(REFRESH_RATE_ENVVAR)
@@ -65,6 +70,6 @@ pub fn set_global_opts_with_args(global_args: &GlobalArgs) {
         global_args.verbosity.unwrap_or(DEFAULT_VERBOSITY)
     };
 
-    VERBOSITY.store(verbosity, Ordering::Relaxed);
+    GlobalOpts::set_verbosity(verbosity);
     GlobalOpts::init_refresh_interval();
 }

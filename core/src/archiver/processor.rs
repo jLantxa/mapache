@@ -20,7 +20,6 @@ use crate::{
     mapache::{self, BlobType, ID, SaveID},
     repository::repo::Repository,
     ui::snapshot::SnapshotProgressReporter,
-    utils::size,
 };
 
 /// Reusable chunker instance.
@@ -101,45 +100,38 @@ pub(crate) async fn process_item(
             })?;
 
             if next.node.is_file() {
-                let file_res = open_for_sequential_read(path);
-                let file = match file_res {
-                    Ok(f) => f,
-                    Err(e) => {
-                        progress_reporter.warning(&format!(
-                            "Failed to open file {}: {}",
-                            path.display(),
-                            e
-                        ));
-                        progress.processed_node();
-                        return Ok(None);
+                let repo_clone = repo.clone();
+                let path_clone = path.to_path_buf();
+                let progress_clone = progress.clone();
+                let reporter_clone = progress_reporter.clone();
+                let shutdown_signal_clone = shutdown_signal.clone();
+                let node_clone = next.node.clone();
+
+                let blobs_ids = tokio::task::spawn_blocking(move || {
+                    let file = open_for_sequential_read(&path_clone)?;
+                    let file_size = node_clone.metadata.size;
+
+                    if file_size <= mapache::defaults::MIN_CHUNK_SIZE {
+                        store_small_file(
+                            repo_clone,
+                            file,
+                            &node_clone,
+                            progress_clone.as_ref(),
+                            reporter_clone.as_ref(),
+                        )
+                    } else {
+                        chunk_and_store_file(
+                            repo_clone,
+                            file,
+                            &node_clone,
+                            progress_clone,
+                            reporter_clone,
+                            shutdown_signal_clone,
+                        )
                     }
-                };
-
-                let file_size = next.node.metadata.size;
-                let capacity = (file_size as usize).min(size::MiB as usize);
-                let reader = std::io::BufReader::with_capacity(capacity, file);
-
-                let blobs_ids = match chunk_and_store_file(
-                    repo,
-                    &next.node,
-                    reader,
-                    progress.clone(),
-                    progress_reporter.clone(),
-                    shutdown_signal,
-                )
+                })
                 .await
-                {
-                    Ok(ids) => ids,
-                    Err(e) => {
-                        progress_reporter.warning(&format!(
-                            "Failed to process blobs for {}: {}",
-                            path.display(),
-                            e
-                        ));
-                        progress.processed_node();
-                        return Ok(None);
-                    }
-                };
+                .context("Blob processing panicked")??;
 
                 next.node.blobs = Some(blobs_ids);
             }
@@ -162,61 +154,40 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 }
 
 /// Split file into chunks and store blobs.
-pub(crate) async fn chunk_and_store_file<R: Read + Send + 'static>(
+pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
     repo: Arc<Repository>,
-    node: &Node,
     reader: R,
+    node: &Node,
     progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Vec<ID>> {
-    if node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE {
-        return store_small_file(
-            repo,
-            reader,
-            node,
-            progress.as_ref(),
-            progress_reporter.as_ref(),
-        )
-        .await;
-    }
-
     let file_size = node.metadata.size;
-    let progress_blocking = progress.clone();
-    let reporter_blocking = progress_reporter.clone();
+    let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
+    let mut ids = Vec::new();
 
-    let chunk_ids = tokio::task::spawn_blocking(move || {
-        let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
-        let mut ids = Vec::new();
-
-        for result in stream {
-            if shutdown_signal.load(Ordering::Relaxed) {
-                return Err(anyhow!("Shutdown signal received"));
-            }
-
-            let chunk = result?;
-            let chunk_len = chunk.data.len() as u64;
-
-            let rt = tokio::runtime::Handle::current();
-            let id = rt.block_on(repo.encode_and_save_blob(
-                BlobType::Data,
-                WriteContents::Owned(chunk.data),
-                SaveID::CalculateID,
-            ))?;
-
-            ids.push(id);
-            progress_blocking.processed_bytes(chunk_len);
-            reporter_blocking.processed_bytes(chunk_len);
+    for result in stream {
+        if shutdown_signal.load(Ordering::Relaxed) {
+            return Err(anyhow!("Shutdown signal received"));
         }
-        Ok::<Vec<ID>, anyhow::Error>(ids)
-    })
-    .await
-    .context("Chunker panicked")??;
 
-    Ok(chunk_ids)
+        let chunk = result?;
+        let chunk_len = chunk.data.len() as u64;
+
+        let id = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(&chunk.data),
+            SaveID::CalculateID,
+        )?;
+
+        ids.push(id);
+        progress.processed_bytes(chunk_len);
+        progress_reporter.processed_bytes(chunk_len);
+    }
+    Ok(ids)
 }
 
-async fn store_small_file<R: Read>(
+fn store_small_file<R: Read>(
     repo: Arc<Repository>,
     mut reader: R,
     node: &Node,
@@ -238,13 +209,11 @@ async fn store_small_file<R: Read>(
         data.set_len(size);
     }
 
-    let id = repo
-        .encode_and_save_blob(
-            BlobType::Data,
-            WriteContents::Owned(data),
-            SaveID::CalculateID,
-        )
-        .await?;
+    let id = repo.encode_and_save_blob(
+        BlobType::Data,
+        WriteContents::Owned(data),
+        SaveID::CalculateID,
+    )?;
 
     progress.processed_bytes(node.metadata.size);
     progress_reporter.processed_bytes(node.metadata.size);

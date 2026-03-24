@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -281,12 +281,16 @@ impl Plan {
                         )
                         .await?;
 
-                    repo.encode_and_save_blob(
-                        blob_type,
-                        WriteContents::Owned(data),
-                        SaveID::WithID(blob_id),
-                    )
-                    .await?;
+                    let repo_clone = repo.clone();
+                    tokio::task::spawn_blocking(move || {
+                        repo_clone.encode_and_save_blob(
+                            blob_type,
+                            WriteContents::Borrowed(&data),
+                            SaveID::WithID(blob_id),
+                        )
+                    })
+                    .await
+                    .context("Blob processing panicked")??;
 
                     bar.inc(1);
                     Ok::<(), anyhow::Error>(())

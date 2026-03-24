@@ -33,7 +33,7 @@ impl Tree {
 
     /// Saves a tree in the repository. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub async fn save_to_repo(&mut self, repo: &Repository) -> Result<ID> {
+    pub async fn save_to_repo(&mut self, repo: Arc<Repository>) -> Result<ID> {
         let mut owned = std::mem::take(self); // Take ownership
 
         let (serialized_data, owned_back) = tokio::task::spawn_blocking(move || {
@@ -46,12 +46,15 @@ impl Tree {
 
         *self = owned_back; // Return ownership
 
-        repo.encode_and_save_blob(
-            BlobType::Tree,
-            WriteContents::Owned(serialized_data),
-            SaveID::CalculateID,
-        )
+        tokio::task::spawn_blocking(move || {
+            repo.encode_and_save_blob(
+                BlobType::Tree,
+                WriteContents::Owned(serialized_data),
+                SaveID::CalculateID,
+            )
+        })
         .await
+        .context("Blob processing panicked")?
         .context("Failed to save tree blob to repository")
     }
 

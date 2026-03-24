@@ -343,18 +343,18 @@ async fn run_rechunk_task(
     let reader = SerializedNodeDataReader::new(repo.clone(), &node).await?;
     let sync_reader = BlockingBridge { inner: reader };
 
-    // Threads in spawn_blocking need their own encoding context
-    let mut _thread_context = repo.get_encoding_context()?;
-
-    chunk_and_store_file(
-        repo,
-        &node,
-        sync_reader,
-        progress,
-        progress_reporter,
-        shutdown_signal,
-    )
+    tokio::task::spawn_blocking(move || {
+        chunk_and_store_file(
+            repo,
+            sync_reader,
+            &node,
+            progress,
+            progress_reporter,
+            shutdown_signal,
+        )
+    })
     .await
+    .map_err(|e| anyhow::anyhow!("Rechunk task panicked: {}", e))?
 }
 
 pub enum SaveID {

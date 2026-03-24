@@ -178,7 +178,7 @@ impl TreeSerializer {
         let mut completed_tree = Tree::new(pending_tree.children);
 
         let tree_id = completed_tree
-            .save_to_repo(&self.repo.clone())
+            .save_to_repo(self.repo.clone())
             .await
             .with_context(|| format!("Failed to save tree for {}", dir_path.display()))?;
 

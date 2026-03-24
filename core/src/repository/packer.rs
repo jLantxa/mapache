@@ -596,10 +596,12 @@ impl PackSaver {
     ) {
         match blob_type {
             BlobType::Data => {
+                // For Data packs, the 'raw' and 'encoded' sizes correspond to the blobs themselves.
+                // The 'meta' sizes correspond to the pack footer.
                 repo.stats.raw_bytes.fetch_add(raw_size, Ordering::Relaxed);
                 repo.stats
                     .encoded_bytes
-                    .fetch_add(encoded_size, Ordering::Relaxed);
+                    .fetch_add(encoded_size - meta_size, Ordering::Relaxed);
                 repo.stats
                     .meta_raw_bytes
                     .fetch_add(meta_size, Ordering::Relaxed);
@@ -611,13 +613,13 @@ impl PackSaver {
                     .fetch_add(num_blobs, Ordering::Relaxed);
             }
             BlobType::Tree => {
-                // For Tree packs, the "data" itself is metadata
+                // For Tree packs, everything (blobs + footer) is considered repository metadata.
                 repo.stats
                     .meta_raw_bytes
                     .fetch_add(raw_size + meta_size, Ordering::Relaxed);
                 repo.stats
                     .meta_encoded_bytes
-                    .fetch_add(meta_size, Ordering::Relaxed);
+                    .fetch_add(encoded_size, Ordering::Relaxed);
                 repo.stats
                     .meta_blobs
                     .fetch_add(num_blobs, Ordering::Relaxed);

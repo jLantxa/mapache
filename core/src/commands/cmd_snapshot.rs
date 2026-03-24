@@ -123,10 +123,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 bail!("The snapshot root must be a directory");
             }
 
-            std::fs::read_dir(root)?
-                .filter_map(|entry| entry.ok())
-                .map(|entry| entry.path())
-                .collect()
+            let mut dir = tokio::fs::read_dir(root).await?;
+            let mut paths = Vec::new();
+            while let Some(entry) = dir.next_entry().await? {
+                paths.push(entry.path());
+            }
+            paths
         }
     };
 

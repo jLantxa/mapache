@@ -87,8 +87,8 @@ impl LocalFS {
             })
     }
 
-    /// Synchronous version of set_readonly_status for use in blocking tasks.
-    fn set_readonly_status_sync(full_path: &Path, readonly: bool) -> std::io::Result<()> {
+    /// Internal synchronous version of set_readonly_status for use in blocking tasks.
+    fn set_readonly_status_internal(full_path: &Path, readonly: bool) -> std::io::Result<()> {
         let metadata = match std::fs::metadata(full_path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !readonly => return Ok(()),
@@ -220,11 +220,11 @@ impl StorageBackend for LocalFS {
                 }
             }
 
-            let _ = Self::set_readonly_status_sync(&full_path, false);
+            let _ = Self::set_readonly_status_internal(&full_path, false);
 
             std::fs::rename(&full_tmp_path, &full_path)?;
 
-            let _ = Self::set_readonly_status_sync(&full_path, true);
+            let _ = Self::set_readonly_status_internal(&full_path, true);
 
             Ok(())
         })

@@ -36,10 +36,10 @@ pub(crate) fn default_bar_draw_target() -> ProgressDrawTarget {
 pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {
     let mut table = Table::new_with_alignments(vec![
         Alignment::Left,
+        Alignment::Left,
+        Alignment::Left,
         Alignment::Right,
-        Alignment::Right,
-        Alignment::Right,
-        Alignment::Right,
+        Alignment::Left,
     ]);
 
     table.set_headers(vec![

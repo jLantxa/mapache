@@ -90,7 +90,7 @@ pub struct Auth {
     pub password: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct RepoConfig {
     pub pack_size: u64,
     pub use_cache: bool,
@@ -911,8 +911,9 @@ impl Repository {
                         .objects_path
                         .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-                    let files = repo.backend.list_dir(&dir).await?;
-                    for path in files {
+                    let entries = repo.backend.list_dir(&dir).await?;
+                    for node in entries {
+                        let path = node.into_path();
                         let filename = path.file_name().unwrap().to_string_lossy().to_string();
                         if let Ok(id) = ID::from_hex(&filename) {
                             list.push(id);
@@ -958,10 +959,34 @@ impl Repository {
     /// with all extensions included.
     pub async fn list_all_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
         match file_type {
-            ContentIdType::Snapshot => self.backend.list_dir(&self.snapshot_path).await,
-            ContentIdType::Key => self.backend.list_dir(&self.keys_path).await,
-            ContentIdType::Index => self.backend.list_dir(&self.index_path).await,
-            ContentIdType::Lock => self.backend.list_dir(&self.locks_path).await,
+            ContentIdType::Snapshot => Ok(self
+                .backend
+                .list_dir(&self.snapshot_path)
+                .await?
+                .into_iter()
+                .map(|n| n.into_path())
+                .collect()),
+            ContentIdType::Key => Ok(self
+                .backend
+                .list_dir(&self.keys_path)
+                .await?
+                .into_iter()
+                .map(|n| n.into_path())
+                .collect()),
+            ContentIdType::Index => Ok(self
+                .backend
+                .list_dir(&self.index_path)
+                .await?
+                .into_iter()
+                .map(|n| n.into_path())
+                .collect()),
+            ContentIdType::Lock => Ok(self
+                .backend
+                .list_dir(&self.locks_path)
+                .await?
+                .into_iter()
+                .map(|n| n.into_path())
+                .collect()),
             ContentIdType::Pack => {
                 use futures::stream::{self, StreamExt};
 
@@ -974,8 +999,10 @@ impl Repository {
                         let dir = objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
                         async move {
-                            let files = backend.list_dir(&dir).await?;
-                            Ok::<Vec<PathBuf>, anyhow::Error>(files)
+                            let entries = backend.list_dir(&dir).await?;
+                            Ok::<Vec<PathBuf>, anyhow::Error>(
+                                entries.into_iter().map(|n| n.into_path()).collect(),
+                            )
                         }
                     })
                     .buffer_unordered(4) // Use conservative concurrency

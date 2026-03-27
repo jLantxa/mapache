@@ -155,7 +155,7 @@ pub trait StorageBackend: Send + Sync {
     async fn rename(&self, from: &Path, to: &Path) -> Result<()>;
 
     /// Lists the immediate contents of a directory.
-    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>>;
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>>;
 
     /// Recursively creates a directory path.
     async fn create_dir(&self, path: &Path) -> Result<()>;
@@ -364,7 +364,7 @@ impl BackendUrl {
 /// Represents a generic filesystem node within a backend.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BackendNode {
-    File(PathBuf),
+    File(PathBuf, u64),
     Dir(PathBuf),
 }
 
@@ -372,7 +372,7 @@ impl BackendNode {
     /// Returns the inner path regardless of node type.
     pub fn path(&self) -> &Path {
         match self {
-            BackendNode::File(path) => path,
+            BackendNode::File(path, _) => path,
             BackendNode::Dir(path) => path,
         }
     }
@@ -380,7 +380,7 @@ impl BackendNode {
     /// Consumes the node and returns the inner path.
     pub fn into_path(self) -> PathBuf {
         match self {
-            BackendNode::File(path) => path,
+            BackendNode::File(path, _) => path,
             BackendNode::Dir(path) => path,
         }
     }
@@ -402,12 +402,15 @@ pub async fn read_backend_dir(
     while let Some(current) = stack.pop() {
         let entries = backend.list_dir(&current).await?;
 
-        for sub_path in entries {
-            if backend.is_file(&sub_path).await {
-                nodes.push(BackendNode::File(sub_path.to_path_buf()));
-            } else if backend.is_dir(&sub_path).await {
-                nodes.push(BackendNode::Dir(sub_path.to_path_buf()));
-                stack.push(sub_path.to_path_buf());
+        for node in entries {
+            match &node {
+                BackendNode::File(_, _) => {
+                    nodes.push(node);
+                }
+                BackendNode::Dir(sub_path) => {
+                    nodes.push(node.clone());
+                    stack.push(sub_path.to_path_buf());
+                }
             }
         }
     }

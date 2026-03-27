@@ -1,6 +1,6 @@
 use std::{
     io::SeekFrom,
-    path::{Path, PathBuf},
+    path::Path,
     pin::Pin,
     sync::{
         Arc,
@@ -329,7 +329,7 @@ impl StorageBackend for ThrottledBackend {
         self.inner.rename(from, to).await
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<crate::backend::BackendNode>> {
         self.inner.list_dir(path).await
     }
 

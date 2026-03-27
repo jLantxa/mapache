@@ -187,7 +187,7 @@ mod tests {
             let first_pack_path = &ctx.repo_path.join(
                 backend_nodes
                     .iter()
-                    .find(|&node| matches!(node, BackendNode::File(_)))
+                    .find(|&node| matches!(node, BackendNode::File(_, _)))
                     .expect("There should at least be one pack")
                     .path(),
             );

@@ -4,7 +4,9 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use s3::{Bucket, Region, creds::Credentials};
 
-use crate::backend::{Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry};
+use crate::backend::{
+    BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry,
+};
 
 /// A storage backend that interacts with S3-compatible APIs.
 pub struct S3Backend {
@@ -201,13 +203,13 @@ impl StorageBackend for S3Backend {
         .await
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         let mut prefix = self.key_from_path(path);
         if !prefix.is_empty() && !prefix.ends_with('/') {
             prefix.push('/');
         }
 
-        let mut paths = Vec::new();
+        let mut nodes = Vec::new();
         let mut continuation_token: Option<String> = None;
 
         loop {
@@ -236,7 +238,7 @@ impl StorageBackend for S3Backend {
                 for p in prefixes {
                     let dir_key = p.prefix.trim_end_matches('/');
                     if let Ok(rel) = self.path_from_key(dir_key) {
-                        paths.push(rel);
+                        nodes.push(BackendNode::Dir(rel));
                     }
                 }
             }
@@ -247,7 +249,7 @@ impl StorageBackend for S3Backend {
                     continue;
                 }
                 if let Ok(rel) = self.path_from_key(&obj.key) {
-                    paths.push(rel);
+                    nodes.push(BackendNode::File(rel, obj.size));
                 }
             }
 
@@ -258,9 +260,9 @@ impl StorageBackend for S3Backend {
             }
         }
 
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
+        nodes.sort();
+        nodes.dedup();
+        Ok(nodes)
     }
 
     async fn is_file(&self, path: &Path) -> bool {

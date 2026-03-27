@@ -16,7 +16,7 @@ use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::cleanup::CleanupHandler,
     mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
-    repository::repo::{LOCKS_DIR, RepoConfig, Repository},
+    repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self},
 };
@@ -37,6 +37,10 @@ pub struct CmdArgs {
     /// SSH private key
     #[clap(long = "dst-ssh-privatekey", value_parser)]
     pub dst_ssh_privatekey: Option<PathBuf>,
+
+    /// Dry run
+    #[clap(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -49,28 +53,48 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.target.clone(),
         ssh_privatekey: args.dst_ssh_privatekey.clone(),
-        dry_backend: false,
+        dry_backend: args.dry_run,
         limit_upload: global_args.limit_upload,
         limit_download: global_args.limit_download,
     })
     .await?;
 
-    let src_auth = utils::get_auth_from_file(&global_args.auth_file)?;
-    let (_repo, _secure_storage, mut lock_handle) = Repository::try_open_with_lock(
-        src_auth.as_ref(),
+    let auth =
+        utils::get_auth_from_file(&global_args.auth_file)?.unwrap_or_else(ui::cli::request_auth);
+
+    let repo_config = RepoConfig {
+        pack_size: DEFAULT_PACK_SIZE,
+        use_cache: !global_args.no_cache,
+        compression: global_args.compression_level,
+    };
+
+    let (_src_repo, _src_ss, mut src_lock) = Repository::try_open_with_lock(
+        Some(&auth),
         global_args.key.as_ref(),
         src_backend.clone(),
-        RepoConfig {
-            pack_size: DEFAULT_PACK_SIZE,
-            use_cache: !global_args.no_cache,
-            compression: global_args.compression_level,
-        },
-        true,
+        repo_config,
+        false, // Source lock
         global_args.retry_lock_duration,
     )
     .await?;
 
-    dst_backend.create().await?; // Create the backend to create the directory if it doesn't exist.
+    // Try to open the destination repo with the source auth to acquire a lock.
+    let dst_lock = if let Ok((_, _, lock)) = Repository::try_open_with_lock(
+        Some(&auth),
+        global_args.key.as_ref(),
+        dst_backend.clone(),
+        repo_config,
+        args.delete, // Exclusive lock if we are going to delete
+        global_args.retry_lock_duration,
+    )
+    .await
+    {
+        Some(lock)
+    } else {
+        None
+    };
+
+    dst_backend.create().await?;
 
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         ui::cli::log!(
@@ -78,7 +102,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             "Process interrupted. Cleaning up...".bold().yellow()
         );
     })?;
-    cleanup_handler.add_lock(lock_handle.clone());
+    cleanup_handler.add_lock(src_lock.clone());
+    if let Some(lock) = &dst_lock {
+        cleanup_handler.add_lock(lock.clone());
+    }
 
     let start = Instant::now();
 
@@ -95,7 +122,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         utils::pretty_print_duration(start.elapsed())
     );
 
-    lock_handle.unlock().await;
+    src_lock.unlock().await;
+    if let Some(mut lock) = dst_lock {
+        lock.unlock().await;
+    }
 
     Ok(())
 }
@@ -123,6 +153,33 @@ async fn sync_backends(
         );
     }
 
+    // Delete obsolete objects first
+    if delete {
+        let delete_progress_bar =
+            ProgressBar::with_draw_target(Some(to_delete.len() as u64), default_bar_draw_target())
+                .with_style(
+                    ProgressStyle::default_bar()
+                        .template("[{percent} %] [{bar:20.cyan/white}] Deleting files: {pos}/{len}")
+                        .unwrap()
+                        .progress_chars("=> "),
+                );
+
+        for node in to_delete {
+            if shutdown_signal.load(Ordering::Relaxed) {
+                bail!("Interrupted");
+            }
+
+            match node {
+                BackendNode::File(path, _) => dst_backend.remove(&path).await?,
+                BackendNode::Dir(path) => dst_backend.remove(&path).await?,
+            }
+
+            delete_progress_bar.inc(1);
+        }
+
+        delete_progress_bar.finish_and_clear();
+    }
+
     let copy_progress_bar =
         ProgressBar::with_draw_target(Some(to_copy.len() as u64), default_bar_draw_target())
             .with_style(
@@ -144,56 +201,49 @@ async fn sync_backends(
             );
 
     // Copy files from src to dst.
-    for node in to_copy {
-        if shutdown_signal.load(Ordering::Relaxed) {
-            bail!("Interrupted");
-        }
+    use futures::stream::{self, StreamExt};
 
-        // TODO: For better performance, we could implement buffered I/O in the
-        // backend and transfer the files in small chunks. This would complicate the
-        // StorageBackend trait, so it is probably not worth it.
+    let stream = stream::iter(to_copy)
+        .map(|node| {
+            let shutdown_signal = shutdown_signal.clone();
+            let bar = &copy_progress_bar;
 
-        match node {
-            BackendNode::Dir(path) => dst_backend.create_dir(&path).await?,
-            BackendNode::File(path) => {
-                let handle = Handle::new(&path);
-                let data = src_backend.read(&handle, 0, 0).await?;
-                dst_backend
-                    .write(&handle, backend::WriteContents::Owned(data))
-                    .await?;
+            async move {
+                if shutdown_signal.load(Ordering::Relaxed) {
+                    bail!("Interrupted");
+                }
+
+                match node {
+                    BackendNode::Dir(path) => dst_backend.create_dir(&path).await?,
+                    BackendNode::File(path, _) => {
+                        let handle = Handle::new(&path);
+                        let data = src_backend.read(&handle, 0, 0).await?;
+                        dst_backend
+                            .write(&handle, backend::WriteContents::Owned(data))
+                            .await?;
+                    }
+                }
+
+                bar.inc(1);
+                Ok::<(), anyhow::Error>(())
             }
-        }
+        })
+        .buffer_unordered(4); // Use 4 concurrent copy operations
 
-        copy_progress_bar.inc(1);
+    let results = stream.collect::<Vec<_>>().await;
+    for res in results {
+        res?;
     }
 
     copy_progress_bar.finish_and_clear();
 
-    // Delete obsolete objects
-    if delete {
-        let delete_progress_bar =
-            ProgressBar::with_draw_target(Some(to_delete.len() as u64), default_bar_draw_target())
-                .with_style(
-                    ProgressStyle::default_bar()
-                        .template("[{percent} %] [{bar:20.cyan/white}] Deleting files: {pos}/{len}")
-                        .unwrap()
-                        .progress_chars("=> "),
-                );
-
-        for node in to_delete {
-            if shutdown_signal.load(Ordering::Relaxed) {
-                bail!("Interrupted");
-            }
-
-            match node {
-                BackendNode::File(path) => dst_backend.remove(&path).await?,
-                BackendNode::Dir(path) => dst_backend.remove(&path).await?,
-            }
-
-            delete_progress_bar.inc(1);
-        }
-
-        delete_progress_bar.finish_and_clear();
+    // Finally, synchronize the manifest file to ensure repo validity at destination
+    let manifest_path = std::path::Path::new(repo::MANIFEST_PATH);
+    let handle = Handle::new(manifest_path);
+    if let Ok(data) = src_backend.read(&handle, 0, 0).await {
+        dst_backend
+            .write(&handle, backend::WriteContents::Owned(data))
+            .await?;
     }
 
     Ok(())
@@ -221,12 +271,18 @@ async fn diff(
     let mut src_nodes: Vec<BackendNode> = backend::read_backend_dir(src_backend, &PathBuf::new())
         .await?
         .into_iter()
-        .filter(|n| !n.path().starts_with(LOCKS_DIR))
+        .filter(|n| {
+            let p = n.path();
+            !p.starts_with(LOCKS_DIR) && p != std::path::Path::new(repo::MANIFEST_PATH)
+        })
         .collect();
     let mut dst_nodes: Vec<BackendNode> = backend::read_backend_dir(dst_backend, &PathBuf::new())
         .await?
         .into_iter()
-        .filter(|n| !n.path().starts_with(LOCKS_DIR))
+        .filter(|n| {
+            let p = n.path();
+            !p.starts_with(LOCKS_DIR) && p != std::path::Path::new(repo::MANIFEST_PATH)
+        })
         .collect();
 
     spinner.set_message("Comparing file trees...");
@@ -255,8 +311,26 @@ async fn diff(
                     num_to_delete += 1;
                 }
                 std::cmp::Ordering::Equal => {
-                    src_iter.next();
-                    dst_iter.next();
+                    let src = src_iter.next().unwrap();
+                    let dst = dst_iter.next().unwrap();
+                    match (&src, &dst) {
+                        (BackendNode::File(_, _), BackendNode::File(_, _)) => {
+                            if src != dst {
+                                to_copy.push(src);
+                                num_to_copy += 1;
+                            }
+                        }
+                        (BackendNode::Dir(_), BackendNode::Dir(_)) => {
+                            // Already exists as dir, do nothing
+                        }
+                        _ => {
+                            // Type mismatch! Delete then copy.
+                            to_delete.push(dst);
+                            num_to_delete += 1;
+                            to_copy.push(src);
+                            num_to_copy += 1;
+                        }
+                    }
                 }
             },
             (Some(_), None) => {

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{
-    backend::{Handle, NodeAttr, WriteContents},
+    backend::{BackendNode, Handle, NodeAttr, WriteContents},
     repository::repo::REPO_TMP_EXTENSION,
 };
 
@@ -305,9 +305,9 @@ impl StorageBackend for LocalFS {
         self.exists_exact(&full_path).await
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         let full_path = self.full_path(path);
-        let mut paths = Vec::new();
+        let mut nodes = Vec::new();
 
         let mut read_dir = tokio::fs::read_dir(&full_path).await.with_context(|| {
             format!("Could not list contents of directory '{}'", path.display())
@@ -319,6 +319,9 @@ impl StorageBackend for LocalFS {
             .with_context(|| format!("Failed while iterating directory '{}'", path.display()))?
         {
             let entry_path = entry.path();
+            let metadata = entry.metadata().await.with_context(|| {
+                format!("Could not get metadata for '{}'", entry_path.display())
+            })?;
 
             // Strip the base_path to keep paths relative to the repo root
             let relative = entry_path
@@ -326,10 +329,14 @@ impl StorageBackend for LocalFS {
                 .map(Path::to_path_buf)
                 .context("Found entry outside of repository base path")?;
 
-            paths.push(relative);
+            if metadata.is_file() {
+                nodes.push(BackendNode::File(relative, metadata.len()));
+            } else if metadata.is_dir() {
+                nodes.push(BackendNode::Dir(relative));
+            }
         }
 
-        Ok(paths)
+        Ok(nodes)
     }
 
     async fn is_file(&self, path: &Path) -> bool {

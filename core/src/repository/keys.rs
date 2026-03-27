@@ -131,7 +131,12 @@ pub struct KeyFileStream {
 
 impl KeyFileStream {
     pub async fn new(backend: Arc<dyn StorageBackend>) -> Result<Self> {
-        let entries = backend.list_dir(Path::new(KEYS_DIR)).await?;
+        let entries = backend
+            .list_dir(Path::new(KEYS_DIR))
+            .await?
+            .into_iter()
+            .map(|n| n.into_path())
+            .collect();
         Ok(Self {
             backend,
             entries,
@@ -421,10 +426,11 @@ impl KeyManager {
             bail!("Prefix cannot be empty");
         }
 
-        let files = self.backend.list_dir(Path::new(KEYS_DIR)).await?;
+        let entries = self.backend.list_dir(Path::new(KEYS_DIR)).await?;
         let mut matches = Vec::new();
 
-        for file_path in files {
+        for node in entries {
+            let file_path = node.into_path();
             let filename = file_path
                 .file_name()
                 .context("File should have a name")?

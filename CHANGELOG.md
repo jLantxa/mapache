@@ -1,5 +1,11 @@
 # Changelog
 
+## Latest
+
+### Changes
+
+- Improved `mapache sync`.
+
 ## v0.2.2
 
 ### Fixes

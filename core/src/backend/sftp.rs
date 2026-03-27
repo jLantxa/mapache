@@ -25,7 +25,7 @@ use tokio::{
 
 use crate::{
     backend::{
-        Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents,
+        BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents,
         limiter::{RateLimiter, ThrottledReader, ThrottledWriter},
         retry, set_readonly_mode,
     },
@@ -561,7 +561,7 @@ impl StorageBackend for SftpBackend {
         .await
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         let full = self.full_path(path);
 
         self.retry(|| async {
@@ -579,7 +579,13 @@ impl StorageBackend for SftpBackend {
                 if name == "." || name == ".." {
                     continue;
                 }
-                out.push(path.join(name));
+                let path = path.join(name);
+                let metadata = entry.metadata();
+                if metadata.is_file() {
+                    out.push(BackendNode::File(path, metadata.len()));
+                } else if metadata.is_dir() {
+                    out.push(BackendNode::Dir(path));
+                }
             }
 
             Ok(out)

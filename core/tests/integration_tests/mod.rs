@@ -142,7 +142,7 @@ async fn delete_all_files_from(backend: &dyn StorageBackend, dir: &Path) -> Resu
 
     for node in backend_objects {
         match node {
-            mapache::backend::BackendNode::File(path) => backend.remove(&path).await?,
+            mapache::backend::BackendNode::File(path, _) => backend.remove(&path).await?,
             mapache::backend::BackendNode::Dir(_) => (),
         }
     }

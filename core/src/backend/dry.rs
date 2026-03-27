@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -60,7 +57,7 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<super::BackendNode>> {
         self.backend.list_dir(path).await
     }
 

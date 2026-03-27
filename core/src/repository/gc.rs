@@ -595,7 +595,8 @@ async fn delete_trash_files(repo: &Arc<Repository>) -> Result<()> {
             async move {
                 let mut found = Vec::new();
                 if let Ok(entries) = backend.list_dir(&dir).await {
-                    for entry in entries {
+                    for node in entries {
+                        let entry = node.into_path();
                         if let Some(ext) = entry.extension() {
                             let ext_str = ext.to_string_lossy();
                             if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {

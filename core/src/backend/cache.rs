@@ -192,7 +192,7 @@ impl StorageBackend for CacheBackend {
         Ok(())
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<crate::backend::BackendNode>> {
         self.backend.list_dir(path).await
     }
 

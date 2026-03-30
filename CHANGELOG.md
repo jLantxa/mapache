@@ -2,6 +2,10 @@
 
 ## Latest
 
+### Fixes
+
+- Minor optimizations and cosmetic fixes.
+
 ### Changes
 
 - Improved `mapache sync`.

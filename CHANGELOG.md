@@ -9,6 +9,7 @@
 ### Changes
 
 - Improved `mapache sync`.
+- Allow snapshots with paths from multiple logical units (C:, D:, etc.).
 
 ## v0.2.2
 

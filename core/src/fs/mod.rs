@@ -171,7 +171,7 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
         while let Some(parent) = cur.parent() {
             // Stop when we reached (or crossed) root.
             // Note: this relies on your existing ordering semantics for normalized absolute paths.
-            if parent <= root {
+            if !root.as_os_str().is_empty() && parent <= root {
                 if parent == root
                     && let Some(name) = cur.file_name()
                 {
@@ -193,6 +193,15 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
 
         if let Some(name) = direct_root_child_name {
             unique_root_children.insert(name);
+        } else if root.as_os_str().is_empty() {
+            // We reached the top (parent is None) and root is empty.
+            // Treat 'cur' as a direct child of the virtual root.
+            if let Some(name) = cur.file_name() {
+                unique_root_children.insert(name.to_os_string());
+            } else if let Some(comp) = cur.components().next() {
+                // It's a root prefix like "C:\" or "/"
+                unique_root_children.insert(comp.as_os_str().to_os_string());
+            }
         }
     }
 
@@ -407,7 +416,7 @@ mod tests {
         let paths = vec![PathBuf::from("a/b"), PathBuf::from("x/y")];
         assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
 
-        let paths = vec![PathBuf::from("/home/user/a"), PathBuf::from("a")];
+        let paths = vec![PathBuf::from("C:\\a\\b"), PathBuf::from("D:\\x\\y")];
         assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
     }
 
@@ -437,6 +446,20 @@ mod tests {
         let mut expected = BTreeMap::new();
         expected.insert(PathBuf::from("/a/b"), 2);
         assert_eq!(root_children_count, 2); // 'b' and 'e' are direct children of '/a'
+        assert_eq!(intermediate_paths, expected);
+
+        // Test with empty root (virtual root)
+        let root = PathBuf::from("");
+        let paths = vec![
+            PathBuf::from("/a/b"),
+            PathBuf::from("/a/c"),
+            PathBuf::from("/d"),
+        ];
+        let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
+        let mut expected = BTreeMap::new();
+        expected.insert(PathBuf::from("/"), 2); // children of /: a and d
+        expected.insert(PathBuf::from("/a"), 2); // children of /a: b and c
+        assert_eq!(root_children_count, 1); // the root children is just "/"
         assert_eq!(intermediate_paths, expected);
     }
 

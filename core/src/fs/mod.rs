@@ -116,7 +116,7 @@ pub fn calculate_lcp(paths: &[PathBuf], strict_prefix: bool) -> PathBuf {
         if strict_prefix {
             return paths[0].clone();
         } else {
-            return extract_parent(&paths[0]).expect("Path should have a parent");
+            return extract_parent(&paths[0]).unwrap_or_default();
         }
     }
 

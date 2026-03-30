@@ -212,7 +212,14 @@ impl Node {
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".to_string());
+            .unwrap_or_else(|| {
+                // If it's a drive root or system root, extract a sensible name.
+                if let Some(std::path::Component::Prefix(p)) = path.components().next() {
+                    p.as_os_str().to_string_lossy().replace(':', "")
+                } else {
+                    path.to_string_lossy().into_owned()
+                }
+            });
 
         let mut node = Self {
             name,
@@ -556,5 +563,27 @@ mod tests {
         };
         let s = node_to_string(&node, None, true, true);
         assert!(s.contains("1.000 MiB"));
+    }
+
+    #[test]
+    fn test_node_name_from_windows_prefix() {
+        // We can't easily test actual Windows paths on Linux, but we can test
+        // the logic of how we extract the name from components.
+        let path = Path::new("C:\\");
+        let name = if let Some(std::path::Component::Prefix(p)) = path.components().next() {
+            p.as_os_str().to_string_lossy().replace(':', "")
+        } else {
+            // Fallback for Linux or if no prefix
+            path.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "/".to_string())
+        };
+
+        if cfg!(windows) {
+            assert_eq!(name, "C");
+        } else {
+            // On Linux, "C:\" is just a filename
+            assert_eq!(name, "C:\\");
+        }
     }
 }

@@ -190,12 +190,20 @@ impl TreeSerializer {
         }
 
         // Non-root case
-        let parent_path = extract_parent(&dir_path).with_context(|| {
-            format!(
-                "Could not extract parent path for finalized directory '{}'",
-                dir_path.display()
-            )
-        })?;
+        let parent_path = match extract_parent(&dir_path) {
+            Some(parent) => parent,
+            None if self.snapshot_root_path.as_os_str().is_empty() => {
+                // If the root is empty (virtual root), top-level drives/roots
+                // should be children of the empty path.
+                PathBuf::new()
+            }
+            None => {
+                anyhow::bail!(
+                    "Could not extract parent path for finalized directory '{}'",
+                    dir_path.display()
+                );
+            }
+        };
 
         let mut completed_dir_node = pending_tree.node.with_context(|| {
             format!(

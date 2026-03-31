@@ -2,7 +2,6 @@ pub(crate) mod node_restorer;
 pub(crate) mod sync;
 
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -56,8 +55,8 @@ pub async fn restore(
         std::fs::create_dir_all(target_path)?;
     }
 
-    // Directories to restore file times later
-    let mut restored_dir_times = HashMap::new();
+    // Directories to restore metadata later
+    let mut restored_dirs = Vec::new();
 
     while let Some(node_res) = node_stream.next().await {
         if shutdown_signal.load(Ordering::Relaxed) {
@@ -115,7 +114,7 @@ pub async fn restore(
                     }
                 }
                 Strategy::Fail => {
-                    if !node.is_dir() || !restored_dir_times.contains_key(&path) {
+                    if !node.is_dir() || !restored_dirs.iter().any(|(p, _)| p == &restore_path) {
                         bail!("Target {} exists already", restore_path.display());
                     }
                 }
@@ -131,10 +130,7 @@ pub async fn restore(
         }
 
         if node.is_dir() {
-            let path = restore_path.clone();
-            let atime = node.metadata.accessed_time;
-            let mtime = node.metadata.modified_time;
-            restored_dir_times.insert(path, (atime, mtime));
+            restored_dirs.push((restore_path.clone(), node.clone()));
         }
 
         if let Err(e) = node_restorer::restore_node_to_path(
@@ -157,12 +153,16 @@ pub async fn restore(
     }
 
     if !opts.dry_run {
-        for (dir_path, (atime, mtime)) in restored_dir_times.into_iter() {
+        // Sort directories by path length descending to ensure bottom-up restoration
+        restored_dirs
+            .sort_unstable_by(|(a, _), (b, _)| b.as_os_str().len().cmp(&a.as_os_str().len()));
+
+        for (dir_path, node) in restored_dirs {
             if shutdown_signal.load(Ordering::Relaxed) {
                 bail!("Interrupted");
             }
 
-            node_restorer::restore_times(&dir_path, atime.as_ref(), mtime.as_ref())?;
+            node_restorer::try_restore_node_metadata(&node, &dir_path, &progress_reporter);
         }
     }
 

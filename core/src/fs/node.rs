@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::Metadata as FsMetadata,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -6,6 +7,11 @@ use std::{
 
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
@@ -98,6 +104,18 @@ pub struct Metadata {
     // Raw device ID for block/char devices
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rdev: Option<u64>,
+
+    /// Extended attributes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extended_attributes: Option<BTreeMap<String, Vec<u8>>>,
+
+    /// Windows file attributes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_attributes: Option<u32>,
+
+    /// Linux file flags (chattr)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linux_flags: Option<u32>,
 }
 
 impl Metadata {
@@ -138,6 +156,14 @@ impl Metadata {
             rdev: Some(meta.rdev()),
             #[cfg(not(unix))]
             rdev: None,
+
+            #[cfg(windows)]
+            windows_attributes: Some(meta.file_attributes()),
+            #[cfg(not(windows))]
+            windows_attributes: None,
+
+            linux_flags: None,
+            extended_attributes: None,
         }
     }
 
@@ -166,6 +192,9 @@ impl Metadata {
             || self.inode != other.inode
             || self.nlink != other.nlink
             || self.rdev != other.rdev
+            || self.extended_attributes != other.extended_attributes
+            || self.windows_attributes != other.windows_attributes
+            || self.linux_flags != other.linux_flags
     }
 
     #[inline]
@@ -228,11 +257,57 @@ impl Node {
             ..Default::default()
         };
 
+        node.fetch_xattrs(path);
+        node.fetch_linux_flags(path);
+
         if node.is_symlink() {
             node.populate_symlink_info(path).await?;
         }
 
         Ok(node)
+    }
+
+    pub fn fetch_xattrs(&mut self, path: &Path) {
+        #[cfg(unix)]
+        {
+            let mut xattrs = BTreeMap::new();
+            // Use standard variants to get attributes of the node itself (including symlinks)
+            if let Ok(iter) = xattr::list(path) {
+                for name in iter {
+                    if let Ok(Some(value)) = xattr::get(path, &name) {
+                        xattrs.insert(name.to_string_lossy().into_owned(), value);
+                    }
+                }
+            }
+            if !xattrs.is_empty() {
+                self.metadata.extended_attributes = Some(xattrs);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+
+    pub fn fetch_linux_flags(&mut self, path: &Path) {
+        #[cfg(target_os = "linux")]
+        {
+            if self.is_symlink() {
+                return;
+            }
+
+            // Using standard fs::File for ioctl.
+            // Opening as read-only is enough for GETFLAGS.
+            if let Ok(file) = std::fs::File::open(path) {
+                let mut flags: libc::c_int = 0;
+                const FS_IOC_GETFLAGS: libc::c_ulong = 0x80086601;
+                unsafe {
+                    if libc::ioctl(file.as_raw_fd(), FS_IOC_GETFLAGS, &mut flags) == 0 {
+                        self.metadata.linux_flags = Some(flags as u32);
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = path;
     }
 
     async fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
@@ -358,6 +433,9 @@ impl Node {
             metadata: Metadata::from_fs(&meta),
             ..Default::default()
         };
+
+        node.fetch_xattrs(path);
+        node.fetch_linux_flags(path);
 
         if node.is_symlink() {
             node.populate_symlink_info(path).await?;

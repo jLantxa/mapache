@@ -4,6 +4,12 @@ use std::time::SystemTime;
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
+
 use std::{fs::OpenOptions, io::Write, path::Path};
 
 use {
@@ -250,7 +256,7 @@ pub fn restore_times(
 /// Restores the metadata of a node to the specified destination path.
 /// This function attempts to restore all metadata fields with a best-effort approach.
 #[allow(unused_variables)]
-fn try_restore_node_metadata(
+pub(crate) fn try_restore_node_metadata(
     node: &Node,
     dst_path: &Path,
     progress_reporter: &RestoreProgressReporter,
@@ -290,6 +296,102 @@ fn try_restore_node_metadata(
                 let _ = std::os::unix::fs::chown(dst_path, uid, gid);
             }
         }
+
+        // Restore extended attributes
+        try_restore_xattrs(node, dst_path, progress_reporter);
+
+        // Restore Linux flags
+        try_restore_linux_flags(node, dst_path, progress_reporter);
+    }
+
+    // Restore Windows attributes
+    #[cfg(windows)]
+    try_restore_windows_attributes(node, dst_path, progress_reporter);
+}
+
+#[cfg(unix)]
+fn try_restore_xattrs(node: &Node, dst_path: &Path, progress_reporter: &RestoreProgressReporter) {
+    if let Some(xattrs) = &node.metadata.extended_attributes {
+        for (name, value) in xattrs {
+            if let Err(e) = xattr::set(dst_path, name, value) {
+                progress_reporter.warning(&format!(
+                    "Could not set extended attribute {} for {}: {}",
+                    name,
+                    dst_path.display(),
+                    e
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn try_restore_linux_flags(
+    node: &Node,
+    dst_path: &Path,
+    progress_reporter: &RestoreProgressReporter,
+) {
+    if let Some(flags) = node.metadata.linux_flags {
+        if node.is_symlink() {
+            return;
+        }
+
+        if let Ok(file) = std::fs::File::open(dst_path) {
+            // Mask out flags that are not user-modifiable (like FS_EXTENTS_FL)
+            // This set includes i, a, d, S, A, etc.
+            const FS_FL_USER_MODIFIABLE: u32 = 0x000380FF;
+            let flags_to_set = flags & FS_FL_USER_MODIFIABLE;
+
+            let flags_int: libc::c_int = flags_to_set as libc::c_int;
+            const FS_IOC_SETFLAGS: libc::c_ulong = 0x40086602;
+            unsafe {
+                if libc::ioctl(file.as_raw_fd(), FS_IOC_SETFLAGS, &flags_int) != 0 {
+                    progress_reporter.warning(&format!(
+                        "Could not set Linux flags for {}: {}",
+                        dst_path.display(),
+                        std::io::Error::last_os_error()
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn try_restore_linux_flags(
+    _node: &Node,
+    _dst_path: &Path,
+    _progress_reporter: &RestoreProgressReporter,
+) {
+}
+
+#[cfg(windows)]
+fn try_restore_windows_attributes(
+    node: &Node,
+    dst_path: &Path,
+    progress_reporter: &RestoreProgressReporter,
+) {
+    if let Some(attrs) = node.metadata.windows_attributes {
+        use std::os::windows::ffi::OsStrExt;
+        let wide_path: Vec<u16> = dst_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            if windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(
+                wide_path.as_ptr(),
+                attrs,
+            ) == 0
+            {
+                progress_reporter.warning(&format!(
+                    "Could not set Windows attributes for {}: {}",
+                    dst_path.display(),
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
     }
 }
 
@@ -319,6 +421,9 @@ fn try_restore_symlink_metadata(
     if uid.is_some() || gid.is_some() {
         let _ = std::os::unix::fs::chown(dst_path, uid, gid);
     }
+
+    // Restore extended attributes
+    try_restore_xattrs(node, dst_path, progress_reporter);
 }
 
 #[cfg(test)]

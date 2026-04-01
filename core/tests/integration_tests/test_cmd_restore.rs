@@ -732,4 +732,93 @@ mod tests {
 
         Ok(())
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_xattrs() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        // File with xattr
+        let file_path = backup_path.join("file_with_xattr.txt");
+        std::fs::write(&file_path, "hello xattr")?;
+        let file_attr_name = "user.mapache_file_test";
+        let file_attr_value = b"mapache_file_value";
+        xattr::set(&file_path, file_attr_name, file_attr_value)?;
+
+        // Directory with xattr
+        let dir_path = backup_path.join("dir_with_xattr");
+        std::fs::create_dir(&dir_path)?;
+        let dir_attr_name = "user.mapache_dir_test";
+        let dir_attr_value = b"mapache_dir_value";
+        xattr::set(&dir_path, dir_attr_name, dir_attr_value)?;
+
+        // Symlink with xattr (some OSs might not support xattrs on symlinks, but Linux generally does)
+        let symlink_path = backup_path.join("symlink_with_xattr");
+        std::os::unix::fs::symlink("file_with_xattr.txt", &symlink_path)?;
+        let symlink_attr_name = "user.mapache_symlink_test";
+        let symlink_attr_value = b"mapache_symlink_value";
+        // standard variants do not follow symlinks by default in the xattr crate
+        let symlink_xattr_supported =
+            xattr::set(&symlink_path, symlink_attr_name, symlink_attr_value).is_ok();
+
+        // Init repo
+        ctx.init_repo().await?;
+
+        // Run snapshot
+        let snapshot_args = cmd_snapshot::CmdArgs {
+            paths: vec![backup_path.clone()],
+            as_root: true,
+            exclude: None,
+            tags_str: String::new(),
+            description: None,
+            no_parent: false,
+            skip_if_unchanged: false,
+            no_scan: false,
+            parent: UseSnapshot::Latest,
+            num_readers: 1,
+            num_packers: 1,
+            dry_run: false,
+        };
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+
+        // Restore
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        let restore_args = cmd_restore::CmdArgs {
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Skip,
+            quit_on_error: true,
+            delete: false,
+            no_preserve_root: false,
+        };
+        commands::cmd_restore::run(&ctx.global, &restore_args).await?;
+
+        // Verify file xattr
+        let restored_file_path = restore_path.join("file_with_xattr.txt");
+        assert!(restored_file_path.exists());
+        let restored_file_value = xattr::get(&restored_file_path, file_attr_name)?;
+        assert_eq!(restored_file_value, Some(file_attr_value.to_vec()));
+
+        // Verify directory xattr
+        let restored_dir_path = restore_path.join("dir_with_xattr");
+        assert!(restored_dir_path.exists());
+        let restored_dir_value = xattr::get(&restored_dir_path, dir_attr_name)?;
+        assert_eq!(restored_dir_value, Some(dir_attr_value.to_vec()));
+
+        // Verify symlink xattr
+        if symlink_xattr_supported {
+            let restored_symlink_path = restore_path.join("symlink_with_xattr");
+            assert!(restored_symlink_path.is_symlink());
+            let restored_symlink_value = xattr::get(&restored_symlink_path, symlink_attr_name)?;
+            assert_eq!(restored_symlink_value, Some(symlink_attr_value.to_vec()));
+        }
+
+        Ok(())
+    }
 }

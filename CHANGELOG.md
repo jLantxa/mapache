@@ -10,6 +10,11 @@
 
 - Improved `mapache sync`.
 - Allow snapshots with paths from multiple logical units (C:, D:, etc.).
+- Extended metadata support.
+  - Unix extended attributes (xattr).
+  - Linux file attributes (`chattr`/`lsattr`).
+  - Windows file attributes (Hidden, System, etc.).
+  - Improved directory metadata restoration with a bottom-up pass.
 
 ## v0.2.2
 

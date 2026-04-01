@@ -1,6 +1,6 @@
 [package]
 name = "mapache"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 rust-version = "1.91"
 
@@ -25,7 +25,7 @@ futures = "0.3.32"
 hostname = "0.4.2"
 httpdate = "1.0.3"
 indicatif = { version = "0.18.4", features = ["rayon"] }
-libc = { version = "0.2.183" }
+libc = { version = "0.2.184" }
 num_cpus = "1.17.0"
 num_enum = "0.7.6"
 parking_lot = "0.12.5"

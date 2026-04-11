@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use chrono::Duration;
 use futures::{StreamExt, stream};
 use parking_lot::Mutex;
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, WriteContents, cache::CacheBackend},

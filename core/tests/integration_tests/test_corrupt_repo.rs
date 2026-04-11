@@ -4,7 +4,7 @@ mod tests {
     use std::fs;
 
     use anyhow::{Context, Result};
-    use rand::Rng;
+    use rand::RngExt;
 
     use mapache::{
         commands::{self, UseSnapshot, cmd_snapshot, cmd_verify},

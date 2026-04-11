@@ -1,7 +1,7 @@
 use std::{io::Cursor, path::PathBuf};
 
 use anyhow::{Result, anyhow};
-use rand::RngCore;
+use rand::Rng;
 use rstest::rstest;
 
 use crate::{Chunker, Normalization, lookup::MASKS};

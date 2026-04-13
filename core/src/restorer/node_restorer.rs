@@ -17,7 +17,7 @@ use {
 use crate::{
     fs::node::{Node, NodeType},
     repository::repo::Repository,
-    ui::restore_progress::RestoreProgressReporter,
+    ui::restore::RestoreProgressReporter,
 };
 
 /// Restores a node to the specified destination path.
@@ -25,7 +25,7 @@ use crate::{
 /// done in a reparate pass.
 pub(crate) async fn restore_node_to_path(
     repo: &Repository,
-    progress_reporter: Arc<RestoreProgressReporter>,
+    progress_reporter: Arc<dyn RestoreProgressReporter>,
     node: &Node,
     dst_path: &Path,
     dry_run: bool,
@@ -256,7 +256,7 @@ pub fn restore_times(
 pub(crate) fn try_restore_node_metadata(
     node: &Node,
     dst_path: &Path,
-    progress_reporter: &RestoreProgressReporter,
+    progress_reporter: &dyn RestoreProgressReporter,
 ) {
     // Set file times
     if let Err(e) = restore_times(
@@ -308,7 +308,11 @@ pub(crate) fn try_restore_node_metadata(
 }
 
 #[cfg(unix)]
-fn try_restore_xattrs(node: &Node, dst_path: &Path, progress_reporter: &RestoreProgressReporter) {
+fn try_restore_xattrs(
+    node: &Node,
+    dst_path: &Path,
+    progress_reporter: &dyn RestoreProgressReporter,
+) {
     if let Some(xattrs) = &node.metadata.extended_attributes {
         for (name, value) in xattrs {
             if let Err(e) = xattr::set(dst_path, name, value) {
@@ -327,7 +331,7 @@ fn try_restore_xattrs(node: &Node, dst_path: &Path, progress_reporter: &RestoreP
 fn try_restore_linux_flags(
     node: &Node,
     dst_path: &Path,
-    progress_reporter: &RestoreProgressReporter,
+    progress_reporter: &dyn RestoreProgressReporter,
 ) {
     if let Some(flags) = node.metadata.linux_flags {
         if node.is_symlink() {
@@ -359,7 +363,7 @@ fn try_restore_linux_flags(
 fn try_restore_windows_attributes(
     node: &Node,
     dst_path: &Path,
-    progress_reporter: &RestoreProgressReporter,
+    progress_reporter: &dyn RestoreProgressReporter,
 ) {
     if let Some(attrs) = node.metadata.windows_attributes {
         use std::os::windows::ffi::OsStrExt;
@@ -389,7 +393,7 @@ fn try_restore_windows_attributes(
 fn try_restore_symlink_metadata(
     node: &Node,
     dst_path: &Path,
-    progress_reporter: &RestoreProgressReporter,
+    progress_reporter: &dyn RestoreProgressReporter,
 ) {
     // Set file times using set_symlink_file_times
     if let Some(mtime) = node.metadata.modified_time.as_ref() {
@@ -453,7 +457,7 @@ mod tests {
         node.metadata = original_metadata;
 
         // Now restore the metadata from the node
-        let reporter = RestoreProgressReporter::new(0, 0, 1);
+        let reporter = crate::ui::restore::CliRestoreProgressReporter::new(0, 0, 1);
         try_restore_node_metadata(&node, &file_path, &reporter);
 
         // Check if the mtime was restored back to the node's original mtime

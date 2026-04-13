@@ -1,5 +1,15 @@
 # Changelog
 
+## latest
+
+### Changes
+
+- **Redesigned Restorer**: Implemented a new high-performance, pack-centric
+  restoration engine with background prefetching, range-based downloads, and
+  concurrent restoration to significantly improve I/O efficiency.
+- **Improved Metadata Restoration**: File and directory metadata are now
+  restored in a separate bottom-up pass to ensure consistency.
+
 ## v0.2.3
 
 ### Fixes

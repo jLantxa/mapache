@@ -6,9 +6,17 @@ use crate::{commands::Compression, repository::repo::RepoConfig, utils::size};
 
 pub(crate) const APP_NAME: &str = "mapache";
 
-// --- Concurrency ---
+// --- Snapshot ---
 pub(crate) const DEFAULT_SNAPSHOT_READERS: usize = 4;
 pub(crate) const DEFAULT_SNAPSHOT_PACKERS: usize = 4;
+
+// --- Restore ---
+pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH: usize = 4;
+pub(crate) const DEFAULT_RESTORE_BLOB_CONCURRENCY: usize = 8;
+pub(crate) const DEFAULT_RESTORE_MAX_OPEN_FILES: usize = 20;
+pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES: usize = (128 * size::MiB) as usize;
+pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT: usize = (256 * size::KiB) as usize;
+pub(crate) const DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE: u64 = 32 * size::MiB;
 
 // --- Index ---
 pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);

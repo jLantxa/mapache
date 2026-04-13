@@ -75,12 +75,11 @@ down memory usage while maintaining performance.
 
 ### v0.3.0
 
-The main goal for the v0.3.0 is to redesign the restorer. The current restorer
-is file-centric and performs one backend IO read per blob. While this was
-perfectly functional for a v0.1.0, we need to redesign it to improve run-time
-and IO efficiency.
+Redesigned the restorer into a high-performance, pack-centric engine with
+background prefetching and concurrent restoration to significantly improve
+I/O efficiency.
 
-- [ ] `restore` redesign
+- [x] `restore` redesign
 
 ### Future
 

@@ -406,6 +406,11 @@ impl Repository {
         self.backend.clone()
     }
 
+    /// Get the secure storage
+    pub fn secure_storage(&self) -> Arc<SecureStorage> {
+        self.secure_storage.clone()
+    }
+
     /// Encodes and saves a blob in the repository. This blob can be packed with other blobs in a pack file.
     /// Returns the ID of the saved blob.
     ///

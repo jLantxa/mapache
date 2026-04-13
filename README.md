@@ -65,7 +65,7 @@ stable prototype with all core features after 8 months of work.
 The v0.1.x series brought bug fixes, optimizations and minor new features.
 The main goal was to optimize the Archiver performance.
 
-### v0.2.0 (_we are here_)
+### v0.2.0
 
 The v0.2.0 marks the finalization of the Archiver. The complete engine was
 refactored to make the backend code async. An initial S3 backend implementation
@@ -73,14 +73,13 @@ was added and the SFTP backend was reimplemented with a rust-native async crate.
 The async refactor had the additional challenge of tuning parallelism to trim
 down memory usage while maintaining performance.
 
-### v0.3.0
+### v0.3.0 (_we are here_)
 
-The main goal for the v0.3.0 is to redesign the restorer. The current restorer
-is file-centric and performs one backend IO read per blob. While this was
-perfectly functional for a v0.1.0, we need to redesign it to improve run-time
-and IO efficiency.
+Redesigned the restorer into a high-performance, pack-centric engine with
+background prefetching and concurrent restoration to significantly improve
+I/O efficiency.
 
-- [ ] `restore` redesign
+- [x] `restore` redesign
 
 ### Future
 

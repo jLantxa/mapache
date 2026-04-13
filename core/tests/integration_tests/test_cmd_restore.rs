@@ -56,6 +56,7 @@ mod tests {
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -154,6 +155,7 @@ mod tests {
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: true,
@@ -211,6 +213,7 @@ mod tests {
         // Run restore 1
         let restore_path = ctx._tmp_dir.path().join("restore1");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -239,6 +242,7 @@ mod tests {
         // Run restore 2
         let restore_path = ctx._tmp_dir.path().join("restore2");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -300,6 +304,7 @@ mod tests {
         // Run restore to create base files
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -336,6 +341,7 @@ mod tests {
 
         // Restore with --delete
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -422,6 +428,7 @@ mod tests {
         // Run restore to create base files
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -458,6 +465,7 @@ mod tests {
 
         // Restore with --delete
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -540,6 +548,7 @@ mod tests {
         // Run restore to create base files
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -576,6 +585,7 @@ mod tests {
 
         // Restore with --delete
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -655,6 +665,7 @@ mod tests {
 
         let restore_path = ctx._tmp_dir.path().join("restore_conflicts");
         let restore_args_initial = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -688,6 +699,7 @@ mod tests {
         set_file_times(&file_to_skip, filetime, filetime)?;
 
         let restore_args_overwrite = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -711,6 +723,7 @@ mod tests {
         );
 
         let restore_args_skip = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -786,6 +799,7 @@ mod tests {
         // Restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -817,6 +831,125 @@ mod tests {
             assert!(restored_symlink_path.is_symlink());
             let restored_symlink_value = xattr::get(&restored_symlink_path, symlink_attr_name)?;
             assert_eq!(restored_symlink_value, Some(symlink_attr_value.to_vec()));
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_restore_sparse_vs_eager_allocation() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        // Create a moderately-sized test file
+        let file_path = backup_path.join("large_file.bin");
+        let test_size = 10 * 1024 * 1024; // 10 MiB
+        let test_data = vec![42u8; test_size];
+        std::fs::write(&file_path, &test_data)?;
+
+        // Init repo and snapshot
+        ctx.init_repo().await?;
+
+        let snapshot_args = cmd_snapshot::CmdArgs {
+            paths: vec![file_path.clone()],
+            as_root: false,
+            exclude: None,
+            tags_str: String::new(),
+            description: None,
+            no_parent: false,
+            skip_if_unchanged: false,
+            no_scan: true,
+            parent: UseSnapshot::Latest,
+            num_readers: 1,
+            num_packers: 1,
+            dry_run: false,
+        };
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
+            .await
+            .context("Failed to run cmd_snapshot")?;
+
+        // Test 1: Restore with sparse allocation (default)
+        let restore_sparse_path = ctx._tmp_dir.path().join("restore_sparse");
+        let restore_args_sparse = cmd_restore::CmdArgs {
+            preallocate: false,
+            target: restore_sparse_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Overwrite,
+            quit_on_error: true,
+            delete: false,
+            no_preserve_root: false,
+        };
+        commands::cmd_restore::run(&ctx.global, &restore_args_sparse)
+            .await
+            .context("Failed to restore with sparse allocation")?;
+
+        let restored_sparse_file = restore_sparse_path.join("large_file.bin");
+        assert!(
+            restored_sparse_file.exists(),
+            "Sparse restore: file should exist at {:?}",
+            restored_sparse_file
+        );
+        let sparse_content = std::fs::read(&restored_sparse_file)?;
+        assert_eq!(sparse_content.len(), test_data.len());
+        assert_eq!(sparse_content, test_data);
+        let sparse_metadata = std::fs::metadata(&restored_sparse_file)?;
+        assert_eq!(sparse_metadata.len(), test_size as u64);
+
+        // Test 2: Restore with eager allocation
+        let restore_eager_path = ctx._tmp_dir.path().join("restore_eager");
+        let restore_args_eager = cmd_restore::CmdArgs {
+            preallocate: true,
+            target: restore_eager_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Overwrite,
+            quit_on_error: true,
+            delete: false,
+            no_preserve_root: false,
+        };
+        commands::cmd_restore::run(&ctx.global, &restore_args_eager)
+            .await
+            .context("Failed to restore with eager allocation")?;
+
+        let restored_eager_file = restore_eager_path.join("large_file.bin");
+        assert!(
+            restored_eager_file.exists(),
+            "Eager restore: file should exist at {:?}",
+            restored_eager_file
+        );
+        let eager_content = std::fs::read(&restored_eager_file)?;
+        assert_eq!(eager_content.len(), test_data.len());
+        assert_eq!(eager_content, test_data);
+        let eager_metadata = std::fs::metadata(&restored_eager_file)?;
+        assert_eq!(eager_metadata.len(), test_size as u64);
+
+        // Both files should have identical content
+        assert_eq!(sparse_content, eager_content);
+
+        // On Unix, check allocation: eager-allocated file should use more disk space
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let sparse_blocks = sparse_metadata.blocks();
+            let eager_blocks = eager_metadata.blocks();
+            // Eager allocation reserves actual blocks; sparse may use fewer initially
+            // This is a best-effort check; some filesystems behave differently
+            eprintln!(
+                "Sparse file blocks: {}, Eager file blocks: {}",
+                sparse_blocks, eager_blocks
+            );
+            assert!(
+                eager_blocks > 0,
+                "Eager-allocated file should have allocated blocks"
+            );
         }
 
         Ok(())

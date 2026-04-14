@@ -13,7 +13,7 @@ pub(crate) const DEFAULT_SNAPSHOT_PACKERS: usize = 4;
 // --- Restore ---
 pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH: usize = 4;
 pub(crate) const DEFAULT_RESTORE_BLOB_CONCURRENCY: usize = 8;
-pub(crate) const DEFAULT_RESTORE_MAX_OPEN_FILES: usize = 20;
+pub(crate) const DEFAULT_RESTORE_MAX_OPEN_FILES: usize = 128;
 pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES: usize = (128 * size::MiB) as usize;
 pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT: usize = (256 * size::KiB) as usize;
 pub(crate) const DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE: u64 = 32 * size::MiB;

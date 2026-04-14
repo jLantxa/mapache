@@ -216,19 +216,20 @@ mod tests {
         let mut corrupted = false;
         for entry in std::fs::read_dir(objects_dir)? {
             let entry = entry?;
+            #[allow(clippy::collapsible_if)]
             if entry.file_type()?.is_dir() {
-                for sub_entry in std::fs::read_dir(entry.path())? {
+                if let Some(sub_entry) = std::fs::read_dir(entry.path())?.next() {
                     let sub_entry = sub_entry?;
                     let path = sub_entry.path();
                     // Make writable first (mapache sets them readonly)
                     let mut perms = std::fs::metadata(&path)?.permissions();
+                    #[allow(clippy::permissions_set_readonly_false)]
                     perms.set_readonly(false);
                     std::fs::set_permissions(&path, perms)?;
 
                     // Overwrite with different size
                     std::fs::write(&path, b"too short")?;
                     corrupted = true;
-                    break;
                 }
             }
             if corrupted {

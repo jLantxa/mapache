@@ -12,7 +12,7 @@ use std::{
 };
 
 #[cfg(not(unix))]
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Seek, Write};
 
 #[cfg(unix)]
 use std::os::unix::{fs::FileExt, io::AsRawFd};
@@ -312,6 +312,7 @@ impl Restorer {
         let mut restored_dirs = Vec::new();
         let mut file_nodes: HashMap<PathBuf, Node> = HashMap::new();
         let mut dir_nodes: HashMap<PathBuf, Node> = HashMap::new();
+        let mut node_count = 0;
 
         self.progress_reporter
             .set_message("Planning...".to_string());
@@ -319,6 +320,12 @@ impl Restorer {
         while let Some(node_res) = node_stream.next().await {
             if self.shutdown_signal.load(Ordering::Relaxed) {
                 bail!("Interrupted");
+            }
+
+            node_count += 1;
+            if node_count % 100 == 0 {
+                self.progress_reporter
+                    .set_message(format!("Planning... ({} nodes)", node_count));
             }
 
             let (mut path, stream_node_res) = node_res?;

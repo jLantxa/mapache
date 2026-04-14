@@ -98,6 +98,10 @@ pub struct Metadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inode: Option<u64>,
 
+    // The device ID containing the file
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dev: Option<u64>,
+
     // The number of hard links pointing to this inode
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nlink: Option<u64>,
@@ -149,6 +153,11 @@ impl Metadata {
             inode: None,
 
             #[cfg(unix)]
+            dev: Some(meta.dev()),
+            #[cfg(not(unix))]
+            dev: None,
+
+            #[cfg(unix)]
             nlink: Some(meta.nlink()),
             #[cfg(not(unix))]
             nlink: None,
@@ -191,6 +200,7 @@ impl Metadata {
             || self.owner_uid != other.owner_uid
             || self.owner_gid != other.owner_gid
             || self.inode != other.inode
+            || self.dev != other.dev
             || self.nlink != other.nlink
             || self.rdev != other.rdev
             || self.extended_attributes != other.extended_attributes

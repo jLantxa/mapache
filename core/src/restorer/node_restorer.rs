@@ -164,17 +164,7 @@ pub(crate) async fn restore_node_to_path(
 
             // Restore symlink metadata after creation
             if !dry_run {
-                #[cfg(unix)]
-                {
-                    try_restore_symlink_metadata(node, dst_path, progress_reporter.as_ref());
-                }
-                #[cfg(not(unix))]
-                {
-                    progress_reporter.warning(&format!(
-                        "Symlink metadata restoration is not supported on this OS: {}",
-                        dst_path.display()
-                    ));
-                }
+                try_restore_symlink_metadata(node, dst_path, progress_reporter.as_ref());
             }
         }
 
@@ -395,35 +385,76 @@ fn try_restore_symlink_metadata(
     dst_path: &Path,
     progress_reporter: &dyn RestoreProgressReporter,
 ) {
+    use std::os::unix::ffi::OsStrExt;
+
     // Set file times using set_symlink_file_times
     if let Some(mtime) = node.metadata.modified_time.as_ref() {
         let ft_mtime = FileTime::from(*mtime);
         let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
 
         if let Err(e) = filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime) {
-            progress_reporter.warning(&format!("Could not set file times for symlink: {e}"));
+            progress_reporter.warning(&format!(
+                "Could not set file times for symlink {}: {}",
+                dst_path.display(),
+                e
+            ));
         }
     }
 
-    // TODO: Set permissions for symlink
+    // Set owner (uid) and group (gid) using lchown to avoid following the link.
+    let uid = node.metadata.owner_uid.unwrap_or(u32::MAX); // -1 in libc
+    let gid = node.metadata.owner_gid.unwrap_or(u32::MAX); // -1 in libc
 
-    // Set owner (uid) and group (gid) using lchown
-    let uid = node.metadata.owner_uid;
-    let gid = node.metadata.owner_gid;
-
-    // lchown is needed to change the ownership of the symlink itself, not the target.
-    if uid.is_some() || gid.is_some() {
-        let _ = std::os::unix::fs::chown(dst_path, uid, gid);
+    if uid != u32::MAX || gid != u32::MAX {
+        let c_path = std::ffi::CString::new(dst_path.as_os_str().as_bytes()).unwrap();
+        unsafe {
+            if libc::lchown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) != 0 {
+                let err = std::io::Error::last_os_error();
+                // Only warn if it's not a permission error (which is expected for non-root)
+                if err.kind() != std::io::ErrorKind::PermissionDenied {
+                    progress_reporter.warning(&format!(
+                        "Could not set owner/group for symlink {}: {}",
+                        dst_path.display(),
+                        err
+                    ));
+                }
+            }
+        }
     }
 
-    // Restore extended attributes
+    // Restore extended attributes (xattr crate's set handles symlinks correctly if not following)
     try_restore_xattrs(node, dst_path, progress_reporter);
+}
+
+#[cfg(windows)]
+fn try_restore_symlink_metadata(
+    node: &Node,
+    dst_path: &Path,
+    progress_reporter: &dyn RestoreProgressReporter,
+) {
+    // Set file times for symlink on Windows
+    if let Some(mtime) = node.metadata.modified_time.as_ref() {
+        let ft_mtime = FileTime::from(*mtime);
+        let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
+
+        if let Err(e) = filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime) {
+            progress_reporter.warning(&format!(
+                "Could not set file times for symlink {}: {}",
+                dst_path.display(),
+                e
+            ));
+        }
+    }
+
+    // Restore Windows attributes for the symlink itself
+    try_restore_windows_attributes(node, dst_path, progress_reporter);
 }
 
 #[cfg(test)]
 #[allow(unused_imports)]
 mod tests {
     use {
+        crate::ui,
         chrono::{Duration, Local},
         std::time::SystemTime,
     };
@@ -457,7 +488,7 @@ mod tests {
         node.metadata = original_metadata;
 
         // Now restore the metadata from the node
-        let reporter = crate::ui::restore::CliRestoreProgressReporter::new(0, 0, 1);
+        let reporter = ui::restore::CliRestoreProgressReporter::new(None, None);
         try_restore_node_metadata(&node, &file_path, &reporter);
 
         // Check if the mtime was restored back to the node's original mtime

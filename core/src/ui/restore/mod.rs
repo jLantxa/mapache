@@ -8,7 +8,7 @@ use std::path::Path;
 
 pub trait RestoreProgressReporter: Send + Sync {
     fn set_message(&self, msg: String);
-    fn processing_node(&self, path: &Path);
+    fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64);
     fn processed_item(&self, path: &Path);
     fn processed_bytes(&self, bytes: u64);
     fn error(&self, msg: &str);

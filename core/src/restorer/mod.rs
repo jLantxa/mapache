@@ -109,6 +109,8 @@ struct RestorePlan {
     restored_dirs: Vec<RestoredDirectory>,
     file_nodes: HashMap<PathBuf, Node>,
     dir_nodes: HashMap<PathBuf, Node>,
+    total_items: u64,
+    total_bytes: u64,
 }
 
 #[derive(Clone)]
@@ -290,12 +292,16 @@ impl Restorer {
         let index = self.repo.index();
         let plan = self.build_plan(&mut node_stream, index).await?;
 
+        // Initialize progress reporter with stats gathered during planning
+        self.progress_reporter
+            .resize_workload(plan.total_items, plan.total_bytes);
+
         let plan_files = plan.files.clone();
         let plan_packs = plan.packs.clone();
         let dry_run = self.opts.dry_run;
         let secure_storage = self.repo.secure_storage();
 
-        self.restore_packs(plan_files.clone(), plan_packs, secure_storage, dry_run)
+        self.restore_packs(plan_files, plan_packs, secure_storage, dry_run)
             .await?;
         self.restore_metadata(&plan, dry_run)?;
 
@@ -313,6 +319,8 @@ impl Restorer {
         let mut file_nodes: HashMap<PathBuf, Node> = HashMap::new();
         let mut dir_nodes: HashMap<PathBuf, Node> = HashMap::new();
         let mut node_count = 0;
+        let mut total_items = 0;
+        let mut total_bytes = 0;
 
         self.progress_reporter
             .set_message("Planning...".to_string());
@@ -342,6 +350,11 @@ impl Restorer {
                     }
                     Err(_) => continue,
                 };
+            }
+
+            total_items += 1;
+            if node.is_file() {
+                total_bytes += node.metadata.size;
             }
 
             let restore_path = self.target_path.join(&path);
@@ -462,6 +475,8 @@ impl Restorer {
             restored_dirs,
             file_nodes,
             dir_nodes,
+            total_items,
+            total_bytes,
         })
     }
 

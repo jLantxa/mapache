@@ -7,8 +7,6 @@ use std::{
 use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
-use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 
 use crate::{
@@ -18,18 +16,17 @@ use crate::{
         calculate_lcp,
         filter::{expand_include_paths, parse_relative_filter_paths},
         get_absolute_normalized_path,
-        tree::SerializedNodeStream,
     },
-    mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, global::GlobalOpts},
+    mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
     repository::repo::{RepoConfig, Repository},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
-        self, SPINNER_TICK_CHARS, default_bar_draw_target,
+        self,
         restore::{
             CliRestoreProgressReporter, JsonRestoreProgressReporter, RestoreProgressReporter,
         },
     },
-    utils::{self, format_size_binary, size},
+    utils::{self, size},
 };
 
 impl std::fmt::Display for Strategy {
@@ -152,29 +149,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     emit_restore_start(global_args.json, args, &snapshot_id, &abs_normalized_target);
 
-    let (num_files, num_dirs, num_expected_items, total_bytes) = scan_restore_plan(
-        repo.clone(),
-        snapshot.tree,
-        parsed_includes.clone(),
-        parsed_excludes.clone(),
-    )
-    .await?;
-
-    emit_restore_plan(
-        global_args.json,
-        num_files,
-        num_dirs,
-        num_expected_items,
-        total_bytes,
-    );
-
-    const NUM_SHOWN_PROCESSING_ITEMS: usize = 1;
-    let progress_reporter = make_restore_progress_reporter(
-        global_args.json,
-        num_expected_items,
-        total_bytes,
-        NUM_SHOWN_PROCESSING_ITEMS,
-    );
+    // We initialize the reporter with 0 totals. The Restorer will resize_workload it
+    // with actual totals once it finishes planning (which is now the same as scanning).
+    let progress_reporter = make_restore_progress_reporter(global_args.json, None, None);
 
     let json_mode = global_args.json;
     let reporter_clone = progress_reporter.clone();
@@ -277,53 +254,20 @@ fn emit_restore_start(json: bool, args: &CmdArgs, snapshot_id: &crate::mapache::
     }
 }
 
-fn emit_restore_plan(json: bool, files: u64, directories: u64, total_items: u64, total_bytes: u64) {
-    if json {
-        #[derive(Serialize)]
-        struct RestorePlanMsg {
-            files: u64,
-            directories: u64,
-            total_items: u64,
-            total_bytes: u64,
-        }
-
-        ui::json_reporter::emit_static(
-            "restore_plan",
-            &RestorePlanMsg {
-                files,
-                directories,
-                total_items,
-                total_bytes,
-            },
-        );
-    } else {
-        ui::cli::log!(
-            "{} {} files, {} directories, {}\n",
-            "To restore:".bold().cyan(),
-            files,
-            directories,
-            utils::format_size_binary(total_bytes, 3),
-        );
-    }
-}
-
 fn make_restore_progress_reporter(
     json: bool,
-    num_expected_items: u64,
-    total_bytes: u64,
-    num_display_items: usize,
+    num_expected_items: Option<u64>,
+    total_bytes: Option<u64>,
 ) -> Arc<dyn RestoreProgressReporter> {
     if json {
         Arc::new(JsonRestoreProgressReporter::new(
             num_expected_items,
             total_bytes,
-            num_display_items,
         ))
     } else {
         Arc::new(CliRestoreProgressReporter::new(
             num_expected_items,
             total_bytes,
-            num_display_items,
         ))
     }
 }
@@ -368,53 +312,4 @@ fn emit_restore_complete(
             utils::format_count(warnings, "warning", "warnings")
         );
     }
-}
-
-async fn scan_restore_plan(
-    repo: Arc<Repository>,
-    tree_id: crate::mapache::ID,
-    include: Option<Vec<PathBuf>>,
-    exclude: Option<Vec<PathBuf>>,
-) -> Result<(u64, u64, u64, u64)> {
-    let mut node_stream =
-        SerializedNodeStream::new(repo, Some(tree_id), PathBuf::new(), include, exclude).await?;
-    let mut total_bytes = 0;
-    let mut num_files = 0;
-    let mut num_dirs = 0;
-    let mut num_expected_items = 0;
-
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Scanning snapshot tree ({msg})")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-
-    while let Some(res) = node_stream.next().await {
-        let (_path, stream_node_res) = res?;
-        let stream_node = stream_node_res?;
-
-        let node = stream_node.node;
-        num_expected_items += 1;
-
-        if node.is_dir() {
-            num_dirs += 1;
-        } else if node.is_file() {
-            num_files += 1;
-            total_bytes += node.metadata.size;
-        }
-
-        spinner.set_message(format!(
-            "{} files, {} dirs, {}",
-            num_files,
-            num_dirs,
-            format_size_binary(total_bytes, 3)
-        ));
-    }
-
-    spinner.finish_and_clear();
-    Ok((num_files, num_dirs, num_expected_items, total_bytes))
 }

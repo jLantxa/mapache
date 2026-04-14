@@ -76,6 +76,15 @@ pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash256 {
     hasher.finalize().into()
 }
 
+/// Calculates the 256-bit BLAKE3 hash of a file by reading it.
+pub fn calculate_hash_from_path(path: &Path) -> Result<Hash256> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Hasher::new();
+    hasher.update_reader(&mut reader)?;
+    Ok(hasher.finalize().into())
+}
+
 // --- Formatting ---
 
 /// Formats a byte count into a human-readable string with binary prefixes (KiB, MiB, etc.).

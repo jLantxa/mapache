@@ -44,16 +44,12 @@ pub struct JsonRestoreProgressReporter {
     current_stage: Arc<Mutex<String>>,
     last_update: Arc<Mutex<Instant>>,
     start_time: Instant,
-    num_expected_items: u64,
-    num_expected_bytes: u64,
+    num_expected_items: AtomicU64,
+    num_expected_bytes: AtomicU64,
 }
 
 impl JsonRestoreProgressReporter {
-    pub(crate) fn new(
-        num_expected_items: u64,
-        num_expected_bytes: u64,
-        _num_display_items: usize,
-    ) -> Self {
+    pub(crate) fn new(num_expected_items: Option<u64>, num_expected_bytes: Option<u64>) -> Self {
         Self {
             json_reporter: JsonReporter::new(true),
             processed_items_count: AtomicU64::new(0),
@@ -63,8 +59,8 @@ impl JsonRestoreProgressReporter {
             current_stage: Arc::new(Mutex::new(String::new())),
             last_update: Arc::new(Mutex::new(Instant::now())),
             start_time: Instant::now(),
-            num_expected_items,
-            num_expected_bytes,
+            num_expected_items: AtomicU64::new(num_expected_items.unwrap_or(0)),
+            num_expected_bytes: AtomicU64::new(num_expected_bytes.unwrap_or(0)),
         }
     }
 
@@ -83,6 +79,8 @@ impl JsonRestoreProgressReporter {
         let processed_bytes = self.processed_bytes_count.load(Ordering::Relaxed);
         let errors = self.error_counter.load(Ordering::Relaxed);
         let warnings = self.warning_counter.load(Ordering::Relaxed);
+        let total_items = self.num_expected_items.load(Ordering::Relaxed);
+        let total_bytes = self.num_expected_bytes.load(Ordering::Relaxed);
 
         self.json_reporter.emit(
             "restore_status",
@@ -90,8 +88,8 @@ impl JsonRestoreProgressReporter {
                 stage,
                 processed_items,
                 processed_bytes,
-                total_items: self.num_expected_items,
-                total_bytes: self.num_expected_bytes,
+                total_items,
+                total_bytes,
                 errors,
                 warnings,
                 elapsed_seconds: self.start_time.elapsed().as_secs_f64(),
@@ -110,8 +108,12 @@ impl RestoreProgressReporter for JsonRestoreProgressReporter {
         }
     }
 
-    fn processing_node(&self, _path: &Path) {
-        // No-op for restore JSON mode.
+    fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
+        self.num_expected_items
+            .store(num_expected_items, Ordering::Relaxed);
+        self.num_expected_bytes
+            .store(num_expected_bytes, Ordering::Relaxed);
+        self.emit_status_update();
     }
 
     fn processed_item(&self, _path: &Path) {

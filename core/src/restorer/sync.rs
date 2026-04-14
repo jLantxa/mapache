@@ -1,3 +1,6 @@
+//! The sync module provides functionality for synchronizing a local directory
+//! with a snapshot by deleting local files that are not present in the snapshot.
+
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -13,7 +16,9 @@ use futures::StreamExt;
 
 use crate::{fs::tree::SerializedTreeStream, mapache::ID, repository::repo::Repository, ui};
 
-/// Delete all local nodes not present in a snapshot tree
+/// Delete all local nodes not present in a snapshot tree.
+/// This function synchronizes the target directory with the snapshot by
+/// removing files and directories that are not part of the snapshot.
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_nodes(
     repo: Arc<Repository>,
@@ -76,7 +81,8 @@ pub async fn delete_nodes(
     Ok(())
 }
 
-// Helper function to process a single local directory to sync
+/// Helper function to process a single local directory to sync.
+/// Compares local entries with snapshot nodes and deletes those that don't match.
 fn process_local_directory(
     local_dir_path: &Path,
     snapshot_node_names: &HashSet<&str>,
@@ -129,7 +135,7 @@ fn process_local_directory(
     Ok(())
 }
 
-// Helper function to perform the actual file/directory deletion or log dry run
+/// Helper function to perform the actual file/directory deletion or log dry run.
 fn perform_deletion(path_to_delete: &Path, dry_run: bool) -> Result<()> {
     if dry_run {
         ui::cli::log!(
@@ -154,7 +160,7 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Returns true if a path is contained by the include paths
+/// Returns true if a path is contained by any of the include paths.
 fn path_is_below_includes(path: &Path, include: Option<&Vec<PathBuf>>) -> bool {
     if include.is_none() {
         return true;

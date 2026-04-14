@@ -48,9 +48,12 @@ pub(crate) const REPO_DROPPED_EXTENSION: &str = "dropped";
 
 const OBJECTS_DIR_FANOUT: usize = 2;
 
+/// A pair of sizes representing raw and encoded (compressed/encrypted) bytes.
 #[derive(Debug, Default, Copy, Clone)]
 pub struct SizePair {
+    /// Original size of the data.
     pub raw: u64,
+    /// Size of the data after encoding.
     pub encoded: u64,
 }
 
@@ -83,20 +86,25 @@ impl std::ops::AddAssign for SizePair {
     }
 }
 
-/// Authentication credentials of a user
+/// Authentication credentials of a user.
 #[derive(Debug)]
 pub struct Auth {
     pub username: String,
     pub password: String,
 }
 
+/// Configuration options for a repository.
 #[derive(Debug, Clone, Copy)]
 pub struct RepoConfig {
+    /// Maximum size of a pack file in bytes.
     pub pack_size: u64,
+    /// Whether to use the local metadata cache.
     pub use_cache: bool,
+    /// Compression level to use for new data.
     pub(crate) compression: Compression,
 }
 
+/// Thread-safe statistics for a repository.
 #[derive(Debug, Default)]
 pub struct RepoStats {
     pub raw_bytes: AtomicU64,
@@ -111,6 +119,7 @@ pub struct RepoStats {
     pub index_meta_bytes: AtomicU64,
 }
 
+/// A snapshot of repository statistics at a point in time.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RepoStatsSnapshot {
     pub data: SizePair,
@@ -143,6 +152,8 @@ impl RepoStats {
     }
 }
 
+/// The Repository struct is the central entry point for all repository operations.
+/// It manages the backend storage, encryption, indexing, and packing of data.
 pub struct Repository {
     manifest: Manifest,
 

@@ -1,3 +1,6 @@
+//! The tree_serializer module implements a bottom-up tree builder that collects
+//! processed nodes and serializes them into repository trees.
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -81,6 +84,8 @@ fn init_pending_trees(
 
 /// A struct responsible for managing directory state and serializing completed
 /// directory trees to the repository in a bottom-up fashion.
+/// It maintains a stack of "pending" trees that are finalized once all their
+/// children have been processed.
 pub(crate) struct TreeSerializer {
     repo: Arc<Repository>,
     pending_trees: HashMap<PathBuf, PendingTree>,

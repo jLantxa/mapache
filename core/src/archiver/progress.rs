@@ -1,3 +1,6 @@
+//! The progress module provides thread-safe counters for tracking the progress
+//! of a snapshot operation.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{

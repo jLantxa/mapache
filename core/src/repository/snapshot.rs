@@ -1,3 +1,6 @@
+//! This module defines the repository snapshot format and related types.
+//! A snapshot represents a complete backup of a directory tree at a point in time.
+
 use std::{
     collections::BTreeSet,
     path::PathBuf,
@@ -22,6 +25,7 @@ use crate::{
     repository::repo::{REPO_DROPPED_EXTENSION, Repository},
 };
 
+/// A pair containing a snapshot ID and the snapshot itself.
 #[derive(Debug, Clone)]
 pub struct SnapshotPair {
     pub id: ID,
@@ -73,6 +77,7 @@ pub struct Snapshot {
     pub summary: SnapshotSummary,
 }
 
+/// Represents a snapshot entry in a list, including its ID and active status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotEntry {
     pub id: ID,
@@ -96,6 +101,7 @@ impl Snapshot {
     }
 }
 
+/// Tracks the number of new, deleted, and changed files and directories in a snapshot.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiffCounts {
@@ -208,6 +214,7 @@ impl DiffCountsAtomic {
     }
 }
 
+/// Summary of the snapshot process, including counts and byte sizes.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SnapshotSummary {

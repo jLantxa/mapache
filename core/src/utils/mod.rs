@@ -36,6 +36,8 @@ pub mod size {
 
 // --- Password ---
 
+/// Reads authentication credentials (username and password) from a file.
+/// The file should contain the username on the first line and the password on the second.
 pub fn get_auth_from_file(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
     match password_file_path {
         None => Ok(None),
@@ -305,7 +307,7 @@ pub fn mode_to_permissions_string(mode: u32) -> String {
 
 // --- Others ---
 
-/// Returns the hostname and username
+/// Returns the system's hostname and the current user's name.
 pub fn get_system_info() -> (Option<String>, Option<String>) {
     let hostname = hostname::get().ok().and_then(|hn| hn.into_string().ok());
     let username = if cfg!(windows) {
@@ -316,7 +318,7 @@ pub fn get_system_info() -> (Option<String>, Option<String>) {
     (hostname, username)
 }
 
-/// Returns the cummulative size of all files below a base path.
+/// Returns the cumulative size of all files within a directory and its subdirectories.
 pub fn dir_size(path: &Path) -> Result<u64> {
     let mut total_size = 0;
 
@@ -349,10 +351,10 @@ pub fn dir_size(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
-/// Counts entries in a directory based on a custom filtering function.
+/// Counts entries in a directory that satisfy a given filter predicate.
 ///
-/// The filter closure receives a reference to a fs::DirEntry and should return
-/// 'true' if the entry should be counted.
+/// The filter closure receives a reference to a `std::fs::DirEntry` and should return
+/// `true` if the entry should be counted.
 pub fn count_entries<F>(dir_path: &Path, filter: F) -> Result<usize>
 where
     F: Fn(&std::fs::DirEntry) -> bool,
@@ -371,7 +373,7 @@ where
     Ok(count)
 }
 
-/// Counts files in a directory.
+/// Counts the number of regular files within a directory (non-recursive).
 pub fn count_files(dir_path: &Path) -> Result<usize> {
     count_entries(dir_path, |entry| entry.path().is_file())
 }

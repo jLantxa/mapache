@@ -1,3 +1,8 @@
+//! The restorer module implements the logic for restoring files, directories, and
+//! symlinks from a repository snapshot to a local filesystem.
+//! It uses a pack-centric approach with background prefetching and concurrent
+//! restoration for high performance.
+
 pub(crate) mod node_restorer;
 pub(crate) mod sync;
 
@@ -43,25 +48,38 @@ use crate::{
         storage::SecureStorage,
     },
     ui::restore::RestoreProgressReporter,
+    utils::size,
 };
 
+/// Strategy for handling existing files during restoration.
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
 pub enum Strategy {
+    /// Fail if the file already exists.
     Fail,
+    /// Overwrite existing files.
     Overwrite,
+    /// Skip files that already exist.
     Skip,
+    /// Only overwrite if the snapshot version is newer.
     Newer,
 }
 
+/// Options for the restoration process.
 pub struct RestoreOptions {
+    /// How to handle existing files.
     pub strategy: Strategy,
+    /// Strip this prefix from the source paths.
     pub strip_prefix: Option<PathBuf>,
+    /// If true, do not perform any actual restoration.
     pub dry_run: bool,
+    /// If true, stop the entire restoration process on the first error.
     pub quit_on_error: bool,
+    /// If true, preallocate disk space for files before writing.
     pub preallocate: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Performs the restoration of a snapshot to a target path.
 pub async fn restore(
     repo: Arc<Repository>,
     snapshot: &Snapshot,
@@ -83,6 +101,9 @@ pub async fn restore(
     restorer.restore(snapshot.tree, include, exclude).await
 }
 
+/// The Restorer is responsible for coordinating the restoration process.
+/// It builds a restoration plan and then executes it by downloading blobs
+/// and writing them to the target filesystem.
 struct Restorer {
     repo: Arc<Repository>,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
@@ -93,43 +114,64 @@ struct Restorer {
 
 type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
 
+/// Information about a single file to be restored.
 struct FileRestorePlan {
+    /// Full path to the file in the target filesystem.
     path: PathBuf,
+    /// Relative path within the snapshot.
     rel_path: PathBuf,
 }
 
+/// Information about a directory that has been restored.
 #[derive(Clone)]
 struct RestoredDirectory {
+    /// Path to the directory.
     path: PathBuf,
 }
 
+/// The complete plan for the restoration process.
 struct RestorePlan {
+    /// List of files to be restored.
     files: Arc<Vec<FileRestorePlan>>,
+    /// Mapping of pack IDs to the blobs and their target locations in files.
     packs: Arc<PackMap>,
+    /// List of directories that were created/restored.
     restored_dirs: Vec<RestoredDirectory>,
+    /// Mapping of target paths to their original file nodes.
     file_nodes: HashMap<PathBuf, Node>,
+    /// Mapping of target paths to their original directory nodes.
     dir_nodes: HashMap<PathBuf, Node>,
+    /// Total number of items (files, dirs, symlinks) in the plan.
     total_items: u64,
+    /// Total number of bytes to be restored.
     total_bytes: u64,
 }
 
+/// A request to restore a specific blob into a file.
 #[derive(Clone)]
 struct BlobRestoreRequest {
+    /// Index into the RestorePlan's files list.
     file_idx: usize,
+    /// Offset within the target file where the blob should be written.
     offset_in_file: u64,
+    /// Locator for the blob in the repository's index.
     locator: BlobLocator,
 }
 
-const PACK_READ_MERGE_THRESHOLD: u64 = 16 * 1024;
-
+/// A segment of a pack file that needs to be downloaded to satisfy one or more blob requests.
 struct DownloadedPackSegment {
+    /// The raw data of the pack segment.
     data: Arc<Vec<u8>>,
+    /// Mapping of blob IDs to the requests they satisfy.
     blob_to_targets: Arc<HashMap<ID, Vec<BlobRestoreRequest>>>,
+    /// List of blobs in this segment, sorted by offset.
     sorted_blobs: Vec<(ID, BlobLocator)>,
+    /// Minimum offset of this segment within the pack file.
     min_offset: u64,
 }
 
 impl DownloadedPackSegment {
+    /// Returns the length of the pack segment in bytes.
     fn source_len(&self) -> usize {
         self.sorted_blobs
             .iter()
@@ -140,14 +182,19 @@ impl DownloadedPackSegment {
     }
 }
 
-/// A cache for open file handles during restoration
+/// A cache for open file handles during restoration.
+/// This helps avoid repeated open/close operations when writing blobs to files.
 struct FileHandleCache {
+    /// Map of file indices to open file handles.
     handles: HashMap<usize, File>,
+    /// LRU order of file indices.
     order: VecDeque<usize>,
+    /// Maximum number of file handles to keep open.
     max_handles: usize,
 }
 
 impl FileHandleCache {
+    /// Creates a new FileHandleCache with the specified maximum number of open handles.
     fn new(max_handles: usize) -> Self {
         Self {
             handles: HashMap::new(),
@@ -156,6 +203,7 @@ impl FileHandleCache {
         }
     }
 
+    /// Moves a file index to the end of the LRU queue.
     fn touch(&mut self, file_idx: usize) {
         if let Some(pos) = self.order.iter().position(|&idx| idx == file_idx) {
             self.order.remove(pos);
@@ -163,6 +211,8 @@ impl FileHandleCache {
         }
     }
 
+    /// Retrieves an open file handle for the specified file index, opening it if necessary.
+    /// If the cache is full, the least recently used handle is closed.
     fn get_handle(&mut self, file_idx: usize, path: &Path) -> Result<&File> {
         if self.handles.contains_key(&file_idx) {
             self.touch(file_idx);
@@ -194,6 +244,7 @@ impl FileHandleCache {
 }
 
 impl Restorer {
+    /// Creates a new Restorer instance.
     fn new(
         repo: Arc<Repository>,
         target_path: PathBuf,
@@ -210,6 +261,8 @@ impl Restorer {
         }
     }
 
+    /// Preallocates disk space for a file.
+    /// This is used as an optimization to reduce disk fragmentation and ensure sufficient space.
     fn preallocate_file(&self, file: &mut File, length: u64) -> Result<()> {
         if length == 0 {
             return Ok(());
@@ -270,6 +323,7 @@ impl Restorer {
         }
     }
 
+    /// Performs the restoration of a snapshot tree to the target path.
     async fn restore(
         &self,
         tree_id: ID,
@@ -308,6 +362,8 @@ impl Restorer {
         Ok(())
     }
 
+    /// Builds a restoration plan by walking the snapshot tree and determining
+    /// which nodes need to be restored.
     async fn build_plan(
         &self,
         node_stream: &mut SerializedNodeStream,
@@ -480,9 +536,12 @@ impl Restorer {
         })
     }
 
+    /// Groups individual blob requests into larger pack segments to optimize downloads.
     fn segment_pack_blob_requests(
         blob_requests: Vec<(ID, BlobRestoreRequest)>,
     ) -> Vec<DownloadedPackSegment> {
+        const PACK_READ_MERGE_THRESHOLD: u64 = 16 * size::KiB;
+
         let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
         for (blob_id, req) in blob_requests {
             blob_to_targets.entry(blob_id).or_default().push(req);
@@ -538,6 +597,7 @@ impl Restorer {
         segments
     }
 
+    /// Helper method to build a pack segment from a list of blobs.
     fn build_segment_from_current(
         blob_to_targets: &HashMap<ID, Vec<BlobRestoreRequest>>,
         current_segment: Vec<(ID, BlobLocator)>,
@@ -556,6 +616,7 @@ impl Restorer {
         }
     }
 
+    /// Downloads the requested pack segments from the repository backend.
     async fn download_pack_segments_for_repo(
         repo: Arc<Repository>,
         pack_id: ID,
@@ -582,6 +643,7 @@ impl Restorer {
         Ok(segments)
     }
 
+    /// Checks if a node should be restored based on the current restoration strategy.
     async fn should_restore_node(
         &self,
         node: &Node,

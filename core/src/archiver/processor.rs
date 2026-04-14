@@ -1,3 +1,6 @@
+//! The processor module handles the actual reading and chunking of files
+//! during the snapshot process.
+
 use std::{
     io::Read,
     path::Path,
@@ -30,7 +33,8 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::CHUNKER_NORMALIZATION,
 );
 
-/// Processes an item from the diff stream.
+/// Processes an item (file, directory, or symlink) from the diff stream.
+/// This includes reading and chunking new/changed files.
 pub(crate) async fn process_item(
     (path, prev_node_res, next_node_res, diff_type): (
         &Path,
@@ -147,13 +151,14 @@ pub(crate) async fn process_item(
     Ok(out)
 }
 
+/// Reports the difference in a node to the progress tracker.
 #[inline]
 fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgress) {
     let is_dir = node.is_dir();
     progress.increment_diff(is_dir, &diff_type);
 }
 
-/// Split file into chunks and store blobs.
+/// Reads a file, chunks it using the CDC chunker, and stores the chunks in the repository.
 pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
     repo: Arc<Repository>,
     reader: R,
@@ -187,6 +192,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
     Ok(ids)
 }
 
+/// Stores a small file as a single blob without chunking.
 fn store_small_file<R: Read>(
     repo: Arc<Repository>,
     mut reader: R,

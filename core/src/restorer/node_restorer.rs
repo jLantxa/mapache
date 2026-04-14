@@ -1,3 +1,6 @@
+//! The node_restorer module provides lower-level functionality for restoring
+//! individual nodes (files, directories, symlinks) and their associated metadata.
+
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -240,8 +243,8 @@ pub fn restore_times(
     Ok(())
 }
 
-/// Restores the metadata of a node to the specified destination path.
-/// This function attempts to restore all metadata fields with a best-effort approach.
+/// Attempts to restore all metadata (times, permissions, ownership, xattrs, flags) for a node.
+/// This is a best-effort operation and will log warnings on failure.
 #[allow(unused_variables)]
 pub(crate) fn try_restore_node_metadata(
     node: &Node,
@@ -297,6 +300,7 @@ pub(crate) fn try_restore_node_metadata(
     try_restore_windows_attributes(node, dst_path, progress_reporter);
 }
 
+/// Restores extended attributes (xattrs) for a node.
 #[cfg(unix)]
 fn try_restore_xattrs(
     node: &Node,
@@ -317,6 +321,7 @@ fn try_restore_xattrs(
     }
 }
 
+/// Restores Linux-specific file flags for a node.
 #[cfg(target_os = "linux")]
 fn try_restore_linux_flags(
     node: &Node,
@@ -349,6 +354,7 @@ fn try_restore_linux_flags(
     }
 }
 
+/// Restores Windows-specific file attributes for a node.
 #[cfg(windows)]
 fn try_restore_windows_attributes(
     node: &Node,
@@ -379,6 +385,7 @@ fn try_restore_windows_attributes(
     }
 }
 
+/// Restores metadata for a symlink without following it.
 #[cfg(unix)]
 fn try_restore_symlink_metadata(
     node: &Node,
@@ -426,6 +433,7 @@ fn try_restore_symlink_metadata(
     try_restore_xattrs(node, dst_path, progress_reporter);
 }
 
+/// Restores metadata for a symlink on Windows.
 #[cfg(windows)]
 fn try_restore_symlink_metadata(
     node: &Node,

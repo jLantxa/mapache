@@ -1,3 +1,8 @@
+//! The archiver module implements the core logic for creating new repository snapshots.
+//! It orchestrates a pipeline that scans the local filesystem, compares it with
+//! a parent snapshot (if available), processes changed files into chunks, and
+//! serializes the resulting directory tree.
+
 pub(crate) mod processor;
 pub(crate) mod progress;
 pub(crate) mod tree_serializer;
@@ -29,18 +34,27 @@ use crate::{
     utils,
 };
 
+/// Options for creating a new snapshot.
 #[derive(Clone)]
 pub struct SnapshotOptions<'a> {
+    /// List of absolute paths to include in the snapshot.
     pub absolute_source_paths: Vec<PathBuf>,
+    /// The root path within the repository's virtual filesystem where the snapshot is placed.
     pub snapshot_root_path: PathBuf,
+    /// Glob patterns for paths to exclude from the snapshot.
     pub exclude_paths: Vec<PathBuf>,
+    /// An optional parent snapshot to use for incremental backups.
     pub parent_snapshot: Option<&'a SnapshotPair>,
+    /// Tags associated with the new snapshot.
     pub tags: BTreeSet<String>,
+    /// An optional text description for the snapshot.
     pub description: Option<String>,
+    /// If true, skip the initial filesystem scan (estimated progress will be less accurate).
     pub no_scan: bool,
 }
 
-/// Internal state to coordinate graceful shutdowns and error reporting across tasks.
+/// Internal state used to coordinate multiple concurrent tasks in the archiver pipeline.
+/// It tracks progress, completion status, and fatal errors.
 struct PipelineStatus {
     /// Signal that the snapshot is finished.
     finished_flag: AtomicBool,
@@ -96,7 +110,8 @@ impl PipelineStatus {
     }
 }
 
-/// Orchestrates the backup snapshot process, building a new snapshot of the source paths.
+/// The main entry point for creating a new snapshot.
+/// This function sets up the processing pipeline and waits for its completion.
 pub(crate) async fn snapshot(
     repo: Arc<Repository>,
     snapshot_options: SnapshotOptions<'_>,

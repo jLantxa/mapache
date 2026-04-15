@@ -31,19 +31,18 @@ use parking_lot::Mutex;
 use tokio::{sync::Semaphore, task::spawn_blocking};
 
 use crate::{
-    backend::Handle,
     fs::{self as repo_fs, node::Node, tree::SerializedNodeStream},
     mapache::{
-        ContentIdType, ID,
+        ID,
         defaults::{
             DEFAULT_RESTORE_BLOB_CONCURRENCY, DEFAULT_RESTORE_MAX_OPEN_FILES,
             DEFAULT_RESTORE_PACK_PREFETCH, DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES,
-            DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT, DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD,
-            DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE,
+            DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT,
         },
     },
     repository::{
         index::{BlobLocator, MasterIndex},
+        loader,
         repo::Repository,
         snapshot::Snapshot,
         storage::SecureStorage,
@@ -156,30 +155,6 @@ struct BlobRestoreRequest {
     offset_in_file: u64,
     /// Locator for the blob in the repository's index.
     locator: BlobLocator,
-}
-
-/// A segment of a pack file that needs to be downloaded to satisfy one or more blob requests.
-struct DownloadedPackSegment {
-    /// The raw data of the pack segment.
-    data: Arc<Vec<u8>>,
-    /// Mapping of blob IDs to the requests they satisfy.
-    blob_to_targets: Arc<HashMap<ID, Vec<BlobRestoreRequest>>>,
-    /// List of blobs in this segment, sorted by offset.
-    sorted_blobs: Vec<(ID, BlobLocator)>,
-    /// Minimum offset of this segment within the pack file.
-    min_offset: u64,
-}
-
-impl DownloadedPackSegment {
-    /// Returns the length of the pack segment in bytes.
-    fn source_len(&self) -> usize {
-        self.sorted_blobs
-            .iter()
-            .map(|(_, loc)| loc.offset as u64 + loc.length as u64)
-            .max()
-            .unwrap_or(self.min_offset) as usize
-            - self.min_offset as usize
-    }
 }
 
 /// A cache for open file handles during restoration.
@@ -536,120 +511,6 @@ impl Restorer {
         })
     }
 
-    /// Groups individual blob requests into larger pack segments to optimize downloads.
-    fn segment_pack_blob_requests(
-        blob_requests: Vec<(ID, BlobRestoreRequest)>,
-    ) -> Vec<DownloadedPackSegment> {
-        let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
-        for (blob_id, req) in blob_requests {
-            blob_to_targets.entry(blob_id).or_default().push(req);
-        }
-
-        let mut sorted_blobs = blob_to_targets
-            .iter()
-            .map(|(blob_id, targets)| (*blob_id, targets[0].locator))
-            .collect::<Vec<_>>();
-        sorted_blobs.sort_by_key(|(_, loc)| loc.offset);
-
-        let mut segments = Vec::new();
-        let mut current_segment = Vec::new();
-        let mut segment_min = 0;
-        let mut segment_max = 0;
-        let max_segment_size = DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE;
-
-        for (blob_id, locator) in sorted_blobs.iter().cloned() {
-            let blob_start = locator.offset as u64;
-            let blob_end = blob_start + locator.length as u64;
-            let next_segment_max = segment_max.max(blob_end);
-            let next_segment_size = next_segment_max.saturating_sub(segment_min);
-
-            if current_segment.is_empty() {
-                segment_min = blob_start;
-                segment_max = blob_end;
-                current_segment.push((blob_id, locator));
-            } else if blob_start <= segment_max + DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD
-                && next_segment_size <= max_segment_size
-            {
-                segment_max = next_segment_max;
-                current_segment.push((blob_id, locator));
-            } else {
-                segments.push(Self::build_segment_from_current(
-                    &blob_to_targets,
-                    current_segment,
-                    segment_min,
-                ));
-                current_segment = vec![(blob_id, locator)];
-                segment_min = blob_start;
-                segment_max = blob_end;
-            }
-        }
-
-        if !current_segment.is_empty() {
-            segments.push(Self::build_segment_from_current(
-                &blob_to_targets,
-                current_segment,
-                segment_min,
-            ));
-        }
-
-        segments
-    }
-
-    /// Helper method to build a pack segment from a list of blobs.
-    fn build_segment_from_current(
-        blob_to_targets: &HashMap<ID, Vec<BlobRestoreRequest>>,
-        current_segment: Vec<(ID, BlobLocator)>,
-        min_offset: u64,
-    ) -> DownloadedPackSegment {
-        let mut segment_blob_to_targets = HashMap::new();
-        for (id, _) in &current_segment {
-            segment_blob_to_targets.insert(*id, blob_to_targets.get(id).unwrap().clone());
-        }
-
-        DownloadedPackSegment {
-            data: Arc::new(Vec::new()),
-            blob_to_targets: Arc::new(segment_blob_to_targets),
-            sorted_blobs: current_segment,
-            min_offset,
-        }
-    }
-
-    /// Downloads the requested pack segments from the repository backend.
-    async fn download_pack_segments_for_repo(
-        repo: Arc<Repository>,
-        pack_id: ID,
-        mut segments: Vec<DownloadedPackSegment>,
-    ) -> Result<Vec<DownloadedPackSegment>> {
-        let path = repo.get_path(ContentIdType::Pack, &pack_id);
-
-        let mut read_futures = Vec::new();
-        for segment in &segments {
-            let source_len = segment.source_len();
-            let offset = segment.min_offset as isize;
-            let repo = repo.clone();
-            let path = path.clone();
-
-            read_futures.push(async move {
-                repo.backend()
-                    .read(
-                        &Handle::new_with_hint(&path, ContentIdType::Pack, false),
-                        offset,
-                        source_len,
-                    )
-                    .await
-                    .with_context(|| format!("Failed to read pack {pack_id}"))
-            });
-        }
-
-        let results = futures::future::try_join_all(read_futures).await?;
-
-        for (segment, data) in segments.iter_mut().zip(results) {
-            segment.data = Arc::new(data);
-        }
-
-        Ok(segments)
-    }
-
     /// Checks if a node should be restored based on the current restoration strategy.
     async fn should_restore_node(
         &self,
@@ -741,7 +602,20 @@ impl Restorer {
             let repo = self.repo.clone();
             let memory_budget = memory_budget.clone();
             async move {
-                let segments = Restorer::segment_pack_blob_requests(blob_requests);
+                let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
+                for (blob_id, req) in blob_requests {
+                    blob_to_targets.entry(blob_id).or_default().push(req);
+                }
+
+                let blobs_vec: Vec<(ID, BlobLocator, Vec<BlobRestoreRequest>)> = blob_to_targets
+                    .into_iter()
+                    .map(|(id, targets)| {
+                        let locator = targets[0].locator;
+                        (id, locator, targets)
+                    })
+                    .collect();
+
+                let segments = loader::segment_blobs(pack_id, blobs_vec);
                 let requested_bytes: u64 = segments
                     .iter()
                     .map(|segment| segment.source_len() as u64)
@@ -755,8 +629,7 @@ impl Restorer {
                     .acquire_many_owned(permit_units)
                     .await
                     .map_err(|_| anyhow!("Interrupted while reserving restore memory"))?;
-                let segments =
-                    Restorer::download_pack_segments_for_repo(repo, pack_id, segments).await;
+                let segments = loader::download_pack_segments(repo, segments).await;
                 segments.map(|segments| (segments, permit))
             }
         })
@@ -768,16 +641,16 @@ impl Restorer {
             }
 
             let (segments, _memory_permit) = res?;
-            for pack_segment in segments {
-                let mut blob_stream = futures::stream::iter(pack_segment.sorted_blobs.into_iter())
-                    .map(|(blob_id, locator)| {
-                        let pack_data = pack_segment.data.clone();
+            for (pack_segment, segment_data) in segments {
+                let data = Arc::new(segment_data);
+                let mut blob_stream = futures::stream::iter(pack_segment.blobs.into_iter())
+                    .map(|(blob_id, locator, targets)| {
+                        let pack_data = data.clone();
                         let secure_storage = secure_storage.clone();
                         let handle_cache = handle_cache.clone();
                         let progress_reporter = self.progress_reporter.clone();
                         let files = files.clone();
                         let quit_on_error = self.opts.quit_on_error;
-                        let targets = pack_segment.blob_to_targets.get(&blob_id).unwrap().clone();
                         let min_offset = pack_segment.min_offset;
 
                         async move {

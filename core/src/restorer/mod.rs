@@ -38,7 +38,8 @@ use crate::{
         defaults::{
             DEFAULT_RESTORE_BLOB_CONCURRENCY, DEFAULT_RESTORE_MAX_OPEN_FILES,
             DEFAULT_RESTORE_PACK_PREFETCH, DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES,
-            DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT, DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE,
+            DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT, DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD,
+            DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE,
         },
     },
     repository::{
@@ -48,7 +49,6 @@ use crate::{
         storage::SecureStorage,
     },
     ui::restore::RestoreProgressReporter,
-    utils::size,
 };
 
 /// Strategy for handling existing files during restoration.
@@ -540,8 +540,6 @@ impl Restorer {
     fn segment_pack_blob_requests(
         blob_requests: Vec<(ID, BlobRestoreRequest)>,
     ) -> Vec<DownloadedPackSegment> {
-        const PACK_READ_MERGE_THRESHOLD: u64 = 16 * size::KiB;
-
         let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
         for (blob_id, req) in blob_requests {
             blob_to_targets.entry(blob_id).or_default().push(req);
@@ -569,7 +567,7 @@ impl Restorer {
                 segment_min = blob_start;
                 segment_max = blob_end;
                 current_segment.push((blob_id, locator));
-            } else if blob_start <= segment_max + PACK_READ_MERGE_THRESHOLD
+            } else if blob_start <= segment_max + DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD
                 && next_segment_size <= max_segment_size
             {
                 segment_max = next_segment_max;
@@ -624,20 +622,29 @@ impl Restorer {
     ) -> Result<Vec<DownloadedPackSegment>> {
         let path = repo.get_path(ContentIdType::Pack, &pack_id);
 
-        for segment in &mut segments {
+        let mut read_futures = Vec::new();
+        for segment in &segments {
             let source_len = segment.source_len();
+            let offset = segment.min_offset as isize;
+            let repo = repo.clone();
+            let path = path.clone();
 
-            let pack_data = repo
-                .backend()
-                .read(
-                    &Handle::new_with_hint(&path, ContentIdType::Pack, false),
-                    segment.min_offset as isize,
-                    source_len,
-                )
-                .await
-                .with_context(|| format!("Failed to read pack {pack_id}"))?;
+            read_futures.push(async move {
+                repo.backend()
+                    .read(
+                        &Handle::new_with_hint(&path, ContentIdType::Pack, false),
+                        offset,
+                        source_len,
+                    )
+                    .await
+                    .with_context(|| format!("Failed to read pack {pack_id}"))
+            });
+        }
 
-            segment.data = Arc::new(pack_data);
+        let results = futures::future::try_join_all(read_futures).await?;
+
+        for (segment, data) in segments.iter_mut().zip(results) {
+            segment.data = Arc::new(data);
         }
 
         Ok(segments)

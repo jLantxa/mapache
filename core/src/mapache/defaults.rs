@@ -17,6 +17,7 @@ pub(crate) const DEFAULT_RESTORE_MAX_OPEN_FILES: usize = 128;
 pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES: usize = (128 * size::MiB) as usize;
 pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT: usize = (256 * size::KiB) as usize;
 pub(crate) const DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE: u64 = 32 * size::MiB;
+pub(crate) const DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD: u64 = 2 * size::MiB;
 
 // --- Index ---
 pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);

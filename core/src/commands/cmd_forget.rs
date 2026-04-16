@@ -106,7 +106,7 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
 const FORGET_MSG: &str = "forget";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth_from_file(&global_args.auth_file)?;
+    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?;
 
     let config = RepoConfig {

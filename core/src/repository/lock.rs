@@ -7,6 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Local};
+use colored::Colorize;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 

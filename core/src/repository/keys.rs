@@ -9,6 +9,7 @@ use anyhow::{Context as _, Result, bail};
 use argon2;
 use base64::Engine;
 use chrono::{DateTime, Local};
+use colored::Colorize;
 use futures::{Stream, StreamExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 

@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use chrono::Duration;
+use colored::Colorize;
 use futures::{StreamExt, stream};
 use parking_lot::Mutex;
 use rand::{RngExt, rng};

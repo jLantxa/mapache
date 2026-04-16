@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Error, Result, anyhow, bail};
 use chrono::Duration;
 use clap::{ArgGroup, Parser, Subcommand};
+use colored::Colorize;
 use serde::Serialize;
 
 use crate::{
@@ -106,7 +107,7 @@ pub struct WithGlobal<T: clap::Args> {
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 pub struct GlobalArgs {
     /// Repository path
-    #[clap(short, long)]
+    #[clap(short, long, env = "MAPACHE_REPOSITORY")]
     pub repo: String,
 
     /// Disable cache

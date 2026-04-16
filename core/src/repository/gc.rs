@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
+use colored::Colorize;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
 

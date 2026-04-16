@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
+use colored::Colorize;
 use fuser::{
     Config, Errno, FileHandle, Filesystem, FopenFlags, Generation, INodeNo, KernelConfig,
     LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,

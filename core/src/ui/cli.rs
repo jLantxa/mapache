@@ -68,14 +68,14 @@ macro_rules! log_always {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
-        eprintln!("\x1b[1;31mError:\x1b[0m {}", format_args!($($arg)*))
+        eprintln!("{}: {}", "Error".red().bold(), format_args!($($arg)*))
     };
 }
 
 #[macro_export]
 macro_rules! warning {
     ($($arg:tt)*) => {
-        $crate::ui::cli::log_with_level!(1, "\x1b[1;33mWarning:\x1b[0m {}", format_args!($($arg)*))
+        $crate::ui::cli::log_with_level!(1, "{}: {}", "Warning".yellow().bold(), format_args!($($arg)*))
     };
 }
 

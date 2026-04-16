@@ -9,7 +9,13 @@ use anyhow::{Context, Result, anyhow};
 use blake3::Hasher;
 use chrono::{DateTime, Duration, Local};
 
-use crate::{mapache::Hash256, repository::repo::Auth};
+use crate::{
+    mapache::{
+        Hash256,
+        vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
+    },
+    repository::repo::Auth,
+};
 
 // --- Constants ---
 
@@ -36,34 +42,43 @@ pub mod size {
 
 // --- Password ---
 
-/// Reads authentication credentials (username and password) from a file.
+/// Reads authentication credentials (username and password) from a file or environment variables.
 /// The file should contain the username on the first line and the password on the second.
-pub fn get_auth_from_file(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
-    match password_file_path {
-        None => Ok(None),
-        Some(path) => {
-            let text = std::fs::read_to_string(path).with_context(|| {
-                format!("Could not read repository password from {}", path.display())
-            })?;
+/// If no file is provided, it checks the MAPACHE_USERNAME and MAPACHE_PASSWORD environment variables.
+pub fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
+    if let Some(path) = password_file_path {
+        let text = std::fs::read_to_string(path).with_context(|| {
+            format!("Could not read repository password from {}", path.display())
+        })?;
 
-            // Procesa el texto para obtener el username y la password
-            let mut lines = text.lines();
-            let username = lines
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("File {} is empty", path.display()))?
-                .to_string();
+        // Procesa el texto para obtener el username y la password
+        let mut lines = text.lines();
+        let username = lines
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("File {} is empty", path.display()))?
+            .to_string();
 
-            let password = lines
-                .next()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "File {} is missing the password on the second line",
-                        path.display()
-                    )
-                })?
-                .to_string();
+        let password = lines
+            .next()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "File {} is missing the password on the second line",
+                    path.display()
+                )
+            })?
+            .to_string();
 
-            Ok(Some(Auth { username, password }))
+        Ok(Some(Auth { username, password }))
+    } else {
+        let username = get_envvar(USERNAME_ENVVAR);
+        let password = get_envvar(PASSWORD_ENVVAR);
+
+        match (username, password) {
+            (Some(u), Some(p)) => Ok(Some(Auth {
+                username: u,
+                password: p,
+            })),
+            _ => Ok(None),
         }
     }
 }
@@ -650,27 +665,46 @@ mod tests {
     }
 
     #[test]
-    fn test_get_auth_from_file() -> Result<()> {
+    fn test_get_auth() -> Result<()> {
         let tmp_dir = tempfile::tempdir()?;
         let auth_file = tmp_dir.path().join("auth");
 
         // Write a valid auth file
         std::fs::write(&auth_file, "user1\npass123")?;
 
-        let auth = get_auth_from_file(&Some(auth_file.clone()))?.unwrap();
+        let auth = get_auth(&Some(auth_file.clone()))?.unwrap();
         assert_eq!(auth.username, "user1");
         assert_eq!(auth.password, "pass123");
 
         // Test empty file
         std::fs::write(&auth_file, "")?;
-        assert!(get_auth_from_file(&Some(auth_file.clone())).is_err());
+        assert!(get_auth(&Some(auth_file.clone())).is_err());
 
         // Test missing password
         std::fs::write(&auth_file, "user1")?;
-        assert!(get_auth_from_file(&Some(auth_file.clone())).is_err());
+        assert!(get_auth(&Some(auth_file.clone())).is_err());
 
-        // Test None input
-        assert!(get_auth_from_file(&None)?.is_none());
+        // Test None input (no env vars)
+        unsafe {
+            std::env::remove_var(USERNAME_ENVVAR);
+            std::env::remove_var(PASSWORD_ENVVAR);
+        }
+        assert!(get_auth(&None)?.is_none());
+
+        // Test environment variables
+        unsafe {
+            std::env::set_var(USERNAME_ENVVAR, "env_user");
+            std::env::set_var(PASSWORD_ENVVAR, "env_pass");
+        }
+        let auth = get_auth(&None)?.unwrap();
+        assert_eq!(auth.username, "env_user");
+        assert_eq!(auth.password, "env_pass");
+
+        // Cleanup
+        unsafe {
+            std::env::remove_var(USERNAME_ENVVAR);
+            std::env::remove_var(PASSWORD_ENVVAR);
+        }
 
         Ok(())
     }

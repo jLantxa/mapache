@@ -87,7 +87,7 @@ impl VerifyStats {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth_from_file(&global_args.auth_file)?;
+    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend_options = global_args.backend_options(false);
     let backend_arc = new_backend_with_prompt(backend_options).await?;
 

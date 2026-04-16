@@ -59,8 +59,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
     .await?;
 
-    let auth =
-        utils::get_auth_from_file(&global_args.auth_file)?.unwrap_or_else(ui::cli::request_auth);
+    let auth = utils::get_auth(&global_args.auth_file)?.unwrap_or_else(ui::cli::request_auth);
 
     let repo_config = RepoConfig {
         pack_size: DEFAULT_PACK_SIZE,

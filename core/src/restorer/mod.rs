@@ -259,11 +259,13 @@ impl Restorer {
         {
             let fd = file.as_raw_fd();
 
-            // Use F_VOLPOSMODE (1) - Allocate from the current position/offset
-            // This is often more reliable than F_PEEKOSYNC in test environments
+            // Constants for fcntl F_PREALLOCATE
+            const F_VOLPOSMODE: i32 = 1; // Allocate from the current position/offset
+            const F_STARTPOSMODE: i32 = 3; // Allocate from the start of the file
+
             let mut store = libc::fstore_t {
                 fst_flags: libc::F_ALLOCATEALL,
-                fst_posmode: 1, // F_VOLPOSMODE
+                fst_posmode: F_VOLPOSMODE,
                 fst_offset: 0,
                 fst_length: length as libc::off_t,
                 fst_bytesalloc: 0,
@@ -273,7 +275,7 @@ impl Restorer {
 
             // If F_VOLPOSMODE fails, try the "start of file" mode
             if res == -1 {
-                store.fst_posmode = 3; // F_STARTPOSMODE
+                store.fst_posmode = F_STARTPOSMODE;
                 res = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &store) };
             }
 

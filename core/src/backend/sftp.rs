@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
+use colored::Colorize;
 use russh::{
     client,
     keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key},

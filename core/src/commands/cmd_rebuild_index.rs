@@ -31,7 +31,7 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth_from_file(&global_args.auth_file)?;
+    let auth = utils::get_auth(&global_args.auth_file)?;
 
     let backend_options = global_args.backend_options(args.dry_run);
     let backend = new_backend_with_prompt(backend_options).await?;

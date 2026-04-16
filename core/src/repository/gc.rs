@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
@@ -12,6 +12,7 @@ use crate::{
         global::GlobalOpts,
     },
     repository::{
+        loader,
         repo::{REPO_DROPPED_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
@@ -210,54 +211,28 @@ impl Plan {
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
     async fn repack(&mut self) -> Result<()> {
-        // Collect information about ALL referenced blobs in obsolete packs.
-        // We use iter_ids to find every single record (including duplicates)
-        // that points into a pack scheduled for deletion.
-        let repack_bar = ProgressBar::with_draw_target(
-            Some(self.referenced_blobs.len() as u64),
-            default_bar_draw_target(),
-        )
-        .with_style(
-            ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] Finding blobs to repack")
-                .unwrap()
-                .progress_chars("=> "),
-        );
-        repack_bar.tick();
+        // Gather locators while the index is still intact.
+        // We use a Vec to preserve the exact metadata we need for the loader.
+        let mut locators_to_repack = Vec::new();
 
-        // Key: Blob ID. Value: Tuple of (Pack ID, BlobType, Offset, Encoded Length)
-        // HashMap ensures we only get one repack instruction per unique referenced blob ID.
-        let mut repack_blob_info = HashMap::<ID, (ID, mapache::BlobType, u32, u32)>::new();
+        self.repo.index().for_each_id(|id, locator| {
+            if self.referenced_blobs.contains(id) && self.obsolete_packs.contains(&locator.pack_id)
+            {
+                locators_to_repack.push((*id, locator));
+            }
+        });
 
-        self.repo
-            .index()
-            .for_each_id(|referenced_blob_id, locator| {
-                repack_bar.inc(1);
+        if locators_to_repack.is_empty() {
+            return Ok(());
+        }
 
-                if self.referenced_blobs.contains(referenced_blob_id)
-                    && self.obsolete_packs.contains(&locator.pack_id)
-                {
-                    // HashMap insertion here automatically deduplicates the *repack instruction* by Blob ID.
-                    repack_blob_info.insert(
-                        *referenced_blob_id,
-                        (
-                            locator.pack_id,
-                            locator.blob_type,
-                            locator.offset,
-                            locator.length,
-                        ),
-                    );
-                }
-            });
-        repack_bar.finish_and_clear();
-
-        // Index cleanup must happen before repacking to clear the old references,
-        // otherwise the repacked blobs will be considered duplicates and the save will fail.
-        // This is where the old, duplicate index entries are logically removed.
+        // Clear old references.
+        // This prevents the saver from seeing the blobs as "already existing"
+        // and ensures our new pack file becomes the primary source.
         self.repo.index().cleanup(Some(&self.obsolete_packs));
 
         let repack_bar = ProgressBar::with_draw_target(
-            Some(repack_blob_info.len() as u64),
+            Some(locators_to_repack.len() as u64),
             default_bar_draw_target(),
         )
         .with_style(
@@ -267,41 +242,36 @@ impl Plan {
                 .progress_chars("=> "),
         );
 
-        stream::iter(repack_blob_info)
-            .map(|(blob_id, (pack_id, blob_type, offset, length))| {
-                let repo = self.repo.clone();
-                let bar = repack_bar.clone();
-                async move {
-                    let data = repo
-                        .read_from_pack_and_decode(
-                            blob_type,
-                            &pack_id,
-                            offset as u64,
-                            length as u64,
-                        )
-                        .await?;
+        let loader = loader::BlobLoader::new(self.repo.clone());
 
-                    let repo_clone = repo.clone();
-                    tokio::task::spawn_blocking(move || {
-                        repo_clone.encode_and_save_blob(
-                            blob_type,
-                            WriteContents::Borrowed(&data),
-                            SaveID::WithID(blob_id),
-                        )
-                    })
-                    .await
-                    .context("Blob processing panicked")??;
+        // We chunk the locators to keep memory usage predictable during the repack.
+        for chunk in locators_to_repack.chunks(100) {
+            let loaded_blobs = loader.load_with_locators(chunk.to_vec()).await?;
 
-                    bar.inc(1);
-                    Ok::<(), anyhow::Error>(())
-                }
-            })
-            .buffer_unordered(8)
-            .try_collect::<Vec<()>>()
-            .await?;
+            for (id, data) in loaded_blobs {
+                // We find the original blob_type from our chunked locators
+                let blob_type = chunk
+                    .iter()
+                    .find(|(cid, _)| *cid == id)
+                    .map(|(_, loc)| loc.blob_type)
+                    .unwrap_or(mapache::BlobType::Data);
+
+                let repo_clone = self.repo.clone();
+                tokio::task::spawn_blocking(move || {
+                    repo_clone.encode_and_save_blob(
+                        blob_type,
+                        WriteContents::Owned(data),
+                        SaveID::WithID(id),
+                    )
+                })
+                .await
+                .context("Repack task panicked")??;
+
+                repack_bar.inc(1);
+            }
+        }
 
         repack_bar.finish_and_clear();
-
         Ok(())
     }
 

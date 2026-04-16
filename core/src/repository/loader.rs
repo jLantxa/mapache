@@ -1,16 +1,18 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 
-use crate::backend::Handle;
-use crate::mapache::defaults::{
-    DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD, DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE,
+use crate::{
+    backend::Handle,
+    mapache::{
+        defaults::{
+            DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD, DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE,
+        },
+        {BlobType, ContentIdType, ID},
+    },
+    repository::{index::BlobLocator, repo::Repository},
 };
-use crate::mapache::{BlobType, ContentIdType, ID};
-use crate::repository::index::BlobLocator;
-use crate::repository::repo::Repository;
 
 /// A segment of a pack file to be downloaded.
 #[derive(Debug, Clone)]
@@ -123,7 +125,6 @@ pub async fn download_pack_segments<T: Send + 'static>(
     Ok(final_results)
 }
 
-/// A high-level loader for blobs that uses pack segmentation.
 pub struct BlobLoader {
     repo: Arc<Repository>,
 }
@@ -133,40 +134,57 @@ impl BlobLoader {
         Self { repo }
     }
 
-    /// Loads multiple blobs efficiently.
-    pub async fn load_blobs(&self, blob_ids: &[ID]) -> Result<HashMap<ID, Vec<u8>>> {
-        if blob_ids.is_empty() {
+    pub async fn load_with_id(&self, blob_ids: &[ID]) -> Result<HashMap<ID, Vec<u8>>> {
+        let mut locators = Vec::with_capacity(blob_ids.len());
+        for id in blob_ids {
+            let loc = self
+                .repo
+                .index()
+                .get(id)
+                .with_context(|| format!("Blob {id} not found in index"))?;
+            locators.push((*id, loc));
+        }
+        self.load_with_locators(locators).await
+    }
+
+    pub async fn load_with_locators(
+        &self,
+        locators: Vec<(ID, BlobLocator)>,
+    ) -> Result<HashMap<ID, Vec<u8>>> {
+        if locators.is_empty() {
             return Ok(HashMap::new());
         }
 
+        // Group by Pack
         let mut pack_groups: HashMap<ID, Vec<(ID, BlobLocator, ())>> = HashMap::new();
-        for id in blob_ids {
-            if let Some(loc) = self.repo.index().get(id) {
-                pack_groups
-                    .entry(loc.pack_id)
-                    .or_default()
-                    .push((*id, loc, ()));
-            } else {
-                anyhow::bail!("Blob {} not found in index", id);
-            }
+        for (id, loc) in locators {
+            pack_groups
+                .entry(loc.pack_id)
+                .or_default()
+                .push((id, loc, ()));
         }
 
-        let mut all_segments = Vec::new();
-        for (pack_id, blobs) in pack_groups {
-            all_segments.extend(segment_blobs(pack_id, blobs));
-        }
+        // Segment
+        let all_segments: Vec<_> = pack_groups
+            .into_iter()
+            .flat_map(|(pack_id, blobs)| segment_blobs(pack_id, blobs))
+            .collect();
 
+        // Download
         let loaded = download_pack_segments(self.repo.clone(), all_segments).await?;
 
-        let mut result = HashMap::with_capacity(blob_ids.len());
+        // Extract and Decode
+        let mut result = HashMap::with_capacity(loaded.len());
         for (segment, data) in loaded {
             for (id, loc, _) in segment.blobs {
                 let start = (loc.offset as u64 - segment.min_offset) as usize;
                 let end = start + loc.length as usize;
+
                 let decoded = self
                     .repo
                     .secure_storage()
                     .decode_owned(data[start..end].to_vec())?;
+
                 result.insert(id, decoded);
             }
         }

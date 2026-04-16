@@ -60,6 +60,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: Some(vec!["0".to_string(), "1".to_string()]),
             exclude: Some(vec![
                 String::from("0/00/file00.txt"),
@@ -159,6 +160,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: true,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -217,6 +219,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: Some(vec![
                 "0/file0.txt".to_string(),
                 "0/00/file00.txt".to_string(),
@@ -246,6 +249,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: Some(vec!["0/00/file00.txt".to_string()]),
             exclude: None,
             strip_prefix: true,
@@ -308,6 +312,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -345,6 +350,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -432,6 +438,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -469,6 +476,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: Some(vec!["0".to_string()]),
             exclude: None,
             strip_prefix: false,
@@ -552,6 +560,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -589,6 +598,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -669,6 +679,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -703,6 +714,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: Some(vec!["0/file0.txt".to_string()]),
             exclude: None,
             strip_prefix: false,
@@ -727,6 +739,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: Some(vec!["0/00/file00.txt".to_string()]),
             exclude: None,
             strip_prefix: false,
@@ -803,6 +816,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -876,6 +890,7 @@ mod tests {
             target: restore_sparse_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -907,6 +922,7 @@ mod tests {
             target: restore_eager_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,
@@ -951,6 +967,123 @@ mod tests {
                 "Eager-allocated file should have allocated blocks"
             );
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_restore_verify_content() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        let file_path = backup_path.join("file.txt");
+        let original_content = "Original content";
+        std::fs::write(&file_path, original_content)?;
+
+        // Init repo
+        ctx.init_repo().await?;
+
+        // Run snapshot
+        let snapshot_args = cmd_snapshot::CmdArgs {
+            paths: vec![file_path.clone()],
+            as_root: false,
+            exclude: None,
+            tags_str: String::new(),
+            description: None,
+            no_parent: false,
+            skip_if_unchanged: false,
+            no_scan: true,
+            parent: UseSnapshot::Latest,
+            num_readers: 1,
+            num_packers: 1,
+            dry_run: false,
+        };
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
+            .await
+            .context("Failed to run cmd_snapshot")?;
+
+        // Run restore to create base file
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        let mut restore_args = cmd_restore::CmdArgs {
+            preallocate: false,
+            target: restore_path.clone(),
+            snapshot: UseSnapshot::Latest,
+            dry_run: false,
+            verify: false,
+            include: None,
+            exclude: None,
+            strip_prefix: false,
+            strategy: Strategy::Overwrite,
+            quit_on_error: true,
+            delete: false,
+            no_preserve_root: false,
+        };
+        commands::cmd_restore::run(&ctx.global, &restore_args)
+            .await
+            .context("Failed to run initial cmd_restore")?;
+
+        let restored_file = restore_path.join("file.txt");
+        assert_eq!(std::fs::read_to_string(&restored_file)?, original_content);
+
+        // Get original mtime
+        let original_filetime =
+            FileTime::from_last_modification_time(&std::fs::metadata(&restored_file)?);
+
+        // Modify content but keep size and mtime
+        let modified_content = "Modified content"; // Same length as "Original content" is 16.
+        assert_eq!(original_content.len(), modified_content.len());
+
+        std::fs::write(&restored_file, modified_content)?;
+        set_file_times(&restored_file, original_filetime, original_filetime)?;
+
+        let new_metadata = std::fs::metadata(&restored_file)?;
+        assert_eq!(new_metadata.len(), original_content.len() as u64);
+        // We might have some precision issues depending on platform, but set_file_times should help.
+
+        // Run restore again WITHOUT verify. It should skip because size and mtime match.
+        restore_args.verify = false;
+        commands::cmd_restore::run(&ctx.global, &restore_args)
+            .await
+            .context("Failed to run second cmd_restore")?;
+
+        assert_eq!(std::fs::read_to_string(&restored_file)?, modified_content);
+
+        // Modify mtime but keep modified content.
+        // It should detect that content DOES NOT match (automatic verification on mtime mismatch) and RESTORE it.
+        let different_filetime =
+            FileTime::from_last_modification_time(&std::fs::metadata(&restored_file)?);
+        let future_time = FileTime::from_unix_time(different_filetime.unix_seconds() + 1000, 0);
+        set_file_times(&restored_file, future_time, future_time)?;
+
+        commands::cmd_restore::run(&ctx.global, &restore_args)
+            .await
+            .context("Failed to run third cmd_restore (automatic verify on mtime mismatch)")?;
+
+        // It should have restored original content because hashes didn't match.
+        assert_eq!(std::fs::read_to_string(&restored_file)?, original_content);
+
+        // Test overwriting a readonly file
+        // Make it readonly in the target.
+        let mut perms = std::fs::metadata(&restored_file)?.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&restored_file, perms)?;
+
+        // Modify backup data file to force an overwrite (change content)
+        std::fs::write(&file_path, "New original content")?;
+        // Snapshot again
+        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+
+        // Restore with overwrite strategy. It should succeed despite the file being readonly.
+        restore_args.strategy = Strategy::Overwrite;
+        commands::cmd_restore::run(&ctx.global, &restore_args)
+            .await
+            .context("Failed to overwrite readonly file")?;
+
+        assert_eq!(
+            std::fs::read_to_string(&restored_file)?,
+            "New original content"
+        );
 
         Ok(())
     }

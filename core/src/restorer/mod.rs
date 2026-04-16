@@ -75,6 +75,8 @@ pub struct RestoreOptions {
     pub quit_on_error: bool,
     /// If true, preallocate disk space for files before writing.
     pub preallocate: bool,
+    /// If true, verify the content of existing files by hashing them.
+    pub verify: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -390,7 +392,7 @@ impl Restorer {
 
             let restore_path = self.target_path.join(&path);
             if !self
-                .should_restore_node(&node, &restore_path, &restored_dirs)
+                .should_restore_node(&node, &restore_path, &restored_dirs, index.clone())
                 .await?
             {
                 self.progress_reporter.processed_item(&path);
@@ -454,6 +456,13 @@ impl Restorer {
                         if let Some(parent) = restore_path.parent() {
                             fs::create_dir_all(parent)?;
                         }
+
+                        // If the file exists, it might be read-only (which we set during previous restores).
+                        // We need to clear those attributes before we can overwrite/truncate it.
+                        if restore_path.exists() {
+                            self.clear_readonly_attribute(&restore_path)?;
+                        }
+
                         let mut file = OpenOptions::new()
                             .create(true)
                             .write(true)
@@ -517,6 +526,7 @@ impl Restorer {
         node: &Node,
         restore_path: &Path,
         restored_dirs: &[RestoredDirectory],
+        index: Arc<MasterIndex>,
     ) -> Result<bool> {
         if !repo_fs::path_exists(restore_path).await {
             return Ok(true);
@@ -529,12 +539,27 @@ impl Restorer {
             let local_size = local_metadata.len();
             let local_mtime = local_metadata.modified().ok();
 
-            if local_size == node.metadata.size
-                && node
+            if local_size == node.metadata.size {
+                let mtime_matches = node
                     .metadata
-                    .times_match(local_mtime, node.metadata.modified_time)
-            {
-                return Ok(false);
+                    .times_match(local_mtime, node.metadata.modified_time);
+
+                // If mtime and size match, we skip by default (trust metadata).
+                // If --verify is set, we hash anyway to be sure.
+                if mtime_matches && !self.opts.verify {
+                    return Ok(false);
+                }
+
+                // If mtime differs but size is the same, OR if --verify is set,
+                // we check the actual content hashes.
+                if self
+                    .verify_file_content(node, restore_path, index)
+                    .await
+                    .unwrap_or(false)
+                {
+                    // Content matches! Skip restoration of this file.
+                    return Ok(false);
+                }
             }
         }
 
@@ -578,6 +603,84 @@ impl Restorer {
                 Ok(true)
             }
         }
+    }
+
+    /// Verifies that the content of a local file matches the blobs in the repository.
+    async fn verify_file_content(
+        &self,
+        node: &Node,
+        local_path: &Path,
+        index: Arc<MasterIndex>,
+    ) -> Result<bool> {
+        let blobs = match &node.blobs {
+            Some(b) => b.clone(),
+            None => return Ok(true),
+        };
+
+        let local_path = local_path.to_path_buf();
+        spawn_blocking(move || {
+            let file = File::open(&local_path)?;
+            let mut offset = 0;
+
+            for blob_id in blobs {
+                let locator = index
+                    .get_data(&blob_id)
+                    .ok_or_else(|| anyhow!("Blob {} not found in index", blob_id))?;
+
+                let mut chunk = vec![0u8; locator.raw_length as usize];
+                #[cfg(unix)]
+                file.read_exact_at(&mut chunk, offset)?;
+                #[cfg(windows)]
+                file.seek_read(&mut chunk, offset)?;
+
+                let actual_id = ID::from_content(&chunk);
+                if actual_id != blob_id {
+                    return Ok(false);
+                }
+                offset += locator.raw_length as u64;
+            }
+            Ok(true)
+        })
+        .await?
+    }
+
+    /// Clears the readonly attribute from a file to allow overwriting it.
+    /// This handles both Windows readonly attributes and Unix write permissions.
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn clear_readonly_attribute(&self, path: &Path) -> Result<()> {
+        let metadata = fs::metadata(path).with_context(|| {
+            format!(
+                "Failed to get metadata for permission change: {}",
+                path.display()
+            )
+        })?;
+
+        let mut perms = metadata.permissions();
+
+        #[cfg(windows)]
+        {
+            if perms.readonly() {
+                perms.set_readonly(false);
+                fs::set_permissions(path, perms).with_context(|| {
+                    format!("Failed to clear readonly attribute on {}", path.display())
+                })?;
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = perms.mode();
+            // If the file is not writable by the owner, make it writable.
+            if mode & 0o200 == 0 {
+                perms.set_mode(mode | 0o200);
+                fs::set_permissions(path, perms).with_context(|| {
+                    format!("Failed to set write permission on {}", path.display())
+                })?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn restore_packs(

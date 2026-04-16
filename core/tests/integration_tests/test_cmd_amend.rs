@@ -73,6 +73,7 @@ mod tests {
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
+            verify: false,
             include: None,
             exclude: None,
             strip_prefix: false,

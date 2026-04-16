@@ -95,6 +95,11 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub preallocate: bool,
 
+    /// Force verification of existing files by content (hashing) even if mtime matches.
+    /// Note: verification is already performed automatically if size matches but mtime differs.
+    #[clap(long, default_value_t = false)]
+    pub verify: bool,
+
     /// Dry run
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
@@ -178,6 +183,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             quit_on_error: args.quit_on_error,
             strip_prefix: common_prefix,
             preallocate: args.preallocate,
+            verify: args.verify,
         },
         progress_reporter.clone(),
         cleanup_handler.interrupted.clone(),

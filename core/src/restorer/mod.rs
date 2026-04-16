@@ -522,6 +522,22 @@ impl Restorer {
             return Ok(true);
         }
 
+        // If a file already exists at the restore path, we can skip it if the size and modified time match.
+        if node.is_file()
+            && let Ok(local_metadata) = fs::symlink_metadata(restore_path)
+        {
+            let local_size = local_metadata.len();
+            let local_mtime = local_metadata.modified().ok();
+
+            if local_size == node.metadata.size
+                && node
+                    .metadata
+                    .times_match(local_mtime, node.metadata.modified_time)
+            {
+                return Ok(false);
+            }
+        }
+
         match self.opts.strategy {
             Strategy::Overwrite => Ok(true),
             Strategy::Skip => Ok(false),

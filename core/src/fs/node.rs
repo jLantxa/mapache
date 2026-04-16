@@ -209,7 +209,7 @@ impl Metadata {
     }
 
     #[inline]
-    fn times_match(&self, t1: Option<SystemTime>, t2: Option<SystemTime>) -> bool {
+    pub fn times_match(&self, t1: Option<SystemTime>, t2: Option<SystemTime>) -> bool {
         match (t1, t2) {
             (None, None) => true,
             (Some(t1), Some(t2)) => {

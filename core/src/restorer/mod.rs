@@ -762,7 +762,7 @@ impl Restorer {
             let (segments, _memory_permit) = res?;
             for (pack_segment, segment_data) in segments {
                 let data = Arc::new(segment_data);
-                let mut blob_stream = futures::stream::iter(pack_segment.blobs.into_iter())
+                let mut blob_stream = futures::stream::iter(pack_segment.blobs)
                     .map(|(blob_id, locator, targets)| {
                         let pack_data = data.clone();
                         let secure_storage = secure_storage.clone();
@@ -849,8 +849,7 @@ impl Restorer {
         }
 
         let mut restored_dirs = plan.restored_dirs.clone();
-        restored_dirs
-            .sort_unstable_by(|a, b| b.path.as_os_str().len().cmp(&a.path.as_os_str().len()));
+        restored_dirs.sort_unstable_by_key(|b| std::cmp::Reverse(b.path.as_os_str().len()));
 
         for dir_entry in restored_dirs {
             if self.shutdown_signal.load(Ordering::Relaxed) {

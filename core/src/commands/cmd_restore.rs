@@ -93,13 +93,12 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub quit_on_error: bool,
 
-    /// Eagerly preallocate files before restoring contents.
-    /// This may avoid failures on nearly full disks, but can be slower.
+    /// Preallocate files instead of writing them sequentially.
+    /// This may speed up restoration but can cause higher disk fragmentation.
     #[clap(long, default_value_t = false)]
-    pub preallocate: bool,
+    pub sparse: bool,
 
     /// Force verification of existing files by content (hashing) even if mtime matches.
-    /// Note: verification is already performed automatically if size matches but mtime differs.
     #[clap(long, default_value_t = false)]
     pub verify: bool,
 
@@ -184,7 +183,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             strategy: args.strategy.clone(),
             quit_on_error: args.quit_on_error,
             strip_prefix: common_prefix,
-            preallocate: args.preallocate,
+            preallocate: !args.sparse,
             verify: args.verify,
         },
         progress_reporter.clone(),

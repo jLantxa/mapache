@@ -57,7 +57,7 @@ mod tests {
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
-            preallocate: false,
+            sparse: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -161,7 +161,7 @@ mod tests {
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
-            preallocate: false,
+            sparse: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -227,7 +227,7 @@ mod tests {
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
-            preallocate: false,
+            sparse: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -356,7 +356,7 @@ mod tests {
 
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
-            preallocate: false,
+            sparse: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -443,7 +443,7 @@ mod tests {
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
-            preallocate: false,
+            sparse: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -532,7 +532,7 @@ mod tests {
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
-            preallocate: false,
+            sparse: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,
@@ -711,7 +711,7 @@ mod tests {
         // Restore
         let restore_path = ctx._tmp_dir.path().join("restore");
         let restore_args = cmd_restore::CmdArgs {
-            preallocate: false,
+            sparse: false,
             target: restore_path.clone(),
             snapshot: UseSnapshot::Latest,
             dry_run: false,

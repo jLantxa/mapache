@@ -239,7 +239,8 @@ impl Restorer {
     }
 
     /// Preallocates disk space for a file.
-    /// This is used as an optimization to reduce disk fragmentation and ensure sufficient space.
+    /// This is used as an optimization to reduce disk fragmentation and ensure sufficient space,
+    /// but it is slower than sparse file creation.
     fn preallocate_file(&self, file: &mut File, length: u64) -> Result<()> {
         if length == 0 {
             return Ok(());

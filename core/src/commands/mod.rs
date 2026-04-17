@@ -7,7 +7,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::{
-    backend::BackendOptions,
+    backend::{BackendOptions, StorageBackend},
     mapache::{
         ContentIdType, ID,
         defaults::{
@@ -17,10 +17,12 @@ use crate::{
         global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
     },
     repository::{
-        repo::Repository,
+        lock::LockHandle,
+        repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
+        storage::SecureStorage,
     },
-    ui::{self},
+    ui::{self, cli},
     utils::{self, size},
 };
 
@@ -425,6 +427,113 @@ fn extract_global(command: &Command) -> Option<&GlobalArgs> {
         Unlock,
         Verify,
     })
+}
+
+/// Helper to open a repository with interactive authentication if needed.
+pub async fn open_repository(
+    auth_file: Option<&PathBuf>,
+    key_file_path: Option<&PathBuf>,
+    backend: Arc<dyn StorageBackend>,
+    config: RepoConfig,
+) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
+    let mut auth = utils::get_auth(&auth_file.cloned())?;
+
+    // If auth is provided (from file or env), try it once.
+    if let Some(a) = auth.take() {
+        return Repository::try_open_unlocked(&a, key_file_path, backend, config).await;
+    }
+
+    // Otherwise, loop with prompts
+    const MAX_PASSWORD_RETRIES: u32 = 3;
+    let mut password_try_count = 0;
+
+    loop {
+        let current_auth = cli::request_auth();
+
+        match Repository::try_open_unlocked(&current_auth, key_file_path, backend.clone(), config)
+            .await
+        {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                let is_retryable = e
+                    .chain()
+                    .find_map(|err| err.downcast_ref::<crate::repository::keys::KeyManagerError>())
+                    .map(|key_err| !key_err.is_fatal())
+                    .unwrap_or(false);
+
+                if is_retryable {
+                    password_try_count += 1;
+                    if password_try_count < MAX_PASSWORD_RETRIES {
+                        cli::log!("Incorrect username or password. Try again.");
+                        continue;
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// Helper to open a repository with a lock and interactive authentication if needed.
+pub async fn open_repository_with_lock(
+    auth_file: Option<&PathBuf>,
+    key_file_path: Option<&PathBuf>,
+    backend: Arc<dyn StorageBackend>,
+    config: RepoConfig,
+    exclusive_lock: bool,
+    retry_duration: Option<Duration>,
+) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
+    let mut auth = utils::get_auth(&auth_file.cloned())?;
+
+    // If auth is provided (from file or env), try it once.
+    if let Some(a) = auth.take() {
+        return Repository::try_open_with_lock(
+            &a,
+            key_file_path,
+            backend,
+            config,
+            exclusive_lock,
+            retry_duration,
+        )
+        .await;
+    }
+
+    // Otherwise, loop with prompts
+    const MAX_PASSWORD_RETRIES: u32 = 3;
+    let mut password_try_count = 0;
+
+    loop {
+        let current_auth = cli::request_auth();
+
+        match Repository::try_open_with_lock(
+            &current_auth,
+            key_file_path,
+            backend.clone(),
+            config,
+            exclusive_lock,
+            retry_duration,
+        )
+        .await
+        {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                let is_retryable = e
+                    .chain()
+                    .find_map(|err| err.downcast_ref::<crate::repository::keys::KeyManagerError>())
+                    .map(|key_err| !key_err.is_fatal())
+                    .unwrap_or(false);
+
+                if is_retryable {
+                    password_try_count += 1;
+                    if password_try_count < MAX_PASSWORD_RETRIES {
+                        crate::log!("Incorrect username or password. Try again.");
+                        continue;
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

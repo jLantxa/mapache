@@ -7,18 +7,15 @@ use futures::StreamExt;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler},
+    commands::{GlobalArgs, cleanup::CleanupHandler, open_repository_with_lock},
     fs::tree::{NodeDiff, NodeDiffStream, SerializedNodeStream},
     mapache::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::{
-        repo::{RepoConfig, Repository},
-        snapshot::DiffCounts,
-    },
+    repository::{repo::RepoConfig, snapshot::DiffCounts},
     ui::{
         self,
         table::{Alignment, Table},
     },
-    utils::{self, format_size_binary, size},
+    utils::{format_size_binary, size},
 };
 
 #[derive(Args, Debug)]
@@ -32,7 +29,6 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
@@ -40,8 +36,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, _, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,

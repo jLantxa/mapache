@@ -6,6 +6,7 @@ use colored::Colorize;
 
 use crate::archiver::{self, SnapshotOptions, progress::SnapshotProgress};
 use crate::backend::{StorageHint, new_backend_with_prompt};
+use crate::commands::open_repository_with_lock;
 use crate::commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags};
 use crate::fs::{
     self, calculate_lcp,
@@ -14,7 +15,7 @@ use crate::fs::{
 use crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS;
 use crate::mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN};
 use crate::repository::{
-    repo::{RepoConfig, Repository},
+    repo::RepoConfig,
     snapshot::{SnapshotPair, SnapshotSummary},
 };
 use crate::ui::{
@@ -88,7 +89,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         bail!("No source paths provided.");
     };
 
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?;
 
     let config = RepoConfig {
@@ -96,8 +96,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, _, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,

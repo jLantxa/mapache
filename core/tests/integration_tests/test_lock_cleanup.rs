@@ -26,7 +26,7 @@ async fn test_lock_handle_drop() -> Result<()> {
 
     {
         let (_repo, _, _lock_handle) = Repository::try_open_with_lock(
-            Some(&ctx.auth),
+            &ctx.auth,
             None,
             Arc::new(mapache::backend::localfs::LocalFS::new(
                 ctx.repo_path.clone(),
@@ -76,7 +76,7 @@ async fn test_commands_lock_cleanup() -> Result<()> {
             ctx.repo_path.clone(),
         ));
         let (repo, _) =
-            Repository::try_open_unlocked(Some(&ctx.auth), None, backend, TEST_REPO_CONFIG).await?;
+            Repository::try_open_unlocked(&ctx.auth, None, backend, TEST_REPO_CONFIG).await?;
         let ids = repo.list_snapshot_ids().await?;
         ids.first()
             .expect("Snapshot should have been created")

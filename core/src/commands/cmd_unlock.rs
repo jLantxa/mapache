@@ -3,8 +3,9 @@ use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
+    commands::open_repository,
     mapache::ContentIdType,
-    repository::repo::{RepoConfig, Repository},
+    repository::repo::RepoConfig,
     ui,
     utils::{self, size},
 };
@@ -19,7 +20,6 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let config = RepoConfig {
@@ -28,9 +28,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (repo, _) =
-        Repository::try_open_unlocked(auth.as_ref(), global_args.key.as_ref(), backend, config)
-            .await?;
+    let (repo, _) = open_repository(
+        global_args.auth_file.as_ref(),
+        global_args.key.as_ref(),
+        backend,
+        config,
+    )
+    .await?;
 
     let locks = repo.get_locks().await?;
     let mut num_deleted_locks = 0;

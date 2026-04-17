@@ -183,15 +183,10 @@ pub struct Repository {
 impl Repository {
     /// Create and initialize a new repository
     pub async fn init(
-        auth: Option<&Auth>,
+        auth: &Auth,
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<Manifest> {
-        let auth = match auth {
-            Some(a) => a,
-            None => &ui::cli::request_new_auth(),
-        };
-
         backend
             .create()
             .await
@@ -261,10 +256,9 @@ impl Repository {
     }
 
     /// Try to open a repository and acquire a lock.
-    /// This function prompts for a password to retrieve a master key.
     #[allow(clippy::type_complexity)]
     pub async fn try_open_with_lock(
-        auth: Option<&Auth>,
+        auth: &Auth,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
@@ -283,63 +277,16 @@ impl Repository {
     }
 
     /// Try to open a repository  without acquiring a lock.
-    /// This function prompts for a password to retrieve a master key.
     #[allow(clippy::type_complexity)]
     pub async fn try_open_unlocked(
-        mut auth: Option<&Auth>,
+        auth: &Auth,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
     ) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
         let key_manager = KeyManager::new(backend.clone());
 
-        const MAX_PASSWORD_RETRIES: u32 = 3;
-        let mut password_try_count = 0;
-
-        let (_key_id, master_key) = {
-            if let Some(a) = auth.take() {
-                key_manager.retrieve_master_key(a, key_file_path).await?
-            } else {
-                // Before prompting for credentials, verify that keyfiles exist (when reading from repo)
-                if key_file_path.is_none() {
-                    key_manager.keyfiles_exist().await?;
-                }
-
-                loop {
-                    let auth_from_console = ui::cli::request_auth();
-
-                    match key_manager
-                        .retrieve_master_key(&auth_from_console, key_file_path)
-                        .await
-                    {
-                        Ok(key) => break key,
-                        Err(e) => {
-                            // Check if this is a retryable error (wrong password)
-                            let is_retryable = e
-                                .chain()
-                                .find_map(|err| err.downcast_ref::<keys::KeyManagerError>())
-                                .map(|key_err| !key_err.is_fatal())
-                                .unwrap_or(false);
-
-                            if is_retryable {
-                                password_try_count += 1;
-                                if password_try_count < MAX_PASSWORD_RETRIES {
-                                    ui::cli::log!("Incorrect username or password. Try again.");
-                                    continue;
-                                } else {
-                                    bail!(
-                                        "Failed to retrieve master key after {MAX_PASSWORD_RETRIES} attempts."
-                                    );
-                                }
-                            } else {
-                                // Not retryable - it's a real error, fail immediately
-                                return Err(e);
-                            }
-                        }
-                    }
-                }
-            }
-        };
+        let (_key_id, master_key) = key_manager.retrieve_master_key(auth, key_file_path).await?;
 
         let secure_storage = Arc::new(
             SecureStorage::new()
@@ -1354,9 +1301,9 @@ mod tests {
         });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        Repository::init(auth.as_ref(), None, backend.to_owned()).await?;
+        Repository::init(auth.as_ref().unwrap(), None, backend.to_owned()).await?;
         let (_, _, mut lock_handle) = Repository::try_open_with_lock(
-            auth.as_ref(),
+            auth.as_ref().unwrap(),
             None,
             backend,
             TEST_REPO_CONFIG,
@@ -1386,9 +1333,9 @@ mod tests {
         });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
-        Repository::init(auth.as_ref(), None, backend.to_owned()).await?;
+        Repository::init(auth.as_ref().unwrap(), None, backend.to_owned()).await?;
         let (_, _, mut lock_handle) = Repository::try_open_with_lock(
-            auth.as_ref(),
+            auth.as_ref().unwrap(),
             None,
             backend,
             TEST_REPO_CONFIG,
@@ -1483,14 +1430,13 @@ mod tests {
         let backend = Arc::new(LocalFS::new(repo_path));
 
         let (r0, _ss0) =
-            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)
-                .await?;
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
 
         let other_lock = Arc::new(Mutex::new(Lock::new(other_lock_exclusive)));
         r0.save_lock(&other_lock).await?;
 
         let own_repo_open_result = Repository::try_open_with_lock(
-            Some(&auth),
+            &auth,
             None,
             backend.clone(),
             TEST_REPO_CONFIG,
@@ -1564,8 +1510,7 @@ mod tests {
         let backend = Arc::new(LocalFS::new(repo_path));
 
         let (r0, _ss0) =
-            Repository::try_open_unlocked(Some(&auth), None, backend.clone(), TEST_REPO_CONFIG)
-                .await?;
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
 
         let other_lock = Arc::new(Mutex::new(Lock::new_for_test(
             true,
@@ -1574,7 +1519,7 @@ mod tests {
         r0.save_lock(&other_lock).await?;
 
         let (_, _, mut lock_handle) = Repository::try_open_with_lock(
-            Some(&auth),
+            &auth,
             None,
             backend.clone(),
             TEST_REPO_CONFIG,

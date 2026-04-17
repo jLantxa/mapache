@@ -521,7 +521,7 @@ mod tests {
 
         let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let (repo, _) =
-            Repository::try_open_unlocked(Some(&ctx.auth), None, backend.clone(), TEST_REPO_CONFIG)
+            Repository::try_open_unlocked(&ctx.auth, None, backend.clone(), TEST_REPO_CONFIG)
                 .await?;
         let initial_packs = repo.list_packs().await?.len();
 
@@ -535,7 +535,7 @@ mod tests {
         commands::cmd_clean::run(&ctx.global, &gc_args_high).await?;
 
         let (repo, _) =
-            Repository::try_open_unlocked(Some(&ctx.auth), None, backend.clone(), TEST_REPO_CONFIG)
+            Repository::try_open_unlocked(&ctx.auth, None, backend.clone(), TEST_REPO_CONFIG)
                 .await?;
         let post_gc_high_packs = repo.list_packs().await?.len();
 

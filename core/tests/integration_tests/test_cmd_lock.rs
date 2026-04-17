@@ -26,15 +26,9 @@ mod tests {
         ));
 
         // Open with lock and KEEP the handle alive to maintain the lock
-        let (_repo, _, mut lock_handle) = Repository::try_open_with_lock(
-            Some(&ctx.auth),
-            None,
-            backend,
-            TEST_REPO_CONFIG,
-            true,
-            None,
-        )
-        .await?;
+        let (_repo, _, mut lock_handle) =
+            Repository::try_open_with_lock(&ctx.auth, None, backend, TEST_REPO_CONFIG, true, None)
+                .await?;
 
         let locks_dir = ctx.repo_path.join(LOCKS_DIR);
         assert_eq!(mapache::utils::count_files(&locks_dir)?, 1);

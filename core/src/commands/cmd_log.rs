@@ -5,10 +5,10 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{cleanup::CleanupHandler, parse_tags},
+    commands::{cleanup::CleanupHandler, open_repository_with_lock, parse_tags},
     mapache::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        repo::{REPO_DROPPED_EXTENSION, RepoConfig, Repository},
+        repo::{REPO_DROPPED_EXTENSION, RepoConfig},
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
@@ -45,7 +45,6 @@ pub struct CmdArgs {
 const LOG_MSG: &str = "log";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let config = RepoConfig {
@@ -53,8 +52,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, _, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,

@@ -129,7 +129,7 @@ impl TestContext {
 
 async fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
     let backend = Arc::new(LocalFS::new(repo_path));
-    let _ = Repository::init(Some(auth), None, backend)
+    let _ = Repository::init(auth, None, backend)
         .await
         .context("Failed to init repo")?;
     Ok(())

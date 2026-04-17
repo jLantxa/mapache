@@ -6,7 +6,10 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot},
+    commands::{
+        GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
+        open_repository_with_lock,
+    },
     fs::{
         node::{Metadata, Node, NodeType, node_to_string},
         tree::{Tree, find_serialized_node},
@@ -14,7 +17,7 @@ use crate::{
     mapache::ID,
     repository::repo::{RepoConfig, Repository},
     ui,
-    utils::{self, size},
+    utils::size,
 };
 
 #[derive(Args, Debug)]
@@ -42,7 +45,6 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let config = RepoConfig {
@@ -50,8 +52,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, _, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,

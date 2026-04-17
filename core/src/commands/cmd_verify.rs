@@ -9,6 +9,7 @@ use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
+use crate::commands::open_repository_with_lock;
 use crate::fs::tree::SerializedNodeStream;
 use crate::mapache::global::GlobalOpts;
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
     commands::{GlobalArgs, cleanup::CleanupHandler},
     mapache::ID,
     repository::{
-        repo::{RepoConfig, Repository},
+        repo::RepoConfig,
         snapshot::{Snapshot, SnapshotStream},
         verify::{verify_pack, verify_snapshot_refs},
     },
@@ -87,7 +88,6 @@ impl VerifyStats {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend_options = global_args.backend_options(false);
     let backend_arc = new_backend_with_prompt(backend_options).await?;
 
@@ -106,8 +106,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 
     // Open repository
-    let (repo, secure_storage, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, secure_storage, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend_arc.clone(),
         config,

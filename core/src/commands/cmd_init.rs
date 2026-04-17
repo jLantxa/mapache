@@ -23,9 +23,11 @@ const INIT_MSG: &str = "init";
 
 pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
-    let auth = utils::get_auth(&global_args.auth_file)?;
-    let manifest =
-        Repository::init(auth.as_ref(), global_args.key.as_ref(), backend.clone()).await?;
+    let auth = match utils::get_auth(&global_args.auth_file)? {
+        Some(a) => a,
+        None => ui::cli::request_new_auth(),
+    };
+    let manifest = Repository::init(&auth, global_args.key.as_ref(), backend.clone()).await?;
 
     if !global_args.json {
         ui::cli::log!(

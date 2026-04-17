@@ -45,16 +45,9 @@ mod tests {
 
         // Try to open repo
         let backend = Arc::new(LocalFS::new(ctx.repo_path));
-        Repository::try_open_with_lock(
-            Some(&ctx.auth),
-            None,
-            backend,
-            TEST_REPO_CONFIG,
-            false,
-            None,
-        )
-        .await
-        .context("Failed to open repository")?;
+        Repository::try_open_with_lock(&ctx.auth, None, backend, TEST_REPO_CONFIG, false, None)
+            .await
+            .context("Failed to open repository")?;
 
         Ok(())
     }
@@ -96,7 +89,7 @@ mod tests {
         // Try to open repo
         let backend = Arc::new(LocalFS::new(ctx.repo_path));
         Repository::try_open_with_lock(
-            Some(&ctx.auth),
+            &ctx.auth,
             Some(&keyfile_path),
             backend,
             TEST_REPO_CONFIG,

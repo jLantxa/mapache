@@ -1,5 +1,6 @@
-use crate::repository::repo::Auth;
 use dialoguer::{Input, Password};
+
+use crate::repository::repo::Auth;
 
 pub(crate) fn request_password(prompt: &str) -> String {
     Password::new()

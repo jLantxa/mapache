@@ -6,7 +6,7 @@ use colored::Colorize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler},
+    commands::{GlobalArgs, cleanup::CleanupHandler, open_repository_with_lock},
     mapache::defaults::DEFAULT_GC_TOLERANCE,
     repository::{
         gc::{self},
@@ -38,7 +38,6 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?;
 
     let config = RepoConfig {
@@ -46,8 +45,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, _, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,

@@ -59,7 +59,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
     .await?;
 
-    let auth = utils::get_auth(&global_args.auth_file)?.unwrap_or_else(ui::cli::request_auth);
+    let auth = match utils::get_auth(&global_args.auth_file)? {
+        Some(a) => a,
+        None => ui::cli::request_auth(),
+    };
 
     let repo_config = RepoConfig {
         pack_size: DEFAULT_PACK_SIZE,
@@ -68,7 +71,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     let (_src_repo, _src_ss, mut src_lock) = Repository::try_open_with_lock(
-        Some(&auth),
+        &auth,
         global_args.key.as_ref(),
         src_backend.clone(),
         repo_config,
@@ -79,7 +82,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     // Try to open the destination repo with the source auth to acquire a lock.
     let dst_lock = if let Ok((_, _, lock)) = Repository::try_open_with_lock(
-        Some(&auth),
+        &auth,
         global_args.key.as_ref(),
         dst_backend.clone(),
         repo_config,

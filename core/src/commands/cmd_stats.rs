@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
-    commands::{GlobalArgs, cleanup::CleanupHandler},
+    commands::{GlobalArgs, cleanup::CleanupHandler, open_repository_with_lock},
     fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::{ContentIdType, global::GlobalOpts},
     repository::{
@@ -88,7 +88,6 @@ struct StatsOutput {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let config = RepoConfig {
@@ -97,8 +96,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (repo, secure_storage, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, secure_storage, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend.clone(),
         config,

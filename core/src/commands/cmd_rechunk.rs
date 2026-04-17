@@ -8,12 +8,9 @@ use futures::StreamExt;
 use crate::{
     archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
-    commands::{GlobalArgs, cleanup::CleanupHandler},
+    commands::{GlobalArgs, cleanup::CleanupHandler, open_repository_with_lock},
     mapache::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
-    repository::{
-        repo::{RepoConfig, Repository},
-        snapshot::SnapshotStream,
-    },
+    repository::{repo::RepoConfig, snapshot::SnapshotStream},
     ui::{
         self,
         snapshot::{SnapshotProgressReporter, cli::CliSnapshotProgressReporter},
@@ -27,7 +24,6 @@ use crate::{
 pub struct CmdArgs {}
 
 pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
-    let auth = utils::get_auth(&global_args.auth_file)?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let config = RepoConfig {
@@ -35,8 +31,8 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
-    let (repo, _, mut lock_handle) = Repository::try_open_with_lock(
-        auth.as_ref(),
+    let (repo, _, mut lock_handle) = open_repository_with_lock(
+        global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend,
         config,

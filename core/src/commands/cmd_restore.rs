@@ -93,8 +93,8 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub quit_on_error: bool,
 
-    /// Preallocate files instead of writing them sequentially.
-    /// This may speed up restoration but can cause higher disk fragmentation.
+    /// Create sparse files instead of preallocating them.
+    /// This is faster on some filesystems but may cause higher disk fragmentation.
     #[clap(long, default_value_t = false)]
     pub sparse: bool,
 

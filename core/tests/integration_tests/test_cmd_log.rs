@@ -23,6 +23,7 @@ mod tests {
             paths: vec![backup_data_tmp_path.join("file.txt")],
             as_root: false,
             exclude: None,
+            exclude_file: None,
             tags_str: "tag1".to_string(),
             description: Some("test description".to_string()),
             no_parent: true,

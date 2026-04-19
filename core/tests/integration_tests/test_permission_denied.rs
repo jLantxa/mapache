@@ -47,6 +47,7 @@ mod tests {
             paths: vec![backup_data_tmp_path.clone()],
             as_root: true,
             exclude: None,
+            exclude_file: None,
             tags_str: String::new(),
             description: None,
             no_parent: false,

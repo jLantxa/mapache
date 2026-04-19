@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
@@ -16,7 +17,9 @@ use crate::{
         EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
         open_repository_with_lock, parse_tags,
     },
-    fs::filter::parse_relative_filter_paths,
+    fs::filter::{
+        merge_filtered_paths, parse_relative_filter_paths, read_filtered_paths_from_file,
+    },
     mapache::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::{
         repo::{RepoConfig, Repository},
@@ -66,6 +69,10 @@ pub struct CmdArgs {
     /// List of paths to exclude from the backup
     #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
     pub exclude: Option<Vec<String>>,
+
+    /// A file containing a list of paths to exclude, one per line.
+    #[clap(long, value_parser)]
+    pub exclude_file: Option<PathBuf>,
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -164,7 +171,15 @@ async fn amend(
     }
 
     let origin_processed_bytes = snapshot.summary.processed_bytes;
-    let parsed_excludes = parse_relative_filter_paths(args.exclude.as_ref());
+
+    // Read exclude paths from file if provided.
+    let excludes_from_file = match &args.exclude_file {
+        Some(path) => Some(read_filtered_paths_from_file(path)?),
+        None => None,
+    };
+    let all_excludes = merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
+
+    let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
 
     if parsed_excludes.is_some() {
         repo.init_pack_saver(1)?;

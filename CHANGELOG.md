@@ -13,6 +13,8 @@
   `MAPACHE_USERNAME`, and `MAPACHE_PASSWORD` to simplify automation and scripting.
 - **Enhanced CLI UI**: Improved error and warning messages with clearer
   formatting and better cross-platform color support.
+- Added `--exclude-file` and `--include-file` to read include and exclude paths
+  from file.
 
 ## v0.2.3
 

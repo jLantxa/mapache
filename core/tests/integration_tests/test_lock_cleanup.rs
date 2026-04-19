@@ -57,6 +57,7 @@ async fn test_commands_lock_cleanup() -> Result<()> {
         paths: vec![ctx.backup_data_path.as_ref().unwrap().clone()],
         as_root: false,
         exclude: None,
+        exclude_file: None,
         tags_str: "[]".to_string(),
         description: None,
         no_parent: false,

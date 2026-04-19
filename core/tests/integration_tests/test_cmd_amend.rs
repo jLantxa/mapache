@@ -33,6 +33,7 @@ mod tests {
             ],
             as_root: false,
             exclude: None,
+            exclude_file: None,
             tags_str: String::new(),
             description: None,
             no_parent: false,
@@ -61,6 +62,7 @@ mod tests {
             description: None,
             clear_description: false,
             exclude: Some(excluded_paths.clone()),
+            exclude_file: None,
         };
         commands::cmd_amend::run(&ctx.global, &amend_args)
             .await
@@ -76,6 +78,8 @@ mod tests {
             verify: false,
             include: None,
             exclude: None,
+            include_file: None,
+            exclude_file: None,
             strip_prefix: false,
             strategy: Strategy::Skip,
 
@@ -151,6 +155,7 @@ mod tests {
             paths: vec![backup_data_tmp_path.join("0")],
             as_root: false,
             exclude: None,
+            exclude_file: None,
             tags_str: "tag0,tag1".to_string(),
             description: Some(String::from("This snapshot will be amended")),
             no_parent: false,
@@ -174,6 +179,7 @@ mod tests {
             description: None,
             clear_description: true,
             exclude: None,
+            exclude_file: None,
         };
         commands::cmd_amend::run(&ctx.global, &amend_args)
             .await
@@ -197,6 +203,7 @@ mod tests {
             description: Some(String::from("This description is new")),
             clear_description: false,
             exclude: None,
+            exclude_file: None,
         };
         commands::cmd_amend::run(&ctx.global, &amend_args)
             .await

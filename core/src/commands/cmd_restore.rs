@@ -17,7 +17,10 @@ use crate::{
     },
     fs::{
         calculate_lcp,
-        filter::{expand_include_paths, parse_relative_filter_paths},
+        filter::{
+            expand_include_paths, merge_filtered_paths, parse_relative_filter_paths,
+            read_filtered_paths_from_file,
+        },
         get_absolute_normalized_path,
     },
     mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
@@ -63,9 +66,17 @@ pub struct CmdArgs {
     #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
     pub include: Option<Vec<String>>,
 
+    /// A file containing a list of paths to include, one per line.
+    #[clap(long, value_parser)]
+    pub include_file: Option<PathBuf>,
+
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
     pub exclude: Option<Vec<String>>,
+
+    /// A file containing a list of paths to exclude, one per line.
+    #[clap(long, value_parser)]
+    pub exclude_file: Option<PathBuf>,
 
     /// Strip the longest common prefix from all restored routes.
     #[clap(long, value_parser, default_value_t = false)]
@@ -134,11 +145,23 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Ok(None) | Err(_) => bail!("Snapshot not found"),
     };
 
-    let parsed_excludes = parse_relative_filter_paths(args.exclude.as_ref());
+    // Read include and exclude paths from files if provided.
+    let excludes_from_file = match &args.exclude_file {
+        Some(path) => Some(read_filtered_paths_from_file(path)?),
+        None => None,
+    };
+    let all_excludes = merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
+    let includes_from_file = match &args.include_file {
+        Some(path) => Some(read_filtered_paths_from_file(path)?),
+        None => None,
+    };
+    let all_includes = merge_filtered_paths(args.include.as_ref(), includes_from_file.as_ref());
+
+    let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
     let parsed_includes = expand_include_paths(
         repo.clone(),
         &snapshot_id,
-        args.include.as_deref(),
+        all_includes.as_deref(),
         parsed_excludes.clone(),
     )
     .await?;

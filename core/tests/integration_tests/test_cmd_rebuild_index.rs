@@ -32,6 +32,7 @@ mod tests {
             ],
             as_root: false,
             exclude: None,
+            exclude_file: None,
             tags_str: String::new(),
             description: None,
             no_parent: false,

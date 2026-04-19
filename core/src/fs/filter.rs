@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     sync::Arc,
@@ -606,6 +607,36 @@ pub async fn expand_include_paths(
     fixed_includes.dedup();
 
     Ok(Some(fixed_includes))
+}
+
+pub(crate) fn read_filtered_paths_from_file(path: &Path) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)?;
+    Ok(content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
+}
+
+pub(crate) fn merge_filtered_paths(
+    a: Option<&Vec<String>>,
+    b: Option<&Vec<String>>,
+) -> Option<Vec<String>> {
+    if a.is_none() && b.is_none() {
+        return None;
+    }
+
+    let mut unique_paths = HashSet::new();
+
+    if let Some(a_paths) = a {
+        unique_paths.extend(a_paths.iter().cloned());
+    }
+    if let Some(b_paths) = b {
+        unique_paths.extend(b_paths.iter().cloned());
+    }
+
+    Some(unique_paths.into_iter().collect())
 }
 
 #[cfg(test)]

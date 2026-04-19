@@ -8,6 +8,7 @@ use crate::archiver::{self, SnapshotOptions, progress::SnapshotProgress};
 use crate::backend::{StorageHint, new_backend_with_prompt};
 use crate::commands::open_repository_with_lock;
 use crate::commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags};
+use crate::fs::filter::{merge_filtered_paths, read_filtered_paths_from_file};
 use crate::fs::{
     self, calculate_lcp,
     filter::{PathFilter, normalized_exclude_paths},
@@ -45,6 +46,10 @@ pub struct CmdArgs {
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
     pub exclude: Option<Vec<String>>,
+
+    /// A file containing a list of paths to exclude, one per line.
+    #[clap(long, value_parser)]
+    pub exclude_file: Option<PathBuf>,
 
     /// Tags
     #[clap(long = "tags", value_parser, default_value_t = EMPTY_TAG_MARK.to_string())]
@@ -146,9 +151,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         }
     }
 
+    // Read exclude paths from file if provided.
+    let excludes_from_file = match &args.exclude_file {
+        Some(path) => Some(read_filtered_paths_from_file(path)?),
+        None => None,
+    };
+
+    let all_excludes = merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
+
     // Normalize the exclude paths and filter the source paths using the excludes
     let normalized_excludes: Option<Vec<PathBuf>> =
-        normalized_exclude_paths(args.exclude.as_ref())?;
+        normalized_exclude_paths(all_excludes.as_ref())?;
     let path_filter = PathFilter::new(None, normalized_excludes.clone());
 
     absolute_source_paths.retain(|p| path_filter.allow(p));

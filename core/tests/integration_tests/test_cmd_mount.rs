@@ -16,21 +16,28 @@ mod tests {
 
     /// Unmounts the filesystem from `mountpoint`
     pub fn unmount(mountpoint: &Path) -> Result<()> {
-        let output = std::process::Command::new("fusermount")
-            .arg("-u")
-            .arg(mountpoint)
-            .output()
-            .with_context(|| {
-                format!("Failed to execute fusermount for {}", mountpoint.display())
-            })?;
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("fusermount");
+        #[cfg(target_os = "linux")]
+        cmd.arg("-u");
+
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("umount");
+
+        let output = cmd.arg(mountpoint).output().with_context(|| {
+            format!(
+                "Failed to execute unmount command for {}",
+                mountpoint.display()
+            )
+        })?;
 
         if !output.status.success() {
             eprintln!(
-                "fusermount stderr: {}",
+                "Unmount stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
             eprintln!(
-                "fusermount stdout: {}",
+                "Unmount stdout: {}",
                 String::from_utf8_lossy(&output.stdout)
             );
             bail!("Unmount command failed with status: {}", output.status);

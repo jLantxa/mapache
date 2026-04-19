@@ -38,7 +38,7 @@ mod test_corrupt_repo;
 mod test_lock_cleanup;
 mod test_permission_denied;
 
-#[cfg(all(feature = "fuse", target_os = "linux"))]
+#[cfg(all(feature = "fuse", unix))]
 mod test_cmd_mount;
 
 const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";

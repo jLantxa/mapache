@@ -309,7 +309,7 @@ impl Node {
             // Opening as read-only is enough for GETFLAGS.
             if let Ok(file) = std::fs::File::open(path) {
                 let mut flags: libc::c_int = 0;
-                const FS_IOC_GETFLAGS: libc::c_ulong = 0x80086601;
+                const FS_IOC_GETFLAGS: libc::Ioctl = 0x80086601u32 as libc::Ioctl;
                 unsafe {
                     if libc::ioctl(file.as_raw_fd(), FS_IOC_GETFLAGS, &mut flags) == 0 {
                         self.metadata.linux_flags = Some(flags as u32);

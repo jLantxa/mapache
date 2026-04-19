@@ -79,9 +79,15 @@ impl MapacheFS {
 
     /// Unmounts the filesystem from `mountpoint`
     pub fn unmount(mountpoint: &Path) -> Result<()> {
-        std::process::Command::new("fusermount")
-            .arg("-u")
-            .arg(mountpoint)
+        #[cfg(target_os = "linux")]
+        let mut cmd = std::process::Command::new("fusermount");
+        #[cfg(target_os = "linux")]
+        cmd.arg("-u");
+
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("umount");
+
+        cmd.arg(mountpoint)
             .output()
             .map_err(|_| anyhow!("Failed to unmount {}", mountpoint.display()))?;
 

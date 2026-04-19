@@ -15,6 +15,8 @@
   formatting and better cross-platform color support.
 - Added `--exclude-file` and `--include-file` to read include and exclude paths
   from file.
+- **Self-contained binary**: Link all dependencies statically for release
+  artifacts.
 
 ## v0.2.3
 

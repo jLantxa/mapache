@@ -340,7 +340,7 @@ fn try_restore_linux_flags(
             let flags_to_set = flags & FS_FL_USER_MODIFIABLE;
 
             let flags_int: libc::c_int = flags_to_set as libc::c_int;
-            const FS_IOC_SETFLAGS: libc::c_ulong = 0x40086602;
+            const FS_IOC_SETFLAGS: libc::Ioctl = 0x40086602u32 as libc::Ioctl;
             unsafe {
                 if libc::ioctl(file.as_raw_fd(), FS_IOC_SETFLAGS, &flags_int) != 0 {
                     progress_reporter.warning(&format!(

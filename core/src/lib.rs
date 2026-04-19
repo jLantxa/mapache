@@ -8,5 +8,5 @@ pub mod restorer;
 pub mod ui;
 pub mod utils;
 
-#[cfg(all(feature = "fuse", target_os = "linux"))]
+#[cfg(all(feature = "fuse", unix))]
 pub(crate) mod fuse;

@@ -1,13 +1,15 @@
-all: debug test release fmt clippy
+all: debug release test fmt clippy
 
 debug:
 	cargo build
 
 release:
-	cargo build --release
+	CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static" \
+	cargo build --release --target x86_64-unknown-linux-musl -p mapache
+	cp target/x86_64-unknown-linux-musl/release/mapache target/release/mapache
 
 test:
-	cargo test
+	cargo test -r
 
 doc:
 	cargo doc --no-deps --document-private-items
@@ -27,3 +29,5 @@ cov:
 
 clean:
 	cargo clean
+	rm -rf ./build/
+

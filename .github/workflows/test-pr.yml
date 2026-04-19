@@ -2,7 +2,7 @@ name: test-pr
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,16 +11,16 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Check format
-      run: cargo fmt --check
+      - uses: actions/checkout@v4
+      - name: Check format
+        run: cargo fmt --check
 
   clippy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Run clippy
-      run: cargo clippy
+      - uses: actions/checkout@v4
+      - name: Run clippy
+        run: cargo clippy
 
   test:
     runs-on: ${{ matrix.os }}
@@ -28,7 +28,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Test
-      run: cargo test --verbose
+      - name: Test
+        run: cargo test -r --verbose

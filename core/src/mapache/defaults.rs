@@ -66,7 +66,7 @@ pub(crate) const DEFAULT_PROGRESS_REFRESH_RATE_HZ: f32 = 10.0;
 pub(crate) const MAX_PATH_DISPLAY_LEN: usize = 100;
 
 // --- FUSE ---
-#[cfg(all(feature = "fuse", target_os = "linux"))]
+#[cfg(all(feature = "fuse", unix))]
 pub(crate) const DEFAULT_FUSE_STASH_CACHE_SIZE_MIB: f32 = 64.0;
 
 // --- Others ---

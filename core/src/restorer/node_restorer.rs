@@ -413,18 +413,25 @@ fn try_restore_symlink_metadata(
     let gid = node.metadata.owner_gid.unwrap_or(u32::MAX); // -1 in libc
 
     if uid != u32::MAX || gid != u32::MAX {
-        let c_path = std::ffi::CString::new(dst_path.as_os_str().as_bytes()).unwrap();
-        unsafe {
-            if libc::lchown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) != 0 {
-                let err = std::io::Error::last_os_error();
-                // Only warn if it's not a permission error (which is expected for non-root)
-                if err.kind() != std::io::ErrorKind::PermissionDenied {
-                    progress_reporter.warning(&format!(
-                        "Could not set owner/group for symlink {}: {}",
-                        dst_path.display(),
-                        err
-                    ));
+        match std::ffi::CString::new(dst_path.as_os_str().as_bytes()) {
+            Ok(c_path) => unsafe {
+                if libc::lchown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) != 0 {
+                    let err = std::io::Error::last_os_error();
+                    // Only warn if it's not a permission error (which is expected for non-root)
+                    if err.kind() != std::io::ErrorKind::PermissionDenied {
+                        progress_reporter.warning(&format!(
+                            "Could not set owner/group for symlink {}: {}",
+                            dst_path.display(),
+                            err
+                        ));
+                    }
                 }
+            },
+            Err(_) => {
+                progress_reporter.warning(&format!(
+                    "Could not set owner/group for symlink {}: path contains null byte",
+                    dst_path.display()
+                ));
             }
         }
     }

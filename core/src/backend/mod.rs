@@ -208,7 +208,7 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                     },
                     None => {
                         let prompt = format!("{username}@{host}'s password");
-                        sftp::AuthMethod::Password(ui::cli::request_password(&prompt))
+                        sftp::AuthMethod::Password(ui::cli::request_password(&prompt)?)
                     }
                 };
 
@@ -236,21 +236,28 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
             }
         }
         BackendUrl::S3(bucket, prefix) => {
-            let endpoint = std::env::var("AWS_ENDPOINT_URL").unwrap_or_else(|_| {
-                ui::cli::request_input("S3 Endpoint (leave empty for AWS)")
-                    .unwrap_or("amazonaws.com".to_string())
-            });
+            let endpoint = match std::env::var("AWS_ENDPOINT_URL") {
+                Ok(v) => v,
+                Err(_) => ui::cli::request_input("S3 Endpoint (leave empty for AWS)")?
+                    .unwrap_or_else(|| "amazonaws.com".to_string()),
+            };
 
-            let region = std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| {
-                ui::cli::request_input("S3 Region").unwrap_or("us-east-1".to_string())
-            });
+            let region = match std::env::var("AWS_DEFAULT_REGION") {
+                Ok(v) => v,
+                Err(_) => {
+                    ui::cli::request_input("S3 Region")?.unwrap_or_else(|| "us-east-1".to_string())
+                }
+            };
 
-            let access_key = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_else(|_| {
-                ui::cli::request_input("AWS Access Key ID").unwrap_or_default()
-            });
+            let access_key = match std::env::var("AWS_ACCESS_KEY_ID") {
+                Ok(v) => v,
+                Err(_) => ui::cli::request_input("AWS Access Key ID")?.unwrap_or_default(),
+            };
 
-            let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY")
-                .unwrap_or_else(|_| ui::cli::request_password("AWS Secret Access Key"));
+            let secret_key = match std::env::var("AWS_SECRET_ACCESS_KEY") {
+                Ok(v) => v,
+                Err(_) => ui::cli::request_password("AWS Secret Access Key")?,
+            };
 
             Arc::new(S3Backend::new(
                 region,

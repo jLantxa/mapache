@@ -30,13 +30,16 @@ num_enum = "0.7.6"
 parking_lot = "0.12.5"
 rand = "0.10.1"
 rayon = "1.12.0"
-rust-s3 = { version = "0.37.1", default-features = false, features = ["tokio-rustls-tls"] }
+rust-s3 = { version = "0.37.1", default-features = false, features = ["reqwest", "with-tokio"] }
 rustc-hash = "2.1.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 signal-hook-registry = "1.4.8"
-russh = "0.60.0"
+russh = { version = "0.60.1", default-features = false, features = ["flate2", "ring", "rsa"] }
 russh-sftp = "2.1.1"
+# Force ring for rustls and reqwest to avoid aws-lc-sys issues on macOS cross-compilation
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots", "json", "stream"] }
 tokio = { version = "1.52", features = [
   "rt",
   "rt-multi-thread",

@@ -5,3 +5,6 @@ members = [
     "chunker",
     "chunker/fuzz"
 ]
+
+[profile.release]
+strip = true

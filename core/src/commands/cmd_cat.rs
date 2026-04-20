@@ -79,7 +79,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 .load_blob(&id)
                 .await
                 .context("Failed to load tree blob")?;
-            println!("{}", String::from_utf8(tree.clone()).unwrap());
             let tree: Tree = serde_json::from_slice(&tree)?;
             ui::cli::log!("{}", serde_json::to_string_pretty(&tree)?);
             Ok(())

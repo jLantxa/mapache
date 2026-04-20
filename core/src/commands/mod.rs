@@ -448,7 +448,7 @@ pub async fn open_repository(
     let mut password_try_count = 0;
 
     loop {
-        let current_auth = cli::request_auth();
+        let current_auth = cli::request_auth()?;
 
         match Repository::try_open_unlocked(&current_auth, key_file_path, backend.clone(), config)
             .await
@@ -503,7 +503,7 @@ pub async fn open_repository_with_lock(
     let mut password_try_count = 0;
 
     loop {
-        let current_auth = cli::request_auth();
+        let current_auth = cli::request_auth()?;
 
         match Repository::try_open_with_lock(
             &current_auth,

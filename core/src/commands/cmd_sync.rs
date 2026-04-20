@@ -61,7 +61,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let auth = match utils::get_auth(&global_args.auth_file)? {
         Some(a) => a,
-        None => ui::cli::request_auth(),
+        None => ui::cli::request_auth()?,
     };
 
     let repo_config = RepoConfig {

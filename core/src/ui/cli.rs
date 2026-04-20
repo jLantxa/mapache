@@ -1,53 +1,51 @@
+use anyhow::Result;
 use dialoguer::{Input, Password};
 
 use crate::repository::repo::Auth;
 
-pub(crate) fn request_password(prompt: &str) -> String {
+pub(crate) fn request_password(prompt: &str) -> Result<String> {
     Password::new()
         .with_prompt(prompt)
         .interact()
-        .expect("Failed to read password")
+        .map_err(Into::into)
 }
 
-pub(crate) fn request_input(prompt: &str) -> Option<String> {
+pub(crate) fn request_input(prompt: &str) -> Result<Option<String>> {
     let input: String = Input::new()
         .with_prompt(prompt)
         .allow_empty(true)
-        .interact()
-        .expect("Failed to read input");
+        .interact()?;
 
-    if input.is_empty() { None } else { Some(input) }
+    if input.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(input))
+    }
 }
 
 /// Requests a password with a prompt and confirmation.
-pub(crate) fn request_new_password(prompt: &str, confirmation: &str) -> String {
+pub(crate) fn request_new_password(prompt: &str, confirmation: &str) -> Result<String> {
     Password::new()
         .with_prompt(prompt)
         .with_confirmation(confirmation, "Passwords don't match")
         .interact()
-        .expect("Failed to read password")
+        .map_err(Into::into)
 }
 
 /// Requests new authentication data (username and password) with confirmation
-pub(crate) fn request_new_auth() -> Auth {
-    let username: String = Input::new()
-        .with_prompt("Enter new username")
-        .interact()
-        .expect("Failed to read username");
+pub(crate) fn request_new_auth() -> Result<Auth> {
+    let username: String = Input::new().with_prompt("Enter new username").interact()?;
 
-    let password = request_new_password("Enter new password", "Confirm password");
-    Auth { username, password }
+    let password = request_new_password("Enter new password", "Confirm password")?;
+    Ok(Auth { username, password })
 }
 
 /// Requests authentication data (username and password)
-pub(crate) fn request_auth() -> Auth {
-    let username: String = Input::new()
-        .with_prompt("Enter username")
-        .interact()
-        .expect("Failed to read username");
+pub(crate) fn request_auth() -> Result<Auth> {
+    let username: String = Input::new().with_prompt("Enter username").interact()?;
 
-    let password = request_password("Enter password");
-    Auth { username, password }
+    let password = request_password("Enter password")?;
+    Ok(Auth { username, password })
 }
 
 #[macro_export]

@@ -96,7 +96,7 @@ async fn run_list(global_args: &GlobalArgs) -> Result<()> {
 }
 
 async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
-    let auth = request_auth();
+    let auth = request_auth()?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let key_manager = KeyManager::new(backend.clone());
@@ -105,7 +105,7 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
         .await?;
 
     ui::cli::log!("\nCreating new user key...");
-    let new_auth = request_new_auth();
+    let new_auth = request_new_auth()?;
     let new_key_file =
         KeyManager::generate_key_file(&new_auth, master_key).context("Could not generate key")?;
 
@@ -139,7 +139,7 @@ async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
 }
 
 async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> Result<()> {
-    let auth = request_auth();
+    let auth = request_auth()?;
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
 
     let key_manager = KeyManager::new(backend.clone());
@@ -151,7 +151,7 @@ async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArg
 
     let new_auth = Auth {
         username: auth.username,
-        password: ui::cli::request_new_password("Enter the new password", "Confirm password"),
+        password: ui::cli::request_new_password("Enter the new password", "Confirm password")?,
     };
 
     let new_keyfile = KeyManager::generate_key_file(&new_auth, master_key)?;

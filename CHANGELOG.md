@@ -4,6 +4,9 @@
 
 ### Changes
 
+- **Multi-platform Build System**: Overhauled the build system to support
+  static, cross-platform releases for Linux (x64/ARM), Windows, and macOS.
+- **Self-contained binary**: Link all dependencies statically for release
 - **Redesigned Restorer**: Implemented a new high-performance, pack-centric
   restoration engine with background prefetching, range-based downloads, and
   concurrent restoration to significantly improve I/O efficiency.
@@ -15,8 +18,6 @@
   formatting and better cross-platform color support.
 - Added `--exclude-file` and `--include-file` to read include and exclude paths
   from file.
-- **Self-contained binary**: Link all dependencies statically for release
-  artifacts.
 
 ## v0.2.3
 

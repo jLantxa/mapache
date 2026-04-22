@@ -187,6 +187,10 @@ impl Repository {
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<Manifest> {
+        if backend.path_exists(Path::new(MANIFEST_PATH)).await {
+            bail!("Repository already exists (manifest found)");
+        }
+
         backend
             .create()
             .await

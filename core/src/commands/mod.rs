@@ -52,6 +52,9 @@ pub mod cmd_unlock;
 pub mod cmd_verify;
 
 pub mod cleanup;
+pub mod error;
+
+pub use error::{ToExitCode, fail};
 
 /// mapache CLI definition
 #[derive(Parser, Debug)]
@@ -332,7 +335,7 @@ fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 }
 
 /// CLI entry point
-pub async fn parse_and_run() -> Result<()> {
+pub async fn parse_and_run() -> i32 {
     let args = Cli::parse();
 
     let json_enabled = extract_global(&args.command)
@@ -370,24 +373,32 @@ pub async fn parse_and_run() -> Result<()> {
     };
 
     if let Err(ref e) = result {
+        let exit_code = e
+            .downcast_ref::<error::MapacheError>()
+            .map(|me| me.exit_code)
+            .unwrap_or(error::GENERIC_ERROR_CODE);
+
         if !json_enabled {
             ui::cli::error!("{}", e);
         } else {
             #[derive(Serialize)]
             struct ErrorMessage<'a> {
                 msg: &'a str,
+                exit_code: i32,
             }
 
             ui::json_reporter::emit_static(
                 "exit_error",
                 &ErrorMessage {
                     msg: &e.to_string(),
+                    exit_code,
                 },
             );
         }
+        return exit_code;
     }
 
-    result
+    0
 }
 
 macro_rules! extract_global {

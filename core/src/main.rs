@@ -12,8 +12,7 @@ pub static malloc_conf: &[u8] = b"narenas:1,tcache:true,dirty_decay_ms:10,muzzy_
 #[tokio::main]
 async fn main() {
     // Parse arguments and execute commands.
-    // Intercept errors and exit with code 1 on failure.
-    if commands::parse_and_run().await.is_err() {
-        std::process::exit(1);
-    }
+    // Exit with the code returned by the command execution.
+    let exit_code = commands::parse_and_run().await;
+    std::process::exit(exit_code);
 }

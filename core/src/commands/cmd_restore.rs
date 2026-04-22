@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
 use serde::Serialize;
@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
+        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail, find_use_snapshot,
         open_repository_with_lock,
     },
     fs::{
@@ -34,6 +34,20 @@ use crate::{
     },
     utils::{self, size},
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum RestoreError {
+    RepoOpenFail = 10,
+    SnapshotNotFound = 20,
+    TargetError = 21,
+    RestoreFailed = 30,
+}
+
+impl ToExitCode for RestoreError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 impl std::fmt::Display for Strategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -119,7 +133,14 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?;
+    let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run))
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to initialize backend: {}", e),
+                RestoreError::RestoreFailed,
+            )
+        })?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
@@ -134,7 +155,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        fail(
+            format!("Failed to open repository: {}", e),
+            RestoreError::RepoOpenFail,
+        )
+    })?;
 
     let start = Instant::now();
 
@@ -142,7 +169,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot).await {
         Ok(Some((id, snap))) => (id, snap),
-        Ok(None) | Err(_) => bail!("Snapshot not found"),
+        Ok(None) | Err(_) => {
+            return Err(fail("Snapshot not found", RestoreError::SnapshotNotFound));
+        }
     };
 
     // Read include and exclude paths from files if provided.
@@ -174,7 +203,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         None
     };
 
-    let abs_normalized_target = get_absolute_normalized_path(&args.target)?;
+    let abs_normalized_target = get_absolute_normalized_path(&args.target).map_err(|e| {
+        fail(
+            format!("Invalid target path: {}", e),
+            RestoreError::TargetError,
+        )
+    })?;
 
     emit_restore_start(global_args.json, args, &snapshot_id, &abs_normalized_target);
 

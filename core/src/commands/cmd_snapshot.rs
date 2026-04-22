@@ -6,8 +6,8 @@ use colored::Colorize;
 
 use crate::archiver::{self, SnapshotOptions, progress::SnapshotProgress};
 use crate::backend::{StorageHint, new_backend_with_prompt};
-use crate::commands::open_repository_with_lock;
 use crate::commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags};
+use crate::commands::{ToExitCode, fail, open_repository_with_lock};
 use crate::fs::filter::{merge_filtered_paths, read_filtered_paths_from_file};
 use crate::fs::{
     self, calculate_lcp,
@@ -30,6 +30,21 @@ use crate::ui::{
 use crate::utils::{self, size};
 
 use super::{GlobalArgs, UseSnapshot};
+
+#[derive(Debug, Clone, Copy)]
+pub enum SnapshotError {
+    BackendError = 11,
+    RepoOpenFail = 12,
+    SourcePathError = 20,
+    ParentNotFound = 21,
+    SnapshotFailed = 30,
+}
+
+impl ToExitCode for SnapshotError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
@@ -91,10 +106,20 @@ pub struct CmdArgs {
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if args.paths.is_empty() {
-        bail!("No source paths provided.");
+        return Err(fail(
+            "No source paths provided.",
+            SnapshotError::SourcePathError,
+        ));
     };
 
-    let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?;
+    let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run))
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to initialize backend: {}", e),
+                SnapshotError::SnapshotFailed,
+            )
+        })?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
@@ -109,7 +134,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        fail(
+            format!("Failed to open repository: {}", e),
+            SnapshotError::RepoOpenFail,
+        )
+    })?;
 
     let start = Instant::now();
 
@@ -147,13 +178,23 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(absolute_path) => {
                 let _ = absolute_source_paths.insert(absolute_path);
             }
-            Err(e) => bail!("{path:?}: {e}"),
+            Err(e) => {
+                return Err(fail(
+                    format!("Error processing path {:?}: {}", path, e),
+                    SnapshotError::SourcePathError,
+                ));
+            }
         }
     }
 
     // Read exclude paths from file if provided.
     let excludes_from_file = match &args.exclude_file {
-        Some(path) => Some(read_filtered_paths_from_file(path)?),
+        Some(path) => Some(read_filtered_paths_from_file(path).map_err(|e| {
+            fail(
+                format!("Error reading exclude file: {}", e),
+                SnapshotError::SourcePathError,
+            )
+        })?),
         None => None,
     };
 
@@ -192,7 +233,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 ui::cli::log!("{} This is the first snapshot.", "[!]".bold().cyan());
                 None
             }
-            Err(_) => bail!("Parent snapshot not found"),
+            Err(e) => {
+                return Err(fail(
+                    format!("Parent snapshot not found: {}", e),
+                    SnapshotError::ParentNotFound,
+                ));
+            }
         },
     };
 
@@ -221,7 +267,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })?;
     cleanup_handler.add_lock(lock_handle.clone());
 
-    repo.init_pack_saver(args.num_packers)?;
+    repo.init_pack_saver(args.num_packers).map_err(|e| {
+        fail(
+            format!("Failed to initialize pack saver: {}", e),
+            SnapshotError::SnapshotFailed,
+        )
+    })?;
 
     // Process and save new snapshot
     let snapshot_result = archiver::snapshot(
@@ -243,7 +294,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     .await;
 
     // Flush repo and finalize pack saver
-    let repo_stats = repo.flush_and_finalize_pack_saver().await?;
+    let repo_stats = repo.flush_and_finalize_pack_saver().await.map_err(|e| {
+        fail(
+            format!("Failed to finalize snapshot: {}", e),
+            SnapshotError::SnapshotFailed,
+        )
+    })?;
 
     // Handle potential interruption or error
     let mut new_snapshot = match snapshot_result {
@@ -254,7 +310,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             }
 
             progress_reporter.finalize();
-            return Err(e);
+            return Err(fail(
+                format!("Snapshot failed: {}", e),
+                SnapshotError::SnapshotFailed,
+            ));
         }
     };
 

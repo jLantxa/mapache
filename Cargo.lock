@@ -1941,6 +1941,7 @@ dependencies = [
  "signal-hook-registry",
  "tar",
  "tempfile",
+ "thiserror 2.0.18",
  "tikv-jemallocator",
  "tokio",
  "tokio-stream",

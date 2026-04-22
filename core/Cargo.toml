@@ -52,6 +52,7 @@ tokio-stream = "0.1.18"
 zstd = "0.13.3"
 url = "2.5.8"
 percent-encoding = "2.3.2"
+thiserror = "2.0.18"
 
 [target.'cfg(unix)'.dependencies]
 xattr = "1.6.1"

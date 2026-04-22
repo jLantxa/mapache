@@ -9,7 +9,7 @@ use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
-use crate::commands::open_repository_with_lock;
+use crate::commands::{ToExitCode, fail, open_repository_with_lock};
 use crate::fs::tree::SerializedNodeStream;
 use crate::mapache::global::GlobalOpts;
 use crate::{
@@ -24,6 +24,20 @@ use crate::{
     ui::{self, default_bar_draw_target},
     utils::{self, collections::IdSet, size},
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum VerifyError {
+    RepoOpenFail = 10,
+    CorruptPacks = 20,
+    CorruptSnapshots = 21,
+    VerifyFailed = 22,
+}
+
+impl ToExitCode for VerifyError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug)]
 #[clap(
@@ -89,7 +103,14 @@ impl VerifyStats {
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let backend_options = global_args.backend_options(false);
-    let backend_arc = new_backend_with_prompt(backend_options).await?;
+    let backend_arc = new_backend_with_prompt(backend_options)
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to initialize backend: {}", e),
+                VerifyError::VerifyFailed,
+            )
+        })?;
 
     let config = RepoConfig {
         pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
@@ -114,7 +135,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        fail(
+            format!("Failed to open repository: {}", e),
+            VerifyError::RepoOpenFail,
+        )
+    })?;
 
     // Init cleanup handler
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
@@ -515,7 +542,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             );
         }
 
-        bail!("Repository integrity check failed.");
+        let code = if packs_corrupt_count > 0 {
+            VerifyError::CorruptPacks
+        } else {
+            VerifyError::CorruptSnapshots
+        };
+
+        return Err(fail("Repository integrity check failed.", code));
     }
 
     if dangling_count > 0 {

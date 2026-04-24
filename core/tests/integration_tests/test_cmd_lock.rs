@@ -26,7 +26,7 @@ mod tests {
         ));
 
         // Open with lock and KEEP the handle alive to maintain the lock
-        let (_repo, _, mut lock_handle) =
+        let (_repo, _, lock_handle) =
             Repository::try_open_with_lock(&ctx.auth, None, backend, TEST_REPO_CONFIG, true, None)
                 .await?;
 

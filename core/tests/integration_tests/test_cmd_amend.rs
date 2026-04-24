@@ -145,7 +145,7 @@ mod tests {
 
         // Init repo
         ctx.init_repo().await?;
-        let (repo, _, mut test_repo_lock_handle) =
+        let (repo, _, test_repo_lock_handle) =
             Repository::try_open_with_lock(&ctx.auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
         test_repo_lock_handle.unlock().await;

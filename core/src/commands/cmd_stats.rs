@@ -11,12 +11,12 @@ use serde::Serialize;
 
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
-    commands::{GlobalArgs, cleanup::CleanupHandler, open_repository_with_lock},
+    commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
     fs::{node::NodeType, tree::SerializedNodeStream},
     mapache::{ContentIdType, global::GlobalOpts},
     repository::{
         packer::Packer,
-        repo::{MANIFEST_PATH, RepoConfig, Repository},
+        repo::{MANIFEST_PATH, Repository},
         snapshot::SnapshotStream,
         storage::SecureStorage,
     },
@@ -88,34 +88,30 @@ struct StatsOutput {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
-
-    let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * utils::size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-    };
-
-    let (repo, secure_storage, mut lock_handle) = open_repository_with_lock(
+    with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        backend.clone(),
-        config,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
+        |repo, secure_storage, lock_handle| async move {
+            let cleanup_handler = CleanupHandler::new()?;
+            cleanup_handler.add_lock(lock_handle.clone());
+
+            repo.reload_master_index().await?;
+
+            stats_repository(
+                repo.clone(),
+                secure_storage,
+                repo.backend(),
+                args,
+                global_args.json,
+            )
+            .await
+        },
     )
-    .await?;
-
-    let cleanup_handler = CleanupHandler::new()?;
-    cleanup_handler.add_lock(lock_handle.clone());
-
-    repo.reload_master_index().await?;
-
-    let res = stats_repository(repo, secure_storage, backend, args, global_args.json).await;
-
-    lock_handle.unlock().await;
-
-    res
+    .await
 }
 
 async fn stats_repository(

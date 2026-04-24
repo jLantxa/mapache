@@ -6,11 +6,10 @@ use colored::Colorize;
 
 use crate::{
     backend::{BackendUrl, new_backend_with_prompt},
-    commands::{GlobalArgs, cleanup::CleanupHandler, open_repository_with_lock},
+    commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
     fs,
     fuse::fs::MapacheFS,
     mapache::defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB,
-    repository::repo::RepoConfig,
     ui,
     utils::size,
 };
@@ -66,77 +65,69 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         bail!("Cannot mount the repository on itself");
     }
 
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
-
-    let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-    };
-    let (repo, _, mut lock_handle) = open_repository_with_lock(
+    with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        backend,
-        config,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
-    )
-    .await?;
+        |repo, _, lock_handle| async move {
+            // Listen for CTRL + C to unmount.
+            let cleanup_handler = CleanupHandler::new()?;
+            cleanup_handler.add_lock(lock_handle.clone());
 
-    // Listen for CTRL + C to unmount.
-    let cleanup_handler = CleanupHandler::new()?;
-    cleanup_handler.add_lock(lock_handle.clone());
+            repo.reload_master_index().await?;
 
-    repo.reload_master_index().await?;
+            ui::cli::log!("Mounting repository in {}", cannonical_mountpoint.display());
+            ui::cli::log!(
+                "Press {} to finish or unmount the filesystem manually.",
+                "Ctrl+C".bold()
+            );
 
-    ui::cli::log!("Mounting repository in {}", cannonical_mountpoint.display());
-    ui::cli::log!(
-        "Press {} to finish or unmount the filesystem manually.",
-        "Ctrl+C".bold()
-    );
+            let mount_path = cannonical_mountpoint.clone();
+            let allow_other = args.allow_other;
+            let metadata_only = args.metadata_only;
+            let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
 
-    let mount_path = cannonical_mountpoint.clone();
-    let allow_other = args.allow_other;
-    let metadata_only = args.metadata_only;
-    let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
+            let mount_res = tokio::task::spawn_blocking(move || {
+                MapacheFS::mount(
+                    repo,
+                    &mount_path,
+                    allow_other,
+                    metadata_only,
+                    data_cache_size,
+                )
+            });
 
-    let mount_res = tokio::task::spawn_blocking(move || {
-        MapacheFS::mount(
-            repo,
-            &mount_path,
-            allow_other,
-            metadata_only,
-            data_cache_size,
-        )
-    });
-
-    tokio::select! {
-        res = mount_res => {
-            res.context("Mount task panicked")??;
-        }
-        _ = async {
-            loop {
-                if cleanup_handler.is_interrupted() {
-                    break;
+            tokio::select! {
+                res = mount_res => {
+                    res.context("Mount task panicked")??;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                _ = async {
+                    loop {
+                        if cleanup_handler.is_interrupted() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                } => {
+                    ui::cli::log!("Interrupt received. Unmounting...");
+                    let _ = MapacheFS::unmount(&cannonical_mountpoint);
+                }
             }
-        } => {
-            ui::cli::log!("Interrupt received. Unmounting...");
-            let _ = MapacheFS::unmount(&cannonical_mountpoint);
-        }
-    }
 
-    if created_mountpoint {
-        ui::cli::verbose_1!(
-            "Removing created mountpoint {}",
-            cannonical_mountpoint.display()
-        );
+            if created_mountpoint {
+                ui::cli::verbose_1!(
+                    "Removing created mountpoint {}",
+                    cannonical_mountpoint.display()
+                );
 
-        let _ = std::fs::remove_dir_all(&cannonical_mountpoint);
-    }
+                let _ = std::fs::remove_dir_all(&cannonical_mountpoint);
+            }
 
-    lock_handle.unlock().await;
-
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }

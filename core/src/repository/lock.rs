@@ -118,6 +118,8 @@ pub struct LockHandle {
     repo: Arc<Repository>,
     lock: Arc<Mutex<Lock>>,
     alive_flag: Arc<AtomicBool>,
+    unlock_mutex: Arc<tokio::sync::Mutex<()>>,
+    runtime_handle: tokio::runtime::Handle,
     dry_run: bool,
 }
 
@@ -127,6 +129,8 @@ impl LockHandle {
             repo: repo.clone(),
             lock,
             alive_flag: Arc::new(AtomicBool::new(true)),
+            unlock_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            runtime_handle: tokio::runtime::Handle::current(),
             dry_run,
         };
 
@@ -142,7 +146,7 @@ impl LockHandle {
         let lock = self.lock.clone();
         let alive_flag = self.alive_flag.clone();
 
-        tokio::spawn(async move {
+        self.runtime_handle.spawn(async move {
             loop {
                 tokio::time::sleep(LOCK_REFRESH_PERIOD).await;
 
@@ -157,38 +161,43 @@ impl LockHandle {
         });
     }
 
-    pub async fn unlock(&mut self) {
-        self.perform_unlock().await;
-    }
-
-    async fn perform_unlock(&self) {
+    pub async fn unlock(&self) {
+        let _guard = self.unlock_mutex.lock().await;
         if self.alive_flag.swap(false, Ordering::SeqCst) && !self.dry_run {
-            // Get the ID without holding the lock across an await point
-            let lock_id = {
-                let lock_guard = self.lock.lock();
-                *lock_guard.id()
-            };
-
-            let _ = self
-                .repo
-                .delete_file(ContentIdType::Lock, &lock_id, None)
-                .await;
+            self.perform_delete().await;
         }
     }
 
+    async fn perform_delete(&self) {
+        // Get the ID without holding the lock across an await point
+        let lock_id = {
+            let lock_guard = self.lock.lock();
+            *lock_guard.id()
+        };
+
+        let _ = self
+            .repo
+            .delete_file(ContentIdType::Lock, &lock_id, None)
+            .await;
+    }
+
     pub fn trigger_unlock(&self) {
-        if self.alive_flag.swap(false, Ordering::SeqCst) && !self.dry_run {
-            // Spawn the cleanup task instead of blocking the thread
+        if self.alive_flag.load(Ordering::SeqCst) && !self.dry_run {
             let repo = self.repo.clone();
             let lock = self.lock.clone();
+            let alive_flag = self.alive_flag.clone();
+            let unlock_mutex = self.unlock_mutex.clone();
 
-            tokio::spawn(async move {
-                let lock_id = {
-                    let lock_guard = lock.lock();
-                    *lock_guard.id()
-                };
+            self.runtime_handle.spawn(async move {
+                let _guard = unlock_mutex.lock().await;
+                if alive_flag.swap(false, Ordering::SeqCst) {
+                    let lock_id = {
+                        let lock_guard = lock.lock();
+                        *lock_guard.id()
+                    };
 
-                let _ = repo.delete_file(ContentIdType::Lock, &lock_id, None).await;
+                    let _ = repo.delete_file(ContentIdType::Lock, &lock_id, None).await;
+                }
             });
         }
     }

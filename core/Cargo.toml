@@ -24,7 +24,7 @@ filetime = "0.2.27"
 futures = "0.3.32"
 hostname = "0.4.2"
 indicatif = { version = "0.18.4", features = ["rayon"] }
-libc = { version = "0.2.185" }
+libc = { version = "0.2.186" }
 num_cpus = "1.17.0"
 num_enum = "0.7.6"
 parking_lot = "0.12.5"

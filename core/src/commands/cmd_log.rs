@@ -5,14 +5,14 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{cleanup::CleanupHandler, open_repository_with_lock, parse_tags},
+    commands::{cleanup::CleanupHandler, parse_tags},
     mapache::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
-        repo::{REPO_DROPPED_EXTENSION, RepoConfig},
+        repo::REPO_DROPPED_EXTENSION,
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
-    utils::{self, size},
+    utils::{self},
 };
 
 use super::GlobalArgs;
@@ -45,109 +45,100 @@ pub struct CmdArgs {
 const LOG_MSG: &str = "log";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
-
-    let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-    };
-    let (repo, _, mut lock_handle) = open_repository_with_lock(
+    crate::commands::with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        backend,
-        config,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
-    )
-    .await?;
+        |repo, _secure_storage, lock_handle| async move {
+            let cleanup_handler = CleanupHandler::new()?;
+            cleanup_handler.add_lock(lock_handle.clone());
 
-    let cleanup_handler = CleanupHandler::new()?;
-    cleanup_handler.add_lock(lock_handle.clone());
+            let show_active = args.all || !args.dropped;
+            let show_dropped = args.all || args.dropped;
 
-    let show_active = args.all || !args.dropped;
-    let show_dropped = args.all || args.dropped;
+            let mut snapshots_sorted = match &args.snapshot {
+                None => {
+                    let mut snapshots = Vec::new();
 
-    let mut snapshots_sorted = match &args.snapshot {
-        None => {
-            let mut snapshots = Vec::new();
+                    if show_active {
+                        let mut active_snapshots = SnapshotStream::new(repo.clone())
+                            .await?
+                            .collect_entries(true)
+                            .await?;
+                        snapshots.append(&mut active_snapshots);
+                    }
 
-            if show_active {
-                let mut active_snapshots = SnapshotStream::new(repo.clone())
-                    .await?
-                    .collect_entries(true)
-                    .await?;
-                snapshots.append(&mut active_snapshots);
-            }
+                    if show_dropped {
+                        let mut dropped_snapshots = SnapshotStream::dropped(repo.clone())
+                            .await?
+                            .collect_entries(false)
+                            .await?;
+                        snapshots.append(&mut dropped_snapshots);
+                    }
 
-            if show_dropped {
-                let mut dropped_snapshots = SnapshotStream::dropped(repo.clone())
-                    .await?
-                    .collect_entries(false)
-                    .await?;
-                snapshots.append(&mut dropped_snapshots);
-            }
+                    snapshots
+                }
+                Some(prefix) => {
+                    let (id, path) = repo
+                        .find(ContentIdType::Snapshot, prefix)
+                        .await
+                        .with_context(|| format!("Could not find snapshot {prefix}"))?;
 
-            snapshots
-        }
-        Some(prefix) => {
-            let (id, path) = repo
-                .find(ContentIdType::Snapshot, prefix)
-                .await
-                .with_context(|| format!("Could not find snapshot {prefix}"))?;
+                    let ext = path.extension().and_then(|s| s.to_str());
+                    let active = match ext {
+                        Some(REPO_DROPPED_EXTENSION) => false,
+                        None => true,
+                        _ => bail!(
+                            "Snapshot {} not found",
+                            id.to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                        ),
+                    };
 
-            let ext = path.extension().and_then(|s| s.to_str());
-            let active = match ext {
-                Some(REPO_DROPPED_EXTENSION) => false,
-                None => true,
-                _ => bail!(
-                    "Snapshot {} not found",
-                    id.to_short_hex(SHORT_SNAPSHOT_ID_LEN)
-                ),
+                    let snapshot = repo.load_snapshot(&id, ext).await?;
+                    vec![SnapshotEntry {
+                        id,
+                        snapshot,
+                        active,
+                    }]
+                }
             };
 
-            let snapshot = repo.load_snapshot(&id, ext).await?;
-            vec![SnapshotEntry {
-                id,
-                snapshot,
-                active,
-            }]
-        }
-    };
+            if let Some(tags_str) = &args.tags_str {
+                let tags = parse_tags(Some(tags_str));
+                snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
+            }
+            snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
 
-    if let Some(tags_str) = &args.tags_str {
-        let tags = parse_tags(Some(tags_str));
-        snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
-    }
-    snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
+            if snapshots_sorted.is_empty() {
+                ui::cli::log!("No snapshots found");
+                return Ok(());
+            }
 
-    if snapshots_sorted.is_empty() {
-        ui::cli::log!("No snapshots found");
-        lock_handle.unlock().await;
-        return Ok(());
-    }
+            if !global_args.json {
+                ui::cli::log!();
+                if args.compact {
+                    log_snapshots_compact(&snapshots_sorted);
+                } else {
+                    log_snapshots_full(&snapshots_sorted);
+                }
 
-    if !global_args.json {
-        ui::cli::log!();
-        if args.compact {
-            log_snapshots_compact(&snapshots_sorted);
-        } else {
-            log_snapshots_full(&snapshots_sorted);
-        }
+                ui::cli::log!("{} snapshots", snapshots_sorted.len());
+            } else {
+                ui::json_reporter::emit_static(
+                    LOG_MSG,
+                    &MsgSnapshots {
+                        snapshots: snapshots_sorted,
+                    },
+                );
+            }
 
-        ui::cli::log!("{} snapshots", snapshots_sorted.len());
-    } else {
-        ui::json_reporter::emit_static(
-            LOG_MSG,
-            &MsgSnapshots {
-                snapshots: snapshots_sorted,
-            },
-        );
-    }
-
-    lock_handle.unlock().await;
-
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 fn log_snapshots_full(snapshots: &SnapshotEntryList) {

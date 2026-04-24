@@ -6,15 +6,15 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{self, cleanup::CleanupHandler, open_repository_with_lock, parse_tags},
+    commands::{self, cleanup::CleanupHandler, parse_tags, with_repository_lock},
     mapache::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE},
     repository::{
-        repo::{REPO_DROPPED_EXTENSION, RepoConfig},
+        repo::REPO_DROPPED_EXTENSION,
         retention::{RetentionRule, apply_retention_rules},
         snapshot::{SnapshotEntryList, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
-    utils::{self, collections::IdSet, size},
+    utils::{self, collections::IdSet},
 };
 
 use super::GlobalArgs;
@@ -106,153 +106,147 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
 const FORGET_MSG: &str = "forget";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?;
-
-    let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-    };
-    let (repo, _, mut lock_handle) = open_repository_with_lock(
+    with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        backend,
-        config,
+        new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?,
+        global_args.to_repo_config(),
         true,
         global_args.retry_lock_duration,
-    )
-    .await?;
+        |repo, _secure_storage, lock_handle| async move {
+            let cleanup_handler = CleanupHandler::new()?;
+            cleanup_handler.add_lock(lock_handle.clone());
 
-    let cleanup_handler = CleanupHandler::new()?;
-    cleanup_handler.add_lock(lock_handle.clone());
-
-    let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
-        .await?
-        .collect_entries(true)
-        .await?;
-
-    if let Some(tags) = &args.tags_str {
-        let tags = parse_tags(Some(tags));
-        snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
-    }
-    snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
-
-    let mut ids_to_keep: IdSet<ID> = IdSet::default();
-
-    if !args.forget.is_empty() {
-        let mut forget_ids = IdSet::default();
-        for prefix in &args.forget {
-            let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
-            forget_ids.insert(id);
-        }
-        for e in &snapshots_sorted {
-            if !forget_ids.contains(&e.id) {
-                ids_to_keep.insert(e.id);
-            }
-        }
-    } else {
-        let mut retention_rules = Vec::new();
-        if let Some(n) = args.keep_last {
-            retention_rules.push(RetentionRule::KeepLast(n));
-        }
-        if let Some(d) = args.keep_within {
-            retention_rules.push(RetentionRule::KeepWithin(d));
-        }
-        if let Some(n) = args.keep_yearly {
-            retention_rules.push(RetentionRule::KeepYearly(n));
-        }
-        if let Some(n) = args.keep_monthly {
-            retention_rules.push(RetentionRule::KeepMonthly(n));
-        }
-        if let Some(n) = args.keep_weekly {
-            retention_rules.push(RetentionRule::KeepWeekly(n));
-        }
-        if let Some(n) = args.keep_daily {
-            retention_rules.push(RetentionRule::KeepDaily(n));
-        }
-        if let Some(tags_str) = &args.keep_tags_str {
-            let keep_tags = parse_tags(Some(tags_str));
-            retention_rules.push(RetentionRule::KeepTags(keep_tags));
-        }
-
-        if retention_rules.is_empty() {
-            bail!("At least one retention rule must be used.");
-        }
-
-        ids_to_keep = apply_retention_rules(&snapshots_sorted, &retention_rules, Local::now());
-    }
-
-    let mut kept_snapshots = Vec::new();
-    let mut removed_snapshots = Vec::new();
-    for entry in snapshots_sorted.into_iter() {
-        if !ids_to_keep.contains(&entry.id) {
-            removed_snapshots.push(entry);
-        } else {
-            kept_snapshots.push(entry);
-        };
-    }
-
-    if !args.dry_run && !removed_snapshots.is_empty() {
-        for entry in &removed_snapshots {
-            if args.force {
-                repo.delete_file(ContentIdType::Snapshot, &entry.id, None)
-                    .await?;
-            } else {
-                repo.set_extension(
-                    ContentIdType::Snapshot,
-                    &entry.id,
-                    Some(REPO_DROPPED_EXTENSION),
-                )
+            let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
+                .await?
+                .collect_entries(true)
                 .await?;
+
+            if let Some(tags) = &args.tags_str {
+                let tags = parse_tags(Some(tags));
+                snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
             }
-        }
-    }
+            snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
 
-    if global_args.json {
-        ui::json_reporter::emit_static(
-            FORGET_MSG,
-            &MsgForget {
-                kept: kept_snapshots,
-                removed: removed_snapshots,
-            },
-        );
-    } else {
-        ui::cli::log!();
-        ui::cli::log!("{}", "Snapshots to keep:".bold());
-        log_snapshots_compact(&kept_snapshots);
+            let mut ids_to_keep: IdSet<ID> = IdSet::default();
 
-        if !removed_snapshots.is_empty() {
-            ui::cli::log!("{}", "Snapshots to remove:".bold());
-            log_snapshots_compact(&removed_snapshots);
-        }
+            if !args.forget.is_empty() {
+                let mut forget_ids = IdSet::default();
+                for prefix in &args.forget {
+                    let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
+                    forget_ids.insert(id);
+                }
+                for e in &snapshots_sorted {
+                    if !forget_ids.contains(&e.id) {
+                        ids_to_keep.insert(e.id);
+                    }
+                }
+            } else {
+                let mut retention_rules = Vec::new();
+                if let Some(n) = args.keep_last {
+                    retention_rules.push(RetentionRule::KeepLast(n));
+                }
+                if let Some(d) = args.keep_within {
+                    retention_rules.push(RetentionRule::KeepWithin(d));
+                }
+                if let Some(n) = args.keep_yearly {
+                    retention_rules.push(RetentionRule::KeepYearly(n));
+                }
+                if let Some(n) = args.keep_monthly {
+                    retention_rules.push(RetentionRule::KeepMonthly(n));
+                }
+                if let Some(n) = args.keep_weekly {
+                    retention_rules.push(RetentionRule::KeepWeekly(n));
+                }
+                if let Some(n) = args.keep_daily {
+                    retention_rules.push(RetentionRule::KeepDaily(n));
+                }
+                if let Some(tags_str) = &args.keep_tags_str {
+                    let keep_tags = parse_tags(Some(tags_str));
+                    retention_rules.push(RetentionRule::KeepTags(keep_tags));
+                }
 
-        let count_str = utils::format_count(removed_snapshots.len(), "snapshot", "snapshots");
-        if args.dry_run {
-            ui::cli::log!("This would remove {}", count_str);
-        } else {
-            ui::cli::log!("Removed {}", count_str);
-        }
-    }
+                if retention_rules.is_empty() {
+                    bail!("At least one retention rule must be used.");
+                }
 
-    if args.run_gc {
-        let gc_args = commands::cmd_clean::CmdArgs {
-            tolerance: args.tolerance,
-            dry_run: args.dry_run,
-            no_repack: false,
-        };
+                ids_to_keep =
+                    apply_retention_rules(&snapshots_sorted, &retention_rules, Local::now());
+            }
 
-        if !global_args.json {
-            ui::cli::log!();
-            ui::cli::log!("Running garbage collector...");
-        }
+            let mut kept_snapshots = Vec::new();
+            let mut removed_snapshots = Vec::new();
+            for entry in snapshots_sorted.into_iter() {
+                if !ids_to_keep.contains(&entry.id) {
+                    removed_snapshots.push(entry);
+                } else {
+                    kept_snapshots.push(entry);
+                };
+            }
 
-        repo.reload_master_index().await?; // We need to load the index for the garbage collector
-        commands::cmd_clean::run_with_repo(global_args, &gc_args, repo).await?;
-    }
+            if !args.dry_run && !removed_snapshots.is_empty() {
+                for entry in &removed_snapshots {
+                    if args.force {
+                        repo.delete_file(ContentIdType::Snapshot, &entry.id, None)
+                            .await?;
+                    } else {
+                        repo.set_extension(
+                            ContentIdType::Snapshot,
+                            &entry.id,
+                            Some(REPO_DROPPED_EXTENSION),
+                        )
+                        .await?;
+                    }
+                }
+            }
 
-    lock_handle.unlock().await;
+            if global_args.json {
+                ui::json_reporter::emit_static(
+                    FORGET_MSG,
+                    &MsgForget {
+                        kept: kept_snapshots,
+                        removed: removed_snapshots,
+                    },
+                );
+            } else {
+                ui::cli::log!();
+                ui::cli::log!("{}", "Snapshots to keep:".bold());
+                log_snapshots_compact(&kept_snapshots);
 
-    Ok(())
+                if !removed_snapshots.is_empty() {
+                    ui::cli::log!("{}", "Snapshots to remove:".bold());
+                    log_snapshots_compact(&removed_snapshots);
+                }
+
+                let count_str =
+                    utils::format_count(removed_snapshots.len(), "snapshot", "snapshots");
+                if args.dry_run {
+                    ui::cli::log!("This would remove {}", count_str);
+                } else {
+                    ui::cli::log!("Removed {}", count_str);
+                }
+            }
+
+            if args.run_gc {
+                let gc_args = commands::cmd_clean::CmdArgs {
+                    tolerance: args.tolerance,
+                    dry_run: args.dry_run,
+                    no_repack: false,
+                };
+
+                if !global_args.json {
+                    ui::cli::log!();
+                    ui::cli::log!("Running garbage collector...");
+                }
+
+                repo.reload_master_index().await?; // We need to load the index for the garbage collector
+                commands::cmd_clean::run_with_repo(global_args, &gc_args, repo).await?;
+            }
+
+            Ok(())
+        },
+    )
+    .await
 }
 
 #[derive(Serialize)]

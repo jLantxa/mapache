@@ -70,7 +70,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (_src_repo, _src_ss, mut src_lock) = Repository::try_open_with_lock(
+    let (_src_repo, _src_ss, src_lock) = Repository::try_open_with_lock(
         &auth,
         global_args.key.as_ref(),
         src_backend.clone(),
@@ -111,25 +111,27 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    sync_backends(
+    let res = sync_backends(
         src_backend.as_ref(),
         dst_backend.as_ref(),
         args.delete,
         cleanup_handler.interrupted.clone(),
     )
-    .await?;
+    .await;
 
-    ui::cli::log!(
-        "Finished in {}",
-        utils::pretty_print_duration(start.elapsed())
-    );
+    if res.is_ok() {
+        ui::cli::log!(
+            "Finished in {}",
+            utils::pretty_print_duration(start.elapsed())
+        );
+    }
 
     src_lock.unlock().await;
-    if let Some(mut lock) = dst_lock {
+    if let Some(lock) = dst_lock {
         lock.unlock().await;
     }
 
-    Ok(())
+    res
 }
 
 /// Synchronize a repository to a destination backend.

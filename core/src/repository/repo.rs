@@ -1306,7 +1306,7 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref().unwrap(), None, backend.to_owned()).await?;
-        let (_, _, mut lock_handle) = Repository::try_open_with_lock(
+        let (_, _, lock_handle) = Repository::try_open_with_lock(
             auth.as_ref().unwrap(),
             None,
             backend,
@@ -1338,7 +1338,7 @@ mod tests {
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
         Repository::init(auth.as_ref().unwrap(), None, backend.to_owned()).await?;
-        let (_, _, mut lock_handle) = Repository::try_open_with_lock(
+        let (_, _, lock_handle) = Repository::try_open_with_lock(
             auth.as_ref().unwrap(),
             None,
             backend,
@@ -1450,7 +1450,7 @@ mod tests {
         .await;
 
         let is_err = own_repo_open_result.is_err();
-        if let Ok((_, _, mut lock)) = own_repo_open_result {
+        if let Ok((_, _, lock)) = own_repo_open_result {
             lock.unlock().await;
         }
 
@@ -1522,7 +1522,7 @@ mod tests {
         )));
         r0.save_lock(&other_lock).await?;
 
-        let (_, _, mut lock_handle) = Repository::try_open_with_lock(
+        let (_, _, lock_handle) = Repository::try_open_with_lock(
             &auth,
             None,
             backend.clone(),

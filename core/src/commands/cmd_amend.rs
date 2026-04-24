@@ -15,21 +15,21 @@ use crate::{
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
-        open_repository_with_lock, parse_tags,
+        parse_tags, with_repository_lock,
     },
     fs::filter::{
         merge_filtered_paths, parse_relative_filter_paths, read_filtered_paths_from_file,
     },
     mapache::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::{
-        repo::{RepoConfig, Repository},
+        repo::Repository,
         snapshot::{Snapshot, SnapshotStream},
     },
     ui::{
         self,
         snapshot::{SnapshotProgressReporter, cli::CliSnapshotProgressReporter},
     },
-    utils::{self, size},
+    utils::{self},
 };
 
 #[derive(Args, Debug)]
@@ -76,75 +76,67 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
-
-    let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-    };
-    let (repo, _, mut lock_handle) = open_repository_with_lock(
+    with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        backend,
-        config,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        global_args.to_repo_config(),
         true,
         global_args.retry_lock_duration,
+        |repo, _, lock_handle| async move {
+            let cleanup_handler = CleanupHandler::new()?;
+            cleanup_handler.add_lock(lock_handle.clone());
+
+            let start = Instant::now();
+
+            repo.reload_master_index().await?;
+
+            let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
+
+            if args.all {
+                let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
+                while let Some(res) = snapshot_stream.next().await {
+                    snapshots.push(res?);
+                }
+            } else {
+                match find_use_snapshot(repo.clone(), &args.snapshot).await {
+                    Ok(Some((id, snap))) => snapshots.push((id, snap)),
+                    Ok(None) | Err(_) => bail!("Snapshot not found"),
+                }
+            }
+
+            let num_snapshots = snapshots.len();
+            for (i, (id, snapshot)) in snapshots.iter_mut().rev().enumerate() {
+                let amend_str = format!(
+                    "Amending snapshot {}",
+                    id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().red()
+                );
+                if args.all {
+                    ui::cli::log!("{} ({}/{})", amend_str, i + 1, num_snapshots);
+                } else {
+                    ui::cli::log!("{} ", amend_str);
+                }
+
+                amend(
+                    repo.clone(),
+                    id,
+                    snapshot,
+                    args,
+                    cleanup_handler.interrupted.clone(),
+                )
+                .await?;
+                ui::cli::log!();
+            }
+
+            ui::cli::log!(
+                "Finished in {}",
+                utils::pretty_print_duration(start.elapsed())
+            );
+
+            Ok(())
+        },
     )
-    .await?;
-
-    let cleanup_handler = CleanupHandler::new()?;
-    cleanup_handler.add_lock(lock_handle.clone());
-
-    let start = Instant::now();
-
-    repo.reload_master_index().await?;
-
-    let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
-
-    if args.all {
-        let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-        while let Some(res) = snapshot_stream.next().await {
-            snapshots.push(res?);
-        }
-    } else {
-        match find_use_snapshot(repo.clone(), &args.snapshot).await {
-            Ok(Some((id, snap))) => snapshots.push((id, snap)),
-            Ok(None) | Err(_) => bail!("Snapshot not found"),
-        }
-    }
-
-    let num_snapshots = snapshots.len();
-    for (i, (id, snapshot)) in snapshots.iter_mut().rev().enumerate() {
-        let amend_str = format!(
-            "Amending snapshot {}",
-            id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().red()
-        );
-        if args.all {
-            ui::cli::log!("{} ({}/{})", amend_str, i + 1, num_snapshots);
-        } else {
-            ui::cli::log!("{} ", amend_str);
-        }
-
-        amend(
-            repo.clone(),
-            id,
-            snapshot,
-            args,
-            cleanup_handler.interrupted.clone(),
-        )
-        .await?;
-        ui::cli::log!();
-    }
-
-    ui::cli::log!(
-        "Finished in {}",
-        utils::pretty_print_duration(start.elapsed())
-    );
-
-    lock_handle.unlock().await;
-
-    Ok(())
+    .await
 }
 
 async fn amend(

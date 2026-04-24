@@ -175,6 +175,14 @@ impl GlobalArgs {
             limit_download: self.limit_download,
         }
     }
+
+    pub fn to_repo_config(&self) -> RepoConfig {
+        RepoConfig {
+            pack_size: (self.pack_size_mib * size::MiB as f32) as u64,
+            use_cache: !self.no_cache,
+            compression: self.compression_level,
+        }
+    }
 }
 
 fn parse_bandwidth(s: &str) -> Result<u64, String> {
@@ -483,6 +491,36 @@ pub async fn open_repository(
             }
         }
     }
+}
+
+/// Helper to open a repository with a lock and interactive authentication if needed,
+/// ensuring the lock is released when the provided closure finishes.
+pub async fn with_repository_lock<F, Fut, T>(
+    auth_file: Option<&PathBuf>,
+    key_file_path: Option<&PathBuf>,
+    backend: Arc<dyn StorageBackend>,
+    config: RepoConfig,
+    exclusive_lock: bool,
+    retry_duration: Option<Duration>,
+    f: F,
+) -> Result<T>
+where
+    F: FnOnce(Arc<Repository>, Arc<SecureStorage>, LockHandle) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let (repo, storage, lock) = open_repository_with_lock(
+        auth_file,
+        key_file_path,
+        backend,
+        config,
+        exclusive_lock,
+        retry_duration,
+    )
+    .await?;
+
+    let res = f(repo, storage, lock.clone()).await;
+    lock.unlock().await;
+    res
 }
 
 /// Helper to open a repository with a lock and interactive authentication if needed.

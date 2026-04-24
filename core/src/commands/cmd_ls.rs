@@ -7,17 +7,15 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
-        open_repository_with_lock,
+        GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot, with_repository_lock,
     },
     fs::{
         node::{Metadata, Node, NodeType, node_to_string},
         tree::{Tree, find_serialized_node},
     },
     mapache::ID,
-    repository::repo::{RepoConfig, Repository},
+    repository::repo::Repository,
     ui,
-    utils::size,
 };
 
 #[derive(Args, Debug)]
@@ -45,45 +43,37 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
-
-    let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-    };
-    let (repo, _, mut lock_handle) = open_repository_with_lock(
+    with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        backend,
-        config,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
+        |repo, _secure_storage, lock_handle| async move {
+            let cleanup_handler = CleanupHandler::new()?;
+            cleanup_handler.add_lock(lock_handle.clone());
+
+            repo.reload_master_index().await?;
+
+            let (_snapshot_id, snapshot) = find_use_snapshot(repo.clone(), &args.snapshot)
+                .await?
+                .context("Snapshot not found")?;
+
+            let node = if let Some(p) = &args.path {
+                find_serialized_node(repo.as_ref(), &snapshot.tree, p)
+                    .await?
+                    .with_context(|| format!("'{}' does not exist in snapshot", p.display()))?
+            } else {
+                Node::new_root(&snapshot.tree)
+            };
+
+            ls(&args.path.clone().unwrap_or_default(), &node, &repo, args).await?;
+
+            Ok(())
+        },
     )
-    .await?;
-
-    let cleanup_handler = CleanupHandler::new()?;
-    cleanup_handler.add_lock(lock_handle.clone());
-
-    repo.reload_master_index().await?;
-
-    let (_snapshot_id, snapshot) = find_use_snapshot(repo.clone(), &args.snapshot)
-        .await?
-        .context("Snapshot not found")?;
-
-    let node = if let Some(p) = &args.path {
-        find_serialized_node(repo.as_ref(), &snapshot.tree, p)
-            .await?
-            .with_context(|| format!("'{}' does not exist in snapshot", p.display()))?
-    } else {
-        Node::new_root(&snapshot.tree)
-    };
-
-    ls(&args.path.clone().unwrap_or_default(), &node, &repo, args).await?;
-
-    lock_handle.unlock().await;
-
-    Ok(())
+    .await
 }
 
 /// List the contents of a node.

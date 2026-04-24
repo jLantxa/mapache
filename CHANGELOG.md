@@ -18,6 +18,13 @@
   formatting and better cross-platform color support.
 - Added `--exclude-file` and `--include-file` to read include and exclude paths
   from file.
+- **Return codes**: Mapache can now return error codes. Experimental support
+  added for the `init`, `snapshot`, `restore` and `verify` commands.
+
+### Fixes
+
+- Make sure that locks are always released under normal termination.
+- Update dependencies patching some vulnerabilities.
 
 ## v0.2.3
 

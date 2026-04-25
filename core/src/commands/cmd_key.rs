@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use futures::StreamExt;
+use zeroize::Zeroizing;
 
 use crate::{
     backend::{Handle, WriteContents, new_backend_with_prompt},
@@ -107,7 +108,7 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
     ui::cli::log!("\nCreating new user key...");
     let new_auth = request_new_auth()?;
     let new_key_file =
-        KeyManager::generate_key_file(&new_auth, master_key).context("Could not generate key")?;
+        KeyManager::generate_key_file(&new_auth, &master_key).context("Could not generate key")?;
 
     let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
@@ -151,10 +152,13 @@ async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArg
 
     let new_auth = Auth {
         username: auth.username,
-        password: ui::cli::request_new_password("Enter the new password", "Confirm password")?,
+        password: Zeroizing::new(ui::cli::request_new_password(
+            "Enter the new password",
+            "Confirm password",
+        )?),
     };
 
-    let new_keyfile = KeyManager::generate_key_file(&new_auth, master_key)?;
+    let new_keyfile = KeyManager::generate_key_file(&new_auth, &master_key)?;
     key_manager.save_keyfile(&new_keyfile).await?;
     key_manager.delete_keyfile_with_id(&old_id).await?;
 

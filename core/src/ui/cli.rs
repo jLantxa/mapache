@@ -1,5 +1,6 @@
 use anyhow::Result;
 use dialoguer::{Input, Password};
+use zeroize::Zeroizing;
 
 use crate::repository::repo::Auth;
 
@@ -37,7 +38,10 @@ pub(crate) fn request_new_auth() -> Result<Auth> {
     let username: String = Input::new().with_prompt("Enter new username").interact()?;
 
     let password = request_new_password("Enter new password", "Confirm password")?;
-    Ok(Auth { username, password })
+    Ok(Auth {
+        username,
+        password: Zeroizing::new(password),
+    })
 }
 
 /// Requests authentication data (username and password)
@@ -45,7 +49,10 @@ pub(crate) fn request_auth() -> Result<Auth> {
     let username: String = Input::new().with_prompt("Enter username").interact()?;
 
     let password = request_password("Enter password")?;
-    Ok(Auth { username, password })
+    Ok(Auth {
+        username,
+        password: Zeroizing::new(password),
+    })
 }
 
 #[macro_export]

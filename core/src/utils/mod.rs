@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use blake3::Hasher;
 use chrono::{DateTime, Duration, Local};
 
@@ -16,6 +16,7 @@ use crate::{
     },
     repository::repo::Auth,
 };
+use zeroize::Zeroizing;
 
 // --- Constants ---
 
@@ -68,7 +69,10 @@ pub fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
             })?
             .to_string();
 
-        Ok(Some(Auth { username, password }))
+        Ok(Some(Auth {
+            username,
+            password: Zeroizing::new(password),
+        }))
     } else {
         let username = get_envvar(USERNAME_ENVVAR);
         let password = get_envvar(PASSWORD_ENVVAR);
@@ -76,7 +80,7 @@ pub fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
         match (username, password) {
             (Some(u), Some(p)) => Ok(Some(Auth {
                 username: u,
-                password: p,
+                password: Zeroizing::new(p),
             })),
             _ => Ok(None),
         }
@@ -394,6 +398,28 @@ pub fn count_files(dir_path: &Path) -> Result<usize> {
 }
 
 // --- Tests ---
+/// Joins a relative path to a base path, ensuring the result is within the base path.
+/// This prevents path traversal attacks.
+pub fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
+    if relative.is_absolute() {
+        bail!("Relative path cannot be absolute: {}", relative.display());
+    }
+
+    let joined = base.join(relative);
+    let normalized = crate::fs::get_absolute_normalized_path(&joined)?;
+    let normalized_base = crate::fs::get_absolute_normalized_path(base)?;
+
+    if !normalized.starts_with(&normalized_base) {
+        bail!(
+            "Path traversal detected: {} is outside of {}",
+            normalized.display(),
+            normalized_base.display()
+        );
+    }
+
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{NaiveDateTime, TimeZone};
@@ -674,7 +700,7 @@ mod tests {
 
         let auth = get_auth(&Some(auth_file.clone()))?.unwrap();
         assert_eq!(auth.username, "user1");
-        assert_eq!(auth.password, "pass123");
+        assert_eq!(*auth.password, "pass123");
 
         // Test empty file
         std::fs::write(&auth_file, "")?;
@@ -698,7 +724,7 @@ mod tests {
         }
         let auth = get_auth(&None)?.unwrap();
         assert_eq!(auth.username, "env_user");
-        assert_eq!(auth.password, "env_pass");
+        assert_eq!(*auth.password, "env_pass");
 
         // Cleanup
         unsafe {

@@ -1,6 +1,7 @@
 use aes_gcm_siv::{AeadInPlace, Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
+use zeroize::Zeroizing;
 
 use crate::backend::WriteContents;
 use crate::mapache::{self, defaults::DEFAULT_COMPRESSION};
@@ -259,13 +260,13 @@ impl SecureStorage {
         password: &str,
         salt: &[u8],
         params: argon2::Params,
-    ) -> Result<[u8; KEY_LEN]> {
+    ) -> Result<Zeroizing<[u8; KEY_LEN]>> {
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
         let mut key = [0u8; KEY_LEN];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut key)
             .map_err(|e| anyhow!("argon2 derive failed: {e}"))?;
-        Ok(key)
+        Ok(Zeroizing::new(key))
     }
 
     /// Generate a cryptographically strong salt using the OS random source.

@@ -13,6 +13,7 @@ use colored::Colorize;
 use futures::{StreamExt, stream};
 use parking_lot::Mutex;
 use rand::{RngExt, rng};
+use zeroize::Zeroizing;
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, WriteContents, cache::CacheBackend},
@@ -91,7 +92,7 @@ impl std::ops::AddAssign for SizePair {
 #[derive(Debug)]
 pub struct Auth {
     pub username: String,
-    pub password: String,
+    pub password: Zeroizing<String>,
 }
 
 /// Configuration options for a repository.
@@ -201,7 +202,7 @@ impl Repository {
 
         // Create new key
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(auth, master_key.clone())
+        let keyfile = KeyManager::generate_key_file(auth, &master_key.clone())
             .context("Could not generate key")?;
         let secure_storage = Arc::new(
             SecureStorage::new()
@@ -1301,7 +1302,7 @@ mod tests {
 
         let auth = Some(Auth {
             username: String::from("mapachito"),
-            password: String::from("password"),
+            password: Zeroizing::new(String::from("password")),
         });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
@@ -1333,7 +1334,7 @@ mod tests {
 
         let auth = Some(Auth {
             username: String::from("mapachito"),
-            password: String::from("password"),
+            password: Zeroizing::new(String::from("password")),
         });
         let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
 
@@ -1352,15 +1353,14 @@ mod tests {
         Ok(())
     }
 
-    /// Test generation of master keys
     #[test]
     fn test_generate_key_file() -> Result<()> {
         let auth = Auth {
             username: "mapachito".to_string(),
-            password: "password".to_string(),
+            password: Zeroizing::new("password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(&auth, master_key.clone())?;
+        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone())?;
 
         let salt = general_purpose::STANDARD.decode(keyfile.salt.clone())?;
         let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key.clone())?;
@@ -1369,11 +1369,11 @@ mod tests {
             SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params())?;
         let ss = SecureStorage::new()
             .with_compression(Compression::Fast.to_level())
-            .with_key(&intermediate_key);
+            .with_key(&*intermediate_key);
 
         let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();
 
-        assert_eq!(master_key, decrypted_key.as_slice());
+        assert_eq!(*master_key, decrypted_key.as_slice());
 
         Ok(())
     }
@@ -1397,12 +1397,12 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let auth = Auth {
             username: "mapachito".to_string(),
-            password: "password".to_string(),
+            password: Zeroizing::new("password".to_string()),
         };
         let auth_file_path = tmp_path.join("auth");
         std::fs::write(
             &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
+            format!("{}\n{}", auth.username, *auth.password),
         )?;
 
         let repo = String::from("repo");
@@ -1477,12 +1477,12 @@ mod tests {
         let tmp_path = tmp_dir.path();
         let auth = Auth {
             username: "mapachito".to_string(),
-            password: "password".to_string(),
+            password: Zeroizing::new("password".to_string()),
         };
         let auth_file_path = tmp_path.join("auth");
         std::fs::write(
             &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
+            format!("{}\n{}", auth.username, *auth.password),
         )?;
 
         let repo = String::from("repo");

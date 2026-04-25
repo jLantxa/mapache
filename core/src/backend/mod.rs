@@ -19,6 +19,7 @@ use localfs::LocalFS;
 use percent_encoding::percent_decode_str;
 use s3::S3Backend;
 use url::Url;
+use zeroize::Zeroizing;
 
 use crate::{backend::sftp::SftpBackend, mapache::ContentIdType, ui};
 
@@ -208,7 +209,9 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                     },
                     None => {
                         let prompt = format!("{username}@{host}'s password");
-                        sftp::AuthMethod::Password(ui::cli::request_password(&prompt)?)
+                        sftp::AuthMethod::Password(Zeroizing::new(ui::cli::request_password(
+                            &prompt,
+                        )?))
                     }
                 };
 
@@ -264,8 +267,8 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                 bucket.clone(),
                 prefix.clone(),
                 endpoint,
-                access_key,
-                secret_key,
+                Zeroizing::new(access_key),
+                Zeroizing::new(secret_key),
             )?)
         }
     };

@@ -23,6 +23,7 @@ use tokio::{
     sync::Mutex,
     time::timeout,
 };
+use zeroize::Zeroizing;
 
 use crate::{
     backend::{
@@ -63,11 +64,11 @@ impl std::error::Error for SftpError {}
 #[derive(Clone, Debug)]
 pub enum AuthMethod {
     /// Standard username/password authentication.
-    Password(String),
+    Password(Zeroizing<String>),
     /// Public key authentication using a private key file.
     PubKey {
         private_key: PathBuf,
-        passphrase: Option<String>,
+        passphrase: Option<Zeroizing<String>>,
     },
 }
 
@@ -110,13 +111,15 @@ impl SftpConnection {
 
         let auth_res = match auth_method {
             AuthMethod::Password(password) => {
-                session.authenticate_password(username, password).await?
+                session
+                    .authenticate_password(username, password.as_str())
+                    .await?
             }
             AuthMethod::PubKey {
                 private_key,
                 passphrase,
             } => {
-                let key = load_secret_key(private_key, passphrase.as_deref())
+                let key = load_secret_key(private_key, passphrase.as_ref().map(|p| p.as_str()))
                     .context("Failed to load private key")?;
                 let pk = PrivateKeyWithHashAlg::new(Arc::new(key), None);
                 session.authenticate_publickey(username, pk).await?

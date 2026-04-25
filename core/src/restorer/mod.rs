@@ -393,7 +393,7 @@ impl Restorer {
                 total_bytes += node.metadata.size;
             }
 
-            let restore_path = self.target_path.join(&path);
+            let restore_path = crate::utils::secure_join(&self.target_path, &path)?;
             if !self
                 .should_restore_node(&node, &restore_path, &restored_dirs, index.clone())
                 .await?
@@ -460,10 +460,15 @@ impl Restorer {
                             fs::create_dir_all(parent)?;
                         }
 
-                        // If the file exists, it might be read-only (which we set during previous restores).
-                        // We need to clear those attributes before we can overwrite/truncate it.
-                        if restore_path.exists() {
-                            self.clear_readonly_attribute(&restore_path)?;
+                        // If the file exists, it might be a symlink or read-only.
+                        // We must NOT follow symlinks when restoring to prevent overwriting
+                        // files outside the target directory.
+                        if let Ok(m) = fs::symlink_metadata(&restore_path) {
+                            if m.file_type().is_symlink() {
+                                fs::remove_file(&restore_path)?;
+                            } else {
+                                self.clear_readonly_attribute(&restore_path)?;
+                            }
                         }
 
                         let mut file = OpenOptions::new()

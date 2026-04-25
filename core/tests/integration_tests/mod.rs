@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use tempfile::tempdir;
+use zeroize::Zeroizing;
 
 use mapache::{
     backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
@@ -77,12 +78,12 @@ impl TestContext {
         let tmp_path = tmp_dir.path();
         let auth = Auth {
             username: "mapachito".to_string(),
-            password: "password".to_string(),
+            password: Zeroizing::new("password".to_string()),
         };
         let auth_file_path = tmp_path.join("auth");
         std::fs::write(
             &auth_file_path,
-            format!("{}\n{}", auth.username, auth.password),
+            format!("{}\n{}", auth.username, *auth.password),
         )?;
 
         let repo_path = tmp_path.join("repo");

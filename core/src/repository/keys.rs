@@ -12,6 +12,7 @@ use chrono::{DateTime, Local};
 use colored::Colorize;
 use futures::{Stream, StreamExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::{
     backend::{Handle, StorageBackend, WriteContents},
@@ -208,11 +209,11 @@ impl KeyManager {
         Self { backend }
     }
 
-    pub fn generate_new_master_key() -> Vec<u8> {
-        rand::random::<[u8; 32]>().to_vec()
+    pub fn generate_new_master_key() -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(rand::random::<[u8; 32]>().to_vec())
     }
 
-    pub fn decode_master_key(password: &str, keyfile: &KeyFile) -> Result<Vec<u8>> {
+    pub fn decode_master_key(password: &str, keyfile: &KeyFile) -> Result<Zeroizing<Vec<u8>>> {
         let salt = base64::engine::general_purpose::STANDARD.decode(&keyfile.salt)?;
         let encrypted_key =
             base64::engine::general_purpose::STANDARD.decode(&keyfile.encrypted_key)?;
@@ -221,15 +222,15 @@ impl KeyManager {
             SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params())?;
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
-            .with_key(&intermediate_key);
+            .with_key(&*intermediate_key);
 
         ss.decrypt(&encrypted_key)
-            .map(|c| c.into_owned())
+            .map(|c| Zeroizing::new(c.into_owned()))
             .context("Could not retrieve master key from this keyfile")
     }
 
     /// Generates a new KeyFile for the master key with a new password
-    pub fn generate_key_file(auth: &Auth, master_key: Vec<u8>) -> Result<KeyFile> {
+    pub fn generate_key_file(auth: &Auth, master_key: &[u8]) -> Result<KeyFile> {
         let create_time = Local::now();
         let argon2_params = argon2::Params::default();
 
@@ -240,9 +241,9 @@ impl KeyManager {
 
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
-            .with_key(&intermediate_key);
+            .with_key(&*intermediate_key);
 
-        let encrypted_key = ss.encrypt(&master_key)?;
+        let encrypted_key = ss.encrypt(master_key)?;
 
         Ok(KeyFile {
             created: create_time,
@@ -260,7 +261,7 @@ impl KeyManager {
         &self,
         auth: &Auth,
         keyfile_path: Option<&PathBuf>,
-    ) -> Result<(Option<ID>, Vec<u8>)> {
+    ) -> Result<(Option<ID>, Zeroizing<Vec<u8>>)> {
         self.retrieve_master_key_internal(auth, keyfile_path)
             .await
             .map_err(anyhow::Error::new)
@@ -270,7 +271,7 @@ impl KeyManager {
         &self,
         auth: &Auth,
         keyfile_path: Option<&PathBuf>,
-    ) -> std::result::Result<(Option<ID>, Vec<u8>), KeyManagerError> {
+    ) -> std::result::Result<(Option<ID>, Zeroizing<Vec<u8>>), KeyManagerError> {
         match keyfile_path {
             Some(path) => {
                 let ss = SecureStorage::new();
@@ -470,15 +471,15 @@ mod tests {
     fn test_key_file_roundtrip() -> Result<()> {
         let auth = Auth {
             username: "test_user".to_string(),
-            password: "test_password".to_string(),
+            password: Zeroizing::new("test_password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
 
-        let key_file = KeyManager::generate_key_file(&auth, master_key.clone())?;
+        let key_file = KeyManager::generate_key_file(&auth, &master_key)?;
         assert_eq!(key_file.username, "test_user");
 
         let decoded_master_key = KeyManager::decode_master_key(&auth.password, &key_file)?;
-        assert_eq!(master_key, decoded_master_key);
+        assert_eq!(*master_key, *decoded_master_key);
 
         // Test with wrong password
         let wrong_password_res = KeyManager::decode_master_key("wrong_password", &key_file);

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use s3::{Bucket, Region, creds::Credentials};
+use zeroize::Zeroizing;
 
 use crate::backend::{
     BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry,
@@ -21,8 +22,8 @@ impl S3Backend {
         bucket_name: String,
         prefix: PathBuf,
         endpoint: String,
-        access_key: String,
-        secret_key: String,
+        access_key: Zeroizing<String>,
+        secret_key: Zeroizing<String>,
     ) -> Result<Self> {
         let region = if endpoint == "amazonaws.com" {
             region.parse::<Region>().map_err(|e| anyhow::anyhow!(e))?
@@ -30,8 +31,9 @@ impl S3Backend {
             Region::Custom { region, endpoint }
         };
 
-        let credentials = Credentials::new(Some(&access_key), Some(&secret_key), None, None, None)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let credentials =
+            Credentials::new(Some(&*access_key), Some(&*secret_key), None, None, None)
+                .map_err(|e| anyhow::anyhow!(e))?;
         let bucket = Bucket::new(&bucket_name, region, credentials)
             .map_err(|e| anyhow::anyhow!(e))?
             .with_path_style();

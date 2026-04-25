@@ -25,6 +25,10 @@
 
 - Make sure that locks are always released under normal termination.
 - Update dependencies patching some vulnerabilities.
+- **Security fixes**:
+  - Ensure files are never restored outside of the target directory.
+  - Zeroize sensitive data (passwords, keys, etc.) after use.
+  - Hardened FUSE permissions.
 
 ## v0.2.3
 

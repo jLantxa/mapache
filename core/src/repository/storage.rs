@@ -90,17 +90,17 @@ impl SecureStorage {
             }
 
             unsafe {
-                // SAFETY: Avoiding zero-initialization for performance. Safe because capacity is
-                // reserved and zstd::compress_to_buffer initializes the written range.
-                let slice = std::slice::from_raw_parts_mut(
-                    out.as_mut_ptr().add(data_start) as *mut std::mem::MaybeUninit<u8>,
-                    bound,
-                );
-                let dest = &mut *(slice as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]);
+                // SAFETY: We have reserved at least `bound` bytes of capacity starting at `data_start`.
+                // zstd::compress_to_buffer is called with a pointer to this uninitialized region.
+                // We only set the length of the vector AFTER zstd has successfully written `n` bytes.
+                let dest_ptr = out.as_mut_ptr().add(data_start);
+                let dest_slice = std::slice::from_raw_parts_mut(dest_ptr, bound);
+
                 let n = c
                     .compressor
-                    .compress_to_buffer(data, dest)
+                    .compress_to_buffer(data, dest_slice)
                     .map_err(|e| anyhow!("zstd failed: {e}"))?;
+
                 out.set_len(data_start + n);
             }
         } else {

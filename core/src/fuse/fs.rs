@@ -60,7 +60,12 @@ impl MapacheFS {
         };
 
         let mut config = Config::default();
-        config.mount_options = vec![MountOption::RO];
+        config.mount_options = vec![
+            MountOption::RO,
+            MountOption::CUSTOM("nodev".to_string()),
+            MountOption::CUSTOM("nosuid".to_string()),
+            MountOption::CUSTOM("noexec".to_string()),
+        ];
         config.acl = if allow_other {
             SessionACL::All
         } else {
@@ -80,12 +85,12 @@ impl MapacheFS {
     /// Unmounts the filesystem from `mountpoint`
     pub fn unmount(mountpoint: &Path) -> Result<()> {
         #[cfg(target_os = "linux")]
-        let mut cmd = std::process::Command::new("fusermount");
+        let mut cmd = std::process::Command::new("/usr/bin/fusermount");
         #[cfg(target_os = "linux")]
         cmd.arg("-u");
 
         #[cfg(target_os = "macos")]
-        let mut cmd = std::process::Command::new("umount");
+        let mut cmd = std::process::Command::new("/usr/sbin/umount");
 
         cmd.arg(mountpoint)
             .output()

@@ -79,6 +79,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             repo.reload_master_index().await?;
 
+            let allow_other = args.allow_other;
+            if allow_other {
+                ui::cli::warning!(
+                    "The --allow-other option is enabled. The backup content is now visible to ALL users on this system."
+                );
+            }
+
             ui::cli::log!("Mounting repository in {}", cannonical_mountpoint.display());
             ui::cli::log!(
                 "Press {} to finish or unmount the filesystem manually.",
@@ -86,7 +93,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             );
 
             let mount_path = cannonical_mountpoint.clone();
-            let allow_other = args.allow_other;
             let metadata_only = args.metadata_only;
             let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
 

@@ -74,6 +74,11 @@ RUN cargo zigbuild --release --target aarch64-apple-darwin -p mapache --no-defau
 # --- Final Image ---
 FROM alpine:latest
 LABEL "Author"="Leuqar"
+
+# Add non-root user
+RUN addgroup -S mapache && adduser -S mapache -G mapache
+USER mapache
+
 WORKDIR /artifacts
 
 COPY --from=builder /mapache/target/x86_64-unknown-linux-musl/release/mapache /artifacts/mapache_linux_x64

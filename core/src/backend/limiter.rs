@@ -429,4 +429,21 @@ mod tests {
         writer.write_all(&[0u8]).await.unwrap();
         assert!(start.elapsed().as_secs_f64() >= 0.4);
     }
+
+    #[tokio::test]
+    async fn test_rate_limiter_replenish() {
+        let limit = 1000;
+        let limiter = RateLimiter::new(limit);
+
+        // Consume initial burst
+        limiter.wait(1000).await;
+
+        // Wait 1.1 second manually to ensure at least 1000 tokens are replenished
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        let start = Instant::now();
+        limiter.wait(1000).await;
+        // Should be almost instant now
+        assert!(start.elapsed().as_millis() < 200);
+    }
 }

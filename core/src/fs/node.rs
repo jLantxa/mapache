@@ -604,6 +604,42 @@ mod tests {
     }
 
     #[test]
+    fn test_metadata_times_match() {
+        let t1 = SystemTime::UNIX_EPOCH;
+        let t2 = t1 + std::time::Duration::from_millis(500);
+        let m = Metadata::default();
+
+        assert!(m.times_match(Some(t1), Some(t1)));
+
+        #[cfg(windows)]
+        assert!(m.times_match(Some(t1), Some(t2)));
+        #[cfg(not(windows))]
+        assert!(!m.times_match(Some(t1), Some(t2)));
+
+        assert!(!m.times_match(Some(t1), None));
+        assert!(!m.times_match(None, Some(t1)));
+        assert!(m.times_match(None, None));
+    }
+
+    #[tokio::test]
+    async fn test_node_from_path() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let file_path = tmp_dir.path().join("file.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let node = Node::from_path(&file_path).await.unwrap();
+        assert_eq!(node.name, "file.txt");
+        assert!(node.is_file());
+        assert_eq!(node.metadata.size, 5);
+
+        let dir_path = tmp_dir.path().join("subdir");
+        std::fs::create_dir(&dir_path).unwrap();
+        let node_dir = Node::from_path(&dir_path).await.unwrap();
+        assert_eq!(node_dir.name, "subdir");
+        assert!(node_dir.is_dir());
+    }
+
+    #[test]
     fn test_node_to_string_short() {
         let node = Node {
             name: "test_file".to_string(),

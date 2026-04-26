@@ -712,6 +712,16 @@ mod tests {
         assert!(wildmatch_bytes(b"*.txt", b"foo.txt"));
         assert!(!wildmatch_bytes(b"*.txt", b"foo.png"));
         assert!(wildmatch_bytes(b"**", b"anything"));
+        assert!(wildmatch_bytes(b"**a", b"ba"));
+        assert!(wildmatch_bytes(b"**a", b"a"));
+        assert!(wildmatch_bytes(b"a**b", b"ab"));
+        assert!(wildmatch_bytes(b"a**b", b"axb"));
+        assert!(wildmatch_bytes(b"*?*a", b"ba"));
+        assert!(wildmatch_bytes(b"*?*a", b"bba"));
+        assert!(!wildmatch_bytes(b"*?*a", b"a"));
+        assert!(wildmatch_bytes(b"", b""));
+        assert!(!wildmatch_bytes(b"a", b""));
+        assert!(!wildmatch_bytes(b"", b"a"));
     }
 
     #[test]
@@ -719,6 +729,7 @@ mod tests {
         let rule = GlobRule::new(Path::new("src/**/*.rs"));
         assert!(rule.is_strict_match(Path::new("src/main.rs")));
         assert!(rule.is_strict_match(Path::new("src/utils/mod.rs")));
+        assert!(rule.is_strict_match(Path::new("src/a/b/c/d.rs")));
         assert!(!rule.is_strict_match(Path::new("src/main.c")));
         assert!(!rule.is_strict_match(Path::new("tests/test.rs")));
 
@@ -726,10 +737,28 @@ mod tests {
         assert!(rule2.is_strict_match(Path::new("a/b/c")));
         assert!(!rule2.is_strict_match(Path::new("a/c")));
         assert!(!rule2.is_strict_match(Path::new("a/b/d/c")));
+
+        let rule3 = GlobRule::new(Path::new("**/target/*.o"));
+        assert!(rule3.is_strict_match(Path::new("target/main.o")));
+        assert!(rule3.is_strict_match(Path::new("a/b/target/test.o")));
+        assert!(!rule3.is_strict_match(Path::new("a/target/b/test.o")));
     }
 
     #[test]
-    fn test_path_trie_basic() {
+    fn test_glob_rule_prefix_match_exclude() {
+        let rule = GlobRule::new(Path::new("a/b/c"));
+        assert!(rule.matches_for_exclude(Path::new("a/b/c")));
+        assert!(rule.matches_for_exclude(Path::new("a/b/c/d")));
+        assert!(!rule.matches_for_exclude(Path::new("a/b")));
+
+        let rule2 = GlobRule::new(Path::new("a/*/c"));
+        assert!(rule2.matches_for_exclude(Path::new("a/x/c")));
+        assert!(rule2.matches_for_exclude(Path::new("a/x/c/d")));
+        assert!(!rule2.matches_for_exclude(Path::new("a/x")));
+    }
+
+    #[test]
+    fn test_path_trie() {
         let mut trie = PathTrie::with_capacity(10);
         trie.insert(Path::new("a/b/c"));
         trie.finalize();
@@ -738,5 +767,12 @@ mod tests {
         assert!(trie.contains_prefix_of(Path::new("a/b/c/d")));
         assert!(!trie.contains_prefix_of(Path::new("a/b")));
         assert!(!trie.contains_prefix_of(Path::new("x")));
+
+        // test matches_include_semantics
+        assert!(trie.matches_include_semantics(Path::new("a")));
+        assert!(trie.matches_include_semantics(Path::new("a/b")));
+        assert!(trie.matches_include_semantics(Path::new("a/b/c")));
+        assert!(trie.matches_include_semantics(Path::new("a/b/c/d")));
+        assert!(!trie.matches_include_semantics(Path::new("x")));
     }
 }

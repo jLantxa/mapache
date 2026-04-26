@@ -186,6 +186,10 @@ pub fn pretty_print_duration(duration: std::time::Duration) -> String {
     let total_seconds = duration.as_secs();
     let milliseconds = duration.subsec_millis();
 
+    if total_seconds == 0 && milliseconds == 0 {
+        return "0s".to_string();
+    }
+
     let days = total_seconds / (24 * 3600);
     let rem_seconds = total_seconds % (24 * 3600);
     let hours = rem_seconds / 3600;
@@ -198,18 +202,20 @@ pub fn pretty_print_duration(duration: std::time::Duration) -> String {
     if days > 0 {
         parts.push(format!("{days}d"));
     }
-    if (hours > 0 || (days > 0 && minutes > 0) || (days > 0 && seconds > 0 && parts.is_empty()))
-        && parts.len() < 2
-    {
+
+    if hours > 0 && parts.len() < 2 {
         parts.push(format!("{hours}h"));
     }
-    if (minutes > 0 || (hours > 0 && seconds > 0 && parts.is_empty())) && parts.len() < 2 {
+
+    if minutes > 0 && parts.len() < 2 {
         parts.push(format!("{minutes}m"));
     }
-    if (seconds > 0 || (minutes > 0 && milliseconds > 0 && parts.is_empty())) && parts.len() < 2 {
+
+    if seconds > 0 && parts.len() < 2 {
         parts.push(format!("{seconds}s"));
     }
-    if parts.is_empty() && milliseconds > 0 {
+
+    if milliseconds > 0 && parts.len() < 2 {
         parts.push(format!("{milliseconds}ms"));
     }
 
@@ -621,6 +627,18 @@ mod tests {
             pretty_print_duration(std::time::Duration::new(86400 * 7, 0)),
             "7d"
         ); // 1 week
+        assert_eq!(
+            pretty_print_duration(std::time::Duration::from_secs(3600 * 24 + 3600)),
+            "1d 1h"
+        );
+        assert_eq!(
+            pretty_print_duration(std::time::Duration::from_secs(3600 * 24 + 60)),
+            "1d 1m"
+        );
+        assert_eq!(
+            pretty_print_duration(std::time::Duration::from_secs(3600 * 24 + 1)),
+            "1d 1s"
+        );
     }
 
     #[test]

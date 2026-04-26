@@ -695,4 +695,42 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_packer_size_accumulation() -> Result<()> {
+        let key = KeyManager::generate_new_master_key();
+        let secure_storage = Arc::new(
+            SecureStorage::new()
+                .with_compression(DEFAULT_COMPRESSION.to_level())
+                .with_key(&key),
+        );
+
+        let mut packer = Packer::new(1024, secure_storage.clone())?;
+
+        let data1 = b"some data".to_vec();
+        let encoded1 = secure_storage.encode(&data1)?;
+        packer.add_blob(
+            ID::from_content(&encoded1),
+            BlobType::Data,
+            &encoded1,
+            data1.len() as u64,
+        );
+
+        assert_eq!(packer.size(), encoded1.len() as u64);
+        assert_eq!(packer.num_objects(), 1);
+
+        let data2 = b"more data".to_vec();
+        let encoded2 = secure_storage.encode(&data2)?;
+        packer.add_blob(
+            ID::from_content(&encoded2),
+            BlobType::Data,
+            &encoded2,
+            data2.len() as u64,
+        );
+
+        assert_eq!(packer.size(), (encoded1.len() + encoded2.len()) as u64);
+        assert_eq!(packer.num_objects(), 2);
+
+        Ok(())
+    }
 }

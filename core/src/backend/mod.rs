@@ -209,9 +209,7 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                     },
                     None => {
                         let prompt = format!("{username}@{host}'s password");
-                        sftp::AuthMethod::Password(Zeroizing::new(ui::cli::request_password(
-                            &prompt,
-                        )?))
+                        sftp::AuthMethod::Password(ui::cli::request_password(&prompt)?)
                     }
                 };
 
@@ -253,12 +251,14 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
             };
 
             let access_key = match std::env::var("AWS_ACCESS_KEY_ID") {
-                Ok(v) => v,
-                Err(_) => ui::cli::request_input("AWS Access Key ID")?.unwrap_or_default(),
+                Ok(v) => Zeroizing::new(v),
+                Err(_) => {
+                    Zeroizing::new(ui::cli::request_input("AWS Access Key ID")?.unwrap_or_default())
+                }
             };
 
             let secret_key = match std::env::var("AWS_SECRET_ACCESS_KEY") {
-                Ok(v) => v,
+                Ok(v) => Zeroizing::new(v),
                 Err(_) => ui::cli::request_password("AWS Secret Access Key")?,
             };
 
@@ -267,8 +267,8 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                 bucket.clone(),
                 prefix.clone(),
                 endpoint,
-                Zeroizing::new(access_key),
-                Zeroizing::new(secret_key),
+                access_key,
+                secret_key,
             )?)
         }
     };
@@ -488,5 +488,59 @@ mod tests {
         let messy_file = 0o100777;
         let result = set_readonly_mode(messy_file, true, false);
         assert_eq!(result, 0o100400);
+    }
+
+    #[test]
+    fn test_node_attr_default() {
+        let attr = NodeAttr {
+            size: None,
+            uid: None,
+            gid: None,
+            perm: None,
+            atime: None,
+            mtime: None,
+        };
+        assert!(attr.size.is_none());
+    }
+
+    #[test]
+    fn test_backend_url_parsing() {
+        // Local
+        assert_eq!(
+            BackendUrl::from("/tmp/repo").unwrap(),
+            BackendUrl::Local(PathBuf::from("/tmp/repo"))
+        );
+
+        #[cfg(not(windows))]
+        assert_eq!(
+            BackendUrl::from("file:///tmp/repo").unwrap(),
+            BackendUrl::Local(PathBuf::from("/tmp/repo"))
+        );
+
+        #[cfg(windows)]
+        assert_eq!(
+            BackendUrl::from("file:///C:/tmp/repo").unwrap(),
+            BackendUrl::Local(PathBuf::from("C:/tmp/repo"))
+        );
+
+        // SFTP
+        let sftp_url = "sftp://user@host:2222/path/to/repo";
+        if let BackendUrl::Sftp(user, host, port, path) = BackendUrl::from(sftp_url).unwrap() {
+            assert_eq!(user, "user");
+            assert_eq!(host, "host");
+            assert_eq!(port, 2222);
+            assert_eq!(path, PathBuf::from("path/to/repo"));
+        } else {
+            panic!("Failed to parse SFTP URL");
+        }
+
+        // S3
+        let s3_url = "s3://my-bucket/my-prefix";
+        if let BackendUrl::S3(bucket, prefix) = BackendUrl::from(s3_url).unwrap() {
+            assert_eq!(bucket, "my-bucket");
+            assert_eq!(prefix, PathBuf::from("my-prefix"));
+        } else {
+            panic!("Failed to parse S3 URL");
+        }
     }
 }

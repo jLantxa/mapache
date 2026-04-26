@@ -38,6 +38,7 @@ mod test_cmd_verify;
 mod test_corrupt_repo;
 mod test_lock_cleanup;
 mod test_permission_denied;
+mod test_zeroize;
 
 #[cfg(all(feature = "fuse", unix))]
 mod test_cmd_mount;

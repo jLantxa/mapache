@@ -884,6 +884,36 @@ mod tests {
     }
 
     #[test]
+    fn test_index_serialization() {
+        let pack_id = mock_id("pack1");
+        let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
+
+        let index_file = IndexFile {
+            packs: vec![IndexFilePack {
+                id: pack_id,
+                blobs: vec![IndexFileBlob {
+                    id: b1.id,
+                    blob_type: b1.blob_type,
+                    offset: b1.offset,
+                    length: b1.length,
+                    raw_length: b1.raw_length,
+                }],
+            }],
+        };
+
+        let json = serde_json::to_string(&index_file).unwrap();
+        // The JSON should contain the pack ID and the blob ID
+        assert!(json.contains(&pack_id.to_hex()));
+        assert!(json.contains(&mock_id("b1").to_hex()));
+
+        let deserialized: IndexFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.packs.len(), 1);
+        assert_eq!(deserialized.packs[0].blobs.len(), 1);
+        assert_eq!(deserialized.packs[0].id, pack_id);
+        assert_eq!(deserialized.packs[0].blobs[0].id, mock_id("b1"));
+    }
+
+    #[test]
     fn test_master_index_merge_deduplication() {
         let mi = MasterIndex::new();
 

@@ -383,13 +383,19 @@ mod tests {
     #[test]
     fn test_keep_within() {
         let snapshots = create_mock_snapshots();
-        // 2 years duration
-        let rules = vec![RetentionRule::KeepWithin(Duration::days(2 * 365))];
+
+        // Keep within 1 day
+        let rules = vec![RetentionRule::KeepWithin(Duration::days(1))];
         let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        // Cutoff: 2025-05-24 21:58:00
+        let expected_ids = create_expected_ids(&[20, 21, 22]);
+        assert_eq!(kept_ids, expected_ids);
 
-        // Cutoff: 2023-05-25 21:58:00
-        let expected_ids = create_expected_ids(&[13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
-
+        // Keep within 30 days
+        let rules = vec![RetentionRule::KeepWithin(Duration::days(30))];
+        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        // Cutoff: 2025-04-25 21:58:00
+        let expected_ids = create_expected_ids(&[19, 20, 21, 22]);
         assert_eq!(kept_ids, expected_ids);
     }
 

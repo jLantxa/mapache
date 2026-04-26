@@ -463,4 +463,15 @@ mod tests {
         let id_result = ID::from_hex("");
         assert!(id_result.is_err());
     }
+
+    #[test]
+    fn test_id_serialization() {
+        let id = ID::new_random();
+        let json = serde_json::to_string(&id).unwrap();
+        // ID should be serialized as a hex string
+        assert_eq!(json, format!("\"{}\"", id.to_hex()));
+
+        let deserialized: ID = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, deserialized);
+    }
 }

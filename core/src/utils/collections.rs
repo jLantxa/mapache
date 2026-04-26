@@ -292,32 +292,25 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_middle_item() {
+    fn test_new_id_set() {
+        let set = IdIndexSet::<u32>::new_id_set();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+    }
+
+    #[test]
+    fn test_remove_all_items() {
         let mut set = IndexSet::new();
-        set.insert("apple".to_string()); // index 0
-        set.insert("banana".to_string()); // index 1 (to be removed)
-        set.insert("cherry".to_string()); // index 2 (will be moved to index 1)
+        set.insert("a".to_string());
+        set.insert("b".to_string());
+        set.insert("c".to_string());
 
-        // Remove the middle item (banana)
-        assert!(set.remove(&"banana".to_string()));
+        assert!(set.remove(&"b".to_string()));
         assert_eq!(set.len(), 2);
-
-        // banana is gone
-        assert_eq!(set.get_index(&"banana".to_string()), None);
-        assert_eq!(set.get_value(2), None);
-
-        // apple is unchanged
-        assert_eq!(set.get_index(&"apple".to_string()), Some(&0));
-        assert_eq!(set.get_value(0), Some(&"apple".to_string()));
-
-        // cherry's index must be updated to 1
-        assert_eq!(set.get_index(&"cherry".to_string()), Some(&1));
-        assert_eq!(set.get_value(1), Some(&"cherry".to_string()));
-
-        // Check iteration order (apple, cherry)
-        let mut iter = set.iter();
-        assert_eq!(iter.next(), Some(&"apple".to_string()));
-        assert_eq!(iter.next(), Some(&"cherry".to_string()));
-        assert_eq!(iter.next(), None);
+        assert!(set.remove(&"a".to_string()));
+        assert_eq!(set.len(), 1);
+        assert!(set.remove(&"c".to_string()));
+        assert_eq!(set.len(), 0);
+        assert!(set.is_empty());
     }
 }

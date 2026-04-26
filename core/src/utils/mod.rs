@@ -182,20 +182,20 @@ pub fn pretty_print_timestamp(timestamp: &DateTime<Local>) -> String {
 
 /// Pretty prints a `std::time::Duration` in a human-readable format.
 /// Attempts to show up to two most significant units.
+/// Milliseconds are only shown if the total duration is less than one second.
 pub fn pretty_print_duration(duration: std::time::Duration) -> String {
     let total_seconds = duration.as_secs();
     let milliseconds = duration.subsec_millis();
 
+    // Handle the absolute zero case
     if total_seconds == 0 && milliseconds == 0 {
         return "0s".to_string();
     }
 
-    let days = total_seconds / (24 * 3600);
-    let rem_seconds = total_seconds % (24 * 3600);
-    let hours = rem_seconds / 3600;
-    let rem_seconds = rem_seconds % 3600;
-    let minutes = rem_seconds / 60;
-    let seconds = rem_seconds % 60;
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
 
     let mut parts = Vec::with_capacity(2);
 
@@ -215,15 +215,12 @@ pub fn pretty_print_duration(duration: std::time::Duration) -> String {
         parts.push(format!("{seconds}s"));
     }
 
-    if milliseconds > 0 && parts.len() < 2 {
+    // Only show ms if we haven't reached a full second yet
+    if total_seconds == 0 && milliseconds > 0 {
         parts.push(format!("{milliseconds}ms"));
     }
 
-    if parts.is_empty() {
-        "0s".to_string()
-    } else {
-        parts.join(" ")
-    }
+    parts.join(" ")
 }
 
 /// Parses a duration string (e.g., "1d", "2w", "3m", "4y", "5h", "6s") into a `chrono::Duration`.
@@ -580,7 +577,15 @@ mod tests {
             "1s"
         );
         assert_eq!(
+            pretty_print_duration(std::time::Duration::from_millis(1500)),
+            "1s"
+        );
+        assert_eq!(
             pretty_print_duration(std::time::Duration::from_secs(59)),
+            "59s"
+        );
+        assert_eq!(
+            pretty_print_duration(std::time::Duration::from_millis(59500)),
             "59s"
         );
         assert_eq!(

@@ -149,7 +149,7 @@ impl Packer {
     /// This includes:
     /// 1. Generating the footer.
     /// 2. Encrypting the footer.
-    /// 3. Hashing the entire 20MB+ buffer (BLAKE3/SHA256).
+    /// 3. Hashing the entire 20MB+ buffer.
     ///
     /// Returns the data and metadata required for upload and indexing.
     /// The internal buffer is essentially "stolen" by the result and must be

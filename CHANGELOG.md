@@ -30,6 +30,13 @@
   - Ensure files are never restored outside of the target directory.
   - Zeroize sensitive data (passwords, keys, etc.) after use.
   - Hardened FUSE permissions.
+- **Stability and Safety**:
+  - Optimized memory usage during restoration by using a fixed-size buffer for
+    file verification.
+  - Hardened garbage collection and retention logic by replacing risky panics
+    with structured error handling.
+  - Fixed a bug in `restore` with `--delete` where some nodes were not
+    correctly identified for deletion.
 
 ## v0.2.3
 

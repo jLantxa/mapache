@@ -162,11 +162,11 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool) -> Result<()> {
 
 /// Returns true if a path is contained by any of the include paths.
 fn path_is_below_includes(path: &Path, include: Option<&Vec<PathBuf>>) -> bool {
-    if include.is_none() {
+    let Some(includes) = include else {
         return true;
-    }
+    };
 
-    for ipath in include.unwrap() {
+    for ipath in includes {
         if path.starts_with(ipath) {
             return true;
         }

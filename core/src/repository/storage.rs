@@ -92,7 +92,8 @@ impl SecureStorage {
             unsafe {
                 // SAFETY: We have reserved at least `bound` bytes of capacity starting at `data_start`.
                 // zstd::compress_to_buffer is called with a pointer to this uninitialized region.
-                // We only set the length of the vector AFTER zstd has successfully written `n` bytes.
+                // We only set the length of the vector AFTER zstd has successfully written `n` bytes,
+                // which is safe as those bytes are now initialized.
                 let dest_ptr = out.as_mut_ptr().add(data_start);
                 let dest_slice = std::slice::from_raw_parts_mut(dest_ptr, bound);
 

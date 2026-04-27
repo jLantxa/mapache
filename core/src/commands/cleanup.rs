@@ -25,6 +25,9 @@ impl CleanupHandler {
         let clone_for_sigint = interrupted.clone();
         let locks_clone = locks.clone();
         let sigint_handler = unsafe {
+            // SAFETY: register is a wrapper around signal handlers. The closure
+            // provided is thread-safe and only performs atomic operations and
+            // non-blocking mutex locks, which is safe in this context.
             register(libc::SIGINT, move || {
                 clone_for_sigint.store(true, Ordering::SeqCst);
                 if let Ok(locks) = locks_clone.lock() {
@@ -69,6 +72,9 @@ impl CleanupHandler {
         let locks_clone = locks.clone();
         let cb_sigint = callback.clone();
         let sigint_handler = unsafe {
+            // SAFETY: register is a wrapper around signal handlers. The closure
+            // provided is thread-safe and only performs atomic operations and
+            // non-blocking mutex locks, which is safe in this context.
             register(libc::SIGINT, move || {
                 clone_for_sigint.store(true, Ordering::SeqCst);
                 CLEANUP_ONCE.call_once(|| {

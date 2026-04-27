@@ -74,19 +74,15 @@ pub(crate) async fn restore_node_to_path(
 
                 let chunk_size = chunk_data.len() as u64;
 
-                if !dry_run {
-                    dst_file
-                        .as_ref()
-                        .expect("Destination file should exist")
-                        .write_all(&chunk_data)
-                        .with_context(|| {
-                            format!(
-                                "Could not restore block #{} ({}) to file {}",
-                                index + 1,
-                                blob_id,
-                                dst_path.display()
-                            )
-                        })?;
+                if !dry_run && let Some(mut file) = dst_file.as_ref() {
+                    file.write_all(&chunk_data).with_context(|| {
+                        format!(
+                            "Could not restore block #{} ({}) to file {}",
+                            index + 1,
+                            blob_id,
+                            dst_path.display()
+                        )
+                    })?;
                 }
 
                 progress_reporter.processed_bytes(chunk_size);
@@ -114,14 +110,13 @@ pub(crate) async fn restore_node_to_path(
             let symlink_info = node.symlink_info.as_ref();
 
             // Show a warning if the symlink metadata is missing and return.
-            if symlink_info.is_none() {
+            let Some(symlink_info) = symlink_info else {
                 progress_reporter.warning(&format!(
                     "Symlink {} does not have a target path",
                     dst_path.display()
                 ));
                 return Ok(());
-            }
-            let symlink_info = symlink_info.expect("Symlink info should exist");
+            };
 
             if !dry_run {
                 // Create all parent directories before the symlink
@@ -342,6 +337,9 @@ fn try_restore_linux_flags(
             let flags_int: libc::c_int = flags_to_set as libc::c_int;
             const FS_IOC_SETFLAGS: libc::Ioctl = 0x40086602u32 as libc::Ioctl;
             unsafe {
+                // SAFETY: We are calling ioctl on a valid file descriptor with a correctly
+                // sized flags integer. FS_IOC_SETFLAGS is a standard Linux ioctl for
+                // setting file attributes.
                 if libc::ioctl(file.as_raw_fd(), FS_IOC_SETFLAGS, &flags_int) != 0 {
                     progress_reporter.warning(&format!(
                         "Could not set Linux flags for {}: {}",
@@ -370,6 +368,8 @@ fn try_restore_windows_attributes(
             .collect();
 
         unsafe {
+            // SAFETY: wide_path is a null-terminated UTF-16 string, which is required
+            // by the Windows API SetFileAttributesW.
             if windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(
                 wide_path.as_ptr(),
                 attrs,
@@ -415,6 +415,8 @@ fn try_restore_symlink_metadata(
     if uid != u32::MAX || gid != u32::MAX {
         match std::ffi::CString::new(dst_path.as_os_str().as_bytes()) {
             Ok(c_path) => unsafe {
+                // SAFETY: c_path is a valid null-terminated C string. lchown is a
+                // standard libc function that operates on symlinks without following them.
                 if libc::lchown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) != 0 {
                     let err = std::io::Error::last_os_error();
                     // Only warn if it's not a permission error (which is expected for non-root)

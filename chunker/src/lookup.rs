@@ -5,7 +5,7 @@
 //! according to some properties.
 
 /// Gear hash look up table.
-/// This table is the BLAKE3 hash of every byte value from 0x00 to 0xff.
+/// This table is a cryptographic hash of every byte value from 0x00 to 0xff.
 #[rustfmt::skip]
 pub(crate) const GEAR: [u64; 256] = [
     0xb2a5525c1a564cb1, 0xf2d88fedf370a687, 0x154884889f3883fe, 0xd8656cd83ec355c2,

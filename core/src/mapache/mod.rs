@@ -1,5 +1,6 @@
 pub mod defaults;
 pub mod global;
+pub mod hash;
 pub mod vars;
 
 use std::{
@@ -44,12 +45,12 @@ impl ID {
     }
 
     /// Constructs an ID from a slice.
-    pub fn from_bytes(bytes: [u8; ID_LENGTH]) -> Self {
+    pub fn from_bytes(bytes: Hash256) -> Self {
         Self(bytes)
     }
 
     pub fn from_content<T: AsRef<[u8]>>(data: T) -> Self {
-        Self(utils::calculate_hash(data))
+        hash::hash(data)
     }
 
     /// Converts the ID to a hex String.

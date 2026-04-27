@@ -48,6 +48,7 @@ use crate::{
         storage::SecureStorage,
     },
     ui::restore::RestoreProgressReporter,
+    utils::size,
 };
 
 /// Strategy for handling existing files during restoration.
@@ -636,18 +637,36 @@ impl Restorer {
             let file = File::open(&local_path)?;
             let mut offset = 0;
 
+            // Use a fixed-size buffer to hash the file content in chunks.
+            // This avoids allocating many large vectors during verification.
+            const VERIFY_BUFFER_SIZE: usize = 64 * size::KiB as usize;
+            let mut buffer = vec![0u8; VERIFY_BUFFER_SIZE];
+
             for blob_id in blobs {
                 let locator = index
                     .get_data(&blob_id)
                     .ok_or_else(|| anyhow!("Blob {} not found in index", blob_id))?;
 
-                let mut chunk = vec![0u8; locator.raw_length as usize];
-                #[cfg(unix)]
-                file.read_exact_at(&mut chunk, offset)?;
-                #[cfg(windows)]
-                file.seek_read(&mut chunk, offset)?;
+                let mut hasher = crate::mapache::hash::Hasher::new();
+                let mut remaining = locator.raw_length as u64;
+                let mut blob_offset = offset;
 
-                let actual_id = ID::from_content(&chunk);
+                while remaining > 0 {
+                    let to_read = (remaining as usize).min(VERIFY_BUFFER_SIZE);
+                    let chunk = &mut buffer[..to_read];
+
+                    #[cfg(unix)]
+                    file.read_exact_at(chunk, blob_offset)?;
+                    #[cfg(windows)]
+                    file.seek_read(chunk, blob_offset)?;
+
+                    hasher.update(chunk);
+                    let read_bytes = to_read as u64;
+                    remaining -= read_bytes;
+                    blob_offset += read_bytes;
+                }
+
+                let actual_id = hasher.finalize();
                 if actual_id != blob_id {
                     return Ok(false);
                 }

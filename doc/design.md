@@ -143,8 +143,8 @@ in the future.
 ### Hashing
 
 All content IDs (hashes) used by mapache to identify objects in the repository
-are generated with the BLAKE3 hashing algorithm. BLAKE3 is a modern and fast
-hashing algorithm that produces 256-bit hashes.
+are generated with a high-performance cryptographic hashing algorithm. The
+current implementation uses BLAKE3, which produces 256-bit hashes.
 
 ## Threat model
 
@@ -172,7 +172,7 @@ Mapache uses a dual-layer approach to ensure data integrity and confidentiality:
   authentication layer allows Mapache to detect if a file has been altered or
   manipulated externally.
 - **Content-Addressability:** Objects are identified by the cryptographic hash
-  (ID) of their content (BLAKE3). This provides a secondary and independent
+  (ID) of their content. This provides a secondary and independent
   verification mechanism to ensure the content has not been corrupted.
 
 ### Attacker Limitations
@@ -380,9 +380,9 @@ The index files, located in the repo/index directory, are the repository's
 central lookup mechanism and source of truth for all stored data.
 
 These files contain metadata about the repository's pack files. Crucially, they
-act as a map, linking the ID (BLAKE3 hash) of every content-addressable tree and
-data blob to its specific physical location, including the Pack ID, offset, and
-length within that pack.
+act as a map, linking the ID (cryptographic hash) of every content-addressable
+tree and data blob to its specific physical location, including the Pack ID,
+offset, and length within that pack.
 
 The index determines what data exists in the repository; any pack or blob data
 not referenced by an index is considered non-existent and subject to garbage

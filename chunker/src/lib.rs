@@ -6,8 +6,8 @@
 //! chunking and "rolling two bytes each time".
 //!
 //! The original paper suggests MD5 for the Gear lookup tables, although this
-//! implementation uses BLAKE3 for the sole purpose of reusing an existing
-//! dependency.
+//! implementation uses a cryptographic hash for the sole purpose of reusing
+//! an existing dependency.
 //!
 //! The masks are randomly generated to distribute the 'one' bits evenly between
 //! bits 0..48.

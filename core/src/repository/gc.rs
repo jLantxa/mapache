@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -504,8 +504,12 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
 
     spinner.finish_and_clear();
 
-    let final_blobs = Arc::try_unwrap(referenced_blobs).unwrap().into_inner();
-    let final_packs = Arc::try_unwrap(referenced_packs).unwrap().into_inner();
+    let final_blobs = Arc::try_unwrap(referenced_blobs)
+        .map_err(|_| anyhow!("Internal error: could not unwrap referenced_blobs Arc"))?
+        .into_inner();
+    let final_packs = Arc::try_unwrap(referenced_packs)
+        .map_err(|_| anyhow!("Internal error: could not unwrap referenced_packs Arc"))?
+        .into_inner();
 
     ui::cli::log!(
         "Found {} referenced blobs and {} packs",

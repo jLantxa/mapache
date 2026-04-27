@@ -6,14 +6,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use blake3::Hasher;
 use chrono::{DateTime, Duration, Local};
 
 use crate::{
-    mapache::{
-        Hash256,
-        vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
-    },
+    mapache::vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     repository::repo::Auth,
 };
 use zeroize::Zeroizing;
@@ -85,25 +81,6 @@ pub fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
             _ => Ok(None),
         }
     }
-}
-
-// --- Hashing ---
-
-/// Calculates the 256-bit BLAKE3 hash of a byte array.
-#[inline]
-pub fn calculate_hash<T: AsRef<[u8]>>(data: T) -> Hash256 {
-    let mut hasher = Hasher::new();
-    hasher.update(data.as_ref());
-    hasher.finalize().into()
-}
-
-/// Calculates the 256-bit BLAKE3 hash of a file by reading it.
-pub fn calculate_hash_from_path(path: &Path) -> Result<Hash256> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
-    let mut hasher = Hasher::new();
-    hasher.update_reader(&mut reader)?;
-    Ok(hasher.finalize().into())
 }
 
 // --- Formatting ---
@@ -428,23 +405,6 @@ mod tests {
     use chrono::{NaiveDateTime, TimeZone};
 
     use super::*;
-
-    #[test]
-    fn test_calculate_hash() {
-        let data = br#"
-             Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt
-             ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation
-             ullamco laboris nisi ut aliquid ex ea commodi consequat. Quis aute iure reprehenderit in
-             voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint obcaecat
-             cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-             "#;
-        let hash = calculate_hash(data);
-
-        assert_eq!(
-            bytes_to_hex(&hash),
-            "28ff314ca7c551552d4d2f4be86fd2348749ace0fbda1a051038bdb493c10a4d"
-        );
-    }
 
     #[test]
     fn test_format_size_binary() {

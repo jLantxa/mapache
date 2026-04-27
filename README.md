@@ -27,7 +27,7 @@ approach to incremental backups.
 
 At its core, `mapache` operates on a content-addressable repository model. Every
 file, directory, and piece of metadata is decomposed into binary objects
-identified by their BLAKE3 cryptographic hash. This architecture naturally
+identified by their cryptographic hash. This architecture naturally
 enables global deduplication: if multiple files share the same content—even
 across different snapshots or machines — `mapache` stores that data only once.
 To ensure storage efficiency and high I/O throughput, these objects are bundled
@@ -42,6 +42,15 @@ delete any old snapshot at any time without risking the integrity of newer
 ones. All data, from file contents to directory structures, is compressed with
 `zstd` and protected by AES-GCM-SIV authenticated encryption, ensuring your
 repository remains a "black box" to anyone without the master key.
+
+## **Project Status**
+
+Mapache is a feature-complete backup solution. While the architecture is
+designed for reliability and has extensive test coverage, it is a relatively new
+project. As with any tool managing critical data, users should perform their own
+validation before relying on it for primary backups.
+
+---
 
 ## Key Features
 
@@ -65,7 +74,7 @@ stable prototype with all core features after 8 months of work.
 The v0.1.x series brought bug fixes, optimizations and minor new features.
 The main goal was to optimize the Archiver performance.
 
-### v0.2.0 (_we are here_)
+### v0.2.0
 
 The v0.2.0 marks the finalization of the Archiver. The complete engine was
 refactored to make the backend code async. An initial S3 backend implementation
@@ -73,7 +82,7 @@ was added and the SFTP backend was reimplemented with a rust-native async crate.
 The async refactor had the additional challenge of tuning parallelism to trim
 down memory usage while maintaining performance.
 
-### v0.3.0
+### v0.3.0 (_we are here_)
 
 Redesigned the restorer into a high-performance, pack-centric engine with
 background prefetching and concurrent restoration to significantly improve
@@ -85,6 +94,7 @@ I/O efficiency.
 
 All other planned features:
 
+- [ ] incremental restore,
 - [ ] configuration files,
 - [ ] master key rotation,
 - [ ] return codes for commands,

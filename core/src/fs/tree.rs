@@ -419,7 +419,7 @@ where
 
                     let diff = match (&node_p_res, &node_n_res) {
                         (Ok(node_p), Ok(node_n)) => {
-                            if node_p.node.metadata.is_modified(&node_n.node.metadata) {
+                            if node_p.node.is_modified_hint(&node_n.node) {
                                 NodeDiff::Changed
                             } else {
                                 NodeDiff::Unchanged

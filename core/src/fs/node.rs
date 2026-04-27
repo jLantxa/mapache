@@ -177,37 +177,6 @@ impl Metadata {
         }
     }
 
-    /// Compare this metadata with the metadata of another node.
-    /// Returns `true` iff any metadata differs, which could indicate that the
-    /// node contents have changed or the node has been replaced.
-    #[inline]
-    pub fn is_modified(&self, other: &Self) -> bool {
-        if self.size != other.size {
-            return true;
-        }
-
-        // Check times with tolerance
-        if !self.times_match(self.modified_time, other.modified_time) {
-            return true;
-        }
-
-        if !self.times_match(self.created_time, other.created_time) {
-            return true;
-        }
-
-        // Compare other fields
-        self.mode != other.mode
-            || self.owner_uid != other.owner_uid
-            || self.owner_gid != other.owner_gid
-            || self.inode != other.inode
-            || self.dev != other.dev
-            || self.nlink != other.nlink
-            || self.rdev != other.rdev
-            || self.extended_attributes != other.extended_attributes
-            || self.windows_attributes != other.windows_attributes
-            || self.linux_flags != other.linux_flags
-    }
-
     #[inline]
     pub fn times_match(&self, t1: Option<SystemTime>, t2: Option<SystemTime>) -> bool {
         match (t1, t2) {
@@ -454,6 +423,20 @@ impl Node {
 
         Ok(node)
     }
+
+    /// Compare this metadata with the metadata of another node.
+    /// Returns `true` iff any key metadata differs, which could indicate that the
+    /// node contents have changed or the node has been replaced.
+    #[inline]
+    pub fn is_modified_hint(&self, other: &Self) -> bool {
+        let this_meta = &self.metadata;
+        let other_meta = &other.metadata;
+
+        this_meta.size != other_meta.size
+            || !this_meta.times_match(this_meta.modified_time, other_meta.modified_time)
+            || !other_meta.times_match(this_meta.created_time, other_meta.created_time)
+            || this_meta.inode != other_meta.inode
+    }
 }
 
 /// Returns the NodeType for a metadata entry
@@ -587,20 +570,6 @@ mod tests {
 
         node.node_type = NodeType::Socket;
         assert!(node.is_socket());
-    }
-
-    #[test]
-    fn test_metadata_is_modified() {
-        let m1 = Metadata {
-            size: 100,
-            modified_time: Some(SystemTime::UNIX_EPOCH),
-            ..Default::default()
-        };
-        let mut m2 = m1.clone();
-        assert!(!m1.is_modified(&m2));
-
-        m2.size = 200;
-        assert!(m1.is_modified(&m2));
     }
 
     #[test]

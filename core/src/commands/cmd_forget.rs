@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{self, cleanup::CleanupHandler, parse_tags, with_repository_lock},
+    commands::{self, ToExitCode, cleanup::CleanupHandler, fail, parse_tags, with_repository_lock},
     mapache::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE},
     repository::{
         repo::REPO_DROPPED_EXTENSION,
@@ -18,6 +18,19 @@ use crate::{
 };
 
 use super::GlobalArgs;
+
+#[derive(Debug, Clone, Copy)]
+pub enum ForgetError {
+    RepoOpenFail = 10,
+    InvalidRule = 20,
+    ForgetFailed = 30,
+}
+
+impl ToExitCode for ForgetError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 // Define argument groups for mutual exclusivity and multiple selection
 #[derive(Parser, Debug)]
@@ -109,16 +122,34 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(args.dry_run)).await?,
+        new_backend_with_prompt(global_args.backend_options(args.dry_run))
+            .await
+            .map_err(|e| {
+                fail(
+                    format!("Failed to initialize backend: {}", e),
+                    ForgetError::ForgetFailed,
+                )
+            })?,
         global_args.to_repo_config(),
         true,
         global_args.retry_lock_duration,
         |repo, _secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new().map_err(|e| {
+                fail(
+                    format!("Failed to initialize cleanup handler: {}", e),
+                    ForgetError::ForgetFailed,
+                )
+            })?;
             cleanup_handler.add_lock(lock_handle.clone());
 
             let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
-                .await?
+                .await
+                .map_err(|e| {
+                    fail(
+                        format!("Failed to load snapshots: {}", e),
+                        ForgetError::ForgetFailed,
+                    )
+                })?
                 .collect_entries(true)
                 .await?;
 
@@ -133,7 +164,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             if !args.forget.is_empty() {
                 let mut forget_ids = IdSet::default();
                 for prefix in &args.forget {
-                    let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
+                    let (id, _) =
+                        repo.find(ContentIdType::Snapshot, prefix)
+                            .await
+                            .map_err(|_e| {
+                                fail(
+                                    format!("Snapshot not found: {}", prefix),
+                                    ForgetError::ForgetFailed,
+                                )
+                            })?;
                     forget_ids.insert(id);
                 }
                 for e in &snapshots_sorted {
@@ -167,7 +206,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
 
                 if retention_rules.is_empty() {
-                    bail!("At least one retention rule must be used.");
+                    return Err(fail(
+                        "At least one retention rule must be used.",
+                        ForgetError::InvalidRule,
+                    ));
                 }
 
                 ids_to_keep =
@@ -188,14 +230,26 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 for entry in &removed_snapshots {
                     if args.force {
                         repo.delete_file(ContentIdType::Snapshot, &entry.id, None)
-                            .await?;
+                            .await
+                            .map_err(|e| {
+                                fail(
+                                    format!("Failed to delete snapshot: {}", e),
+                                    ForgetError::ForgetFailed,
+                                )
+                            })?;
                     } else {
                         repo.set_extension(
                             ContentIdType::Snapshot,
                             &entry.id,
                             Some(REPO_DROPPED_EXTENSION),
                         )
-                        .await?;
+                        .await
+                        .map_err(|e| {
+                            fail(
+                                format!("Failed to mark snapshot for deletion: {}", e),
+                                ForgetError::ForgetFailed,
+                            )
+                        })?;
                     }
                 }
             }
@@ -239,7 +293,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     ui::cli::log!("Running garbage collector...");
                 }
 
-                repo.reload_master_index().await?; // We need to load the index for the garbage collector
+                repo.reload_master_index().await.map_err(|e| {
+                    fail(
+                        format!("Failed to reload master index: {}", e),
+                        ForgetError::ForgetFailed,
+                    )
+                })?; // We need to load the index for the garbage collector
                 commands::cmd_clean::run_with_repo(global_args, &gc_args, repo).await?;
             }
 
@@ -247,6 +306,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
     )
     .await
+    .map_err(|e| {
+        if e.is::<crate::commands::error::MapacheError>() {
+            e
+        } else {
+            fail(
+                format!("Failed to open repository: {}", e),
+                ForgetError::RepoOpenFail,
+            )
+        }
+    })
 }
 
 #[derive(Serialize)]

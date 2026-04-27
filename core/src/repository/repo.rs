@@ -155,7 +155,15 @@ impl RepoStats {
 }
 
 /// The Repository struct is the central entry point for all repository operations.
-/// It manages the backend storage, encryption, indexing, and packing of data.
+///
+/// It manages the lifecycle of a repository, including:
+/// - Authentication and key management through [SecureStorage].
+/// - High-level I/O operations for snapshots, trees, and blobs.
+/// - Data packing and indexing to optimize storage and retrieval.
+/// - Concurrency control via repository locks.
+///
+/// A Repository instance is usually obtained by calling [Repository::try_open_with_lock]
+/// or [Repository::try_open_unlocked].
 pub struct Repository {
     manifest: Manifest,
 

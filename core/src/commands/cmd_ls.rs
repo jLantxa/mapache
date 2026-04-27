@@ -7,7 +7,8 @@ use colored::Colorize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot, with_repository_lock,
+        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail, find_use_snapshot,
+        with_repository_lock,
     },
     fs::{
         node::{Metadata, Node, NodeType, node_to_string},
@@ -17,6 +18,20 @@ use crate::{
     repository::repo::Repository,
     ui,
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum LsError {
+    RepoOpenFail = 10,
+    SnapshotNotFound = 20,
+    PathNotFound = 21,
+    LsFailed = 30,
+}
+
+impl ToExitCode for LsError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug)]
 #[clap(about = "List nodes in the repository")]
@@ -46,34 +61,69 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        new_backend_with_prompt(global_args.backend_options(false))
+            .await
+            .map_err(|e| {
+                fail(
+                    format!("Failed to initialize backend: {}", e),
+                    LsError::LsFailed,
+                )
+            })?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
         |repo, _secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new().map_err(|e| {
+                fail(
+                    format!("Failed to initialize cleanup handler: {}", e),
+                    LsError::LsFailed,
+                )
+            })?;
             cleanup_handler.add_lock(lock_handle.clone());
 
-            repo.reload_master_index().await?;
+            repo.reload_master_index().await.map_err(|e| {
+                fail(
+                    format!("Failed to reload master index: {}", e),
+                    LsError::LsFailed,
+                )
+            })?;
 
-            let (_snapshot_id, snapshot) = find_use_snapshot(repo.clone(), &args.snapshot)
-                .await?
-                .context("Snapshot not found")?;
+            let (_snapshot_id, snapshot) =
+                match find_use_snapshot(repo.clone(), &args.snapshot).await {
+                    Ok(Some(pair)) => pair,
+                    _ => {
+                        return Err(fail("Snapshot not found", LsError::SnapshotNotFound));
+                    }
+                };
 
             let node = if let Some(p) = &args.path {
                 find_serialized_node(repo.as_ref(), &snapshot.tree, p)
-                    .await?
-                    .with_context(|| format!("'{}' does not exist in snapshot", p.display()))?
+                    .await
+                    .map_err(|e| fail(format!("Error finding path: {}", e), LsError::LsFailed))?
+                    .with_context(|| format!("'{}' does not exist in snapshot", p.display()))
+                    .map_err(|e| fail(e.to_string(), LsError::PathNotFound))?
             } else {
                 Node::new_root(&snapshot.tree)
             };
 
-            ls(&args.path.clone().unwrap_or_default(), &node, &repo, args).await?;
+            ls(&args.path.clone().unwrap_or_default(), &node, &repo, args)
+                .await
+                .map_err(|e| fail(format!("Listing failed: {}", e), LsError::LsFailed))?;
 
             Ok(())
         },
     )
     .await
+    .map_err(|e| {
+        if e.is::<crate::commands::error::MapacheError>() {
+            e
+        } else {
+            fail(
+                format!("Failed to open repository: {}", e),
+                LsError::RepoOpenFail,
+            )
+        }
+    })
 }
 
 /// List the contents of a node.

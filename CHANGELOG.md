@@ -19,7 +19,8 @@
 - Added `--exclude-file` and `--include-file` to read include and exclude paths
   from file.
 - **Return codes**: Mapache can now return error codes. Experimental support
-  added for the `init`, `snapshot`, `restore` and `verify` commands.
+  added for the `init`, `snapshot`, `restore`, `verify`, `clean`, `sync`,
+  `forget` and `ls` commands.
 
 ### Fixes
 

@@ -14,14 +14,28 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
-    commands::cleanup::CleanupHandler,
-    mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
+    commands::{ToExitCode, cleanup::CleanupHandler, fail},
+    mapache::defaults::DEFAULT_PACK_SIZE,
+    mapache::global::GlobalOpts,
     repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self},
 };
 
 use super::GlobalArgs;
+
+#[derive(Debug, Clone, Copy)]
+pub enum SyncError {
+    RepoOpenFail = 10,
+    BackendError = 11,
+    SyncFailed = 20,
+}
+
+impl ToExitCode for SyncError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug)]
 #[clap(about = "Synchronize a repository in a different location")]
@@ -48,7 +62,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ui::cli::warning!("The repo and target backend URLs are the same");
     }
 
-    let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false)).await?;
+    let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false))
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to initialize source backend: {}", e),
+                SyncError::BackendError,
+            )
+        })?;
 
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.target.clone(),
@@ -57,7 +78,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         limit_upload: global_args.limit_upload,
         limit_download: global_args.limit_download,
     })
-    .await?;
+    .await
+    .map_err(|e| {
+        fail(
+            format!("Failed to initialize destination backend: {}", e),
+            SyncError::BackendError,
+        )
+    })?;
 
     let auth = match utils::get_auth(&global_args.auth_file)? {
         Some(a) => a,
@@ -78,7 +105,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false, // Source lock
         global_args.retry_lock_duration,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        fail(
+            format!("Failed to open source repository: {}", e),
+            SyncError::RepoOpenFail,
+        )
+    })?;
 
     // Try to open the destination repo with the source auth to acquire a lock.
     let dst_lock = if let Ok((_, _, lock)) = Repository::try_open_with_lock(
@@ -96,7 +129,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         None
     };
 
-    dst_backend.create().await?;
+    dst_backend.create().await.map_err(|e| {
+        fail(
+            format!("Failed to create destination backend: {}", e),
+            SyncError::BackendError,
+        )
+    })?;
 
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         ui::cli::log!(
@@ -117,7 +155,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         args.delete,
         cleanup_handler.interrupted.clone(),
     )
-    .await;
+    .await
+    .map_err(|e| {
+        fail(
+            format!("Synchronization failed: {}", e),
+            SyncError::SyncFailed,
+        )
+    });
 
     if res.is_ok() {
         ui::cli::log!(

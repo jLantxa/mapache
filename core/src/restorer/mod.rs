@@ -103,8 +103,14 @@ pub async fn restore(
 }
 
 /// The Restorer is responsible for coordinating the restoration process.
-/// It builds a restoration plan and then executes it by downloading blobs
-/// and writing them to the target filesystem.
+///
+/// It implements a high-performance, pack-centric approach. Instead of restoring
+/// file by file (which causes random I/O and many small backend requests), it:
+/// 1. Scans the snapshot tree to build a restoration plan.
+/// 2. Groups all required blobs by the pack file they reside in.
+/// 3. Downloads packs (or relevant ranges) sequentially.
+/// 4. Distributes downloaded blobs to their target files in parallel.
+/// 5. Restores metadata in a separate bottom-up pass.
 struct Restorer {
     repo: Arc<Repository>,
     progress_reporter: Arc<dyn RestoreProgressReporter>,

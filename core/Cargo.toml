@@ -35,8 +35,8 @@ rustc-hash = "2.1.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 signal-hook-registry = "1.4.8"
-russh = { version = "0.60.1", default-features = false, features = ["flate2", "ring", "rsa"] }
-russh-sftp = "2.1.1"
+russh = { version = "0.60.2", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh-sftp = "2.1.2"
 tokio = { version = "1.52", features = [
   "rt",
   "rt-multi-thread",

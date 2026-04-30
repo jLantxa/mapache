@@ -33,25 +33,20 @@ else
 endif
 
 release-linux-static:
-	rustup target add x86_64-unknown-linux-musl
 	CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static" \
 		cargo build --release --target x86_64-unknown-linux-musl -p mapache
 
 release-arm64:
-	rustup target add aarch64-unknown-linux-musl
 	cargo build --release --target aarch64-unknown-linux-musl -p mapache
 
 release-armv7:
-	rustup target add armv7-unknown-linux-musleabihf
 	cargo build --release --target armv7-unknown-linux-musleabihf -p mapache
 
 release-windows:
-	rustup target add x86_64-pc-windows-msvc
 	RUSTFLAGS="-C target-feature=+crt-static" \
 		cargo xwin build --release --target x86_64-pc-windows-msvc -p mapache
 
 release-mac:
-	rustup target add x86_64-apple-darwin aarch64-apple-darwin
 	cargo build --release --target x86_64-apple-darwin -p mapache --no-default-features
 	cargo build --release --target aarch64-apple-darwin -p mapache --no-default-features
 

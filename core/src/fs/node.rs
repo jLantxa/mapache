@@ -9,7 +9,7 @@ use std::{
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
 #[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd;
+use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -123,9 +123,95 @@ pub struct Metadata {
     pub linux_flags: Option<u32>,
 }
 
+/// Minimal manual implementation of the Linux `statx` syscall.
+///
+/// This is necessary because some libc versions (like older musl versions used in static
+/// Rust builds) do not provide the `statx` wrapper or its associated types.
+/// By talking directly to the kernel, we can reliably retrieve the birth time (creation time)
+/// of files, which is otherwise unavailable in such environments.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod linux_statx {
+    pub const STATX_TYPE: u32 = 0x0001;
+    pub const STATX_MODE: u32 = 0x0002;
+    pub const STATX_NLINK: u32 = 0x0004;
+    pub const STATX_UID: u32 = 0x0008;
+    pub const STATX_GID: u32 = 0x0010;
+    pub const STATX_ATIME: u32 = 0x0020;
+    pub const STATX_MTIME: u32 = 0x0040;
+    pub const STATX_CTIME: u32 = 0x0080;
+    pub const STATX_INO: u32 = 0x0100;
+    pub const STATX_SIZE: u32 = 0x0200;
+    pub const STATX_BLOCKS: u32 = 0x0400;
+    /// Mask for all "basic" stats available in a standard stat call.
+    pub const STATX_BASIC_STATS: u32 = 0x07ff;
+    /// Mask for the file birth time (creation time).
+    pub const STATX_BTIME: u32 = 0x0800;
+
+    /// Don't sync attributes with the server (for network filesystems).
+    pub const AT_STATX_DONT_SYNC: i32 = 0x4000;
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    /// Timestamp format used by the `statx` syscall.
+    pub struct statx_timestamp {
+        pub tv_sec: i64,
+        pub tv_nsec: u32,
+        pub __reserved: i32,
+    }
+
+    #[repr(C)]
+    /// The structure returned by the `statx` syscall.
+    /// See `man statx(2)` for details on field meanings.
+    pub struct statx {
+        pub stx_mask: u32,
+        pub stx_blksize: u32,
+        pub stx_attributes: u64,
+        pub stx_nlink: u32,
+        pub stx_uid: u32,
+        pub stx_gid: u32,
+        pub stx_mode: u16,
+        pub __spare0: [u16; 1],
+        pub stx_ino: u64,
+        pub stx_size: u64,
+        pub stx_blocks: u64,
+        pub stx_attributes_mask: u64,
+        pub stx_atime: statx_timestamp,
+        pub stx_btime: statx_timestamp,
+        pub stx_ctime: statx_timestamp,
+        pub stx_mtime: statx_timestamp,
+        pub stx_rdev_major: u32,
+        pub stx_rdev_minor: u32,
+        pub stx_dev_major: u32,
+        pub stx_dev_minor: u32,
+        pub __spare2: [u64; 14],
+    }
+
+    /// Invokes the `statx` syscall directly via `libc::syscall`.
+    ///
+    /// # Safety
+    /// This is a raw syscall wrapper. The caller must ensure that `pathname` points to a
+    /// valid C-string and `statxbuf` points to a valid `statx` structure.
+    pub unsafe fn statx(
+        dirfd: i32,
+        pathname: *const libc::c_char,
+        flags: i32,
+        mask: u32,
+        statxbuf: *mut statx,
+    ) -> i32 {
+        #[cfg(target_arch = "x86_64")]
+        const SYS_STATX: libc::c_long = 332;
+        #[cfg(target_arch = "aarch64")]
+        const SYS_STATX: libc::c_long = 291;
+        #[cfg(target_arch = "riscv64")]
+        const SYS_STATX: libc::c_long = 291;
+
+        unsafe { libc::syscall(SYS_STATX, dirfd, pathname, flags, mask, statxbuf) as i32 }
+    }
+}
+
 impl Metadata {
-    #[inline]
-    pub fn from_fs(meta: &FsMetadata) -> Self {
+    fn from_fs(meta: &FsMetadata) -> Self {
         Self {
             size: meta.len(),
             accessed_time: None, // atime is disabled
@@ -177,6 +263,51 @@ impl Metadata {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn statx_to_system_time(ts: linux_statx::statx_timestamp) -> SystemTime {
+        if ts.tv_sec >= 0 {
+            SystemTime::UNIX_EPOCH + std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec)
+        } else {
+            SystemTime::UNIX_EPOCH - std::time::Duration::new(ts.tv_sec.unsigned_abs(), ts.tv_nsec)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn makedev(major: u32, minor: u32) -> u64 {
+        ((minor & 0xff) as u64)
+            | (((major & 0xfff) as u64) << 8)
+            | (((minor & !0xff) as u64) << 12)
+            | (((major & !0xfff) as u64) << 32)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_statx(sx: &linux_statx::statx) -> Self {
+        let mut m = Self {
+            size: sx.stx_size,
+            accessed_time: None, // atime is disabled
+            modified_time: Some(Self::statx_to_system_time(sx.stx_mtime)),
+            mode: Some(sx.stx_mode as u32),
+            owner_uid: Some(sx.stx_uid),
+            owner_gid: Some(sx.stx_gid),
+            inode: Some(sx.stx_ino),
+            nlink: Some(sx.stx_nlink as u64),
+            dev: Some(Self::makedev(sx.stx_dev_major, sx.stx_dev_minor)),
+            ..Default::default()
+        };
+
+        if (sx.stx_mask & linux_statx::STATX_BTIME) != 0 {
+            m.created_time = Some(Self::statx_to_system_time(sx.stx_btime));
+        }
+
+        // STATX_BLOCKS is 0x0400, but here we want to check if stx_rdev_* are valid.
+        // In the kernel, STATX_RDEV is 0x0400.
+        if (sx.stx_mask & 0x0400) != 0 {
+            m.rdev = Some(Self::makedev(sx.stx_rdev_major, sx.stx_rdev_minor));
+        }
+
+        m
+    }
+
     #[inline]
     pub fn times_match(&self, t1: Option<SystemTime>, t2: Option<SystemTime>) -> bool {
         match (t1, t2) {
@@ -209,14 +340,7 @@ impl Metadata {
 impl Node {
     /// Build a `Node` from any path on disk.
     pub async fn from_path(path: &Path) -> Result<Self> {
-        let meta = tokio::fs::symlink_metadata(path).await.with_context(|| {
-            format!(
-                "Failed to get symlink metadata for path: {}",
-                path.display()
-            )
-        })?;
-
-        let node_type = get_node_type(&meta)?;
+        let (metadata, node_type) = Self::fetch_metadata_and_type(path, false).await?;
 
         let name = path
             .file_name()
@@ -233,7 +357,7 @@ impl Node {
         let mut node = Self {
             name,
             node_type,
-            metadata: Metadata::from_fs(&meta),
+            metadata,
             ..Default::default()
         };
 
@@ -245,6 +369,79 @@ impl Node {
         }
 
         Ok(node)
+    }
+
+    async fn fetch_metadata_and_type(
+        path: &Path,
+        follow_symlinks: bool,
+    ) -> Result<(Metadata, NodeType)> {
+        #[cfg(target_os = "linux")]
+        {
+            let path_owned = path.to_owned();
+            let res = tokio::task::spawn_blocking(move || {
+                let c_path = std::ffi::CString::new(path_owned.as_os_str().as_bytes())?;
+                let mut sx: linux_statx::statx = unsafe { std::mem::zeroed() };
+                let flags = if follow_symlinks {
+                    0
+                } else {
+                    libc::AT_SYMLINK_NOFOLLOW
+                } | linux_statx::AT_STATX_DONT_SYNC;
+
+                let res = unsafe {
+                    linux_statx::statx(
+                        libc::AT_FDCWD,
+                        c_path.as_ptr(),
+                        flags,
+                        linux_statx::STATX_BASIC_STATS | linux_statx::STATX_BTIME,
+                        &mut sx,
+                    )
+                };
+
+                if res == 0 {
+                    let meta = Metadata::from_statx(&sx);
+                    let mode = sx.stx_mode as u32;
+                    let node_type = if (mode & libc::S_IFMT) == libc::S_IFDIR {
+                        NodeType::Directory
+                    } else if (mode & libc::S_IFMT) == libc::S_IFREG {
+                        NodeType::File
+                    } else if (mode & libc::S_IFMT) == libc::S_IFLNK {
+                        NodeType::Symlink
+                    } else if (mode & libc::S_IFMT) == libc::S_IFBLK {
+                        NodeType::BlockDevice
+                    } else if (mode & libc::S_IFMT) == libc::S_IFCHR {
+                        NodeType::CharDevice
+                    } else if (mode & libc::S_IFMT) == libc::S_IFIFO {
+                        NodeType::Fifo
+                    } else if (mode & libc::S_IFMT) == libc::S_IFSOCK {
+                        NodeType::Socket
+                    } else {
+                        bail!("Unsupported file type");
+                    };
+                    Ok(Some((meta, node_type)))
+                } else {
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() == Some(libc::ENOSYS) {
+                        Ok(None) // Fallback to std::fs
+                    } else {
+                        Err(anyhow::Error::from(err))
+                    }
+                }
+            })
+            .await??;
+
+            if let Some(res) = res {
+                return Ok(res);
+            }
+        }
+
+        // Fallback or non-Linux implementation
+        let meta = if follow_symlinks {
+            tokio::fs::metadata(path).await
+        } else {
+            tokio::fs::symlink_metadata(path).await
+        }?;
+        let node_type = get_node_type(&meta)?;
+        Ok((Metadata::from_fs(&meta), node_type))
     }
 
     pub fn fetch_xattrs(&mut self, path: &Path) {
@@ -304,13 +501,10 @@ impl Node {
         // We probe the target type only if it exists.
         if let Some(parent) = path.parent() {
             let full_target_path = parent.join(&target);
-            if let Ok(target_meta) = tokio::fs::metadata(&full_target_path).await {
-                info.target_type = Some(get_node_type(&target_meta).with_context(|| {
-                    format!(
-                        "Failed to resolve target type for symlink: {}",
-                        full_target_path.display()
-                    )
-                })?);
+            if let Ok((_, target_type)) =
+                Self::fetch_metadata_and_type(&full_target_path, true).await
+            {
+                info.target_type = Some(target_type);
             }
         }
 
@@ -354,63 +548,18 @@ impl Node {
     }
 
     pub async fn from_dir_entry(path: &Path, e: &tokio::fs::DirEntry) -> Result<Self> {
-        let ft = e
-            .file_type()
-            .await
-            .with_context(|| format!("Failed to get file type for entry: {}", path.display()))?;
-
-        // Name is cheap: file_name is already an OsString
         let name = e.file_name().to_string_lossy().into_owned();
-
-        let node_type = if ft.is_dir() {
-            NodeType::Directory
-        } else if ft.is_file() {
-            NodeType::File
-        } else if ft.is_symlink() {
-            NodeType::Symlink
-        } else {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileTypeExt;
-                if ft.is_block_device() {
-                    NodeType::BlockDevice
-                } else if ft.is_char_device() {
-                    NodeType::CharDevice
-                } else if ft.is_fifo() {
-                    NodeType::Fifo
-                } else if ft.is_socket() {
-                    NodeType::Socket
-                } else {
-                    bail!("Unsupported Unix file type for entry: {}", path.display());
-                }
-            }
-            #[cfg(not(unix))]
-            bail!(
-                "Unsupported non-Unix file type for entry: {}",
-                path.display()
-            )
-        };
 
         // Metadata semantics:
         // - symlink -> symlink_metadata
         // - otherwise -> entry.metadata
-        let meta = if node_type == NodeType::Symlink {
-            tokio::fs::symlink_metadata(path)
-                .await
-                .with_context(|| format!("Failed to get symlink metadata: {}", path.display()))?
-        } else {
-            e.metadata().await.with_context(|| {
-                format!(
-                    "Failed to get metadata for directory entry: {}",
-                    path.display()
-                )
-            })?
-        };
+        // Our fetch_metadata_and_type handles this correctly.
+        let (metadata, node_type) = Self::fetch_metadata_and_type(path, false).await?;
 
         let mut node = Self {
             name,
             node_type,
-            metadata: Metadata::from_fs(&meta),
+            metadata,
             ..Default::default()
         };
 
@@ -606,6 +755,43 @@ mod tests {
         let node_dir = Node::from_path(&dir_path).await.unwrap();
         assert_eq!(node_dir.name, "subdir");
         assert!(node_dir.is_dir());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_metadata_statx_parity() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let file_path = tmp_dir.path().join("parity.txt");
+        std::fs::write(&file_path, "parity test").unwrap();
+
+        let node = Node::from_path(&file_path).await.unwrap();
+        let meta = std::fs::symlink_metadata(&file_path).unwrap();
+
+        assert_eq!(node.metadata.size, meta.len());
+        assert_eq!(node.metadata.mode, Some(meta.mode()));
+        assert_eq!(node.metadata.owner_uid, Some(meta.uid()));
+        assert_eq!(node.metadata.owner_gid, Some(meta.gid()));
+        assert_eq!(node.metadata.inode, Some(meta.ino()));
+        assert_eq!(node.metadata.dev, Some(meta.dev()));
+        assert_eq!(node.metadata.nlink, Some(meta.nlink()));
+
+        // mtime should match within reasonable precision
+        assert!(
+            node.metadata
+                .times_match(node.metadata.modified_time, meta.modified().ok())
+        );
+
+        // btime should be present on most modern Linux filesystems
+        if let Ok(created) = meta.created() {
+            assert!(
+                node.metadata
+                    .times_match(node.metadata.created_time, Some(created))
+            );
+        } else {
+            // If std::fs couldn't get it, our statx might have (on musl) or not.
+            // But on glibc (likely where tests run), they should behave similarly.
+            println!("Creation time not supported by std::fs on this filesystem");
+        }
     }
 
     #[test]

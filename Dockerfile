@@ -75,17 +75,19 @@ RUN cargo zigbuild --release --target aarch64-apple-darwin -p mapache --no-defau
 FROM alpine:latest
 LABEL "Author"="Leuqar"
 
+ARG GIT_REF="unknown"
+
 # Add non-root user
 RUN addgroup -S mapache && adduser -S mapache -G mapache
 USER mapache
 
 WORKDIR /artifacts
 
-COPY --from=builder /mapache/target/x86_64-unknown-linux-musl/release/mapache /artifacts/mapache_linux_x64
-COPY --from=builder /mapache/target/aarch64-unknown-linux-musl/release/mapache /artifacts/mapache_linux_arm64
-COPY --from=builder /mapache/target/armv7-unknown-linux-musleabihf/release/mapache /artifacts/mapache_linux_armv7
-COPY --from=builder /mapache/target/x86_64-pc-windows-msvc/release/mapache.exe /artifacts/mapache_win_x64.exe
-COPY --from=builder /mapache/target/x86_64-apple-darwin/release/mapache /artifacts/mapache_mac_x64
-COPY --from=builder /mapache/target/aarch64-apple-darwin/release/mapache /artifacts/mapache_mac_arm64
+COPY --from=builder /mapache/target/x86_64-unknown-linux-musl/release/mapache /artifacts/mapache_${GIT_REF}_linux_x64
+COPY --from=builder /mapache/target/aarch64-unknown-linux-musl/release/mapache /artifacts/mapache_${GIT_REF}_linux_arm64
+COPY --from=builder /mapache/target/armv7-unknown-linux-musleabihf/release/mapache /artifacts/mapache_${GIT_REF}_linux_armv7
+COPY --from=builder /mapache/target/x86_64-pc-windows-msvc/release/mapache.exe /artifacts/mapache_${GIT_REF}_win_x64.exe
+COPY --from=builder /mapache/target/x86_64-apple-darwin/release/mapache /artifacts/mapache_${GIT_REF}_mac_x64
+COPY --from=builder /mapache/target/aarch64-apple-darwin/release/mapache /artifacts/mapache_${GIT_REF}_mac_arm64
 
 CMD ["/bin/true"]

@@ -98,12 +98,12 @@ if __name__ == "__main__":
         shutil.chown(BUILD_PATH, user=calling_user, group=calling_group)
 
         artifacts_map = {
-            "mapache_linux_x64": f"mapache_{safe_ref}_linux_x64",
-            "mapache_linux_arm64": f"mapache_{safe_ref}_linux_arm64",
-            "mapache_linux_armv7": f"mapache_{safe_ref}_linux_armv7",
-            "mapache_win_x64.exe": f"mapache_{safe_ref}_win_x64.exe",
-            "mapache_mac_x64": f"mapache_{safe_ref}_mac_x64",
-            "mapache_mac_arm64": f"mapache_{safe_ref}_mac_arm64",
+            f"mapache_{ref}_linux_x64": f"mapache_{safe_ref}_linux_x64",
+            f"mapache_{ref}_linux_arm64": f"mapache_{safe_ref}_linux_arm64",
+            f"mapache_{ref}_linux_armv7": f"mapache_{safe_ref}_linux_armv7",
+            f"mapache_{ref}_win_x64.exe": f"mapache_{safe_ref}_win_x64.exe",
+            f"mapache_{ref}_mac_x64": f"mapache_{safe_ref}_mac_x64",
+            f"mapache_{ref}_mac_arm64": f"mapache_{safe_ref}_mac_arm64",
         }
 
         print("Copying and packaging artifacts...")

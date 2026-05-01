@@ -1,6 +1,6 @@
 [package]
 name = "mapache"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 edition = "2024"
 rust-version = "1.91"
 
@@ -30,12 +30,18 @@ num_enum = "0.7.6"
 parking_lot = "0.12.5"
 rand = "0.10.1"
 rayon = "1.12.0"
-rust-s3 = { version = "0.37.1", default-features = false, features = ["with-tokio"] }
+rust-s3 = { version = "0.37.1", default-features = false, features = [
+  "with-tokio",
+] }
 rustc-hash = "2.1.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 signal-hook-registry = "1.4.8"
-russh = { version = "0.60.2", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh = { version = "0.60.2", default-features = false, features = [
+  "flate2",
+  "ring",
+  "rsa",
+] }
 russh-sftp = "2.1.2"
 tokio = { version = "1.52", features = [
   "rt",

@@ -201,41 +201,46 @@ impl FSNodeStream {
                 let mut num_children = 0;
 
                 if node.is_dir() {
-                    // Read entries and create nodes asynchronously.
-                    let mut children = Vec::new();
-                    match tokio::fs::read_dir(&path).await {
-                        Ok(mut read_dir) => {
-                            while let Ok(Some(entry)) = read_dir.next_entry().await {
-                                let child_path = entry.path();
-                                if state.filter.allow(&child_path) {
-                                    match Node::from_dir_entry(&child_path, &entry).await {
-                                        Ok(node) => children.push((entry.file_name(), node)),
-                                        Err(e) => {
-                                            yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children: 0 }));
-                                            yield (path.clone(), Err(e.context("Failed to build node from entry")));
-                                        }
-                                    }
+                    let filter = state.filter.clone();
+                    let path_clone = path.clone();
+
+                    let children_res = tokio::task::spawn_blocking(move || {
+                        let mut children = Vec::new();
+                        let entries = std::fs::read_dir(&path_clone)
+                            .with_context(|| format!("Failed to read directory: {}", path_clone.display()))?;
+
+                        for entry_res in entries {
+                            let entry = entry_res?;
+                            let child_path = entry.path();
+                            if filter.allow(&child_path) {
+                                let child_node = Node::from_path_sync(&child_path)
+                                    .with_context(|| format!("Failed to build node for: {}", child_path.display()))?;
+                                children.push((entry.file_name(), child_node));
+                            }
+                        }
+                        children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
+                        Ok::<_, anyhow::Error>(children)
+                    })
+                    .await
+                    .context("Directory scanning panicked")?;
+
+                    match children_res {
+                        Ok(children) => {
+                            num_children = children.len();
+                            // Yield the directory node NOW.
+                            yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children }));
+
+                            if num_children > 0 {
+                                let shared_parent = Arc::new(path.clone());
+                                // Push successfully stated nodes to stack in reverse order.
+                                for (child_name, child_node) in children.into_iter().rev() {
+                                    state.stack.push((shared_parent.clone(), child_name, Some(child_node)));
                                 }
                             }
                         }
                         Err(e) => {
                             yield (path.clone(), Ok(StreamNode { node, num_children: 0 }));
-                            yield (path, Err(anyhow::Error::from(e).context("Failed to read directory entries")));
-                            continue;
-                        }
-                    }
-                    children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
-
-                    num_children = children.len();
-
-                    // Yield the directory node NOW.
-                    yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children }));
-
-                    if num_children > 0 {
-                        let shared_parent = Arc::new(path.clone());
-                        // Push successfully stated nodes to stack in reverse order.
-                        for (child_name, child_node) in children.into_iter().rev() {
-                            state.stack.push((shared_parent.clone(), child_name, Some(child_node)));
+                            yield (path, Err(e));
                         }
                     }
                     continue;

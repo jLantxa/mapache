@@ -187,12 +187,16 @@ def main():
     restic_env = os.environ.copy()
     restic_env.update({"RESTIC_PASSWORD": "benchpassword"})
 
-    for i in range(args.iterations):
-        print(f"\nIteration {i+1}/{args.iterations}")
+    for i in range(args.iterations + 1):
+        is_warmup = i == 0
+        if is_warmup:
+            print(f"\nWarmup Iteration (Results will be discarded)...")
+        else:
+            print(f"\nIteration {i}/{args.iterations}")
 
         # --- MAPACHE ---
         print("\nBenchmarking mapache...")
-        if REPO_DIR_MAPACHE.exists():
+        if REPO_DIR_MAPACHE.exists(): 
             print(f"  Cleaning up existing mapache repository at {REPO_DIR_MAPACHE}...")
             shutil.rmtree(REPO_DIR_MAPACHE)
 
@@ -200,24 +204,26 @@ def main():
         subprocess.run([args.mapache, "init", "-r", str(REPO_DIR_MAPACHE)], env=mapache_env, check=True, capture_output=True)
 
         # Backup
-        m = run_bench(f"backup_iter_{i}", "mapache",
-                      [args.mapache, "snapshot", str(SOURCE_DIR / "linux-7.0"), "-r", str(REPO_DIR_MAPACHE), "--json", "--readers", "4"],
+        m = run_bench(f"backup_{'warmup' if is_warmup else i}", "mapache", 
+                      [args.mapache, "snapshot", str(SOURCE_DIR / "linux-7.0"), "-r", str(REPO_DIR_MAPACHE), "--json", "--readers", "4"], 
                       mapache_env)
         m.action = "backup"
         m.repo_size_bytes = get_dir_size(REPO_DIR_MAPACHE)
-        results.append(m)
+        if not is_warmup:
+            results.append(m)
 
         # Restore
         cleanup_restores()
-        m = run_bench(f"restore_iter_{i}", "mapache",
-                      [args.mapache, "restore", "-r", str(REPO_DIR_MAPACHE), "--target", str(RESTORE_DIR), "latest"],
+        m = run_bench(f"restore_{'warmup' if is_warmup else i}", "mapache", 
+                      [args.mapache, "restore", "-r", str(REPO_DIR_MAPACHE), "--target", str(RESTORE_DIR), "latest"], 
                       mapache_env)
         m.action = "restore"
-        results.append(m)
+        if not is_warmup:
+            results.append(m)
 
         # --- RESTIC ---
         print("\nBenchmarking restic...")
-        if REPO_DIR_RESTIC.exists():
+        if REPO_DIR_RESTIC.exists(): 
             print(f"  Cleaning up existing restic repository at {REPO_DIR_RESTIC}...")
             shutil.rmtree(REPO_DIR_RESTIC)
 
@@ -225,21 +231,22 @@ def main():
         subprocess.run([args.restic, "init", "-r", str(REPO_DIR_RESTIC)], env=restic_env, check=True, capture_output=True)
 
         # Backup
-        m = run_bench(f"backup_iter_{i}", "restic",
-                      [args.restic, "backup", str(SOURCE_DIR / "linux-7.0"), "-r", str(REPO_DIR_RESTIC), "--json", "--read-concurrency", "4"],
+        m = run_bench(f"backup_{'warmup' if is_warmup else i}", "restic", 
+                      [args.restic, "backup", str(SOURCE_DIR / "linux-7.0"), "-r", str(REPO_DIR_RESTIC), "--json", "--read-concurrency", "4"], 
                       restic_env)
         m.action = "backup"
         m.repo_size_bytes = get_dir_size(REPO_DIR_RESTIC)
-        results.append(m)
+        if not is_warmup:
+            results.append(m)
 
         # Restore
         cleanup_restores()
-        m = run_bench(f"restore_iter_{i}", "restic",
-                      [args.restic, "restore", "latest", "-r", str(REPO_DIR_RESTIC), "--target", str(RESTORE_DIR)],
+        m = run_bench(f"restore_{'warmup' if is_warmup else i}", "restic", 
+                      [args.restic, "restore", "latest", "-r", str(REPO_DIR_RESTIC), "--target", str(RESTORE_DIR)], 
                       restic_env)
         m.action = "restore"
-        results.append(m)
-
+        if not is_warmup:
+            results.append(m)
     # Save results
     results_file = BENCH_ROOT / "results.json"
     with open(results_file, "w") as f:

@@ -344,7 +344,15 @@ impl Metadata {
 impl Node {
     /// Build a `Node` from any path on disk.
     pub async fn from_path(path: &Path) -> Result<Self> {
-        let (metadata, node_type) = Self::fetch_metadata_and_type(path, false).await?;
+        let path_owned = path.to_owned();
+        tokio::task::spawn_blocking(move || Self::from_path_sync(&path_owned))
+            .await
+            .context("Node creation panicked")?
+    }
+
+    /// Synchronous version of `from_path`.
+    pub fn from_path_sync(path: &Path) -> Result<Self> {
+        let (metadata, node_type) = Self::fetch_metadata_and_type_sync(path, false)?;
 
         let name = path
             .file_name()
@@ -369,7 +377,7 @@ impl Node {
         node.fetch_linux_flags(path);
 
         if node.is_symlink() {
-            node.populate_symlink_info(path).await?;
+            node.populate_symlink_info_sync(path)?;
         }
 
         Ok(node)
@@ -379,70 +387,79 @@ impl Node {
         path: &Path,
         follow_symlinks: bool,
     ) -> Result<(Metadata, NodeType)> {
+        let path_owned = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            Self::fetch_metadata_and_type_sync(&path_owned, follow_symlinks)
+        })
+        .await
+        .context("Metadata fetching panicked")?
+    }
+
+    fn fetch_metadata_and_type_sync(
+        path: &Path,
+        follow_symlinks: bool,
+    ) -> Result<(Metadata, NodeType)> {
         #[cfg(target_os = "linux")]
         {
-            let path_owned = path.to_owned();
-            let res = tokio::task::spawn_blocking(move || {
-                let c_path = std::ffi::CString::new(path_owned.as_os_str().as_bytes())?;
-                let mut sx: linux_statx::statx = unsafe { std::mem::zeroed() };
-                let flags = if follow_symlinks {
-                    0
-                } else {
-                    libc::AT_SYMLINK_NOFOLLOW
-                } | linux_statx::AT_STATX_DONT_SYNC;
+            let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+            let mut sx: linux_statx::statx = unsafe { std::mem::zeroed() };
+            let flags = if follow_symlinks {
+                0
+            } else {
+                libc::AT_SYMLINK_NOFOLLOW
+            } | linux_statx::AT_STATX_DONT_SYNC;
 
-                let res = unsafe {
-                    linux_statx::statx(
-                        libc::AT_FDCWD,
-                        c_path.as_ptr(),
-                        flags,
-                        linux_statx::STATX_BASIC_STATS | linux_statx::STATX_BTIME,
-                        &mut sx,
-                    )
+            // We only request the fields we actually use.
+            // STATX_BASIC_STATS (0x7ff) includes atime and ctime which we don't need.
+            const REQ_MASK: u32 = linux_statx::STATX_TYPE
+                | linux_statx::STATX_MODE
+                | linux_statx::STATX_NLINK
+                | linux_statx::STATX_UID
+                | linux_statx::STATX_GID
+                | linux_statx::STATX_MTIME
+                | linux_statx::STATX_INO
+                | linux_statx::STATX_SIZE
+                | linux_statx::STATX_BTIME;
+
+            let res = unsafe {
+                linux_statx::statx(libc::AT_FDCWD, c_path.as_ptr(), flags, REQ_MASK, &mut sx)
+            };
+
+            if res == 0 {
+                let meta = Metadata::from_statx(&sx);
+                let mode = sx.stx_mode as u32;
+                let node_type = if (mode & libc::S_IFMT) == libc::S_IFDIR {
+                    NodeType::Directory
+                } else if (mode & libc::S_IFMT) == libc::S_IFREG {
+                    NodeType::File
+                } else if (mode & libc::S_IFMT) == libc::S_IFLNK {
+                    NodeType::Symlink
+                } else if (mode & libc::S_IFMT) == libc::S_IFBLK {
+                    NodeType::BlockDevice
+                } else if (mode & libc::S_IFMT) == libc::S_IFCHR {
+                    NodeType::CharDevice
+                } else if (mode & libc::S_IFMT) == libc::S_IFIFO {
+                    NodeType::Fifo
+                } else if (mode & libc::S_IFMT) == libc::S_IFSOCK {
+                    NodeType::Socket
+                } else {
+                    bail!("Unsupported file type");
                 };
-
-                if res == 0 {
-                    let meta = Metadata::from_statx(&sx);
-                    let mode = sx.stx_mode as u32;
-                    let node_type = if (mode & libc::S_IFMT) == libc::S_IFDIR {
-                        NodeType::Directory
-                    } else if (mode & libc::S_IFMT) == libc::S_IFREG {
-                        NodeType::File
-                    } else if (mode & libc::S_IFMT) == libc::S_IFLNK {
-                        NodeType::Symlink
-                    } else if (mode & libc::S_IFMT) == libc::S_IFBLK {
-                        NodeType::BlockDevice
-                    } else if (mode & libc::S_IFMT) == libc::S_IFCHR {
-                        NodeType::CharDevice
-                    } else if (mode & libc::S_IFMT) == libc::S_IFIFO {
-                        NodeType::Fifo
-                    } else if (mode & libc::S_IFMT) == libc::S_IFSOCK {
-                        NodeType::Socket
-                    } else {
-                        bail!("Unsupported file type");
-                    };
-                    Ok(Some((meta, node_type)))
-                } else {
-                    let err = std::io::Error::last_os_error();
-                    if err.raw_os_error() == Some(libc::ENOSYS) {
-                        Ok(None) // Fallback to std::fs
-                    } else {
-                        Err(anyhow::Error::from(err))
-                    }
+                return Ok((meta, node_type));
+            } else {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ENOSYS) {
+                    return Err(anyhow::Error::from(err));
                 }
-            })
-            .await??;
-
-            if let Some(res) = res {
-                return Ok(res);
+                // Fallback to std::fs if statx is not supported
             }
         }
 
         // Fallback or non-Linux implementation
         let meta = if follow_symlinks {
-            tokio::fs::metadata(path).await
+            std::fs::metadata(path)
         } else {
-            tokio::fs::symlink_metadata(path).await
+            std::fs::symlink_metadata(path)
         }?;
         let node_type = get_node_type(&meta)?;
         Ok((Metadata::from_fs(&meta), node_type))
@@ -492,8 +509,20 @@ impl Node {
     }
 
     async fn populate_symlink_info(&mut self, path: &Path) -> Result<()> {
-        let target = tokio::fs::read_link(path)
-            .await
+        let path_owned = path.to_owned();
+        let mut node = self.clone();
+        let updated_node = tokio::task::spawn_blocking(move || {
+            node.populate_symlink_info_sync(&path_owned)?;
+            Ok::<_, anyhow::Error>(node)
+        })
+        .await
+        .context("Symlink info populating panicked")??;
+        *self = updated_node;
+        Ok(())
+    }
+
+    fn populate_symlink_info_sync(&mut self, path: &Path) -> Result<()> {
+        let target = std::fs::read_link(path)
             .with_context(|| format!("Failed to read symlink target for: {}", path.display()))?;
 
         let mut info = SymlinkInfo {
@@ -506,7 +535,7 @@ impl Node {
         if let Some(parent) = path.parent() {
             let full_target_path = parent.join(&target);
             if let Ok((_, target_type)) =
-                Self::fetch_metadata_and_type(&full_target_path, true).await
+                Self::fetch_metadata_and_type_sync(&full_target_path, true)
             {
                 info.target_type = Some(target_type);
             }

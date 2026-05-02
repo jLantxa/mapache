@@ -103,7 +103,7 @@ class Monitor:
             time.sleep(self.interval)
 
 def run_bench(name: str, tool: str, workload: str, cmd: List[str], env: Dict[str, str]) -> Measurement:
-    print(f"  Running {tool} {name} (Workload: {workload})...")
+    print(f"  Running {tool} {name} (Workload: {workload})...", end="")
 
     # Use /usr/bin/time -v for peak RSS verification
     time_cmd = ["/usr/bin/time", "-v"] + cmd
@@ -187,84 +187,89 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark mapache vs restic")
     parser.add_argument("--mapache", default="mapache", help="Path to mapache binary")
     parser.add_argument("--restic", default="restic", help="Path to restic binary")
-    parser.add_argument("--iterations", type=int, default=1, help="Number of times to run each benchmark (excluding warmup)")
+    parser.add_argument("--iterations", type=int, default=1, help="Number of iterations")
     parser.add_argument("--bench-dir", default="/tmp/mapache_bench", help="Directory for benchmark data")
-    parser.add_argument("--workloads", default="kernel,enron", help="Comma-separated list of workloads to run (kernel,enron)")
+    parser.add_argument("--workloads", default="kernel,enron", help="Workloads (kernel,enron)")
     args = parser.parse_args()
 
     selected_workloads = [s.strip() for s in args.workloads.split(",")]
     setup(Path(args.bench_dir), selected_workloads)
 
     results = []
-    mapache_env = os.environ.copy()
-    mapache_env.update({"MAPACHE_USERNAME": "bench", "MAPACHE_PASSWORD": "benchpassword"})
-    restic_env = os.environ.copy()
-    restic_env.update({"RESTIC_PASSWORD": "benchpassword"})
+    mapache_env = {**os.environ, "MAPACHE_USERNAME": "bench", "MAPACHE_PASSWORD": "benchpassword"}
+    restic_env = {**os.environ, "RESTIC_PASSWORD": "benchpassword"}
 
     for w_key in selected_workloads:
         w = WORKLOADS[w_key]
         source_path = SOURCE_DIR / w["extract_name"]
-        print(f"\n" + "#"*40)
-        print(f"### WORKLOAD: {w_key.upper()} ###")
-        print("#"*40)
+        print(f"\n{'#'*40}\n### WORKLOAD: {w_key.upper()} ###\n{'#'*40}")
 
+        # --- MAPACHE BATCH ---
+        print(f"\n>>> Starting Mapache sequence...")
         for i in range(args.iterations + 1):
             is_warmup = i == 0
-            if is_warmup:
-                print(f"\nWarmup Iteration (Results will be discarded)...")
-            else:
-                print(f"\nIteration {i}/{args.iterations}")
+            tag = "warmup" if is_warmup else str(i)
+            print(f"  Iteration {tag}...")
 
-            # --- MAPACHE ---
-            print("\nBenchmarking mapache...")
             if REPO_DIR_MAPACHE.exists(): shutil.rmtree(REPO_DIR_MAPACHE)
             subprocess.run([args.mapache, "init", "-r", str(REPO_DIR_MAPACHE)], env=mapache_env, check=True, capture_output=True)
 
             # Backup
-            m = run_bench(f"backup_{'warmup' if is_warmup else i}", "mapache", w_key,
-                          [args.mapache, "snapshot", str(source_path), "-r", str(REPO_DIR_MAPACHE), "--json", "--readers", "4"],
+            m = run_bench(f"snapshot_{tag}", "mapache", w_key,
+                          [args.mapache, "snapshot", str(source_path), "-r", str(REPO_DIR_MAPACHE), "--quiet", "--readers", "8"],
                           mapache_env)
-            m.action = "backup"
-            m.repo_size_bytes = get_dir_size(REPO_DIR_MAPACHE)
+            m.action, m.repo_size_bytes = "backup", get_dir_size(REPO_DIR_MAPACHE)
             if not is_warmup: results.append(m)
+            print(f" {m.wall_time:.2f} s")
 
             # Restore
             cleanup_restores()
-            m = run_bench(f"restore_{'warmup' if is_warmup else i}", "mapache", w_key,
-                          [args.mapache, "restore", "-r", str(REPO_DIR_MAPACHE), "--target", str(RESTORE_DIR), "latest"],
+            m = run_bench(f"restore_{tag}", "mapache", w_key,
+                          [args.mapache, "restore", "--quiet", "-r", str(REPO_DIR_MAPACHE), "--target", str(RESTORE_DIR), "latest"],
                           mapache_env)
             m.action = "restore"
             if not is_warmup: results.append(m)
+            print(f" {m.wall_time:.2f} s")
 
-            # --- RESTIC ---
-            print("\nBenchmarking restic...")
+        # --- RESTIC BATCH ---
+        print(f"\n>>> Starting Restic sequence...")
+        for i in range(args.iterations + 1):
+            is_warmup = i == 0
+            tag = "warmup" if is_warmup else str(i)
+            print(f"  Iteration {tag}...")
+
             if REPO_DIR_RESTIC.exists(): shutil.rmtree(REPO_DIR_RESTIC)
             subprocess.run([args.restic, "init", "-r", str(REPO_DIR_RESTIC)], env=restic_env, check=True, capture_output=True)
 
             # Backup
-            m = run_bench(f"backup_{'warmup' if is_warmup else i}", "restic", w_key,
-                          [args.restic, "backup", str(source_path), "-r", str(REPO_DIR_RESTIC), "--json", "--read-concurrency", "4"],
+            m = run_bench(f"backup_{tag}", "restic", w_key,
+                          [args.restic, "backup", str(source_path), "-r", str(REPO_DIR_RESTIC), "--quiet", "--read-concurrency", "8"],
                           restic_env)
-            m.action = "backup"
-            m.repo_size_bytes = get_dir_size(REPO_DIR_RESTIC)
+            m.action, m.repo_size_bytes = "backup", get_dir_size(REPO_DIR_RESTIC)
             if not is_warmup: results.append(m)
+            print(f" {m.wall_time:.2f} s")
 
             # Restore
             cleanup_restores()
-            m = run_bench(f"restore_{'warmup' if is_warmup else i}", "restic", w_key,
-                          [args.restic, "restore", "latest", "-r", str(REPO_DIR_RESTIC), "--target", str(RESTORE_DIR)],
+            m = run_bench(f"restore_{tag}", "restic", w_key,
+                          [args.restic, "restore", "--quiet", "latest", "-r", str(REPO_DIR_RESTIC), "--target", str(RESTORE_DIR)],
                           restic_env)
             m.action = "restore"
             if not is_warmup: results.append(m)
+            print(f" {m.wall_time:.2f} s")
 
-    # Save results
-    results_file = BENCH_ROOT / "results.json"
+            print()
+
+    # --- SAVE AND SUMMARY ---
+    # (Rest of the aggregation and printing logic remains exactly the same)
+    save_and_print_summary(results, Path(args.bench_dir))
+
+def save_and_print_summary(results, bench_root):
+    results_file = bench_root / "results.json"
+
     with open(results_file, "w") as f:
         json.dump([asdict(r) for r in results], f, indent=2)
 
-    print(f"\nResults saved to: {results_file}")
-
-    # Aggregate results
     aggregated = {}
     for r in results:
         key = (r.workload, r.tool, r.action)
@@ -273,23 +278,17 @@ def main():
         aggregated[key]["times"].append(r.wall_time)
         aggregated[key]["peak_rss"].append(r.peak_rss_kb)
         aggregated[key]["cpus"].append(r.avg_cpu_percent)
-        if r.repo_size_bytes > 0:
-            aggregated[key]["repo_sizes"].append(r.repo_size_bytes)
+        if r.repo_size_bytes > 0: aggregated[key]["repo_sizes"].append(r.repo_size_bytes)
 
-    # Print summary table
     print("\n" + "="*145)
-    print(f"{'Workload':<10} | {'Tool':<10} | {'Action':<10} | {'Avg Time (s)':<15} | {'Max Time (s)':<15} | {'Avg RSS (MB)':<15} | {'Peak RSS (MB)':<15} | {'Avg CPU (%)':<12} | {'Repo (MB)':<10}")
+    print(f"{'Workload':<10} | {'Tool':<10} | {'Action':<10} | {'Avg Time (s)':<15} | {'Max Time (s)':<15} | {'Avg PSS (MB)':<15} | {'Peak PSS (MB)':<15} | {'Avg CPU (%)':<12} | {'Repo (MB)':<10}")
     print("-" * 145)
     for (workload, tool, action), data in sorted(aggregated.items()):
-        avg_time = sum(data["times"]) / len(data["times"])
-        max_time = max(data["times"])
-        avg_rss = (sum(data["peak_rss"]) / len(data["peak_rss"])) / 1024
-        peak_rss = max(data["peak_rss"]) / 1024
-        avg_cpu = sum(data["cpus"]) / len(data["cpus"])
-        repo_size = (sum(data["repo_sizes"]) / len(data["repo_sizes"])) / (1024*1024) if data["repo_sizes"] else 0.0
-
-        print(f"{workload:<10} | {tool:<10} | {action:<10} | {avg_time:>15.2f} | {max_time:>15.2f} | {avg_rss:>15.2f} | {peak_rss:>15.2f} | {avg_cpu:>12.2f} | {repo_size:>10.2f}")
-    print("="*145)
+        avg_t, max_t = sum(data["times"])/len(data["times"]), max(data["times"])
+        avg_p, peak_p = (sum(data["peak_rss"])/len(data["peak_rss"]))/1024, max(data["peak_rss"])/1024
+        avg_c = sum(data["cpus"])/len(data["cpus"])
+        repo = (sum(data["repo_sizes"])/len(data["repo_sizes"]))/(1024**2) if data["repo_sizes"] else 0.0
+        print(f"{workload:<10} | {tool:<10} | {action:<10} | {avg_t:>15.2f} | {max_t:>15.2f} | {avg_p:>15.2f} | {peak_p:>15.2f} | {avg_c:>12.2f} | {repo:>10.2f}")
 
 if __name__ == "__main__":
     main()

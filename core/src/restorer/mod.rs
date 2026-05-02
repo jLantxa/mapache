@@ -39,6 +39,7 @@ use crate::{
             DEFAULT_RESTORE_PACK_PREFETCH, DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES,
             DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT,
         },
+        hash,
     },
     repository::{
         index::{BlobLocator, MasterIndex},
@@ -48,7 +49,7 @@ use crate::{
         storage::SecureStorage,
     },
     ui::restore::RestoreProgressReporter,
-    utils::size,
+    utils::{self, size},
 };
 
 /// Strategy for handling existing files during restoration.
@@ -126,15 +127,6 @@ type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
 struct FileRestorePlan {
     /// Full path to the file in the target filesystem.
     path: PathBuf,
-    /// Relative path within the snapshot.
-    rel_path: PathBuf,
-}
-
-/// Information about a directory that has been restored.
-#[derive(Clone)]
-struct RestoredDirectory {
-    /// Path to the directory.
-    path: PathBuf,
 }
 
 /// The complete plan for the restoration process.
@@ -143,12 +135,6 @@ struct RestorePlan {
     files: Arc<Vec<FileRestorePlan>>,
     /// Mapping of pack IDs to the blobs and their target locations in files.
     packs: Arc<PackMap>,
-    /// List of directories that were created/restored.
-    restored_dirs: Vec<RestoredDirectory>,
-    /// Mapping of target paths to their original file nodes.
-    file_nodes: HashMap<PathBuf, Node>,
-    /// Mapping of target paths to their original directory nodes.
-    dir_nodes: HashMap<PathBuf, Node>,
     /// Total number of items (files, dirs, symlinks) in the plan.
     total_items: u64,
     /// Total number of bytes to be restored.
@@ -162,8 +148,10 @@ struct BlobRestoreRequest {
     file_idx: usize,
     /// Offset within the target file where the blob should be written.
     offset_in_file: u64,
-    /// Locator for the blob in the repository's index.
-    locator: BlobLocator,
+    /// Locator for the blob in the repository's index (without pack_id, which is in the map key).
+    blob_offset: u32,
+    blob_length: u32,
+    raw_length: u32,
 }
 
 /// A cache for open file handles during restoration.
@@ -321,8 +309,8 @@ impl Restorer {
             self.repo.clone(),
             Some(tree_id),
             PathBuf::new(),
-            include,
-            exclude,
+            include.clone(),
+            exclude.clone(),
         )
         .await?;
 
@@ -344,7 +332,7 @@ impl Restorer {
 
         self.restore_packs(plan_files, plan_packs, secure_storage, dry_run)
             .await?;
-        self.restore_metadata(&plan, dry_run)?;
+        self.restore_metadata(tree_id, include, exclude).await?;
 
         Ok(())
     }
@@ -358,9 +346,6 @@ impl Restorer {
     ) -> Result<RestorePlan> {
         let mut files = Vec::new();
         let mut packs: PackMap = HashMap::new();
-        let mut restored_dirs = Vec::new();
-        let mut file_nodes: HashMap<PathBuf, Node> = HashMap::new();
-        let mut dir_nodes: HashMap<PathBuf, Node> = HashMap::new();
         let mut node_count = 0;
         let mut total_items = 0;
         let mut total_bytes = 0;
@@ -400,9 +385,9 @@ impl Restorer {
                 total_bytes += node.metadata.size;
             }
 
-            let restore_path = crate::utils::secure_join(&self.target_path, &path)?;
+            let restore_path = utils::secure_join(&self.target_path, &path)?;
             if !self
-                .should_restore_node(&node, &restore_path, &restored_dirs, index.clone())
+                .should_restore_node(&node, &restore_path, index.clone())
                 .await?
             {
                 self.progress_reporter.processed_item(&path);
@@ -416,10 +401,6 @@ impl Restorer {
                 if !self.opts.dry_run {
                     fs::create_dir_all(&restore_path)?;
                 }
-                restored_dirs.push(RestoredDirectory {
-                    path: restore_path.clone(),
-                });
-                dir_nodes.insert(restore_path.clone(), node.clone());
                 self.progress_reporter.processed_item(&path);
                 continue;
             }
@@ -448,7 +429,9 @@ impl Restorer {
                             BlobRestoreRequest {
                                 file_idx,
                                 offset_in_file,
-                                locator,
+                                blob_offset: locator.offset,
+                                blob_length: locator.length,
+                                raw_length: locator.raw_length,
                             },
                         ));
                         offset_in_file += locator.raw_length as u64;
@@ -458,9 +441,7 @@ impl Restorer {
                 if blobs_found {
                     files.push(FileRestorePlan {
                         path: restore_path.clone(),
-                        rel_path: path.clone(),
                     });
-                    file_nodes.insert(restore_path.clone(), node.clone());
 
                     if !self.opts.dry_run {
                         if let Some(parent) = restore_path.parent() {
@@ -527,9 +508,6 @@ impl Restorer {
         Ok(RestorePlan {
             files: Arc::new(files),
             packs: Arc::new(packs),
-            restored_dirs,
-            file_nodes,
-            dir_nodes,
             total_items,
             total_bytes,
         })
@@ -540,7 +518,6 @@ impl Restorer {
         &self,
         node: &Node,
         restore_path: &Path,
-        restored_dirs: &[RestoredDirectory],
         index: Arc<MasterIndex>,
     ) -> Result<bool> {
         if !repo_fs::path_exists(restore_path).await {
@@ -612,10 +589,12 @@ impl Restorer {
                 Ok(true)
             }
             Strategy::Fail => {
-                if !node.is_dir() || !restored_dirs.iter().any(|d| d.path == restore_path) {
-                    bail!("Target {} exists already", restore_path.display());
+                // For directories, we check if they already exist.
+                // If they exist, we allow it (as multiple snapshots might restore to the same base).
+                if node.is_dir() {
+                    return Ok(true);
                 }
-                Ok(true)
+                bail!("Target {} exists already", restore_path.display());
             }
         }
     }
@@ -647,7 +626,7 @@ impl Restorer {
                     .get_data(&blob_id)
                     .ok_or_else(|| anyhow!("Blob {} not found in index", blob_id))?;
 
-                let mut hasher = crate::mapache::hash::Hasher::new();
+                let mut hasher = hash::Hasher::new();
                 let mut remaining = locator.raw_length as u64;
                 let mut blob_offset = offset;
 
@@ -727,7 +706,7 @@ impl Restorer {
             for blob_requests in packs.values() {
                 for (_, request) in blob_requests.iter() {
                     self.progress_reporter
-                        .processed_bytes(request.locator.raw_length as u64);
+                        .processed_bytes(request.raw_length as u64);
                 }
             }
             return Ok(());
@@ -762,7 +741,14 @@ impl Restorer {
                 let blobs_vec: Vec<(ID, BlobLocator, Vec<BlobRestoreRequest>)> = blob_to_targets
                     .into_iter()
                     .map(|(id, targets)| {
-                        let locator = targets[0].locator;
+                        let t0 = &targets[0];
+                        let locator = BlobLocator {
+                            pack_id,
+                            offset: t0.blob_offset,
+                            length: t0.blob_length,
+                            raw_length: t0.raw_length,
+                            blob_type: crate::mapache::BlobType::Data, // Only data blobs are in packs map
+                        };
                         (id, locator, targets)
                     })
                     .collect();
@@ -862,39 +848,84 @@ impl Restorer {
         Ok(())
     }
 
-    fn restore_metadata(&self, plan: &RestorePlan, dry_run: bool) -> Result<()> {
-        if dry_run {
+    async fn restore_metadata(
+        &self,
+        tree_id: ID,
+        include: Option<Vec<PathBuf>>,
+        exclude: Option<Vec<PathBuf>>,
+    ) -> Result<()> {
+        if self.opts.dry_run {
             return Ok(());
         }
 
         self.progress_reporter
             .set_message("Restoring metadata...".to_string());
 
-        for file_plan in plan.files.iter() {
-            if let Some(node) = plan.file_nodes.get(&file_plan.path) {
-                node_restorer::try_restore_node_metadata(
-                    node,
-                    &file_plan.path,
-                    self.progress_reporter.as_ref(),
-                );
-            }
-            self.progress_reporter.processed_item(&file_plan.rel_path);
-        }
+        let mut node_stream = SerializedNodeStream::new(
+            self.repo.clone(),
+            Some(tree_id),
+            PathBuf::new(),
+            include,
+            exclude,
+        )
+        .await?;
 
-        let mut restored_dirs = plan.restored_dirs.clone();
-        restored_dirs.sort_unstable_by_key(|b| std::cmp::Reverse(b.path.as_os_str().len()));
+        let mut dirs = Vec::new();
 
-        for dir_entry in restored_dirs {
+        while let Some(node_res) = node_stream.next().await {
             if self.shutdown_signal.load(Ordering::Relaxed) {
                 bail!("Interrupted");
             }
-            if let Some(node) = plan.dir_nodes.get(&dir_entry.path) {
+
+            let (mut path, stream_node_res) = node_res?;
+            let stream_node = stream_node_res?;
+            let node = stream_node.node;
+
+            if let Some(prefix) = &self.opts.strip_prefix {
+                path = match path.strip_prefix(prefix) {
+                    Ok(stripped_path) => {
+                        if stripped_path.as_os_str().is_empty() {
+                            continue;
+                        }
+                        stripped_path.to_path_buf()
+                    }
+                    Err(_) => continue,
+                };
+            }
+
+            let restore_path = utils::secure_join(&self.target_path, &path)?;
+
+            // We only restore metadata for nodes that exist in the target.
+            // Some nodes might have been skipped during planning if they already matched.
+            if !repo_fs::path_exists(&restore_path).await {
+                continue;
+            }
+
+            if node.is_dir() {
+                dirs.push((restore_path, node.metadata));
+            } else {
                 node_restorer::try_restore_node_metadata(
-                    node,
-                    &dir_entry.path,
+                    &node.metadata,
+                    node.is_symlink(),
+                    &restore_path,
                     self.progress_reporter.as_ref(),
                 );
             }
+            self.progress_reporter.processed_item(&path);
+        }
+
+        // Restore directory metadata bottom-up.
+        dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
+        for (p, meta) in dirs {
+            if self.shutdown_signal.load(Ordering::Relaxed) {
+                bail!("Interrupted");
+            }
+            node_restorer::try_restore_node_metadata(
+                &meta,
+                false,
+                &p,
+                self.progress_reporter.as_ref(),
+            );
         }
 
         Ok(())

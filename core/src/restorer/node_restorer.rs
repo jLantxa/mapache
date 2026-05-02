@@ -18,7 +18,7 @@ use {
 };
 
 use crate::{
-    fs::node::{Node, NodeType},
+    fs::node::{Metadata, Node, NodeType},
     repository::repo::Repository,
     ui::restore::RestoreProgressReporter,
 };
@@ -90,7 +90,12 @@ pub(crate) async fn restore_node_to_path(
 
             // Restore metadata after content is written
             if !dry_run {
-                try_restore_node_metadata(node, dst_path, progress_reporter.as_ref());
+                try_restore_node_metadata(
+                    &node.metadata,
+                    false,
+                    dst_path,
+                    progress_reporter.as_ref(),
+                );
             }
         }
 
@@ -162,7 +167,7 @@ pub(crate) async fn restore_node_to_path(
 
             // Restore symlink metadata after creation
             if !dry_run {
-                try_restore_symlink_metadata(node, dst_path, progress_reporter.as_ref());
+                try_restore_symlink_metadata(&node.metadata, dst_path, progress_reporter.as_ref());
             }
         }
 
@@ -227,12 +232,18 @@ pub fn restore_times(
     dst_path: &Path,
     atime: Option<&SystemTime>,
     mtime: Option<&SystemTime>,
+    is_symlink: bool,
 ) -> Result<()> {
     if let Some(modified_time) = mtime {
         let ft_mtime = FileTime::from(*modified_time);
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
-        set_file_times(dst_path, ft_atime, ft_mtime).context("Could not set file times")?;
+        if is_symlink {
+            filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime)
+                .context("Could not set symlink file times")?;
+        } else {
+            set_file_times(dst_path, ft_atime, ft_mtime).context("Could not set file times")?;
+        }
     }
 
     Ok(())
@@ -242,19 +253,27 @@ pub fn restore_times(
 /// This is a best-effort operation and will log warnings on failure.
 #[allow(unused_variables)]
 pub(crate) fn try_restore_node_metadata(
-    node: &Node,
+    metadata: &Metadata,
+    is_symlink: bool,
     dst_path: &Path,
     progress_reporter: &dyn RestoreProgressReporter,
 ) {
+    if is_symlink {
+        try_restore_symlink_metadata(metadata, dst_path, progress_reporter);
+        return;
+    }
+
     // Set file times
     if let Err(e) = restore_times(
         dst_path,
-        node.metadata.accessed_time.as_ref(),
-        node.metadata.modified_time.as_ref(),
+        metadata.accessed_time.as_ref(),
+        metadata.modified_time.as_ref(),
+        false,
     ) {
         progress_reporter.warning(&format!(
-            "Could not set file times for {}).",
-            dst_path.display()
+            "Could not set file times for {}: {}.",
+            dst_path.display(),
+            e
         ));
     }
 
@@ -262,19 +281,17 @@ pub(crate) fn try_restore_node_metadata(
     #[cfg(unix)]
     {
         // Set file permissions (mode)
-        if !node.is_symlink()
-            && let Some(mode) = node.metadata.mode
-        {
+        if !is_symlink && let Some(mode) = metadata.mode {
             let permissions = Permissions::from_mode(mode);
             if std::fs::set_permissions(dst_path, permissions).is_err() {
                 progress_reporter.warning(&format!("Could not set permissions (mode: {mode:o})."));
             }
         }
 
-        if !node.is_symlink() {
+        if !is_symlink {
             // Set owner (uid) and group (gid)
-            let uid = node.metadata.owner_uid;
-            let gid = node.metadata.owner_gid;
+            let uid = metadata.owner_uid;
+            let gid = metadata.owner_gid;
 
             // Restoring uid and gid is very likely to fail unless the user is root.
             if uid.is_some() || gid.is_some() {
@@ -283,26 +300,26 @@ pub(crate) fn try_restore_node_metadata(
         }
 
         // Restore extended attributes
-        try_restore_xattrs(node, dst_path, progress_reporter);
+        try_restore_xattrs(metadata, dst_path, progress_reporter);
     }
 
     // Restore Linux flags
     #[cfg(target_os = "linux")]
-    try_restore_linux_flags(node, dst_path, progress_reporter);
+    try_restore_linux_flags(metadata, is_symlink, dst_path, progress_reporter);
 
     // Restore Windows attributes
     #[cfg(windows)]
-    try_restore_windows_attributes(node, dst_path, progress_reporter);
+    try_restore_windows_attributes(metadata, dst_path, progress_reporter);
 }
 
 /// Restores extended attributes (xattrs) for a node.
 #[cfg(unix)]
 fn try_restore_xattrs(
-    node: &Node,
+    metadata: &Metadata,
     dst_path: &Path,
     progress_reporter: &dyn RestoreProgressReporter,
 ) {
-    if let Some(xattrs) = &node.metadata.extended_attributes {
+    if let Some(xattrs) = &metadata.extended_attributes {
         for (name, value) in xattrs {
             if let Err(e) = xattr::set(dst_path, name, value) {
                 progress_reporter.warning(&format!(
@@ -319,12 +336,13 @@ fn try_restore_xattrs(
 /// Restores Linux-specific file flags for a node.
 #[cfg(target_os = "linux")]
 fn try_restore_linux_flags(
-    node: &Node,
+    metadata: &Metadata,
+    is_symlink: bool,
     dst_path: &Path,
     progress_reporter: &dyn RestoreProgressReporter,
 ) {
-    if let Some(flags) = node.metadata.linux_flags {
-        if node.is_symlink() {
+    if let Some(flags) = metadata.linux_flags {
+        if is_symlink {
             return;
         }
 
@@ -355,11 +373,11 @@ fn try_restore_linux_flags(
 /// Restores Windows-specific file attributes for a node.
 #[cfg(windows)]
 fn try_restore_windows_attributes(
-    node: &Node,
+    metadata: &Metadata,
     dst_path: &Path,
     progress_reporter: &dyn RestoreProgressReporter,
 ) {
-    if let Some(attrs) = node.metadata.windows_attributes {
+    if let Some(attrs) = metadata.windows_attributes {
         use std::os::windows::ffi::OsStrExt;
         let wide_path: Vec<u16> = dst_path
             .as_os_str()
@@ -388,29 +406,29 @@ fn try_restore_windows_attributes(
 /// Restores metadata for a symlink without following it.
 #[cfg(unix)]
 fn try_restore_symlink_metadata(
-    node: &Node,
+    metadata: &Metadata,
     dst_path: &Path,
     progress_reporter: &dyn RestoreProgressReporter,
 ) {
     use std::os::unix::ffi::OsStrExt;
 
     // Set file times using set_symlink_file_times
-    if let Some(mtime) = node.metadata.modified_time.as_ref() {
-        let ft_mtime = FileTime::from(*mtime);
-        let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
-
-        if let Err(e) = filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime) {
-            progress_reporter.warning(&format!(
-                "Could not set file times for symlink {}: {}",
-                dst_path.display(),
-                e
-            ));
-        }
+    if let Err(e) = restore_times(
+        dst_path,
+        metadata.accessed_time.as_ref(),
+        metadata.modified_time.as_ref(),
+        true,
+    ) {
+        progress_reporter.warning(&format!(
+            "Could not set file times for symlink {}: {}",
+            dst_path.display(),
+            e
+        ));
     }
 
     // Set owner (uid) and group (gid) using lchown to avoid following the link.
-    let uid = node.metadata.owner_uid.unwrap_or(u32::MAX); // -1 in libc
-    let gid = node.metadata.owner_gid.unwrap_or(u32::MAX); // -1 in libc
+    let uid = metadata.owner_uid.unwrap_or(u32::MAX); // -1 in libc
+    let gid = metadata.owner_gid.unwrap_or(u32::MAX); // -1 in libc
 
     if uid != u32::MAX || gid != u32::MAX {
         match std::ffi::CString::new(dst_path.as_os_str().as_bytes()) {
@@ -439,32 +457,32 @@ fn try_restore_symlink_metadata(
     }
 
     // Restore extended attributes (xattr crate's set handles symlinks correctly if not following)
-    try_restore_xattrs(node, dst_path, progress_reporter);
+    try_restore_xattrs(metadata, dst_path, progress_reporter);
 }
 
 /// Restores metadata for a symlink on Windows.
 #[cfg(windows)]
 fn try_restore_symlink_metadata(
-    node: &Node,
+    metadata: &Metadata,
     dst_path: &Path,
     progress_reporter: &dyn RestoreProgressReporter,
 ) {
     // Set file times for symlink on Windows
-    if let Some(mtime) = node.metadata.modified_time.as_ref() {
-        let ft_mtime = FileTime::from(*mtime);
-        let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
-
-        if let Err(e) = filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime) {
-            progress_reporter.warning(&format!(
-                "Could not set file times for symlink {}: {}",
-                dst_path.display(),
-                e
-            ));
-        }
+    if let Err(e) = restore_times(
+        dst_path,
+        metadata.accessed_time.as_ref(),
+        metadata.modified_time.as_ref(),
+        true,
+    ) {
+        progress_reporter.warning(&format!(
+            "Could not set file times for symlink {}: {}",
+            dst_path.display(),
+            e
+        ));
     }
 
     // Restore Windows attributes for the symlink itself
-    try_restore_windows_attributes(node, dst_path, progress_reporter);
+    try_restore_windows_attributes(metadata, dst_path, progress_reporter);
 }
 
 #[cfg(test)]
@@ -506,7 +524,7 @@ mod tests {
 
         // Now restore the metadata from the node
         let reporter = ui::restore::CliRestoreProgressReporter::new(None, None);
-        try_restore_node_metadata(&node, &file_path, &reporter);
+        try_restore_node_metadata(&node.metadata, false, &file_path, &reporter);
 
         // Check if the mtime was restored back to the node's original mtime
         assert_eq!(

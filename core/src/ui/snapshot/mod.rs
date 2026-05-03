@@ -16,10 +16,10 @@ pub struct SnapshotProcessSummary {
 /// like terminal UI, JSON output, or GUI updates.
 pub trait SnapshotProgressReporter: Send + Sync {
     /// Called when starting to process a node
-    fn processing_node(&self, path: &std::path::Path, diff: NodeDiff);
+    fn processing_node(&self, path: &std::path::Path, diff: NodeDiff, size_hint: Option<u64>);
 
     /// Called when a node has been processed
-    fn processed_node(&self, path: &std::path::Path, diff: NodeDiff);
+    fn processed_node(&self, path: &std::path::Path, diff: NodeDiff, size_hint: Option<u64>);
 
     /// Called when bytes have been processed
     fn processed_bytes(&self, bytes: u64);

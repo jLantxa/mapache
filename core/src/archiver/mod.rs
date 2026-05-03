@@ -157,7 +157,7 @@ pub(crate) async fn snapshot(
     // Pipeline Channels
     // ---------------------------------------------------------------------
     let (diff_tx, diff_rx) = mpsc::channel(num_readers * 4);
-    let (processed_tx, mut processed_rx) = mpsc::channel(num_readers);
+    let (processed_tx, mut processed_rx) = mpsc::channel(1024);
 
     // ---------------------------------------------------------------------
     // Stage 1: Diff Producer Task

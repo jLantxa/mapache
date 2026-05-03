@@ -62,7 +62,12 @@ pub(crate) async fn process_item(
         None => None,
     };
 
-    progress_reporter.processing_node(path, diff_type);
+    let size_hint = next_node
+        .as_ref()
+        .map(|n| n.node.metadata.size)
+        .or_else(|| prev_node.as_ref().map(|n| n.node.metadata.size));
+
+    progress_reporter.processing_node(path, diff_type, size_hint);
 
     let out = match diff_type {
         NodeDiff::Deleted => {
@@ -146,7 +151,7 @@ pub(crate) async fn process_item(
     };
 
     progress.processed_node();
-    progress_reporter.processed_node(path, diff_type);
+    progress_reporter.processed_node(path, diff_type, size_hint);
 
     Ok(out)
 }
@@ -239,6 +244,20 @@ fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
     }
     #[cfg(not(windows))]
     {
-        std::fs::File::open(path)
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::File::open(path)?;
+
+        // Inform the kernel that we will read this file sequentially.
+        // This triggers the kernel's internal read-ahead optimization.
+        unsafe {
+            libc::posix_fadvise(
+                file.as_raw_fd(),
+                0,
+                0, // 0 means until end of file
+                libc::POSIX_FADV_SEQUENTIAL,
+            );
+        }
+
+        Ok(file)
     }
 }

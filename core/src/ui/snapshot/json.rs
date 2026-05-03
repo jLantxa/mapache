@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use std::time::{Duration, Instant};
 
+use crate::mapache::defaults;
 use crate::{fs::tree::NodeDiff, mapache::global::GlobalOpts, ui::json_reporter::JsonReporter};
 
 use super::SnapshotProgressReporter;
@@ -116,8 +117,11 @@ impl JsonSnapshotProgressReporter {
 }
 
 impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
-    fn processing_node(&self, path: &std::path::Path, _diff: NodeDiff) {
-        {
+    fn processing_node(&self, path: &std::path::Path, _diff: NodeDiff, size_hint: Option<u64>) {
+        let should_track =
+            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+
+        if should_track {
             let mut active = self.active_files.lock().unwrap();
             active.insert(path.to_path_buf());
         }
@@ -126,10 +130,14 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
         }
     }
 
-    fn processed_node(&self, path: &std::path::Path, _diff: NodeDiff) {
+    fn processed_node(&self, path: &std::path::Path, _diff: NodeDiff, size_hint: Option<u64>) {
         self.processed_items
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        {
+
+        let should_track =
+            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+
+        if should_track {
             let mut active = self.active_files.lock().unwrap();
             active.remove(path);
         }

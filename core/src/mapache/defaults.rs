@@ -65,6 +65,11 @@ pub(crate) const DEFAULT_MIN_PACK_SIZE_FACTOR: f32 = 0.05;
 pub(crate) const DEFAULT_PROGRESS_REFRESH_RATE_HZ: f32 = 10.0;
 pub(crate) const MAX_PATH_DISPLAY_LEN: usize = 100;
 
+/// Minimum file size to show active progress (spinners/active files) in the UI.
+/// This avoids excessive allocations and UI updates for tiny files that process instantly.
+/// Set to `None` to disable this optimization and track all files.
+pub(crate) const UI_PROGRESS_ITEM_MIN_SIZE: Option<u64> = Some(128 * size::KiB);
+
 // --- FUSE ---
 #[cfg(all(feature = "fuse", unix))]
 pub(crate) const DEFAULT_FUSE_STASH_CACHE_SIZE_MIB: f32 = 64.0;

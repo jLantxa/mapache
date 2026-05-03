@@ -182,8 +182,8 @@ pub struct Repository {
 
     // Packing
     max_packer_size: u64,
-    pack_saver_tx: Mutex<Option<crossbeam_channel::Sender<PackSaverRequest>>>,
-    pack_saver_handle: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
+    pack_saver_tx: parking_lot::RwLock<Option<crossbeam_channel::Sender<PackSaverRequest>>>,
+    pack_saver_handle: parking_lot::RwLock<Option<std::thread::JoinHandle<Result<()>>>>,
 
     // Stats
     pub(super) stats: RepoStats,
@@ -360,8 +360,8 @@ impl Repository {
             secure_storage,
             max_packer_size: config.pack_size,
             master_index,
-            pack_saver_tx: Mutex::new(None),
-            pack_saver_handle: Mutex::new(None),
+            pack_saver_tx: parking_lot::RwLock::new(None),
+            pack_saver_handle: parking_lot::RwLock::new(None),
             stats: RepoStats::default(),
         };
 
@@ -408,7 +408,7 @@ impl Repository {
         let encoded_data = self.secure_storage.encode(&data)?;
 
         let tx = {
-            let tx_guard = self.pack_saver_tx.lock();
+            let tx_guard = self.pack_saver_tx.read();
             tx_guard
                 .as_ref()
                 .context("Packer is stopped or not initialized")?
@@ -793,18 +793,18 @@ impl Repository {
             pack_saver.run()
         });
 
-        *self.pack_saver_tx.lock() = Some(tx);
-        *self.pack_saver_handle.lock() = Some(handle);
+        *self.pack_saver_tx.write() = Some(tx);
+        *self.pack_saver_handle.write() = Some(handle);
 
         Ok(())
     }
 
     pub async fn flush_and_finalize_pack_saver(&self) -> Result<RepoStatsSnapshot> {
         // Signal PackSaver to stop by dropping the channel
-        let tx = self.pack_saver_tx.lock().take();
+        let tx = self.pack_saver_tx.write().take();
         drop(tx);
 
-        let handle = self.pack_saver_handle.lock().take();
+        let handle = self.pack_saver_handle.write().take();
         if let Some(handle) = handle {
             tokio::task::spawn_blocking(move || {
                 handle

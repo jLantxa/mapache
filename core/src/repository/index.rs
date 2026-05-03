@@ -8,7 +8,7 @@ use crate::{
     backend::StorageHint,
     mapache::{self, BlobType, ContentIdType, ID},
     repository::repo::{Repository, SizePair},
-    utils::collections::{IdIndexSet, IdMap, IdSet},
+    utils::collections::{IdIndexSet, IdMap, IdSet, ShardedIdSet},
 };
 
 use super::packer::PackedBlobDescriptor;
@@ -371,6 +371,9 @@ impl Index {
 pub struct MasterIndex {
     /// Internal state protected by a read-write lock.
     inner: Arc<parking_lot::RwLock<MasterIndexInner>>,
+    /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
+    /// This is sharded to reduce contention during parallel snapshotting.
+    pending_blobs: Arc<ShardedIdSet>,
     auto_save: bool,
 }
 
@@ -378,8 +381,6 @@ pub struct MasterIndex {
 struct MasterIndexInner {
     /// A list of individual indices, some of which might be pending.
     indices: Vec<Index>,
-    /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
-    pending_blobs: IdSet<ID>,
 }
 
 impl Default for MasterIndex {
@@ -394,8 +395,8 @@ impl MasterIndex {
         Self {
             inner: Arc::new(parking_lot::RwLock::new(MasterIndexInner {
                 indices: Vec::with_capacity(1),
-                pending_blobs: IdSet::default(),
             })),
+            pending_blobs: Arc::new(ShardedIdSet::new()),
             auto_save: true,
         }
     }
@@ -403,15 +404,18 @@ impl MasterIndex {
     pub fn clear(&self) {
         let mut lock = self.inner.write();
         lock.indices.clear();
-        lock.pending_blobs.clear();
+        self.pending_blobs.clear();
     }
 
     /// Returns `true` if the object ID is known either in a finalized index
     /// or is currently a pending blob.
     pub fn contains(&self, id: &ID) -> bool {
-        let lock = self.inner.read();
+        if self.pending_blobs.contains(id) {
+            return true;
+        }
 
-        lock.pending_blobs.contains(id) || lock.indices.iter().rev().any(|idx| idx.contains(id))
+        let lock = self.inner.read();
+        lock.indices.iter().rev().any(|idx| idx.contains(id))
     }
 
     /// Search backwards for Data blobs specifically.
@@ -455,19 +459,20 @@ impl MasterIndex {
     /// Adds a blob ID to the set of blobs that are waiting to be packed.
     /// Returns `true` if the ID did not exist in the set and was inserted; `false` otherwise.
     pub fn add_pending_blob(&self, id: ID) -> bool {
-        if self.contains(&id) {
+        // Fast path: check if it's already in pending_blobs or in the index (read-only)
+        if self.pending_blobs.contains(&id) {
             return false;
         }
 
-        let mut lock = self.inner.write();
-
-        if lock.pending_blobs.contains(&id)
-            || lock.indices.iter().rev().any(|idx| idx.contains(&id))
         {
-            return false;
+            let lock = self.inner.read();
+            if lock.indices.iter().rev().any(|idx| idx.contains(&id)) {
+                return false;
+            }
         }
 
-        lock.pending_blobs.insert(id)
+        // Try to insert into pending_blobs. This is sharded so it's low contention.
+        self.pending_blobs.insert(id)
     }
 
     /// Processes a newly created pack of blobs. It removes these blobs from the
@@ -485,12 +490,11 @@ impl MasterIndex {
         let mut target_instance_id = 0;
 
         {
-            let mut lock = self.inner.write();
-
             for blob in &descriptors {
-                lock.pending_blobs.remove(&blob.id);
+                self.pending_blobs.remove(&blob.id);
             }
 
+            let mut lock = self.inner.write();
             if !lock.indices.iter().any(|idx| idx.is_pending()) {
                 lock.indices.push(Index::new());
             }

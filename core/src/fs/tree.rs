@@ -103,15 +103,19 @@ impl FSNodeStream {
         exclude_paths.sort_unstable();
         let filter = Arc::new(PathFilter::new(None, Some(exclude_paths)));
 
-        let mut allowed_paths = Vec::with_capacity(paths.len());
-        for path in paths {
-            if filter.allow(&path) {
-                let node = Node::from_path(&path).await.with_context(|| {
+        use rayon::prelude::*;
+        let allowed_paths: Result<Vec<_>> = paths
+            .into_par_iter()
+            .filter(|path| filter.allow(path))
+            .map(|path| {
+                let node = Node::from_path_sync(&path).with_context(|| {
                     format!("Path {} does not exist or is inaccessible", path.display())
                 })?;
-                allowed_paths.push((path, node));
-            }
-        }
+                Ok((path, node))
+            })
+            .collect();
+
+        let mut allowed_paths = allowed_paths?;
 
         let raw_paths: Vec<PathBuf> = allowed_paths.iter().map(|(p, _)| p.clone()).collect();
         let common_root = calculate_lcp(&raw_paths, false);
@@ -205,19 +209,28 @@ impl FSNodeStream {
                     let path_clone = path.clone();
 
                     let children_res = tokio::task::spawn_blocking(move || {
-                        let mut children = Vec::new();
+                        use rayon::prelude::*;
+
                         let entries = std::fs::read_dir(&path_clone)
                             .with_context(|| format!("Failed to read directory: {}", path_clone.display()))?;
 
-                        for entry_res in entries {
-                            let entry = entry_res?;
-                            let child_path = entry.path();
-                            if filter.allow(&child_path) {
-                                let child_node = Node::from_path_sync(&child_path)
-                                    .with_context(|| format!("Failed to build node for: {}", child_path.display()))?;
-                                children.push((entry.file_name(), child_node));
-                            }
-                        }
+                        // Collect entries into a vector to allow parallel processing.
+                        // We avoid stating everything here, just collecting the names and paths.
+                        let entries_vec: Vec<_> = entries.collect::<std::io::Result<Vec<_>>>()?;
+
+                        let children_results: Result<Vec<_>> = entries_vec
+                            .into_par_iter()
+                            .filter(|entry| filter.allow(&entry.path()))
+                            .map(|entry| {
+                                let child_path = entry.path();
+                                let child_node = Node::from_path_sync(&child_path).with_context(
+                                    || format!("Failed to build node for: {}", child_path.display()),
+                                )?;
+                                Ok((entry.file_name(), child_node))
+                            })
+                            .collect();
+
+                        let mut children = children_results?;
                         children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
                         Ok::<_, anyhow::Error>(children)
                     })

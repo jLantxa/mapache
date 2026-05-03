@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 
 use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
-    mapache::global::GlobalOpts,
+    mapache::{defaults, global::GlobalOpts},
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
@@ -55,10 +55,7 @@ fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<Progr
         if rx.is_empty() || last_update.elapsed() >= update_interval {
             for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
                 let path = active.get(i).cloned().unwrap_or_default();
-                spinner.set_message(abbreviate_path(
-                    &path,
-                    crate::mapache::defaults::MAX_PATH_DISPLAY_LEN,
-                ));
+                spinner.set_message(abbreviate_path(&path, defaults::MAX_PATH_DISPLAY_LEN));
             }
             last_update = Instant::now();
         }
@@ -270,7 +267,7 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
         self.progress_bar.set_length(total_bytes);
     }
 
-    fn processing_node(&self, path: &std::path::Path, diff: NodeDiff) {
+    fn processing_node(&self, path: &std::path::Path, diff: NodeDiff, size_hint: Option<u64>) {
         if self.ui_stop.load(Ordering::Relaxed) {
             return;
         }
@@ -292,22 +289,32 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
                 .println(format!("{}  {}", diff_mark, path.display()));
         }
 
+        // Optimization: Only show "slow" items in the spinner.
+        // Files under the threshold are processed so fast that showing them just adds overhead.
+        let is_slow =
+            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+
         if !self.file_spinners.is_empty()
             && diff != NodeDiff::Deleted
             && diff != NodeDiff::Unchanged
+            && is_slow
         {
             let _ = self.ui_tx.try_send(UiEvent::Start(path.to_path_buf()));
         }
     }
 
-    fn processed_node(&self, path: &std::path::Path, diff: NodeDiff) {
+    fn processed_node(&self, path: &std::path::Path, diff: NodeDiff, size_hint: Option<u64>) {
         if diff != NodeDiff::Deleted {
             self.companion_bar.inc(1);
         }
 
+        let is_slow =
+            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+
         if !self.ui_stop.load(Ordering::Relaxed)
             && !self.file_spinners.is_empty()
             && diff != NodeDiff::Deleted
+            && is_slow
         {
             let _ = self.ui_tx.try_send(UiEvent::Done(path.to_path_buf()));
         }

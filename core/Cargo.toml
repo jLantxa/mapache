@@ -57,6 +57,7 @@ url = "2.5.8"
 percent-encoding = "2.3.2"
 thiserror = "2.0.18"
 zeroize = { version = "1.8.2", features = ["derive"] }
+dashmap = "6.1.0"
 
 [target.'cfg(unix)'.dependencies]
 xattr = "1.6.1"

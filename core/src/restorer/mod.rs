@@ -135,6 +135,8 @@ struct RestorePlan {
     files: Arc<Vec<FileRestorePlan>>,
     /// Mapping of pack IDs to the blobs and their target locations in files.
     packs: Arc<PackMap>,
+    /// List of directories to be restored (path and metadata).
+    directories: Vec<(PathBuf, crate::fs::node::Metadata)>,
     /// Total number of items (files, dirs, symlinks) in the plan.
     total_items: u64,
     /// Total number of bytes to be restored.
@@ -212,6 +214,31 @@ impl FileHandleCache {
         self.handles
             .get(&file_idx)
             .ok_or_else(|| anyhow!("Failed to retrieve file handle after insertion"))
+    }
+}
+
+/// A sharded wrapper around FileHandleCache to reduce lock contention.
+struct ShardedFileHandleCache {
+    shards: Vec<Mutex<FileHandleCache>>,
+    num_shards: usize,
+}
+
+impl ShardedFileHandleCache {
+    fn new(max_total_handles: usize) -> Self {
+        let num_cpus = num_cpus::get();
+        let num_shards = (num_cpus * 4).next_power_of_two().min(64);
+        let handles_per_shard = (max_total_handles / num_shards).max(1);
+
+        let mut shards = Vec::with_capacity(num_shards);
+        for _ in 0..num_shards {
+            shards.push(Mutex::new(FileHandleCache::new(handles_per_shard)));
+        }
+
+        Self { shards, num_shards }
+    }
+
+    fn get_shard(&self, file_idx: usize) -> &Mutex<FileHandleCache> {
+        &self.shards[file_idx % self.num_shards]
     }
 }
 
@@ -305,7 +332,7 @@ impl Restorer {
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
     ) -> Result<()> {
-        let mut node_stream = SerializedNodeStream::new(
+        let node_stream = SerializedNodeStream::new(
             self.repo.clone(),
             Some(tree_id),
             PathBuf::new(),
@@ -319,7 +346,7 @@ impl Restorer {
         }
 
         let index = self.repo.index();
-        let plan = self.build_plan(&mut node_stream, index).await?;
+        let plan = self.build_plan(node_stream, index).await?;
 
         // Initialize progress reporter with stats gathered during planning
         self.progress_reporter
@@ -332,7 +359,8 @@ impl Restorer {
 
         self.restore_packs(plan_files, plan_packs, secure_storage, dry_run)
             .await?;
-        self.restore_metadata(tree_id, include, exclude).await?;
+        self.restore_metadata(tree_id, include, exclude, plan.directories)
+            .await?;
 
         Ok(())
     }
@@ -341,175 +369,241 @@ impl Restorer {
     /// which nodes need to be restored.
     async fn build_plan(
         &self,
-        node_stream: &mut SerializedNodeStream,
+        node_stream: SerializedNodeStream,
         index: Arc<MasterIndex>,
     ) -> Result<RestorePlan> {
-        let mut files = Vec::new();
-        let mut packs: PackMap = HashMap::new();
-        let mut node_count = 0;
-        let mut total_items = 0;
-        let mut total_bytes = 0;
+        let files = Arc::new(Mutex::new(Vec::new()));
+        let directories = Arc::new(Mutex::new(Vec::new()));
+        let packs = Arc::new(dashmap::DashMap::<ID, Vec<(ID, BlobRestoreRequest)>>::new());
+        let node_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let total_items = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let total_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         self.progress_reporter
             .set_message("Planning...".to_string());
 
-        while let Some(node_res) = node_stream.next().await {
-            if self.shutdown_signal.load(Ordering::Relaxed) {
-                bail!("Interrupted");
-            }
+        let num_workers = DEFAULT_RESTORE_BLOB_CONCURRENCY;
 
-            node_count += 1;
-            if node_count % 100 == 0 {
-                self.progress_reporter
-                    .set_message(format!("Planning... ({} nodes)", node_count));
-            }
+        node_stream
+            .for_each_concurrent(num_workers, |node_res| {
+                let index = index.clone();
+                let files = files.clone();
+                let directories = directories.clone();
+                let packs = packs.clone();
+                let node_count = node_count.clone();
+                let total_items = total_items.clone();
+                let total_bytes = total_bytes.clone();
+                let progress_reporter = self.progress_reporter.clone();
+                let shutdown_signal = self.shutdown_signal.clone();
 
-            let (mut path, stream_node_res) = node_res?;
-            let stream_node = stream_node_res?;
-            let node = stream_node.node;
-
-            if let Some(prefix) = &self.opts.strip_prefix {
-                path = match path.strip_prefix(prefix) {
-                    Ok(stripped_path) => {
-                        if stripped_path.as_os_str().is_empty() {
-                            continue;
-                        }
-                        stripped_path.to_path_buf()
+                async move {
+                    if shutdown_signal.load(Ordering::Relaxed) {
+                        return;
                     }
-                    Err(_) => continue,
-                };
-            }
 
-            total_items += 1;
-            if node.is_file() {
-                total_bytes += node.metadata.size;
-            }
+                    let count = node_count.fetch_add(1, Ordering::Relaxed);
+                    if count.is_multiple_of(100) {
+                        progress_reporter.set_message(format!("Planning... ({} nodes)", count));
+                    }
 
-            let restore_path = utils::secure_join(&self.target_path, &path)?;
-            if !self
-                .should_restore_node(&node, &restore_path, index.clone())
-                .await?
-            {
-                self.progress_reporter.processed_item(&path);
-                if node.is_file() {
-                    self.progress_reporter.processed_bytes(node.metadata.size);
-                }
-                continue;
-            }
+                    let (mut path, stream_node_res) = match node_res {
+                        Ok(res) => res,
+                        Err(e) => {
+                            progress_reporter.error(&format!("Error during planning: {e}"));
+                            return;
+                        }
+                    };
 
-            if node.is_dir() {
-                if !self.opts.dry_run {
-                    fs::create_dir_all(&restore_path)?;
-                }
-                self.progress_reporter.processed_item(&path);
-                continue;
-            }
+                    let stream_node = match stream_node_res {
+                        Ok(node) => node,
+                        Err(e) => {
+                            progress_reporter.error(&format!(
+                                "Error reading node {}: {}",
+                                path.display(),
+                                e
+                            ));
+                            return;
+                        }
+                    };
+                    let node = stream_node.node;
 
-            if node.is_file() {
-                let file_idx = files.len();
-                let mut blobs_found = true;
-
-                if let Some(blobs) = &node.blobs {
-                    let mut offset_in_file = 0;
-                    for blob_id in blobs {
-                        let locator = match index.get_data(blob_id) {
-                            Some(loc) => loc,
-                            None => {
-                                let err_msg = format!("Blob {blob_id} not found in index");
-                                if self.opts.quit_on_error {
-                                    bail!(err_msg);
+                    if let Some(prefix) = &self.opts.strip_prefix {
+                        path = match path.strip_prefix(prefix) {
+                            Ok(stripped_path) => {
+                                if stripped_path.as_os_str().is_empty() {
+                                    return;
                                 }
-                                self.progress_reporter.error(&err_msg);
-                                blobs_found = false;
-                                break;
+                                stripped_path.to_path_buf()
                             }
+                            Err(_) => return,
                         };
-                        packs.entry(locator.pack_id).or_default().push((
-                            *blob_id,
-                            BlobRestoreRequest {
-                                file_idx,
-                                offset_in_file,
-                                blob_offset: locator.offset,
-                                blob_length: locator.length,
-                                raw_length: locator.raw_length,
-                            },
-                        ));
-                        offset_in_file += locator.raw_length as u64;
                     }
-                }
 
-                if blobs_found {
-                    files.push(FileRestorePlan {
-                        path: restore_path.clone(),
-                    });
+                    total_items.fetch_add(1, Ordering::Relaxed);
+                    if node.is_file() {
+                        total_bytes.fetch_add(node.metadata.size, Ordering::Relaxed);
+                    }
 
-                    if !self.opts.dry_run {
-                        if let Some(parent) = restore_path.parent() {
-                            fs::create_dir_all(parent)?;
+                    let restore_path = match utils::secure_join(&self.target_path, &path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            progress_reporter
+                                .error(&format!("Secure join failed for {path:?}: {e}"));
+                            return;
                         }
+                    };
 
-                        // If the file exists, it might be a symlink or read-only.
-                        // We must NOT follow symlinks when restoring to prevent overwriting
-                        // files outside the target directory.
-                        if let Ok(m) = fs::symlink_metadata(&restore_path) {
-                            if m.file_type().is_symlink() {
-                                fs::remove_file(&restore_path)?;
-                            } else {
-                                self.clear_readonly_attribute(&restore_path)?;
+                    match self
+                        .should_restore_node(&node, &restore_path, index.clone())
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            progress_reporter.processed_item(&path);
+                            if node.is_file() {
+                                progress_reporter.processed_bytes(node.metadata.size);
+                            }
+                            return;
+                        }
+                        Err(e) => {
+                            progress_reporter.error(&format!(
+                                "Error checking {}: {}",
+                                path.display(),
+                                e
+                            ));
+                            return;
+                        }
+                    }
+
+                    if node.is_dir() {
+                        if !self.opts.dry_run
+                            && let Err(e) = fs::create_dir_all(&restore_path)
+                        {
+                            progress_reporter.error(&format!(
+                                "Failed to create directory {}: {}",
+                                restore_path.display(),
+                                e
+                            ));
+                            return;
+                        }
+                        directories.lock().push((restore_path, node.metadata));
+                        progress_reporter.processed_item(&path);
+                        return;
+                    }
+
+                    if node.is_file() {
+                        let mut file_blobs = Vec::new();
+                        if let Some(blobs) = &node.blobs {
+                            let mut offset_in_file = 0;
+                            for blob_id in blobs {
+                                let locator = match index.get_data(blob_id) {
+                                    Some(loc) => loc,
+                                    None => {
+                                        let err_msg = format!("Blob {blob_id} not found in index");
+                                        progress_reporter.error(&err_msg);
+                                        return;
+                                    }
+                                };
+                                file_blobs.push((*blob_id, locator, offset_in_file));
+                                offset_in_file += locator.raw_length as u64;
                             }
                         }
 
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .truncate(true)
-                            .open(&restore_path)
-                            .with_context(|| {
-                                format!("Failed to create file: {}", restore_path.display())
-                            })?;
+                        let file_idx = {
+                            let mut files_lock = files.lock();
+                            let idx = files_lock.len();
+                            files_lock.push(FileRestorePlan {
+                                path: restore_path.clone(),
+                            });
+                            idx
+                        };
 
-                        if self.opts.preallocate {
-                            self.preallocate_file(&mut file, node.metadata.size)
-                                .with_context(|| {
-                                    format!(
-                                        "Failed to preallocate file: {}",
-                                        restore_path.display()
-                                    )
-                                })?;
-                        } else {
-                            file.set_len(node.metadata.size)?;
+                        // Populate packs map with pre-fetched locators
+                        for (blob_id, locator, offset_in_file) in file_blobs {
+                            packs.entry(locator.pack_id).or_default().push((
+                                blob_id,
+                                BlobRestoreRequest {
+                                    file_idx,
+                                    offset_in_file,
+                                    blob_offset: locator.offset,
+                                    blob_length: locator.length,
+                                    raw_length: locator.raw_length,
+                                },
+                            ));
                         }
+
+                        if !self.opts.dry_run {
+                            if let Some(parent) = restore_path.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+
+                            // If the file exists, it might be a symlink or read-only.
+                            // We must NOT follow symlinks when restoring to prevent overwriting
+                            // files outside the target directory.
+                            if let Ok(m) = fs::symlink_metadata(&restore_path) {
+                                if m.file_type().is_symlink() {
+                                    let _ = fs::remove_file(&restore_path);
+                                } else {
+                                    let _ = self.clear_readonly_attribute(&restore_path);
+                                }
+                            }
+
+                            match OpenOptions::new()
+                                .create(true)
+                                .write(true)
+                                .truncate(true)
+                                .open(&restore_path)
+                            {
+                                Ok(mut file) => {
+                                    if self.opts.preallocate {
+                                        let _ =
+                                            self.preallocate_file(&mut file, node.metadata.size);
+                                    } else {
+                                        let _ = file.set_len(node.metadata.size);
+                                    }
+                                }
+                                Err(e) => {
+                                    progress_reporter.error(&format!(
+                                        "Failed to create file {}: {}",
+                                        restore_path.display(),
+                                        e
+                                    ));
+                                }
+                            }
+                        }
+                    } else if node.is_symlink() {
+                        files.lock().push(FileRestorePlan {
+                            path: restore_path.clone(),
+                        });
+
+                        if !self.opts.dry_run
+                            && let Err(e) = node_restorer::restore_node_to_path(
+                                &self.repo,
+                                progress_reporter.clone(),
+                                &node,
+                                &restore_path,
+                                false,
+                            )
+                            .await
+                        {
+                            progress_reporter.error(&e.to_string());
+                        }
+                        progress_reporter.processed_item(&path);
                     }
-                } else {
-                    self.progress_reporter.processed_item(&path);
-                    self.progress_reporter.processed_bytes(node.metadata.size);
                 }
-            } else if node.is_symlink() {
-                if !self.opts.dry_run
-                    && let Err(e) = node_restorer::restore_node_to_path(
-                        &self.repo,
-                        self.progress_reporter.clone(),
-                        &node,
-                        &restore_path,
-                        false,
-                    )
-                    .await
-                {
-                    let err_msg = e.to_string();
-                    if self.opts.quit_on_error {
-                        bail!(err_msg);
-                    }
-                    self.progress_reporter.error(&err_msg);
-                }
-                self.progress_reporter.processed_item(&path);
-            }
-        }
+            })
+            .await;
+
+        let files = Arc::into_inner(files).unwrap().into_inner();
+        let directories = Arc::into_inner(directories).unwrap().into_inner();
+        let packs_map = Arc::into_inner(packs).unwrap().into_iter().collect();
 
         Ok(RestorePlan {
             files: Arc::new(files),
-            packs: Arc::new(packs),
-            total_items,
-            total_bytes,
+            packs: Arc::new(packs_map),
+            directories,
+            total_items: total_items.load(Ordering::Relaxed),
+            total_bytes: total_bytes.load(Ordering::Relaxed),
         })
     }
 
@@ -715,9 +809,7 @@ impl Restorer {
         self.progress_reporter
             .set_message("Restoring...".to_string());
 
-        let handle_cache = Arc::new(Mutex::new(FileHandleCache::new(
-            DEFAULT_RESTORE_MAX_OPEN_FILES,
-        )));
+        let handle_cache = Arc::new(ShardedFileHandleCache::new(DEFAULT_RESTORE_MAX_OPEN_FILES));
         let mut packs_iter = packs.iter();
 
         let max_memory_units =
@@ -780,67 +872,76 @@ impl Restorer {
 
             let (segments, _memory_permit) = res?;
             for (pack_segment, segment_data) in segments {
-                let data = Arc::new(segment_data);
-                let mut blob_stream = futures::stream::iter(pack_segment.blobs)
-                    .map(|(blob_id, locator, targets)| {
-                        let pack_data = data.clone();
-                        let secure_storage = secure_storage.clone();
+                let data_arc = Arc::new(segment_data);
+
+                // Group all blobs in this segment by target file_idx
+                let mut file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
+
+                for (blob_id, locator, targets) in pack_segment.blobs {
+                    let start = (locator.offset as u64 - pack_segment.min_offset) as usize;
+                    let end = start + locator.length as usize;
+                    let encoded_blob = &data_arc[start..end];
+
+                    let decoded_data = secure_storage
+                        .decode_owned(encoded_blob.to_vec())
+                        .with_context(|| format!("Failed to decode blob {blob_id}"))?;
+
+                    for target in targets {
+                        file_batches
+                            .entry(target.file_idx)
+                            .or_default()
+                            .push((decoded_data.clone(), target.offset_in_file));
+                    }
+                }
+
+                // Process each file batch in parallel
+                let mut batch_stream = futures::stream::iter(file_batches)
+                    .map(|(file_idx, writes)| {
                         let handle_cache = handle_cache.clone();
-                        let progress_reporter = self.progress_reporter.clone();
                         let files = files.clone();
+                        let progress_reporter = self.progress_reporter.clone();
                         let quit_on_error = self.opts.quit_on_error;
-                        let min_offset = pack_segment.min_offset;
 
                         async move {
-                            let start = (locator.offset as u64 - min_offset) as usize;
-                            let end = start + locator.length as usize;
-                            let encoded_blob = &pack_data[start..end];
-                            let data = secure_storage
-                                .decode_owned(encoded_blob.to_vec())
-                                .with_context(|| format!("Failed to decode blob {blob_id}"))?;
-
-                            let chunk_size = data.len() as u64;
-                            let reported_bytes = chunk_size.saturating_mul(targets.len() as u64);
-
                             let write_result =
-                                spawn_blocking(move || -> Result<(), anyhow::Error> {
-                                    let mut cache = handle_cache.lock();
-                                    for target in targets {
-                                        let file_plan = &files[target.file_idx];
-                                        let file =
-                                            cache.get_handle(target.file_idx, &file_plan.path)?;
+                                spawn_blocking(move || -> Result<u64, anyhow::Error> {
+                                    let file_plan = &files[file_idx];
+                                    let mut cache_guard = handle_cache.get_shard(file_idx).lock();
+                                    let file = cache_guard.get_handle(file_idx, &file_plan.path)?;
 
+                                    let mut total_written = 0;
+                                    for (data, offset) in writes {
                                         #[cfg(unix)]
-                                        file.write_at(&data, target.offset_in_file)
-                                            .map_err(|e| anyhow!(e))?;
+                                        file.write_at(&data, offset).map_err(|e| anyhow!(e))?;
                                         #[cfg(windows)]
-                                        file.seek_write(&data, target.offset_in_file)
-                                            .map_err(|e| anyhow!(e))?;
+                                        file.seek_write(&data, offset).map_err(|e| anyhow!(e))?;
+                                        total_written += data.len() as u64;
                                     }
-                                    Ok(())
+                                    Ok(total_written)
                                 })
                                 .await
                                 .map_err(|e| anyhow!(e))?;
 
-                            if let Err(e) = write_result {
-                                let err_msg = format!(
-                                    "Failed to write blob {} to target files: {e}",
-                                    blob_id
-                                );
-                                if quit_on_error {
-                                    bail!(err_msg);
+                            match write_result {
+                                Ok(bytes) => {
+                                    progress_reporter.processed_bytes(bytes);
                                 }
-                                progress_reporter.error(&err_msg);
+                                Err(e) => {
+                                    let err_msg =
+                                        format!("Failed to write to file index {file_idx}: {e}");
+                                    if quit_on_error {
+                                        bail!(err_msg);
+                                    }
+                                    progress_reporter.error(&err_msg);
+                                }
                             }
-
-                            progress_reporter.processed_bytes(reported_bytes);
                             Ok::<(), anyhow::Error>(())
                         }
                     })
                     .buffer_unordered(DEFAULT_RESTORE_BLOB_CONCURRENCY);
 
-                while let Some(blob_res) = blob_stream.next().await {
-                    blob_res?;
+                while let Some(res) = batch_stream.next().await {
+                    res?;
                 }
             }
         }
@@ -853,6 +954,7 @@ impl Restorer {
         tree_id: ID,
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
+        directories: Vec<(PathBuf, crate::fs::node::Metadata)>,
     ) -> Result<()> {
         if self.opts.dry_run {
             return Ok(());
@@ -861,7 +963,7 @@ impl Restorer {
         self.progress_reporter
             .set_message("Restoring metadata...".to_string());
 
-        let mut node_stream = SerializedNodeStream::new(
+        let node_stream = SerializedNodeStream::new(
             self.repo.clone(),
             Some(tree_id),
             PathBuf::new(),
@@ -870,51 +972,63 @@ impl Restorer {
         )
         .await?;
 
-        let mut dirs = Vec::new();
+        // Restore file and symlink metadata in parallel using a second pass.
+        // This avoids keeping all metadata in RAM.
+        node_stream
+            .for_each_concurrent(DEFAULT_RESTORE_BLOB_CONCURRENCY, |node_res| {
+                let progress_reporter = self.progress_reporter.clone();
+                let target_path = self.target_path.clone();
+                let opts_strip_prefix = self.opts.strip_prefix.clone();
 
-        while let Some(node_res) = node_stream.next().await {
-            if self.shutdown_signal.load(Ordering::Relaxed) {
-                bail!("Interrupted");
-            }
+                async move {
+                    let (mut path, stream_node_res) = match node_res {
+                        Ok(res) => res,
+                        Err(_) => return,
+                    };
 
-            let (mut path, stream_node_res) = node_res?;
-            let stream_node = stream_node_res?;
-            let node = stream_node.node;
+                    let stream_node = match stream_node_res {
+                        Ok(node) => node,
+                        Err(_) => return,
+                    };
+                    let node = stream_node.node;
 
-            if let Some(prefix) = &self.opts.strip_prefix {
-                path = match path.strip_prefix(prefix) {
-                    Ok(stripped_path) => {
-                        if stripped_path.as_os_str().is_empty() {
-                            continue;
-                        }
-                        stripped_path.to_path_buf()
+                    if let Some(prefix) = &opts_strip_prefix {
+                        path = match path.strip_prefix(prefix) {
+                            Ok(stripped_path) => {
+                                if stripped_path.as_os_str().is_empty() {
+                                    return;
+                                }
+                                stripped_path.to_path_buf()
+                            }
+                            Err(_) => return,
+                        };
                     }
-                    Err(_) => continue,
-                };
-            }
 
-            let restore_path = utils::secure_join(&self.target_path, &path)?;
+                    let restore_path = match utils::secure_join(&target_path, &path) {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
 
-            // We only restore metadata for nodes that exist in the target.
-            // Some nodes might have been skipped during planning if they already matched.
-            if !repo_fs::path_exists(&restore_path).await {
-                continue;
-            }
+                    // We only restore metadata for nodes that exist in the target.
+                    if !repo_fs::path_exists(&restore_path).await {
+                        return;
+                    }
 
-            if node.is_dir() {
-                dirs.push((restore_path, node.metadata));
-            } else {
-                node_restorer::try_restore_node_metadata(
-                    &node.metadata,
-                    node.is_symlink(),
-                    &restore_path,
-                    self.progress_reporter.as_ref(),
-                );
-            }
-            self.progress_reporter.processed_item(&path);
-        }
+                    if !node.is_dir() {
+                        node_restorer::try_restore_node_metadata(
+                            &node.metadata,
+                            node.is_symlink(),
+                            &restore_path,
+                            progress_reporter.as_ref(),
+                        );
+                    }
+                    progress_reporter.processed_item(&path);
+                }
+            })
+            .await;
 
         // Restore directory metadata bottom-up.
+        let mut dirs = directories;
         dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
         for (p, meta) in dirs {
             if self.shutdown_signal.load(Ordering::Relaxed) {

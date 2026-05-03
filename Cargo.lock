@@ -1880,6 +1880,7 @@ dependencies = [
  "clap_complete",
  "colored",
  "crossbeam-channel",
+ "dashmap",
  "dialoguer",
  "directories",
  "filetime",

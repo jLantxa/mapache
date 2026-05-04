@@ -242,13 +242,14 @@ fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
             .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
             .open(path)
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
         let file = std::fs::File::open(path)?;
 
         // Inform the kernel that we will read this file sequentially.
         // This triggers the kernel's internal read-ahead optimization.
+        #[cfg(not(target_os = "macos"))]
         unsafe {
             libc::posix_fadvise(
                 file.as_raw_fd(),

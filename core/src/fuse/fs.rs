@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
-use std::path::Path;
-use std::sync::Arc;
+use std::{ffi::OsStr, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, anyhow, bail};
 use colored::Colorize;

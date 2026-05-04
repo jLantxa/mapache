@@ -390,9 +390,11 @@ impl StorageBackend for LocalFS {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::backend::BackendUrl;
     use tempfile::tempdir;
+
+    use crate::backend::BackendUrl;
+
+    use super::*;
 
     #[test]
     fn test_local_backend_url() {

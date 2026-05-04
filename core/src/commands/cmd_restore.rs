@@ -23,7 +23,7 @@ use crate::{
         },
         get_absolute_normalized_path,
     },
-    mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
+    mapache::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
         self,
@@ -285,7 +285,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-fn emit_restore_start(json: bool, args: &CmdArgs, snapshot_id: &crate::mapache::ID, target: &Path) {
+fn emit_restore_start(json: bool, args: &CmdArgs, snapshot_id: &ID, target: &Path) {
     if json {
         #[derive(Serialize)]
         struct RestoreStartMsg {

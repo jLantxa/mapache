@@ -1,15 +1,24 @@
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64},
+    },
+    time::{Duration, Instant},
+};
+
 use parking_lot::RwLock;
 use serde::Serialize;
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, atomic::AtomicU64};
-use std::time::{Duration, Instant};
 
-use crate::mapache::defaults;
-use crate::{fs::tree::NodeDiff, mapache::global::GlobalOpts, ui::json_reporter::JsonReporter};
-
-use super::SnapshotProgressReporter;
+use crate::{
+    mapache::defaults,
+    {
+        fs::tree::NodeDiff,
+        mapache::global::GlobalOpts,
+        ui::{json_reporter::JsonReporter, snapshot::SnapshotProgressReporter},
+    },
+};
 
 #[derive(Serialize)]
 struct StatusUpdateMsg {

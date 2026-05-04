@@ -305,10 +305,13 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::BTreeMap,
+        env,
+        path::{Path, PathBuf},
+    };
+
     use super::*;
-    use std::collections::BTreeMap;
-    use std::env;
-    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_get_absolute_normalized_path() -> Result<()> {

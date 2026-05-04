@@ -1,9 +1,11 @@
-use mapache::repository::keys::KeyManager;
-use mapache::repository::repo::Auth;
-use mapache::repository::storage::SecureStorage;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use zeroize::{Zeroize, Zeroizing};
+
+use mapache::repository::{keys::KeyManager, repo::Auth, storage::SecureStorage};
 
 #[test]
 fn test_zeroize_array() {

@@ -1,5 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hash};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::{BuildHasherDefault, Hash},
+};
 
 pub type IdSet<K> = HashSet<K, BuildHasherDefault<rustc_hash::FxHasher>>;
 pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<rustc_hash::FxHasher>>;

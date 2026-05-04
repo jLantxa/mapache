@@ -1,9 +1,10 @@
+use std::sync::{
+    Arc, Mutex, Once,
+    atomic::{AtomicBool, Ordering},
+};
+
 use anyhow::Result;
 use signal_hook_registry::{SigId, register, unregister};
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::repository::lock::LockHandle;
 

@@ -1,8 +1,7 @@
 //! The node_restorer module provides lower-level functionality for restoring
 //! individual nodes (files, directories, symlinks) and their associated metadata.
 
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::{sync::Arc, time::SystemTime};
 
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};

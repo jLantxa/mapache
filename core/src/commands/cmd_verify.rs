@@ -1,7 +1,11 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Instant,
+};
 
 use anyhow::{Result, bail};
 use clap::Args;
@@ -9,13 +13,11 @@ use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
-use crate::commands::{ToExitCode, fail, with_repository_lock};
-use crate::fs::tree::SerializedNodeStream;
-use crate::mapache::global::GlobalOpts;
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler},
-    mapache::ID,
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
+    fs::tree::SerializedNodeStream,
+    mapache::{ID, global::GlobalOpts},
     repository::{
         snapshot::{Snapshot, SnapshotStream},
         verify::{verify_pack, verify_snapshot_refs},

@@ -33,7 +33,7 @@ use tokio::{sync::Semaphore, task::spawn_blocking};
 use crate::{
     fs::{self as repo_fs, node::Node, tree::SerializedNodeStream},
     mapache::{
-        ID,
+        BlobType, ID,
         defaults::{
             DEFAULT_RESTORE_BLOB_CONCURRENCY, DEFAULT_RESTORE_MAX_OPEN_FILES,
             DEFAULT_RESTORE_PACK_PREFETCH, DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES,
@@ -839,7 +839,7 @@ impl Restorer {
                             offset: t0.blob_offset,
                             length: t0.blob_length,
                             raw_length: t0.raw_length,
-                            blob_type: crate::mapache::BlobType::Data, // Only data blobs are in packs map
+                            blob_type: BlobType::Data, // Only data blobs are in packs map
                         };
                         (id, locator, targets)
                     })

@@ -1,12 +1,16 @@
 #![cfg(test)]
 
-use crate::integration_tests::TestContext;
+use std::{path::Path, sync::Arc};
+
 use anyhow::Result;
-use mapache::mapache::defaults::TEST_REPO_CONFIG;
-use mapache::repository::repo::{LOCKS_DIR, Repository};
-use std::path::Path;
-use std::sync::Arc;
 use tokio::time::{Duration, sleep};
+
+use mapache::{
+    mapache::defaults::TEST_REPO_CONFIG,
+    repository::repo::{LOCKS_DIR, Repository},
+};
+
+use crate::integration_tests::TestContext;
 
 async fn wait_for_no_locks(locks_dir: &Path) -> Result<()> {
     for _ in 0..100 {

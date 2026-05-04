@@ -5,7 +5,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     backend::StorageBackend,
-    mapache::ID,
+    mapache::{ContentIdType, ID},
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils::collections::IdSet,
 };
@@ -33,7 +33,7 @@ pub async fn verify_pack(
     secure_storage: Arc<SecureStorage>,
     pack_id: ID,
 ) -> Result<PackStats> {
-    let pack_path = repo.get_path(crate::mapache::ContentIdType::Pack, &pack_id);
+    let pack_path = repo.get_path(ContentIdType::Pack, &pack_id);
 
     // Bit-rot check: Verify full-file hash matches the filename (ID)
     // By reading the entire file once, we avoid subsequent I/O during blob verification.

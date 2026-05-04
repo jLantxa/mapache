@@ -673,8 +673,9 @@ impl StorageBackend for SftpBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::backend::BackendUrl;
+
+    use super::*;
 
     #[test]
     fn test_sftp_backend_url() -> Result<()> {

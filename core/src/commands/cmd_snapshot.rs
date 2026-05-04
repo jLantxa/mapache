@@ -4,27 +4,35 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 
-use crate::archiver::{self, SnapshotOptions, progress::SnapshotProgress};
-use crate::backend::{StorageHint, new_backend_with_prompt};
-use crate::commands::{EMPTY_TAG_MARK, cleanup::CleanupHandler, find_use_snapshot, parse_tags};
-use crate::commands::{ToExitCode, fail, with_repository_lock};
-use crate::fs::filter::{merge_filtered_paths, read_filtered_paths_from_file};
-use crate::fs::{
-    self, calculate_lcp,
-    filter::{PathFilter, normalized_exclude_paths},
-};
-use crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS;
-use crate::mapache::{self, ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN};
-use crate::repository::snapshot::{SnapshotPair, SnapshotSummary};
-use crate::ui::{
-    self,
-    snapshot::{
-        SnapshotProgressReporter, cli::CliSnapshotProgressReporter,
-        json::JsonSnapshotProgressReporter,
+use crate::{
+    archiver::{self, SnapshotOptions, progress::SnapshotProgress},
+    backend::{StorageHint, new_backend_with_prompt},
+    commands::{
+        EMPTY_TAG_MARK, ToExitCode, cleanup::CleanupHandler, fail, find_use_snapshot, parse_tags,
+        with_repository_lock,
     },
-    table::{Alignment, Table},
+    fs::{
+        self, calculate_lcp,
+        filter::{
+            PathFilter, merge_filtered_paths, normalized_exclude_paths,
+            read_filtered_paths_from_file,
+        },
+    },
+    mapache::{
+        self, ContentIdType, ID,
+        defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+    },
+    repository::snapshot::{SnapshotPair, SnapshotSummary},
+    ui::{
+        self,
+        snapshot::{
+            SnapshotProgressReporter, cli::CliSnapshotProgressReporter,
+            json::JsonSnapshotProgressReporter,
+        },
+        table::{Alignment, Table},
+    },
+    utils::{self},
 };
-use crate::utils::{self};
 
 use super::{GlobalArgs, UseSnapshot};
 

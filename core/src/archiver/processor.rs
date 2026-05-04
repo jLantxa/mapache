@@ -244,13 +244,14 @@ fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::io::AsRawFd;
         let file = std::fs::File::open(path)?;
 
         // Inform the kernel that we will read this file sequentially.
         // This triggers the kernel's internal read-ahead optimization.
         #[cfg(not(target_os = "macos"))]
         unsafe {
+            use std::os::unix::io::AsRawFd;
+
             libc::posix_fadvise(
                 file.as_raw_fd(),
                 0,

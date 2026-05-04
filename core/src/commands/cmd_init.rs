@@ -3,14 +3,12 @@ use clap::Args;
 use colored::Colorize;
 use serde::Serialize;
 
-use crate::commands::{ToExitCode, fail};
-use crate::mapache::ID;
-use crate::ui::json_reporter::emit_static;
 use crate::{
     backend::new_backend_with_prompt,
-    mapache::defaults::SHORT_REPO_ID_LEN,
+    commands::{ToExitCode, fail},
+    mapache::{ID, defaults::SHORT_REPO_ID_LEN},
     repository::repo::Repository,
-    ui::{self},
+    ui::{self, json_reporter::emit_static},
     utils,
 };
 

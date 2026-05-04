@@ -1,6 +1,10 @@
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        LazyLock,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use directories::BaseDirs;
 

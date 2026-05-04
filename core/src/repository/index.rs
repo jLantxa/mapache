@@ -1,17 +1,22 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 use anyhow::{Result, bail};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::StorageHint,
     mapache::{self, BlobType, ContentIdType, ID},
+    repository::packer::PackedBlobDescriptor,
     repository::repo::{Repository, SizePair},
     utils::collections::{IdIndexSet, IdMap, IdSet, ShardedIdSet},
 };
-
-use super::packer::PackedBlobDescriptor;
 
 /// Internal optimized representation of a blob's location.
 #[derive(Debug, Clone, Copy)]
@@ -370,7 +375,7 @@ impl Index {
 #[derive(Debug, Clone)]
 pub struct MasterIndex {
     /// Internal state protected by a read-write lock.
-    inner: Arc<parking_lot::RwLock<MasterIndexInner>>,
+    inner: Arc<RwLock<MasterIndexInner>>,
     /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
     /// This is sharded to reduce contention during parallel snapshotting.
     pending_blobs: Arc<ShardedIdSet>,
@@ -393,7 +398,7 @@ impl MasterIndex {
     /// Creates a new, empty `MasterIndex`.
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(parking_lot::RwLock::new(MasterIndexInner {
+            inner: Arc::new(RwLock::new(MasterIndexInner {
                 indices: Vec::with_capacity(1),
             })),
             pending_blobs: Arc::new(ShardedIdSet::new()),

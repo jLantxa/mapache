@@ -13,6 +13,7 @@ You can find more [in-depth documentation](doc/mapache.md).
 
 - [About](#about)
 - [Key Features](#key-features)
+- [Benchmarks](#benchmarks)
 - [Roadmap](#roadmap)
 - [Getting Started](#getting-started)
 
@@ -64,15 +65,54 @@ validation before relying on it for primary backups.
 - **Portable:** A single, statically linked binary with zero external
   dependencies.
 
+## Benchmarks
+
+This is a non-exhaustive set of benchmarks run on my development hardware. They
+serve as a baseline for comparing performance between versions, using restic as
+a base.
+
+**Test environment:** Fedora 43, AMD Ryzen 9 3900X (24 threads), SanDisk Extreme
+PRO NVMe.
+
+Each result is the average of 3 runs following a warmup run, all on local
+storage. Both tools are run with default settings and 8 readers
+(read-concurrency) for backup.
+
+Mapache has traditionally been slower with datasets made of many small files, so
+this benchmark test addresses that area specifically.
+
+Workloads:
+
+- **kernel** — Linux kernel source tree (~1.6 GB, 99'131 objects)
+- **enron** — Enron email corpus (~1.4 GB, 520’901 objects)
+
+### v0.3.0 baseline (vs restic v0.18.1)
+
+#### kernel
+
+| Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
+|---------|-----------|--------|-------|----------|-----------|
+| mapache | backup    | 3.40s  | 1118% | 485 MB   | 304.1 MB  |
+| restic  | backup    | 4.45s  | 1058% | 575 MB   | 308.9 MB  |
+| mapache | restore   | 15.57s | 144%  | 715 MB   | —         |
+| restic  | restore   | 17.32s | 141%  | 242 MB   | —         |
+
+#### enron
+
+| Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
+|---------|-----------|--------|-------|----------|-----------|
+| mapache | backup    | 8.23s  | 1055% | 512 MB   | 717.3 MB  |
+| restic  | backup    | 13.03s | 990%  | 426 MB   | 724.9 MB  |
+| mapache | restore   | 69.75s | 135%  | 543 MB   | —         |
+| restic  | restore   | 82.20s | 142%  | 418 MB   | —         |
+
 ## Roadmap
 
 ### v0.1.0
 
 mapache 0.1.0 was the first public stable release. It was meant to be a first
-stable prototype with all core features after 8 months of work.
-
-The v0.1.x series brought bug fixes, optimizations and minor new features.
-The main goal was to optimize the Archiver performance.
+stable prototype with all core features. This version validated the
+architecture.
 
 ### v0.2.0
 
@@ -82,24 +122,28 @@ was added and the SFTP backend was reimplemented with a rust-native async crate.
 The async refactor had the additional challenge of tuning parallelism to trim
 down memory usage while maintaining performance.
 
-### v0.3.0 (_we are here_)
+### v0.3.0
 
 Redesigned the restorer into a high-performance, pack-centric engine with
 background prefetching and concurrent restoration to significantly improve
 I/O efficiency.
 
 - [x] `restore` redesign
+- [x] Multi-platform static builds (Linux x64/ARM, Windows, macOS)
+- [x] Return codes for commands
+- [x] Security hardening (secure join, zeroize, FUSE permissions)
 
 ### Future
 
-All other planned features:
+In the future, I want to polish all rough edges, like adding `json` output and
+error codes to all commands. Maybe a TUI, but that's a wholly different
+endeavor.
+
+Other planned features (non-exhaustive):
 
 - [ ] incremental restore,
 - [ ] configuration files,
 - [ ] master key rotation,
-- [ ] return codes for commands,
-
-and more.
 
 ## Getting Started
 
@@ -118,9 +162,17 @@ cargo build --release
 cargo install --path core
 ```
 
+`cargo build` compiles binaries with some dynamically linked dependencies. While
+this is fine for testing and development on the same hardware, if you need a
+statically linked binary (which I strongly recommend for portability), run
+`make release-static` or use the binaries provided in the `Releases` page for a
+specific released version.
+
 > **Note for Linux users:** The `mount` command requires FUSE development
 > headers (e.g., `libfuse-dev`). To build without FUSE support, use
 > `--no-default-features`.
+
+
 
 ### Quick Start
 

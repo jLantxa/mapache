@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -44,9 +44,16 @@ pub(crate) struct JsonSnapshotProgressReporter {
     expected_items: Arc<RwLock<Option<AtomicU64>>>,
     expected_bytes: Arc<RwLock<Option<AtomicU64>>>,
     active_files: Mutex<HashSet<PathBuf>>,
+    sampled_paths: Mutex<Vec<PathBuf>>,
     refresh_interval: Duration,
     last_update: Mutex<Instant>,
     start_time: Instant,
+
+    // Sampling budget (Global across threads)
+    sampling_limit: usize,
+    sampling_interval_ns: u64,
+    sampling_last_reset_ns: AtomicU64,
+    sampling_count: AtomicU64,
 }
 
 impl JsonSnapshotProgressReporter {
@@ -61,10 +68,15 @@ impl JsonSnapshotProgressReporter {
             expected_items: Arc::new(RwLock::new(expected_items.map(AtomicU64::new))),
             expected_bytes: Arc::new(RwLock::new(expected_bytes.map(AtomicU64::new))),
             active_files: Mutex::new(HashSet::new()),
+            sampled_paths: Mutex::new(Vec::new()),
             refresh_interval,
             last_update: Mutex::new(Instant::now()),
             start_time: Instant::now(),
             scan_finished: AtomicBool::new(expected_bytes.is_some() && expected_items.is_some()),
+            sampling_limit: 8, // Default budget for JSON status updates
+            sampling_interval_ns: refresh_interval.as_nanos() as u64,
+            sampling_last_reset_ns: AtomicU64::new(0),
+            sampling_count: AtomicU64::new(0),
         }
     }
 
@@ -79,36 +91,38 @@ impl JsonSnapshotProgressReporter {
     }
 
     fn emit_status_update(&self) {
-        let processed_items = self
-            .processed_items
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let processed_bytes = self
-            .processed_bytes
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let processed_items = self.processed_items.load(Ordering::Relaxed);
+        let processed_bytes = self.processed_bytes.load(Ordering::Relaxed);
         let total_items = self
             .expected_items
             .read()
             .as_ref()
-            .map(|a| a.load(std::sync::atomic::Ordering::Relaxed));
+            .map(|a| a.load(Ordering::Relaxed));
         let total_bytes = self
             .expected_bytes
             .read()
             .as_ref()
-            .map(|a| a.load(std::sync::atomic::Ordering::Relaxed));
+            .map(|a| a.load(Ordering::Relaxed));
 
-        let active_files = self
-            .active_files
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>();
+        let mut active_files_vec = {
+            let active = self.active_files.lock().unwrap();
+            active
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+        };
+
+        // Add sampled paths to the list
+        {
+            let mut sampled = self.sampled_paths.lock().unwrap();
+            for p in sampled.drain(..) {
+                active_files_vec.push(p.display().to_string());
+            }
+        }
 
         let elapsed_seconds = self.start_time.elapsed().as_secs_f64();
 
-        let scan_finished = self
-            .scan_finished
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let scan_finished = self.scan_finished.load(Ordering::Relaxed);
 
         self.json_reporter.emit(
             "status_update",
@@ -117,7 +131,7 @@ impl JsonSnapshotProgressReporter {
                 processed_bytes,
                 total_items,
                 total_bytes,
-                active_files,
+                active_files: active_files_vec,
                 elapsed_seconds,
                 scan_finished,
             },
@@ -127,12 +141,43 @@ impl JsonSnapshotProgressReporter {
 
 impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     fn processing_node(&self, path: &std::path::Path, _diff: NodeDiff, size_hint: Option<u64>) {
-        let should_track =
-            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+            .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
-        if should_track {
+        if is_slow {
             let mut active = self.active_files.lock().unwrap();
             active.insert(path.to_path_buf());
+        } else {
+            // Budgeted sampling for small files (Global N per T)
+            let elapsed_ns = self.start_time.elapsed().as_nanos() as u64;
+
+            let last_reset = self.sampling_last_reset_ns.load(Ordering::Relaxed);
+
+            if elapsed_ns.saturating_sub(last_reset) >= self.sampling_interval_ns {
+                // New time slot: reset budget and clear stale samples
+                if self
+                    .sampling_last_reset_ns
+                    .compare_exchange(
+                        last_reset,
+                        elapsed_ns,
+                        std::sync::atomic::Ordering::SeqCst,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    self.sampling_count.store(1, Ordering::Relaxed);
+                    let mut guard = self.sampled_paths.lock().unwrap();
+                    guard.clear();
+                    guard.push(path.to_path_buf());
+                }
+            } else {
+                // Current time slot: check remaining budget
+                let count = self.sampling_count.fetch_add(1, Ordering::Relaxed);
+                if (count as usize) < self.sampling_limit {
+                    let mut guard = self.sampled_paths.lock().unwrap();
+                    guard.push(path.to_path_buf());
+                }
+            }
         }
         if self.should_emit_update() {
             self.emit_status_update();
@@ -140,13 +185,12 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     }
 
     fn processed_node(&self, path: &std::path::Path, _diff: NodeDiff, size_hint: Option<u64>) {
-        self.processed_items
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.processed_items.fetch_add(1, Ordering::Relaxed);
 
-        let should_track =
-            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+            .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
-        if should_track {
+        if is_slow {
             let mut active = self.active_files.lock().unwrap();
             active.remove(path);
         }
@@ -156,8 +200,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     }
 
     fn processed_bytes(&self, bytes: u64) {
-        self.processed_bytes
-            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        self.processed_bytes.fetch_add(bytes, Ordering::Relaxed);
         if self.should_emit_update() {
             self.emit_status_update();
         }
@@ -167,7 +210,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
         let mut lock = self.expected_items.write();
         match lock.as_ref() {
             Some(a) => {
-                a.fetch_add(val, std::sync::atomic::Ordering::Relaxed);
+                a.fetch_add(val, Ordering::Relaxed);
             }
             None => {
                 let _ = lock.insert(AtomicU64::new(val));
@@ -179,7 +222,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
         let mut lock = self.expected_bytes.write();
         match lock.as_ref() {
             Some(a) => {
-                a.fetch_add(val, std::sync::atomic::Ordering::Relaxed);
+                a.fetch_add(val, Ordering::Relaxed);
             }
             None => {
                 let _ = lock.insert(AtomicU64::new(val));
@@ -188,8 +231,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     }
 
     fn scan_finished(&self) {
-        self.scan_finished
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.scan_finished.store(true, Ordering::Relaxed);
     }
 
     fn error(&self, msg: &str) {

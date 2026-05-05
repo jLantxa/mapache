@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         Arc,
@@ -28,36 +29,60 @@ enum UiEvent {
     Shutdown,
 }
 
-fn ui_loop(rx: Receiver<UiEvent>, update_interval: Duration, spinners: Vec<ProgressBar>) {
+fn ui_loop(
+    rx: Receiver<UiEvent>,
+    update_interval: Duration,
+    spinners: Vec<ProgressBar>,
+    sampled_paths: Arc<Mutex<VecDeque<PathBuf>>>,
+) {
     let slots_limit = spinners.len();
     let mut active: Vec<PathBuf> = Vec::with_capacity(slots_limit);
+    let mut display_queue: VecDeque<PathBuf> = VecDeque::with_capacity(slots_limit);
 
-    // Throttle UI updates
-    let mut last_update = Instant::now();
+    // Throttle UI redraws
+    let mut last_redraw = Instant::now();
 
-    while let Ok(ev) = rx.recv() {
-        match ev {
-            UiEvent::Start(path) => {
+    loop {
+        let ev_res = rx.recv_timeout(update_interval);
+        match ev_res {
+            Ok(UiEvent::Start(path)) => {
                 if !active.contains(&path) {
                     active.push(path);
                 }
             }
-            UiEvent::Done(path) => {
+            Ok(UiEvent::Done(path)) => {
                 if let Some(pos) = active.iter().position(|x| x == &path) {
                     active.remove(pos);
                 }
             }
-            UiEvent::Shutdown => break,
+            Ok(UiEvent::Shutdown) => break,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
 
-        // Only redraw if the channel is drained OR enough time has passed.
-        // This ensures "snappy" updates when idle, but "batched" updates during bursts.
-        if rx.is_empty() || last_update.elapsed() >= update_interval {
+        let now = Instant::now();
+        if rx.is_empty() || now.duration_since(last_redraw) >= update_interval {
+            // Drain sampled paths from shared state into our display queue
+            {
+                let mut guard = sampled_paths.lock();
+                while let Some(path) = guard.pop_front() {
+                    display_queue.push_back(path);
+                    if display_queue.len() > slots_limit {
+                        display_queue.pop_front();
+                    }
+                }
+            }
+
             for (i, spinner) in spinners.iter().enumerate().take(slots_limit) {
-                let path = active.get(i).cloned().unwrap_or_default();
+                let path = if i < active.len() {
+                    active[i].clone()
+                } else {
+                    display_queue.pop_front().unwrap_or_default()
+                };
+
                 spinner.set_message(abbreviate_path(&path, defaults::MAX_PATH_DISPLAY_LEN));
             }
-            last_update = Instant::now();
+            last_redraw = now;
         }
     }
 }
@@ -78,6 +103,15 @@ pub struct CliSnapshotProgressReporter {
 
     ui_tx: Sender<UiEvent>,
     ui_stop: AtomicBool,
+
+    // Sampling budget (Global across threads)
+    sampled_paths: Arc<Mutex<VecDeque<PathBuf>>>,
+    sampling_limit: usize,
+    sampling_interval_ns: u64,
+    sampling_last_reset_ns: AtomicU64,
+    sampling_count: AtomicU64,
+    start_time: Instant,
+
     _ui_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -226,9 +260,18 @@ impl CliSnapshotProgressReporter {
         // ---------------- UI Thread ----------------
         let (ui_tx, ui_rx) = crossbeam_channel::unbounded::<UiEvent>();
         let spinners_for_thread = file_spinners.clone();
+        let sampled_paths = Arc::new(Mutex::new(VecDeque::with_capacity(num_display_items)));
+        let sampled_paths_for_thread = Arc::clone(&sampled_paths);
         let ui_thread = Some(thread::spawn(move || {
-            ui_loop(ui_rx, refresh_interval, spinners_for_thread);
+            ui_loop(
+                ui_rx,
+                refresh_interval,
+                spinners_for_thread,
+                sampled_paths_for_thread,
+            );
         }));
+
+        let start_time = Instant::now();
 
         Self {
             mp,
@@ -242,6 +285,12 @@ impl CliSnapshotProgressReporter {
             verbosity,
             ui_tx,
             ui_stop: AtomicBool::new(false),
+            sampled_paths,
+            sampling_limit: num_display_items,
+            sampling_interval_ns: refresh_interval.as_nanos() as u64,
+            sampling_last_reset_ns: AtomicU64::new(0),
+            sampling_count: AtomicU64::new(0),
+            start_time,
             _ui_thread: Mutex::new(ui_thread),
         }
     }
@@ -290,16 +339,47 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
         }
 
         // Optimization: Only show "slow" items in the spinner.
-        // Files under the threshold are processed so fast that showing them just adds overhead.
-        let is_slow =
-            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+        // Files under the threshold are sampled.
+        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+            .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if !self.file_spinners.is_empty()
             && diff != NodeDiff::Deleted
             && diff != NodeDiff::Unchanged
-            && is_slow
         {
-            let _ = self.ui_tx.try_send(UiEvent::Start(path.to_path_buf()));
+            if is_slow {
+                let _ = self.ui_tx.try_send(UiEvent::Start(path.to_path_buf()));
+            } else {
+                // Budgeted sampling for small files (Global N per T)
+                let elapsed_ns = self.start_time.elapsed().as_nanos() as u64;
+
+                let last_reset = self.sampling_last_reset_ns.load(Ordering::Relaxed);
+
+                if elapsed_ns.saturating_sub(last_reset) >= self.sampling_interval_ns {
+                    // New time slot: reset budget and clear stale samples
+                    if self
+                        .sampling_last_reset_ns
+                        .compare_exchange(
+                            last_reset,
+                            elapsed_ns,
+                            Ordering::SeqCst,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        self.sampling_count.store(1, Ordering::Relaxed);
+                        let mut guard = self.sampled_paths.lock();
+                        guard.clear();
+                        guard.push_back(path.to_path_buf());
+                    }
+                } else {
+                    // Current time slot: check remaining budget
+                    let count = self.sampling_count.fetch_add(1, Ordering::Relaxed);
+                    if (count as usize) < self.sampling_limit {
+                        self.sampled_paths.lock().push_back(path.to_path_buf());
+                    }
+                }
+            }
         }
     }
 
@@ -308,8 +388,8 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
             self.companion_bar.inc(1);
         }
 
-        let is_slow =
-            defaults::UI_PROGRESS_ITEM_MIN_SIZE.is_none_or(|t| size_hint.is_none_or(|s| s >= t));
+        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+            .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if !self.ui_stop.load(Ordering::Relaxed)
             && !self.file_spinners.is_empty()

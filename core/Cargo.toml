@@ -78,4 +78,4 @@ xz2 = "0.1.7"
 
 [features]
 default = ["fuse"]
-fuse = ["fuser"]   #FUSE for mount command
+fuse = ["fuser"] #FUSE for mount command

@@ -122,7 +122,7 @@ impl std::fmt::Display for ID {
     }
 }
 
-/// Implementation  of Debug for ID.
+/// Implementation of Debug for ID.
 impl std::fmt::Debug for ID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_hex())
@@ -234,14 +234,14 @@ pub(crate) async fn rewrite_snapshot_tree(
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     // Canonicalize exclude paths relative to snapshot root
-    let cannonical_excludes: Option<Vec<PathBuf>> = excludes.map(|exclude_paths| {
+    let canonical_excludes: Option<Vec<PathBuf>> = excludes.map(|exclude_paths| {
         exclude_paths
             .iter()
             .map(|path| snapshot.root.join(path))
             .collect()
     });
 
-    let path_filter = PathFilter::new(None, cannonical_excludes.clone());
+    let path_filter = PathFilter::new(None, canonical_excludes.clone());
 
     // Filter paths to retain only those allowed
     let mut paths = snapshot.paths.clone();
@@ -255,7 +255,7 @@ pub(crate) async fn rewrite_snapshot_tree(
         Some(snapshot.tree),
         snapshot.root.clone(),
         None,
-        cannonical_excludes,
+        canonical_excludes,
     )
     .await?;
 

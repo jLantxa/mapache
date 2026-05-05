@@ -289,7 +289,7 @@ impl Repository {
         Ok((repo, secure_storage, lock_handle))
     }
 
-    /// Try to open a repository  without acquiring a lock.
+    /// Try to open a repository without acquiring a lock.
     #[allow(clippy::type_complexity)]
     pub async fn try_open_unlocked(
         auth: &Auth,
@@ -732,7 +732,7 @@ impl Repository {
                 2 * mapache::ID_LENGTH
             );
         } else if prefix.is_empty() {
-            // Although it is technically posible to use an empty prefix, which would find a match
+            // Although it is technically possible to use an empty prefix, which would find a match
             // if only one file of the type exists. let's consider this invalid as it can be
             // potentially ambiguous or lead to errors.
             bail!("Prefix cannot be empty");

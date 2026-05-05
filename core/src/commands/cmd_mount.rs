@@ -56,11 +56,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         bail!("Mountpoint must be a directory");
     }
 
-    let cannonical_mountpoint = fs::get_absolute_normalized_path(&actual_mountpoint)?;
+    let canonical_mountpoint = fs::get_absolute_normalized_path(&actual_mountpoint)?;
 
     // Don't allow mounting on the repo path
     if let BackendUrl::Local(repo_path) = BackendUrl::from(&global_args.repo)?
-        && cannonical_mountpoint == fs::get_absolute_normalized_path(&repo_path)?
+        && canonical_mountpoint == fs::get_absolute_normalized_path(&repo_path)?
     {
         bail!("Cannot mount the repository on itself");
     }
@@ -86,13 +86,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 );
             }
 
-            ui::cli::log!("Mounting repository in {}", cannonical_mountpoint.display());
+            ui::cli::log!("Mounting repository in {}", canonical_mountpoint.display());
             ui::cli::log!(
                 "Press {} to finish or unmount the filesystem manually.",
                 "Ctrl+C".bold()
             );
 
-            let mount_path = cannonical_mountpoint.clone();
+            let mount_path = canonical_mountpoint.clone();
             let metadata_only = args.metadata_only;
             let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
 
@@ -119,17 +119,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                 } => {
                     ui::cli::log!("Interrupt received. Unmounting...");
-                    let _ = MapacheFS::unmount(&cannonical_mountpoint);
+                    let _ = MapacheFS::unmount(&canonical_mountpoint);
                 }
             }
 
             if created_mountpoint {
                 ui::cli::verbose_1!(
                     "Removing created mountpoint {}",
-                    cannonical_mountpoint.display()
+                    canonical_mountpoint.display()
                 );
 
-                let _ = std::fs::remove_dir_all(&cannonical_mountpoint);
+                let _ = std::fs::remove_dir_all(&canonical_mountpoint);
             }
 
             Ok(())

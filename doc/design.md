@@ -58,7 +58,7 @@ repo
 
 Mapache is a de-duplicating, incremental backup program. It implements a
 content-defined chunking algorithm to split files into small chunks. Every chunk
-is identified by the hash of its raw data, or ID. This algorithm is able do
+is identified by the hash of its raw data, or ID. This algorithm is able to
 detect content boundaries, so when you modify the file, the algorithm can detect
 the new data added as a series of new chunks.
 All these file chunks, or `data blobs` are stored in the `objects` directory,
@@ -76,7 +76,7 @@ and attributes.
 Mapache stores the tree metadata as blobs in the object storage. File nodes
 contain the list of data blobs that constitute its contents, symlinks contain
 the target path, directory nodes have a reference to its own subtree, etc. These
-medatada blobs are also deduplicated so that if two trees are exactly
+metadata blobs are also deduplicated so that if two trees are exactly
 identical, there only exists one copy in the object storage. This deduplication
 reduces the amount of data necessary to store the snapshot metadata, since most
 of the time a snapshot only introduces a few modified or new trees.
@@ -213,7 +213,7 @@ The `manifest` file is compressed and encrypted with the master key.
 ### Snapshots
 
 The `snapshot` file contains metadata about a snapshot: timestamp, user name,
-host name,paths, root tree, summary, etc.
+host name, paths, root tree, summary, etc.
 The file name (ID) is the hash of the encoded content.
 
 ```json
@@ -279,8 +279,8 @@ Tree and data blobs are stored in separate packs. The data blobs contain chunks
 of the file contents. The tree blob contain metadata about the file system tree
 nodes in JSON format. Data and tree blobs are stored in pack files in the same
 way. Each tree is stored as a single blob. A tree node can be a file, directory,
-symlinkm etc. Directories have a `tree` field which points to its subtree. File
-nodes have a `blobs` field with contains a list of its data blobs in order.
+symlink, etc. Directories have a `tree` field which points to its subtree. File
+nodes have a `blobs` field which contains a list of its data blobs in order.
 Symlinks have a field `symlink_info` which contains metadata about the target
 path and node type of the target.
 

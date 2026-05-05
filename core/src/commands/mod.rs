@@ -62,7 +62,7 @@ pub use error::{ToExitCode, fail};
     name = "mapache",
     version = THIS_MAPACHE_VERSION,
     about = "🦝 mapache backup program",
-    long_about = "mapache is a fast, secure, efficient and deduplicated program \
+    long_about = "mapache is a fast, secure, efficient and deduplicating program \
         to make backup copies of your files."
 )]
 pub struct Cli {

@@ -38,7 +38,7 @@ russh = { version = "0.60.2", default-features = false, features = [
   "rsa",
 ] }
 russh-sftp = "2.1.2"
-rust-s3 = { version = "0.37.1", default-features = false, features = [
+rust-s3 = { version = "0.37.2", default-features = false, features = [
   "with-tokio",
 ] }
 rustc-hash = "2.1.2"

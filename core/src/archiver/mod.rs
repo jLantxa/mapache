@@ -9,6 +9,7 @@ pub(crate) mod tree_serializer;
 
 use std::{
     collections::BTreeSet,
+    path::Path,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -156,8 +157,9 @@ pub(crate) async fn snapshot(
     // ---------------------------------------------------------------------
     // Pipeline Channels
     // ---------------------------------------------------------------------
-    let (diff_tx, diff_rx) = mpsc::channel(num_readers * 4);
-    let (processed_tx, mut processed_rx) = mpsc::channel(1024);
+    // We use a larger buffer for many small files to reduce backpressure on the producer.
+    let (diff_tx, diff_rx) = mpsc::channel(num_readers * 128);
+    let (processed_tx, mut processed_rx) = mpsc::channel(4096);
 
     // ---------------------------------------------------------------------
     // Stage 1: Diff Producer Task
@@ -287,7 +289,8 @@ pub(crate) async fn snapshot(
     })
 }
 
-/// Spawns a scanner task.
+/// Spawns a background scanner task to estimate the total size and item count.
+/// This implementation uses a parallel recursive walk with `rayon` for maximum speed.
 fn spawn_scanner_task(
     no_scan: bool,
     absolute_source_paths: Vec<PathBuf>,
@@ -300,40 +303,86 @@ fn spawn_scanner_task(
             return;
         }
 
-        let mut scan_stream =
-            match FSNodeStream::from_paths(absolute_source_paths, exclude_paths).await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    status.signal_fatal(anyhow!("Scanner failed to start: {e}"));
-                    return;
-                }
-            };
+        let filter = Arc::new(crate::fs::filter::PathFilter::new(
+            None,
+            Some(exclude_paths),
+        ));
 
-        while let Some(item) = scan_stream.next().await {
-            // Exit if user requested shutdown or another part of the pipeline failed
-            if status.is_failed() || status.is_finished() {
-                break;
+        let status_for_blocking = status.clone();
+        let reporter_for_blocking = progress_reporter.clone();
+        let filter_for_blocking = filter.clone();
+
+        let res = tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+            absolute_source_paths.into_par_iter().for_each(|path| {
+                parallel_scan_recursive(
+                    &path,
+                    filter_for_blocking.clone(),
+                    status_for_blocking.clone(),
+                    reporter_for_blocking.clone(),
+                );
+            });
+        })
+        .await;
+
+        if let Err(e) = res {
+            status.signal_fatal(anyhow!("Scanner panicked or failed: {e}"));
+        }
+
+        progress_reporter.scan_finished();
+    });
+}
+
+fn parallel_scan_recursive(
+    path: &Path,
+    filter: Arc<crate::fs::filter::PathFilter>,
+    status: Arc<PipelineStatus>,
+    progress_reporter: Arc<dyn SnapshotProgressReporter>,
+) {
+    // Exit early if user requested shutdown or another part of the pipeline failed
+    if status.is_failed() || status.is_finished() {
+        return;
+    }
+
+    if !filter.allow(path) {
+        return;
+    }
+
+    match crate::fs::node::Node::from_path_sync(path) {
+        Ok(node) => {
+            progress_reporter.add_expected_items(1);
+            if node.is_file() {
+                progress_reporter.add_expected_bytes(node.metadata.size);
             }
 
-            match item {
-                Ok((_path, Ok(stream_node))) => {
-                    let node = stream_node.node;
-                    progress_reporter.add_expected_items(1);
-                    if node.is_file() {
-                        progress_reporter.add_expected_bytes(node.metadata.size);
+            if node.is_dir() {
+                match std::fs::read_dir(path) {
+                    Ok(entries) => {
+                        use rayon::prelude::*;
+                        // par_bridge allows us to process the directory entries in parallel.
+                        entries.par_bridge().for_each(|entry_res| {
+                            if let Ok(entry) = entry_res {
+                                parallel_scan_recursive(
+                                    &entry.path(),
+                                    filter.clone(),
+                                    status.clone(),
+                                    progress_reporter.clone(),
+                                );
+                            }
+                        });
                     }
-                }
-                Ok((path, Err(e))) => {
-                    progress_reporter.warning(&format!("Error scanning {}: {}", path.display(), e));
-                }
-                Err(e) => {
-                    status.signal_fatal(
-                        anyhow!(e).context("The scanner failed to traverse target paths"),
-                    );
-                    return;
+                    Err(e) => {
+                        progress_reporter.warning(&format!(
+                            "Error reading directory {}: {}",
+                            path.display(),
+                            e
+                        ));
+                    }
                 }
             }
         }
-        progress_reporter.scan_finished();
-    });
+        Err(e) => {
+            progress_reporter.warning(&format!("Error scanning {}: {}", path.display(), e));
+        }
+    }
 }

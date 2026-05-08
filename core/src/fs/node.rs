@@ -309,6 +309,30 @@ impl Metadata {
             m.rdev = Some(Self::makedev(sx.stx_rdev_major, sx.stx_rdev_minor));
         }
 
+        // Populate linux_flags from stx_attributes.
+        // This avoids a separate ioctl() call later for the most common flags.
+        // Many statx attributes (like IMMUTABLE, APPEND) have the same bit values
+        // as the FS_*_FL constants used by the ioctl.
+        const STATX_ATTR_COMPRESSED: u64 = 0x0004;
+        const STATX_ATTR_IMMUTABLE: u64 = 0x0010;
+        const STATX_ATTR_APPEND: u64 = 0x0020;
+        const STATX_ATTR_NODUMP: u64 = 0x0040;
+        const STATX_ATTR_NOATIME: u64 = 0x0080;
+        const STATX_ATTR_ENCRYPTED: u64 = 0x0800;
+        const STATX_ATTR_VERITY: u64 = 0x100000;
+        const STATX_ATTR_DAX: u64 = 0x200000;
+
+        const SUPPORTED_FLAGS_MASK: u64 = STATX_ATTR_COMPRESSED
+            | STATX_ATTR_IMMUTABLE
+            | STATX_ATTR_APPEND
+            | STATX_ATTR_NODUMP
+            | STATX_ATTR_NOATIME
+            | STATX_ATTR_ENCRYPTED
+            | STATX_ATTR_VERITY
+            | STATX_ATTR_DAX;
+
+        m.linux_flags = Some((sx.stx_attributes & SUPPORTED_FLAGS_MASK) as u32);
+
         m
     }
 

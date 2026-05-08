@@ -50,15 +50,13 @@ pub fn assert_times_equal(t1: std::time::SystemTime, t2: std::time::SystemTime) 
         return;
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::time::UNIX_EPOCH;
-        let d1 = t1.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let d2 = t2.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let diff = d1.abs_diff(d2);
-        if diff.as_secs() < 1 {
-            return;
-        }
+    use std::time::UNIX_EPOCH;
+    let d1 = t1.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d2 = t2.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let diff = d1.abs_diff(d2);
+
+    if diff.as_secs() < 1 {
+        return;
     }
 
     assert_eq!(t1, t2);

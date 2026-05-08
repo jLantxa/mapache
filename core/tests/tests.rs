@@ -42,6 +42,7 @@ mod test_utils {
                 continue;
             }
 
+            entry.set_preserve_mtime(true);
             entry.unpack_in(extract_to_dir)?;
         }
 

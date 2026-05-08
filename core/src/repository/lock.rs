@@ -57,19 +57,30 @@ pub struct Lock {
 
     /// The ID of the process that acquired the lock.
     pid: u32,
+
+    /// Context about the process that acquired the lock (e.g., command line arguments).
+    #[serde(default)]
+    context: Vec<String>,
+
+    /// When the lock was originally acquired.
+    #[serde(default)]
+    creation_time: Option<DateTime<Local>>,
 }
 
 impl Lock {
     pub fn new(exclusive: bool) -> Self {
         let (hostname, username) = utils::get_system_info();
+        let now = Local::now();
 
         Self {
             id: ID::new_random(),
-            timestamp: Local::now(),
+            timestamp: now,
             exclusive,
             hostname: hostname.unwrap_or_default(),
             username: username.unwrap_or_default(),
             pid: std::process::id(),
+            context: std::env::args().collect(),
+            creation_time: Some(now),
         }
     }
 
@@ -85,6 +96,8 @@ impl Lock {
             hostname: hostname.unwrap_or_default(),
             username: username.unwrap_or_default(),
             pid: std::process::id(),
+            context: vec!["test".to_string()],
+            creation_time: Some(timestamp),
         }
     }
 
@@ -104,12 +117,83 @@ impl Lock {
         self.exclusive
     }
 
+    pub fn context(&self) -> &[String] {
+        &self.context
+    }
+
+    pub fn creation_time(&self) -> Option<DateTime<Local>> {
+        self.creation_time
+    }
+
+    pub fn hostname(&self) -> &str {
+        &self.hostname
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Checks if the lock is expired based on the refresh timestamp.
     pub fn is_expired(&self) -> bool {
         let now = Local::now();
         let expire_timeout_chrono = chrono::Duration::from_std(LOCK_EXPIRE_TIMEOUT)
             .expect("LOCK_EXPIRE_TIMEOUT should fit into chrono::Duration");
 
         now.signed_duration_since(self.timestamp) > expire_timeout_chrono
+    }
+
+    /// Checks if the process that acquired the lock is still alive.
+    ///
+    /// This only works if the lock was acquired on the same host.
+    pub fn process_alive(&self) -> bool {
+        let (current_hostname, _) = utils::get_system_info();
+        if self.hostname.is_empty()
+            || current_hostname.is_none()
+            || self.hostname != current_hostname.unwrap()
+        {
+            // We can't know for sure if the process is alive on another host.
+            return true;
+        }
+
+        #[cfg(unix)]
+        {
+            // On Unix, sending signal 0 to a process is a safe way to check its existence.
+            unsafe { libc::kill(self.pid as libc::pid_t, 0) == 0 }
+        }
+
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+            use windows_sys::Win32::System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+            };
+
+            unsafe {
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, self.pid);
+                if handle == 0 {
+                    return false;
+                }
+                let mut exit_code = 0;
+                let res = GetExitCodeProcess(handle, &mut exit_code);
+                CloseHandle(handle);
+
+                res != 0 && exit_code == STILL_ACTIVE as u32
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            true
+        }
+    }
+
+    /// A lock is considered stale if it's expired OR if we can prove the process is dead.
+    pub fn is_stale(&self) -> bool {
+        self.is_expired() || !self.process_alive()
     }
 }
 

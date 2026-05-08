@@ -26,7 +26,7 @@ use crate::{
         storage::{EncodingContext, SecureStorage},
     },
     ui::{self},
-    utils::collections::IdSet,
+    utils::{self, collections::IdSet},
 };
 
 use super::{
@@ -1188,8 +1188,9 @@ impl Repository {
                 continue;
             }
 
-            // Clean up expired locks from other processes
-            if lock.is_expired() {
+            // Clean up stale locks from other processes.
+            // A lock is stale if it's expired OR if the process is dead on the same host.
+            if lock.is_stale() {
                 let _ = self.delete_file(ContentIdType::Lock, lock.id(), None).await;
                 continue;
             }
@@ -1201,10 +1202,25 @@ impl Repository {
                     .delete_file(ContentIdType::Lock, &new_lock_id, None)
                     .await;
 
-                bail!(
-                    "Conflict detected with existing lock (ID: {}).",
-                    lock.id().to_short_hex(4)
+                let info = format!(
+                    "Conflict detected with existing lock.\n\
+                     ID:      {}\n\
+                     Host:    {}\n\
+                     User:    {}\n\
+                     PID:     {}\n\
+                     Started: {}\n\
+                     Context: {}",
+                    lock.id().to_short_hex(4),
+                    lock.hostname(),
+                    lock.username(),
+                    lock.pid(),
+                    lock.creation_time()
+                        .map(|t| utils::pretty_print_timestamp(&t))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    lock.context().join(" ")
                 );
+
+                bail!(info);
             }
         }
 

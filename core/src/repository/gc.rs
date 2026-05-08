@@ -527,7 +527,7 @@ async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
     let mut num_deleted_locks = 0;
 
     for lock in locks {
-        if lock.is_expired() {
+        if lock.is_stale() {
             size_freed += repo
                 .delete_file(ContentIdType::Lock, lock.id(), None)
                 .await?;
@@ -537,7 +537,7 @@ async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
 
     ui::cli::log!(
         "Deleted {}",
-        utils::format_count(num_deleted_locks, "expired lock", "expired locks")
+        utils::format_count(num_deleted_locks, "stale lock", "stale locks")
     );
 
     Ok(size_freed)

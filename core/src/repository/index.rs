@@ -591,6 +591,22 @@ impl MasterIndex {
         }
     }
 
+    pub fn for_each_pack_id<F>(&self, mut f: F)
+    where
+        F: FnMut(&ID),
+    {
+        let lock = self.inner.read();
+        let mut seen = IdSet::default();
+
+        for idx in &lock.indices {
+            for pack_id in idx.pack_ids.iter() {
+                if seen.insert(*pack_id) {
+                    f(pack_id);
+                }
+            }
+        }
+    }
+
     pub fn ids(&self) -> IdSet<ID> {
         let lock = self.inner.read();
 

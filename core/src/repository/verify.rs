@@ -1,16 +1,13 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
     backend::StorageBackend,
-    mapache::{ContentIdType, ID},
+    mapache::{ContentIdType, ID, defaults::DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE},
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils::collections::IdSet,
 };
-
-use futures::{FutureExt, StreamExt};
 
 pub struct PackStats {
     pub dangling: usize,
@@ -22,11 +19,7 @@ pub struct PackStats {
 
 /// Verify the checksum and contents of a pack.
 ///
-/// This performs a "Physical Verification":
-/// 1. Reads the ENTIRE file from the backend to verify the file-level ID (bit-rot check).
-/// 2. Parses the pack footer from the memory-resident data.
-/// 3. Decrypts and verifies EVERY blob in the pack in parallel (CPU-bound).
-/// 4. Hashes the plaintext and compares it to the ID.
+/// This performs a "Physical Verification" with constant memory usage.
 pub async fn verify_pack(
     repo: Arc<Repository>,
     backend: Arc<dyn StorageBackend>,
@@ -35,84 +28,108 @@ pub async fn verify_pack(
 ) -> Result<PackStats> {
     let pack_path = repo.get_path(ContentIdType::Pack, &pack_id);
 
-    // Bit-rot check: Verify full-file hash matches the filename (ID)
-    // By reading the entire file once, we avoid subsequent I/O during blob verification.
-    let raw_data = backend
-        .read(&crate::backend::Handle::new(&pack_path), 0, 0)
-        .await
-        .context("Failed to read pack file for bit-rot check")?;
+    // Get footer first to know blob locations.
+    let pack_header =
+        Packer::parse_pack_footer(repo.as_ref(), backend.as_ref(), &secure_storage, &pack_id)
+            .await?;
 
-    let index = repo.index();
+    // Get pack size
+    let attr = backend.lstat(&pack_path).await?;
+    let pack_size = attr.size.ok_or_else(|| anyhow!("Pack size unknown"))?;
 
-    // Move CPU intensive work (hashing, decryption) to blocking thread pool
-    tokio::task::spawn_blocking(move || {
-        let file_hash = ID::from_content(&raw_data);
-        let bit_rot = file_hash != pack_id;
+    let mut bit_rot_hasher = crate::mapache::hash::Hasher::new();
+    let mut current_file_offset: u64 = 0;
+    const CHUNK_SIZE: usize = DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE as usize;
 
-        // Verify Footer / Metadata
-        let pack_header = Packer::parse_footer(&secure_storage, &raw_data)
-            .context("Failed to parse pack footer")?;
+    let mut verified_blobs = 0;
+    let mut corrupt_blobs = Vec::new();
+    let mut bytes_processed = 0;
 
-        // Verify Data Integrity (Parallel)
-        // This is now purely CPU bound (decryption + hashing) since we have raw_data in memory.
-        let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
-            .par_iter()
-            .fold(
-                || (0, Vec::new(), 0),
-                |(mut v_count, mut corrupt, mut bytes), blob_desc| {
-                    let start = blob_desc.offset as usize;
-                    let end = (blob_desc.offset + blob_desc.length) as usize;
+    let mut next_blob_idx = 0;
+    let mut current_blob_data = Vec::with_capacity(CHUNK_SIZE); // Reuse buffer for blobs
 
-                    if end > raw_data.len() {
-                        corrupt.push(blob_desc.id);
-                        return (v_count, corrupt, bytes);
-                    }
-
-                    let data_res = secure_storage.decode(&raw_data[start..end]);
-
-                    match data_res {
-                        Ok(data) => {
-                            let checksum = ID::from_content(&data);
-                            if checksum != blob_desc.id {
-                                corrupt.push(blob_desc.id);
-                            } else {
-                                v_count += 1;
-                            }
-                        }
-                        Err(_) => {
-                            corrupt.push(blob_desc.id);
-                        }
-                    }
-
-                    bytes += blob_desc.length as u64;
-                    (v_count, corrupt, bytes)
-                },
+    // Process the pack file sequentially
+    while current_file_offset < pack_size {
+        let to_read = (pack_size - current_file_offset).min(CHUNK_SIZE as u64) as usize;
+        let chunk = backend
+            .read(
+                &crate::backend::Handle::new(&pack_path),
+                current_file_offset as isize,
+                to_read,
             )
-            .reduce(
-                || (0, Vec::new(), 0),
-                |mut a, mut b| {
-                    a.1.append(&mut b.1);
-                    (a.0 + b.0, a.1, a.2 + b.2)
-                },
-            );
+            .await
+            .context("Failed to read pack chunk during verification")?;
 
-        // Check for Dangling Blobs
-        let mut num_dangling = 0;
-        for blob in &pack_header {
-            if !index.contains(&blob.id) {
-                num_dangling += 1;
+        bit_rot_hasher.update(&chunk);
+        let chunk_start = current_file_offset;
+        let chunk_end = current_file_offset + to_read as u64;
+
+        // Process all blobs that intersect with this chunk
+        while next_blob_idx < pack_header.len() {
+            let desc = &pack_header[next_blob_idx];
+            let blob_start = desc.offset as u64;
+            let blob_end = blob_start + desc.length as u64;
+
+            // If the current blob starts after this chunk, we are done with this chunk
+            if blob_start >= chunk_end {
+                break;
+            }
+
+            // Calculate the intersection of the blob and the current chunk
+            let intersect_start = blob_start.max(chunk_start);
+            let intersect_end = blob_end.min(chunk_end);
+
+            if intersect_start < intersect_end {
+                let start_in_chunk = (intersect_start - chunk_start) as usize;
+                let end_in_chunk = (intersect_end - chunk_start) as usize;
+                current_blob_data.extend_from_slice(&chunk[start_in_chunk..end_in_chunk]);
+            }
+
+            // If we have collected the full blob, verify it
+            if current_blob_data.len() == desc.length as usize {
+                let plaintext_res = secure_storage.decode(&current_blob_data);
+                match plaintext_res {
+                    Ok(plaintext) => {
+                        if ID::from_content(&plaintext) != desc.id {
+                            corrupt_blobs.push(desc.id);
+                        } else {
+                            verified_blobs += 1;
+                        }
+                    }
+                    Err(_) => {
+                        corrupt_blobs.push(desc.id);
+                    }
+                }
+                bytes_processed += desc.length as u64;
+
+                // CRITICAL: Reset the blob buffer for the next one
+                current_blob_data.clear();
+                next_blob_idx += 1;
+            } else {
+                // Blob continues in the next chunk
+                break;
             }
         }
 
-        Ok(PackStats {
-            dangling: num_dangling,
-            verified_blobs,
-            corrupt_blobs,
-            bytes_processed,
-            bit_rot,
-        })
+        current_file_offset = chunk_end;
+    }
+
+    let bit_rot = bit_rot_hasher.finalize() != pack_id;
+    let index = repo.index();
+    let mut num_dangling = 0;
+    for blob in &pack_header {
+        if !index.contains(&blob.id) {
+            num_dangling += 1;
+        }
+    }
+
+    Ok(PackStats {
+        dangling: num_dangling,
+        verified_blobs,
+        corrupt_blobs,
+        bytes_processed,
+        bit_rot,
     })
-    .await?
 }
 
 /// Verify that all blobs referenced by a snapshot are indexed.
@@ -120,7 +137,7 @@ pub async fn verify_snapshot_refs(
     repo: Arc<Repository>,
     snapshot_id: &ID,
     existing_packs: &IdSet<ID>,
-    verified_trees: Arc<parking_lot::Mutex<IdSet<ID>>>,
+    verified_trees: Arc<crate::utils::collections::ShardedIdSet>,
 ) -> Result<usize> {
     let snapshot = repo.load_snapshot(snapshot_id, None).await?;
     let tree_id = snapshot.tree;
@@ -130,70 +147,41 @@ pub async fn verify_snapshot_refs(
         bail!("Snapshot root tree {} is missing from index", tree_id);
     }
 
-    let mut stack = vec![(PathBuf::new(), tree_id)];
+    let mut stack = vec![tree_id];
     let index = repo.index();
 
-    while !stack.is_empty() {
-        // Drain current stack and start fetching subtrees in parallel with a limit
-        let to_fetch: Vec<_> = std::mem::take(&mut stack);
-        let mut fetch_stream = futures::stream::iter(to_fetch)
-            .map(|(path, current_tree_id)| {
-                // Global Deduplication: Skip if this tree has already been verified
-                let mut seen = verified_trees.lock();
-                if seen.contains(&current_tree_id) {
-                    return futures::future::ready(Ok(None)).left_future();
-                }
-                seen.insert(current_tree_id);
-                drop(seen);
+    while let Some(current_tree_id) = stack.pop() {
+        // Global Deduplication: Skip if this tree has already been verified
+        if !verified_trees.insert(current_tree_id) {
+            continue;
+        }
 
-                let repo = repo.clone();
-                async move {
-                    let tree =
-                        crate::fs::tree::Tree::load_from_repo(repo.as_ref(), &current_tree_id)
-                            .await?;
-                    Ok::<_, anyhow::Error>(Some((path, tree)))
-                }
-                .right_future()
-            })
-            .buffer_unordered(8); // Limit parallel tree loads
+        let tree = crate::fs::tree::Tree::load_from_repo(repo.as_ref(), &current_tree_id).await?;
+        for node in tree.nodes {
+            let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
 
-        while let Some(res) = fetch_stream.next().await {
-            let maybe_tree = res?;
-            if let Some((path, tree)) = maybe_tree {
-                for node in tree.nodes {
-                    let node_path = path.join(&node.name);
-                    let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
-
-                    for id in referenced_ids {
-                        match index.get(id) {
-                            Some(blob_locator) => {
-                                if !existing_packs.contains(&blob_locator.pack_id) {
-                                    bail!(
-                                        "Broken Reference at {:?}: Pack {} referenced by blob {} is missing from storage",
-                                        node_path,
-                                        blob_locator.pack_id,
-                                        id
-                                    );
-                                }
-                            }
-                            None => {
-                                bail!(
-                                    "Broken Reference at {:?}: Blob {} is missing from index",
-                                    node_path,
-                                    id
-                                );
-                            }
+            for id in referenced_ids {
+                match index.get(id) {
+                    Some(blob_locator) => {
+                        if !existing_packs.contains(&blob_locator.pack_id) {
+                            bail!(
+                                "Broken Reference: Pack {} referenced by blob {} is missing from storage",
+                                blob_locator.pack_id,
+                                id
+                            );
                         }
                     }
-
-                    // If it's a directory, push to stack for next round of parallel fetching
-                    if let Some(subtree_id) = node.tree {
-                        stack.push((node_path, subtree_id));
+                    None => {
+                        bail!("Broken Reference: Blob {} is missing from index", id);
                     }
                 }
+            }
+
+            if let Some(subtree_id) = node.tree {
+                stack.push(subtree_id);
             }
         }
     }
 
-    Ok(0) // 0 errors
+    Ok(0)
 }

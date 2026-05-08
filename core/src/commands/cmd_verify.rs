@@ -19,7 +19,7 @@ use crate::{
     fs::tree::SerializedNodeStream,
     mapache::{ID, global::GlobalOpts},
     repository::{
-        snapshot::{Snapshot, SnapshotStream},
+        snapshot::SnapshotStream,
         verify::{verify_pack, verify_snapshot_refs},
     },
     ui::{self, default_bar_draw_target},
@@ -53,7 +53,7 @@ pub struct CmdArgs {
     pub read_packs: bool,
 
     /// Number of packs to process in parallel
-    #[clap(short, long, default_value_t = 8, requires = "read_packs")]
+    #[clap(short, long, default_value_t = 4, requires = "read_packs")]
     pub parallel: usize,
 
     /// Use local cache
@@ -176,9 +176,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             // ------------------------------------------
             ui::cli::log!("{}", "Verifying Index Consistency...".bold());
             let mut missing_packs = IdSet::default();
-            repo.index().for_each_id(|_id, locator| {
-                if !packs_all.contains(&locator.pack_id) {
-                    missing_packs.insert(locator.pack_id);
+            repo.index().for_each_pack_id(|pack_id| {
+                if !packs_all.contains(pack_id) {
+                    missing_packs.insert(*pack_id);
                 }
             });
 
@@ -370,17 +370,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let mut logical_failed_early = false;
             let snapshots_corrupt = AtomicUsize::new(0);
             let mut num_snapshots_total = 0;
-            let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
+            let verified_trees = Arc::new(utils::collections::ShardedIdSet::new());
 
             if (!physical_failed_early || !args.fail_early) && !cleanup_handler.is_interrupted() {
                 ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
                 let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-                let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
+                let mut snapshots: Vec<(ID, chrono::DateTime<chrono::Local>)> = Vec::new();
                 let mut stream = snapshot_stream;
                 while let Some(res) = stream.next().await {
                     match res {
-                        Ok(pair) => snapshots.push(pair),
+                        Ok((id, snapshot)) => snapshots.push((id, snapshot.timestamp)),
                         Err(e) => {
                             ui::cli::error!("Failed to load snapshot: {:?}", e);
                             snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
@@ -392,7 +392,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
 
                 // Sort snapshots by timestamp (oldest first)
-                snapshots.sort_by_key(|(_, s)| s.timestamp);
+                snapshots.sort_by_key(|(_, timestamp)| *timestamp);
                 num_snapshots_total = snapshots.len();
 
                 let stop_flag = AtomicBool::new(false);
@@ -405,7 +405,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                                 && !interrupted_flag.load(Ordering::Relaxed),
                         )
                     })
-                    .map(|(i, (snapshot_id, _snapshot))| {
+                    .map(|(i, (snapshot_id, _))| {
                         let repo = repo.clone();
                         let packs = &packs_all;
                         let verified_trees = verified_trees.clone();
@@ -454,22 +454,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 ui::cli::log!();
                 ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
 
-                let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-                let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
-                while let Some(res) = snapshot_stream.next().await {
-                    match res {
-                        Ok(pair) => snapshots.push(pair),
-                        Err(e) => {
-                            ui::cli::error!(
-                                "Failed to load snapshot for corruption analysis: {:?}",
-                                e
-                            );
-                        }
-                    }
-                }
+                let snapshot_ids = repo.list_snapshot_ids().await?;
 
-                futures::stream::iter(snapshots)
-                    .map(|(snapshot_id, _)| {
+                futures::stream::iter(snapshot_ids)
+                    .map(|snapshot_id| {
                         let repo = repo.clone();
                         let corrupt_blobs = corrupt_blobs.clone();
                         async move {

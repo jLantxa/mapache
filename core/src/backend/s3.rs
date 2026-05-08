@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use s3::{Bucket, Region, creds::Credentials};
 use zeroize::Zeroizing;
 
-use crate::backend::{
-    BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry,
+use crate::{
+    backend::{BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry},
+    mapache::defaults::{S3_MULTIPART_PART_SIZE, S3_MULTIPART_THRESHOLD},
 };
 
 /// A storage backend that interacts with S3-compatible APIs.
@@ -146,15 +147,92 @@ impl StorageBackend for S3Backend {
 
     async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
         let key = self.key_from_path(handle.path);
+        let content_len = contents.len();
 
-        self.retry(|| async {
-            let response = self.bucket.put_object(&key, &contents).await?;
-            if response.status_code() >= 400 {
-                bail!("S3 write failed: HTTP {}", response.status_code());
+        if (content_len as u64) < S3_MULTIPART_THRESHOLD {
+            self.retry(|| async {
+                let response = self.bucket.put_object(&key, &contents).await?;
+                if response.status_code() >= 400 {
+                    bail!("S3 write failed: HTTP {}", response.status_code());
+                }
+                Ok(())
+            })
+            .await
+        } else {
+            // Multipart Upload
+            let content_type = "application/octet-stream";
+            let upload_id = self
+                .retry(|| async {
+                    let init_res = self
+                        .bucket
+                        .initiate_multipart_upload(&key, content_type)
+                        .await?;
+                    Ok(init_res.upload_id)
+                })
+                .await?;
+
+            let mut completed_parts = Vec::new();
+            let mut part_number: u32 = 1;
+            let mut current_offset: usize = 0;
+
+            while current_offset < content_len {
+                let end = (current_offset + S3_MULTIPART_PART_SIZE as usize).min(content_len);
+                let part_data = &contents[current_offset..end];
+
+                let etag_res = self
+                    .retry(|| async {
+                        let part = self
+                            .bucket
+                            .put_multipart_chunk(
+                                part_data.to_vec(),
+                                &key,
+                                part_number,
+                                &upload_id,
+                                content_type,
+                            )
+                            .await?;
+                        Ok(part)
+                    })
+                    .await;
+
+                match etag_res {
+                    Ok(part) => {
+                        completed_parts.push(part);
+                        current_offset = end;
+                        part_number += 1;
+                    }
+                    Err(e) => {
+                        // Abort upload on failure
+                        let _ = self.bucket.abort_upload(&key, &upload_id).await;
+                        return Err(e).context(format!("Failed to upload part {}", part_number));
+                    }
+                }
             }
-            Ok(())
-        })
-        .await
+
+            self.retry(|| async {
+                let complete_res = self
+                    .bucket
+                    .complete_multipart_upload(&key, &upload_id, completed_parts.clone())
+                    .await?;
+                if complete_res.status_code() >= 400 {
+                    bail!(
+                        "S3 multipart complete failed: HTTP {}",
+                        complete_res.status_code()
+                    );
+                }
+                Ok(())
+            })
+            .await
+            .inspect_err(|_e| {
+                // Try to abort on completion failure too
+                tokio::spawn({
+                    let bucket = self.bucket.clone();
+                    let key = key.clone();
+                    let upload_id = upload_id.clone();
+                    async move { bucket.abort_upload(&key, &upload_id).await }
+                });
+            })
+        }
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {

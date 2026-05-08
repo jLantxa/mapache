@@ -67,7 +67,11 @@ xattr = "1.6.1"
 tikv-jemallocator = "0.6.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 rstest = "0.26.1"

@@ -167,21 +167,21 @@ impl Lock {
 
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+            use windows_sys::Win32::Foundation::{CloseHandle, FALSE, STILL_ACTIVE};
             use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
             };
 
             unsafe {
                 let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, self.pid);
-                if handle == 0 {
+                if handle.is_null() {
                     return false;
                 }
                 let mut exit_code = 0;
                 let res = GetExitCodeProcess(handle, &mut exit_code);
                 CloseHandle(handle);
 
-                res != 0 && exit_code == STILL_ACTIVE as u32
+                res != FALSE && exit_code == STILL_ACTIVE as u32
             }
         }
 

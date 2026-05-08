@@ -74,6 +74,10 @@ pub(crate) const UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE: Option<u64> = Some(128 * si
 #[cfg(all(feature = "fuse", unix))]
 pub(crate) const DEFAULT_FUSE_STASH_CACHE_SIZE_MIB: f32 = 64.0;
 
+// --- S3 ---
+pub(crate) const S3_MULTIPART_THRESHOLD: u64 = 128 * size::MiB;
+pub(crate) const S3_MULTIPART_PART_SIZE: u64 = 128 * size::MiB;
+
 // --- Others ---
 /// A default RepoConfig for use in tests.
 pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {

@@ -21,7 +21,9 @@ fn main() {
     print_masks("MASKS", &masks);
 }
 
-/// Calculate the hash value of one byte value.
+/// Hash a single byte using BLAKE3 salted with `"mapache"`.
+///
+/// Returns the first 8 bytes of the hash as a little-endian `u64`.
 fn hash(byte: u8) -> u64 {
     let mut hasher = blake3::Hasher::new();
 
@@ -36,20 +38,23 @@ fn hash(byte: u8) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-/// Generate the Gear table.
+/// Generate the full Gear hash table (256 entries, one per byte value).
 fn generate_gear_table() -> [u64; 256] {
     let gear: [u64; 256] = std::array::from_fn(|i| hash(i as u8));
     gear
 }
 
-/// Generate the Gear table with values shifted 1 bit to the left.
+/// Shift all entries in the Gear table one bit to the left.
+///
+/// The result is used for even-index byte positions in the two-bytes-per-
+/// iteration loop, avoiding a runtime shift operation.
 fn gear_table_ls(gear: &[u64; 256]) -> [u64; 256] {
     let mut gear_ls = *gear;
     gear_ls.iter_mut().for_each(|byte| *byte <<= 1);
     gear_ls
 }
 
-/// Print a table with hex formatting ready to copy to code.
+/// Print a Rust array literal ready for copy-pasting into source code.
 fn print_gear(name: &str, gear: &[u64; 256]) {
     println!("#[rustfmt::skip]\nconst {}: [u64; 256] = [", name);
     for (i, val) in gear.iter().enumerate() {
@@ -64,6 +69,10 @@ fn print_gear(name: &str, gear: &[u64; 256]) {
     println!("];\n");
 }
 
+/// Generate a random bitmask with exactly `num_ones` one-bits.
+///
+/// Bits are selected uniformly at random from positions 0..48 (the lowest
+/// 48 bits of the 64-bit mask). Higher bits (48..64) are never set.
 fn generate_mask(num_ones: u8) -> u64 {
     assert!(
         num_ones > 0 && num_ones <= 48,
@@ -88,6 +97,7 @@ fn generate_mask(num_ones: u8) -> u64 {
     mask
 }
 
+/// Print the MASKS array literal.
 fn print_masks(name: &str, masks: &[u64]) {
     println!("const {}: [u64; {}] = [", name, masks.len());
     for mask in masks {

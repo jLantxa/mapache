@@ -1,5 +1,5 @@
 //! This is an implementation of the [FastCDC](https://ieeexplore.ieee.org/document/9055082)
-//! algorithm by Wen Xia et al published in 2020.
+//! algorithm by Wen Xia et al. published in 2020.
 //! It implements the Content-Defined Chunking algorithm with all the five
 //! optimization techniques described in the paper: Gear-based rolling hashing,
 //! optimized hash judgment, sub-minimum chunk cut-point skipping, normalized
@@ -23,23 +23,31 @@ mod lookup;
 #[cfg(test)]
 mod tests;
 
-pub const TOTAL_MIN_SIZE: usize = 64; // 64 B
-pub const TOTAL_MAX_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
-pub const MIN_NORMAL_SIZE: usize = 256; // 256 B
-pub const MAX_NORMAL_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+/// The absolute minimum chunk size in bytes (64 B).
+pub const TOTAL_MIN_SIZE: usize = 64;
+/// The absolute maximum chunk size in bytes (16 MiB).
+pub const TOTAL_MAX_SIZE: usize = 16 * 1024 * 1024;
+/// The smallest allowed normal (target) chunk size in bytes (256 B).
+pub const MIN_NORMAL_SIZE: usize = 256;
+/// The largest allowed normal (target) chunk size in bytes (4 MiB).
+pub const MAX_NORMAL_SIZE: usize = 4 * 1024 * 1024;
 
 /// Chunk normalization level.
-/// Higher normalization levels result in a narrower distribution of the chunk
-/// sizes around the normal size.
+///
+/// Higher levels produce a narrower chunk size distribution around the normal
+/// size, at the cost of making the cut-point condition stricter (fewer
+/// positions pass the hash judgment). This can slightly reduce the
+/// deduplication ratio because chunk boundaries are less likely to align with
+/// natural content boundaries.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Normalization {
-    /// No normalization.
+    /// No normalization (widest distribution).
     None,
     /// Level 1: low normalization.
     L1,
     /// Level 2: medium normalization.
     L2,
-    /// Level 3: aggressive normalization.
+    /// Level 3: aggressive normalization (narrowest distribution).
     L3,
 }
 
@@ -54,6 +62,11 @@ impl Normalization {
     }
 }
 
+/// FastCDC chunker configured with size bounds and a normalization level.
+///
+/// Holds precomputed masks and references to the static Gear hash tables.
+/// Construct via [`Chunker::new`], then call [`Chunker::cut`] on a buffer or
+/// [`Chunker::stream`] on a [`Read`] source.
 pub struct Chunker {
     min_size: usize,
     normal_size: usize,
@@ -69,7 +82,38 @@ pub struct Chunker {
 }
 
 impl Chunker {
-    /// Initialize a new Chunker with fixed parameters.
+    /// Create a new `Chunker` with the given parameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `min_size` — The minimum chunk size in bytes. Must be ≥ [`TOTAL_MIN_SIZE`].
+    /// * `normal_size` — The target (normal) chunk size in bytes. Must be
+    ///   between `min_size` and `max_size` (inclusive) and ≤ [`MAX_NORMAL_SIZE`].
+    /// * `max_size` — The maximum chunk size in bytes. Must be ≥ `normal_size`
+    ///   and ≤ [`TOTAL_MAX_SIZE`].
+    /// * `normalization` — The normalization level (see [`Normalization`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the following constraints are violated:
+    /// - `min_size ≤ normal_size ≤ max_size`
+    /// - `min_size ≥ TOTAL_MIN_SIZE` (64 B)
+    /// - `max_size ≤ TOTAL_MAX_SIZE` (16 MiB)
+    /// - `normal_size ≤ MAX_NORMAL_SIZE` (4 MiB)
+    /// - `ilog2(normal_size) ± normalization.bits()` is within the mask table
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use chunker::{Chunker, Normalization};
+    ///
+    /// let chunker = Chunker::new(
+    ///     512 * 1024,
+    ///     1024 * 1024,
+    ///     8 * 1024 * 1024,
+    ///     Normalization::L2,
+    /// );
+    /// ```
     pub const fn new(
         min_size: usize,
         normal_size: usize,
@@ -104,7 +148,25 @@ impl Chunker {
         }
     }
 
-    /// Find a cut point in a slice of bytes.
+    /// Find a cut point (chunk boundary) in a byte slice.
+    ///
+    /// Returns the index of the first byte past the cut. If no boundary is
+    /// found within [`min_size`, `max_size`], returns `max_size` (or the slice
+    /// length if shorter).
+    ///
+    /// ## Algorithm
+    ///
+    /// 1. **Sub-minimum skip** — If `len ≤ min_size`, return `len` immediately
+    ///    (no hash checks below the minimum).
+    /// 2. **Alignment** — If the start position is odd, a single byte is
+    ///    consumed to align the loop to even indices.
+    /// 3. **Phase 1** (small mask) — From `min_size` up to the normalization
+    ///    center, use `mask_s` (more one-bits → more positions pass). Two bytes
+    ///    are processed per iteration using both gear and gear_ls tables.
+    /// 4. **Phase 2** (large mask) — From the center up to `max_size`, use
+    ///    `mask_l` (fewer one-bits → fewer positions pass, guaranteeing
+    ///    termination before or at `max_size`).
+    /// 5. **Fallback** — Return `max` if no cut point was found.
     pub fn cut(&self, data: &[u8]) -> usize {
         let len = data.len();
         if len <= self.min_size {
@@ -168,22 +230,29 @@ impl Chunker {
         max
     }
 
-    /// Returns a stream of the chunks of a Read trait object.
+    /// Create a [`ChunkStream`] that yields chunks from a [`Read`] source.
     pub fn stream<R: Read>(&self, source: R) -> ChunkStream<'_, R> {
         ChunkStream::new(source, self, self.max_size)
     }
 }
 
+/// A single chunk produced by the chunker.
+///
+/// Contains the data together with its global offset and byte length.
 pub struct Chunk {
+    /// Global byte offset of this chunk in the original source stream.
     pub offset: usize,
+    /// Number of bytes in this chunk.
     pub length: usize,
+    /// The chunk payload.
     pub data: Vec<u8>,
 }
 
-/// Chunk stream.
+/// Streaming iterator over chunks from a [`Read`] source.
 ///
-/// A chunk stream is an iterator over a Read object that produces a new
-/// chunk every time the next() function is called.
+/// Yields exactly-once reconstruction: concatenating all chunk data in order
+/// reproduces the original source bytes. Each chunk (except possibly the last)
+/// respects the chunker's min/max size constraints.
 pub struct ChunkStream<'a, R: Read> {
     chunker: &'a Chunker,
     source: R,
@@ -192,6 +261,10 @@ pub struct ChunkStream<'a, R: Read> {
 }
 
 impl<'a, R: Read> ChunkStream<'a, R> {
+    /// Create a new chunk stream from a [`Read`] source.
+    ///
+    /// `initial_capacity` hints at the starting buffer size. The internal
+    /// buffer grows as needed, up to `chunker.max_size`.
     pub fn new(source: R, chunker: &'a Chunker, initial_capacity: usize) -> Self {
         Self {
             chunker,
@@ -205,7 +278,9 @@ impl<'a, R: Read> ChunkStream<'a, R> {
 impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
     type Item = Result<Chunk>;
 
-    /// Finds the next cut-point and returns a Chunk until the data is exhausted.
+    /// Read from the source until at least `min_size` bytes are buffered,
+    /// then find a cut point and yield the chunk as a [`Chunk`].
+    /// Flushes any remaining buffered data as the final chunk on EOF.
     fn next(&mut self) -> Option<Self::Item> {
         let max_size = self.chunker.max_size;
         let min_size = self.chunker.min_size;

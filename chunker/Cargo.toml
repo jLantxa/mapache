@@ -3,6 +3,9 @@ name = "chunker"
 version = "0.2.2"
 publish = false
 edition = "2024"
+description = "FastCDC (Fast Content-Defined Chunking) implementation"
+repository.workspace = true
+license = "GPL-3.0-only"
 
 [[bin]]
 name = "chunker-lookup"

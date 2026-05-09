@@ -3,6 +3,9 @@ name = "mapache"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.91"
+description = "Deduplicating encrypted backup tool"
+license = "GPL-3.0-only"
+repository.workspace = true
 
 [dependencies]
 aes-gcm-siv = "0.11.1"

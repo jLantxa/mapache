@@ -1,11 +1,19 @@
-//! Precalculated lookup tables for the CDC algorithm.
+//! Precomputed lookup tables for the CDC algorithm.
 //!
-//! The tables and masks can be generated using the lookup_gen binary.
-//! The Gear tables are deterministic but the masks are generated randomly
-//! according to some properties.
+//! The tables and masks can be regenerated with the `chunker-lookup` binary:
+//!
+//! ```bash
+//! cargo run --bin chunker-lookup
+//! ```
+//!
+//! The Gear tables are deterministic — derived from BLAKE3 hashes of each
+//! byte value `0x00..=0xff` salted with `"mapache"`. The masks are randomly
+//! generated with evenly distributed one-bits across bits 0..48.
 
-/// Gear hash look up table.
-/// This table is a cryptographic hash of every byte value from 0x00 to 0xff.
+/// Gear hash lookup table.
+///
+/// Each entry is the first 8 bytes (little-endian) of
+/// `BLAKE3("mapache" || byte)` for every byte value `0x00..=0xff`.
 #[rustfmt::skip]
 pub(crate) const GEAR: [u64; 256] = [
     0xb2a5525c1a564cb1, 0xf2d88fedf370a687, 0x154884889f3883fe, 0xd8656cd83ec355c2,
@@ -74,7 +82,11 @@ pub(crate) const GEAR: [u64; 256] = [
     0xa464af9c47182530, 0xb31a97d6a40ebba6, 0x50d6fec8f520da7a, 0xccdf1510c4a39802,
 ];
 
-/// Gear hash look up table shifted one bit left.
+/// Gear hash lookup table shifted one bit to the left.
+///
+/// Pre-shifting avoids a runtime `(fp << 1)` in the hot loop when processing
+/// two bytes per iteration. The even-index byte uses this table while the
+/// odd-index byte uses [`GEAR`].
 #[rustfmt::skip]
 pub(crate) const GEAR_LS: [u64; 256] = [
     0x654aa4b834ac9962, 0xe5b11fdbe6e14d0e, 0x2a9109113e7107fc, 0xb0cad9b07d86ab84,
@@ -144,33 +156,42 @@ pub(crate) const GEAR_LS: [u64; 256] = [
 ];
 
 /// Set of masks for the hash judgment.
-/// The masks are indexed by the number of ones.
-/// The `ones` are evenly distributed between bits 0..48
+///
+/// Each mask has exactly `n` one-bits, where `n` is the index into this array.
+/// The one-bits are evenly distributed across bits 0..48.
+///
+/// The index `n` corresponds to a chunk size of `2^n` bytes. This is because
+/// `n` equals `normal_bits ± norm_bits`, where `normal_bits = ilog2(normal_size)`
+/// and `norm_bits` is the normalization level in bits.
+///
+/// Index 0 has zero one-bits, making `hash & mask == 0` always true (every
+/// position passes). This is only selected when `normal_bits - norm_bits == 0`,
+/// which cannot occur under the valid parameter constraints.
 pub(crate) const MASKS: [u64; 26] = [
-    0x0000000000000000, // 1 B
-    0x0000000000002000, // 2 B
-    0x0000000000022000, // 4 B
-    0x0000000010010040, // 8 B
-    0x0000000100010044, // 16 B
-    0x0000090042001000, // 32 B
-    0x0000002a10010004, // 64 B
-    0x0000484208006000, // 128 B
-    0x0000028404200700, // 256 B
-    0x000031c000000198, // 512 B
-    0x0000050454990000, // 1 KiB
-    0x00001e0500504030, // 2 KiB
-    0x0000080a08c18a14, // 4 KiB
-    0x000040ca21080463, // 8 KiB
-    0x00001320504831b0, // 16 KiB
-    0x00009144a50094a2, // 32 KiB
-    0x0000090864506356, // 64 KiB
-    0x0000894111111766, // 128 KiB
-    0x0000b13e28184185, // 256 KiB
-    0x0000c9798491121a, // 512 KiB
-    0x0000b639e012072a, // 1 MiB
-    0x00006eca54da018c, // 2 MiB
-    0x00001a11cf6528d5, // 4 MiB
-    0x00009e551498f3a4, // 8 MiB
-    0x0000e4b0dee270b2, // 16 MiB
-    0x0000fb7d40e32cb0, // 32 MiB
+    0x0000000000000000, // [ 0]  1 B    (0 ones)
+    0x0000000000002000, // [ 1]  2 B    (1 one)
+    0x0000000000022000, // [ 2]  4 B    (2 ones)
+    0x0000000010010040, // [ 3]  8 B    (3 ones)
+    0x0000000100010044, // [ 4] 16 B    (4 ones)
+    0x0000090042001000, // [ 5] 32 B    (5 ones)
+    0x0000002a10010004, // [ 6] 64 B    (6 ones)
+    0x0000484208006000, // [ 7] 128 B   (7 ones)
+    0x0000028404200700, // [ 8] 256 B   (8 ones)
+    0x000031c000000198, // [ 9] 512 B   (9 ones)
+    0x0000050454990000, // [10] 1 KiB   (10 ones)
+    0x00001e0500504030, // [11] 2 KiB   (11 ones)
+    0x0000080a08c18a14, // [12] 4 KiB   (12 ones)
+    0x000040ca21080463, // [13] 8 KiB   (13 ones)
+    0x00001320504831b0, // [14] 16 KiB  (14 ones)
+    0x00009144a50094a2, // [15] 32 KiB  (15 ones)
+    0x0000090864506356, // [16] 64 KiB  (16 ones)
+    0x0000894111111766, // [17] 128 KiB (17 ones)
+    0x0000b13e28184185, // [18] 256 KiB (18 ones)
+    0x0000c9798491121a, // [19] 512 KiB (19 ones)
+    0x0000b639e012072a, // [20] 1 MiB   (20 ones)
+    0x00006eca54da018c, // [21] 2 MiB   (21 ones)
+    0x00001a11cf6528d5, // [22] 4 MiB   (22 ones)
+    0x00009e551498f3a4, // [23] 8 MiB   (23 ones)
+    0x0000e4b0dee270b2, // [24] 16 MiB  (24 ones)
+    0x0000fb7d40e32cb0, // [25] 32 MiB  (25 ones)
 ];

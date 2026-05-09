@@ -84,7 +84,7 @@ this benchmark test addresses that area specifically.
 Workloads:
 
 - **kernel** — Linux kernel source tree (~1.6 GB, 99'131 objects)
-- **enron** — Enron email corpus (~1.4 GB, 520’901 objects)
+- **enron** — Enron email corpus (~1.4 GB, 520'901 objects)
 
 ### v0.3.0 baseline (vs restic v0.18.1)
 
@@ -116,7 +116,7 @@ architecture.
 
 ### v0.2.0
 
-The v0.2.0 marks the finalization of the Archiver. The complete engine was
+v0.2.0 marks the finalization of the Archiver. The complete engine was
 refactored to make the backend code async. An initial S3 backend implementation
 was added and the SFTP backend was reimplemented with a rust-native async crate.
 The async refactor had the additional challenge of tuning parallelism to trim
@@ -141,9 +141,9 @@ endeavor.
 
 Other planned features (non-exhaustive):
 
-- [ ] incremental restore,
-- [ ] configuration files,
-- [ ] master key rotation,
+- [ ] incremental restore
+- [ ] configuration files
+- [ ] master key rotation
 
 ## Getting Started
 
@@ -171,8 +171,6 @@ specific released version.
 > **Note for Linux users:** The `mount` command requires FUSE development
 > headers (e.g., `libfuse-dev`). To build without FUSE support, use
 > `--no-default-features`.
-
-
 
 ### Quick Start
 

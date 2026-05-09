@@ -6,5 +6,8 @@ members = [
     "chunker/fuzz"
 ]
 
+[workspace.package]
+repository = "https://github.com/jlantxa/mapache"
+
 [profile.release]
 strip = true

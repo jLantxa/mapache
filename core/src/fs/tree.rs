@@ -209,29 +209,18 @@ impl FSNodeStream {
                     let path_clone = path.clone();
 
                     let children_res = tokio::task::spawn_blocking(move || {
-                        use rayon::prelude::*;
-
                         let entries = std::fs::read_dir(&path_clone)
                             .with_context(|| format!("Failed to read directory: {}", path_clone.display()))?;
 
-                        // Collect entries into a vector to allow parallel processing.
-                        // We avoid stating everything here, just collecting the names and paths.
                         let entries_vec: Vec<_> = entries.collect::<std::io::Result<Vec<_>>>()?;
 
-                        let children_results: Result<Vec<_>> = entries_vec
-                            .into_par_iter()
+                        let mut children: Vec<_> = entries_vec
+                            .into_iter()
                             .filter(|entry| filter.allow(&entry.path()))
-                            .map(|entry| {
-                                let child_path = entry.path();
-                                let child_node = Node::from_path_sync(&child_path).with_context(
-                                    || format!("Failed to build node for: {}", child_path.display()),
-                                )?;
-                                Ok((entry.file_name(), child_node))
-                            })
+                            .map(|entry| entry.file_name())
                             .collect();
 
-                        let mut children = children_results?;
-                        children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
+                        children.sort_unstable();
                         Ok::<_, anyhow::Error>(children)
                     })
                     .await
@@ -240,14 +229,12 @@ impl FSNodeStream {
                     match children_res {
                         Ok(children) => {
                             num_children = children.len();
-                            // Yield the directory node NOW.
                             yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children }));
 
                             if num_children > 0 {
                                 let shared_parent = Arc::new(path.clone());
-                                // Push successfully stated nodes to stack in reverse order.
-                                for (child_name, child_node) in children.into_iter().rev() {
-                                    state.stack.push((shared_parent.clone(), child_name, Some(child_node)));
+                                for child_name in children.into_iter().rev() {
+                                    state.stack.push((shared_parent.clone(), child_name, None));
                                 }
                             }
                         }

@@ -71,3 +71,6 @@ cov:
 clean:
 	cargo clean
 	rm -rf ./build/
+
+cloc:
+	@cloc . --exclude-dir=target --timeout 0

@@ -1215,7 +1215,7 @@ impl Repository {
                     lock.username(),
                     lock.pid(),
                     lock.creation_time()
-                        .map(|t| utils::pretty_print_timestamp(&t))
+                        .map(|t| utils::pretty_print_timestamp(&t, None))
                         .unwrap_or_else(|| "unknown".to_string()),
                     lock.context().join(" ")
                 );

@@ -148,6 +148,10 @@ impl MapacheFS {
 
 impl Filesystem for MapacheFS {
     fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), std::io::Error> {
+        // We want the by_date directories to be sorted alphabetically,
+        // so the dates must be sortable. We use a sortable format.
+        const DATE_FORMAT_STR: &str = "%Y-%m-%d %H:%M:%S %:z";
+
         self.rt_handle.block_on(async {
             let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
             match SnapshotStream::new(self.repo.clone()).await {
@@ -182,7 +186,7 @@ impl Filesystem for MapacheFS {
             for (id, snapshot) in &snapshots {
                 let name = format!(
                     "{} - {}",
-                    utils::pretty_print_timestamp(&snapshot.timestamp),
+                    utils::pretty_print_timestamp(&snapshot.timestamp, Some(DATE_FORMAT_STR)),
                     id.to_short_hex(4)
                 );
                 let target = format!("../ids/{}", id.to_hex());
@@ -197,7 +201,10 @@ impl Filesystem for MapacheFS {
 
                 let by_date_name = format!(
                     "{} - {}",
-                    utils::pretty_print_timestamp(&latest_snapshot.timestamp),
+                    utils::pretty_print_timestamp(
+                        &latest_snapshot.timestamp,
+                        Some(DATE_FORMAT_STR)
+                    ),
                     latest_id.to_short_hex(4)
                 );
                 stash.add_symlink(by_date_ino, String::from("latest"), by_date_name);

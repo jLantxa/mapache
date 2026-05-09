@@ -86,7 +86,7 @@ async fn run_list(global_args: &GlobalArgs) -> Result<()> {
         table.add_row(vec![
             keyfile.username,
             id.to_short_hex(6),
-            utils::pretty_print_timestamp(&keyfile.created),
+            utils::pretty_print_timestamp(&keyfile.created, None),
         ]);
     }
 

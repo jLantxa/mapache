@@ -62,7 +62,7 @@ pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {
 
         table.add_row(vec![
             id_str,
-            utils::pretty_print_timestamp(&entry.snapshot.timestamp),
+            utils::pretty_print_timestamp(&entry.snapshot.timestamp, None),
             entry.snapshot.hostname.clone().unwrap_or_default(),
             utils::format_size_binary(entry.snapshot.size(), 3),
             entry

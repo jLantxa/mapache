@@ -157,7 +157,7 @@ fn log_snapshots_full(snapshots: &SnapshotEntryList) {
         ui::cli::log!(
             "{} {}",
             "Date:".bold(),
-            utils::pretty_print_timestamp(&snapshot.timestamp)
+            utils::pretty_print_timestamp(&snapshot.timestamp, None)
         );
         ui::cli::log!(
             "{} {}",

@@ -148,11 +148,9 @@ pub fn pretty_print_system_time(time: SystemTime, format_str: Option<&str>) -> R
     Ok(datetime_local.format(format).to_string())
 }
 
-pub fn pretty_print_timestamp(timestamp: &DateTime<Local>) -> String {
-    timestamp
-        .with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S %Z")
-        .to_string()
+pub fn pretty_print_timestamp(timestamp: &DateTime<Local>, format_str: Option<&str>) -> String {
+    let format = format_str.unwrap_or("%a %Y-%m-%d %H:%M %:z");
+    timestamp.format(format).to_string()
 }
 
 // --- Duration Utilities ---
@@ -669,6 +667,22 @@ mod tests {
             pretty_print_system_time(time, Some("%d/%m/%Y %H:%M:%S"))?,
             "01/12/2025 18:00:00"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pretty_print_timestamp() -> Result<()> {
+        let naive_str = "2025-12-01 18:00";
+        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")?;
+        let datetime: DateTime<Local> = Local.from_local_datetime(&naive_datetime).unwrap();
+
+        let formatted = pretty_print_timestamp(&datetime, None);
+        // format is "%a %Y-%m-%d %H:%M %:z"
+        // 2025-12-01 is a Monday
+        assert!(formatted.starts_with("Mon 2025-12-01 18:00"));
+        // The timezone part depends on the local environment, so we just check it exists
+        assert!(formatted.contains("+") || formatted.contains("-"));
 
         Ok(())
     }

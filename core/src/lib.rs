@@ -1,6 +1,6 @@
-pub mod archive;
 pub mod archiver;
 pub mod backend;
+pub mod bundle;
 pub mod commands;
 pub mod fs;
 pub mod mapache;

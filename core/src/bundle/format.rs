@@ -5,24 +5,24 @@ use crate::{
     },
 };
 
-pub const ARCHIVE_MAGIC_LEN: usize = 12;
-pub const ARCHIVE_MAGIC_START: &[u8; ARCHIVE_MAGIC_LEN] = b"MAPACHE_ARC\0";
-pub const ARCHIVE_MAGIC_END: &[u8; ARCHIVE_MAGIC_LEN] = b"MAPACHE_END\0";
-pub const ARCHIVE_VERSION: u16 = 2;
-pub const ARCHIVE_SALT_LEN: usize = 32;
-pub const ARCHIVE_KEY_LEN: usize = 32;
-pub const ARCHIVE_TRAILER_SIZE_LEN: usize = 4;
-pub const ARCHIVE_HEADER_SIZE: usize = ARCHIVE_MAGIC_LEN
+pub const BUNDLE_MAGIC_LEN: usize = 12;
+pub const BUNDLE_MAGIC_START: &[u8; BUNDLE_MAGIC_LEN] = b"MAPACHE_ARC\0";
+pub const BUNDLE_MAGIC_END: &[u8; BUNDLE_MAGIC_LEN] = b"MAPACHE_END\0";
+pub const BUNDLE_VERSION: u16 = 2;
+pub const BUNDLE_SALT_LEN: usize = 32;
+pub const BUNDLE_KEY_LEN: usize = 32;
+pub const BUNDLE_TRAILER_SIZE_LEN: usize = 4;
+pub const BUNDLE_HEADER_SIZE: usize = BUNDLE_MAGIC_LEN
     + std::mem::size_of::<u16>()
-    + ARCHIVE_SALT_LEN
+    + BUNDLE_SALT_LEN
     + std::mem::size_of::<u32>() * 3;
 
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct ArchiveHeader {
-    pub magic: [u8; ARCHIVE_MAGIC_LEN],
+pub struct BundleHeader {
+    pub magic: [u8; BUNDLE_MAGIC_LEN],
     pub version: u16,
-    pub salt: [u8; ARCHIVE_SALT_LEN],
+    pub salt: [u8; BUNDLE_SALT_LEN],
     pub argon2_t: u32,
     pub argon2_m: u32,
     pub argon2_p: u32,
@@ -30,17 +30,17 @@ pub struct ArchiveHeader {
 
 #[derive(Debug, Clone)]
 #[repr(C)]
-pub struct ArchiveTrailer {
+pub struct BundleTrailer {
     pub root_tree: ID,
     pub index_offset: u64,
     pub index_len: u32,
     pub manifest_offset: u64,
     pub manifest_len: u32,
-    pub magic_end: [u8; ARCHIVE_MAGIC_LEN],
+    pub magic_end: [u8; BUNDLE_MAGIC_LEN],
 }
 
 #[derive(Debug, Clone)]
-pub struct ArchiveIndexEntry {
+pub struct BundleIndexEntry {
     pub id: ID,
     pub blob_type: BlobType,
     pub offset: u64,
@@ -49,11 +49,11 @@ pub struct ArchiveIndexEntry {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ArchiveIndex {
-    pub entries: Vec<ArchiveIndexEntry>,
+pub struct BundleIndex {
+    pub entries: Vec<BundleIndexEntry>,
 }
 
-impl ArchiveHeader {
+impl BundleHeader {
     pub fn to_binary(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         put_bytes(&mut buf, &self.magic);
@@ -78,7 +78,7 @@ impl ArchiveHeader {
     }
 }
 
-impl ArchiveTrailer {
+impl BundleTrailer {
     pub fn to_binary(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         put_bytes(&mut buf, self.root_tree.as_slice());
@@ -103,7 +103,7 @@ impl ArchiveTrailer {
     }
 }
 
-impl ArchiveIndexEntry {
+impl BundleIndexEntry {
     pub fn to_binary(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         put_bytes(&mut buf, self.id.as_slice());
@@ -126,7 +126,7 @@ impl ArchiveIndexEntry {
     }
 }
 
-impl ArchiveIndex {
+impl BundleIndex {
     pub fn to_binary(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         put_u64(&mut buf, self.entries.len() as u64);
@@ -141,16 +141,16 @@ impl ArchiveIndex {
         let len = get_u64(&mut cur)? as usize;
         let mut entries = Vec::with_capacity(len);
         for _ in 0..len {
-            entries.push(ArchiveIndexEntry::from_binary(
-                &cur[..ArchiveIndexEntry::BINARY_SIZE],
+            entries.push(BundleIndexEntry::from_binary(
+                &cur[..BundleIndexEntry::BINARY_SIZE],
             )?);
-            cur = &cur[ArchiveIndexEntry::BINARY_SIZE..];
+            cur = &cur[BundleIndexEntry::BINARY_SIZE..];
         }
         Ok(Self { entries })
     }
 }
 
-impl ArchiveIndexEntry {
+impl BundleIndexEntry {
     const BINARY_SIZE: usize = 32 + 1 + 8 + 4 + 4;
 }
 

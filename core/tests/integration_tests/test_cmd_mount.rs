@@ -133,7 +133,7 @@ async fn inner_test_mount(auto_mount: bool) -> Result<()> {
 
     let mount_args = cmd_mount::CmdArgs {
         mountpoint: mountpoint.clone(),
-        archive: false,
+        bundle: false,
         allow_other: false,
         create_mountpoint: auto_mount,
         metadata_only: false,
@@ -275,7 +275,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
 
     let mount_args = cmd_mount::CmdArgs {
         mountpoint: mountpoint.clone(),
-        archive: false,
+        bundle: false,
         allow_other: false,
         create_mountpoint: true,
         metadata_only: false,
@@ -362,7 +362,7 @@ async fn test_mount_unmount() -> Result<()> {
 
     let mount_args = cmd_mount::CmdArgs {
         mountpoint: mountpoint.clone(),
-        archive: false,
+        bundle: false,
         allow_other: false,
         create_mountpoint: false,
         metadata_only: false,

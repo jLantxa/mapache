@@ -9,26 +9,26 @@ use argon2::Params;
 use parking_lot::Mutex;
 
 use crate::{
-    archive::format::{
-        ARCHIVE_KEY_LEN, ARCHIVE_MAGIC_END, ARCHIVE_MAGIC_START, ARCHIVE_SALT_LEN, ARCHIVE_VERSION,
-        ArchiveHeader, ArchiveIndex, ArchiveIndexEntry, ArchiveTrailer,
-    },
     backend::WriteContents,
+    bundle::format::{
+        BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BUNDLE_SALT_LEN, BUNDLE_VERSION,
+        BundleHeader, BundleIndex, BundleIndexEntry, BundleTrailer,
+    },
     mapache::{BlobType, ID, SaveID, traits::BlobSaver},
     repository::{manifest::Manifest, storage::SecureStorage},
 };
 
-pub struct ArchiveWriter {
+pub struct BundleWriter {
     storage: SecureStorage,
-    inner: Mutex<ArchiveWriterInner>,
+    inner: Mutex<BundleWriterInner>,
 }
 
-struct ArchiveWriterInner {
+struct BundleWriterInner {
     file: File,
-    index: ArchiveIndex,
+    index: BundleIndex,
 }
 
-impl BlobSaver for ArchiveWriter {
+impl BlobSaver for BundleWriter {
     fn save_blob(
         &self,
         blob_type: BlobType,
@@ -39,11 +39,11 @@ impl BlobSaver for ArchiveWriter {
     }
 }
 
-impl ArchiveWriter {
+impl BundleWriter {
     pub fn new<P: AsRef<Path>>(path: P, password: &str, compression_level: i32) -> Result<Self> {
-        let salt = SecureStorage::generate_salt::<ARCHIVE_SALT_LEN>();
+        let salt = SecureStorage::generate_salt::<BUNDLE_SALT_LEN>();
         let params = Params::default();
-        let key = SecureStorage::derive_key::<ARCHIVE_KEY_LEN>(password, &salt, params.clone())?;
+        let key = SecureStorage::derive_key::<BUNDLE_KEY_LEN>(password, &salt, params.clone())?;
 
         let storage = SecureStorage::new()
             .with_compression(compression_level)
@@ -51,9 +51,9 @@ impl ArchiveWriter {
 
         let mut file = File::create(path)?;
 
-        let header = ArchiveHeader {
-            magic: *ARCHIVE_MAGIC_START,
-            version: ARCHIVE_VERSION,
+        let header = BundleHeader {
+            magic: *BUNDLE_MAGIC_START,
+            version: BUNDLE_VERSION,
             salt,
             argon2_t: params.t_cost(),
             argon2_m: params.m_cost(),
@@ -66,9 +66,9 @@ impl ArchiveWriter {
 
         Ok(Self {
             storage,
-            inner: Mutex::new(ArchiveWriterInner {
+            inner: Mutex::new(BundleWriterInner {
                 file,
-                index: ArchiveIndex::default(),
+                index: BundleIndex::default(),
             }),
         })
     }
@@ -84,8 +84,6 @@ impl ArchiveWriter {
             SaveID::WithID(id) => id,
         };
 
-        // Encode (CPU-bound: compression + encryption) outside the lock
-        // so multiple workers can encode chunks in parallel.
         let raw_length = data.len() as u32;
         let encoded_data = self
             .storage
@@ -93,10 +91,8 @@ impl ArchiveWriter {
             .context("Failed to encode blob data")?;
         let length = encoded_data.len() as u32;
 
-        // Lock only for the fast file write + index update
         let mut inner = self.inner.lock();
 
-        // Re-check dedup after acquiring lock (another thread may have stored this blob)
         if inner.index.entries.iter().any(|e| e.id == id) {
             return Ok(id);
         }
@@ -110,7 +106,7 @@ impl ArchiveWriter {
             .write_all(&encoded_data)
             .context("Failed to write blob data")?;
 
-        inner.index.entries.push(ArchiveIndexEntry {
+        inner.index.entries.push(BundleIndexEntry {
             id,
             blob_type,
             offset,
@@ -143,7 +139,7 @@ impl ArchiveWriter {
             .file
             .stream_position()
             .context("Failed to get file position for manifest")?;
-        let manifest = Manifest::new(ARCHIVE_VERSION as u32);
+        let manifest = Manifest::new(BUNDLE_VERSION as u32);
         let manifest_bytes = manifest.to_binary();
         let encrypted_manifest = self
             .storage
@@ -155,13 +151,13 @@ impl ArchiveWriter {
             .write_all(&encrypted_manifest)
             .context("Failed to write manifest")?;
 
-        let trailer = ArchiveTrailer {
+        let trailer = BundleTrailer {
             root_tree: root_tree_id,
             index_offset,
             index_len,
             manifest_offset,
             manifest_len,
-            magic_end: *ARCHIVE_MAGIC_END,
+            magic_end: *BUNDLE_MAGIC_END,
         };
 
         let trailer_bytes = trailer.to_binary();

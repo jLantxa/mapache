@@ -10,42 +10,41 @@ use argon2::ParamsBuilder;
 use parking_lot::Mutex;
 
 use crate::{
-    archive::format::{
-        ARCHIVE_HEADER_SIZE, ARCHIVE_KEY_LEN, ARCHIVE_MAGIC_END, ARCHIVE_MAGIC_START,
-        ARCHIVE_TRAILER_SIZE_LEN, ArchiveHeader, ArchiveIndex, ArchiveTrailer,
+    bundle::format::{
+        BUNDLE_HEADER_SIZE, BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START,
+        BUNDLE_TRAILER_SIZE_LEN, BundleHeader, BundleIndex, BundleTrailer,
     },
     mapache::{ID, traits::BlobLoader},
     repository::storage::SecureStorage,
 };
 
-pub struct ArchiveReader {
+pub struct BundleReader {
     file: Mutex<File>,
     storage: SecureStorage,
-    index: ArchiveIndex,
+    index: BundleIndex,
     index_map: HashMap<ID, usize>,
-    pub trailer: ArchiveTrailer,
+    pub trailer: BundleTrailer,
 }
 
 #[async_trait::async_trait]
-impl BlobLoader for ArchiveReader {
+impl BlobLoader for BundleReader {
     async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
         self.load_blob_internal(id)
     }
 }
 
-impl ArchiveReader {
+impl BundleReader {
     pub fn open<P: AsRef<Path>>(path: P, password: &str) -> Result<Self> {
         let mut file = File::open(path)?;
 
-        // Read header
-        let mut header_bytes = vec![0u8; ARCHIVE_HEADER_SIZE];
+        let mut header_bytes = vec![0u8; BUNDLE_HEADER_SIZE];
         file.read_exact(&mut header_bytes)
             .context("Failed to read header bytes")?;
-        let header = ArchiveHeader::from_binary(&header_bytes)
-            .context("Failed to deserialize archive header")?;
+        let header = BundleHeader::from_binary(&header_bytes)
+            .context("Failed to deserialize bundle header")?;
 
-        if header.magic != *ARCHIVE_MAGIC_START {
-            bail!("Invalid archive magic start");
+        if header.magic != *BUNDLE_MAGIC_START {
+            bail!("Invalid bundle magic start");
         }
 
         let params = ParamsBuilder::new()
@@ -55,41 +54,38 @@ impl ArchiveReader {
             .build()
             .map_err(|e| anyhow::anyhow!("Invalid Argon2 parameters: {}", e))?;
 
-        let key = SecureStorage::derive_key::<ARCHIVE_KEY_LEN>(password, &header.salt, params)?;
+        let key = SecureStorage::derive_key::<BUNDLE_KEY_LEN>(password, &header.salt, params)?;
         let storage = SecureStorage::new().with_key(&*key);
 
-        // Read and decrypt trailer from the end
-        file.seek(SeekFrom::End(-(ARCHIVE_TRAILER_SIZE_LEN as i64)))?;
-        let mut size_bytes = [0u8; ARCHIVE_TRAILER_SIZE_LEN];
+        file.seek(SeekFrom::End(-(BUNDLE_TRAILER_SIZE_LEN as i64)))?;
+        let mut size_bytes = [0u8; BUNDLE_TRAILER_SIZE_LEN];
         file.read_exact(&mut size_bytes)?;
         let encrypted_trailer_size = u32::from_le_bytes(size_bytes);
 
         file.seek(SeekFrom::End(
-            -(ARCHIVE_TRAILER_SIZE_LEN as i64) - encrypted_trailer_size as i64,
+            -(BUNDLE_TRAILER_SIZE_LEN as i64) - encrypted_trailer_size as i64,
         ))?;
         let mut encrypted_trailer = vec![0u8; encrypted_trailer_size as usize];
         file.read_exact(&mut encrypted_trailer)?;
         let decrypted_trailer = storage
             .decrypt(&encrypted_trailer)
-            .context("Failed to decrypt archive trailer")?;
-        let trailer = ArchiveTrailer::from_binary(&decrypted_trailer)
-            .context("Failed to deserialize archive trailer")?;
+            .context("Failed to decrypt bundle trailer")?;
+        let trailer = BundleTrailer::from_binary(&decrypted_trailer)
+            .context("Failed to deserialize bundle trailer")?;
 
-        if trailer.magic_end != *ARCHIVE_MAGIC_END {
-            bail!("Invalid archive magic end");
+        if trailer.magic_end != *BUNDLE_MAGIC_END {
+            bail!("Invalid bundle magic end");
         }
 
-        // Read and decrypt index
         file.seek(SeekFrom::Start(trailer.index_offset))?;
         let mut encrypted_index = vec![0u8; trailer.index_len as usize];
         file.read_exact(&mut encrypted_index)?;
         let decrypted_index = storage
             .decrypt(&encrypted_index)
-            .context("Failed to decrypt archive index")?;
-        let index = ArchiveIndex::from_binary(decrypted_index.as_ref())
-            .context("Failed to deserialize archive index")?;
+            .context("Failed to decrypt bundle index")?;
+        let index = BundleIndex::from_binary(decrypted_index.as_ref())
+            .context("Failed to deserialize bundle index")?;
 
-        // Build index map for O(1) lookups
         let mut index_map = HashMap::new();
         for (i, entry) in index.entries.iter().enumerate() {
             index_map.insert(entry.id, i);
@@ -108,7 +104,7 @@ impl ArchiveReader {
         let idx = self
             .index_map
             .get(id)
-            .context("Blob not found in archive index")?;
+            .context("Blob not found in bundle index")?;
         let entry = &self.index.entries[*idx];
 
         let mut file = self.file.lock();
@@ -132,7 +128,7 @@ impl ArchiveReader {
         Ok(data)
     }
 
-    pub fn index(&self) -> &ArchiveIndex {
+    pub fn index(&self) -> &BundleIndex {
         &self.index
     }
 }

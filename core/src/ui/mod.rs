@@ -11,7 +11,7 @@ use crate::{
     utils,
 };
 
-pub(crate) mod archive;
+pub(crate) mod bundle;
 pub mod cli;
 pub(crate) mod json_reporter;
 pub(crate) mod restore;

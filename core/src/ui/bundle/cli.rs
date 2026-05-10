@@ -15,8 +15,8 @@ use crate::{
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
 };
 
-pub enum ArchiveMode {
-    Archive,
+pub enum BundleMode {
+    Create,
     Extract,
 }
 
@@ -26,7 +26,7 @@ enum UiEvent {
     Shutdown,
 }
 
-pub struct ArchiveCliProgressReporter {
+pub struct BundleCliProgressReporter {
     mp: MultiProgress,
     items_bar: ProgressBar,
     data_bar: ProgressBar,
@@ -38,14 +38,14 @@ pub struct ArchiveCliProgressReporter {
     error_counter: AtomicU64,
 }
 
-impl ArchiveCliProgressReporter {
-    pub fn new(mode: ArchiveMode, total_items: u64, total_bytes: u64, num_spinners: usize) -> Self {
+impl BundleCliProgressReporter {
+    pub fn new(mode: BundleMode, total_items: u64, total_bytes: u64, num_spinners: usize) -> Self {
         let refresh_interval = GlobalOpts::progress_refresh_interval();
         let mp = MultiProgress::with_draw_target(default_bar_draw_target());
 
         let (items_label, bytes_label) = match mode {
-            ArchiveMode::Archive => ("Items", "Data"),
-            ArchiveMode::Extract => ("Items", "Data"),
+            BundleMode::Create => ("Items", "Data"),
+            BundleMode::Extract => ("Items", "Data"),
         };
 
         // Items Bar
@@ -121,7 +121,7 @@ impl ArchiveCliProgressReporter {
     }
 }
 
-impl SnapshotProgressReporter for ArchiveCliProgressReporter {
+impl SnapshotProgressReporter for BundleCliProgressReporter {
     fn processing_node(&self, path: &Path, diff: NodeDiff, size_hint: Option<u64>) {
         if self.ui_stop.load(Ordering::Relaxed) || diff == NodeDiff::Deleted {
             return;

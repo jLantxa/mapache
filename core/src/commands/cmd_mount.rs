@@ -6,8 +6,8 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    archive::reader::ArchiveReader,
     backend::new_backend_with_prompt,
+    bundle::reader::BundleReader,
     commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
     fs,
     mapache::defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB,
@@ -19,15 +19,15 @@ use crate::{
 pub use crate::fuse::fs::MapacheFS;
 
 #[derive(Args, Debug)]
-#[clap(about = "Mount the repository or a .mapache archive as a file system")]
+#[clap(about = "Mount the repository or a .mapache bundle as a file system")]
 pub struct CmdArgs {
     /// Mount point
     #[arg(value_parser)]
     pub mountpoint: PathBuf,
 
-    /// Force mounting as a .mapache archive
+    /// Force mounting as a .mapache bundle
     #[arg(short, long, default_value_t = false)]
-    pub archive: bool,
+    pub bundle: bool,
 
     /// Mount point
     #[arg(long, value_parser, default_value_t = false)]
@@ -66,14 +66,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let canonical_mountpoint = fs::get_absolute_normalized_path(&actual_mountpoint)?;
 
-    // Check if we are mounting a standalone archive file
-    let is_archive = args.archive || {
+    // Check if we are mounting a standalone bundle file
+    let is_bundle = args.bundle || {
         let repo_path = PathBuf::from(&global_args.repo);
         repo_path.is_file() && repo_path.extension().is_some_and(|ext| ext == "mapache")
     };
 
-    if is_archive {
-        return mount_archive(global_args, args, &canonical_mountpoint, created_mountpoint).await;
+    if is_bundle {
+        return mount_bundle(global_args, args, &canonical_mountpoint, created_mountpoint).await;
     }
 
     // Standard repository mounting
@@ -114,7 +114,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     .await
 }
 
-async fn mount_archive(
+async fn mount_bundle(
     global_args: &GlobalArgs,
     args: &CmdArgs,
     mountpoint: &std::path::Path,
@@ -122,16 +122,16 @@ async fn mount_archive(
 ) -> Result<()> {
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_password("Enter archive password")?,
+        None => crate::ui::cli::request_password("Enter bundle password")?,
     };
 
-    let reader = ArchiveReader::open(&global_args.repo, &password)?;
+    let reader = BundleReader::open(&global_args.repo, &password)?;
     let root_tree_id = reader.trailer.root_tree;
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 
     let cleanup_handler = CleanupHandler::new()?;
     ui::cli::log!(
-        "Mounting archive {} in {}",
+        "Mounting bundle {} in {}",
         global_args.repo.bold(),
         mountpoint.display()
     );

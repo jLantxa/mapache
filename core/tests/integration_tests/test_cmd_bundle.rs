@@ -1,32 +1,32 @@
 use crate::integration_tests::{TestContext, assert_times_equal};
 use anyhow::Result;
-use mapache::commands::cmd_archive;
+use mapache::commands::cmd_bundle;
 
 #[tokio::test]
-async fn test_archive_and_extract() -> Result<()> {
+async fn test_bundle_and_extract() -> Result<()> {
     let mut ctx = TestContext::new().await?;
     ctx.setup_backup_data()?;
     let backup_data_path = ctx.backup_data_path.as_ref().unwrap();
 
-    let archive_path = ctx._tmp_dir.path().join("test_archive.mapache");
+    let bundle_path = ctx._tmp_dir.path().join("test_bundle.mapache");
     let extract_path = ctx._tmp_dir.path().join("extracted");
 
-    let archive_args = cmd_archive::CmdArgs {
-        archive: true,
+    let bundle_args = cmd_bundle::CmdArgs {
+        bundle: true,
         input: vec![backup_data_path.clone()],
-        output: Some(archive_path.clone()),
+        output: Some(bundle_path.clone()),
         compression_level: mapache::commands::Compression::Balanced,
         workers: 2,
         internal_password: Some("test_password".to_string()),
         ..Default::default()
     };
 
-    cmd_archive::run(&archive_args).await?;
-    assert!(archive_path.exists());
+    cmd_bundle::run(&bundle_args).await?;
+    assert!(bundle_path.exists());
 
-    let extract_args = cmd_archive::CmdArgs {
+    let extract_args = cmd_bundle::CmdArgs {
         extract: true,
-        input: vec![archive_path.clone()],
+        input: vec![bundle_path.clone()],
         output: Some(extract_path.clone()),
         compression_level: mapache::commands::Compression::Balanced,
         workers: 2,
@@ -34,7 +34,7 @@ async fn test_archive_and_extract() -> Result<()> {
         ..Default::default()
     };
 
-    cmd_archive::run(&extract_args).await?;
+    cmd_bundle::run(&extract_args).await?;
 
     let backup_dir_name = backup_data_path.file_name().unwrap();
     verify_extracted_content(backup_data_path, &extract_path.join(backup_dir_name))?;

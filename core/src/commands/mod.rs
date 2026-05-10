@@ -28,7 +28,7 @@ use crate::{
 
 // Subcommands
 pub mod cmd_amend;
-pub mod cmd_archive;
+pub mod cmd_bundle;
 pub mod cmd_cache;
 pub mod cmd_cat;
 pub mod cmd_clean;
@@ -75,7 +75,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Amend(WithGlobal<cmd_amend::CmdArgs>),
-    Archive(cmd_archive::CmdArgs),
+    Bundle(cmd_bundle::CmdArgs),
     Cache(cmd_cache::CmdArgs),
     Cat(WithGlobal<cmd_cat::CmdArgs>),
     Clean(WithGlobal<cmd_clean::CmdArgs>),
@@ -358,7 +358,7 @@ pub async fn parse_and_run() -> i32 {
 
     let result = match args.command {
         Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args).await,
-        Command::Archive(cmd) => cmd_archive::run(&cmd).await,
+        Command::Bundle(cmd) => cmd_bundle::run(&cmd).await,
         Command::Cat(cmd) => cmd_cat::run(&cmd.global, &cmd.args).await,
         Command::Cache(cmd) => cmd_cache::run(&cmd),
         Command::Completion(cmd) => cmd_completion::run(&cmd),

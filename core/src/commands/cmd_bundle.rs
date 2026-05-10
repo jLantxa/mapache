@@ -11,19 +11,19 @@ use futures::StreamExt;
 use crate::{commands::cleanup::CleanupHandler, fuse::fs::MapacheFS, utils::size};
 
 use crate::{
-    archive::reader::ArchiveReader,
-    archive::writer::ArchiveWriter,
     archiver::{SnapshotOptions, progress::SnapshotProgress},
+    bundle::reader::BundleReader,
+    bundle::writer::BundleWriter,
     fs::{node::Metadata, tree::Tree},
     mapache::{ID, traits::BlobLoader, traits::BlobSaver},
     ui::snapshot::SnapshotProgressReporter,
 };
 
-struct ArchiveRestoreReporterAdapter {
+struct BundleRestoreReporterAdapter {
     inner: Arc<dyn SnapshotProgressReporter>,
 }
 
-impl crate::ui::restore::RestoreProgressReporter for ArchiveRestoreReporterAdapter {
+impl crate::ui::restore::RestoreProgressReporter for BundleRestoreReporterAdapter {
     fn set_message(&self, _msg: String) {}
     fn resize_workload(&self, _num_expected_items: u64, _num_expected_bytes: u64) {}
     fn processed_item(&self, _path: &Path) {}
@@ -45,36 +45,36 @@ impl crate::ui::restore::RestoreProgressReporter for ArchiveRestoreReporterAdapt
 
 #[derive(Debug, Args)]
 #[clap(
-    about = "Create, extract or mount .mapache archive files",
-    group = ArgGroup::new("mode").required(true).args(&["archive", "extract"]),
+    about = "Create, extract or mount .mapache bundle files",
+    group = ArgGroup::new("mode").required(true).args(&["bundle", "extract"]),
 )]
 pub struct CmdArgs {
-    /// Archive mode: create a new archive from source paths
+    /// Bundle mode: create a new bundle from source paths
     #[arg(short, long, group = "mode")]
-    pub archive: bool,
+    pub bundle: bool,
 
-    /// Extract mode: extract an archive to a destination
+    /// Extract mode: extract a bundle to a destination
     #[arg(short = 'x', long, group = "mode")]
     pub extract: bool,
 
-    /// Mount mode: mount an archive as a filesystem (FUSE)
+    /// Mount mode: mount a bundle as a filesystem (FUSE)
     #[cfg(all(feature = "fuse", unix))]
     #[arg(short, long, group = "mode")]
     pub mount: bool,
 
-    /// Input: source paths (-a), archive file (-x), or archive + mountpoint (-m)
+    /// Input: source paths (-a), bundle file (-x), or bundle + mountpoint (-m)
     #[arg(required = true)]
     pub input: Vec<PathBuf>,
 
-    /// Output: archive file (-a) or destination directory (-x). Not used with -m.
+    /// Output: bundle file (-a) or destination directory (-x). Not used with -m.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Glob patterns for paths to exclude (archive mode only)
+    /// Glob patterns for paths to exclude (bundle mode only)
     #[arg(short = 'e', long)]
     pub exclude: Vec<PathBuf>,
 
-    /// Compression level [fastest|fast|balanced|better|best|level:val] (archive mode only)
+    /// Compression level [fastest|fast|balanced|better|best|level:val] (bundle mode only)
     #[clap(long = "compression", value_parser = crate::commands::parse_compression_level, default_value_t = crate::commands::DEFAULT_COMPRESSION)]
     pub compression_level: crate::commands::Compression,
 
@@ -110,7 +110,7 @@ pub struct CmdArgs {
 impl Default for CmdArgs {
     fn default() -> Self {
         Self {
-            archive: false,
+            bundle: false,
             extract: false,
             mount: false,
             input: vec![],
@@ -131,7 +131,7 @@ impl Default for CmdArgs {
 impl Default for CmdArgs {
     fn default() -> Self {
         Self {
-            archive: false,
+            bundle: false,
             extract: false,
             input: vec![],
             output: None,
@@ -144,8 +144,8 @@ impl Default for CmdArgs {
 }
 
 pub async fn run(args: &CmdArgs) -> Result<()> {
-    if args.archive {
-        run_archive(args).await
+    if args.bundle {
+        run_create(args).await
     } else if args.extract {
         run_extract(args).await
     } else {
@@ -153,18 +153,18 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
     }
 }
 
-async fn run_archive(args: &CmdArgs) -> Result<()> {
+async fn run_create(args: &CmdArgs) -> Result<()> {
     let output = args
         .output
         .as_ref()
-        .context("-o is required for archive mode")?;
+        .context("-o is required for bundle mode")?;
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_new_password("Enter archive password", "Confirm password")?,
+        None => crate::ui::cli::request_new_password("Enter bundle password", "Confirm password")?,
     };
 
-    let archive_writer = Arc::new(ArchiveWriter::new(
+    let bundle_writer = Arc::new(BundleWriter::new(
         output,
         &password,
         args.compression_level.to_level(),
@@ -186,8 +186,8 @@ async fn run_archive(args: &CmdArgs) -> Result<()> {
     };
 
     let progress_reporter: Arc<dyn SnapshotProgressReporter> =
-        Arc::new(crate::ui::archive::cli::ArchiveCliProgressReporter::new(
-            crate::ui::archive::cli::ArchiveMode::Archive,
+        Arc::new(crate::ui::bundle::cli::BundleCliProgressReporter::new(
+            crate::ui::bundle::cli::BundleMode::Create,
             0,
             0,
             args.workers,
@@ -208,7 +208,7 @@ async fn run_archive(args: &CmdArgs) -> Result<()> {
     });
 
     crate::ui::cli::log!(
-        "{} Archiving {} to {}...",
+        "{} Creating bundle from {} to {}...",
         "[1/1]".bold().cyan(),
         args.input
             .iter()
@@ -225,7 +225,7 @@ async fn run_archive(args: &CmdArgs) -> Result<()> {
         exclude_paths: args.exclude.clone(),
         parent_snapshot: None,
         tags: Default::default(),
-        description: Some(format!("Archive of {:?}", args.input)),
+        description: Some(format!("Bundle of {:?}", args.input)),
         no_scan: false,
     };
 
@@ -237,7 +237,7 @@ async fn run_archive(args: &CmdArgs) -> Result<()> {
 
     let (processed_tx, mut processed_rx) = tokio::sync::mpsc::channel(4096);
 
-    let saver: Arc<dyn BlobSaver> = archive_writer.clone();
+    let saver: Arc<dyn BlobSaver> = bundle_writer.clone();
     let process_shutdown = shutdown_signal.clone();
     let process_progress = progress.clone();
     let process_reporter = progress_reporter.clone();
@@ -339,7 +339,7 @@ async fn run_archive(args: &CmdArgs) -> Result<()> {
     });
 
     let mut tree_serializer = crate::archiver::tree_serializer::TreeSerializer::new(
-        archive_writer.clone(),
+        bundle_writer.clone(),
         snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,
     );
@@ -359,30 +359,30 @@ async fn run_archive(args: &CmdArgs) -> Result<()> {
         .root_tree()
         .context("Root tree ID not set")?;
 
-    writer_finalize(archive_writer.as_ref(), root_tree_id, output, &progress).await
+    writer_finalize(bundle_writer.as_ref(), root_tree_id, output, &progress).await
 }
 
 async fn run_extract(args: &CmdArgs) -> Result<()> {
     if args.input.len() != 1 {
-        bail!("Extract mode requires exactly one archive file as input");
+        bail!("Extract mode requires exactly one bundle file as input");
     }
-    let archive = &args.input[0];
+    let bundle = &args.input[0];
     let destination = args.output.as_deref().unwrap_or(std::path::Path::new("."));
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_password("Enter archive password")?,
+        None => crate::ui::cli::request_password("Enter bundle password")?,
     };
 
-    let reader = ArchiveReader::open(archive, &password)?;
+    let reader = BundleReader::open(bundle, &password)?;
     let root_tree_id = reader.trailer.root_tree;
     let loader = Arc::new(reader);
 
-    crate::ui::cli::log!("{} Analyzing archive...", "[1/2]".bold().cyan());
-    let (total_items, total_bytes) = scan_archive_tree(loader.clone(), &root_tree_id).await?;
+    crate::ui::cli::log!("{} Analyzing bundle...", "[1/2]".bold().cyan());
+    let (total_items, total_bytes) = scan_bundle_tree(loader.clone(), &root_tree_id).await?;
 
-    let progress_reporter = Arc::new(crate::ui::archive::cli::ArchiveCliProgressReporter::new(
-        crate::ui::archive::cli::ArchiveMode::Extract,
+    let progress_reporter = Arc::new(crate::ui::bundle::cli::BundleCliProgressReporter::new(
+        crate::ui::bundle::cli::BundleMode::Extract,
         total_items as u64,
         total_bytes,
         args.workers,
@@ -391,7 +391,7 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
     crate::ui::cli::log!(
         "{} Extracting {} to {}...",
         "[2/2]".bold().cyan(),
-        archive.display().to_string().bold(),
+        bundle.display().to_string().bold(),
         destination.display().to_string().bold()
     );
 
@@ -435,9 +435,9 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
 #[cfg(all(feature = "fuse", unix))]
 async fn run_mount(args: &CmdArgs) -> Result<()> {
     if args.input.len() != 2 {
-        bail!("Mount mode requires: archive.mapache <mountpoint>");
+        bail!("Mount mode requires: bundle.mapache <mountpoint>");
     }
-    let archive = &args.input[0];
+    let bundle = &args.input[0];
     let mountpoint = &args.input[1];
 
     let actual_mountpoint = mountpoint.clone();
@@ -458,17 +458,17 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_password("Enter archive password")?,
+        None => crate::ui::cli::request_password("Enter bundle password")?,
     };
 
-    let reader = ArchiveReader::open(archive, &password)?;
+    let reader = BundleReader::open(bundle, &password)?;
     let root_tree_id = reader.trailer.root_tree;
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 
     let cleanup_handler = CleanupHandler::new()?;
     crate::ui::cli::log!(
-        "Mounting archive {} in {}",
-        archive.display().to_string().bold(),
+        "Mounting bundle {} in {}",
+        bundle.display().to_string().bold(),
         canonical_mountpoint.display()
     );
 
@@ -542,7 +542,7 @@ where
 }
 
 async fn writer_finalize(
-    writer: &ArchiveWriter,
+    writer: &BundleWriter,
     root_tree_id: ID,
     output_path: &PathBuf,
     progress: &SnapshotProgress,
@@ -553,7 +553,7 @@ async fn writer_finalize(
     let summary = progress.summary();
 
     crate::ui::cli::log!("");
-    crate::ui::cli::log!("{}", "Archive Summary:".bold().cyan());
+    crate::ui::cli::log!("{}", "Bundle Summary:".bold().cyan());
 
     let mut data_table = crate::ui::table::Table::new();
     data_table.add_row(vec![
@@ -573,7 +573,7 @@ async fn writer_finalize(
             .to_string(),
     ]);
     data_table.add_row(vec![
-        "Archive size".to_string(),
+        "Bundle size".to_string(),
         crate::utils::format_size_binary(final_size, 3)
             .bold()
             .green()
@@ -592,12 +592,12 @@ async fn writer_finalize(
     ]);
 
     crate::ui::cli::log!("{}", data_table.render());
-    crate::ui::cli::log!("{}", "Archive completed successfully!".green().bold());
+    crate::ui::cli::log!("{}", "Bundle completed successfully!".green().bold());
 
     Ok(())
 }
 
-async fn scan_archive_tree<L>(loader: Arc<L>, tree_id: &ID) -> Result<(usize, u64)>
+async fn scan_bundle_tree<L>(loader: Arc<L>, tree_id: &ID) -> Result<(usize, u64)>
 where
     L: BlobLoader + ?Sized + 'static,
 {
@@ -679,7 +679,7 @@ where
     });
 
     let meta_reporter: Arc<dyn crate::ui::restore::RestoreProgressReporter> =
-        Arc::new(ArchiveRestoreReporterAdapter {
+        Arc::new(BundleRestoreReporterAdapter {
             inner: reporter.clone(),
         });
 

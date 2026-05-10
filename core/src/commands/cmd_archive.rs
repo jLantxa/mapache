@@ -14,10 +14,34 @@ use crate::{
     archive::reader::ArchiveReader,
     archive::writer::ArchiveWriter,
     archiver::{SnapshotOptions, progress::SnapshotProgress},
-    fs::tree::Tree,
+    fs::{node::Metadata, tree::Tree},
     mapache::{ID, traits::BlobLoader, traits::BlobSaver},
     ui::snapshot::SnapshotProgressReporter,
 };
+
+struct ArchiveRestoreReporterAdapter {
+    inner: Arc<dyn SnapshotProgressReporter>,
+}
+
+impl crate::ui::restore::RestoreProgressReporter for ArchiveRestoreReporterAdapter {
+    fn set_message(&self, _msg: String) {}
+    fn resize_workload(&self, _num_expected_items: u64, _num_expected_bytes: u64) {}
+    fn processed_item(&self, _path: &Path) {}
+    fn processed_bytes(&self, _bytes: u64) {}
+    fn error(&self, msg: &str) {
+        self.inner.error(msg);
+    }
+    fn warning(&self, msg: &str) {
+        self.inner.warning(msg);
+    }
+    fn error_count(&self) -> u64 {
+        0
+    }
+    fn warning_count(&self) -> u64 {
+        0
+    }
+    fn finalize(&self) {}
+}
 
 #[derive(Debug, Args)]
 #[clap(
@@ -610,6 +634,7 @@ where
     L: BlobLoader + ?Sized + 'static,
 {
     let (tx, rx) = tokio::sync::mpsc::channel::<(PathBuf, crate::fs::node::Node)>(4096);
+    let (dir_tx, dir_rx) = tokio::sync::mpsc::channel::<(PathBuf, Metadata)>(4096);
 
     let loader_clone = loader.clone();
     let dest_clone = destination.to_path_buf();
@@ -638,6 +663,9 @@ where
                 let node_path = current_dest.join(&node.name);
                 if node.is_dir() {
                     let _ = std::fs::create_dir_all(&node_path);
+                    let _ = dir_tx
+                        .send((node_path.clone(), node.metadata.clone()))
+                        .await;
                     if let Some(subtree_id) = node.tree {
                         stack.push((node_path.clone(), subtree_id));
                     }
@@ -650,78 +678,123 @@ where
         }
     });
 
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    stream
-        .for_each_concurrent(workers, |(path, node)| {
-            let loader = loader.clone();
-            let reporter = reporter.clone();
-            async move {
-                reporter.processing_node(
-                    &path,
-                    crate::fs::tree::NodeDiff::New,
-                    Some(node.metadata.size),
-                );
+    let meta_reporter: Arc<dyn crate::ui::restore::RestoreProgressReporter> =
+        Arc::new(ArchiveRestoreReporterAdapter {
+            inner: reporter.clone(),
+        });
 
-                if node.is_file() {
-                    if let Some(blobs) = &node.blobs {
-                        let file_res = std::fs::File::create(&path);
-                        if let Ok(mut file) = file_res {
-                            for blob_id in blobs {
-                                match loader.load_blob(blob_id).await {
-                                    Ok(data) => {
-                                        use std::io::Write;
-                                        let data_len = data.len() as u64;
-                                        if let Err(e) = file.write_all(&data) {
+    let process_future = async {
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        stream
+            .for_each_concurrent(workers, |(path, node)| {
+                let loader = loader.clone();
+                let reporter = reporter.clone();
+                let meta_reporter = meta_reporter.clone();
+                async move {
+                    reporter.processing_node(
+                        &path,
+                        crate::fs::tree::NodeDiff::New,
+                        Some(node.metadata.size),
+                    );
+
+                    if node.is_file() {
+                        if let Some(blobs) = &node.blobs {
+                            let file_res = std::fs::File::create(&path);
+                            if let Ok(mut file) = file_res {
+                                let mut success = true;
+                                for blob_id in blobs {
+                                    match loader.load_blob(blob_id).await {
+                                        Ok(data) => {
+                                            use std::io::Write;
+                                            let data_len = data.len() as u64;
+                                            if let Err(e) = file.write_all(&data) {
+                                                reporter.error(&format!(
+                                                    "Failed to write to {}: {}",
+                                                    path.display(),
+                                                    e
+                                                ));
+                                                success = false;
+                                                break;
+                                            }
+                                            reporter.processed_bytes(data_len);
+                                        }
+                                        Err(e) => {
                                             reporter.error(&format!(
-                                                "Failed to write to {}: {}",
+                                                "Failed to load blob {} for {}: {}",
+                                                blob_id,
                                                 path.display(),
                                                 e
                                             ));
+                                            success = false;
                                             break;
                                         }
-                                        reporter.processed_bytes(data_len);
-                                    }
-                                    Err(e) => {
-                                        reporter.error(&format!(
-                                            "Failed to load blob {} for {}: {}",
-                                            blob_id,
-                                            path.display(),
-                                            e
-                                        ));
-                                        break;
                                     }
                                 }
+                                drop(file);
+                                if success {
+                                    crate::restorer::node_restorer::try_restore_node_metadata(
+                                        &node.metadata,
+                                        false,
+                                        &path,
+                                        meta_reporter.as_ref(),
+                                    );
+                                }
+                            } else if let Err(e) = file_res {
+                                reporter.error(&format!(
+                                    "Failed to create file {}: {}",
+                                    path.display(),
+                                    e
+                                ));
                             }
-                        } else if let Err(e) = file_res {
-                            reporter.error(&format!(
-                                "Failed to create file {}: {}",
-                                path.display(),
-                                e
-                            ));
                         }
-                    }
-                } else if node.is_symlink()
-                    && let Some(symlink_info) = &node.symlink_info
-                {
-                    #[cfg(unix)]
+                    } else if node.is_symlink()
+                        && let Some(symlink_info) = &node.symlink_info
                     {
-                        use std::os::unix::fs::symlink;
-                        let _ = symlink(&symlink_info.target_path, &path);
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::symlink;
+                            if symlink(&symlink_info.target_path, &path).is_ok() {
+                                crate::restorer::node_restorer::try_restore_node_metadata(
+                                    &node.metadata,
+                                    true,
+                                    &path,
+                                    meta_reporter.as_ref(),
+                                );
+                            }
+                        }
+
+                        #[cfg(not(unix))]
+                        let _ = symlink_info;
                     }
 
-                    let _ = symlink_info;
+                    reporter.processed_node(
+                        &path,
+                        crate::fs::tree::NodeDiff::New,
+                        Some(node.metadata.size),
+                    );
                 }
+            })
+            .await;
+    };
 
-                reporter.processed_node(
-                    &path,
-                    crate::fs::tree::NodeDiff::New,
-                    Some(node.metadata.size),
-                );
-            }
-        })
-        .await;
+    let _ = futures::join!(walk_task, process_future);
 
-    let _ = walk_task.await;
+    let mut directories: Vec<(PathBuf, Metadata)> = Vec::new();
+    let mut dir_rx = dir_rx;
+    while let Some((path, meta)) = dir_rx.recv().await {
+        directories.push((path, meta));
+    }
+
+    directories.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
+    for (p, meta) in directories {
+        crate::restorer::node_restorer::try_restore_node_metadata(
+            &meta,
+            false,
+            &p,
+            meta_reporter.as_ref(),
+        );
+    }
+
     Ok(())
 }
 

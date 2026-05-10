@@ -1,4 +1,4 @@
-use crate::integration_tests::TestContext;
+use crate::integration_tests::{TestContext, assert_times_equal};
 use anyhow::Result;
 use mapache::commands::cmd_archive;
 
@@ -58,6 +58,19 @@ fn verify_extracted_content(source: &std::path::Path, target: &std::path::Path) 
         let target_meta = std::fs::symlink_metadata(&target_path)?;
 
         assert_eq!(source_meta.file_type(), target_meta.file_type());
+
+        assert_times_equal(source_meta.modified()?, target_meta.modified()?);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                source_meta.permissions().mode() & 0o777,
+                target_meta.permissions().mode() & 0o777,
+                "Permission mismatch for {:?}",
+                source_path
+            );
+        }
 
         if source_meta.is_file() {
             assert_eq!(source_meta.len(), target_meta.len());

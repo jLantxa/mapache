@@ -109,22 +109,21 @@ pub(crate) async fn process_item(
             })?;
 
             if next.node.is_file() {
+                let file_size = next.node.metadata.size;
                 let saver_clone = blob_saver.clone();
                 let path_clone = path.to_path_buf();
                 let progress_clone = progress.clone();
                 let reporter_clone = progress_reporter.clone();
                 let shutdown_signal_clone = shutdown_signal.clone();
-                let node_clone = next.node.clone();
 
-                let blobs_ids = tokio::task::spawn_blocking(move || {
+                let blobs_ids = match tokio::task::spawn_blocking(move || {
                     let file = open_for_sequential_read(&path_clone)?;
-                    let file_size = node_clone.metadata.size;
 
                     if file_size <= mapache::defaults::MIN_CHUNK_SIZE {
                         store_small_file(
                             saver_clone,
                             file,
-                            &node_clone,
+                            file_size,
                             progress_clone.as_ref(),
                             reporter_clone.as_ref(),
                         )
@@ -132,7 +131,7 @@ pub(crate) async fn process_item(
                         chunk_and_store_file(
                             saver_clone,
                             file,
-                            &node_clone,
+                            file_size,
                             progress_clone,
                             reporter_clone,
                             shutdown_signal_clone,
@@ -140,9 +139,23 @@ pub(crate) async fn process_item(
                     }
                 })
                 .await
-                .context("Blob processing panicked")??;
+                {
+                    Ok(Ok(ids)) => Some(ids),
+                    Ok(Err(e)) => {
+                        progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
+                        progress.processed_bytes(file_size);
+                        progress_reporter.processed_bytes(file_size);
+                        None
+                    }
+                    Err(e) => {
+                        progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
+                        progress.processed_bytes(file_size);
+                        progress_reporter.processed_bytes(file_size);
+                        None
+                    }
+                };
 
-                next.node.blobs = Some(blobs_ids);
+                next.node.blobs = blobs_ids;
             }
 
             report_node_diff(&next.node, diff_type, progress.as_ref());
@@ -167,12 +180,11 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
     blob_saver: Arc<dyn BlobSaver>,
     reader: R,
-    node: &Node,
+    file_size: u64,
     progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Vec<ID>> {
-    let file_size = node.metadata.size;
     let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
     let mut ids = Vec::new();
 
@@ -202,11 +214,11 @@ pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
 fn store_small_file<R: Read>(
     blob_saver: Arc<dyn BlobSaver>,
     mut reader: R,
-    node: &Node,
+    file_size: u64,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
 ) -> Result<Vec<ID>> {
-    let size = node.metadata.size as usize;
+    let size = file_size as usize;
     let mut data = Vec::with_capacity(size);
 
     unsafe {
@@ -228,8 +240,8 @@ fn store_small_file<R: Read>(
         SaveID::CalculateID,
     )?;
 
-    progress.processed_bytes(node.metadata.size);
-    progress_reporter.processed_bytes(node.metadata.size);
+    progress.processed_bytes(file_size);
+    progress_reporter.processed_bytes(file_size);
 
     Ok(vec![id])
 }

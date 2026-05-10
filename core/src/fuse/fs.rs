@@ -152,8 +152,8 @@ impl<L: BlobLoader + ?Sized> MapacheFS<L> {
                 Some(n) => n,
                 None => return Ok(()),
             };
-            match node.kind {
-                NodeKind::LazyDir { tree_id } => (tree_id, node.attr.crtime),
+            match &node.kind {
+                NodeKind::LazyDir { tree_id } => (*tree_id, node.attr.crtime),
                 _ => return Ok(()),
             }
         };
@@ -165,7 +165,7 @@ impl<L: BlobLoader + ?Sized> MapacheFS<L> {
             let mut stash = self.stash.write();
             // Check again after lock
             if let Some(node) = stash.get_node(ino)
-                && let NodeKind::LazyDir { .. } = node.kind
+                && let NodeKind::LazyDir { .. } = &node.kind
             {
                 for n in &tree.nodes {
                     let child_ino = stash.next_ino();
@@ -177,7 +177,7 @@ impl<L: BlobLoader + ?Sized> MapacheFS<L> {
                         NodeType::Symlink => NodeKind::Symlink {
                             target: n
                                 .symlink_info
-                                .clone()
+                                .as_ref()
                                 .map(|i| i.target_path.to_string_lossy().to_string())
                                 .unwrap_or_default(),
                         },
@@ -346,8 +346,8 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
             let blobs = {
                 let stash = self.stash.read();
                 match stash.get_node(ino) {
-                    Some(n) => match n.kind {
-                        NodeKind::File { blobs } => blobs,
+                    Some(n) => match &n.kind {
+                        NodeKind::File { blobs } => blobs.clone(),
                         _ => bail!("Not a file"),
                     },
                     None => bail!("Not found"),

@@ -19,12 +19,12 @@ use crate::{
 };
 
 pub struct ArchiveWriter {
+    storage: SecureStorage,
     inner: Mutex<ArchiveWriterInner>,
 }
 
 struct ArchiveWriterInner {
     file: File,
-    storage: SecureStorage,
     index: ArchiveIndex,
 }
 
@@ -65,9 +65,9 @@ impl ArchiveWriter {
             .context("Failed to write header")?;
 
         Ok(Self {
+            storage,
             inner: Mutex::new(ArchiveWriterInner {
                 file,
-                storage,
                 index: ArchiveIndex::default(),
             }),
         })
@@ -84,19 +84,22 @@ impl ArchiveWriter {
             SaveID::WithID(id) => id,
         };
 
+        // Encode (CPU-bound: compression + encryption) outside the lock
+        // so multiple workers can encode chunks in parallel.
+        let raw_length = data.len() as u32;
+        let encoded_data = self
+            .storage
+            .encode(data.as_ref())
+            .context("Failed to encode blob data")?;
+        let length = encoded_data.len() as u32;
+
+        // Lock only for the fast file write + index update
         let mut inner = self.inner.lock();
 
-        // Check if already in index (simple deduplication)
+        // Re-check dedup after acquiring lock (another thread may have stored this blob)
         if inner.index.entries.iter().any(|e| e.id == id) {
             return Ok(id);
         }
-
-        let raw_length = data.len() as u32;
-        let encoded_data = inner
-            .storage
-            .encode(&data)
-            .context("Failed to encode blob data")?;
-        let length = encoded_data.len() as u32;
 
         let offset = inner
             .file
@@ -126,7 +129,7 @@ impl ArchiveWriter {
             .stream_position()
             .context("Failed to get file position for index")?;
         let index_bytes = inner.index.to_binary();
-        let encrypted_index = inner
+        let encrypted_index = self
             .storage
             .encrypt(&index_bytes)
             .context("Failed to encrypt index")?;
@@ -143,7 +146,7 @@ impl ArchiveWriter {
         let manifest = Manifest::new(ARCHIVE_VERSION as u32);
         let manifest_bytes =
             bincode::serialize(&manifest).context("Failed to serialize manifest")?;
-        let encrypted_manifest = inner
+        let encrypted_manifest = self
             .storage
             .encrypt(&manifest_bytes)
             .context("Failed to encrypt manifest")?;
@@ -163,7 +166,7 @@ impl ArchiveWriter {
         };
 
         let trailer_bytes = bincode::serialize(&trailer).context("Failed to serialize trailer")?;
-        let encrypted_trailer = inner
+        let encrypted_trailer = self
             .storage
             .encrypt(&trailer_bytes)
             .context("Failed to encrypt trailer")?;

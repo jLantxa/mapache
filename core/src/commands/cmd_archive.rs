@@ -9,7 +9,7 @@ use futures::StreamExt;
 
 use crate::{
     archive::writer::ArchiveWriter,
-    archiver::{self, SnapshotOptions, progress::SnapshotProgress},
+    archiver::{SnapshotOptions, progress::SnapshotProgress},
     mapache::traits::BlobSaver,
     ui::snapshot::SnapshotProgressReporter,
 };
@@ -72,40 +72,33 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
         crate::fs::calculate_lcp(&absolute_source_paths, false)
     };
 
-    // Scan filesystem for totals to provide accurate progress bars
-    crate::ui::cli::log!("{} Scanning filesystem...", "[1/2]".bold().cyan());
-    let fs_stream = crate::fs::tree::FSNodeStream::from_paths(
-        absolute_source_paths.clone(),
-        args.exclude.clone(),
-    )
-    .await?;
+    // Setup reporter (totals will be filled by background scanner)
+    let progress_reporter: Arc<dyn SnapshotProgressReporter> =
+        Arc::new(crate::ui::archive::cli::ArchiveCliProgressReporter::new(
+            crate::ui::archive::cli::ArchiveMode::Archive,
+            0,
+            0,
+            args.num_readers,
+        ));
 
-    let mut total_items = 0;
-    let mut total_bytes = 0;
-    let mut nodes_to_process = Vec::new();
-
-    let mut fs_stream_scan = fs_stream;
-    while let Some(node_res) = fs_stream_scan.next().await {
-        let (path, stream_node_res) = node_res?;
-        let stream_node = stream_node_res?;
-        total_items += 1;
-        if stream_node.node.is_file() {
-            total_bytes += stream_node.node.metadata.size;
-        }
-        nodes_to_process.push((path, stream_node));
-    }
-
-    // Setup reporter with real totals
-    let progress_reporter = Arc::new(crate::ui::archive::cli::ArchiveCliProgressReporter::new(
-        crate::ui::archive::cli::ArchiveMode::Archive,
-        total_items as u64,
-        total_bytes,
-        args.num_readers,
-    ));
+    // Kick off background scanner for accurate progress estimation
+    let scanner_reporter = progress_reporter.clone();
+    let scanner_paths = absolute_source_paths.clone();
+    let scanner_exclude = args.exclude.clone();
+    let scanner_shutdown = shutdown_signal.clone();
+    let scanner_handle = tokio::spawn(async move {
+        spawn_background_scanner(
+            scanner_paths,
+            scanner_exclude,
+            scanner_reporter,
+            scanner_shutdown,
+        )
+        .await;
+    });
 
     crate::ui::cli::log!(
         "{} Archiving {} to {}...",
-        "[2/2]".bold().cyan(),
+        "[1/1]".bold().cyan(),
         args.source
             .iter()
             .map(|p| p.display().to_string())
@@ -125,21 +118,157 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
         no_scan: false,
     };
 
-    archive_process_nodes(
-        archive_writer.clone(),
-        snapshot_options,
-        nodes_to_process,
-        args.num_readers,
-        progress.clone(),
-        progress_reporter.clone(),
-        shutdown_signal,
+    // Stream filesystem nodes directly into the processing pipeline
+    let fs_stream = crate::fs::tree::FSNodeStream::from_paths(
+        snapshot_options.absolute_source_paths.clone(),
+        snapshot_options.exclude_paths.clone(),
     )
     .await?;
 
-    progress_reporter.finalize();
+    let (processed_tx, mut processed_rx) = tokio::sync::mpsc::channel(4096);
 
-    // Get final archive size
-    let final_size = std::fs::metadata(&args.output)?.len();
+    let saver: Arc<dyn BlobSaver> = archive_writer.clone();
+    let process_shutdown = shutdown_signal.clone();
+    let process_progress = progress.clone();
+    let process_reporter = progress_reporter.clone();
+    let process_readers = args.num_readers;
+
+    let process_task = tokio::spawn(async move {
+        fs_stream
+            .for_each_concurrent(process_readers, |item| {
+                let saver = saver.clone();
+                let progress = process_progress.clone();
+                let reporter = process_reporter.clone();
+                let signal = process_shutdown.clone();
+                let tx = processed_tx.clone();
+
+                async move {
+                    if signal.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let (path, stream_node_res) = match item {
+                        Ok(v) => v,
+                        Err(e) => {
+                            reporter.error(&format!("Scan error: {}", e));
+                            return;
+                        }
+                    };
+
+                    let stream_node = match stream_node_res {
+                        Ok(v) => v,
+                        Err(e) => {
+                            reporter.error(&format!("Node error: {}", e));
+                            return;
+                        }
+                    };
+
+                    if !stream_node.node.is_dir() {
+                        reporter.processing_node(
+                            &path,
+                            crate::fs::tree::NodeDiff::New,
+                            Some(stream_node.node.metadata.size),
+                        );
+                    }
+
+                    let mut node = stream_node.node;
+                    if node.is_file() {
+                        let file_size = node.metadata.size;
+                        let path_str = path.display().to_string();
+                        let saver_clone = saver.clone();
+                        let progress_clone = progress.clone();
+                        let reporter_clone = reporter.clone();
+                        let signal_clone = signal.clone();
+
+                        let blobs_res = tokio::task::spawn_blocking(move || {
+                            let file = std::fs::File::open(&path_str)?;
+                            crate::archiver::processor::chunk_and_store_file(
+                                saver_clone,
+                                file,
+                                file_size,
+                                progress_clone,
+                                reporter_clone,
+                                signal_clone,
+                            )
+                        })
+                        .await
+                        .expect("Task panicked");
+
+                        match blobs_res {
+                            Ok(blobs) => node.blobs = Some(blobs),
+                            Err(e) => {
+                                reporter.error(&format!(
+                                    "Error chunking {}: {}",
+                                    path.display(),
+                                    e
+                                ));
+                                return;
+                            }
+                        }
+                    }
+
+                    progress.processed_node();
+                    reporter.processed_node(
+                        &path,
+                        crate::fs::tree::NodeDiff::New,
+                        Some(node.metadata.size),
+                    );
+
+                    let _ = tx
+                        .send((
+                            path,
+                            crate::fs::tree::StreamNode {
+                                node,
+                                num_children: stream_node.num_children,
+                            },
+                        ))
+                        .await;
+                }
+            })
+            .await;
+    });
+
+    // Tree serializer (sequential)
+    let mut tree_serializer = crate::archiver::tree_serializer::TreeSerializer::new(
+        archive_writer.clone(),
+        snapshot_root_path.clone(),
+        &snapshot_options.absolute_source_paths,
+    );
+
+    while let Some((path_buf, stream_node)) = processed_rx.recv().await {
+        tree_serializer
+            .handle_processed_item((&path_buf, stream_node))
+            .await?;
+    }
+
+    process_task.await?;
+
+    // Wait for background scanner to finish
+    let _ = scanner_handle.await;
+
+    tree_serializer.finalize_root().await?;
+    let root_tree_id = tree_serializer
+        .root_tree()
+        .context("Root tree ID not set")?;
+
+    writer_finalize(
+        archive_writer.as_ref(),
+        root_tree_id,
+        &args.output,
+        &progress,
+    )
+    .await
+}
+
+async fn writer_finalize(
+    writer: &ArchiveWriter,
+    root_tree_id: crate::mapache::ID,
+    output_path: &PathBuf,
+    progress: &SnapshotProgress,
+) -> Result<()> {
+    writer.finalize(root_tree_id)?;
+
+    let final_size = std::fs::metadata(output_path)?.len();
     let summary = progress.summary();
 
     crate::ui::cli::log!("");
@@ -187,129 +316,59 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-async fn archive_process_nodes(
-    writer: Arc<ArchiveWriter>,
-    options: SnapshotOptions<'_>,
-    nodes: Vec<(PathBuf, crate::fs::tree::StreamNode)>,
-    num_readers: usize,
-    progress: Arc<SnapshotProgress>,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
-    shutdown_signal: Arc<AtomicBool>,
-) -> Result<()> {
-    // Setup channels
-    let (processed_tx, mut processed_rx) = tokio::sync::mpsc::channel(4096);
+/// Fast background scanner that estimates total items and bytes using rayon.
+async fn spawn_background_scanner(
+    paths: Vec<PathBuf>,
+    exclude: Vec<PathBuf>,
+    reporter: Arc<dyn SnapshotProgressReporter>,
+    shutdown: Arc<AtomicBool>,
+) {
+    let filter = Arc::new(crate::fs::filter::PathFilter::new(None, Some(exclude)));
+    let reporter_for_scan = reporter.clone();
 
-    // Process items in parallel
-    let saver: Arc<dyn BlobSaver> = writer.clone();
-    let nodes_stream = futures::stream::iter(nodes);
+    let res = tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
+        paths.into_par_iter().for_each(|path| {
+            scan_recursive(&path, &filter, &reporter_for_scan, &shutdown);
+        });
+    })
+    .await;
 
-    let progress_for_task = progress.clone();
-    let reporter_for_task = progress_reporter.clone();
-
-    let fs_task = tokio::spawn(async move {
-        nodes_stream
-            .for_each_concurrent(num_readers, |(path, stream_node)| {
-                let saver = saver.clone();
-                let progress = progress_for_task.clone();
-                let reporter = reporter_for_task.clone();
-                let signal = shutdown_signal.clone();
-                let tx = processed_tx.clone();
-
-                async move {
-                    if signal.load(std::sync::atomic::Ordering::Relaxed) {
-                        return;
-                    }
-
-                    // Only files get the "Active" spinner during processing
-                    if !stream_node.node.is_dir() {
-                        reporter.processing_node(
-                            &path,
-                            crate::fs::tree::NodeDiff::New,
-                            Some(stream_node.node.metadata.size),
-                        );
-                    }
-
-                    let mut node = stream_node.node;
-                    if node.is_file() {
-                        let path_clone = path.clone();
-                        let saver_clone = saver.clone();
-                        let progress_clone = progress.clone();
-                        let reporter_clone = reporter.clone();
-                        let signal_clone = signal.clone();
-                        let node_clone = node.clone();
-
-                        let blobs_res = tokio::task::spawn_blocking(move || {
-                            let file = std::fs::File::open(&path_clone)?;
-                            archiver::processor::chunk_and_store_file(
-                                saver_clone,
-                                file,
-                                &node_clone,
-                                progress_clone,
-                                reporter_clone,
-                                signal_clone,
-                            )
-                        })
-                        .await
-                        .expect("Task panicked");
-
-                        match blobs_res {
-                            Ok(blobs) => node.blobs = Some(blobs),
-                            Err(e) => {
-                                reporter.error(&format!(
-                                    "Error chunking {}: {}",
-                                    path.display(),
-                                    e
-                                ));
-                                return;
-                            }
-                        }
-                    }
-
-                    // All elements signal completion to advance main counters
-                    progress.processed_node();
-                    reporter.processed_node(
-                        &path,
-                        crate::fs::tree::NodeDiff::New,
-                        Some(node.metadata.size),
-                    );
-
-                    let _ = tx
-                        .send((
-                            path,
-                            crate::fs::tree::StreamNode {
-                                node,
-                                num_children: stream_node.num_children,
-                            },
-                        ))
-                        .await;
-                }
-            })
-            .await;
-        drop(processed_tx);
-    });
-
-    // Serialize tree
-    let mut tree_serializer = archiver::tree_serializer::TreeSerializer::new(
-        writer.clone(),
-        options.snapshot_root_path.clone(),
-        &options.absolute_source_paths,
-    );
-
-    while let Some((path_buf, stream_node)) = processed_rx.recv().await {
-        tree_serializer
-            .handle_processed_item((&path_buf, stream_node))
-            .await?;
+    if let Err(e) = res {
+        reporter.error(&format!("Background scanner panicked: {}", e));
     }
 
-    fs_task.await?;
+    reporter.scan_finished();
+}
 
-    tree_serializer.finalize_root().await?;
-    let root_tree_id = tree_serializer
-        .root_tree()
-        .context("Root tree ID not set")?;
+fn scan_recursive(
+    path: &std::path::Path,
+    filter: &Arc<crate::fs::filter::PathFilter>,
+    reporter: &Arc<dyn SnapshotProgressReporter>,
+    shutdown: &Arc<AtomicBool>,
+) {
+    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if !filter.allow(path) {
+        return;
+    }
 
-    // Finalize archive
-    writer.finalize(root_tree_id)?;
+    if let Ok(node) = crate::fs::node::Node::from_path_sync(path) {
+        reporter.add_expected_items(1);
+        if node.is_file() {
+            reporter.add_expected_bytes(node.metadata.size);
+        }
 
-    Ok(())
+        if node.is_dir()
+            && let Ok(entries) = std::fs::read_dir(path)
+        {
+            use rayon::prelude::*;
+            entries.par_bridge().for_each(|entry_res| {
+                if let Ok(entry) = entry_res {
+                    scan_recursive(&entry.path(), filter, reporter, shutdown);
+                }
+            });
+        }
+    }
 }

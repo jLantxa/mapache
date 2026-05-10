@@ -346,11 +346,12 @@ async fn run_rechunk_task(
     let reader = SerializedNodeDataReader::new(repo.clone(), &node).await?;
     let sync_reader = BlockingBridge { inner: reader };
 
+    let size = node.metadata.size;
     tokio::task::spawn_blocking(move || {
         chunk_and_store_file(
             repo,
             sync_reader,
-            &node,
+            size,
             progress,
             progress_reporter,
             shutdown_signal,

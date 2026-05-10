@@ -105,8 +105,8 @@ impl Stash {
         self.nodes.get(&ino).map(|n| n.attr)
     }
 
-    pub(super) fn get_node(&self, ino: INodeNo) -> Option<FsNode> {
-        self.nodes.get(&ino).cloned()
+    pub(super) fn get_node(&self, ino: INodeNo) -> Option<&FsNode> {
+        self.nodes.get(&ino)
     }
 
     pub(super) fn read_dir(

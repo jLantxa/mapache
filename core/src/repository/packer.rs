@@ -1,5 +1,4 @@
 use std::{
-    io::Write,
     sync::{Arc, Weak, atomic::Ordering},
     thread::JoinHandle,
 };
@@ -16,6 +15,7 @@ use crate::{
         repo::{Repository, SizePair},
         storage::{EncodingContext, SecureStorage},
     },
+    utils::binary::{put_bytes, put_u8, put_u32},
 };
 
 //   Pack footer format:
@@ -47,10 +47,6 @@ use crate::{
 //     ^ (41 bytes)
 //
 
-pub const FOOTER_ID_OFFSET: usize = 0;
-pub const FOOTER_BLOB_TYPE_OFFSET: usize = 32;
-pub const FOOTER_BLOB_LENGTH_OFFSET: usize = 33;
-pub const FOOTER_BLOB_RAW_LENGTH_OFFSET: usize = 37;
 pub const FOOTER_BLOB_LEN: usize = 41;
 
 /// Describes a single blob's location and size within a packed file.
@@ -211,16 +207,13 @@ impl Packer {
     /// It automatically inserts random "Padding" blobs to ensure the footer
     /// length is a multiple of `FOOTER_BLOB_MULTIPLE`, hindering size analysis.
     fn generate_footer(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
-        // blob[id (256 bits), lenght (u32), type (u8)] + footer length (u32);
         let mut pack_footer = Vec::with_capacity(FOOTER_BLOB_LEN * descriptors.len());
-        let mut cursor = std::io::Cursor::new(&mut pack_footer);
         let mut rng = rng();
 
         if !descriptors.len().is_multiple_of(FOOTER_BLOB_MULTIPLE) {
             let num_padding_blobs =
                 FOOTER_BLOB_MULTIPLE - (descriptors.len() % FOOTER_BLOB_MULTIPLE);
             for _ in 0..num_padding_blobs {
-                // Add random fields so the compressor cannot reduce the padding size.
                 descriptors.push(PackedBlobDescriptor {
                     id: ID::new_random(),
                     blob_type: BlobType::Padding,
@@ -232,12 +225,10 @@ impl Packer {
         }
 
         for blob in descriptors {
-            cursor.write_all(blob.id.as_slice()).unwrap();
-            cursor
-                .write_all(&(blob.blob_type as u8).to_le_bytes())
-                .unwrap();
-            cursor.write_all(&blob.length.to_le_bytes()).unwrap();
-            cursor.write_all(&blob.raw_length.to_le_bytes()).unwrap();
+            put_bytes(&mut pack_footer, blob.id.as_slice());
+            put_u8(&mut pack_footer, blob.blob_type as u8);
+            put_u32(&mut pack_footer, blob.length);
+            put_u32(&mut pack_footer, blob.raw_length);
         }
         pack_footer
     }
@@ -279,6 +270,8 @@ impl Packer {
         secure_storage: &SecureStorage,
         footer_data: &[u8],
     ) -> Result<Vec<PackedBlobDescriptor>> {
+        use crate::utils::binary::{get_array, get_u8, get_u32};
+
         if footer_data.len() < 4 {
             bail!("Pack footer too short");
         }
@@ -290,42 +283,26 @@ impl Packer {
         let footer_blob_info = secure_storage.decode(
             &footer_data[(footer_data.len() - encoded_footer_length - 4)..footer_data.len() - 4],
         )?;
-        let num_blobs = footer_blob_info.len() / FOOTER_BLOB_LEN;
+        let mut cur = footer_blob_info.as_slice();
         let mut blob_descriptors = Vec::new();
         let mut offset: u32 = 0;
 
-        for i in 0..num_blobs {
-            let blob_info = &footer_blob_info[(i * FOOTER_BLOB_LEN)..((i + 1) * FOOTER_BLOB_LEN)];
-            let blob_type: BlobType = blob_info[FOOTER_BLOB_TYPE_OFFSET].into();
+        while !cur.is_empty() {
+            let id = ID::from_bytes(get_array::<32>(&mut cur)?);
+            let blob_type: BlobType = get_u8(&mut cur)?.into();
+            let length = get_u32(&mut cur)?;
+            let raw_length = get_u32(&mut cur)?;
 
-            if matches!(blob_type, BlobType::Padding) {
-                // Ignore padding blobs. They "don't exist".
-                continue;
+            if !matches!(blob_type, BlobType::Padding) {
+                blob_descriptors.push(PackedBlobDescriptor {
+                    id,
+                    blob_type,
+                    offset,
+                    length,
+                    raw_length,
+                });
+                offset += length;
             }
-
-            let blob_id_bytes: [u8; 32] = blob_info[FOOTER_ID_OFFSET..FOOTER_ID_OFFSET + 32]
-                .try_into()
-                .unwrap();
-            let id = ID::from_bytes(blob_id_bytes);
-            let length = u32::from_le_bytes(
-                blob_info[FOOTER_BLOB_LENGTH_OFFSET..FOOTER_BLOB_LENGTH_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let raw_length = u32::from_le_bytes(
-                blob_info[FOOTER_BLOB_RAW_LENGTH_OFFSET..FOOTER_BLOB_RAW_LENGTH_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-
-            blob_descriptors.push(PackedBlobDescriptor {
-                id,
-                blob_type,
-                offset,
-                length,
-                raw_length,
-            });
-            offset += length;
         }
 
         Ok(blob_descriptors)

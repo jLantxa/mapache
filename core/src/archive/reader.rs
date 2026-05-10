@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use argon2::ParamsBuilder;
-use bincode;
 use parking_lot::Mutex;
 
 use crate::{
@@ -42,8 +41,8 @@ impl ArchiveReader {
         let mut header_bytes = vec![0u8; ARCHIVE_HEADER_SIZE];
         file.read_exact(&mut header_bytes)
             .context("Failed to read header bytes")?;
-        let header: ArchiveHeader =
-            bincode::deserialize(&header_bytes).context("Failed to deserialize archive header")?;
+        let header = ArchiveHeader::from_binary(&header_bytes)
+            .context("Failed to deserialize archive header")?;
 
         if header.magic != *ARCHIVE_MAGIC_START {
             bail!("Invalid archive magic start");
@@ -73,7 +72,7 @@ impl ArchiveReader {
         let decrypted_trailer = storage
             .decrypt(&encrypted_trailer)
             .context("Failed to decrypt archive trailer")?;
-        let trailer: ArchiveTrailer = bincode::deserialize(decrypted_trailer.as_ref())
+        let trailer = ArchiveTrailer::from_binary(&decrypted_trailer)
             .context("Failed to deserialize archive trailer")?;
 
         if trailer.magic_end != *ARCHIVE_MAGIC_END {

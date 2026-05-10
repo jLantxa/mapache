@@ -1,7 +1,11 @@
-use chrono::{DateTime, Local};
+use anyhow::Context;
+use chrono::{DateTime, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::mapache::ID;
+use crate::{
+    mapache::ID,
+    utils::binary::{get_array, get_i64, get_u32, put_bytes, put_i64, put_u32},
+};
 
 /// Repository manifest. This struct contains metadata about the repository itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,7 +16,6 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Creates a new manifest with a given version, a new random ID, and the current UTC time.
     pub fn new(version: u32) -> Self {
         Self {
             version,
@@ -21,18 +24,42 @@ impl Manifest {
         }
     }
 
-    /// Returns the version of the manifest.
     pub fn version(&self) -> u32 {
         self.version
     }
 
-    /// Returns the unique ID of the repository.
     pub fn id(&self) -> &ID {
         &self.id
     }
 
-    /// Returns the creation timestamp of the repository.
     pub fn created_time(&self) -> DateTime<Local> {
         self.created_time
+    }
+
+    pub fn to_binary(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        put_u32(&mut buf, self.version);
+        put_bytes(&mut buf, self.id.as_slice());
+        put_i64(&mut buf, self.created_time.timestamp());
+        put_u32(&mut buf, self.created_time.timestamp_subsec_nanos());
+        buf
+    }
+
+    pub fn from_binary(bytes: &[u8]) -> anyhow::Result<Self> {
+        let mut cur = bytes;
+        let version = get_u32(&mut cur)?;
+        let id = ID::from_bytes(get_array(&mut cur)?);
+        let timestamp_secs = get_i64(&mut cur)?;
+        let timestamp_nsecs = get_u32(&mut cur)?;
+        let utc = Utc
+            .timestamp_opt(timestamp_secs, timestamp_nsecs)
+            .single()
+            .context("invalid manifest timestamp")?;
+        let created_time = utc.with_timezone(&Local);
+        Ok(Self {
+            version,
+            id,
+            created_time,
+        })
     }
 }

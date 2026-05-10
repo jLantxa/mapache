@@ -60,7 +60,7 @@ impl ArchiveWriter {
             argon2_p: params.p_cost(),
         };
 
-        let header_bytes = bincode::serialize(&header).context("Failed to serialize header")?;
+        let header_bytes = header.to_binary();
         file.write_all(&header_bytes)
             .context("Failed to write header")?;
 
@@ -144,8 +144,7 @@ impl ArchiveWriter {
             .stream_position()
             .context("Failed to get file position for manifest")?;
         let manifest = Manifest::new(ARCHIVE_VERSION as u32);
-        let manifest_bytes =
-            bincode::serialize(&manifest).context("Failed to serialize manifest")?;
+        let manifest_bytes = manifest.to_binary();
         let encrypted_manifest = self
             .storage
             .encrypt(&manifest_bytes)
@@ -165,7 +164,7 @@ impl ArchiveWriter {
             magic_end: *ARCHIVE_MAGIC_END,
         };
 
-        let trailer_bytes = bincode::serialize(&trailer).context("Failed to serialize trailer")?;
+        let trailer_bytes = trailer.to_binary();
         let encrypted_trailer = self
             .storage
             .encrypt(&trailer_bytes)

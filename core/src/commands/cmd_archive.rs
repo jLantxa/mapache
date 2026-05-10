@@ -10,7 +10,7 @@ use futures::StreamExt;
 use crate::{
     archive::writer::ArchiveWriter,
     archiver::{SnapshotOptions, progress::SnapshotProgress},
-    mapache::traits::BlobSaver,
+    mapache::{ID, traits::BlobSaver},
     ui::snapshot::SnapshotProgressReporter,
 };
 
@@ -262,7 +262,7 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
 
 async fn writer_finalize(
     writer: &ArchiveWriter,
-    root_tree_id: crate::mapache::ID,
+    root_tree_id: ID,
     output_path: &PathBuf,
     progress: &SnapshotProgress,
 ) -> Result<()> {

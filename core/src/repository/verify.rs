@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
     backend::StorageBackend,
-    mapache::{ContentIdType, ID, defaults::DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE},
+    mapache::{self, ContentIdType, ID, defaults::DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE},
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils::collections::IdSet,
 };
@@ -37,7 +37,7 @@ pub async fn verify_pack(
     let attr = backend.lstat(&pack_path).await?;
     let pack_size = attr.size.ok_or_else(|| anyhow!("Pack size unknown"))?;
 
-    let mut bit_rot_hasher = crate::mapache::hash::Hasher::new();
+    let mut bit_rot_hasher = mapache::hash::Hasher::new();
     let mut current_file_offset: u64 = 0;
     const CHUNK_SIZE: usize = DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE as usize;
 

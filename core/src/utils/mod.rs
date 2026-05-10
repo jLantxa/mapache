@@ -1,3 +1,4 @@
+pub mod binary;
 pub mod collections;
 
 use std::{

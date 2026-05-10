@@ -1,6 +1,6 @@
 use crate::integration_tests::TestContext;
 use anyhow::Result;
-use mapache::commands::{cmd_archive, cmd_extract};
+use mapache::commands::cmd_archive;
 
 #[tokio::test]
 async fn test_archive_and_extract() -> Result<()> {
@@ -11,30 +11,31 @@ async fn test_archive_and_extract() -> Result<()> {
     let archive_path = ctx._tmp_dir.path().join("test_archive.mapache");
     let extract_path = ctx._tmp_dir.path().join("extracted");
 
-    // Archive
     let archive_args = cmd_archive::CmdArgs {
-        source: vec![backup_data_path.clone()],
-        output: archive_path.clone(),
-        exclude: vec![],
+        archive: true,
+        input: vec![backup_data_path.clone()],
+        output: Some(archive_path.clone()),
         compression_level: mapache::commands::Compression::Balanced,
-        num_readers: 2,
+        workers: 2,
         internal_password: Some("test_password".to_string()),
+        ..Default::default()
     };
 
     cmd_archive::run(&archive_args).await?;
     assert!(archive_path.exists());
 
-    // Extract
-    let extract_args = cmd_extract::CmdArgs {
-        archive: archive_path.clone(),
-        destination: extract_path.clone(),
+    let extract_args = cmd_archive::CmdArgs {
+        extract: true,
+        input: vec![archive_path.clone()],
+        output: Some(extract_path.clone()),
+        compression_level: mapache::commands::Compression::Balanced,
         workers: 2,
         internal_password: Some("test_password".to_string()),
+        ..Default::default()
     };
 
-    cmd_extract::run(&extract_args).await?;
+    cmd_archive::run(&extract_args).await?;
 
-    // Verify
     let backup_dir_name = backup_data_path.file_name().unwrap();
     verify_extracted_content(backup_data_path, &extract_path.join(backup_dir_name))?;
 

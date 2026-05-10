@@ -34,7 +34,6 @@ pub mod cmd_cat;
 pub mod cmd_clean;
 mod cmd_completion;
 pub mod cmd_diff;
-pub mod cmd_extract;
 pub mod cmd_find;
 pub mod cmd_forget;
 pub mod cmd_init;
@@ -82,7 +81,6 @@ pub enum Command {
     Clean(WithGlobal<cmd_clean::CmdArgs>),
     Completion(cmd_completion::CmdArgs),
     Diff(WithGlobal<cmd_diff::CmdArgs>),
-    Extract(cmd_extract::CmdArgs),
     Find(WithGlobal<cmd_find::CmdArgs>),
     Forget(WithGlobal<cmd_forget::CmdArgs>),
     Init(WithGlobal<cmd_init::CmdArgs>),
@@ -366,7 +364,6 @@ pub async fn parse_and_run() -> i32 {
         Command::Completion(cmd) => cmd_completion::run(&cmd),
         Command::Clean(cmd) => cmd_clean::run(&cmd.global, &cmd.args).await,
         Command::Diff(cmd) => cmd_diff::run(&cmd.global, &cmd.args).await,
-        Command::Extract(cmd) => cmd_extract::run(&cmd).await,
         Command::Find(cmd) => cmd_find::run(&cmd.global, &cmd.args).await,
         Command::Forget(cmd) => cmd_forget::run(&cmd.global, &cmd.args).await,
         Command::Init(cmd) => cmd_init::run(&cmd.global, &cmd.args).await,

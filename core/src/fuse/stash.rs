@@ -182,6 +182,12 @@ impl Stash {
         }
     }
 
+    pub(super) fn upgrade_root_to_lazy_dir(&mut self, tree_id: ID) {
+        if let Some(node) = self.nodes.get_mut(&INodeNo::ROOT) {
+            node.kind = NodeKind::LazyDir { tree_id };
+        }
+    }
+
     fn insert_entry(
         &mut self,
         parent_ino: INodeNo,

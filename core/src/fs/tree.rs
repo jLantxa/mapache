@@ -15,7 +15,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::{
     backend::WriteContents,
     fs::{calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
-    mapache::{BlobType, ID, SaveID},
+    mapache::{BlobType, ID, SaveID, traits::BlobSaver},
     repository::repo::Repository,
 };
 
@@ -31,31 +31,31 @@ impl Tree {
         Self { nodes }
     }
 
-    /// Saves a tree in the repository. This function should be called when a tree is complete,
+    /// Saves a tree in the storage. This function should be called when a tree is complete,
     /// that is, when all the contents and/or tree hashes have been resolved.
-    pub async fn save_to_repo(&mut self, repo: Arc<Repository>) -> Result<ID> {
+    pub async fn save_to_store(&mut self, blob_saver: Arc<dyn BlobSaver>) -> Result<ID> {
         let mut owned = std::mem::take(self); // Take ownership
 
-        let (serialized_data, owned_back) = tokio::task::spawn_blocking(move || {
+        let (tree_id, owned_back) = tokio::task::spawn_blocking(move || {
             owned.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
             let bytes = serde_json::to_vec(&owned).context("Failed to serialize tree")?;
-            Ok::<_, anyhow::Error>((bytes, owned))
+
+            // Perform the CPU-intensive encryption/saving right here in the worker thread!
+            let id = blob_saver
+                .save_blob(
+                    BlobType::Tree,
+                    WriteContents::Owned(bytes),
+                    SaveID::CalculateID,
+                )
+                .context("Failed to save tree blob to storage")?;
+
+            Ok::<_, anyhow::Error>((id, owned))
         })
         .await
         .context("Tree serialization panicked")??;
 
-        *self = owned_back; // Return ownership
-
-        tokio::task::spawn_blocking(move || {
-            repo.encode_and_save_blob(
-                BlobType::Tree,
-                WriteContents::Owned(serialized_data),
-                SaveID::CalculateID,
-            )
-        })
-        .await
-        .context("Blob processing panicked")?
-        .context("Failed to save tree blob to repository")
+        *self = owned_back;
+        Ok(tree_id)
     }
 
     /// Load a tree from the repository.

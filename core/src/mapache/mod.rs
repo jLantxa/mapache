@@ -1,6 +1,7 @@
 pub mod defaults;
 pub mod global;
 pub mod hash;
+pub mod traits;
 pub mod vars;
 
 use std::{

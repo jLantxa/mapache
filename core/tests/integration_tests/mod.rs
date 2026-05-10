@@ -17,6 +17,7 @@ use mapache::{
 use crate::{TEST_QUIET, test_utils};
 
 mod test_cmd_amend;
+mod test_cmd_archive;
 mod test_cmd_cat;
 mod test_cmd_clean;
 mod test_cmd_completion;

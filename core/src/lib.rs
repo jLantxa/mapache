@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod archiver;
 pub mod backend;
 pub mod commands;

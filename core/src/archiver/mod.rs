@@ -26,7 +26,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::{
     archiver::{progress::SnapshotProgress, tree_serializer::TreeSerializer},
     fs::tree::{FSNodeStream, NodeDiffStream, SerializedNodeStream},
-    mapache::global::THIS_MAPACHE_VERSION,
+    mapache::{global::THIS_MAPACHE_VERSION, traits::BlobSaver},
     repository::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
@@ -190,14 +190,14 @@ pub(crate) async fn snapshot(
     // ---------------------------------------------------------------------
     // Stage 2: Concurrent Processor Task
     // ---------------------------------------------------------------------
-    let processor_repo = repo.clone();
+    let processor_blob_saver: Arc<dyn BlobSaver> = repo.clone();
     let processor_status = status.clone();
     let processor_task = tokio::spawn(async move {
         let stream = ReceiverStream::new(diff_rx);
 
         stream
             .for_each_concurrent(num_readers, |(path, prev, next, diff)| {
-                let repo = processor_repo.clone();
+                let blob_saver = processor_blob_saver.clone();
                 let status = processor_status.clone();
                 let tx = processed_tx.clone();
 
@@ -208,7 +208,7 @@ pub(crate) async fn snapshot(
 
                     match processor::process_item(
                         (path.as_path(), prev, next, diff),
-                        repo,
+                        blob_saver,
                         status.progress.clone(),
                         status.progress_reporter.clone(),
                         status.shutdown_signal.clone(),
@@ -232,7 +232,7 @@ pub(crate) async fn snapshot(
     // Stage 3: Tree Serializer (Main Loop)
     // ---------------------------------------------------------------------
     let mut tree_serializer = TreeSerializer::new(
-        repo.clone(),
+        repo.clone() as Arc<dyn BlobSaver>,
         snapshot_options.snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,
     );

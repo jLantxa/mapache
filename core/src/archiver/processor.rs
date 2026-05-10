@@ -20,8 +20,8 @@ use crate::{
         node::Node,
         tree::{NodeDiff, StreamNode},
     },
+    mapache::traits::BlobSaver,
     mapache::{self, BlobType, ID, SaveID},
-    repository::repo::Repository,
     ui::snapshot::SnapshotProgressReporter,
 };
 
@@ -42,7 +42,7 @@ pub(crate) async fn process_item(
         Option<Result<StreamNode>>,
         NodeDiff,
     ),
-    repo: Arc<Repository>,
+    blob_saver: Arc<dyn BlobSaver>,
     progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
@@ -109,7 +109,7 @@ pub(crate) async fn process_item(
             })?;
 
             if next.node.is_file() {
-                let repo_clone = repo.clone();
+                let saver_clone = blob_saver.clone();
                 let path_clone = path.to_path_buf();
                 let progress_clone = progress.clone();
                 let reporter_clone = progress_reporter.clone();
@@ -122,7 +122,7 @@ pub(crate) async fn process_item(
 
                     if file_size <= mapache::defaults::MIN_CHUNK_SIZE {
                         store_small_file(
-                            repo_clone,
+                            saver_clone,
                             file,
                             &node_clone,
                             progress_clone.as_ref(),
@@ -130,7 +130,7 @@ pub(crate) async fn process_item(
                         )
                     } else {
                         chunk_and_store_file(
-                            repo_clone,
+                            saver_clone,
                             file,
                             &node_clone,
                             progress_clone,
@@ -165,7 +165,7 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 
 /// Reads a file, chunks it using the CDC chunker, and stores the chunks in the repository.
 pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
-    repo: Arc<Repository>,
+    blob_saver: Arc<dyn BlobSaver>,
     reader: R,
     node: &Node,
     progress: Arc<SnapshotProgress>,
@@ -184,7 +184,8 @@ pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
         let chunk = result?;
         let chunk_len = chunk.data.len() as u64;
 
-        let id = repo.encode_and_save_blob(
+        // Perform the intensive save_blob directly in the worker thread.
+        let id = blob_saver.save_blob(
             BlobType::Data,
             WriteContents::Borrowed(&chunk.data),
             SaveID::CalculateID,
@@ -199,7 +200,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
 
 /// Stores a small file as a single blob without chunking.
 fn store_small_file<R: Read>(
-    repo: Arc<Repository>,
+    blob_saver: Arc<dyn BlobSaver>,
     mut reader: R,
     node: &Node,
     progress: &SnapshotProgress,
@@ -220,7 +221,8 @@ fn store_small_file<R: Read>(
         data.set_len(size);
     }
 
-    let id = repo.encode_and_save_blob(
+    // Perform the intensive save_blob directly in the worker thread.
+    let id = blob_saver.save_blob(
         BlobType::Data,
         WriteContents::Owned(data),
         SaveID::CalculateID,

@@ -17,7 +17,7 @@ use crate::{
         tree::{StreamNode, Tree},
     },
     mapache::ID,
-    repository::repo::Repository,
+    mapache::traits::BlobSaver,
 };
 
 /// Represents the expected number of children for a directory node.
@@ -87,7 +87,7 @@ fn init_pending_trees(
 /// It maintains a stack of "pending" trees that are finalized once all their
 /// children have been processed.
 pub(crate) struct TreeSerializer {
-    repo: Arc<Repository>,
+    blob_saver: Arc<dyn BlobSaver>,
     pending_trees: HashMap<PathBuf, PendingTree>,
     snapshot_root_path: PathBuf,
     root_tree_id: Option<ID>,
@@ -95,12 +95,12 @@ pub(crate) struct TreeSerializer {
 
 impl TreeSerializer {
     pub(crate) fn new(
-        repo: Arc<Repository>,
+        blob_saver: Arc<dyn BlobSaver>,
         snapshot_root_path: PathBuf,
         paths: &[PathBuf],
     ) -> Self {
         Self {
-            repo,
+            blob_saver,
             pending_trees: init_pending_trees(&snapshot_root_path, paths),
             snapshot_root_path,
             root_tree_id: None,
@@ -183,7 +183,7 @@ impl TreeSerializer {
         let mut completed_tree = Tree::new(pending_tree.children);
 
         let tree_id = completed_tree
-            .save_to_repo(self.repo.clone())
+            .save_to_store(self.blob_saver.clone())
             .await
             .with_context(|| format!("Failed to save tree for {}", dir_path.display()))?;
 

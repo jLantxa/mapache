@@ -4,6 +4,11 @@
 
 ### Changes
 
+- **Archive & Extract Commands**: New `archive` and `extract` commands to create
+  and restore standalone `.mapache` archive files with full deduplication and
+  encryption.
+- **FUSE Archive Mount**: Mount `.mapache` archives as read-only filesystems
+  via the `mount` command.
 - **Memory-Efficient Verification**: Refactored verification to use a streaming
   approach, capping memory usage for large packs.
 - **Optimized Archiver Parallelism**: Faster filesystem scanning using `rayon`,

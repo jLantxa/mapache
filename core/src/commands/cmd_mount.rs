@@ -1,25 +1,33 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use colored::Colorize;
 
 use crate::{
-    backend::{BackendUrl, new_backend_with_prompt},
+    archive::reader::ArchiveReader,
+    backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
     fs,
-    fuse::fs::MapacheFS,
     mapache::defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB,
+    mapache::traits::BlobLoader,
     ui,
     utils::size,
 };
 
+pub use crate::fuse::fs::MapacheFS;
+
 #[derive(Args, Debug)]
-#[clap(about = "Mount the repository as a file system")]
+#[clap(about = "Mount the repository or a .mapache archive as a file system")]
 pub struct CmdArgs {
     /// Mount point
     #[arg(value_parser)]
     pub mountpoint: PathBuf,
+
+    /// Force mounting as a .mapache archive
+    #[arg(short, long, default_value_t = false)]
+    pub archive: bool,
 
     /// Mount point
     #[arg(long, value_parser, default_value_t = false)]
@@ -36,13 +44,13 @@ pub struct CmdArgs {
     /// Max size of the internal data cache.
     #[arg(long = "cache-size-mib", value_parser, default_value_t = DEFAULT_FUSE_STASH_CACHE_SIZE_MIB)]
     pub data_cache_size_mib: f32,
+
+    #[arg(skip)]
+    pub internal_password: Option<String>,
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    // Check that mountpoint exists and is a directory, or create it if requested
     let actual_mountpoint = args.mountpoint.clone();
-
-    // The mountpoint was created by us and should be deleted when we finish.
     let mut created_mountpoint = false;
 
     if !fs::path_exists(&actual_mountpoint).await {
@@ -58,13 +66,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let canonical_mountpoint = fs::get_absolute_normalized_path(&actual_mountpoint)?;
 
-    // Don't allow mounting on the repo path
-    if let BackendUrl::Local(repo_path) = BackendUrl::from(&global_args.repo)?
-        && canonical_mountpoint == fs::get_absolute_normalized_path(&repo_path)?
-    {
-        bail!("Cannot mount the repository on itself");
+    // Check if we are mounting a standalone archive file
+    let is_archive = args.archive || {
+        let repo_path = PathBuf::from(&global_args.repo);
+        repo_path.is_file() && repo_path.extension().is_some_and(|ext| ext == "mapache")
+    };
+
+    if is_archive {
+        return mount_archive(global_args, args, &canonical_mountpoint, created_mountpoint).await;
     }
 
+    // Standard repository mounting
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -73,67 +85,116 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, _, lock_handle| async move {
-            // Listen for CTRL + C to unmount.
             let cleanup_handler = CleanupHandler::new()?;
             cleanup_handler.add_lock(lock_handle.clone());
-
             repo.reload_master_index().await?;
 
             let allow_other = args.allow_other;
-            if allow_other {
-                ui::cli::warning!(
-                    "The --allow-other option is enabled. The backup content is now visible to ALL users on this system."
-                );
-            }
-
-            ui::cli::log!("Mounting repository in {}", canonical_mountpoint.display());
-            ui::cli::log!(
-                "Press {} to finish or unmount the filesystem manually.",
-                "Ctrl+C".bold()
-            );
-
-            let mount_path = canonical_mountpoint.clone();
             let metadata_only = args.metadata_only;
             let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
 
-            let mount_res = tokio::task::spawn_blocking(move || {
-                MapacheFS::mount(
+            ui::cli::log!("Mounting repository in {}", canonical_mountpoint.display());
+            run_mount_loop(&canonical_mountpoint, cleanup_handler, move |mp| {
+                MapacheFS::<dyn BlobLoader>::mount(
                     repo,
-                    &mount_path,
+                    mp,
                     allow_other,
                     metadata_only,
                     data_cache_size,
                 )
-            });
-
-            tokio::select! {
-                res = mount_res => {
-                    res.context("Mount task panicked")??;
-                }
-                _ = async {
-                    loop {
-                        if cleanup_handler.is_interrupted() {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    }
-                } => {
-                    ui::cli::log!("Interrupt received. Unmounting...");
-                    let _ = MapacheFS::unmount(&canonical_mountpoint);
-                }
-            }
+            })
+            .await?;
 
             if created_mountpoint {
-                ui::cli::verbose_1!(
-                    "Removing created mountpoint {}",
-                    canonical_mountpoint.display()
-                );
-
                 let _ = std::fs::remove_dir_all(&canonical_mountpoint);
             }
-
             Ok(())
         },
     )
     .await
+}
+
+async fn mount_archive(
+    global_args: &GlobalArgs,
+    args: &CmdArgs,
+    mountpoint: &std::path::Path,
+    created_mountpoint: bool,
+) -> Result<()> {
+    let password = match &args.internal_password {
+        Some(p) => zeroize::Zeroizing::new(p.clone()),
+        None => crate::ui::cli::request_password("Enter archive password")?,
+    };
+
+    let reader = ArchiveReader::open(&global_args.repo, &password)?;
+    let root_tree_id = reader.trailer.root_tree;
+    let loader: Arc<dyn BlobLoader> = Arc::new(reader);
+
+    let cleanup_handler = CleanupHandler::new()?;
+    ui::cli::log!(
+        "Mounting archive {} in {}",
+        global_args.repo.bold(),
+        mountpoint.display()
+    );
+
+    let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
+    let allow_other = args.allow_other;
+    let metadata_only = args.metadata_only;
+    let mp_clone = mountpoint.to_path_buf();
+
+    run_mount_loop(mountpoint, cleanup_handler, move |mp| {
+        MapacheFS::mount_loader(
+            loader,
+            None,
+            Some(root_tree_id),
+            mp,
+            crate::fuse::fs::MountOptions {
+                allow_other,
+                metadata_only,
+                data_cache_size,
+                created_time: chrono::Local::now(),
+            },
+        )
+    })
+    .await?;
+
+    if created_mountpoint {
+        let _ = std::fs::remove_dir_all(&mp_clone);
+    }
+
+    Ok(())
+}
+
+async fn run_mount_loop<F>(
+    mountpoint: &std::path::Path,
+    cleanup_handler: CleanupHandler,
+    mount_fn: F,
+) -> Result<()>
+where
+    F: FnOnce(&std::path::Path) -> Result<()> + Send + 'static,
+{
+    ui::cli::log!(
+        "Press {} to finish or unmount the filesystem manually.",
+        "Ctrl+C".bold()
+    );
+
+    let mp_clone = mountpoint.to_path_buf();
+    let mount_res = tokio::task::spawn_blocking(move || mount_fn(&mp_clone));
+
+    tokio::select! {
+        res = mount_res => {
+            res.context("Mount task panicked")??;
+        }
+        _ = async {
+            loop {
+                if cleanup_handler.is_interrupted() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        } => {
+            ui::cli::log!("Interrupt received. Unmounting...");
+            let _ = MapacheFS::<dyn BlobLoader>::unmount(mountpoint);
+        }
+    }
+    Ok(())
 }

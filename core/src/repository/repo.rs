@@ -18,22 +18,21 @@ use zeroize::Zeroizing;
 use crate::{
     backend::{Handle, StorageBackend, StorageHint, WriteContents, cache::CacheBackend},
     commands::Compression,
-    mapache::{self, BlobType, ContentIdType, ID, SaveID},
+    mapache::{
+        self, BlobType, ContentIdType, ID, SaveID,
+        traits::{BlobLoader, BlobSaver},
+    },
     repository::{
-        keys::KeyManager,
+        index::{Index, IndexFile, MasterIndex},
+        keys::{self, KeyManager},
         lock::{Lock, LockHandle},
+        manifest::Manifest,
         packer::{PackSaver, PackSaverRequest},
+        snapshot::Snapshot,
         storage::{EncodingContext, SecureStorage},
     },
     ui::{self},
     utils::{self, collections::IdSet},
-};
-
-use super::{
-    index::{Index, IndexFile, MasterIndex},
-    keys,
-    manifest::Manifest,
-    snapshot::Snapshot,
 };
 
 pub const THIS_REPOSITORY_VERSION: u32 = 1;
@@ -187,6 +186,24 @@ pub struct Repository {
 
     // Stats
     pub(super) stats: RepoStats,
+}
+
+impl BlobSaver for Repository {
+    fn save_blob(
+        &self,
+        blob_type: BlobType,
+        data: WriteContents<'_>,
+        save_id: SaveID,
+    ) -> Result<ID> {
+        self.encode_and_save_blob(blob_type, data, save_id)
+    }
+}
+
+#[async_trait::async_trait]
+impl BlobLoader for Repository {
+    async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
+        self.load_blob(id).await
+    }
 }
 
 impl Repository {

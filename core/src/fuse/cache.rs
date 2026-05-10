@@ -1,11 +1,11 @@
-use crate::{fs::tree::Tree, mapache::ID, repository::repo::Repository};
+use crate::{fs::tree::Tree, mapache::ID, mapache::traits::BlobLoader};
 use anyhow::Result;
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// A cache for `Tree` objects that uses a Least Recently Used (LRU) eviction policy.
-pub(super) struct TreeCache {
-    repo: Arc<Repository>,
+pub(super) struct TreeCache<L: BlobLoader + ?Sized> {
+    loader: Arc<L>,
     capacity: usize,
     inner: Mutex<TreeCacheInner>,
 }
@@ -16,23 +16,23 @@ struct TreeCacheInner {
     next_timestamp: u64,
 }
 
-impl TreeCache {
+impl<L: BlobLoader + ?Sized> TreeCache<L> {
     /// Creates a new TreeCache with a maximum `capacity`.
-    pub(super) fn new(repo: Arc<Repository>, capacity: usize) -> Self {
+    pub(super) fn new(loader: Arc<L>, capacity: usize) -> Self {
         let inner = TreeCacheInner {
             trees: BTreeMap::new(),
             order_map: BTreeMap::new(),
             next_timestamp: 0,
         };
         Self {
-            repo,
+            loader,
             capacity,
             inner: Mutex::new(inner),
         }
     }
 
     /// Looks up a `Tree` in the cache by its `ID`. If not found, it loads the
-    /// tree from the repository, stores it in the cache, and applies the LRU policy.
+    /// tree from the loader, stores it in the cache, and applies the LRU policy.
     pub(super) async fn load(&self, id: &ID) -> Result<Arc<Tree>> {
         {
             let mut inner = self.inner.lock();
@@ -53,8 +53,8 @@ impl TreeCache {
             }
         }
 
-        // Cache miss: load from repository outside the lock
-        let tree_blob = self.repo.load_blob(id).await?;
+        // Cache miss: load from loader outside the lock
+        let tree_blob = self.loader.load_blob(id).await?;
         let tree: Tree = serde_json::from_slice(&tree_blob)?;
         let tree_arc = Arc::new(tree);
 
@@ -92,8 +92,8 @@ impl TreeCache {
 }
 
 /// A cache for blobs that uses a Least Recently Used (LRU) eviction policy.
-pub(super) struct BlobCache {
-    repo: Arc<Repository>,
+pub(super) struct BlobCache<L: BlobLoader + ?Sized> {
+    loader: Arc<L>,
     capacity: u64,
     inner: Mutex<BlobCacheInner>,
 }
@@ -105,9 +105,9 @@ struct BlobCacheInner {
     next_timestamp: u64,
 }
 
-impl BlobCache {
+impl<L: BlobLoader + ?Sized> BlobCache<L> {
     /// Creates a new TreeCache with a maximum `capacity`.
-    pub(super) fn new(repo: Arc<Repository>, capacity: u64) -> Self {
+    pub(super) fn new(loader: Arc<L>, capacity: u64) -> Self {
         let inner = BlobCacheInner {
             size: 0,
             blobs: BTreeMap::new(),
@@ -115,7 +115,7 @@ impl BlobCache {
             next_timestamp: 0,
         };
         Self {
-            repo,
+            loader,
             capacity,
             inner: Mutex::new(inner),
         }
@@ -141,15 +141,8 @@ impl BlobCache {
             }
         }
 
-        // Cache miss: load from repository outside the lock
-        let blob_indexed_size = self
-            .repo
-            .index()
-            .get(id)
-            .map(|l| l.length as u64)
-            .ok_or_else(|| anyhow::anyhow!("Blob is not indexed"))?;
-
-        let blob = self.repo.load_blob(id).await?;
+        // Cache miss: load from loader outside the lock
+        let blob = self.loader.load_blob(id).await?;
         let blob_len = blob.len() as u64;
         let blob_arc = Arc::new(blob);
 
@@ -172,7 +165,7 @@ impl BlobCache {
             inner.next_timestamp += 1;
 
             // Evict until within capacity
-            while inner.size + blob_indexed_size > self.capacity {
+            while inner.size + blob_len > self.capacity {
                 if let Some((_, lru_id)) = inner.order_map.pop_first() {
                     if let Some((evicted_data, _)) = inner.blobs.remove(&lru_id) {
                         inner.size -= evicted_data.len() as u64;

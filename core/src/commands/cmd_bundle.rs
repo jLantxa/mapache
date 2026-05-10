@@ -78,9 +78,9 @@ pub struct CmdArgs {
     #[clap(long = "compression", value_parser = crate::commands::parse_compression_level, default_value_t = crate::commands::DEFAULT_COMPRESSION)]
     pub compression_level: crate::commands::Compression,
 
-    /// Number of parallel workers
-    #[clap(long, default_value_t = num_cpus::get())]
-    pub workers: usize,
+    /// Number of parallel readers
+    #[clap(long, default_value_t = crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS)]
+    pub readers: usize,
 
     /// Create mountpoint if it does not exist (mount mode only, passes to mount -c)
     #[cfg(all(feature = "fuse", unix))]
@@ -117,7 +117,7 @@ impl Default for CmdArgs {
             output: None,
             exclude: vec![],
             compression_level: crate::commands::Compression::Balanced,
-            workers: num_cpus::get(),
+            readers: crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS,
             create: false,
             allow_other: false,
             metadata_only: false,
@@ -137,7 +137,7 @@ impl Default for CmdArgs {
             output: None,
             exclude: vec![],
             compression_level: crate::commands::Compression::Balanced,
-            workers: num_cpus::get(),
+            readers: crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS,
             internal_password: None,
         }
     }
@@ -190,7 +190,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
             crate::ui::bundle::cli::BundleMode::Create,
             0,
             0,
-            args.workers,
+            args.readers,
         ));
 
     let scanner_reporter = progress_reporter.clone();
@@ -241,7 +241,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
     let process_shutdown = shutdown_signal.clone();
     let process_progress = progress.clone();
     let process_reporter = progress_reporter.clone();
-    let process_readers = args.workers;
+    let process_readers = args.readers;
 
     let process_task = tokio::spawn(async move {
         fs_stream
@@ -385,7 +385,7 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
         crate::ui::bundle::cli::BundleMode::Extract,
         total_items as u64,
         total_bytes,
-        args.workers,
+        args.readers,
     ));
 
     crate::ui::cli::log!(
@@ -403,7 +403,7 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
         loader.clone(),
         &root_tree_id,
         destination,
-        args.workers,
+        args.readers,
         progress_reporter.clone(),
     )
     .await?;

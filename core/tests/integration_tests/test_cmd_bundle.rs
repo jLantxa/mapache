@@ -16,7 +16,7 @@ async fn test_bundle_and_extract() -> Result<()> {
         input: vec![backup_data_path.clone()],
         output: Some(bundle_path.clone()),
         compression_level: mapache::commands::Compression::Balanced,
-        workers: 2,
+        readers: 2,
         internal_password: Some("test_password".to_string()),
         ..Default::default()
     };
@@ -29,7 +29,7 @@ async fn test_bundle_and_extract() -> Result<()> {
         input: vec![bundle_path.clone()],
         output: Some(extract_path.clone()),
         compression_level: mapache::commands::Compression::Balanced,
-        workers: 2,
+        readers: 2,
         internal_password: Some("test_password".to_string()),
         ..Default::default()
     };

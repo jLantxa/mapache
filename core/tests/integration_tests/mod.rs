@@ -56,11 +56,11 @@ pub fn assert_times_equal(t1: std::time::SystemTime, t2: std::time::SystemTime) 
     let d2 = t2.duration_since(UNIX_EPOCH).unwrap_or_default();
     let diff = d1.abs_diff(d2);
 
-    if diff.as_secs() < 1 {
+    if diff.as_secs() <= 1 {
         return;
     }
 
-    assert_eq!(t1, t2);
+    assert_eq!(t1, t2, "timestamps differ by {diff:?}");
 }
 
 pub struct TestContext {

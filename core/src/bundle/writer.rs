@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::File,
     io::{Seek, Write},
     path::Path,
@@ -26,6 +27,7 @@ pub struct BundleWriter {
 struct BundleWriterInner {
     file: File,
     index: BundleIndex,
+    seen: HashSet<ID>,
 }
 
 impl BlobSaver for BundleWriter {
@@ -69,6 +71,7 @@ impl BundleWriter {
             inner: Mutex::new(BundleWriterInner {
                 file,
                 index: BundleIndex::default(),
+                seen: HashSet::new(),
             }),
         })
     }
@@ -93,7 +96,7 @@ impl BundleWriter {
 
         let mut inner = self.inner.lock();
 
-        if inner.index.entries.iter().any(|e| e.id == id) {
+        if !inner.seen.insert(id) {
             return Ok(id);
         }
 

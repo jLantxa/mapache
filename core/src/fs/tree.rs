@@ -101,21 +101,28 @@ impl FSNodeStream {
     pub async fn from_paths(paths: Vec<PathBuf>, exclude_paths: Vec<PathBuf>) -> Result<Self> {
         let mut exclude_paths = exclude_paths;
         exclude_paths.sort_unstable();
-        let filter = Arc::new(PathFilter::new(None, Some(exclude_paths)));
+        let filter = Arc::new(PathFilter::new(None, Some(exclude_paths.clone())));
 
-        use rayon::prelude::*;
-        let allowed_paths: Result<Vec<_>> = paths
-            .into_par_iter()
-            .filter(|path| filter.allow(path))
-            .map(|path| {
-                let node = Node::from_path_sync(&path).with_context(|| {
-                    format!("Path {} does not exist or is inaccessible", path.display())
-                })?;
-                Ok((path, node))
+        let allowed_paths: Vec<(PathBuf, Node)> = {
+            let filter = filter.clone();
+            tokio::task::spawn_blocking(move || {
+                use rayon::prelude::*;
+                paths
+                    .into_par_iter()
+                    .filter(|path| filter.allow(path))
+                    .map(|path| {
+                        let node = Node::from_path_sync(&path).with_context(|| {
+                            format!("Path {} does not exist or is inaccessible", path.display())
+                        })?;
+                        Ok((path, node))
+                    })
+                    .collect::<Result<Vec<_>>>()
             })
-            .collect();
+            .await
+            .context("Path statting panicked")??
+        };
 
-        let mut allowed_paths = allowed_paths?;
+        let mut allowed_paths = allowed_paths;
 
         let raw_paths: Vec<PathBuf> = allowed_paths.iter().map(|(p, _)| p.clone()).collect();
         let common_root = calculate_lcp(&raw_paths, false);

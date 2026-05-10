@@ -127,6 +127,16 @@ pub(crate) async fn snapshot(
         shutdown_signal,
     ));
 
+    // Start Background Scanner early so it counts files concurrently
+    // with the stream setup and the backup pipeline.
+    spawn_scanner_task(
+        snapshot_options.no_scan,
+        snapshot_options.absolute_source_paths.clone(),
+        snapshot_options.exclude_paths.clone(),
+        status.clone(),
+        progress_reporter.clone(),
+    );
+
     // Setup Input Streams
     let fs_stream = FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
@@ -144,15 +154,6 @@ pub(crate) async fn snapshot(
     .await?;
 
     let mut diff_stream = NodeDiffStream::new(previous_tree_stream, fs_stream);
-
-    // Start Background Scanner (Progress only)
-    spawn_scanner_task(
-        snapshot_options.no_scan,
-        snapshot_options.absolute_source_paths.clone(),
-        snapshot_options.exclude_paths.clone(),
-        status.clone(),
-        progress_reporter.clone(),
-    );
 
     // ---------------------------------------------------------------------
     // Pipeline Channels
@@ -290,7 +291,8 @@ pub(crate) async fn snapshot(
 }
 
 /// Spawns a background scanner task to estimate the total size and item count.
-/// This implementation uses a parallel recursive walk with `rayon` for maximum speed.
+/// This uses a sequential walk so it does not compete with the main backup
+/// pipeline for rayon's global threadpool.
 fn spawn_scanner_task(
     no_scan: bool,
     absolute_source_paths: Vec<PathBuf>,
@@ -313,15 +315,14 @@ fn spawn_scanner_task(
         let filter_for_blocking = filter.clone();
 
         let res = tokio::task::spawn_blocking(move || {
-            use rayon::prelude::*;
-            absolute_source_paths.into_par_iter().for_each(|path| {
-                parallel_scan_recursive(
-                    &path,
+            for path in &absolute_source_paths {
+                scan_recursive(
+                    path,
                     filter_for_blocking.clone(),
                     status_for_blocking.clone(),
                     reporter_for_blocking.clone(),
                 );
-            });
+            }
         })
         .await;
 
@@ -333,7 +334,7 @@ fn spawn_scanner_task(
     });
 }
 
-fn parallel_scan_recursive(
+fn scan_recursive(
     path: &Path,
     filter: Arc<crate::fs::filter::PathFilter>,
     status: Arc<PipelineStatus>,
@@ -356,28 +357,19 @@ fn parallel_scan_recursive(
             }
 
             if node.is_dir() {
-                match std::fs::read_dir(path) {
-                    Ok(entries) => {
-                        use rayon::prelude::*;
-                        // par_bridge allows us to process the directory entries in parallel.
-                        entries.par_bridge().for_each(|entry_res| {
-                            if let Ok(entry) = entry_res {
-                                parallel_scan_recursive(
-                                    &entry.path(),
-                                    filter.clone(),
-                                    status.clone(),
-                                    progress_reporter.clone(),
-                                );
-                            }
-                        });
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        scan_recursive(
+                            &entry.path(),
+                            filter.clone(),
+                            status.clone(),
+                            progress_reporter.clone(),
+                        );
                     }
-                    Err(e) => {
-                        progress_reporter.warning(&format!(
-                            "Error reading directory {}: {}",
-                            path.display(),
-                            e
-                        ));
-                    }
+                } else {
+                    // read_dir already failed, collect error string outside the move closure
+                    let msg = format!("Error reading directory {}", path.display());
+                    progress_reporter.warning(&msg);
                 }
             }
         }

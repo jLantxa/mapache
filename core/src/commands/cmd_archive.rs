@@ -63,11 +63,7 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
 
     let snapshot_root_path = if absolute_source_paths.len() == 1 {
         let p = &absolute_source_paths[0];
-        if p.is_dir() {
-            p.clone()
-        } else {
-            p.parent().unwrap_or(p).to_path_buf()
-        }
+        p.parent().unwrap_or(p).to_path_buf()
     } else {
         crate::fs::calculate_lcp(&absolute_source_paths, false)
     };

@@ -35,8 +35,8 @@ async fn test_archive_and_extract() -> Result<()> {
     cmd_extract::run(&extract_args).await?;
 
     // Verify
-    // If snapshot_root_path was the folder itself, the root tree contains its contents.
-    verify_extracted_content(backup_data_path, &extract_path)?;
+    let backup_dir_name = backup_data_path.file_name().unwrap();
+    verify_extracted_content(backup_data_path, &extract_path.join(backup_dir_name))?;
 
     Ok(())
 }

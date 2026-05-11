@@ -309,7 +309,18 @@ fn get_hostname() -> Option<String> {
     }
     #[cfg(windows)]
     {
-        std::env::var("COMPUTERNAME").ok()
+        use windows_sys::Win32::System::SystemInformation::{
+            ComputerNameDnsHostname, GetComputerNameExW,
+        };
+        let mut buf = [0u16; 256];
+        let mut len = buf.len() as u32;
+        let ret =
+            unsafe { GetComputerNameExW(ComputerNameDnsHostname, buf.as_mut_ptr(), &mut len) };
+        if ret == 0 {
+            return None;
+        }
+        let s = String::from_utf16_lossy(&buf[..len as usize]);
+        Some(s.trim_end_matches('\0').to_owned())
     }
 }
 

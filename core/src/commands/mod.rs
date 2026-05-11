@@ -55,7 +55,7 @@ pub mod cmd_verify;
 pub mod cleanup;
 pub mod error;
 
-pub use error::{ToExitCode, fail};
+pub(crate) use error::{ToExitCode, fail};
 
 /// mapache CLI definition
 #[derive(Parser, Debug)]

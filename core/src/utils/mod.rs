@@ -1,3 +1,4 @@
+pub mod base64;
 pub mod binary;
 pub mod collections;
 
@@ -19,7 +20,7 @@ use zeroize::Zeroizing;
 
 /// Size units.
 #[allow(non_upper_case_globals)]
-pub mod size {
+pub(crate) mod size {
     // As of 2025, the TB / TiB units are biggest units that one would
     // normally expect in a backup. Sizes bigger than the TB / TiB will still
     // be represented using those units. If this changes in the future, make
@@ -43,7 +44,7 @@ pub mod size {
 /// Reads authentication credentials (username and password) from a file or environment variables.
 /// The file should contain the username on the first line and the password on the second.
 /// If no file is provided, it checks the MAPACHE_USERNAME and MAPACHE_PASSWORD environment variables.
-pub fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
+pub(crate) fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
     if let Some(path) = password_file_path {
         let text = std::fs::read_to_string(path).with_context(|| {
             format!("Could not read repository password from {}", path.display())
@@ -88,7 +89,7 @@ pub fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
 
 /// Formats a byte count into a human-readable string with binary prefixes (KiB, MiB, etc.).
 #[allow(non_upper_case_globals)]
-pub fn format_size_binary(bytes: u64, precision: usize) -> String {
+pub(crate) fn format_size_binary(bytes: u64, precision: usize) -> String {
     if bytes >= size::TiB {
         format!("{:.precision$} TiB", (bytes as f64) / (size::TiB as f64))
     } else if bytes >= size::GiB {
@@ -102,24 +103,8 @@ pub fn format_size_binary(bytes: u64, precision: usize) -> String {
     }
 }
 
-/// Formats a byte count into a human-readable string with decimal prefixes (kB, MB, etc.).
-#[allow(non_upper_case_globals)]
-pub fn format_size_decimal(bytes: u64, precision: usize) -> String {
-    if bytes >= size::TB {
-        format!("{:.precision$} TB", (bytes as f64) / (size::TB as f64))
-    } else if bytes >= size::GB {
-        format!("{:.precision$} GB", (bytes as f64) / (size::GB as f64))
-    } else if bytes >= size::MB {
-        format!("{:.precision$} MB", (bytes as f64) / (size::MB as f64))
-    } else if bytes >= size::kB {
-        format!("{:.precision$} kB", (bytes as f64) / (size::kB as f64))
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 /// Formats a count with appropriate singular or plural suffix.
-pub fn format_count<T>(count: T, singular: &str, plural: &str) -> String
+pub(crate) fn format_count<T>(count: T, singular: &str, plural: &str) -> String
 where
     T: std::fmt::Display + PartialEq + From<u8>,
 {
@@ -131,7 +116,7 @@ where
 }
 
 /// Converts a byte slice to its hexadecimal string representation.
-pub fn bytes_to_hex(bytes: &[u8]) -> String {
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -139,7 +124,10 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
 /// defaulting to "%Y-%m-%d %H:%M:%S" format if not specified.
 ///
 /// Returns an `Err` if the `SystemTime` is before the Unix epoch.
-pub fn pretty_print_system_time(time: SystemTime, format_str: Option<&str>) -> Result<String> {
+pub(crate) fn pretty_print_system_time(
+    time: SystemTime,
+    format_str: Option<&str>,
+) -> Result<String> {
     time.duration_since(UNIX_EPOCH)
         .with_context(|| format!("SystemTime {time:?} is before UNIX EPOCH"))?;
 
@@ -149,7 +137,10 @@ pub fn pretty_print_system_time(time: SystemTime, format_str: Option<&str>) -> R
     Ok(datetime_local.format(format).to_string())
 }
 
-pub fn pretty_print_timestamp(timestamp: &DateTime<Local>, format_str: Option<&str>) -> String {
+pub(crate) fn pretty_print_timestamp(
+    timestamp: &DateTime<Local>,
+    format_str: Option<&str>,
+) -> String {
     let format = format_str.unwrap_or("%a %Y-%m-%d %H:%M %:z");
     timestamp.format(format).to_string()
 }
@@ -159,7 +150,7 @@ pub fn pretty_print_timestamp(timestamp: &DateTime<Local>, format_str: Option<&s
 /// Pretty prints a `std::time::Duration` in a human-readable format.
 /// Attempts to show up to two most significant units.
 /// Milliseconds are only shown if the total duration is less than one second.
-pub fn pretty_print_duration(duration: std::time::Duration) -> String {
+pub(crate) fn pretty_print_duration(duration: std::time::Duration) -> String {
     let total_seconds = duration.as_secs();
     let milliseconds = duration.subsec_millis();
 
@@ -209,7 +200,7 @@ pub fn pretty_print_duration(duration: std::time::Duration) -> String {
 /// - `d`: days
 /// - `w`: weeks
 /// - `y`: years (approximated as 365 days)
-pub fn parse_duration_string(s: &str) -> Result<Duration> {
+pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
     let mut total_duration = Duration::seconds(0);
     let mut current_num_str = String::new();
     let chars = s.chars().peekable();
@@ -254,7 +245,7 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
 
 /// Converts a Unix file mode (as `u32`) into a human-readable permission string
 /// (e.g., "-rwxr-xr-x" like `ls -l`).
-pub fn mode_to_permissions_string(mode: u32) -> String {
+pub(crate) fn mode_to_permissions_string(mode: u32) -> String {
     let mut s = String::with_capacity(10);
 
     let file_type_mask = 0o170000;
@@ -305,9 +296,26 @@ pub fn mode_to_permissions_string(mode: u32) -> String {
 
 // --- Others ---
 
+fn get_hostname() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        let ret = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+        if ret != 0 {
+            return None;
+        }
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("COMPUTERNAME").ok()
+    }
+}
+
 /// Returns the system's hostname and the current user's name.
-pub fn get_system_info() -> (Option<String>, Option<String>) {
-    let hostname = hostname::get().ok().and_then(|hn| hn.into_string().ok());
+pub(crate) fn get_system_info() -> (Option<String>, Option<String>) {
+    let hostname = get_hostname();
     let username = if cfg!(windows) {
         std::env::var("USERNAME").ok()
     } else {
@@ -349,37 +357,24 @@ pub fn dir_size(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
-/// Counts entries in a directory that satisfy a given filter predicate.
-///
-/// The filter closure receives a reference to a `std::fs::DirEntry` and should return
-/// `true` if the entry should be counted.
-pub fn count_entries<F>(dir_path: &Path, filter: F) -> Result<usize>
-where
-    F: Fn(&std::fs::DirEntry) -> bool,
-{
+/// Counts the number of regular files within a directory (non-recursive).
+pub fn count_files(dir_path: &Path) -> Result<usize> {
     let entries = dir_path.read_dir()?;
     let mut count = 0;
-
     for entry in entries {
         if let Ok(entry) = entry
-            && filter(&entry)
+            && entry.path().is_file()
         {
             count += 1;
         }
     }
-
     Ok(count)
-}
-
-/// Counts the number of regular files within a directory (non-recursive).
-pub fn count_files(dir_path: &Path) -> Result<usize> {
-    count_entries(dir_path, |entry| entry.path().is_file())
 }
 
 // --- Tests ---
 /// Joins a relative path to a base path, ensuring the result is within the base path.
 /// This prevents path traversal attacks.
-pub fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
+pub(crate) fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
     if relative.is_absolute() {
         bail!("Relative path cannot be absolute: {}", relative.display());
     }
@@ -439,42 +434,6 @@ mod tests {
         assert_eq!(format_size_binary(12_995_924, 3), "12.394 MiB");
         assert_eq!(format_size_binary(1_500_000_000, 3), "1.397 GiB");
         assert_eq!(format_size_binary(2_100_000_100_000, 3), "1.910 TiB");
-    }
-
-    #[test]
-    fn test_format_size_decimal() {
-        // With one decimal
-        assert_eq!(format_size_decimal(0, 1), "0 B");
-        assert_eq!(format_size_decimal(1, 1), "1 B");
-        assert_eq!(format_size_decimal(324, 1), "324 B");
-        assert_eq!(format_size_decimal(1_205, 1), "1.2 kB");
-        assert_eq!(format_size_decimal(124_112, 1), "124.1 kB");
-        assert_eq!(format_size_decimal(1_045_024, 1), "1.0 MB");
-        assert_eq!(format_size_decimal(12_995_924, 1), "13.0 MB");
-        assert_eq!(format_size_decimal(1_500_000_000, 1), "1.5 GB");
-        assert_eq!(format_size_decimal(2_100_000_100_000, 1), "2.1 TB");
-
-        // With two decimals
-        assert_eq!(format_size_decimal(0, 2), "0 B");
-        assert_eq!(format_size_decimal(1, 2), "1 B");
-        assert_eq!(format_size_decimal(324, 2), "324 B");
-        assert_eq!(format_size_decimal(1_205, 2), "1.21 kB");
-        assert_eq!(format_size_decimal(124_112, 2), "124.11 kB");
-        assert_eq!(format_size_decimal(1_045_024, 2), "1.05 MB");
-        assert_eq!(format_size_decimal(12_995_924, 2), "13.00 MB");
-        assert_eq!(format_size_decimal(1_500_000_000, 2), "1.50 GB");
-        assert_eq!(format_size_decimal(2_100_000_100_000, 2), "2.10 TB");
-
-        // With three decimals
-        assert_eq!(format_size_decimal(0, 3), "0 B");
-        assert_eq!(format_size_decimal(1, 3), "1 B");
-        assert_eq!(format_size_decimal(324, 3), "324 B");
-        assert_eq!(format_size_decimal(1_205, 3), "1.205 kB");
-        assert_eq!(format_size_decimal(124_112, 3), "124.112 kB");
-        assert_eq!(format_size_decimal(1_045_024, 3), "1.045 MB");
-        assert_eq!(format_size_decimal(12_995_924, 3), "12.996 MB");
-        assert_eq!(format_size_decimal(1_500_000_000, 3), "1.500 GB");
-        assert_eq!(format_size_decimal(2_100_000_100_000, 3), "2.100 TB");
     }
 
     #[test]

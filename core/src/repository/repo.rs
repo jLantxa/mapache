@@ -1321,7 +1321,6 @@ impl Repository {
 mod tests {
     use std::sync::Arc;
 
-    use base64::{Engine, engine::general_purpose};
     use chrono::Local;
     use rstest::rstest;
     use tempfile::tempdir;
@@ -1331,6 +1330,7 @@ mod tests {
         commands::Compression,
         mapache::{defaults::TEST_REPO_CONFIG, global::set_global_opts_with_args},
         repository::lock::LOCK_EXPIRE_TIMEOUT,
+        utils,
     };
 
     use super::*;
@@ -1403,8 +1403,8 @@ mod tests {
         let master_key = KeyManager::generate_new_master_key();
         let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone())?;
 
-        let salt = general_purpose::STANDARD.decode(keyfile.salt.clone())?;
-        let encrypted_key = general_purpose::STANDARD.decode(keyfile.encrypted_key.clone())?;
+        let salt = utils::base64::decode(&keyfile.salt)?;
+        let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
 
         let intermediate_key =
             SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params())?;

@@ -5,10 +5,11 @@ use std::{
 };
 
 use anyhow::Result;
-use rustc_hash::{FxHashMap, FxHashSet};
 
 pub mod filter;
 pub mod node;
+
+use crate::utils::collections::{FxHashMap, FxHashSet};
 pub mod tree;
 
 pub async fn path_exists(path: &Path) -> bool {

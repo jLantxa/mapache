@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use argon2;
-use base64::Engine;
 use chrono::{DateTime, Local};
 use colored::Colorize;
 use futures::{Stream, StreamExt, future::BoxFuture};
@@ -21,7 +20,7 @@ use crate::{
         repo::{Auth, KEYS_DIR},
         storage::SecureStorage,
     },
-    ui,
+    ui, utils,
 };
 
 /// Error types for KeyManager operations
@@ -214,9 +213,8 @@ impl KeyManager {
     }
 
     pub fn decode_master_key(password: &str, keyfile: &KeyFile) -> Result<Zeroizing<Vec<u8>>> {
-        let salt = base64::engine::general_purpose::STANDARD.decode(&keyfile.salt)?;
-        let encrypted_key =
-            base64::engine::general_purpose::STANDARD.decode(&keyfile.encrypted_key)?;
+        let salt = utils::base64::decode(&keyfile.salt)?;
+        let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
 
         let intermediate_key =
             SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params())?;
@@ -251,8 +249,8 @@ impl KeyManager {
             m: argon2_params.m_cost(),
             t: argon2_params.t_cost(),
             p: argon2_params.p_cost(),
-            encrypted_key: base64::engine::general_purpose::STANDARD.encode(encrypted_key),
-            salt: base64::engine::general_purpose::STANDARD.encode(salt),
+            encrypted_key: utils::base64::encode(&encrypted_key),
+            salt: utils::base64::encode(&salt),
         })
     }
 

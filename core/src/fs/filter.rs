@@ -7,7 +7,8 @@ use std::{
 
 use anyhow::{Result, bail};
 use futures::StreamExt;
-use rustc_hash::FxHashMap;
+
+use crate::utils::collections::FxHashMap;
 
 use crate::{
     fs::{self, tree::SerializedNodeStream},

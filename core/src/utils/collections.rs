@@ -1,10 +1,31 @@
 use std::{
     collections::{HashMap, HashSet},
-    hash::{BuildHasherDefault, Hash},
+    hash::{BuildHasherDefault, Hash, Hasher},
 };
 
-pub type IdSet<K> = HashSet<K, BuildHasherDefault<rustc_hash::FxHasher>>;
-pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<rustc_hash::FxHasher>>;
+#[derive(Default)]
+pub struct FxHasher {
+    hash: u64,
+}
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.hash = self
+                .hash
+                .wrapping_mul(0x517cc1b727220a95)
+                .wrapping_add(b as u64);
+        }
+    }
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+pub type FxHashSet<V> = HashSet<V, BuildHasherDefault<FxHasher>>;
+pub type IdSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
+pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// IndexSet is a set that can be enumerated by index.
 #[derive(Debug, Clone)]
@@ -38,7 +59,7 @@ where
     }
 }
 
-pub type IdIndexSet<T> = IndexSet<T, BuildHasherDefault<rustc_hash::FxHasher>>;
+pub type IdIndexSet<T> = IndexSet<T, BuildHasherDefault<FxHasher>>;
 
 use crate::mapache::ID;
 use parking_lot::RwLock;

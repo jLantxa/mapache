@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-pub const THIS_MAPACHE_VERSION: &str = match option_env!("MAPACHE_RELEASE_BUILD") {
+pub(crate) const THIS_MAPACHE_VERSION: &str = match option_env!("MAPACHE_RELEASE_BUILD") {
     Some(_) => {
         concat!("v", env!("CARGO_PKG_VERSION"))
     }
@@ -24,7 +24,7 @@ pub const THIS_MAPACHE_VERSION: &str = match option_env!("MAPACHE_RELEASE_BUILD"
 };
 
 /// Base OS directories (cache, home, etc.)
-pub static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {
+pub(crate) static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {
     BaseDirs::new().expect("Expected to find a valid user home directory to initialize base paths")
 });
 
@@ -34,22 +34,22 @@ static VERBOSITY: AtomicU32 = AtomicU32::new(DEFAULT_VERBOSITY);
 static REFRESH_INTERVAL_MS: AtomicU64 =
     AtomicU64::new((1000.0 / DEFAULT_PROGRESS_REFRESH_RATE_HZ) as u64);
 
-pub struct GlobalOpts;
+pub(crate) struct GlobalOpts;
 
 impl GlobalOpts {
     /// Returns the global verbosity setting.
     #[inline]
-    pub fn verbosity() -> u32 {
+    pub(crate) fn verbosity() -> u32 {
         VERBOSITY.load(Ordering::Relaxed)
     }
 
     /// Returns the global progress refresh interval as a Duration.
-    pub fn progress_refresh_interval() -> Duration {
+    pub(crate) fn progress_refresh_interval() -> Duration {
         Duration::from_millis(REFRESH_INTERVAL_MS.load(Ordering::Relaxed))
     }
 
     /// Sets the global verbosity level.
-    pub fn set_verbosity(verbosity: u32) {
+    pub(crate) fn set_verbosity(verbosity: u32) {
         VERBOSITY.store(verbosity, Ordering::Relaxed);
     }
 

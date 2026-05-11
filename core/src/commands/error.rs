@@ -8,7 +8,7 @@ pub trait ToExitCode {
 /// A structured error that carries a message and an exit code.
 /// This can be wrapped in anyhow::Error.
 #[derive(Debug)]
-pub struct MapacheError {
+pub(crate) struct MapacheError {
     pub message: String,
     pub exit_code: i32,
 }
@@ -23,7 +23,7 @@ impl std::error::Error for MapacheError {}
 
 /// Helper to create a structured error that can be returned from commands.
 /// Usage: return Err(fail("Authentication failed", CmdInitError::AuthFail));
-pub fn fail<S: Into<String>, E: ToExitCode>(msg: S, code: E) -> anyhow::Error {
+pub(crate) fn fail<S: Into<String>, E: ToExitCode>(msg: S, code: E) -> anyhow::Error {
     anyhow::Error::new(MapacheError {
         message: msg.into(),
         exit_code: code.to_exit_code(),
@@ -31,4 +31,4 @@ pub fn fail<S: Into<String>, E: ToExitCode>(msg: S, code: E) -> anyhow::Error {
 }
 
 /// Fallback exit code for errors that are not MapacheError.
-pub const GENERIC_ERROR_CODE: i32 = -1;
+pub(crate) const GENERIC_ERROR_CODE: i32 = -1;

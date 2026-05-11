@@ -13,28 +13,23 @@ anyhow = "1.0.102"
 argon2 = "0.5.3"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
-base64 = "0.22.1"
 blake3 = "1.8.5"
 chrono = { version = "0.4.44", features = ["serde"] }
 chunker = { path = "../chunker" }
 clap = { version = "4.6.1", features = ["derive", "wrap_help", "env"] }
-clap_complete = "4.6.4"
+clap_complete = "4.6.5"
 colored = "3.1.1"
 crossbeam-channel = "0.5.15"
 dashmap = "6.1.0"
-dialoguer = "0.12.0"
 directories = "6.0.0"
 filetime = "0.2.28"
 futures = "0.3.32"
-hostname = "0.4.2"
-indicatif = { version = "0.18.4", features = ["rayon"] }
+indicatif = "0.18.4"
 libc = { version = "0.2.186" }
-num_cpus = "1.17.0"
-num_enum = "0.7.6"
 parking_lot = "0.12.5"
-percent-encoding = "2.3.2"
 rand = "0.10.1"
 rayon = "1.12.0"
+rpassword = "7.5"
 russh = { version = "0.60.2", default-features = false, features = [
   "flate2",
   "ring",
@@ -44,11 +39,9 @@ russh-sftp = "2.1.2"
 rust-s3 = { version = "0.37.2", default-features = false, features = [
   "with-tokio",
 ] }
-rustc-hash = "2.1.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 signal-hook-registry = "1.4.8"
-thiserror = "2.0.18"
 tokio = { version = "1.52", features = [
   "rt",
   "rt-multi-thread",

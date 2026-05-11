@@ -289,7 +289,7 @@ impl Packer {
 
         while !cur.is_empty() {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);
-            let blob_type: BlobType = get_u8(&mut cur)?.into();
+            let blob_type = BlobType::try_from(get_u8(&mut cur)?)?;
             let length = get_u32(&mut cur)?;
             let raw_length = get_u32(&mut cur)?;
 

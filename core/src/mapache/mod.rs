@@ -13,7 +13,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
-use num_enum::FromPrimitive;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::io::AsyncReadExt;
 
@@ -152,7 +151,7 @@ impl<'de> Deserialize<'de> for ID {
 }
 
 /// Type of objects that can be stored in a repository.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, FromPrimitive)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum BlobType {
     Data = 0x00,
@@ -161,6 +160,19 @@ pub enum BlobType {
     /// A padding blob descriptor used for obfuscation. This blob is fake and must be ignored.
     #[default]
     Padding = 0xff,
+}
+
+impl TryFrom<u8> for BlobType {
+    type Error = anyhow::Error;
+
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
+        match v {
+            0x00 => Ok(BlobType::Data),
+            0x01 => Ok(BlobType::Tree),
+            0xff => Ok(BlobType::Padding),
+            other => anyhow::bail!("invalid blob type byte: {other}"),
+        }
+    }
 }
 
 /// Type of content-addressable objects that can be stored in a Repository

@@ -225,8 +225,12 @@ struct ShardedFileHandleCache {
 
 impl ShardedFileHandleCache {
     fn new(max_total_handles: usize) -> Self {
-        let num_cpus = num_cpus::get();
-        let num_shards = (num_cpus * 4).next_power_of_two().min(64);
+        let num_shards = (std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            * 4)
+        .next_power_of_two()
+        .min(64);
         let handles_per_shard = (max_total_handles / num_shards).max(1);
 
         let mut shards = Vec::with_capacity(num_shards);

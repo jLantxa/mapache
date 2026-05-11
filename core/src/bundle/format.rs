@@ -118,7 +118,7 @@ impl BundleIndexEntry {
         let mut cur = bytes;
         Ok(Self {
             id: ID::from_bytes(get_array(&mut cur)?),
-            blob_type: blob_type_from_u8(get_u8(&mut cur)?)?,
+            blob_type: BlobType::try_from(get_u8(&mut cur)?)?,
             offset: get_u64(&mut cur)?,
             length: get_u32(&mut cur)?,
             raw_length: get_u32(&mut cur)?,
@@ -152,13 +152,4 @@ impl BundleIndex {
 
 impl BundleIndexEntry {
     const BINARY_SIZE: usize = 32 + 1 + 8 + 4 + 4;
-}
-
-fn blob_type_from_u8(v: u8) -> anyhow::Result<BlobType> {
-    match v {
-        0x00 => Ok(BlobType::Data),
-        0x01 => Ok(BlobType::Tree),
-        0xff => Ok(BlobType::Padding),
-        other => anyhow::bail!("invalid blob type byte: {other}"),
-    }
 }

@@ -1,23 +1,31 @@
+use std::io::{self, BufRead, Write};
+
 use anyhow::Result;
-use dialoguer::{Input, Password};
+use rpassword::prompt_password;
 use zeroize::Zeroizing;
 
 use crate::repository::repo::Auth;
 
+fn read_line(prompt: &str) -> Result<String> {
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    write!(stdout, "{prompt}: ")?;
+    stdout.flush()?;
+
+    let stdin = io::stdin();
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
 pub(crate) fn request_password(prompt: &str) -> Result<Zeroizing<String>> {
-    Password::new()
-        .with_prompt(prompt)
-        .interact()
+    prompt_password(format!("{prompt}: "))
         .map(Zeroizing::new)
         .map_err(Into::into)
 }
 
 pub(crate) fn request_input(prompt: &str) -> Result<Option<String>> {
-    let input: String = Input::new()
-        .with_prompt(prompt)
-        .allow_empty(true)
-        .interact()?;
-
+    let input = read_line(prompt)?;
     if input.is_empty() {
         Ok(None)
     } else {
@@ -27,26 +35,24 @@ pub(crate) fn request_input(prompt: &str) -> Result<Option<String>> {
 
 /// Requests a password with a prompt and confirmation.
 pub(crate) fn request_new_password(prompt: &str, confirmation: &str) -> Result<Zeroizing<String>> {
-    Password::new()
-        .with_prompt(prompt)
-        .with_confirmation(confirmation, "Passwords don't match")
-        .interact()
-        .map(Zeroizing::new)
-        .map_err(Into::into)
+    let pw = prompt_password(format!("{prompt}: "))?;
+    let confirm = prompt_password(format!("{confirmation}: "))?;
+    if pw != confirm {
+        anyhow::bail!("Passwords don't match");
+    }
+    Ok(Zeroizing::new(pw))
 }
 
 /// Requests new authentication data (username and password) with confirmation
 pub(crate) fn request_new_auth() -> Result<Auth> {
-    let username: String = Input::new().with_prompt("Enter new username").interact()?;
-
+    let username = read_line("Enter new username")?;
     let password = request_new_password("Enter new password", "Confirm password")?;
     Ok(Auth { username, password })
 }
 
 /// Requests authentication data (username and password)
 pub(crate) fn request_auth() -> Result<Auth> {
-    let username: String = Input::new().with_prompt("Enter username").interact()?;
-
+    let username = read_line("Enter username")?;
     let password = request_password("Enter password")?;
     Ok(Auth { username, password })
 }

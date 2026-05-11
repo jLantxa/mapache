@@ -588,7 +588,7 @@ async fn writer_finalize(
 
     data_table.add_row(vec![
         "Compression ratio".to_string(),
-        format!("{:.3}%", ratio).bold().yellow().to_string(),
+        format!("{:.1}%", ratio).bold().yellow().to_string(),
     ]);
 
     crate::ui::cli::log!("{}", data_table.render());

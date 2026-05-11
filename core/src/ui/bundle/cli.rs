@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use colored::Colorize;
 use crossbeam_channel::Sender;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
 
 use crate::ui::snapshot::SnapshotProgressReporter;
@@ -13,6 +13,7 @@ use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     mapache::{defaults, global::GlobalOpts},
     ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
+    utils,
 };
 
 pub enum BundleMode {
@@ -52,10 +53,10 @@ impl BundleCliProgressReporter {
         let items_bar = mp.add(ProgressBar::new(total_items));
         items_bar.set_style(
             ProgressStyle::default_bar()
-                .template(&format!("{{spinner:.cyan}} {items_label:<6} [{{bar:30.cyan/blue}}] {{pos}}/{{len}} ({{percent}}%)"))
+                .template(&format!("{{spinner:.cyan}} {items_label:<6} [{{bar:20.cyan/blue}}] {{pos}} / {{len}} ({{percent}}%)"))
                 .unwrap()
                 .tick_chars(SPINNER_TICK_CHARS)
-                .progress_chars("█#░"),
+                .progress_chars("=> "),
         );
         items_bar.enable_steady_tick(refresh_interval);
 
@@ -63,9 +64,19 @@ impl BundleCliProgressReporter {
         let data_bar = mp.add(ProgressBar::new(total_bytes));
         data_bar.set_style(
             ProgressStyle::default_bar()
-                .template(&format!("  {bytes_label:<6} [{{bar:30.green/blue}}] {{bytes}}/{{total_bytes}} [{{bytes_per_sec}}]"))
+                .template(&format!("  {bytes_label:<6} [{{bar:20.green/blue}}] {{processed_bytes_fmt}} [{{bytes_per_sec}}]"))
                 .unwrap()
-                .progress_chars("█#░"),
+                .progress_chars("=> ")
+                .with_key("processed_bytes_fmt", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let bytes = state.pos();
+                    let total = state.len().unwrap_or(0);
+                    let _ = write!(
+                        w,
+                        "{} / {}",
+                        utils::format_size_binary(bytes, 3),
+                        utils::format_size_binary(total, 3)
+                    );
+                }),
         );
         data_bar.enable_steady_tick(refresh_interval);
 

@@ -49,22 +49,11 @@ impl BundleCliProgressReporter {
             BundleMode::Extract => ("Items", "Data"),
         };
 
-        // Items Bar
-        let items_bar = mp.add(ProgressBar::new(total_items));
-        items_bar.set_style(
-            ProgressStyle::default_bar()
-                .template(&format!("{{spinner:.cyan}} {items_label:<6} [{{bar:20.cyan/blue}}] {{pos}} / {{len}} ({{percent}}%)"))
-                .unwrap()
-                .tick_chars(SPINNER_TICK_CHARS)
-                .progress_chars("=> "),
-        );
-        items_bar.enable_steady_tick(refresh_interval);
-
         //  Data Bar
         let data_bar = mp.add(ProgressBar::new(total_bytes));
         data_bar.set_style(
             ProgressStyle::default_bar()
-                .template(&format!("  {bytes_label:<6} [{{bar:20.green/blue}}] {{processed_bytes_fmt}} [{{bytes_per_sec}}]"))
+                .template(&format!("{bytes_label:<6} [{{bar:20.cyan/white}}] [{{percent}}%] {{processed_bytes_fmt}} [{{bytes_per_sec}}]"))
                 .unwrap()
                 .progress_chars("=> ")
                 .with_key("processed_bytes_fmt", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -80,6 +69,17 @@ impl BundleCliProgressReporter {
         );
         data_bar.enable_steady_tick(refresh_interval);
 
+        // Items Bar
+        let items_bar = mp.add(ProgressBar::new(total_items));
+        items_bar.set_style(
+            ProgressStyle::default_bar()
+                .template(&format!("{items_label:<6} {{pos}} / {{len}}"))
+                .unwrap()
+                .tick_chars(SPINNER_TICK_CHARS)
+                .progress_chars("=> "),
+        );
+        items_bar.enable_steady_tick(refresh_interval);
+
         let (ui_tx, ui_rx) = crossbeam_channel::unbounded();
 
         let mp_clone = mp.clone();
@@ -87,7 +87,7 @@ impl BundleCliProgressReporter {
             let mut active_spinners: HashMap<PathBuf, ProgressBar> = HashMap::new();
 
             let file_style = ProgressStyle::default_spinner()
-                .template("    {spinner:.green} {msg}")
+                .template("{spinner:.cyan} {msg}")
                 .unwrap()
                 .tick_chars(SPINNER_TICK_CHARS);
 

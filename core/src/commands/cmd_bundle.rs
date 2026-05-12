@@ -185,6 +185,18 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         crate::fs::calculate_lcp(&absolute_source_paths, false)
     };
 
+    crate::ui::cli::log!(
+        "{} Creating bundle from {} to {}...",
+        "[1/1]".bold().cyan(),
+        args.input
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+            .bold(),
+        output.display().to_string().bold()
+    );
+
     let progress_reporter: Arc<dyn SnapshotProgressReporter> =
         Arc::new(crate::ui::bundle::cli::BundleCliProgressReporter::new(
             crate::ui::bundle::cli::BundleMode::Create,
@@ -206,18 +218,6 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         )
         .await;
     });
-
-    crate::ui::cli::log!(
-        "{} Creating bundle from {} to {}...",
-        "[1/1]".bold().cyan(),
-        args.input
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-            .bold(),
-        output.display().to_string().bold()
-    );
 
     let snapshot_options = SnapshotOptions {
         absolute_source_paths,
@@ -359,6 +359,8 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         .root_tree()
         .context("Root tree ID not set")?;
 
+    progress_reporter.finalize();
+
     writer_finalize(bundle_writer.as_ref(), root_tree_id, output, &progress).await
 }
 
@@ -381,13 +383,6 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
     crate::ui::cli::log!("{} Analyzing bundle...", "[1/2]".bold().cyan());
     let (total_items, total_bytes) = scan_bundle_tree(loader.clone(), &root_tree_id).await?;
 
-    let progress_reporter = Arc::new(crate::ui::bundle::cli::BundleCliProgressReporter::new(
-        crate::ui::bundle::cli::BundleMode::Extract,
-        total_items as u64,
-        total_bytes,
-        args.readers,
-    ));
-
     crate::ui::cli::log!(
         "{} Extracting {} to {}...",
         "[2/2]".bold().cyan(),
@@ -398,6 +393,13 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
     if !destination.exists() {
         std::fs::create_dir_all(destination)?;
     }
+
+    let progress_reporter = Arc::new(crate::ui::bundle::cli::BundleCliProgressReporter::new(
+        crate::ui::bundle::cli::BundleMode::Extract,
+        total_items as u64,
+        total_bytes,
+        args.readers,
+    ));
 
     extract_nodes_parallel(
         loader.clone(),
@@ -410,7 +412,7 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
 
     progress_reporter.finalize();
 
-    crate::ui::cli::log!("");
+    crate::ui::cli::log!();
     crate::ui::cli::log!("{}", "Extraction Summary:".bold().cyan());
 
     let mut data_table = crate::ui::table::Table::new();

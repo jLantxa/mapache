@@ -1,12 +1,11 @@
 use std::{
+    path::PathBuf,
     sync::{
         LazyLock,
         atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
-
-use directories::BaseDirs;
 
 use crate::{
     commands::GlobalArgs,
@@ -23,9 +22,33 @@ pub(crate) const THIS_MAPACHE_VERSION: &str = match option_env!("MAPACHE_RELEASE
     None => concat!("v", env!("CARGO_PKG_VERSION"), "+dev"),
 };
 
-/// Base OS directories (cache, home, etc.)
+pub(crate) struct BaseDirs {
+    cache_dir: PathBuf,
+}
+
+impl BaseDirs {
+    pub fn cache_dir(&self) -> &std::path::Path {
+        &self.cache_dir
+    }
+}
+
+/// Base OS directories (cache, home, etc.) without external dependencies.
 pub(crate) static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {
-    BaseDirs::new().expect("Expected to find a valid user home directory to initialize base paths")
+    let cache_dir = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(|p| PathBuf::from(p).join("AppData").join("Local"))
+            })
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cache")))
+    }
+    .expect("Expected to find a valid user home or cache directory to initialize base paths");
+
+    BaseDirs { cache_dir }
 });
 
 /// Global Settings stored in Atomics for lock-free, thread-safe access.

@@ -1,7 +1,6 @@
 use std::io::{self, BufRead, Write};
 
 use anyhow::Result;
-use rpassword::prompt_password;
 use zeroize::Zeroizing;
 
 use crate::repository::repo::Auth;
@@ -18,10 +17,83 @@ fn read_line(prompt: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
+#[cfg(unix)]
+fn read_password_impl(prompt: &str) -> Result<String> {
+    use libc::{ECHO, STDIN_FILENO, TCSANOW, tcgetattr, tcsetattr};
+
+    let mut stdout = io::stdout().lock();
+    write!(stdout, "{prompt}: ")?;
+    stdout.flush()?;
+
+    let mut termios = unsafe {
+        let mut t = std::mem::zeroed();
+        if tcgetattr(STDIN_FILENO, &mut t) != 0 {
+            return Err(anyhow::anyhow!("Failed to get terminal attributes"));
+        }
+        t
+    };
+
+    let original = termios;
+    termios.c_lflag &= !ECHO;
+
+    unsafe {
+        if tcsetattr(STDIN_FILENO, TCSANOW, &termios) != 0 {
+            return Err(anyhow::anyhow!("Failed to set terminal attributes"));
+        }
+    }
+
+    let mut password = String::new();
+    let res = io::stdin().lock().read_line(&mut password);
+
+    unsafe {
+        tcsetattr(STDIN_FILENO, TCSANOW, &original);
+    }
+    println!();
+
+    res?;
+    Ok(password.trim().to_string())
+}
+
+#[cfg(windows)]
+fn read_password_impl(prompt: &str) -> Result<String> {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_ECHO_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
+    };
+
+    let mut stdout = io::stdout().lock();
+    write!(stdout, "{prompt}: ")?;
+    stdout.flush()?;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    let mut mode = 0;
+    unsafe {
+        GetConsoleMode(handle, &mut mode);
+    }
+
+    let original_mode = mode;
+    unsafe {
+        SetConsoleMode(handle, mode & !ENABLE_ECHO_INPUT);
+    }
+
+    let mut password = String::new();
+    let res = io::stdin().lock().read_line(&mut password);
+
+    unsafe {
+        SetConsoleMode(handle, original_mode);
+    }
+    println!();
+
+    res?;
+    Ok(password.trim().to_string())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_password_impl(prompt: &str) -> Result<String> {
+    read_line(prompt)
+}
+
 pub(crate) fn request_password(prompt: &str) -> Result<Zeroizing<String>> {
-    prompt_password(format!("{prompt}: "))
-        .map(Zeroizing::new)
-        .map_err(Into::into)
+    read_password_impl(prompt).map(Zeroizing::new)
 }
 
 pub(crate) fn request_input(prompt: &str) -> Result<Option<String>> {
@@ -35,8 +107,8 @@ pub(crate) fn request_input(prompt: &str) -> Result<Option<String>> {
 
 /// Requests a password with a prompt and confirmation.
 pub(crate) fn request_new_password(prompt: &str, confirmation: &str) -> Result<Zeroizing<String>> {
-    let pw = prompt_password(format!("{prompt}: "))?;
-    let confirm = prompt_password(format!("{confirmation}: "))?;
+    let pw = read_password_impl(prompt)?;
+    let confirm = read_password_impl(confirmation)?;
     if pw != confirm {
         anyhow::bail!("Passwords don't match");
     }

@@ -39,12 +39,12 @@ impl BundleReader {
 
         let mut header_bytes = vec![0u8; BUNDLE_HEADER_SIZE];
         file.read_exact(&mut header_bytes)
-            .context("Failed to read header bytes")?;
+            .context("Failed to read header bytes from bundle")?;
         let header = BundleHeader::from_binary(&header_bytes)
-            .context("Failed to deserialize bundle header")?;
+            .context("Invalid bundle format: failed to parse header")?;
 
         if header.magic != *BUNDLE_MAGIC_START {
-            bail!("Invalid bundle magic start");
+            bail!("Invalid bundle format: invalid magic start (not a mapache bundle)");
         }
 
         let params = ParamsBuilder::new()
@@ -52,39 +52,48 @@ impl BundleReader {
             .t_cost(header.argon2_t)
             .p_cost(header.argon2_p)
             .build()
-            .map_err(|e| anyhow::anyhow!("Invalid Argon2 parameters: {}", e))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Invalid bundle format: Argon2 parameters are invalid: {}",
+                    e
+                )
+            })?;
 
-        let key = SecureStorage::derive_key::<BUNDLE_KEY_LEN>(password, &header.salt, params)?;
+        let key = SecureStorage::derive_key::<BUNDLE_KEY_LEN>(password, &header.salt, params)
+            .context("Failed to derive key from password")?;
         let storage = SecureStorage::new().with_key(&*key);
 
         file.seek(SeekFrom::End(-(BUNDLE_TRAILER_SIZE_LEN as i64)))?;
         let mut size_bytes = [0u8; BUNDLE_TRAILER_SIZE_LEN];
-        file.read_exact(&mut size_bytes)?;
+        file.read_exact(&mut size_bytes)
+            .context("Failed to read trailer size from bundle")?;
         let encrypted_trailer_size = u32::from_le_bytes(size_bytes);
 
         file.seek(SeekFrom::End(
             -(BUNDLE_TRAILER_SIZE_LEN as i64) - encrypted_trailer_size as i64,
         ))?;
         let mut encrypted_trailer = vec![0u8; encrypted_trailer_size as usize];
-        file.read_exact(&mut encrypted_trailer)?;
+        file.read_exact(&mut encrypted_trailer)
+            .context("Failed to read encrypted trailer from bundle")?;
         let decrypted_trailer = storage
             .decrypt(&encrypted_trailer)
-            .context("Failed to decrypt bundle trailer")?;
+            .context("Failed to decrypt bundle trailer: incorrect password or corrupted data")?;
         let trailer = BundleTrailer::from_binary(&decrypted_trailer)
-            .context("Failed to deserialize bundle trailer")?;
+            .context("Invalid bundle format: failed to parse trailer")?;
 
         if trailer.magic_end != *BUNDLE_MAGIC_END {
-            bail!("Invalid bundle magic end");
+            bail!("Invalid bundle format: invalid magic end");
         }
 
         file.seek(SeekFrom::Start(trailer.index_offset))?;
         let mut encrypted_index = vec![0u8; trailer.index_len as usize];
-        file.read_exact(&mut encrypted_index)?;
+        file.read_exact(&mut encrypted_index)
+            .context("Failed to read encrypted index from bundle")?;
         let decrypted_index = storage
             .decrypt(&encrypted_index)
-            .context("Failed to decrypt bundle index")?;
+            .context("Failed to decrypt bundle index: incorrect password or corrupted data")?;
         let index = BundleIndex::from_binary(decrypted_index.as_ref())
-            .context("Failed to deserialize bundle index")?;
+            .context("Invalid bundle format: failed to parse index")?;
 
         let mut index_map = HashMap::new();
         for (i, entry) in index.entries.iter().enumerate() {

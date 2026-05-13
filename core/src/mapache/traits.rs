@@ -8,6 +8,7 @@ pub trait BlobSaver: Send + Sync {
         blob_type: BlobType,
         data: WriteContents<'_>,
         save_id: SaveID,
+        compress: bool,
     ) -> Result<ID>;
 }
 

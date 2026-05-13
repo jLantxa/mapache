@@ -289,6 +289,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                         let progress_clone = progress.clone();
                         let reporter_clone = reporter.clone();
                         let signal_clone = signal.clone();
+                        let compress = crate::archiver::processor::should_compress(&path);
 
                         let blobs_res = tokio::task::spawn_blocking(move || {
                             let file = std::fs::File::open(&path_str)?;
@@ -299,6 +300,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                                 progress_clone,
                                 reporter_clone,
                                 signal_clone,
+                                compress,
                             )
                         })
                         .await

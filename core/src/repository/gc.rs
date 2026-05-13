@@ -1,14 +1,13 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use colored::Colorize;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
-    backend::WriteContents,
     mapache::{
-        self, ContentIdType, ID, SaveID,
+        self, ContentIdType, ID,
         defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
         global::GlobalOpts,
     },
@@ -247,26 +246,18 @@ impl Plan {
 
         // We chunk the locators to keep memory usage predictable during the repack.
         for chunk in locators_to_repack.chunks(100) {
-            let loaded_blobs = loader.load_with_locators(chunk.to_vec()).await?;
+            let loaded_blobs = loader.load_raw_with_locators(chunk.to_vec()).await?;
 
             for (id, data) in loaded_blobs {
-                // We find the original blob_type from our chunked locators
-                let blob_type = chunk
+                // We find the original blob_type and raw_length from our chunked locators
+                let (blob_type, raw_length) = chunk
                     .iter()
                     .find(|(cid, _)| *cid == id)
-                    .map(|(_, loc)| loc.blob_type)
-                    .unwrap_or(mapache::BlobType::Data);
+                    .map(|(_, loc)| (loc.blob_type, loc.raw_length as u64))
+                    .unwrap_or((mapache::BlobType::Data, 0));
 
-                let repo_clone = self.repo.clone();
-                tokio::task::spawn_blocking(move || {
-                    repo_clone.encode_and_save_blob(
-                        blob_type,
-                        WriteContents::Owned(data),
-                        SaveID::WithID(id),
-                    )
-                })
-                .await
-                .context("Repack task panicked")??;
+                self.repo
+                    .save_encoded_blob(id, blob_type, data, raw_length)?;
 
                 repack_bar.inc(1);
             }

@@ -36,8 +36,9 @@ impl BlobSaver for BundleWriter {
         blob_type: BlobType,
         data: WriteContents<'_>,
         save_id: SaveID,
+        compress: bool,
     ) -> Result<ID> {
-        self.save_blob_internal(blob_type, data, save_id)
+        self.save_blob_internal(blob_type, data, save_id, compress)
     }
 }
 
@@ -81,6 +82,7 @@ impl BundleWriter {
         blob_type: BlobType,
         data: WriteContents<'_>,
         save_id: SaveID,
+        compress: bool,
     ) -> Result<ID> {
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
@@ -88,10 +90,12 @@ impl BundleWriter {
         };
 
         let raw_length = data.len() as u32;
-        let encoded_data = self
-            .storage
-            .encode(data.as_ref())
-            .context("Failed to encode blob data")?;
+        let encoded_data = if compress {
+            self.storage.encode(data.as_ref())
+        } else {
+            self.storage.encrypt(data.as_ref())
+        }
+        .context("Failed to encode/encrypt blob data")?;
         let length = encoded_data.len() as u32;
 
         let mut inner = self.inner.lock();

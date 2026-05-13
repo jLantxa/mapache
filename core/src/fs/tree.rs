@@ -46,6 +46,7 @@ impl Tree {
                     BlobType::Tree,
                     WriteContents::Owned(bytes),
                     SaveID::CalculateID,
+                    true,
                 )
                 .context("Failed to save tree blob to storage")?;
 

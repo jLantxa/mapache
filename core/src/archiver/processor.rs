@@ -33,6 +33,41 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::CHUNKER_NORMALIZATION,
 );
 
+/// List of file extensions that are already compressed and should skip zstd.
+/// This list MUST be kept sorted alphabetically for binary search.
+const NON_COMPRESSIBLE_EXTENSIONS: &[&str] = &[
+    "7z", "aac", "avi", "bz2", "cab", "deb", "dmg", "docx", "epub", "flac", "flv", "gif", "gz",
+    "heic", "heif", "ico", "jpeg", "jpg", "m4a", "m4v", "mkv", "mov", "mp3", "mp4", "odp", "ods",
+    "odt", "ogg", "opus", "pdf", "png", "pptx", "qcow2", "rar", "rpm", "tgz", "tiff", "vmdk",
+    "wav", "webm", "webp", "wmv", "xlsx", "xz", "zip", "zst",
+];
+
+pub(crate) fn should_compress(path: &Path) -> bool {
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) => e,
+        None => return true,
+    };
+
+    // Extensions are usually very short. If it's longer than our stack buffer,
+    // just assume it's compressible or at least not in our list.
+    if ext.len() > 16 {
+        return true;
+    }
+
+    let mut buf = [0u8; 16];
+    let bytes = ext.as_bytes();
+    for i in 0..bytes.len() {
+        buf[i] = bytes[i].to_ascii_lowercase();
+    }
+
+    // SAFETY: The input was valid UTF-8 and we only performed ASCII case mapping.
+    let lowercase_ext = unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) };
+
+    NON_COMPRESSIBLE_EXTENSIONS
+        .binary_search(&lowercase_ext)
+        .is_err()
+}
+
 /// Processes an item (file, directory, or symlink) from the diff stream.
 /// This includes reading and chunking new/changed files.
 pub(crate) async fn process_item(
@@ -115,6 +150,7 @@ pub(crate) async fn process_item(
                 let progress_clone = progress.clone();
                 let reporter_clone = progress_reporter.clone();
                 let shutdown_signal_clone = shutdown_signal.clone();
+                let compress = should_compress(path);
 
                 let blobs_ids = match tokio::task::spawn_blocking(move || {
                     let file = open_for_sequential_read(&path_clone)?;
@@ -126,6 +162,7 @@ pub(crate) async fn process_item(
                             file_size,
                             progress_clone.as_ref(),
                             reporter_clone.as_ref(),
+                            compress,
                         )
                     } else {
                         chunk_and_store_file(
@@ -135,6 +172,7 @@ pub(crate) async fn process_item(
                             progress_clone,
                             reporter_clone,
                             shutdown_signal_clone,
+                            compress,
                         )
                     }
                 })
@@ -184,6 +222,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
     progress: Arc<SnapshotProgress>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
+    compress: bool,
 ) -> Result<Vec<ID>> {
     let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
     let mut ids = Vec::new();
@@ -201,6 +240,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
             BlobType::Data,
             WriteContents::Borrowed(&chunk.data),
             SaveID::CalculateID,
+            compress,
         )?;
 
         ids.push(id);
@@ -217,6 +257,7 @@ fn store_small_file<R: Read>(
     file_size: u64,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
+    compress: bool,
 ) -> Result<Vec<ID>> {
     let size = file_size as usize;
     let mut data = Vec::with_capacity(size);
@@ -238,6 +279,7 @@ fn store_small_file<R: Read>(
         BlobType::Data,
         WriteContents::Owned(data),
         SaveID::CalculateID,
+        compress,
     )?;
 
     progress.processed_bytes(file_size);

@@ -151,6 +151,21 @@ impl BlobLoader {
         &self,
         locators: Vec<(ID, BlobLocator)>,
     ) -> Result<HashMap<ID, Vec<u8>>> {
+        self.load_internal(locators, true).await
+    }
+
+    pub async fn load_raw_with_locators(
+        &self,
+        locators: Vec<(ID, BlobLocator)>,
+    ) -> Result<HashMap<ID, Vec<u8>>> {
+        self.load_internal(locators, false).await
+    }
+
+    async fn load_internal(
+        &self,
+        locators: Vec<(ID, BlobLocator)>,
+        decode: bool,
+    ) -> Result<HashMap<ID, Vec<u8>>> {
         if locators.is_empty() {
             return Ok(HashMap::new());
         }
@@ -180,12 +195,14 @@ impl BlobLoader {
                 let start = (loc.offset as u64 - segment.min_offset) as usize;
                 let end = start + loc.length as usize;
 
-                let decoded = self
-                    .repo
-                    .secure_storage()
-                    .decode_owned(data[start..end].to_vec())?;
+                let blob_data = data[start..end].to_vec();
+                let final_data = if decode {
+                    self.repo.secure_storage().decode_owned(blob_data)?
+                } else {
+                    blob_data
+                };
 
-                result.insert(id, decoded);
+                result.insert(id, final_data);
             }
         }
 

@@ -359,6 +359,8 @@ async fn run_rechunk_task(
     let sync_reader = BlockingBridge { inner: reader };
 
     let size = node.metadata.size;
+    let compress = crate::archiver::processor::should_compress(Path::new(&node.name));
+
     tokio::task::spawn_blocking(move || {
         chunk_and_store_file(
             repo,
@@ -367,6 +369,7 @@ async fn run_rechunk_task(
             progress,
             progress_reporter,
             shutdown_signal,
+            compress,
         )
     })
     .await

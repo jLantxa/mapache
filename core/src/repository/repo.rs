@@ -194,8 +194,9 @@ impl BlobSaver for Repository {
         blob_type: BlobType,
         data: WriteContents<'_>,
         save_id: SaveID,
+        compress: bool,
     ) -> Result<ID> {
-        self.encode_and_save_blob(blob_type, data, save_id)
+        self.encode_and_save_blob(blob_type, data, save_id, compress)
     }
 }
 
@@ -410,6 +411,7 @@ impl Repository {
         blob_type: BlobType,
         data: WriteContents<'_>,
         save_id: SaveID,
+        compress: bool,
     ) -> Result<ID> {
         let id = match save_id {
             SaveID::CalculateID => ID::from_content(&data),
@@ -422,7 +424,11 @@ impl Repository {
         }
 
         let raw_length = data.len() as u64;
-        let encoded_data = self.secure_storage.encode(&data)?;
+        let encoded_data = if compress {
+            self.secure_storage.encode(&data)?
+        } else {
+            self.secure_storage.encrypt(&data)?
+        };
 
         let tx = {
             let tx_guard = self.pack_saver_tx.read();
@@ -441,6 +447,39 @@ impl Repository {
         .map_err(|_| anyhow::anyhow!("Packer channel closed"))?;
 
         Ok(id)
+    }
+
+    /// Saves an ALREADY encoded blob in the repository.
+    /// This is used during GC (repacking) to avoid unnecessary decryption/re-encryption and re-compression.
+    pub fn save_encoded_blob(
+        &self,
+        id: ID,
+        blob_type: BlobType,
+        encoded_data: Vec<u8>,
+        raw_length: u64,
+    ) -> Result<()> {
+        // Fast path for existing blobs
+        if self.master_index.contains(&id) || !self.master_index.add_pending_blob(id) {
+            return Ok(());
+        }
+
+        let tx = {
+            let tx_guard = self.pack_saver_tx.read();
+            tx_guard
+                .as_ref()
+                .context("Packer is stopped or not initialized")?
+                .clone()
+        };
+
+        tx.send(PackSaverRequest::SaveBlob {
+            id,
+            blob_type,
+            data: encoded_data,
+            raw_length,
+        })
+        .map_err(|_| anyhow::anyhow!("Packer channel closed"))?;
+
+        Ok(())
     }
 
     /// Loads a blob from the repository.

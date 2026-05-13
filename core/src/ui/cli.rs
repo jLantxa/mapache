@@ -81,7 +81,6 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     unsafe {
         SetConsoleMode(handle, original_mode);
     }
-    println!();
 
     res?;
     Ok(password.trim().to_string())

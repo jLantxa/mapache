@@ -456,7 +456,7 @@ pub fn set_readonly_mode(mode: u32, readonly: bool, is_dir: bool) -> u32 {
         if readonly {
             base | 0o400 // r---------
         } else {
-            base | 0o600 // rw-------
+            base | 0o600 // rw--------
         }
     }
 }

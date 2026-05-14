@@ -1431,7 +1431,7 @@ mod tests {
     ) -> Result<()> {
         use crate::{
             commands::{self, Compression, GlobalArgs, cmd_init::CmdArgs},
-            mapache::defaults::{DEFAULT_DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
+            mapache::defaults::{DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
         };
 
         let tmp_dir = tempdir()?;
@@ -1457,7 +1457,7 @@ mod tests {
             json: false,
             verbosity: Some(3),
             ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,
@@ -1511,7 +1511,7 @@ mod tests {
     async fn test_acquire_lock_deletes_other_expired_lock() -> Result<()> {
         use crate::{
             commands::{self, GlobalArgs, cmd_init::CmdArgs},
-            mapache::defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            mapache::defaults::DEFAULT_PACK_SIZE_MIB,
         };
 
         let tmp_dir = tempdir()?;
@@ -1537,7 +1537,7 @@ mod tests {
             json: false,
             verbosity: Some(3),
             ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,

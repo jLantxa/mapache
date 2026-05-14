@@ -166,10 +166,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     // Parallel deletion
     let num_deleted = AtomicUsize::new(0);
     let freed = AtomicU64::new(0);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
     pool.install(|| {
         to_delete.par_iter().for_each(|path| {
             let name = path

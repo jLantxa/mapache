@@ -148,8 +148,7 @@ impl StorageBackend for CacheBackend {
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         if !Self::should_cache(handle) {
             // If the handle is not eligible for caching, read directly from the primary.
-            let data = self.backend.read(handle, offset, length).await?;
-            return Ok(data);
+            return self.backend.read(handle, offset, length).await;
         }
 
         // Try reading from the cache.

@@ -11,7 +11,7 @@ use crate::{
     mapache::{
         ContentIdType, ID,
         defaults::{
-            DEFAULT_COMPRESSION, DEFAULT_DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
+            DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
             MIN_CONFIGURABLE_PACK_SIZE_MIB,
         },
         global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
@@ -130,7 +130,7 @@ pub struct GlobalArgs {
     pub auth_file: Option<PathBuf>,
 
     /// Pack target size in MiB
-    #[clap(long = "pack-size", value_parser = pack_size_parser, default_value_t = DEFAULT_DEFAULT_PACK_SIZE_MIB)]
+    #[clap(long = "pack-size", value_parser = pack_size_parser, default_value_t = DEFAULT_PACK_SIZE_MIB)]
     pub pack_size_mib: f32,
 
     /// Path to a KeyFile

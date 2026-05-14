@@ -15,7 +15,10 @@ use crate::{
     bundle::reader::BundleReader,
     bundle::writer::BundleWriter,
     fs::{node::Metadata, tree::Tree},
-    mapache::{ID, traits::BlobLoader, traits::BlobSaver},
+    mapache::{
+        ID,
+        traits::{BlobLoader, BlobSaver},
+    },
     ui::snapshot::SnapshotProgressReporter,
 };
 

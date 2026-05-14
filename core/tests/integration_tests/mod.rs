@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 use mapache::{
     backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
     commands::{Compression, GlobalArgs},
-    mapache::{defaults::DEFAULT_DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
+    mapache::{defaults::DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
     repository::repo::{Auth, Repository},
 };
 
@@ -96,7 +96,7 @@ impl TestContext {
             json: false,
             verbosity: Some(3),
             ssh_privatekey: None,
-            pack_size_mib: DEFAULT_DEFAULT_PACK_SIZE_MIB,
+            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
             compression_level: Compression::Fastest,

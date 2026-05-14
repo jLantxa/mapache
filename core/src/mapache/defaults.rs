@@ -26,8 +26,8 @@ pub(crate) const BLOBS_PER_INDEX_FILE: usize = 65535;
 // --- Packing ---
 pub(crate) const MIN_CONFIGURABLE_PACK_SIZE_MIB: f32 = 1.0_f32;
 pub(crate) const MAX_CONFIGURABLE_PACK_SIZE_MIB: f32 = (u32::MAX as u64 / size::MiB) as f32;
-pub const DEFAULT_DEFAULT_PACK_SIZE_MIB: f32 = 16.0;
-pub const DEFAULT_PACK_SIZE: u64 = (DEFAULT_DEFAULT_PACK_SIZE_MIB * size::MiB as f32) as u64;
+pub const DEFAULT_PACK_SIZE_MIB: f32 = 16.0;
+pub const DEFAULT_PACK_SIZE: u64 = (DEFAULT_PACK_SIZE_MIB * size::MiB as f32) as u64;
 pub(crate) const FOOTER_BLOB_MULTIPLE: usize = 64;
 
 // --- Chunking ---

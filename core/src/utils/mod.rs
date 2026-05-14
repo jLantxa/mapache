@@ -50,7 +50,7 @@ pub(crate) fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Au
             format!("Could not read repository password from {}", path.display())
         })?;
 
-        // Procesa el texto para obtener el username y la password
+        // Parse the text to extract the username and password
         let mut lines = text.lines();
         let username = lines
             .next()

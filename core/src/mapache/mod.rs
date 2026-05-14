@@ -60,7 +60,7 @@ impl ID {
 
     /// Convert to hex String with `len` bytes
     pub fn to_short_hex(&self, len: usize) -> String {
-        utils::bytes_to_hex(&self.0[0..(len)]).to_string()
+        utils::bytes_to_hex(&self.0[..len])
     }
 
     /// Helper function to convert a hex char into a byte.

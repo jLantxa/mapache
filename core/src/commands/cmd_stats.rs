@@ -182,16 +182,21 @@ async fn stats_repository(
         .saturating_add(total_key_size)
         .saturating_add(manifest_size);
 
-    spinner.finish_and_clear();
-
     // Index-level summary
     let mut indexed_blobs = 0u64;
     let mut indexed_encoded = 0u64;
     let mut indexed_raw = 0u64;
+
+    spinner.set_message("scanning index");
+    let mut count = 0u64;
     repo.index().for_each_id(|_id, loc| {
         indexed_blobs += 1;
         indexed_encoded = indexed_encoded.saturating_add(loc.length as u64);
         indexed_raw = indexed_raw.saturating_add(loc.raw_length as u64);
+        count += 1;
+        if count.is_multiple_of(10000) {
+            spinner.set_message(format!("scanning index: {count}"));
+        }
     });
 
     // Snapshot-derived summary (index-only)
@@ -204,14 +209,16 @@ async fn stats_repository(
     let mut pack_footer_dangling: Option<usize> = None;
 
     if args.full {
-        spinner.set_message("parsing pack footers");
         let pack_ids = repo.list_packs().await?;
+        let num_pack_ids = pack_ids.len();
         let mut total_descriptors_encoded = 0u64;
         let mut total_descriptors_raw = 0u64;
         let mut total_descriptors = 0usize;
         let mut dangling = 0usize;
 
-        for pack_id in pack_ids.iter() {
+        spinner.set_message(format!("parsing pack footers 0/{num_pack_ids}"));
+
+        for (idx, pack_id) in pack_ids.iter().enumerate() {
             let descriptors = Packer::parse_pack_footer(
                 repo.as_ref(),
                 backend.as_ref(),
@@ -220,6 +227,8 @@ async fn stats_repository(
             )
             .await
             .with_context(|| format!("Failed to parse footer for pack {}", pack_id.to_hex()))?;
+
+            spinner.set_message(format!("parsing pack footers {}/{}", idx + 1, num_pack_ids));
 
             for d in descriptors.iter() {
                 total_descriptors += 1;
@@ -476,15 +485,6 @@ async fn analyze_snapshots(
     let mut total_encoded_data_size_tree = 0u64;
     let mut total_restorable_bytes = 0u64;
     let mut visited_blobs = IdSet::default();
-
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
     let snaps = repo.list_all_files(ContentIdType::Snapshot).await?;
     let num_snapshots = snaps.len();

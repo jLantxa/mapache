@@ -29,7 +29,7 @@ impl ToExitCode for CleanError {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(
     about = "Clean up the repository",
     long_about = "Clean up the repository removing obsolete objects and merging pack and index files."

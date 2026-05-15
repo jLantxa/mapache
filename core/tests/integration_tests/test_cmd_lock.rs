@@ -1,9 +1,8 @@
 #![cfg(test)]
 
 mod tests {
-    use anyhow::{Context, Result};
+    use anyhow::Result;
     use mapache::{
-        commands::{self, cmd_unlock},
         mapache::defaults::TEST_REPO_CONFIG,
         repository::repo::{LOCKS_DIR, Repository},
     };
@@ -14,9 +13,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_unlock() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        ctx.global.verbosity = Some(1);
-        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
+        let ctx = TestContext::new().await?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -34,17 +31,11 @@ mod tests {
         assert_eq!(mapache::utils::count_files(&locks_dir)?, 1);
 
         // Test cmd_unlock without force (should not delete as it's not expired)
-        let unlock_args = cmd_unlock::CmdArgs { force: false };
-        commands::cmd_unlock::run(&ctx.global, &unlock_args)
-            .await
-            .context("cmd_unlock failed")?;
+        ctx.unlock_builder().run(&ctx.global).await?;
         assert_eq!(mapache::utils::count_files(&locks_dir)?, 1);
 
         // Test cmd_unlock with force
-        let unlock_args_force = cmd_unlock::CmdArgs { force: true };
-        commands::cmd_unlock::run(&ctx.global, &unlock_args_force)
-            .await
-            .context("cmd_unlock force failed")?;
+        ctx.unlock_builder().force(true).run(&ctx.global).await?;
         assert_eq!(mapache::utils::count_files(&locks_dir)?, 0);
 
         lock_handle.unlock().await;

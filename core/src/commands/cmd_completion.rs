@@ -6,7 +6,7 @@ use clap_complete::Shell;
 
 use crate::commands;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Generate autocompletion scripts")]
 pub struct CmdArgs {
     /// Shell type (bash, zsh, fish, powershell, etc.)

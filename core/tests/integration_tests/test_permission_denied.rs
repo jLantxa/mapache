@@ -5,11 +5,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use anyhow::{Context, Result};
-    use mapache::{
-        commands::{self, UseSnapshot, cmd_snapshot},
-        repository::repo::SNAPSHOTS_DIR,
-        utils,
-    };
+    use mapache::repository::repo::SNAPSHOTS_DIR;
+    use mapache::utils;
 
     use crate::integration_tests::TestContext;
 
@@ -43,23 +40,9 @@ mod tests {
         ctx.init_repo().await?;
 
         // Run snapshot - this should now SUCCEED and skip the inaccessible dir
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.clone()],
-            as_root: true,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: false,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .root(true)
+            .run(&ctx.global)
             .await
             .context("Snapshot should succeed by skipping inaccessible paths")?;
 

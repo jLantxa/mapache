@@ -4,7 +4,7 @@ mod tests {
     use anyhow::Result;
     use mapache::repository::repo::KEYS_DIR;
 
-    use crate::integration_tests::{TestContext, run_bin};
+    use crate::integration_tests::TestContext;
 
     #[tokio::test]
     async fn test_run_key_subcommands_and_check_stdout() -> Result<()> {
@@ -16,17 +16,8 @@ mod tests {
         ctx.init_repo().await?;
 
         // Test key list
-        let output = run_bin(&[
-            "key",
-            "--repo",
-            &ctx.repo_path.to_string_lossy(),
-            "--auth-file",
-            &ctx.auth_file_path.to_string_lossy(),
-            "list",
-        ])?;
+        let stdout = ctx.run_mapache_ok(&["key", "list"])?;
 
-        assert!(output.status.success());
-        let stdout = String::from_utf8(output.stdout)?;
         assert!(stdout.contains("mapachito"));
         assert!(stdout.contains("Key ID"));
 
@@ -39,17 +30,8 @@ mod tests {
         let key_id = keys[0].file_name().unwrap().to_str().unwrap().to_string();
 
         // Verification of 'delete' subcommand
-        let output = run_bin(&[
-            "key",
-            "--repo",
-            &ctx.repo_path.to_string_lossy(),
-            "--auth-file",
-            &ctx.auth_file_path.to_string_lossy(),
-            "delete",
-            &key_id,
-        ])?;
+        ctx.run_mapache_ok(&["key", "delete", &key_id])?;
 
-        assert!(output.status.success());
         assert!(!keys_dir.join(&key_id).exists());
 
         Ok(())

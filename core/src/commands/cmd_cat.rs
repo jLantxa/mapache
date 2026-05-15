@@ -11,7 +11,7 @@ use crate::{
     ui,
 };
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Print repository objects")]
 pub struct CmdArgs {
     /// Object to print:

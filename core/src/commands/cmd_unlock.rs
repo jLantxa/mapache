@@ -12,7 +12,7 @@ use crate::{
 
 use super::GlobalArgs;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Remove existing locks")]
 pub struct CmdArgs {
     #[clap(short, long, default_value_t = false)]

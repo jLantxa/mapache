@@ -53,11 +53,11 @@ pub enum KeySubcommand {
     ChangePassword(PasswordChangeArgs),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Create and manage keys")]
 pub struct CmdArgs {
     #[command(subcommand)]
-    subcommand: KeySubcommand,
+    pub subcommand: KeySubcommand,
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {

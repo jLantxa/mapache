@@ -3,13 +3,11 @@
 mod tests {
     use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-    use anyhow::{Context, Result};
+    use anyhow::Result;
     use mapache::{
         backend::localfs::LocalFS,
-        commands::{self, UseSnapshot, cmd_amend, cmd_restore, cmd_snapshot},
         mapache::defaults::TEST_REPO_CONFIG,
         repository::{repo::Repository, snapshot::SnapshotStream},
-        restorer::Strategy,
     };
 
     use crate::integration_tests::{TestContext, assert_times_equal};
@@ -18,78 +16,36 @@ mod tests {
     async fn test_amend_exclude() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .await?;
 
         let excluded_paths = vec![
             "2".to_string(),
             "file.txt".to_string(),
             "0/00/file00.txt".to_string(),
         ];
-        let amend_args = cmd_amend::CmdArgs {
-            snapshot: UseSnapshot::Latest,
-            all: false,
-            keep_old: false,
-            tags_str: None,
-            clear_tags: false,
-            description: None,
-            clear_description: false,
-            exclude: Some(excluded_paths.clone()),
-            exclude_file: None,
-        };
-        commands::cmd_amend::run(&ctx.global, &amend_args)
-            .await
-            .context("Failed to run cmd_amend")?;
+
+        ctx.amend_builder()
+            .exclude(excluded_paths.clone())
+            .run(&ctx.global)
+            .await?;
 
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip,
-
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore")?;
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -118,7 +74,7 @@ mod tests {
             }
 
             // We excluded some paths, so the size of directories will not be consistent
-            if !restore_path.is_dir() {
+            if !restored_path.is_dir() {
                 assert_eq!(restored_meta.len(), backup_meta.len());
             }
 
@@ -139,7 +95,7 @@ mod tests {
     async fn test_amend_tags_and_description() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
 
@@ -150,40 +106,19 @@ mod tests {
                 .await?;
         test_repo_lock_handle.unlock().await;
 
-        // Run snapshot twice
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.join("0")],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: "tag0,tag1".to_string(),
-            description: Some(String::from("This snapshot will be amended")),
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        // Run snapshot with tags and description
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("0")])
+            .tags("tag0,tag1".to_string())
+            .description("This snapshot will be amended".to_string())
+            .run(&ctx.global)
+            .await?;
 
-        let amend_args = cmd_amend::CmdArgs {
-            snapshot: UseSnapshot::Latest,
-            all: false,
-            keep_old: false,
-            tags_str: None,
-            clear_tags: true,
-            description: None,
-            clear_description: true,
-            exclude: None,
-            exclude_file: None,
-        };
-        commands::cmd_amend::run(&ctx.global, &amend_args)
-            .await
-            .context("Failed to run cmd_amend (1/2)")?;
+        // Clear tags and description
+        ctx.amend_builder()
+            .clear_tags(true)
+            .clear_description(true)
+            .run(&ctx.global)
+            .await?;
 
         let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
         let (_, snapshot) = snapshot_stream
@@ -194,20 +129,12 @@ mod tests {
         assert!(snapshot.tags.is_empty());
         assert!(snapshot.description.is_none());
 
-        let amend_args = cmd_amend::CmdArgs {
-            snapshot: UseSnapshot::Latest,
-            all: false,
-            keep_old: false,
-            tags_str: Some("new_tag".to_string()),
-            clear_tags: false,
-            description: Some(String::from("This description is new")),
-            clear_description: false,
-            exclude: None,
-            exclude_file: None,
-        };
-        commands::cmd_amend::run(&ctx.global, &amend_args)
-            .await
-            .context("Failed to run cmd_amend (2/2)")?;
+        // Set new tags and description
+        ctx.amend_builder()
+            .tags("new_tag".to_string())
+            .description("This description is new".to_string())
+            .run(&ctx.global)
+            .await?;
 
         let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
         let (_, snapshot) = snapshot_stream
@@ -222,6 +149,7 @@ mod tests {
         assert_eq!(
             snapshot
                 .description
+                .as_ref()
                 .expect("The description should not be None"),
             "This description is new"
         );

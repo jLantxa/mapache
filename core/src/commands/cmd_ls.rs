@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use colored::Colorize;
 
@@ -150,14 +150,21 @@ async fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArg
     if node.is_dir() && args.recursive {
         stack.push((path.to_path_buf(), node.clone()));
     } else if node.is_dir() {
-        let mut tree = Tree::load_from_repo(repo, node.tree.as_ref().unwrap()).await?;
+        let tree_id = node
+            .tree
+            .as_ref()
+            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
+        let mut tree = Tree::load_from_repo(repo, tree_id).await?;
         tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         print_tree(&tree, args);
         return Ok(());
     }
 
     while let Some((parent_path, node)) = stack.pop() {
-        let tree_id = node.tree.as_ref().unwrap();
+        let tree_id = node
+            .tree
+            .as_ref()
+            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
         let current_path = parent_path.join(&node.name);
 
         let mut tree = Tree::load_from_repo(repo, tree_id).await?;

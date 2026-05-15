@@ -18,7 +18,7 @@ use crate::{
     utils::{self},
 };
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Rebuild the index by scanning all existing packs")]
 pub struct CmdArgs {
     /// Dry run

@@ -6,12 +6,9 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
-    use anyhow::{Context, Result};
+    use anyhow::Result;
     use filetime::{FileTime, set_file_times};
-    use mapache::{
-        commands::{self, UseSnapshot, cmd_restore, cmd_snapshot},
-        restorer::Strategy,
-    };
+    use mapache::restorer::Strategy;
 
     use crate::integration_tests::{TestContext, assert_times_equal};
 
@@ -19,66 +16,35 @@ mod tests {
     async fn test_restore_with_filter() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: Some(vec![
-                backup_data_tmp_path
-                    .join("0/01")
-                    .to_string_lossy()
-                    .into_owned(),
-            ]),
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .exclude(vec![
+            backup_data_tmp_path
+                .join("0/01")
+                .to_string_lossy()
+                .into_owned(),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: Some(vec!["0".to_string(), "1".to_string()]),
-            exclude: Some(vec![
-                String::from("0/00/file00.txt"),
-                String::from("0/*.txt"),
-            ]),
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip,
-
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore")?;
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["0".to_string(), "1".to_string()])
+            .exclude(vec!["0/00/file00.txt".to_string(), "0/*.txt".to_string()])
+            .run(&ctx.global)
+            .await?;
 
         let restored_paths = vec![
             PathBuf::from("0"),
@@ -127,58 +93,28 @@ mod tests {
     async fn test_restore_dry_run() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: true,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip,
-
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore")?;
+        ctx.restore_builder(restore_path.clone())
+            .dry_run(true)
+            .run(&ctx.global)
+            .await?;
 
         assert!(!restore_path.exists());
 
@@ -189,61 +125,32 @@ mod tests {
     async fn test_restore_strip_prefix() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         // Run restore 1
         let restore_path = ctx._tmp_dir.path().join("restore1");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: Some(vec![
+        ctx.restore_builder(restore_path.clone())
+            .include(vec![
                 "0/file0.txt".to_string(),
                 "0/00/file00.txt".to_string(),
-            ]),
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: true,
-            strategy: Strategy::Skip,
-
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore 1")?;
+            ])
+            .strip_prefix(true)
+            .run(&ctx.global)
+            .await?;
 
         let restored_paths = vec![PathBuf::from("file0.txt"), PathBuf::from("00/file00.txt")];
         for path in &restored_paths {
@@ -253,26 +160,11 @@ mod tests {
 
         // Run restore 2
         let restore_path = ctx._tmp_dir.path().join("restore2");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: Some(vec!["0/00/file00.txt".to_string()]),
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: true,
-            strategy: Strategy::Skip,
-
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore 2")?;
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["0/00/file00.txt".to_string()])
+            .strip_prefix(true)
+            .run(&ctx.global)
+            .await?;
 
         let restored_paths = vec![PathBuf::from("file00.txt")];
         for path in &restored_paths {
@@ -287,58 +179,29 @@ mod tests {
     async fn test_restore_delete_default() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         // Run restore to create base files
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-
-            quit_on_error: false,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore (1/2)")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .run(&ctx.global)
+            .await?;
 
         // Create extra files
         std::fs::create_dir_all(restore_path.join("0"))?;
@@ -359,26 +222,12 @@ mod tests {
         );
 
         // Restore with --delete
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-
-            quit_on_error: false,
-            delete: true,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore (2/2)")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .delete(true)
+            .run(&ctx.global)
+            .await?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -418,58 +267,29 @@ mod tests {
     async fn test_restore_delete_default_with_include() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         // Run restore to create base files
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-
-            quit_on_error: false,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore (1/2)")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .run(&ctx.global)
+            .await?;
 
         // Create extra files
         std::fs::create_dir_all(restore_path.join("0"))?;
@@ -490,26 +310,13 @@ mod tests {
         );
 
         // Restore with --delete
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: Some(vec!["0".to_string()]),
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-
-            quit_on_error: false,
-            delete: true,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore (2/2)")?;
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["0".to_string()])
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .delete(true)
+            .run(&ctx.global)
+            .await?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -545,58 +352,30 @@ mod tests {
     async fn test_restore_delete_no_preserve_root() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         // Run restore to create base files
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-
-            quit_on_error: false,
-            delete: false,
-            no_preserve_root: true,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore (1/2)")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .no_preserve_root(true)
+            .run(&ctx.global)
+            .await?;
 
         // Create extra files
         std::fs::create_dir_all(restore_path.join("0"))?;
@@ -617,26 +396,13 @@ mod tests {
         );
 
         // Restore with --delete
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-
-            quit_on_error: false,
-            delete: true,
-            no_preserve_root: true,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore (2/2)")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .delete(true)
+            .no_preserve_root(true)
+            .run(&ctx.global)
+            .await?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -676,51 +442,24 @@ mod tests {
     async fn test_restore_with_conflict_resolution() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo and create Snapshot 1
         ctx.init_repo().await?;
 
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.join("0")],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::from("S1"),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot S1")?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("0")])
+            .tags(String::from("S1"))
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         let restore_path = ctx._tmp_dir.path().join("restore_conflicts");
-        let restore_args_initial = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip, // Strategy doesn't matter for initial restore
-
-            quit_on_error: false,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args_initial)
-            .await
-            .context("Failed to run initial cmd_restore")?;
+        ctx.restore_builder(restore_path.clone())
+            .quit_on_error(false)
+            .run(&ctx.global)
+            .await?;
 
         let file_to_overwrite = restore_path.join("0").join("file0.txt");
         let file_to_skip = restore_path.join("0").join("00").join("file00.txt");
@@ -738,26 +477,12 @@ mod tests {
         set_file_times(&file_to_overwrite, filetime, filetime)?;
         set_file_times(&file_to_skip, filetime, filetime)?;
 
-        let restore_args_overwrite = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: Some(vec!["0/file0.txt".to_string()]),
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-
-            quit_on_error: false,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args_overwrite)
-            .await
-            .context("Failed to run cmd_restore Overwrite")?;
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["0/file0.txt".to_string()])
+            .strategy(Strategy::Overwrite)
+            .quit_on_error(false)
+            .run(&ctx.global)
+            .await?;
 
         // Verify that the file was overwritten
         assert_eq!(
@@ -765,26 +490,12 @@ mod tests {
             original_content
         );
 
-        let restore_args_skip = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: Some(vec!["0/00/file00.txt".to_string()]),
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip,
-
-            quit_on_error: false,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args_skip)
-            .await
-            .context("Failed to run cmd_restore Skip")?;
+        ctx.restore_builder(restore_path.clone())
+            .include(vec!["0/00/file00.txt".to_string()])
+            .strategy(Strategy::Skip)
+            .quit_on_error(false)
+            .run(&ctx.global)
+            .await?;
 
         // Verify that the local change was kept (skipped)
         assert_eq!(std::fs::read_to_string(&file_to_skip)?, new_content_skip);
@@ -826,42 +537,18 @@ mod tests {
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_path.clone()],
-            as_root: true,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: false,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Restore
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip,
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args).await?;
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
 
         // Verify file xattr
         let restored_file_path = restore_path.join("file_with_xattr.txt");
@@ -901,46 +588,20 @@ mod tests {
         // Init repo and snapshot
         ctx.init_repo().await?;
 
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![file_path.clone()],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Test 1: Restore with sparse allocation (default)
         let restore_sparse_path = ctx._tmp_dir.path().join("restore_sparse");
-        let restore_args_sparse = cmd_restore::CmdArgs {
-            sparse: true,
-            target: restore_sparse_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args_sparse)
-            .await
-            .context("Failed to restore with sparse allocation")?;
+        ctx.restore_builder(restore_sparse_path.clone())
+            .sparse(true)
+            .strategy(Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
 
         let restored_sparse_file = restore_sparse_path.join("large_file.bin");
         assert!(
@@ -956,25 +617,11 @@ mod tests {
 
         // Test 2: Restore with eager allocation
         let restore_eager_path = ctx._tmp_dir.path().join("restore_eager");
-        let restore_args_eager = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_eager_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args_eager)
-            .await
-            .context("Failed to restore with eager allocation")?;
+        ctx.restore_builder(restore_eager_path.clone())
+            .sparse(false)
+            .strategy(Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
 
         let restored_eager_file = restore_eager_path.join("large_file.bin");
         assert!(
@@ -1026,46 +673,19 @@ mod tests {
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![file_path.clone()],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Run restore to create base file
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let mut restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Overwrite,
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run initial cmd_restore")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
 
         let restored_file = restore_path.join("file.txt");
         assert_eq!(std::fs::read_to_string(&restored_file)?, original_content);
@@ -1086,10 +706,11 @@ mod tests {
         // We might have some precision issues depending on platform, but set_file_times should help.
 
         // Run restore again WITHOUT verify. It should skip because size and mtime match.
-        restore_args.verify = false;
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run second cmd_restore")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .verify(false)
+            .run(&ctx.global)
+            .await?;
 
         assert_eq!(std::fs::read_to_string(&restored_file)?, modified_content);
 
@@ -1100,9 +721,11 @@ mod tests {
         let future_time = FileTime::from_unix_time(different_filetime.unix_seconds() + 1000, 0);
         set_file_times(&restored_file, future_time, future_time)?;
 
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run third cmd_restore (automatic verify on mtime mismatch)")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .verify(false)
+            .run(&ctx.global)
+            .await?;
 
         // It should have restored original content because hashes didn't match.
         assert_eq!(std::fs::read_to_string(&restored_file)?, original_content);
@@ -1116,13 +739,18 @@ mod tests {
         // Modify backup data file to force an overwrite (change content)
         std::fs::write(&file_path, "New original content")?;
         // Snapshot again
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Restore with overwrite strategy. It should succeed despite the file being readonly.
-        restore_args.strategy = Strategy::Overwrite;
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to overwrite readonly file")?;
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
 
         assert_eq!(
             std::fs::read_to_string(&restored_file)?,

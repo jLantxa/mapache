@@ -32,8 +32,9 @@ pub mod cmd_bundle;
 pub mod cmd_cache;
 pub mod cmd_cat;
 pub mod cmd_clean;
-mod cmd_completion;
-pub mod cmd_diff;
+pub mod cmd_completion;
+mod cmd_diff;
+
 pub mod cmd_find;
 pub mod cmd_forget;
 pub mod cmd_init;

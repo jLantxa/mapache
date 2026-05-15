@@ -46,7 +46,7 @@ impl crate::ui::restore::RestoreProgressReporter for BundleRestoreReporterAdapte
     fn finalize(&self) {}
 }
 
-#[derive(Debug, Args)]
+#[derive(Args, Debug, Clone)]
 #[clap(
     about = "Create, extract or mount .mapache bundle files",
     group = ArgGroup::new("mode").required(true).args(&["bundle", "extract"]),

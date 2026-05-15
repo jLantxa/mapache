@@ -40,7 +40,7 @@ impl ToExitCode for VerifyError {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(
     about = "Verify the integrity of the data stored in the repository",
     long_about = "Verify the integrity of the data stored in the repository. \

@@ -17,7 +17,7 @@ use crate::{
 
 use super::GlobalArgs;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Show all snapshots present in the repository")]
 #[clap(group = ArgGroup::new("filter").multiple(false))]
 pub struct CmdArgs {

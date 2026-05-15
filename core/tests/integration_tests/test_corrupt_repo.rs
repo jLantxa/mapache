@@ -6,10 +6,7 @@ mod tests {
     use anyhow::{Context, Result};
     use rand::RngExt;
 
-    use mapache::{
-        commands::{self, UseSnapshot, cmd_snapshot, cmd_verify},
-        repository::repo::{OBJECTS_DIR, SNAPSHOTS_DIR},
-    };
+    use mapache::repository::repo::{OBJECTS_DIR, SNAPSHOTS_DIR};
 
     use crate::integration_tests::{TestContext, set_write_permission};
 
@@ -21,32 +18,20 @@ mod tests {
 
         ctx.init_repo().await?;
 
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.join("file.txt")],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: true,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_parent(true)
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Verify initial state
-        let verify_args = cmd_verify::CmdArgs {
-            read_packs: true,
-            parallel: 1,
-            with_cache: false,
-            fail_early: true,
-            sample: None,
-        };
-        commands::cmd_verify::run(&ctx.global, &verify_args)
+        ctx.verify_builder()
+            .read_packs(true)
+            .parallel(1)
+            .fail_early(true)
+            .run(&ctx.global)
             .await
             .context("Initial verify failed")?;
 
@@ -69,7 +54,13 @@ mod tests {
 
         assert!(deleted, "Should have deleted at least one pack file");
 
-        let res = commands::cmd_verify::run(&ctx.global, &verify_args).await;
+        let res = ctx
+            .verify_builder()
+            .read_packs(true)
+            .parallel(1)
+            .fail_early(true)
+            .run(&ctx.global)
+            .await;
         assert!(res.is_err(), "Verify should fail when an object is missing");
 
         Ok(())
@@ -83,22 +74,13 @@ mod tests {
 
         ctx.init_repo().await?;
 
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.join("file.txt")],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: true,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_parent(true)
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Corrupt snapshot file (make it unparseable)
         let snapshots_path = ctx.repo_path.join(SNAPSHOTS_DIR);
@@ -117,14 +99,13 @@ mod tests {
 
         assert!(corrupted, "Should have corrupted a snapshot file");
 
-        let verify_args = cmd_verify::CmdArgs {
-            read_packs: true,
-            parallel: 1,
-            with_cache: false,
-            fail_early: true,
-            sample: None,
-        };
-        let res = commands::cmd_verify::run(&ctx.global, &verify_args).await;
+        let res = ctx
+            .verify_builder()
+            .read_packs(true)
+            .parallel(1)
+            .fail_early(true)
+            .run(&ctx.global)
+            .await;
         assert!(
             res.is_err(),
             "Verify should fail when a snapshot is corrupt/unreadable"
@@ -141,22 +122,13 @@ mod tests {
 
         ctx.init_repo().await?;
 
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.join("file.txt")],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: true,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_parent(true)
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Flip a bit in the middle of the snapshot file
         let snapshots_path = ctx.repo_path.join(SNAPSHOTS_DIR);
@@ -175,14 +147,13 @@ mod tests {
 
         assert!(corrupted, "Should have flipped a bit in a snapshot file");
 
-        let verify_args = cmd_verify::CmdArgs {
-            read_packs: true,
-            parallel: 1,
-            with_cache: false,
-            fail_early: true,
-            sample: None,
-        };
-        let res = commands::cmd_verify::run(&ctx.global, &verify_args).await;
+        let res = ctx
+            .verify_builder()
+            .read_packs(true)
+            .parallel(1)
+            .fail_early(true)
+            .run(&ctx.global)
+            .await;
         assert!(
             res.is_err(),
             "Verify should fail when a snapshot has bit-flips"
@@ -200,22 +171,13 @@ mod tests {
         ctx.init_repo().await?;
 
         // Create a snapshot with enough data to ensure a pack is created
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.clone()],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: true,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 1,
-            num_packers: 1,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .no_parent(true)
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
 
         // Corrupt pack files randomly
         let objects_path = ctx.repo_path.join(OBJECTS_DIR);
@@ -265,15 +227,13 @@ mod tests {
             "At least one pack should have been corrupted"
         );
 
-        let verify_args = cmd_verify::CmdArgs {
-            read_packs: true,
-            parallel: 1,
-            with_cache: false,
-            fail_early: true,
-            sample: None,
-        };
-
-        let res = commands::cmd_verify::run(&ctx.global, &verify_args).await;
+        let res = ctx
+            .verify_builder()
+            .read_packs(true)
+            .parallel(1)
+            .fail_early(true)
+            .run(&ctx.global)
+            .await;
         assert!(
             res.is_err(),
             "Verify should fail when a pack file is corrupt"

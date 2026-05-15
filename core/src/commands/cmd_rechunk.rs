@@ -18,7 +18,7 @@ use crate::{
     utils::{self},
 };
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Rechunk all snapshots")]
 #[clap(long_about = "Rechunk all snapshots using the current chunker and parameters.")]
 pub struct CmdArgs {}

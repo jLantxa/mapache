@@ -37,7 +37,7 @@ impl ToExitCode for SyncError {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Synchronize a repository in a different location")]
 pub struct CmdArgs {
     /// Destination path

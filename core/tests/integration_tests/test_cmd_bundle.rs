@@ -1,43 +1,35 @@
 use crate::integration_tests::{TestContext, assert_times_equal};
 use anyhow::Result;
-use mapache::commands::cmd_bundle;
 
 #[tokio::test]
 async fn test_bundle_and_extract() -> Result<()> {
     let mut ctx = TestContext::new().await?;
     ctx.setup_backup_data()?;
-    let backup_data_path = ctx.backup_data_path.as_ref().unwrap();
+    let backup_data_path = ctx.backup_data_path.clone().unwrap();
 
     let bundle_path = ctx._tmp_dir.path().join("test_bundle.mapache");
     let extract_path = ctx._tmp_dir.path().join("extracted");
 
-    let bundle_args = cmd_bundle::CmdArgs {
-        bundle: true,
-        input: vec![backup_data_path.clone()],
-        output: Some(bundle_path.clone()),
-        compression_level: mapache::commands::Compression::Balanced,
-        readers: 2,
-        internal_password: Some("test_password".to_string()),
-        ..Default::default()
-    };
+    ctx.bundle_builder()
+        .bundle(true)
+        .input(vec![backup_data_path.clone()])
+        .output(bundle_path.clone())
+        .password("test_password".to_string())
+        .run()
+        .await?;
 
-    cmd_bundle::run(&bundle_args).await?;
     assert!(bundle_path.exists());
 
-    let extract_args = cmd_bundle::CmdArgs {
-        extract: true,
-        input: vec![bundle_path.clone()],
-        output: Some(extract_path.clone()),
-        compression_level: mapache::commands::Compression::Balanced,
-        readers: 2,
-        internal_password: Some("test_password".to_string()),
-        ..Default::default()
-    };
-
-    cmd_bundle::run(&extract_args).await?;
+    ctx.bundle_builder()
+        .extract(true)
+        .input(vec![bundle_path.clone()])
+        .output(extract_path.clone())
+        .password("test_password".to_string())
+        .run()
+        .await?;
 
     let backup_dir_name = backup_data_path.file_name().unwrap();
-    verify_extracted_content(backup_data_path, &extract_path.join(backup_dir_name))?;
+    verify_extracted_content(&backup_data_path, &extract_path.join(backup_dir_name))?;
 
     Ok(())
 }

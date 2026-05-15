@@ -131,7 +131,9 @@ pub fn calculate_lcp(paths: &[PathBuf], strict_prefix: bool) -> PathBuf {
             break 'outer;
         }
 
-        let first_comp = current_components[0].as_ref().unwrap();
+        let first_comp = current_components[0]
+            .as_ref()
+            .expect("All components checked for None above");
         let all_match = current_components[1..]
             .iter()
             .all(|comp_opt| comp_opt.as_ref().is_some_and(|comp| comp.eq(first_comp)));

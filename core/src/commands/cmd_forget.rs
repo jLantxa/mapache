@@ -33,7 +33,7 @@ impl ToExitCode for ForgetError {
 }
 
 // Define argument groups for mutual exclusivity and multiple selection
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(group = ArgGroup::new("policy").multiple(false))] // Either forget OR retention_rules, but not both
 #[clap(group = ArgGroup::new("retention_rules").multiple(true))] // Allow multiple --keep-* rules
 #[clap(

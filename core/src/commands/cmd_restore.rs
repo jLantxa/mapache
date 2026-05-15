@@ -59,7 +59,7 @@ impl std::fmt::Display for Strategy {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(
     about = "Restore a snapshot in a target path",
     long_about = "Restore a snapshot in a target path. Running this command in \

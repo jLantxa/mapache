@@ -4,9 +4,7 @@ mod tests {
     use std::sync::Arc;
 
     use mapache::{
-        backend::localfs::LocalFS,
-        commands::{self, cmd_init::CmdArgs},
-        mapache::defaults::TEST_REPO_CONFIG,
+        backend::localfs::LocalFS, mapache::defaults::TEST_REPO_CONFIG,
         repository::repo::Repository,
     };
 
@@ -18,10 +16,9 @@ mod tests {
     async fn test_init() -> Result<()> {
         let ctx = TestContext::new().await?;
 
-        let args = CmdArgs {};
-
         // Init repo
-        commands::cmd_init::run(&ctx.global, &args)
+        ctx.init_builder()
+            .run(&ctx.global)
             .await
             .context("Failed to run cmd_init")?;
 
@@ -60,10 +57,9 @@ mod tests {
         ctx.global.key = Some(keyfile_path.clone());
         mapache::mapache::global::set_global_opts_with_args(&ctx.global);
 
-        let args = CmdArgs {};
-
         // Init repo
-        commands::cmd_init::run(&ctx.global, &args)
+        ctx.init_builder()
+            .run(&ctx.global)
             .await
             .context("Failed to run cmd_init")?;
 

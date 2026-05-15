@@ -24,7 +24,7 @@ use crate::{
     utils::{self, collections::IdSet},
 };
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(about = "Show repository statistics")]
 pub struct CmdArgs {
     /// Parse pack footers for physical statistics (expensive)

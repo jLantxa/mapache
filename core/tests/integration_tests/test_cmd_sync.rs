@@ -3,13 +3,9 @@
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use anyhow::{Context, Result};
+    use anyhow::Result;
     use mapache::{
         backend::{self, BackendNode, StorageBackend, localfs::LocalFS},
-        commands::{
-            self, UseSnapshot, cmd_snapshot,
-            cmd_sync::{self},
-        },
         repository::repo::LOCKS_DIR,
     };
 
@@ -25,42 +21,22 @@ mod tests {
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         let dst_repo_path = ctx._tmp_dir.path().join("sync_dst");
-        let sync_args = cmd_sync::CmdArgs {
-            target: dst_repo_path.to_string_lossy().to_string(),
-            delete: false,
-            dst_ssh_privatekey: None,
-            dry_run: false,
-        };
-        cmd_sync::run(&ctx.global, &sync_args)
-            .await
-            .context("Failed to run cmd_sync")?;
+        ctx.sync_builder(dst_repo_path.to_string_lossy().to_string())
+            .run(&ctx.global)
+            .await?;
 
-        let src_backend = Arc::new(LocalFS::new(ctx.repo_path));
+        let src_backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path));
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
@@ -94,33 +70,19 @@ mod tests {
         ctx.init_repo().await?;
 
         // Run snapshot
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await?;
 
         let dst_repo_path = ctx._tmp_dir.path().join("sync_dst");
 
-        let src_backend = Arc::new(LocalFS::new(ctx.repo_path));
+        let src_backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path.clone()));
         dst_backend.create().await?;
 
@@ -141,15 +103,10 @@ mod tests {
             b"Dummy content",
         )?;
 
-        let sync_args = cmd_sync::CmdArgs {
-            target: dst_repo_path.to_string_lossy().to_string(),
-            delete: true,
-            dst_ssh_privatekey: None,
-            dry_run: false,
-        };
-        cmd_sync::run(&ctx.global, &sync_args)
-            .await
-            .context("Failed to run cmd_sync")?;
+        ctx.sync_builder(dst_repo_path.to_string_lossy().to_string())
+            .delete(true)
+            .run(&ctx.global)
+            .await?;
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());
         let mut src_nodes: Vec<BackendNode> =
@@ -182,37 +139,17 @@ mod tests {
         ctx.init_repo().await?;
 
         // Run snapshot to generate some files
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![backup_data_tmp_path.join("file.txt")],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot")?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await?;
 
         let dst_repo_path = ctx._tmp_dir.path().join("sync_dst_size");
-        let sync_args = cmd_sync::CmdArgs {
-            target: dst_repo_path.to_string_lossy().to_string(),
-            delete: false,
-            dst_ssh_privatekey: None,
-            dry_run: false,
-        };
 
         // First sync
-        cmd_sync::run(&ctx.global, &sync_args)
-            .await
-            .context("Failed to run first cmd_sync")?;
+        ctx.sync_builder(dst_repo_path.to_string_lossy().to_string())
+            .run(&ctx.global)
+            .await?;
 
         // Find a pack file in the destination and corrupt its size
         let objects_dir = dst_repo_path.join("objects");
@@ -242,11 +179,11 @@ mod tests {
         assert!(corrupted, "Could not find any pack file to corrupt");
 
         // Second sync: should detect size difference and fix it
-        cmd_sync::run(&ctx.global, &sync_args)
-            .await
-            .context("Failed to run second cmd_sync")?;
+        ctx.sync_builder(dst_repo_path.to_string_lossy().to_string())
+            .run(&ctx.global)
+            .await?;
 
-        let src_backend = Arc::new(LocalFS::new(ctx.repo_path));
+        let src_backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let dst_backend = Arc::new(LocalFS::new(dst_repo_path));
 
         let forward_cmp = |n0: &BackendNode, n1: &BackendNode| n0.path().cmp(n1.path());

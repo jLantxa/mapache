@@ -80,14 +80,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             while let Some(res) = stream.next().await {
                 let (path, source_res, target_res, diff_type) = res?;
 
-                let source = source_res.map(|r| r.unwrap());
-                let target = target_res.map(|r| r.unwrap());
+                let source = source_res.transpose()?;
+                let target = target_res.transpose()?;
 
                 let node = target
                     .as_ref()
                     .or(source.as_ref())
                     .map(|sn| &sn.node)
-                    .expect("Node missing");
+                    .expect("Node missing in diff result");
                 let path_display = if node.is_dir() {
                     path.to_string_lossy().blue().bold()
                 } else {
@@ -98,8 +98,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     NodeDiff::New => "+".bold().green(),
                     NodeDiff::Deleted => "-".bold().red(),
                     NodeDiff::Changed => {
-                        let s_node = &source.as_ref().unwrap().node;
-                        let t_node = &target.as_ref().unwrap().node;
+                        let s_node = &source
+                            .as_ref()
+                            .expect("Source node missing in Changed diff")
+                            .node;
+                        let t_node = &target
+                            .as_ref()
+                            .expect("Target node missing in Changed diff")
+                            .node;
                         if s_node.node_type != t_node.node_type {
                             "T".bold().purple()
                         } else if s_node.blobs != t_node.blobs {
@@ -113,9 +119,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
                 if diff_type != NodeDiff::Unchanged {
                     ui::cli::log!("{}  {}", symbol, path_display);
-                } else if source.as_ref().unwrap().node.blobs != target.as_ref().unwrap().node.blobs
-                {
-                    ui::cli::log!("{}  {}", "?".bold().white().on_red(), path.display());
+                } else {
+                    let s_node = &source
+                        .as_ref()
+                        .expect("Source node missing in Unchanged diff")
+                        .node;
+                    let t_node = &target
+                        .as_ref()
+                        .expect("Target node missing in Unchanged diff")
+                        .node;
+                    if s_node.blobs != t_node.blobs {
+                        ui::cli::log!("{}  {}", "?".bold().white().on_red(), path.display());
+                    }
                 }
 
                 counts.increment(node.is_dir(), &diff_type);

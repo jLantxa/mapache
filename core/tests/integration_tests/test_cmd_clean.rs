@@ -3,13 +3,10 @@
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use anyhow::{Context, Result};
+    use anyhow::Result;
     use mapache::{
-        backend::localfs::LocalFS,
-        commands::{self, UseSnapshot, cmd_clean, cmd_restore, cmd_snapshot},
-        mapache::defaults::TEST_REPO_CONFIG,
+        backend::localfs::LocalFS, mapache::defaults::TEST_REPO_CONFIG,
         repository::repo::Repository,
-        restorer::Strategy,
     };
 
     use crate::integration_tests::{TestContext, assert_times_equal};
@@ -18,111 +15,37 @@ mod tests {
     async fn test_gc_sanity_check() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot twice
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot (1/2)")?;
+        ctx.snapshot(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .await?;
 
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot (2/2)")?;
+        ctx.snapshot(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+        ])
+        .await?;
 
         // Keep the last snapshot
-        let forget_args = commands::cmd_forget::CmdArgs {
-            forget: Vec::new(),
-            force: false,
-            keep_last: Some(1),
-            keep_within: None,
-            keep_yearly: None,
-            keep_monthly: None,
-            keep_weekly: None,
-            keep_daily: None,
-            run_gc: false,
-            dry_run: false,
-            tolerance: 0.0_f32,
-            tags_str: Some(String::new()),
-            keep_tags_str: Some(String::new()),
-        };
-        commands::cmd_forget::run(&ctx.global, &forget_args)
-            .await
-            .context("Failed to run cmd_forget")?;
+        ctx.forget_builder().keep_last(1).run(&ctx.global).await?;
 
-        let gc_args = cmd_clean::CmdArgs {
-            tolerance: 0.0_f32,
-            dry_run: false,
-
-            no_repack: false,
-        };
-        commands::cmd_clean::run(&ctx.global, &gc_args)
-            .await
-            .context("Failed to run cmd_gc")?;
+        ctx.clean_builder().run(&ctx.global).await?;
 
         // Run restore
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip,
-
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args)
-            .await
-            .context("Failed to run cmd_restore")?;
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
 
         let paths = vec![
             PathBuf::from("0"),
@@ -163,92 +86,37 @@ mod tests {
     async fn test_clean_dry_run() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
 
         // Init repo
         ctx.init_repo().await?;
 
         // Run snapshot twice
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-                backup_data_tmp_path.join("file.txt"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot (1/2)")?;
+        ctx.snapshot(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+            backup_data_tmp_path.join("file.txt"),
+        ])
+        .await?;
 
-        let snapshot_args = cmd_snapshot::CmdArgs {
-            paths: vec![
-                backup_data_tmp_path.join("0"),
-                backup_data_tmp_path.join("1"),
-                backup_data_tmp_path.join("2"),
-            ],
-            as_root: false,
-            exclude: None,
-            exclude_file: None,
-            tags_str: String::new(),
-            description: None,
-            no_parent: false,
-            skip_if_unchanged: false,
-            no_scan: true,
-            parent: UseSnapshot::Latest,
-            num_readers: 2,
-            num_packers: 2,
-            dry_run: false,
-        };
-        commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
-            .await
-            .context("Failed to run cmd_snapshot (2/2)")?;
+        ctx.snapshot(vec![
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+            backup_data_tmp_path.join("2"),
+        ])
+        .await?;
 
         // Keep the last snapshot
-        let forget_args = commands::cmd_forget::CmdArgs {
-            forget: Vec::new(),
-            force: false,
-            keep_last: Some(1),
-            keep_within: None,
-            keep_yearly: None,
-            keep_monthly: None,
-            keep_weekly: None,
-            keep_daily: None,
-            run_gc: false,
-            dry_run: false,
-            tolerance: 0.0_f32,
-            tags_str: Some(String::new()),
-            keep_tags_str: Some(String::new()),
-        };
-        commands::cmd_forget::run(&ctx.global, &forget_args)
-            .await
-            .context("Failed to run cmd_forget")?;
+        ctx.forget_builder().keep_last(1).run(&ctx.global).await?;
 
         // Run cmd_clean and compare the repositories (using backend readdir)
         let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let mut pre_clean_nodes =
             mapache::backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
-        let gc_args = cmd_clean::CmdArgs {
-            tolerance: 0.0_f32,
-            dry_run: true, // DRY-RUN !
 
-            no_repack: false,
-        };
-        commands::cmd_clean::run(&ctx.global, &gc_args)
-            .await
-            .context("Failed to run cmd_gc")?;
+        ctx.clean_builder().dry_run(true).run(&ctx.global).await?;
+
         let mut post_clean_nodes =
             mapache::backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
 
@@ -259,15 +127,9 @@ mod tests {
         // Now the same, but without dry-run, the repo changes
         let pre_clean_nodes =
             mapache::backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
-        let gc_args = cmd_clean::CmdArgs {
-            tolerance: 0.0_f32,
-            dry_run: false, // No dry-run
 
-            no_repack: false,
-        };
-        commands::cmd_clean::run(&ctx.global, &gc_args)
-            .await
-            .context("Failed to run cmd_gc")?;
+        ctx.clean_builder().run(&ctx.global).await?;
+
         let post_clean_nodes =
             mapache::backend::read_backend_dir(backend.as_ref(), &PathBuf::new()).await?;
         assert_ne!(pre_clean_nodes, post_clean_nodes);
@@ -281,9 +143,6 @@ mod tests {
 
         // Set a small pack size to force multiple packs and repacking
         ctx.global.pack_size_mib = 1.0; // 1MiB packs
-        ctx.global.verbosity = Some(1);
-        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
-
         ctx.init_repo().await?;
 
         let backup_path = ctx._tmp_dir.path().join("backup");
@@ -297,25 +156,10 @@ mod tests {
         std::fs::write(&file_a, &data_a)?;
         std::fs::write(&file_b, &data_b)?;
 
-        commands::cmd_snapshot::run(
-            &ctx.global,
-            &cmd_snapshot::CmdArgs {
-                paths: vec![backup_path.clone()],
-                as_root: true,
-                exclude: None,
-                exclude_file: None,
-                tags_str: String::new(),
-                description: None,
-                no_parent: false,
-                skip_if_unchanged: false,
-                no_scan: false,
-                parent: UseSnapshot::Latest,
-                num_readers: 1,
-                num_packers: 1,
-                dry_run: false,
-            },
-        )
-        .await?;
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .run(&ctx.global)
+            .await?;
 
         let snapshots_dir = ctx.repo_path.join("snapshots");
         let snapshots = std::fs::read_dir(&snapshots_dir)?
@@ -335,55 +179,24 @@ mod tests {
         let data_c = vec![2u8; 512 * 1024];
         std::fs::write(&file_c, &data_c)?;
 
-        commands::cmd_snapshot::run(
-            &ctx.global,
-            &cmd_snapshot::CmdArgs {
-                paths: vec![backup_path.clone()],
-                as_root: true,
-                exclude: None,
-                exclude_file: None,
-                tags_str: String::new(),
-                description: None,
-                no_parent: false,
-                skip_if_unchanged: false,
-                no_scan: false,
-                parent: UseSnapshot::Latest,
-                num_readers: 1,
-                num_packers: 1,
-                dry_run: false,
-            },
-        )
-        .await?;
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .run(&ctx.global)
+            .await?;
 
         // Forget Snapshot 1.
-        let forget_args = commands::cmd_forget::CmdArgs {
-            forget: vec![first_id],
-            force: true, // Permanent delete
-            tags_str: None,
-            keep_last: None,
-            keep_within: None,
-            keep_yearly: None,
-            keep_monthly: None,
-            keep_weekly: None,
-            keep_daily: None,
-            keep_tags_str: None,
-            dry_run: false,
-            run_gc: false,
-            tolerance: 0.0,
-        };
-        commands::cmd_forget::run(&ctx.global, &forget_args).await?;
+        ctx.forget_builder()
+            .forget(vec![first_id])
+            .force(true)
+            .run(&ctx.global)
+            .await?;
 
         // After forgetting Snapshot 1, file_b's blobs are now garbage.
         let objects_dir = ctx.repo_path.join("objects");
         let pre_gc_size = mapache::utils::dir_size(&objects_dir)?;
 
         // Run GC.
-        let gc_args = cmd_clean::CmdArgs {
-            tolerance: 0.0,
-            dry_run: false,
-            no_repack: false,
-        };
-        commands::cmd_clean::run(&ctx.global, &gc_args).await?;
+        ctx.clean_builder().run(&ctx.global).await?;
 
         let post_gc_size = mapache::utils::dir_size(&objects_dir)?;
 
@@ -396,35 +209,15 @@ mod tests {
         );
 
         // Verify Snapshot 2 is still valid and restorable.
-        let verify_args = commands::cmd_verify::CmdArgs {
-            read_packs: true,
-            parallel: 1,
-            with_cache: false,
-            fail_early: false,
-            sample: None,
-        };
-        commands::cmd_verify::run(&ctx.global, &verify_args)
-            .await
-            .context("Verify failed after GC")?;
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&ctx.global)
+            .await?;
 
         let restore_path = ctx._tmp_dir.path().join("restore");
-        let restore_args = commands::cmd_restore::CmdArgs {
-            sparse: false,
-            target: restore_path.clone(),
-            snapshot: UseSnapshot::Latest,
-            dry_run: false,
-            verify: false,
-            include: None,
-            exclude: None,
-            include_file: None,
-            exclude_file: None,
-            strip_prefix: false,
-            strategy: Strategy::Skip,
-            quit_on_error: true,
-            delete: false,
-            no_preserve_root: false,
-        };
-        commands::cmd_restore::run(&ctx.global, &restore_args).await?;
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
 
         assert!(restore_path.join("file_a.bin").exists());
         assert!(restore_path.join("file_c.bin").exists());
@@ -441,9 +234,6 @@ mod tests {
         let mut ctx = TestContext::new().await?;
 
         ctx.global.pack_size_mib = 16.0;
-        ctx.global.verbosity = Some(1);
-        mapache::mapache::global::set_global_opts_with_args(&ctx.global);
-
         ctx.init_repo().await?;
 
         let backup_path = ctx._tmp_dir.path().join("backup");
@@ -458,25 +248,10 @@ mod tests {
         std::fs::write(&file_b, &data_b)?;
 
         // Snapshot 1: {A, B}
-        commands::cmd_snapshot::run(
-            &ctx.global,
-            &cmd_snapshot::CmdArgs {
-                paths: vec![backup_path.clone()],
-                as_root: true,
-                exclude: None,
-                exclude_file: None,
-                tags_str: String::new(),
-                description: None,
-                no_parent: false,
-                skip_if_unchanged: false,
-                no_scan: false,
-                parent: UseSnapshot::Latest,
-                num_readers: 1,
-                num_packers: 1,
-                dry_run: false,
-            },
-        )
-        .await?;
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .run(&ctx.global)
+            .await?;
 
         let snapshots_dir = ctx.repo_path.join("snapshots");
         let snapshots = std::fs::read_dir(&snapshots_dir)?
@@ -491,43 +266,17 @@ mod tests {
 
         // Create Snapshot 2: {A} (B is deleted)
         std::fs::remove_file(&file_b)?;
-        commands::cmd_snapshot::run(
-            &ctx.global,
-            &cmd_snapshot::CmdArgs {
-                paths: vec![backup_path.clone()],
-                as_root: true,
-                exclude: None,
-                exclude_file: None,
-                tags_str: String::new(),
-                description: None,
-                no_parent: false,
-                skip_if_unchanged: false,
-                no_scan: false,
-                parent: UseSnapshot::Latest,
-                num_readers: 1,
-                num_packers: 1,
-                dry_run: false,
-            },
-        )
-        .await?;
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .run(&ctx.global)
+            .await?;
 
         // Forget Snapshot 1
-        let forget_args = commands::cmd_forget::CmdArgs {
-            forget: vec![first_id],
-            force: true,
-            tags_str: None,
-            keep_last: None,
-            keep_within: None,
-            keep_yearly: None,
-            keep_monthly: None,
-            keep_weekly: None,
-            keep_daily: None,
-            keep_tags_str: None,
-            dry_run: false,
-            run_gc: false,
-            tolerance: 0.0,
-        };
-        commands::cmd_forget::run(&ctx.global, &forget_args).await?;
+        ctx.forget_builder()
+            .forget(vec![first_id])
+            .force(true)
+            .run(&ctx.global)
+            .await?;
 
         // GC Logic: Ratio = garbage / 16MiB = 1MiB / 16MiB = 0.0625.
 
@@ -538,13 +287,7 @@ mod tests {
         let initial_packs = repo.list_packs().await?.len();
 
         // Run GC with tolerance 0.1 (10%). 6.25% < 10%, should KEEP the data pack.
-        // It will however delete the unused tree pack from Snapshot 1.
-        let gc_args_high = cmd_clean::CmdArgs {
-            tolerance: 0.1,
-            dry_run: false,
-            no_repack: false,
-        };
-        commands::cmd_clean::run(&ctx.global, &gc_args_high).await?;
+        ctx.clean_builder().tolerance(0.1).run(&ctx.global).await?;
 
         let (repo, _) =
             Repository::try_open_unlocked(&ctx.auth, None, backend.clone(), TEST_REPO_CONFIG)
@@ -559,23 +302,12 @@ mod tests {
         );
 
         // Run GC with tolerance 0.05 (5%). 6.25% > 5%, should REPACK the data pack.
-        let gc_args_low = cmd_clean::CmdArgs {
-            tolerance: 0.05,
-            dry_run: false,
-            no_repack: false,
-        };
-        commands::cmd_clean::run(&ctx.global, &gc_args_low).await?;
+        ctx.clean_builder().tolerance(0.05).run(&ctx.global).await?;
 
-        let verify_args = commands::cmd_verify::CmdArgs {
-            read_packs: true,
-            parallel: 1,
-            with_cache: false,
-            fail_early: false,
-            sample: None,
-        };
-        commands::cmd_verify::run(&ctx.global, &verify_args)
-            .await
-            .context("Verify failed after low tolerance GC")?;
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&ctx.global)
+            .await?;
 
         Ok(())
     }

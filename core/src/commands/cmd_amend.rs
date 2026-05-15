@@ -32,7 +32,7 @@ use crate::{
     utils::{self},
 };
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(group = ArgGroup::new("snapshot_group").multiple(false))]
 #[clap(group = ArgGroup::new("tags_group").multiple(false))]
 #[clap(group = ArgGroup::new("description_group").multiple(false))]

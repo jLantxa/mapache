@@ -1,24 +1,23 @@
 #![cfg(test)]
 
 mod tests {
-    use crate::integration_tests::run_bin;
+    use crate::integration_tests::TestContext;
     use anyhow::Result;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_run_completion_and_check_stdout() -> Result<()> {
+        let ctx = TestContext::new().await?;
         let tmp_dir = tempdir()?;
 
         // Test completion via binary
-        let output = run_bin(&[
+        ctx.run_mapache_ok(&[
             "completion",
             "--shell",
             "bash",
             "--path",
             &tmp_dir.path().to_string_lossy(),
         ])?;
-
-        assert!(output.status.success());
 
         // Depending on implementation, it might write to the file or stdout.
         // If it writes to the file, we check the file.

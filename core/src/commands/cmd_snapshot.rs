@@ -51,7 +51,7 @@ impl ToExitCode for SnapshotError {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
 #[clap(about = "Create a new snapshot")]
 pub struct CmdArgs {

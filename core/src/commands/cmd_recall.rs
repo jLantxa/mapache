@@ -9,7 +9,7 @@ use crate::{
 };
 
 // Define argument groups for mutual exclusivity and multiple selection
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(about = "Recall forgotten snapshots")]
 pub struct CmdArgs {
     #[arg(value_parser)]

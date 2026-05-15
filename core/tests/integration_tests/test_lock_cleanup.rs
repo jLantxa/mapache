@@ -49,77 +49,45 @@ async fn test_lock_handle_drop() -> Result<()> {
 
 #[tokio::test]
 async fn test_commands_lock_cleanup() -> Result<()> {
-    use mapache::commands::*;
-
     let mut ctx = TestContext::new().await?;
     ctx.init_repo().await?;
     let locks_dir = ctx.repo_path.join(LOCKS_DIR);
 
     // Snapshot
     ctx.setup_backup_data()?;
-    let snapshot_args = cmd_snapshot::CmdArgs {
-        paths: vec![ctx.backup_data_path.as_ref().unwrap().clone()],
-        as_root: false,
-        exclude: None,
-        exclude_file: None,
-        tags_str: "[]".to_string(),
-        description: None,
-        no_parent: false,
-        no_scan: false,
-        skip_if_unchanged: false,
-        parent: UseSnapshot::Latest,
-        num_readers: 1,
-        num_packers: 1,
-        dry_run: false,
-    };
-    cmd_snapshot::run(&ctx.global, &snapshot_args).await?;
+    ctx.snapshot_builder(vec![ctx.backup_data_path.as_ref().unwrap().clone()])
+        .tags("[]".to_string())
+        .num_readers(1)
+        .num_packers(1)
+        .run(&ctx.global)
+        .await?;
     wait_for_no_locks(&locks_dir).await?;
 
     // Get the snapshot ID
-    let snapshot_id_hex = {
-        let backend = Arc::new(mapache::backend::localfs::LocalFS::new(
-            ctx.repo_path.clone(),
-        ));
-        let (repo, _) =
-            Repository::try_open_unlocked(&ctx.auth, None, backend, TEST_REPO_CONFIG).await?;
-        let ids = repo.list_snapshot_ids().await?;
-        ids.first()
-            .expect("Snapshot should have been created")
-            .to_hex()
-    };
+    let snapshot_id_hex = ctx
+        .get_snapshot_ids()?
+        .first()
+        .cloned()
+        .expect("Snapshot should have been created");
 
     // Log
-    let log_args = cmd_log::CmdArgs {
-        snapshot: None,
-        dropped: false,
-        all: false,
-        compact: true,
-        tags_str: None,
-    };
-    cmd_log::run(&ctx.global, &log_args).await?;
+    ctx.log_builder().compact(true).run(&ctx.global).await?;
     wait_for_no_locks(&locks_dir).await?;
 
     // Stats
-    let stats_args = cmd_stats::CmdArgs { full: false };
-    cmd_stats::run(&ctx.global, &stats_args).await?;
+    ctx.stats_builder().run(&ctx.global).await?;
     wait_for_no_locks(&locks_dir).await?;
 
     // Verify
-    let verify_args = cmd_verify::CmdArgs {
-        read_packs: false,
-        parallel: 1,
-        with_cache: false,
-        fail_early: false,
-        sample: None,
-    };
-    cmd_verify::run(&ctx.global, &verify_args).await?;
+    ctx.verify_builder().run(&ctx.global).await?;
     wait_for_no_locks(&locks_dir).await?;
 
     // Cat
-    let cat_args = cmd_cat::CmdArgs {
-        object: cmd_cat::Object::Snapshot(snapshot_id_hex.clone()),
-    };
-    cmd_cat::run(&ctx.global, &cat_args).await?;
+    ctx.cat_builder(mapache::commands::cmd_cat::Object::Snapshot(
+        snapshot_id_hex.clone(),
+    ))
+    .run(&ctx.global)
+    .await?;
     wait_for_no_locks(&locks_dir).await?;
 
     Ok(())

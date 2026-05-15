@@ -48,14 +48,16 @@ pub(crate) async fn process_item(
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Option<StreamNode>> {
     // Check if next_node has an error. If so, report it and skip the node.
-    if let Some(Err(e)) = next_node_res {
-        progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
-        progress.processed_node();
-        return Ok(None);
-    }
+    let next_node = match next_node_res {
+        Some(Err(e)) => {
+            progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
+            progress.processed_node();
+            return Ok(None);
+        }
+        Some(Ok(n)) => Some(n),
+        None => None,
+    };
 
-    // From here on, next_node_res is either None or Some(Ok(next_node)).
-    let next_node = next_node_res.map(|r| r.unwrap());
     let prev_node = match prev_node_res {
         Some(Ok(n)) => Some(n),
         Some(Err(_)) => None, // Should not happen in practice for SerializedNodeStream

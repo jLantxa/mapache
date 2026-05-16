@@ -3,7 +3,7 @@ use std::{
     hash::Hash,
 };
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 
 use crate::{
     mapache::ID,
@@ -30,6 +30,8 @@ pub enum RetentionRule {
     KeepWeekly(usize),
     /// Keep N daily snapshots.
     KeepDaily(usize),
+    /// Keep N hourly snapshots.
+    KeepHourly(usize),
     /// Keep snapshots with tag
     KeepTags(BTreeSet<String>),
 }
@@ -42,6 +44,7 @@ pub enum RetentionRule {
 pub fn apply_retention_rules(
     snapshots_sorted: &[SnapshotEntry],
     rules: &[RetentionRule],
+    keep_min: Option<usize>,
     now: DateTime<Local>,
 ) -> IdSet<ID> {
     let mut snapshots_to_keep: IdSet<ID> = IdSet::default();
@@ -149,6 +152,22 @@ pub fn apply_retention_rules(
 
                 keep_latest_per_period(snapshots_sorted, |s| s.timestamp.date_naive(), cutoff)
             }
+            RetentionRule::KeepHourly(n) => {
+                // Truncate 'now' to the start of the current hour.
+                let now_truncated = now
+                    .with_minute(0)
+                    .and_then(|d| d.with_second(0))
+                    .unwrap_or(now);
+
+                // Cutoff is the start of the hour N hours ago.
+                let cutoff = now_truncated - Duration::hours((*n - 1) as i64);
+
+                keep_latest_per_period(
+                    snapshots_sorted,
+                    |s| (s.timestamp.date_naive(), s.timestamp.hour()),
+                    cutoff,
+                )
+            }
             RetentionRule::KeepTags(tags) => {
                 // Keep all snapshots that match the required tags.
                 snapshots_sorted
@@ -163,7 +182,39 @@ pub fn apply_retention_rules(
         snapshots_to_keep.extend(ids_to_keep);
     }
 
+    // Ensure minimum number of snapshots are kept
+    if let Some(min) = keep_min {
+        let target = min.min(snapshots_sorted.len());
+        if snapshots_to_keep.len() < target {
+            for entry in snapshots_sorted.iter().rev() {
+                if snapshots_to_keep.len() >= target {
+                    break;
+                }
+                snapshots_to_keep.insert(entry.id);
+            }
+        }
+    }
+
     snapshots_to_keep
+}
+
+/// Filters snapshots to only include those from the specified hosts.
+/// Snapshots without a hostname are excluded when any host filter is active.
+pub fn filter_snapshots_by_hosts<'a>(
+    snapshots: impl Iterator<Item = &'a SnapshotEntry>,
+    hosts: &[String],
+) -> Vec<&'a SnapshotEntry> {
+    if hosts.is_empty() {
+        return snapshots.collect();
+    }
+    snapshots
+        .filter(|e| {
+            e.snapshot
+                .hostname
+                .as_ref()
+                .is_some_and(|h| hosts.contains(h))
+        })
+        .collect()
 }
 
 /// Generic helper function to abstract the common logic for period-based retention.
@@ -225,7 +276,12 @@ mod tests {
     }
 
     /// Creates a standard mock snapshot (ID and Snapshot struct).
-    fn create_snapshot(id_val: u32, timestamp: DateTime<Local>, tags: &[&str]) -> SnapshotEntry {
+    fn create_snapshot(
+        id_val: u32,
+        timestamp: DateTime<Local>,
+        tags: &[&str],
+        hostname: Option<&str>,
+    ) -> SnapshotEntry {
         let snapshot_id = create_id(id_val);
         SnapshotEntry {
             id: snapshot_id,
@@ -238,7 +294,7 @@ mod tests {
                 tags: tags.iter().map(|s| s.to_string()).collect(),
                 description: None,
                 summary: Default::default(),
-                hostname: None,
+                hostname: hostname.map(|s| s.to_string()),
                 username: None,
                 version: None,
             },
@@ -253,33 +309,84 @@ mod tests {
 
     fn create_mock_snapshots() -> SnapshotEntryList {
         let mut snapshots = vec![
-            create_snapshot(0, create_datetime((2021, 12, 31), (23, 59, 59), 0), &[]),
-            create_snapshot(1, create_datetime((2022, 1, 1), (0, 0, 0), 0), &[]),
-            create_snapshot(2, create_datetime((2023, 1, 1), (0, 0, 0), 2), &[]), // 2023-01-03
-            create_snapshot(3, create_datetime((2023, 1, 1), (0, 0, 0), 3), &[]), // 2023-01-04
-            create_snapshot(4, create_datetime((2023, 1, 1), (0, 0, 0), 4), &[]), // 2023-01-05
-            create_snapshot(5, create_datetime((2023, 1, 1), (0, 0, 0), 7), &[]), // 2023-01-08
-            create_snapshot(6, create_datetime((2023, 1, 1), (0, 0, 0), 14), &[]), // 2023-01-15
-            create_snapshot(7, create_datetime((2023, 1, 1), (0, 0, 0), 15), &[]), // 2023-01-16
-            create_snapshot(8, create_datetime((2023, 1, 1), (0, 0, 0), 16), &[]), // 2023-01-17
-            create_snapshot(9, create_datetime((2023, 1, 1), (0, 0, 0), 21), &[]), // 2023-01-22
+            create_snapshot(
+                0,
+                create_datetime((2021, 12, 31), (23, 59, 59), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(1, create_datetime((2022, 1, 1), (0, 0, 0), 0), &[], None),
+            create_snapshot(2, create_datetime((2023, 1, 1), (0, 0, 0), 2), &[], None),
+            create_snapshot(3, create_datetime((2023, 1, 1), (0, 0, 0), 3), &[], None),
+            create_snapshot(4, create_datetime((2023, 1, 1), (0, 0, 0), 4), &[], None),
+            create_snapshot(5, create_datetime((2023, 1, 1), (0, 0, 0), 7), &[], None),
+            create_snapshot(6, create_datetime((2023, 1, 1), (0, 0, 0), 14), &[], None),
+            create_snapshot(7, create_datetime((2023, 1, 1), (0, 0, 0), 15), &[], None),
+            create_snapshot(8, create_datetime((2023, 1, 1), (0, 0, 0), 16), &[], None),
+            create_snapshot(9, create_datetime((2023, 1, 1), (0, 0, 0), 21), &[], None),
             create_snapshot(
                 10,
-                create_datetime((2023, 1, 1), (0, 0, 0), 23), // 2023-01-24
+                create_datetime((2023, 1, 1), (0, 0, 0), 23),
                 &["tag0", "tag1"],
+                None,
             ),
-            create_snapshot(11, create_datetime((2023, 1, 28), (23, 59, 59), 0), &[]), // 2023-01-28
-            create_snapshot(12, create_datetime((2023, 2, 28), (23, 59, 0), 0), &[]),  // 2023-02-28
-            create_snapshot(13, create_datetime((2023, 12, 31), (23, 59, 0), 0), &[]), // 2023-12-31
-            create_snapshot(14, create_datetime((2024, 12, 31), (23, 59, 0), 0), &[]), // 2024-12-31
-            create_snapshot(15, create_datetime((2024, 12, 31), (23, 59, 59), 0), &[]), // 2024-12-31
-            create_snapshot(16, create_datetime((2025, 1, 1), (0, 0, 1), 0), &[]),
-            create_snapshot(17, create_datetime((2025, 4, 13), (23, 59, 59), 0), &[]), // 2025-04-13
-            create_snapshot(18, create_datetime((2025, 4, 14), (0, 0, 1), 0), &[]),    // 2025-04-14
-            create_snapshot(19, create_datetime((2025, 5, 1), (12, 0, 0), 0), &[]),    // 2025-05-01
-            create_snapshot(20, create_datetime((2025, 5, 25), (20, 29, 46), 0), &[]), // 2025-05-25
-            create_snapshot(21, create_datetime((2025, 5, 25), (20, 30, 0), 0), &[]),  // 2025-05-25
-            create_snapshot(22, create_datetime((2025, 5, 25), (21, 57, 59), 0), &[]), // 2025-05-25 (Just before 'now')
+            create_snapshot(
+                11,
+                create_datetime((2023, 1, 28), (23, 59, 59), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(
+                12,
+                create_datetime((2023, 2, 28), (23, 59, 0), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(
+                13,
+                create_datetime((2023, 12, 31), (23, 59, 0), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(
+                14,
+                create_datetime((2024, 12, 31), (23, 59, 0), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(
+                15,
+                create_datetime((2024, 12, 31), (23, 59, 59), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(16, create_datetime((2025, 1, 1), (0, 0, 1), 0), &[], None),
+            create_snapshot(
+                17,
+                create_datetime((2025, 4, 13), (23, 59, 59), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(18, create_datetime((2025, 4, 14), (0, 0, 1), 0), &[], None),
+            create_snapshot(19, create_datetime((2025, 5, 1), (12, 0, 0), 0), &[], None),
+            create_snapshot(
+                20,
+                create_datetime((2025, 5, 25), (20, 29, 46), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(
+                21,
+                create_datetime((2025, 5, 25), (20, 30, 0), 0),
+                &[],
+                None,
+            ),
+            create_snapshot(
+                22,
+                create_datetime((2025, 5, 25), (21, 57, 59), 0),
+                &[],
+                None,
+            ),
         ];
 
         assert_no_duplicate_ids(&snapshots);
@@ -312,7 +419,7 @@ mod tests {
     fn test_keep_last() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepLast(4)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
 
         // Keeps the last four
         let expected_keep_ids = create_expected_ids(&[22, 21, 20, 19]);
@@ -325,7 +432,7 @@ mod tests {
         let snapshots = create_mock_snapshots();
 
         let rules = vec![RetentionRule::KeepYearly(5)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
 
         let expected_ids = create_expected_ids(&[
             0,  // Latest in 2021
@@ -342,7 +449,7 @@ mod tests {
     fn test_keep_monthly() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepMonthly(5)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
 
         let expected_ids = create_expected_ids(&[
             16, // Latest in Jan 2025
@@ -357,7 +464,7 @@ mod tests {
     fn test_keep_weekly() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepWeekly(8)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
 
         let expected_ids = create_expected_ids(&[
             17, // Latest in Week 15 (Apr 13)
@@ -373,7 +480,7 @@ mod tests {
     fn test_keep_daily() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepDaily(10)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
 
         let expected_ids = create_expected_ids(&[22]);
 
@@ -386,14 +493,14 @@ mod tests {
 
         // Keep within 1 day
         let rules = vec![RetentionRule::KeepWithin(Duration::days(1))];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
         // Cutoff: 2025-05-24 21:58:00
         let expected_ids = create_expected_ids(&[20, 21, 22]);
         assert_eq!(kept_ids, expected_ids);
 
         // Keep within 30 days
         let rules = vec![RetentionRule::KeepWithin(Duration::days(30))];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
         // Cutoff: 2025-04-25 21:58:00
         let expected_ids = create_expected_ids(&[19, 20, 21, 22]);
         assert_eq!(kept_ids, expected_ids);
@@ -405,7 +512,7 @@ mod tests {
         let rules = vec![RetentionRule::KeepTags(
             ["tag0"].into_iter().map(|s| s.to_string()).collect(),
         )];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
 
         let expected_ids = create_expected_ids(&[10]);
 
@@ -420,7 +527,7 @@ mod tests {
             RetentionRule::KeepMonthly(5), // Keeps {16, 18, 22}
             RetentionRule::KeepTags(["tag1"].into_iter().map(|s| s.to_string()).collect()), // Keeps {10}
         ];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, test_now());
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
 
         // Union: {10, 16, 18, 20, 21, 22}
         let expected_ids = create_expected_ids(&[
@@ -433,5 +540,89 @@ mod tests {
         ]);
 
         assert_eq!(kept_ids, expected_ids);
+    }
+
+    #[test]
+    fn test_keep_hourly() {
+        let now = test_now();
+        let snapshots = vec![
+            create_snapshot(0, now - Duration::hours(5), &[], None),
+            create_snapshot(1, now - Duration::hours(4), &[], None),
+            create_snapshot(2, now - Duration::hours(3), &[], None),
+            create_snapshot(3, now - Duration::hours(2), &[], None),
+            create_snapshot(4, now - Duration::hours(1), &[], None),
+            create_snapshot(5, now, &[], None),
+        ];
+
+        let rules = vec![RetentionRule::KeepHourly(3)];
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, now);
+
+        // Keeps the latest snapshot per hour for the last 3 hours
+        let expected_ids = create_expected_ids(&[3, 4, 5]);
+        assert_eq!(kept_ids, expected_ids);
+    }
+
+    #[test]
+    fn test_filter_by_hosts() {
+        let snapshots = [
+            create_snapshot(0, test_now() - Duration::days(2), &[], Some("server-a")),
+            create_snapshot(1, test_now() - Duration::days(1), &[], Some("server-b")),
+            create_snapshot(2, test_now(), &[], Some("server-a")),
+            create_snapshot(3, test_now() - Duration::hours(1), &[], None),
+        ];
+
+        let filtered = filter_snapshots_by_hosts(snapshots.iter(), &["server-a".to_string()]);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].id, create_id(0));
+        assert_eq!(filtered[1].id, create_id(2));
+
+        let filtered_multi = filter_snapshots_by_hosts(
+            snapshots.iter(),
+            &["server-a".to_string(), "server-b".to_string()],
+        );
+        assert_eq!(filtered_multi.len(), 3);
+
+        let filtered_empty = filter_snapshots_by_hosts(snapshots.iter(), &[]);
+        assert_eq!(filtered_empty.len(), 4);
+    }
+
+    #[test]
+    fn test_keep_min_override() {
+        let snapshots = create_mock_snapshots();
+
+        // KeepLast(2) would keep only {22, 21}
+        let rules = vec![RetentionRule::KeepLast(2)];
+        let kept_ids = apply_retention_rules(&snapshots, &rules, Some(5), test_now());
+
+        // With keep_min=5, should have 5 snapshots: {22, 21} + {20, 19, 18}
+        assert_eq!(kept_ids.len(), 5);
+        assert!(kept_ids.contains(&create_id(22)));
+        assert!(kept_ids.contains(&create_id(21)));
+        assert!(kept_ids.contains(&create_id(20)));
+        assert!(kept_ids.contains(&create_id(19)));
+        assert!(kept_ids.contains(&create_id(18)));
+    }
+
+    #[test]
+    fn test_keep_min_no_override_when_enough() {
+        let snapshots = create_mock_snapshots();
+
+        // KeepLast(10) already keeps more than 5
+        let rules = vec![RetentionRule::KeepLast(10)];
+        let kept_ids = apply_retention_rules(&snapshots, &rules, Some(5), test_now());
+
+        // Should keep 10, not reduced to 5
+        assert_eq!(kept_ids.len(), 10);
+    }
+
+    #[test]
+    fn test_keep_min_none() {
+        let snapshots = create_mock_snapshots();
+
+        let rules = vec![RetentionRule::KeepLast(2)];
+        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+
+        // No minimum, so just KeepLast(2)
+        assert_eq!(kept_ids.len(), 2);
     }
 }

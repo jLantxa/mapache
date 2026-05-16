@@ -631,11 +631,14 @@ impl ForgetBuilder {
                 keep_monthly: None,
                 keep_weekly: None,
                 keep_daily: None,
+                keep_hourly: None,
                 run_gc: false,
                 dry_run: false,
                 tolerance: 0.0,
                 tags_str: None,
                 keep_tags_str: None,
+                hosts: Vec::new(),
+                keep_min: None,
             },
         }
     }

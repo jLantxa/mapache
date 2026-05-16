@@ -12,7 +12,7 @@ use crate::{
     mapache::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE},
     repository::{
         repo::REPO_DROPPED_EXTENSION,
-        retention::{RetentionRule, apply_retention_rules},
+        retention::{RetentionRule, apply_retention_rules, filter_snapshots_by_hosts},
         snapshot::{SnapshotEntryList, SnapshotStream},
     },
     ui::{self, log_snapshots_compact},
@@ -57,6 +57,10 @@ pub struct CmdArgs {
     #[arg(long = "tags", value_parser)]
     pub tags_str: Option<String>,
 
+    /// Only consider snapshots from these hosts.
+    #[arg(long = "host", value_parser)]
+    pub hosts: Vec<String>,
+
     /// Keep the last N snapshots.
     #[arg(long, group = "retention_rules")]
     pub keep_last: Option<usize>,
@@ -81,9 +85,17 @@ pub struct CmdArgs {
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     pub keep_daily: Option<usize>,
 
+    /// Keep N hourly snapshots. N must be greater than 1 or "all".
+    #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
+    pub keep_hourly: Option<usize>,
+
     /// Keep all snapshots with tags
     #[arg(long = "keep-tags", value_parser, group = "retention_rules")]
     pub keep_tags_str: Option<String>,
+
+    /// Always keep at least N snapshots (after applying retention rules).
+    #[arg(long, value_parser = parse_retention_number)]
+    pub keep_min: Option<usize>,
 
     /// Perform a dry run: show which snapshots would be removed without actually removing them.
     #[arg(long)]
@@ -162,6 +174,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 let tags = parse_tags(Some(tags));
                 snapshots_sorted.retain(|e| e.snapshot.has_tags(&tags));
             }
+
+            if !args.hosts.is_empty() {
+                let filtered = filter_snapshots_by_hosts(snapshots_sorted.iter(), &args.hosts);
+                let filtered_ids: IdSet<ID> = filtered.iter().map(|e| e.id).collect();
+                snapshots_sorted.retain(|e| filtered_ids.contains(&e.id));
+            }
+
             snapshots_sorted.sort_unstable_by_key(|e| e.snapshot.timestamp);
 
             let mut ids_to_keep: IdSet<ID> = IdSet::default();
@@ -207,6 +226,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 if let Some(n) = args.keep_daily {
                     retention_rules.push(RetentionRule::KeepDaily(n));
                 }
+                if let Some(n) = args.keep_hourly {
+                    retention_rules.push(RetentionRule::KeepHourly(n));
+                }
                 if let Some(tags_str) = &args.keep_tags_str {
                     let keep_tags = parse_tags(Some(tags_str));
                     retention_rules.push(RetentionRule::KeepTags(keep_tags));
@@ -219,8 +241,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     ));
                 }
 
-                ids_to_keep =
-                    apply_retention_rules(&snapshots_sorted, &retention_rules, Local::now());
+                ids_to_keep = apply_retention_rules(
+                    &snapshots_sorted,
+                    &retention_rules,
+                    args.keep_min,
+                    Local::now(),
+                );
             }
 
             let mut kept_snapshots = Vec::new();

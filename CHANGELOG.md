@@ -10,8 +10,6 @@
   via the `mount` command.
 - **Memory-Efficient Verification**: Refactored verification to use a streaming
   approach, capping memory usage for large packs.
-- **Optimized Archiver Parallelism**: Faster filesystem scanning using `rayon`,
-  Linux `statx` optimization, and improved pipeline throughput.
 - **Enhanced Atomic Locks**: Added better metadata and robust stale lock
   detection with detailed conflict reporting.
 - **Robust S3 Backend**: Implemented multipart uploads for files >= 128 MiB
@@ -19,6 +17,9 @@
   garbage collection.
 - **Improved GC Efficiency**: Stream snapshots instead of loading all into
   memory upfront and process repack chunks in parallel with pipelining.
+- **Enhanced Retention Rules**: Added `--host` (multiple), `--keep-hourly`, and
+  `--keep-min` flags to the forget command for more granular snapshot retention
+  control.
 
 ## v0.3.0
 

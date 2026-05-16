@@ -14,8 +14,11 @@
   Linux `statx` optimization, and improved pipeline throughput.
 - **Enhanced Atomic Locks**: Added better metadata and robust stale lock
   detection with detailed conflict reporting.
-- **Robust S3 Backend**: Implemented multipart uploads for files >= 128 MiB,
-  improving reliability and support for large pack files.
+- **Robust S3 Backend**: Implemented multipart uploads for files >= 128 MiB
+  and recursive listing to avoid hundreds of directory requests during
+  garbage collection.
+- **Improved GC Efficiency**: Stream snapshots instead of loading all into
+  memory upfront and process repack chunks in parallel with pipelining.
 
 ## v0.3.0
 

@@ -8,21 +8,24 @@
 //!
 //! Log files are named `mapache_<timestamp>.log` with automatic collision handling.
 
-use std::fs::OpenOptions;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
-use tracing_subscriber::fmt::{FmtContext, Layer};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-
 use colored::Colorize;
+use tracing_subscriber::{
+    filter::LevelFilter,
+    fmt::{
+        FmtContext, Layer,
+        format::{FormatEvent, FormatFields, Writer},
+    },
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+};
 
-use crate::mapache::vars::{DEBUG_LEVEL_ENVVAR, DEBUG_PATH_ENVVAR, get_envvar};
-use crate::ui;
+use crate::{
+    mapache::vars::{DEBUG_LEVEL_ENVVAR, DEBUG_PATH_ENVVAR, get_envvar},
+    ui,
+};
 
 /// Custom event formatter for mapache logs.
 ///
@@ -74,7 +77,7 @@ fn parse_level(s: &str) -> Option<tracing::Level> {
 ///
 /// Reads configuration from environment variables and sets up a file-based logger.
 /// Returns silently if the level is invalid or missing.
-pub(crate) fn init() {
+pub(crate) fn init_debugger() {
     let level = match get_envvar(DEBUG_LEVEL_ENVVAR) {
         Some(val) if !val.is_empty() => match parse_level(&val) {
             Some(l) => l,

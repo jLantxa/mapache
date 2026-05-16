@@ -357,7 +357,7 @@ pub async fn parse_and_run() -> i32 {
         set_global_opts_with_args(global_ref);
     }
 
-    ui::debug::init();
+    ui::debug::init_debugger();
 
     tracing::info!(target: "mapache", "called with args: {}", std::env::args().collect::<Vec<_>>().join(" "));
 

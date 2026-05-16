@@ -9,5 +9,9 @@ members = [
 [workspace.package]
 repository = "https://github.com/jlantxa/mapache"
 
+[profile.dev]
+opt-level = 1
+debug = true
+
 [profile.release]
 strip = true

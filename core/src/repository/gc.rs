@@ -258,36 +258,64 @@ impl Plan {
                 .progress_chars("=> "),
         );
 
-        let loader = loader::BlobLoader::new(self.repo.clone());
+        // Process chunks in parallel with pipelining
+        const CHUNK_SIZE: usize = 100;
+        const MAX_CONCURRENT_CHUNKS: usize = 4;
 
-        // We chunk the locators to keep memory usage predictable during the repack.
-        for chunk in locators_to_repack.chunks(100) {
-            let loaded_blobs = loader.load_with_locators(chunk.to_vec()).await?;
+        let chunks: Vec<_> = locators_to_repack.chunks(CHUNK_SIZE).collect();
+        let bar = Arc::new(repack_bar);
 
-            for (id, data) in loaded_blobs {
-                // We find the original blob_type from our chunked locators
-                let blob_type = chunk
-                    .iter()
-                    .find(|(cid, _)| *cid == id)
-                    .map(|(_, loc)| loc.blob_type)
-                    .unwrap_or(mapache::BlobType::Data);
+        stream::iter(chunks)
+            .map(|chunk| {
+                let repo = self.repo.clone();
+                let bar = bar.clone();
 
-                let repo_clone = self.repo.clone();
-                tokio::task::spawn_blocking(move || {
-                    repo_clone.encode_and_save_blob(
-                        blob_type,
-                        WriteContents::Owned(data),
-                        SaveID::WithID(id),
-                    )
-                })
-                .await
-                .context("Repack task panicked")??;
+                async move {
+                    let loader = loader::BlobLoader::new(repo.clone());
+                    let loaded_blobs = loader.load_with_locators(chunk.to_vec()).await?;
 
-                repack_bar.inc(1);
-            }
-        }
+                    // Process blobs in parallel within each chunk
+                    let tasks: Vec<_> = loaded_blobs
+                        .into_iter()
+                        .map(|(id, data)| {
+                            let blob_type = chunk
+                                .iter()
+                                .find(|(cid, _)| *cid == id)
+                                .map(|(_, loc)| loc.blob_type)
+                                .unwrap_or(mapache::BlobType::Data);
 
-        repack_bar.finish_and_clear();
+                            let repo_clone = repo.clone();
+                            let bar_clone = bar.clone();
+
+                            tokio::task::spawn_blocking(move || {
+                                let result = repo_clone.encode_and_save_blob(
+                                    blob_type,
+                                    WriteContents::Owned(data),
+                                    SaveID::WithID(id),
+                                );
+                                bar_clone.inc(1);
+                                result
+                            })
+                        })
+                        .collect();
+
+                    // Await all tasks in parallel
+                    let results = futures::future::join_all(tasks).await;
+
+                    for result in results {
+                        result
+                            .context("Repack task panicked")?
+                            .context("Repack blob failed")?;
+                    }
+
+                    Ok::<(), anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_CHUNKS)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        bar.finish_and_clear();
         Ok(())
     }
 
@@ -399,11 +427,7 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
     let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
-    let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
-    let mut snapshots = Vec::new();
-    while let Some(res) = snapshot_stream.next().await {
-        snapshots.push(res?);
-    }
+    let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
@@ -415,8 +439,8 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-    let results = stream::iter(snapshots)
-        .map(|(_snapshot_id, snapshot)| {
+    snapshot_stream
+        .map(|res| {
             let repo = repo.clone();
             let spinner = spinner.clone();
             let referenced_blobs = referenced_blobs.clone();
@@ -424,6 +448,7 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
             let verified_trees = verified_trees.clone();
 
             async move {
+                let (_snapshot_id, snapshot) = res?;
                 let index = repo.index();
                 let mut stack = vec![snapshot.tree];
 
@@ -431,7 +456,6 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                     let to_fetch: Vec<_> = std::mem::take(&mut stack);
                     let mut fetch_stream = futures::stream::iter(to_fetch)
                         .map(|tree_id| {
-                            // Global Deduplication
                             let mut seen = verified_trees.lock();
                             if seen.contains(&tree_id) {
                                 return futures::future::ready(Ok(None)).left_future();
@@ -439,7 +463,6 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                             seen.insert(tree_id);
                             drop(seen);
 
-                            // Mark tree blob as referenced
                             {
                                 let mut blobs = referenced_blobs.lock();
                                 if blobs.insert(tree_id) {
@@ -474,12 +497,10 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                         let maybe_tree = tree_res?;
                         if let Some(tree) = maybe_tree {
                             for node in tree.nodes {
-                                // Tree blobs (subdirectories)
                                 if let Some(subtree_id) = node.tree {
                                     stack.push(subtree_id);
                                 }
 
-                                // Data blobs
                                 if let Some(blobs) = node.blobs {
                                     let mut ref_blobs = referenced_blobs.lock();
                                     let mut ref_packs = referenced_packs.lock();
@@ -509,13 +530,9 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                 Ok::<(), anyhow::Error>(())
             }
         })
-        .buffer_unordered(4) // Parallelism factor for snapshots
-        .collect::<Vec<_>>()
-        .await;
-
-    for res in results {
-        res?;
-    }
+        .buffer_unordered(4)
+        .try_collect::<Vec<_>>()
+        .await?;
 
     spinner.finish_and_clear();
 

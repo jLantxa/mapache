@@ -61,7 +61,7 @@ validation before relying on it for primary backups.
   never stored or transmitted in the clear.
 - **Compression:** Zstd compression with adjustable levels to balance backup
   speed and storage usage.
-- **Backends:** Native support for Local FS, SFTP, and S3 (experimental).
+- **Backends:** Native support for Local FS, SFTP, and S3.
 - **Portable:** A single, statically linked binary with zero external
   dependencies.
 

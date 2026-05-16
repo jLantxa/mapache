@@ -37,6 +37,7 @@ pub struct Plan {
     pub tolerated_packs: IdSet<ID>, // Packs containing garbage, but keep due to tolerance
     pub unused_packs: IdSet<ID>,   // Packs not referenced by any snapshot or index
     pub index_ids: IdSet<ID>,      // Current index IDs
+    pub object_trash: Vec<PathBuf>, // Pre-collected .tmp/.dropped files in objects directory
 }
 
 #[derive(Debug, Default)]
@@ -49,7 +50,8 @@ pub struct GcSizes {
 pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone()).await?;
 
-    let mut keep_packs: IdSet<ID> = repo.list_packs().await?;
+    let (keep_packs, object_trash) = repo.list_packs_and_trash().await?;
+    let mut keep_packs = keep_packs;
     let mut unused_packs = keep_packs.clone();
 
     keep_packs.retain(|id| referenced_packs.contains(id));
@@ -65,6 +67,7 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
         unused_packs,
         index_ids: repo.index().ids(),
         small_packs: IdSet::default(),
+        object_trash,
     };
 
     // Count garbage bytes in each pack
@@ -145,7 +148,7 @@ impl Plan {
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
         gc_sizes.deleted_bytes += remove_expired_locks(&self.repo).await?;
-        delete_trash_files(&self.repo).await?;
+        delete_trash_files(&self.repo, Some(self.object_trash.drain(..).collect())).await?;
 
         if self.small_packs.len() > 1 {
             self.obsolete_packs.extend(self.small_packs.drain());
@@ -547,18 +550,17 @@ async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
 ///
 /// This function avoids a full recursive crawl by targeting only the specific
 /// directories where temporary files are created (index, snapshots, keys, locks, and data fanout).
-async fn delete_trash_files(repo: &Arc<Repository>) -> Result<()> {
-    let mut target_dirs = vec![
+/// If `object_trash` is provided, it skips scanning the object directories.
+async fn delete_trash_files(
+    repo: &Arc<Repository>,
+    object_trash: Option<Vec<PathBuf>>,
+) -> Result<()> {
+    let target_dirs = vec![
         repo.snapshot_path().to_path_buf(),
         repo.index_path().to_path_buf(),
         repo.keys_path().to_path_buf(),
         repo.locks_path().to_path_buf(),
     ];
-
-    // Add all 256 data fanout subdirectories
-    for n in 0..256 {
-        target_dirs.push(repo.objects_path().join(format!("{n:0>2x}")));
-    }
 
     let backend = repo.backend();
 
@@ -588,6 +590,7 @@ async fn delete_trash_files(repo: &Arc<Repository>) -> Result<()> {
         .await?
         .into_iter()
         .flatten()
+        .chain(object_trash.into_iter().flatten())
         .collect();
 
     // Delete found trash files

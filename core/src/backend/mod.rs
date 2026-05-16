@@ -191,6 +191,36 @@ pub trait StorageBackend: Send + Sync {
     fn is_dry_run(&self) -> bool {
         false
     }
+
+    /// Recursively lists all files under a directory.
+    ///
+    /// Default implementation iterates 256 fanout subdirectories for object paths.
+    /// Backends like S3 override this with a single prefix-list call.
+    async fn list_dir_recursive(&self, path: &Path) -> Result<Vec<BackendNode>> {
+        use futures::stream::{self, StreamExt, TryStreamExt};
+
+        let entries = stream::iter(self.list_dir(path).await?)
+            .map(|node| {
+                let backend = self;
+                async move {
+                    match node {
+                        BackendNode::Dir(dir_path) => {
+                            let sub = backend.list_dir_recursive(&dir_path).await?;
+                            Ok::<Vec<BackendNode>, anyhow::Error>(sub)
+                        }
+                        BackendNode::File(_, _) => Ok(vec![node]),
+                    }
+                }
+            })
+            .buffer_unordered(8)
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        Ok(entries)
+    }
 }
 
 /// Configuration used to initialize a backend.

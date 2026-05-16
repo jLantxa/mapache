@@ -894,40 +894,30 @@ impl Repository {
 
     /// Lists all packs in the repository.
     pub async fn list_packs(&self) -> Result<IdSet<ID>> {
-        let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
+        let (packs, _) = self.list_packs_and_trash().await?;
+        Ok(packs)
+    }
 
-        let results = stream::iter(0..num_folders)
-            .map(|n| {
-                let repo = self;
-                async move {
-                    let mut list = Vec::new();
-                    let dir = repo
-                        .objects_path
-                        .join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
+    /// Lists all packs and trash files (.tmp, .dropped) in the objects directory.
+    pub async fn list_packs_and_trash(&self) -> Result<(IdSet<ID>, Vec<PathBuf>)> {
+        let mut packs = IdSet::default();
+        let mut trash = Vec::new();
 
-                    let entries = repo.backend.list_dir(&dir).await?;
-                    for node in entries {
-                        let path = node.into_path();
-                        let filename = path.file_name().unwrap().to_string_lossy().to_string();
-                        if let Ok(id) = ID::from_hex(&filename) {
-                            list.push(id);
-                        }
-                    }
-                    Ok::<Vec<ID>, anyhow::Error>(list)
+        let entries = self.backend.list_dir_recursive(&self.objects_path).await?;
+        for node in entries {
+            let path = node.into_path();
+            let filename = path.file_name().unwrap().to_string_lossy().to_string();
+            if let Ok(id) = ID::from_hex(&filename) {
+                packs.insert(id);
+            } else if let Some(ext) = path.extension() {
+                let ext_str = ext.to_string_lossy();
+                if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
+                    trash.push(path);
                 }
-            })
-            .buffer_unordered(8) // Process 8 directories in parallel
-            .collect::<Vec<_>>()
-            .await;
-
-        let mut final_list = IdSet::default();
-        for res in results {
-            for id in res? {
-                final_list.insert(id);
             }
         }
 
-        Ok(final_list)
+        Ok((packs, trash))
     }
 
     /// Returns the path to an object with a given hash in the repository.

@@ -402,6 +402,58 @@ impl StorageBackend for S3Backend {
         })
         .await
     }
+
+    async fn list_dir_recursive(&self, path: &Path) -> Result<Vec<BackendNode>> {
+        let mut prefix = self.key_from_path(path);
+        if !prefix.is_empty() && !prefix.ends_with('/') {
+            prefix.push('/');
+        }
+
+        let mut nodes = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        // List without delimiter to get all objects recursively in one paginated request
+        loop {
+            let (result, status_code) = self
+                .retry(|| async {
+                    let (res, code) = self
+                        .bucket
+                        .list_page(
+                            prefix.clone(),
+                            None, // No delimiter = recursive listing
+                            continuation_token.clone(),
+                            Some("1000".to_string()),
+                            None,
+                        )
+                        .await?;
+                    Ok((res, code))
+                })
+                .await?;
+
+            if status_code >= 400 {
+                bail!("S3 list failed with status {}", status_code);
+            }
+
+            for obj in result.contents {
+                if obj.key.ends_with('/') {
+                    continue;
+                }
+                if let Ok(rel) = self.path_from_key(&obj.key) {
+                    nodes.push(BackendNode::File(rel, obj.size));
+                }
+            }
+
+            if result.is_truncated && result.next_continuation_token.is_some() {
+                continuation_token = result.next_continuation_token;
+            } else {
+                break;
+            }
+        }
+
+        nodes.sort();
+        nodes.dedup();
+        Ok(nodes)
+    }
 }
 
 #[cfg(test)]

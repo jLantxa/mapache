@@ -40,6 +40,7 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
 
             // Check for cache hit
             if let Some((tree, timestamp)) = inner.trees.get_mut(id) {
+                tracing::trace!(target: "fuse", "TreeCache HIT: {}", id.to_short_hex(8));
                 let old_timestamp = *timestamp;
                 *timestamp = ts;
                 let tree_clone = Arc::clone(tree);
@@ -54,6 +55,7 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
         }
 
         // Cache miss: load from loader outside the lock
+        tracing::debug!(target: "fuse", "TreeCache MISS: {}", id.to_short_hex(8));
         let tree_blob = self.loader.load_blob(id).await?;
         let tree: Tree = serde_json::from_slice(&tree_blob)?;
         let tree_arc = Arc::new(tree);
@@ -64,6 +66,7 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
 
             // Re-check hit (rare race condition)
             if let Some((t, timestamp)) = inner.trees.get_mut(id) {
+                tracing::trace!(target: "fuse", "TreeCache HIT (race): {}", id.to_short_hex(8));
                 let old_timestamp = *timestamp;
                 *timestamp = ts;
                 let t_clone = Arc::clone(t);
@@ -80,6 +83,7 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
             if inner.trees.len() >= self.capacity
                 && let Some((_, lru_id)) = inner.order_map.pop_first()
             {
+                tracing::debug!(target: "fuse", "TreeCache EVICT: {}", lru_id.to_short_hex(8));
                 inner.trees.remove(&lru_id);
             }
 
@@ -128,6 +132,7 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
 
             // Check for cache hit
             if let Some((data, timestamp)) = inner.blobs.get_mut(id) {
+                tracing::trace!(target: "fuse", "BlobCache HIT: {}", id.to_short_hex(8));
                 let old_timestamp = *timestamp;
                 *timestamp = ts;
                 let data_clone = Arc::clone(data);
@@ -142,6 +147,7 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
         }
 
         // Cache miss: load from loader outside the lock
+        tracing::debug!(target: "fuse", "BlobCache MISS: {}", id.to_short_hex(8));
         let blob = self.loader.load_blob(id).await?;
         let blob_len = blob.len() as u64;
         let blob_arc = Arc::new(blob);
@@ -152,6 +158,7 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
 
             // Re-check hit
             if let Some((d, timestamp)) = inner.blobs.get_mut(id) {
+                tracing::trace!(target: "fuse", "BlobCache HIT (race): {}", id.to_short_hex(8));
                 let old_timestamp = *timestamp;
                 *timestamp = ts;
                 let d_clone = Arc::clone(d);
@@ -168,6 +175,7 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
             while inner.size + blob_len > self.capacity {
                 if let Some((_, lru_id)) = inner.order_map.pop_first() {
                     if let Some((evicted_data, _)) = inner.blobs.remove(&lru_id) {
+                        tracing::debug!(target: "fuse", "BlobCache EVICT: {}", lru_id.to_short_hex(8));
                         inner.size -= evicted_data.len() as u64;
                     }
                 } else {

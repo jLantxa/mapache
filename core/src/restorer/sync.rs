@@ -55,6 +55,7 @@ pub async fn delete_nodes(
             Ok(data) => data,
             Err(e) => {
                 ui::cli::warning!("Could not read snapshot subtree entry: {e}");
+                tracing::warn!(target: "restorer", "Could not read snapshot subtree entry: {e}");
                 continue; // Skip to the next item in the stream
             }
         };
@@ -65,6 +66,8 @@ pub async fn delete_nodes(
         if !path_is_below_includes(&path, include.as_ref()) {
             continue;
         }
+
+        tracing::debug!(target: "restorer", "Syncing local directory {:?} with snapshot tree", path);
 
         // Pre-process snapshot tree nodes into a HashSet for fast lookups
         let snapshot_node_names: HashSet<&str> = snapshot_tree
@@ -78,6 +81,7 @@ pub async fn delete_nodes(
         process_local_directory(local_dir, &snapshot_node_names, dry_run)?
     }
 
+    tracing::info!(target: "restorer", "Sync deletion finished");
     Ok(())
 }
 
@@ -143,8 +147,10 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool) -> Result<()> {
             "[DRY RUN]".bold().purple(),
             path_to_delete.display()
         );
+        tracing::debug!(target: "restorer", "Dry run: would delete {:?}", path_to_delete);
     } else if path_to_delete.is_dir() {
         ui::cli::verbose_1!("Deleted {path_to_delete:?}");
+        tracing::debug!(target: "restorer", "Deleting directory {:?}", path_to_delete);
         std::fs::remove_dir_all(path_to_delete).with_context(|| {
             format!(
                 "Failed to delete local directory '{}'",
@@ -153,6 +159,7 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool) -> Result<()> {
         })?;
     } else {
         ui::cli::verbose_1!("Deleted {path_to_delete:?}");
+        tracing::debug!(target: "restorer", "Deleting file {:?}", path_to_delete);
         std::fs::remove_file(path_to_delete)
             .with_context(|| format!("Failed to delete local file {path_to_delete:?}"))?;
     }

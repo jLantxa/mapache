@@ -51,6 +51,7 @@ pub(crate) async fn process_item(
     let next_node = match next_node_res {
         Some(Err(e)) => {
             progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
+            tracing::warn!(target: "archiver", "Skipping {}: {}", path.display(), e);
             progress.processed_node();
             return Ok(None);
         }

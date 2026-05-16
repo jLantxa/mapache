@@ -76,6 +76,7 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "amend", "Starting amend command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -132,6 +133,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 "Finished in {}",
                 utils::pretty_print_duration(start.elapsed())
             );
+            tracing::info!(target: "amend", "Amend command completed in {:?}", start.elapsed());
 
             Ok(())
         },
@@ -146,6 +148,7 @@ async fn amend(
     args: &CmdArgs,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
+    tracing::info!(target: "amend", "Amending snapshot {}", origin_snapshot_id.to_short_hex(8));
     snapshot.summary.amends = Some(*origin_snapshot_id);
 
     if args.description.is_some() {
@@ -211,7 +214,9 @@ async fn amend(
     // Note: To protect the repo from interruptions, we delete the snapshot only
     // after the new one is saved.
     if new_id != *origin_snapshot_id {
+        tracing::info!(target: "amend", "Amended snapshot saved as {}", new_id.to_short_hex(8));
         if !args.keep_old {
+            tracing::info!(target: "amend", "Deleting old snapshot {}", origin_snapshot_id.to_short_hex(8));
             repo.delete_file(ContentIdType::Snapshot, origin_snapshot_id, None)
                 .await?;
         }
@@ -230,6 +235,7 @@ async fn amend(
                 .bold()
         );
     } else {
+        tracing::info!(target: "amend", "No changes detected for snapshot {}", origin_snapshot_id.to_short_hex(8));
         ui::cli::log!("No changes");
     }
 

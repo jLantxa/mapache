@@ -34,13 +34,16 @@ pub async fn verify_pack(
     secure_storage: Arc<SecureStorage>,
     pack_id: ID,
 ) -> Result<PackStats> {
+    tracing::debug!(target: "verify", "Verifying pack {}", pack_id.to_short_hex(8));
     let pack_path = repo.get_path(ContentIdType::Pack, &pack_id);
     let attr = backend.lstat(&pack_path).await?;
     let pack_size = attr.size.ok_or_else(|| anyhow!("Pack size unknown"))?;
 
     if pack_size <= CHUNK_SIZE as u64 {
+        tracing::trace!(target: "verify", "Using inline verification for pack {}", pack_id.to_short_hex(8));
         verify_pack_inline(repo, backend, secure_storage, pack_id, pack_path).await
     } else {
+        tracing::trace!(target: "verify", "Using streaming verification for pack {}", pack_id.to_short_hex(8));
         verify_pack_streaming(repo, backend, secure_storage, pack_id, pack_path).await
     }
 }
@@ -323,6 +326,7 @@ pub async fn verify_snapshot_refs(
     existing_packs: &IdSet<ID>,
     verified_trees: Arc<crate::utils::collections::ShardedIdSet>,
 ) -> Result<usize> {
+    tracing::info!(target: "verify", "Verifying references for snapshot {}", snapshot_id.to_short_hex(8));
     let snapshot = repo.load_snapshot(snapshot_id, None).await?;
     let tree_id = snapshot.tree;
 
@@ -367,5 +371,6 @@ pub async fn verify_snapshot_refs(
         }
     }
 
+    tracing::info!(target: "verify", "Snapshot {} references verified successfully", snapshot_id.to_short_hex(8));
     Ok(0)
 }

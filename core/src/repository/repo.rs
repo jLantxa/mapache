@@ -213,22 +213,38 @@ impl Repository {
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
     ) -> Result<Manifest> {
+        tracing::info!(target: "repo", "Checking for existing repository");
         if backend.path_exists(Path::new(MANIFEST_PATH)).await {
+            tracing::error!(target: "repo", "Repository already exists");
             bail!("Repository already exists (manifest found)");
         }
 
         backend
             .create()
             .await
+            .inspect_err(
+                |e| tracing::error!(target: "repo", "Failed to create root directory: {e}"),
+            )
             .context("Could not create root directory")?;
+        tracing::debug!(target: "repo", "Root directory created");
 
         let keys_path = PathBuf::from(KEYS_DIR);
         backend.create_dir(&keys_path).await?;
+        tracing::debug!(target: "repo", "Keys directory created");
 
         // Create new key
+        tracing::info!(target: "repo", "Generating master key and keyfile");
         let master_key = KeyManager::generate_new_master_key();
         let keyfile = KeyManager::generate_key_file(auth, &master_key.clone())
+            .inspect_err(|e| tracing::error!(target: "repo", "Key generation failed: {e}"))
             .context("Could not generate key")?;
+        tracing::info!(
+            target: "repo",
+            "Keyfile generated (Argon2 m={}, t={}, p={})",
+            keyfile.m,
+            keyfile.t,
+            keyfile.p
+        );
         let secure_storage = Arc::new(
             SecureStorage::new()
                 .with_compression(Compression::Fast.to_level())
@@ -240,14 +256,21 @@ impl Repository {
         let keyfile_id = ID::from_content(&keyfile_json);
         match keyfile_path {
             Some(p) => {
-                std::fs::write(p, &keyfile_json)?;
+                std::fs::write(p, &keyfile_json)
+                    .inspect_err(|e| tracing::error!(target: "repo", "Failed to write keyfile to '{}': {e}", p.display()))
+                    ?;
+                tracing::info!(target: "repo", "Keyfile written to {}", p.display());
             }
             None => {
                 let p = keys_path.join(keyfile_id.to_hex());
                 let handle = Handle::new_with_hint(&p, ContentIdType::Key, true);
                 backend
                     .write(&handle, WriteContents::Owned(keyfile_json))
-                    .await?;
+                    .await
+                    .inspect_err(
+                        |e| tracing::error!(target: "repo", "Failed to write keyfile to backend: {e}"),
+                    )?;
+                tracing::info!(target: "repo", "Keyfile written to backend: {}", p.display());
             }
         }
 
@@ -258,6 +281,7 @@ impl Repository {
         let locks_path = PathBuf::from(LOCKS_DIR);
 
         // Save new manifest
+        tracing::info!(target: "repo", "Creating manifest v{THIS_REPOSITORY_VERSION}");
         let manifest = Manifest::new(THIS_REPOSITORY_VERSION);
 
         let manifest_path = Path::new(MANIFEST_PATH);
@@ -268,7 +292,8 @@ impl Repository {
                 &Handle::new(manifest_path),
                 WriteContents::Owned(manifest_json),
             )
-            .await?;
+            .await
+            .inspect_err(|e| tracing::error!(target: "repo", "Failed to write manifest: {e}"))?;
 
         backend.create_dir(&objects_path).await?;
         let num_folders: usize = 1 << (4 * OBJECTS_DIR_FANOUT);
@@ -277,10 +302,12 @@ impl Repository {
                 .create_dir(&objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}")))
                 .await?;
         }
+        tracing::debug!(target: "repo", "Objects directory with {num_folders} fanout folders created");
 
         backend.create_dir(&snapshot_path).await?;
         backend.create_dir(&index_path).await?;
         backend.create_dir(&locks_path).await?;
+        tracing::info!(target: "repo", "Repository structure created");
 
         Ok(manifest)
     }
@@ -298,9 +325,11 @@ impl Repository {
         let dry_run = backend.is_dry_run();
         let (repo, secure_storage) =
             Self::try_open_unlocked(auth, key_file_path, backend, config).await?;
+        tracing::info!(target: "repo", "Acquiring lock (exclusive={exclusive_lock})");
         let lock = repo
             .try_acquire_lock_with_retry(exclusive_lock, retry_duration)
             .await?;
+        tracing::info!(target: "repo", "Lock acquired");
         let lock_handle = LockHandle::new(repo.clone(), lock, dry_run);
 
         Ok((repo, secure_storage, lock_handle))
@@ -314,9 +343,11 @@ impl Repository {
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
     ) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
+        tracing::info!(target: "repo", "Opening repository");
         let key_manager = KeyManager::new(backend.clone());
 
         let (_key_id, master_key) = key_manager.retrieve_master_key(auth, key_file_path).await?;
+        tracing::info!(target: "repo", "Master key retrieved");
 
         let secure_storage = Arc::new(
             SecureStorage::new()
@@ -334,6 +365,7 @@ impl Repository {
             .decode(&manifest)
             .context("Could not decode the manifest file")?;
         let manifest: Manifest = serde_json::from_slice(&manifest)?;
+        tracing::info!(target: "repo", "Manifest loaded (v{})", manifest.version());
 
         let version = manifest.version();
         if version > THIS_REPOSITORY_VERSION {
@@ -341,6 +373,7 @@ impl Repository {
         }
 
         let repo = Repository::open(backend, secure_storage.clone(), config).await?;
+        tracing::info!(target: "repo", "Repository opened");
 
         Ok((repo, secure_storage))
     }
@@ -506,6 +539,16 @@ impl Repository {
             None => WriteContents::Borrowed(data),
         };
 
+        if matches!(
+            file_type,
+            ContentIdType::Snapshot
+                | ContentIdType::Index
+                | ContentIdType::Key
+                | ContentIdType::Lock
+        ) {
+            tracing::info!(target: "repo", "Saving {file_type} to {}", path.display());
+        }
+
         self.backend.write(&handle, cow_data).await?;
 
         Ok((*id, SizePair::new(raw_size, encoded_size)))
@@ -545,6 +588,7 @@ impl Repository {
         let path = self
             .get_path(file_type, id)
             .with_extension(with_extension.unwrap_or_default());
+        tracing::info!(target: "repo", "Deleting {file_type} at {}", path.display());
         let size = self.backend.lstat(&path).await?.size;
         self.backend.remove(&path).await?;
 
@@ -789,6 +833,7 @@ impl Repository {
     }
 
     pub fn init_pack_saver(self: &Arc<Self>, num_packers: usize) -> Result<()> {
+        tracing::info!(target: "repo", "Initializing pack saver (workers={num_packers})");
         let (tx, rx) = crossbeam_channel::bounded(2 * num_packers);
 
         let weak_self = Arc::downgrade(self);
@@ -817,6 +862,7 @@ impl Repository {
     }
 
     pub async fn flush_and_finalize_pack_saver(&self) -> Result<RepoStatsSnapshot> {
+        tracing::info!(target: "repo", "Finalizing pack saver");
         // Signal PackSaver to stop by dropping the channel
         let tx = self.pack_saver_tx.write().take();
         drop(tx);
@@ -831,6 +877,7 @@ impl Repository {
             .await??;
         }
 
+        tracing::info!(target: "repo", "Persisting index");
         let index_size = self.index().persist(self).await?;
 
         self.stats
@@ -840,6 +887,7 @@ impl Repository {
             .index_meta_bytes
             .fetch_add(index_size.encoded, Ordering::Relaxed);
 
+        tracing::info!(target: "repo", "Pack saver finalized");
         Ok(self.stats.snapshot())
     }
 
@@ -1037,6 +1085,7 @@ impl Repository {
 
     /// Load the master index from file
     pub async fn reload_master_index(&self) -> Result<()> {
+        tracing::info!(target: "repo", "Reloading master index");
         let mut files = self.list_files(ContentIdType::Index).await?;
         files.sort_unstable(); // Ensure deterministic order
 
@@ -1092,6 +1141,7 @@ impl Repository {
             }
         }
 
+        tracing::info!(target: "repo", "Loaded {num_index_files} index files");
         ui::cli::verbose_1!("Loaded {} index files", num_index_files);
 
         Ok(())

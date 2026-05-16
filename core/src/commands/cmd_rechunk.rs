@@ -103,6 +103,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
                 "Finished in {}",
                 utils::pretty_print_duration(start.elapsed())
             );
+            tracing::info!(target: "rechunk", "Rechunk command completed in {:?}", start.elapsed());
 
             Ok(())
         },

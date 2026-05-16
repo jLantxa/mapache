@@ -105,6 +105,7 @@ fn list(cache_base: &Path) -> Result<()> {
 
 /// Deletes cache folders by prefix.
 fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
+    tracing::info!(target: "cache", "Starting cache cleanup (base={:?})", cache_base);
     if !cache_base.exists() {
         println!(
             "Cache base directory does not exist: {}",
@@ -175,6 +176,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
                 .unwrap_or_default();
             let size = utils::dir_size(path).unwrap_or(0);
 
+            tracing::info!(target: "cache", "Deleting cache directory {:?}", path);
             match std::fs::remove_dir_all(path) {
                 Ok(_) => {
                     num_deleted.fetch_add(1, Ordering::Relaxed);
@@ -202,6 +204,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
             .green()
             .bold()
     );
+    tracing::info!(target: "cache", "Cache cleanup finished (freed {})", utils::format_size_binary(freed.load(Ordering::Relaxed), 3));
 
     Ok(())
 }

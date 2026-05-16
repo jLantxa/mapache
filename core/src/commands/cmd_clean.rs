@@ -51,6 +51,7 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "clean", "Starting clean command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -73,6 +74,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 )
             })?;
             cleanup_handler.add_lock(lock_handle.clone());
+            tracing::info!(target: "clean", "Reloading master index");
             repo.reload_master_index().await.map_err(|e| {
                 fail(
                     format!("Failed to reload master index: {}", e),
@@ -102,6 +104,7 @@ pub async fn run_with_repo(
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
 ) -> Result<()> {
+    tracing::info!(target: "clean", "Starting garbage collection scan");
     let tolerance = if args.no_repack {
         // No repack means a tolerance of 100 %.
         100.0
@@ -118,6 +121,7 @@ pub async fn run_with_repo(
             CleanError::ScanFailed,
         )
     })?;
+    tracing::info!(target: "clean", "GC scan finished. Plan: {} packs to remove, {} to repack", plan.unused_packs.len() + plan.obsolete_packs.len(), plan.small_packs.len());
 
     ui::cli::log!();
     ui::cli::log!("Total packs: {}", plan.total_packs.to_string(),);
@@ -140,13 +144,16 @@ pub async fn run_with_repo(
     ui::cli::log!();
     if args.dry_run {
         ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
+        tracing::info!(target: "clean", "Dry run enabled. GC not executed.");
     } else {
+        tracing::info!(target: "clean", "Executing GC plan");
         let gc_sizes = plan.execute().await.map_err(|e| {
             fail(
                 format!("Failed to execute GC plan: {}", e),
                 CleanError::ExecuteFailed,
             )
         })?;
+        tracing::info!(target: "clean", "GC execution finished. Added: {}, Deleted: {}", utils::format_size_binary(gc_sizes.added_bytes, 1), utils::format_size_binary(gc_sizes.deleted_bytes, 1));
         let net_deleted_bytes = gc_sizes.deleted_bytes as i64 - gc_sizes.added_bytes as i64;
 
         // Report the total written and deleted bytes.
@@ -183,6 +190,7 @@ pub async fn run_with_repo(
             utils::pretty_print_duration(start.elapsed())
         );
     }
+    tracing::info!(target: "clean", "Clean command completed in {:?}", start.elapsed());
 
     Ok(())
 }

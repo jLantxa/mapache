@@ -1,7 +1,12 @@
 use std::{
-    sync::{Arc, Weak, atomic::Ordering},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::JoinHandle,
 };
+
+static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender};
@@ -84,6 +89,7 @@ struct PackFinalizationResult {
 /// Note: This struct is designed to be REUSED. Do not drop it.
 /// Pass it back to the `PackSaver` via the empty channel to recycle the internal heap allocation.
 pub struct Packer {
+    instance_id: u64,
     buffer: Vec<u8>,
     descriptors: Vec<PackedBlobDescriptor>,
     raw_size: u64,
@@ -97,6 +103,7 @@ impl Packer {
         let encoding_context = secure_storage.get_encoding_context()?;
 
         Ok(Self {
+            instance_id: NEXT_PACKER_ID.fetch_add(1, Ordering::Relaxed),
             buffer: Vec::with_capacity(capacity),
             descriptors: Vec::with_capacity(FOOTER_BLOB_MULTIPLE),
             raw_size: 0,
@@ -128,7 +135,6 @@ impl Packer {
         let offset = self.buffer.len() as u32;
         let length = encoded_data.len() as u32;
 
-        self.raw_size += raw_size;
         self.buffer.extend_from_slice(encoded_data);
 
         self.descriptors.push(PackedBlobDescriptor {
@@ -138,8 +144,11 @@ impl Packer {
             length,
             raw_length: raw_size as u32,
         });
-    }
 
+        self.raw_size += raw_size;
+
+        tracing::trace!(target: "packer", "Packer #{} added blob {} ({} -> {} bytes)", self.instance_id, id.to_short_hex(8), raw_size, length);
+    }
     /// Performs the CPU-intensive work of finalizing the pack.
     ///
     /// This includes:
@@ -413,6 +422,14 @@ impl PackSaver {
                         let pack_data = result.data;
                         let descriptors = result.descriptors;
 
+                        tracing::debug!(
+                            target: "packer",
+                            "Worker uploading pack {} ({} blobs, {} bytes)",
+                            pack_id.to_short_hex(8),
+                            stats_blobs,
+                            stats_enc
+                        );
+
                         // Bridge to Async Backend:
                         // We use block_on to wait for the I/O to complete. This enforces
                         // backpressure; if the upload is slow, the worker stays busy
@@ -441,8 +458,12 @@ impl PackSaver {
                         });
 
                         let index_size = match upload_and_index {
-                            Ok(size) => size,
+                            Ok(size) => {
+                                tracing::debug!(target: "packer", "Pack {} uploaded and indexed", pack_id.to_short_hex(8));
+                                size
+                            }
                             Err(e) => {
+                                tracing::error!(target: "packer", "Worker failed to save pack {}: {e}", pack_id.to_short_hex(8));
                                 *err_ptr.lock() = Some(e);
                                 packer.recycle_buffer(pack_data);
                                 let _ = tx.send(packer); // Return packer to avoid leak
@@ -498,6 +519,7 @@ impl PackSaver {
     /// Starts the main event loop.
     /// This loop is now extremely lightweight. It purely moves pointers.
     pub fn run(mut self) -> Result<()> {
+        tracing::info!(target: "packer", "Pack saver loop started");
         while let Ok(request) = self.rx.recv() {
             match request {
                 PackSaverRequest::SaveBlob {
@@ -522,15 +544,19 @@ impl PackSaver {
         }
 
         // Final flushes
+        tracing::info!(target: "packer", "Flushing remaining packs");
         self.dispatch_packer(BlobType::Data)?;
         self.dispatch_packer(BlobType::Tree)?;
 
         // Close channel to signal workers to finish
         drop(self.full_packer_tx);
 
-        self.worker_handle
+        let res = self
+            .worker_handle
             .join()
-            .map_err(|_| anyhow::anyhow!("Worker panicked"))?
+            .map_err(|_| anyhow::anyhow!("Worker panicked"));
+        tracing::info!(target: "packer", "Pack saver loop finished");
+        res?
     }
 
     /// Swaps the current packer with a fresh one from the recycle pool
@@ -546,6 +572,7 @@ impl PackSaver {
             return Ok(());
         }
 
+        tracing::debug!(target: "packer", "Dispatching {blob_type:?} pack ({} bytes, {} blobs) to workers", packer_ref.size(), packer_ref.num_objects());
         // Get an empty packer from the pool (blocks if workers are too slow, creating backpressure)
         let mut new_packer = self
             .empty_packer_rx

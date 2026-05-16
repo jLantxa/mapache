@@ -139,6 +139,7 @@ impl StorageBackend for LocalFS {
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let path = handle.path;
         let full_path = self.full_path(path);
+        tracing::trace!(target: "backend", "LocalFS: read {:?} (offset={}, length={})", path, offset, length);
 
         let mut file = tokio::fs::File::open(&full_path)
             .await
@@ -191,6 +192,7 @@ impl StorageBackend for LocalFS {
         let path = handle.path.to_path_buf();
         let full_base_path = self.base_path.clone();
         let data = contents.into_owned();
+        tracing::trace!(target: "backend", "LocalFS: write {:?} ({} bytes)", path, data.len());
 
         tokio::task::spawn_blocking(move || {
             let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
@@ -235,6 +237,7 @@ impl StorageBackend for LocalFS {
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let fullpath_from = self.full_path(from);
         let fullpath_to = self.full_path(to);
+        tracing::debug!(target: "backend", "LocalFS: rename {:?} -> {:?}", from, to);
 
         // On Windows, the source must be writable to be renamed/moved
         let _ = self.set_readonly_status(from, false).await;
@@ -259,6 +262,7 @@ impl StorageBackend for LocalFS {
 
     async fn create_dir(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
+        tracing::debug!(target: "backend", "LocalFS: create_dir {:?}", path);
         tokio::fs::create_dir_all(&full_path).await?;
 
         #[cfg(unix)]
@@ -271,6 +275,7 @@ impl StorageBackend for LocalFS {
 
     async fn remove(&self, path: &Path) -> Result<()> {
         let full_path = self.full_path(path);
+        tracing::debug!(target: "backend", "LocalFS: remove {:?}", path);
 
         match tokio::fs::symlink_metadata(&full_path).await {
             Ok(metadata) => {
@@ -308,6 +313,7 @@ impl StorageBackend for LocalFS {
     async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         let full_path = self.full_path(path);
         let mut nodes = Vec::new();
+        tracing::debug!(target: "backend", "LocalFS: list_dir {:?}", path);
 
         let mut read_dir = tokio::fs::read_dir(&full_path).await.with_context(|| {
             format!("Could not list contents of directory '{}'", path.display())

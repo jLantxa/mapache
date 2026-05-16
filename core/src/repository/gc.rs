@@ -48,6 +48,7 @@ pub struct GcSizes {
 
 /// Scan the repository and make a plan of what needs to be cleaned.
 pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
+    tracing::info!(target: "gc", "Starting garbage collection scan (tolerance={:.1}%)", tolerance * 100.0);
     let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone()).await?;
 
     let (keep_packs, object_trash) = repo.list_packs_and_trash().await?;
@@ -56,6 +57,7 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
 
     keep_packs.retain(|id| referenced_packs.contains(id));
     unused_packs.retain(|id| !referenced_packs.contains(id));
+    tracing::debug!(target: "gc", "Found {} referenced packs and {} unused packs", keep_packs.len(), unused_packs.len());
 
     let mut plan = Plan {
         repo: repo.clone(),
@@ -108,6 +110,7 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     }
 
     spinner.finish_and_clear();
+    tracing::debug!(target: "gc", "Found {} obsolete blobs in {} packs", spinner.position(), pack_garbage.len());
     ui::cli::log!(
         "Found {} obsolete blobs in {} packs",
         spinner.position(),
@@ -127,6 +130,7 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
         if (garbage_bytes as f32 / DEFAULT_PACK_SIZE as f32) > tolerance {
+            tracing::trace!(target: "gc", "Pack {} is obsolete (garbage bytes: {})", pack_id.to_short_hex(8), garbage_bytes);
             keep_packs.remove(&pack_id);
             plan.obsolete_packs.insert(pack_id);
         } else {
@@ -135,6 +139,7 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
         spinner.inc(1);
     }
     spinner.finish_and_clear();
+    tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small, {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_packs.len(), plan.tolerated_packs.len(), plan.unused_packs.len());
 
     Ok(plan)
 }
@@ -143,6 +148,7 @@ impl Plan {
     /// Execute the plan. Calling this method consumes the plan so it cannot be
     /// executed more than once.
     pub async fn execute(mut self) -> Result<GcSizes> {
+        tracing::info!(target: "gc", "Executing garbage collection plan");
         let mut gc_sizes = GcSizes::default();
 
         // Delete all expired locks first. This operation is independent of all others,
@@ -151,6 +157,7 @@ impl Plan {
         delete_trash_files(&self.repo, Some(self.object_trash.drain(..).collect())).await?;
 
         if self.small_packs.len() > 1 {
+            tracing::debug!(target: "gc", "Marking {} small packs as obsolete for repacking", self.small_packs.len());
             self.obsolete_packs.extend(self.small_packs.drain());
         }
 
@@ -158,6 +165,7 @@ impl Plan {
 
         // No need to repack and rewrite the indices if there are no obsolete packs
         if !self.obsolete_packs.is_empty() {
+            tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
             self.repo
                 .init_pack_saver(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
 
@@ -170,6 +178,7 @@ impl Plan {
             gc_sizes.deleted_bytes += self.delete_obsolete_packs().await?;
         }
 
+        tracing::info!(target: "gc", "Garbage collection execution finished");
         Ok(gc_sizes)
     }
 
@@ -227,8 +236,11 @@ impl Plan {
         });
 
         if locators_to_repack.is_empty() {
+            tracing::debug!(target: "gc", "No blobs to repack");
             return Ok(());
         }
+
+        tracing::info!(target: "gc", "Repacking {} blobs", locators_to_repack.len());
 
         // Clear old references.
         // This prevents the saver from seeing the blobs as "already existing"

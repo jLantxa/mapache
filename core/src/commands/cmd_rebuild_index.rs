@@ -27,6 +27,7 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "rebuild-index", "Starting rebuild-index command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -48,16 +49,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             if args.dry_run {
                 ui::cli::log!("{}", "[DRY RUN]".bold().purple());
+                tracing::info!(target: "rebuild-index", "Dry run enabled");
             }
 
             // Discover packs and blobs
             ui::cli::log!("Discovering packs...");
+            tracing::info!(target: "rebuild-index", "Listing packs and existing indices");
 
             let all_pack_ids = repo.list_packs().await?;
             let old_index_ids = repo.list_index_ids().await?;
             let mut new_master_index = MasterIndex::new();
             new_master_index.set_autosave(false);
             ui::cli::log!("Found {} packs", all_pack_ids.len());
+            tracing::info!(target: "rebuild-index", "Found {} packs and {} indices", all_pack_ids.len(), old_index_ids.len());
 
             let scan_bar = ProgressBar::with_draw_target(
                 Some(all_pack_ids.len() as u64),
@@ -95,6 +99,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 .await;
 
             scan_bar.finish_and_clear();
+            tracing::info!(target: "rebuild-index", "Pack scanning finished");
 
             // Populate the new index
             let mut blob_count = 0;
@@ -120,14 +125,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             }
 
             ui::cli::log!("Found {} blobs", blob_count);
+            tracing::info!(target: "rebuild-index", "Rebuild summary: {} blobs found, {} packs skipped due to errors", blob_count, error_count);
             if error_count > 0 {
                 ui::cli::warning!("Skipped {} packs due to errors", error_count);
             }
 
             // Save the new index
+            tracing::info!(target: "rebuild-index", "Persisting new index");
             let new_index_size = new_master_index.persist(repo.as_ref()).await?;
             let new_index_ids = new_master_index.ids();
             ui::cli::log!("Persisted {} new indices", new_index_ids.len());
+            tracing::info!(target: "rebuild-index", "Persisted {} new index files", new_index_ids.len());
 
             // Delete the old index
             // We must ensure we don't delete any of the NEW indices if they happen to have
@@ -180,6 +188,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 "Deleted {} obsolete index files",
                 index_delete_bar.position()
             );
+            tracing::info!(target: "rebuild-index", "Deleted {} obsolete index files", index_delete_bar.position());
 
             // Report added space
             let added_size: i64 =
@@ -211,6 +220,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 prefix,
                 utils::pretty_print_duration(start.elapsed(),),
             );
+            tracing::info!(target: "rebuild-index", "Rebuild-index command completed in {:?}", start.elapsed());
 
             Ok(())
         },

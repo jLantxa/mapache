@@ -33,24 +33,34 @@ pub struct CmdArgs {}
 const INIT_MSG: &str = "init";
 
 pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "init", "Initializing repository at {}", global_args.repo);
+
     let backend = new_backend_with_prompt(global_args.backend_options(false))
         .await
         .map_err(|e| {
+            tracing::error!(target: "init", "Backend initialization failed: {e}");
             fail(
                 format!("Failed to initialize backend: {}", e),
                 InitError::BackendError,
             )
         })?;
 
+    tracing::info!(target: "init", "Backend initialized");
+
     let auth = match utils::get_auth(&global_args.auth_file)? {
         Some(a) => a,
-        None => ui::cli::request_new_auth()
-            .map_err(|_| fail("Authentication failed", InitError::AuthFail))?,
+        None => ui::cli::request_new_auth().map_err(|_| {
+            tracing::error!(target: "init", "Authentication failed");
+            fail("Authentication failed", InitError::AuthFail)
+        })?,
     };
+
+    tracing::info!(target: "init", "Calling Repository::init");
 
     let manifest = Repository::init(&auth, global_args.key.as_ref(), backend.clone())
         .await
         .map_err(|e| {
+            tracing::error!(target: "init", "Repository::init failed: {e}");
             fail(
                 format!(
                     "Failed to initialize repository in {:?}: {}",
@@ -59,6 +69,13 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
                 InitError::RepoInitError,
             )
         })?;
+
+    tracing::info!(
+        target: "init",
+        "Repository {} initialized at {}",
+        manifest.id().to_short_hex(SHORT_REPO_ID_LEN),
+        global_args.repo
+    );
 
     if !global_args.json {
         ui::cli::log!(

@@ -169,6 +169,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             utils::pretty_print_duration(start.elapsed())
         );
     }
+    tracing::info!(target: "sync", "Sync command completed in {:?}", start.elapsed());
 
     src_lock.unlock().await;
     if let Some(lock) = dst_lock {
@@ -202,7 +203,8 @@ async fn sync_backends(
     }
 
     // Delete obsolete objects first
-    if delete {
+    if delete && !to_delete.is_empty() {
+        tracing::info!(target: "sync", "Deleting {} obsolete items from destination", to_delete.len());
         let delete_progress_bar =
             ProgressBar::with_draw_target(Some(to_delete.len() as u64), default_bar_draw_target())
                 .with_style(
@@ -217,6 +219,7 @@ async fn sync_backends(
                 bail!("Interrupted");
             }
 
+            tracing::debug!(target: "sync", "Deleting {:?}", node.path());
             match node {
                 BackendNode::File(path, _) => dst_backend.remove(&path).await?,
                 BackendNode::Dir(path) => dst_backend.remove(&path).await?,
@@ -262,8 +265,12 @@ async fn sync_backends(
                 }
 
                 match node {
-                    BackendNode::Dir(path) => dst_backend.create_dir(&path).await?,
+                    BackendNode::Dir(path) => {
+                        tracing::debug!(target: "sync", "Creating directory {:?}", path);
+                        dst_backend.create_dir(&path).await?
+                    }
                     BackendNode::File(path, _) => {
+                        tracing::debug!(target: "sync", "Copying file {:?}", path);
                         let handle = Handle::new(&path);
                         let data = src_backend.read(&handle, 0, 0).await?;
                         dst_backend

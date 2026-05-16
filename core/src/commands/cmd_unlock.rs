@@ -40,6 +40,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let mut num_deleted_locks = 0;
     for lock in locks {
         if args.force || lock.is_expired() {
+            tracing::info!(target: "unlock", "Deleting lock {}", lock.id().to_short_hex(8));
             repo.delete_file(ContentIdType::Lock, lock.id(), None)
                 .await?;
             num_deleted_locks += 1;
@@ -50,6 +51,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         "Deleted {}",
         utils::format_count(num_deleted_locks, "lock", "locks")
     );
+    tracing::info!(target: "unlock", "Deleted {} locks", num_deleted_locks);
 
     Ok(())
 }

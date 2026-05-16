@@ -213,6 +213,7 @@ impl KeyManager {
     }
 
     pub fn decode_master_key(password: &str, keyfile: &KeyFile) -> Result<Zeroizing<Vec<u8>>> {
+        tracing::debug!(target: "keys", "Decoding master key for user: {}", keyfile.username);
         let salt = utils::base64::decode(&keyfile.salt)?;
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
 
@@ -229,6 +230,7 @@ impl KeyManager {
 
     /// Generates a new KeyFile for the master key with a new password
     pub fn generate_key_file(auth: &Auth, master_key: &[u8]) -> Result<KeyFile> {
+        tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
         let create_time = Local::now();
         let argon2_params = argon2::Params::default();
 
@@ -260,6 +262,7 @@ impl KeyManager {
         auth: &Auth,
         keyfile_path: Option<&PathBuf>,
     ) -> Result<(Option<ID>, Zeroizing<Vec<u8>>)> {
+        tracing::debug!(target: "keys", "Retrieving master key (path={:?})", keyfile_path);
         self.retrieve_master_key_internal(auth, keyfile_path)
             .await
             .map_err(anyhow::Error::new)
@@ -272,6 +275,7 @@ impl KeyManager {
     ) -> std::result::Result<(Option<ID>, Zeroizing<Vec<u8>>), KeyManagerError> {
         match keyfile_path {
             Some(path) => {
+                tracing::debug!(target: "keys", "Reading key file from path: {:?}", path);
                 let ss = SecureStorage::new();
                 let handle = Handle::new_with_hint(path, ContentIdType::Key, true);
                 let keyfile_data = self
@@ -291,6 +295,7 @@ impl KeyManager {
                     .map_err(KeyManagerError::Other)
             }
             None => {
+                tracing::debug!(target: "keys", "Searching for matching key file in repository");
                 let mut keyfile_stream = KeyFileStream::new(self.backend.clone())
                     .await
                     .map_err(|_| KeyManagerError::NoKeyfilesFound)?;
@@ -305,6 +310,7 @@ impl KeyManager {
                     if keyfile.username == auth.username
                         && let Ok(master_key) = Self::decode_master_key(&auth.password, &keyfile)
                     {
+                        tracing::info!(target: "keys", "Master key retrieved using key file {}", id.to_short_hex(8));
                         return Ok((Some(id), master_key));
                     }
                 }
@@ -331,6 +337,7 @@ impl KeyManager {
     /// Load a keyfile with a given ID
     pub async fn load_keyfile_with_id(&self, id: &ID) -> Result<Option<KeyFile>> {
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
+        tracing::debug!(target: "keys", "Loading key file {}", id.to_short_hex(8));
         if !self.backend.path_exists(&path).await {
             return Ok(None);
         }
@@ -404,6 +411,7 @@ impl KeyManager {
         let id = ID::from_content(&compressed_json);
         let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
 
+        tracing::info!(target: "keys", "Saving new key file {} for user {}", id.to_short_hex(8), keyfile.username);
         self.backend
             .write(
                 &Handle::new_with_hint(&path, ContentIdType::Key, true),

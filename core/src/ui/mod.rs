@@ -13,6 +13,7 @@ use crate::{
 
 pub(crate) mod bundle;
 pub mod cli;
+pub(crate) mod debug;
 pub(crate) mod json_reporter;
 pub(crate) mod restore;
 pub(crate) mod snapshot;

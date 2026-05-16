@@ -271,6 +271,7 @@ impl SnapshotStream {
         // Use the stream! macro to generate the state machine automatically
         let inner = stream! {
             while let Some(id) = ids.pop() {
+                tracing::debug!(target: "snapshot", "Loading snapshot {}", id.to_short_hex(8));
                 let res = repo.load_snapshot(&id, ext.as_deref()).await;
 
                 // Decrement the remaining counter regardless of success

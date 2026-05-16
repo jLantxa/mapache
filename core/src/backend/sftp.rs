@@ -464,6 +464,7 @@ impl StorageBackend for SftpBackend {
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let full = self.full_path(handle.path);
         let limiter = self.download_limiter.clone();
+        tracing::trace!(target: "backend", "SFTP: read {:?} (offset={}, length={})", handle.path, offset, length);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
@@ -515,6 +516,7 @@ impl StorageBackend for SftpBackend {
         let full_tmp = self.full_path(&tmp_path);
         let full_dst = self.full_path(handle.path);
         let limiter = self.upload_limiter.clone();
+        tracing::trace!(target: "backend", "SFTP: write {:?} ({} bytes)", handle.path, contents.len());
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
@@ -557,6 +559,7 @@ impl StorageBackend for SftpBackend {
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let full_from = self.full_path(from);
         let full_to = self.full_path(to);
+        tracing::debug!(target: "backend", "SFTP: rename {:?} -> {:?}", from, to);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
@@ -567,6 +570,7 @@ impl StorageBackend for SftpBackend {
 
     async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         let full = self.full_path(path);
+        tracing::debug!(target: "backend", "SFTP: list_dir {:?}", path);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
@@ -599,6 +603,7 @@ impl StorageBackend for SftpBackend {
 
     async fn create_dir(&self, path: &Path) -> Result<()> {
         let full = self.full_path(path);
+        tracing::debug!(target: "backend", "SFTP: create_dir {:?}", path);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
@@ -609,6 +614,7 @@ impl StorageBackend for SftpBackend {
 
     async fn remove(&self, file_path: &Path) -> Result<()> {
         let full = self.full_path(file_path);
+        tracing::debug!(target: "backend", "SFTP: remove {:?}", file_path);
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;

@@ -103,6 +103,7 @@ impl VerifyStats {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "verify", "Starting verify command");
     if global_args.no_cache {
         ui::cli::warning!(
             "--no-cache has no effect on this command. \
@@ -175,6 +176,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             // Index Consistency (Blobs -> Packs)
             // ------------------------------------------
             ui::cli::log!("{}", "Verifying Index Consistency...".bold());
+            tracing::info!(target: "verify", "Verifying index consistency");
             let mut missing_packs = IdSet::default();
             repo.index().for_each_pack_id(|pack_id| {
                 if !packs_all.contains(pack_id) {
@@ -183,6 +185,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             });
 
             if !missing_packs.is_empty() {
+                tracing::error!(target: "verify", "Index refers to {} missing packs", missing_packs.len());
                 ui::cli::error!(
                     "Index refers to {} missing packs!",
                     missing_packs.len().to_string().bold().red()
@@ -194,6 +197,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     bail!("Index consistency check failed.");
                 }
             } else {
+                tracing::info!(target: "verify", "Index consistency check passed");
                 ui::cli::log!(
                     "{} {}",
                     "Index consistency check passed.".bold().green(),
@@ -569,6 +573,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 ),
                 utils::pretty_print_duration(start.elapsed())
             );
+            tracing::info!(target: "verify", "Verify command completed successfully in {:?}", start.elapsed());
 
             Ok(())
         },

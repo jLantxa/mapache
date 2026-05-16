@@ -132,6 +132,7 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "restore", "Starting restore command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -149,8 +150,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         |repo, _secure_storage, lock_handle| async move {
             let start = Instant::now();
 
+            tracing::info!(target: "restore", "Reloading master index");
             repo.reload_master_index().await?;
 
+            tracing::info!(target: "restore", "Finding snapshot to restore (snapshot={:?})", args.snapshot);
             let (snapshot_id, snapshot) =
                 match find_use_snapshot(repo.clone(), &args.snapshot).await {
                     Ok(Some((id, snap))) => (id, snap),
@@ -198,6 +201,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     )
                 })?;
 
+            tracing::info!(target: "restore", "Restoring snapshot {snapshot_id} (root={:?}) to {:?}", snapshot.root, abs_normalized_target);
+
             emit_restore_start(global_args.json, args, &snapshot_id, &abs_normalized_target);
 
             // We initialize the reporter with 0 totals. The Restorer will resize_workload it
@@ -242,6 +247,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             if args.delete {
                 // Delete local nodes not present in the snapshot tree
+                tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
                 restorer::sync::delete_nodes(
                     repo,
                     abs_normalized_target.clone(),
@@ -266,6 +272,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 warning_count,
                 args.dry_run,
             );
+            tracing::info!(target: "restore", "Restore command completed in {:?}", start.elapsed());
 
             Ok(())
         },

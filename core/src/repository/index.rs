@@ -142,6 +142,7 @@ impl Index {
     /// Creates an `Index` from a serialized `IndexFile`.
     pub fn from_index_file(index_file: IndexFile, id: ID) -> Self {
         let mut index = Self::new();
+        tracing::debug!(target: "index", "Loading index {} into instance #{}", id.to_short_hex(8), index.instance_id);
         index.set_status(IndexStatus::Persisted(id));
 
         for pack in index_file.packs {
@@ -448,9 +449,18 @@ impl MasterIndex {
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
     pub fn get(&self, id: &ID) -> Option<BlobLocator> {
+        tracing::trace!(target: "index", "Lookup blob {}", id.to_short_hex(8));
         let lock = self.inner.read();
 
-        lock.indices.iter().rev().find_map(|idx| idx.get(id))
+        let res = lock.indices.iter().rev().find_map(|idx| idx.get(id));
+
+        if res.is_some() {
+            tracing::trace!(target: "index", "Blob {} found", id.to_short_hex(8));
+        } else {
+            tracing::trace!(target: "index", "Blob {} not found", id.to_short_hex(8));
+        }
+
+        res
     }
 
     /// Adds a fully constructed `Index` to the master index.
@@ -495,6 +505,7 @@ impl MasterIndex {
         let mut target_instance_id = 0;
 
         {
+            let num_blobs = descriptors.len();
             for blob in &descriptors {
                 self.pending_blobs.remove(&blob.id);
             }
@@ -510,6 +521,7 @@ impl MasterIndex {
                 .find(|idx| idx.is_pending())
                 .expect("There should be a pending index");
 
+            tracing::debug!(target: "index", "Adding pack {} ({} blobs) to pending index #{}", pack_id.to_short_hex(8), num_blobs, pending_index.instance_id);
             pending_index.add_pack(pack_id, descriptors);
 
             let is_full = pending_index.is_full();
@@ -517,6 +529,8 @@ impl MasterIndex {
                 pending_index.create_time.elapsed() >= mapache::defaults::INDEX_FLUSH_TIMEOUT;
 
             if self.auto_save && (is_full || is_timed_out) {
+                let reason = if is_full { "full" } else { "timeout" };
+                tracing::info!(target: "index", "Persisting index #{} (reason: {})", pending_index.instance_id, reason);
                 // We must persist this index. To avoid holding the lock during IO,
                 // we'll take it out of the list or mark it as non-pending.
                 // Simplified approach: just finalize it and keep it in the list.
@@ -524,6 +538,7 @@ impl MasterIndex {
                 target_instance_id = pending_index.instance_id;
                 index_to_persist = Some(pending_index.clone());
             } else if is_full {
+                tracing::debug!(target: "index", "Index #{} is full, finalizing", pending_index.instance_id);
                 pending_index.finalize();
             }
         }
@@ -554,10 +569,16 @@ impl MasterIndex {
             let mut lock = self.inner.write();
             for idx in &mut lock.indices {
                 if !matches!(idx.status, IndexStatus::Persisted(_)) && !idx.is_empty() {
+                    tracing::debug!(target: "index", "Marking index #{} for persistence", idx.instance_id);
                     idx.finalize();
                     indices_to_persist.push(idx.clone());
                 }
             }
+        }
+
+        let num_to_persist = indices_to_persist.len();
+        if num_to_persist > 0 {
+            tracing::info!(target: "index", "Persisting {} indices", num_to_persist);
         }
 
         for mut idx in indices_to_persist {
@@ -623,6 +644,8 @@ impl MasterIndex {
 
     /// Merges all current indices into a new collection of full indices.
     fn merge_index(&self, lock: &mut MasterIndexInner, obsolete_packs: Option<&IdSet<ID>>) {
+        let num_old_indices = lock.indices.len();
+        tracing::info!(target: "index", "Merging {} indices", num_old_indices);
         let mut old_indices = std::mem::take(&mut lock.indices);
         // Sort by instance_id to ensure deterministic merge order.
         old_indices.sort_by_key(|idx| idx.instance_id);
@@ -667,6 +690,7 @@ impl MasterIndex {
             new_indices.push(current_index);
         }
 
+        tracing::info!(target: "index", "Indices merged: {} -> {}", num_old_indices, new_indices.len());
         lock.indices = new_indices;
     }
 

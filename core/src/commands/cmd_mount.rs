@@ -50,6 +50,7 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "mount", "Starting mount command (mountpoint={:?})", args.mountpoint);
     let actual_mountpoint = args.mountpoint.clone();
     let mut created_mountpoint = false;
 
@@ -94,6 +95,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let data_cache_size = (args.data_cache_size_mib * size::MiB as f32) as u64;
 
             ui::cli::log!("Mounting repository in {}", canonical_mountpoint.display());
+            tracing::info!(target: "mount", "Mounting repository at {:?}", canonical_mountpoint);
             run_mount_loop(&canonical_mountpoint, cleanup_handler, move |mp| {
                 MapacheFS::<dyn BlobLoader>::mount(
                     repo,
@@ -120,6 +122,7 @@ async fn mount_bundle(
     mountpoint: &std::path::Path,
     created_mountpoint: bool,
 ) -> Result<()> {
+    tracing::info!(target: "mount", "Mounting bundle at {:?}", mountpoint);
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
         None => crate::ui::cli::request_password("Enter bundle password")?,
@@ -193,8 +196,10 @@ where
             }
         } => {
             ui::cli::log!("Interrupt received. Unmounting...");
+            tracing::info!(target: "mount", "Interrupt received. Unmounting {:?}", mountpoint);
             let _ = MapacheFS::<dyn BlobLoader>::unmount(mountpoint);
         }
     }
+    tracing::info!(target: "mount", "Mount loop finished");
     Ok(())
 }

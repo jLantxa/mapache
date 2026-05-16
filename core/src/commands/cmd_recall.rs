@@ -28,6 +28,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let cleanup_handler = CleanupHandler::new()?;
             cleanup_handler.add_lock(lock_handle.clone());
 
+            tracing::info!(target: "recall", "Searching for dropped snapshot");
             let (id, _dropped_path) = repo
                 .find_with_extension(
                     ContentIdType::Snapshot,
@@ -36,6 +37,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 )
                 .await?;
 
+            tracing::info!(target: "recall", "Recalling snapshot {}", id.to_short_hex(8));
             repo.recall_dropped_snapshot(&id).await?;
 
             Ok(())

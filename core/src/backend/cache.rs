@@ -77,6 +77,7 @@ impl CacheBackend {
         let path_buf = path.to_path_buf();
         let handle = Handle::new(path);
 
+        tracing::debug!(target: "cache", "Caching file {:?}", path);
         loop {
             let should_wait = {
                 let mut queue = self.download_queue.lock();
@@ -122,9 +123,11 @@ impl CacheBackend {
 
         match &result {
             Ok(_) => {
+                tracing::debug!(target: "cache", "File {:?} cached successfully", path);
                 queue.remove(&path_buf);
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::error!(target: "cache", "Failed to cache file {:?}: {}", path, e);
                 queue.insert(path_buf, DownloadState::Failed);
             }
         }
@@ -153,8 +156,12 @@ impl StorageBackend for CacheBackend {
 
         // Try reading from the cache.
         match self.cache.read(handle, offset, length).await {
-            Ok(data) => Ok(data), // Cache Hit
+            Ok(data) => {
+                tracing::trace!(target: "cache", "Cache HIT: {:?}", handle.path);
+                Ok(data)
+            } // Cache Hit
             Err(_) => {
+                tracing::debug!(target: "cache", "Cache MISS: {:?}", handle.path);
                 // Cache Miss: Cache the file and read again from cache.
                 self.cache_file(handle.path).await?;
                 self.cache.read(handle, offset, length).await
@@ -163,6 +170,7 @@ impl StorageBackend for CacheBackend {
     }
 
     async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
+        tracing::trace!(target: "cache", "Cache: write {:?}", handle.path);
         if Self::should_cache(handle) {
             // Write to the primary backend with a reference to avoid moving ownership yet
             self.backend
@@ -183,6 +191,7 @@ impl StorageBackend for CacheBackend {
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        tracing::debug!(target: "cache", "Cache: rename {:?} -> {:?}", from, to);
         // Try to rename the cached path. If it failed, it didn't exist.
         // If this file should be cached, it will be next time it is read.
         let _ = self.cache.rename(from, to).await;
@@ -200,6 +209,7 @@ impl StorageBackend for CacheBackend {
     }
 
     async fn remove(&self, file_path: &Path) -> Result<()> {
+        tracing::debug!(target: "cache", "Cache: remove {:?}", file_path);
         let path_buf = file_path.to_path_buf();
 
         loop {

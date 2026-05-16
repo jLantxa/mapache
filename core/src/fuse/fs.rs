@@ -50,6 +50,7 @@ impl MapacheFS<dyn BlobLoader> {
         metadata_only: bool,
         data_cache_size: u64,
     ) -> Result<()> {
+        tracing::info!(target: "fuse", "Mounting repository at {:?}", mountpoint);
         let created_time = repo.manifest().created_time();
 
         Self::mount_loader_generic(
@@ -74,6 +75,7 @@ impl MapacheFS<dyn BlobLoader> {
         mountpoint: &Path,
         options: MountOptions,
     ) -> Result<()> {
+        tracing::info!(target: "fuse", "Mounting loader at {:?}", mountpoint);
         Self::mount_loader_generic(loader, repo, archive_root_tree, mountpoint, options)
     }
 
@@ -118,6 +120,7 @@ impl MapacheFS<dyn BlobLoader> {
         config.n_threads = Some(1);
         config.clone_fd = false;
 
+        tracing::debug!(target: "fuse", "Starting FUSE session at {:?}", mountpoint);
         if let Err(e) = fuser::mount2(filesystem, mountpoint, &config) {
             Self::unmount(mountpoint).context("Failed to unmount after error.")?;
             return Err(anyhow!("FUSE error: {}", e));
@@ -128,6 +131,7 @@ impl MapacheFS<dyn BlobLoader> {
 
     /// Unmounts the filesystem from `mountpoint`
     pub fn unmount(mountpoint: &Path) -> Result<()> {
+        tracing::info!(target: "fuse", "Unmounting {:?}", mountpoint);
         #[cfg(target_os = "linux")]
         let mut cmd = std::process::Command::new("/usr/bin/fusermount");
         #[cfg(target_os = "linux")]
@@ -196,9 +200,11 @@ impl<L: BlobLoader + ?Sized> MapacheFS<L> {
 
 impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
     fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), std::io::Error> {
+        tracing::debug!(target: "fuse", "FUSE filesystem initialized");
         self.rt_handle.block_on(async {
             if let Some(root_tree_id) = self.archive_root_tree {
                 // For archives, we mount the tree directly at the root
+                tracing::debug!(target: "fuse", "Mounting archive root tree: {}", root_tree_id.to_short_hex(8));
                 let mut stash = self.stash.write();
                 stash.upgrade_root_to_lazy_dir(root_tree_id);
                 return;
@@ -206,6 +212,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
 
             // For repositories, we use the standard snapshots structure
             if let Some(repo) = &self.repo {
+                tracing::debug!(target: "fuse", "Loading snapshots for FUSE mount");
                 const DATE_FORMAT_STR: &str = "%Y-%m-%d %H:%M:%S %:z";
                 let mut snapshots: Vec<(ID, Snapshot)> = Vec::new();
                 match SnapshotStream::new(repo.clone()).await {
@@ -268,6 +275,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
 
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let name_str = name.to_string_lossy().to_string();
+        tracing::debug!(target: "fuse", "LOOKUP parent={}, name={}", parent.0, name_str);
 
         if let Some(attr) = self.stash.read().get_attr_by_name(parent, &name_str) {
             return reply.entry(&TTL, &attr, Generation(0));
@@ -280,11 +288,15 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
 
         match result {
             Ok(Some(attr)) => reply.entry(&TTL, &attr, Generation(0)),
-            _ => reply.error(Errno::ENOENT),
+            _ => {
+                tracing::debug!(target: "fuse", "LOOKUP failed: not found");
+                reply.error(Errno::ENOENT)
+            }
         }
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+        tracing::trace!(target: "fuse", "GETATTR ino={}", ino.0);
         match self.stash.read().get_attr(ino) {
             None => reply.error(Errno::ENOENT),
             Some(attr) => reply.attr(&TTL, &attr),
@@ -299,6 +311,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
+        tracing::debug!(target: "fuse", "READDIR ino={}, offset={}", ino.0, offset);
         let entries = self.rt_handle.block_on(async {
             let _ = self.ensure_loaded(ino).await;
             self.stash.read().read_dir(ino, offset)
@@ -314,6 +327,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+        tracing::debug!(target: "fuse", "OPEN ino={}", ino.0);
         match self.stash.read().get_attr(ino) {
             Some(attr) if attr.kind == fuser::FileType::RegularFile => {
                 if self.metadata_only {
@@ -338,6 +352,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
+        tracing::trace!(target: "fuse", "READ ino={}, offset={}, size={}", ino.0, offset, size);
         if self.metadata_only {
             return reply.error(Errno::EACCES);
         }
@@ -404,6 +419,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
     }
 
     fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+        tracing::debug!(target: "fuse", "READLINK ino={}", ino.0);
         match self.stash.read().read_link(ino) {
             Some(target) => reply.data(target.as_bytes()),
             None => reply.error(Errno::ENOENT),

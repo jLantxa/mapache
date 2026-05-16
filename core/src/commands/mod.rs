@@ -357,6 +357,10 @@ pub async fn parse_and_run() -> i32 {
         set_global_opts_with_args(global_ref);
     }
 
+    ui::debug::init();
+
+    tracing::info!(target: "mapache", "called with args: {}", std::env::args().collect::<Vec<_>>().join(" "));
+
     let result = match args.command {
         Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args).await,
         Command::Bundle(cmd) => cmd_bundle::run(&cmd).await,
@@ -390,6 +394,8 @@ pub async fn parse_and_run() -> i32 {
             .map(|me| me.exit_code)
             .unwrap_or(error::GENERIC_ERROR_CODE);
 
+        tracing::error!(target: "mapache", "return exit code {}: {}", exit_code, e);
+
         if !json_enabled {
             ui::cli::error!("{}", e);
         } else {
@@ -410,6 +416,7 @@ pub async fn parse_and_run() -> i32 {
         return exit_code;
     }
 
+    tracing::info!(target: "mapache", "return with code 0");
     0
 }
 

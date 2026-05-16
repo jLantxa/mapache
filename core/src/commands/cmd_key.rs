@@ -132,9 +132,11 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
 }
 
 async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
+    tracing::info!(target: "key", "Starting key delete command (id={})", args.id);
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
     let key_manager = KeyManager::new(backend.clone());
-    let (_id, path) = key_manager.find_id_with_prefix(&args.id).await?;
+    let (id, path) = key_manager.find_id_with_prefix(&args.id).await?;
+    tracing::info!(target: "key", "Deleting key file {}", id.to_short_hex(8));
     backend.remove(&path).await
 }
 
@@ -150,12 +152,14 @@ async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArg
     let master_key = KeyManager::decode_master_key(&auth.password, &old_keyfile)?;
 
     let new_auth = Auth {
-        username: auth.username,
+        username: auth.username.clone(),
         password: ui::cli::request_new_password("Enter the new password", "Confirm password")?,
     };
 
     let new_keyfile = KeyManager::generate_key_file(&new_auth, &master_key)?;
+    tracing::info!(target: "key", "Saving updated key file for user {}", auth.username);
     key_manager.save_keyfile(&new_keyfile).await?;
+    tracing::info!(target: "key", "Deleting old key file {}", old_id.to_short_hex(8));
     key_manager.delete_keyfile_with_id(&old_id).await?;
 
     Ok(())

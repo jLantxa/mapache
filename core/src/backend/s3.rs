@@ -112,6 +112,7 @@ impl StorageBackend for S3Backend {
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
         let key = self.key_from_path(handle.path);
+        tracing::trace!(target: "backend", "S3: read {:?} (offset={}, length={})", handle.path, offset, length);
 
         self.retry(|| async {
             let response = if offset == 0 && length == 0 {
@@ -148,6 +149,7 @@ impl StorageBackend for S3Backend {
     async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
         let key = self.key_from_path(handle.path);
         let content_len = contents.len();
+        tracing::trace!(target: "backend", "S3: write {:?} ({} bytes)", handle.path, content_len);
 
         if (content_len as u64) < S3_MULTIPART_THRESHOLD {
             self.retry(|| async {
@@ -238,6 +240,7 @@ impl StorageBackend for S3Backend {
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let src_key = self.key_from_path(from);
         let dest_key = self.key_from_path(to);
+        tracing::debug!(target: "backend", "S3: rename {:?} -> {:?}", from, to);
 
         // S3 rename is COPY + DELETE (not atomic).
         self.retry(|| async {
@@ -272,6 +275,7 @@ impl StorageBackend for S3Backend {
 
     async fn remove(&self, path: &Path) -> Result<()> {
         let key = self.key_from_path(path);
+        tracing::debug!(target: "backend", "S3: remove {:?}", path);
 
         self.retry(|| async {
             let resp = self.bucket.delete_object(&key).await?;
@@ -285,6 +289,7 @@ impl StorageBackend for S3Backend {
 
     async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         let mut prefix = self.key_from_path(path);
+        tracing::debug!(target: "backend", "S3: list_dir {:?}", path);
         if !prefix.is_empty() && !prefix.ends_with('/') {
             prefix.push('/');
         }

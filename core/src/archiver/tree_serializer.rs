@@ -265,6 +265,7 @@ impl TreeSerializer {
     }
 
     pub(crate) async fn finalize_root(&mut self) -> Result<()> {
+        tracing::info!(target: "archiver", "Finalizing root tree");
         let root = self.snapshot_root_path.clone();
         self.finalize_if_complete(&root).await
     }

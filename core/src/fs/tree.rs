@@ -99,6 +99,7 @@ pub struct FSNodeStream {
 
 impl FSNodeStream {
     pub async fn from_paths(paths: Vec<PathBuf>, exclude_paths: Vec<PathBuf>) -> Result<Self> {
+        tracing::debug!(target: "fs", "Creating FSNodeStream from paths: {:?} (excludes: {:?})", paths, exclude_paths);
         let mut exclude_paths = exclude_paths;
         exclude_paths.sort_unstable();
         let filter = Arc::new(PathFilter::new(None, Some(exclude_paths.clone())));
@@ -175,6 +176,7 @@ impl FSNodeStream {
                 if take_intermediate {
                     let (path, num_children, maybe_node) = state.intermediate_paths.pop().unwrap();
                     if state.filter.allow(&path) {
+                        tracing::trace!(target: "fs", "Emitting intermediate path: {:?} (children={})", path, num_children);
                         let node_res = if let Some(n) = maybe_node {
                             Ok(n)
                         } else {
@@ -192,9 +194,11 @@ impl FSNodeStream {
                 let (parent, name, maybe_node) = state.stack.pop().unwrap();
                 let path = parent.join(&name);
                 if !state.filter.allow(&path) {
+                    tracing::trace!(target: "fs", "Path excluded by filter: {:?}", path);
                     continue;
                 }
 
+                tracing::trace!(target: "fs", "Processing path: {:?}", path);
                 let node_res = if let Some(n) = maybe_node {
                     Ok(n)
                 } else {
@@ -215,6 +219,7 @@ impl FSNodeStream {
                     let filter = state.filter.clone();
                     let path_clone = path.clone();
 
+                    tracing::trace!(target: "fs", "Scanning directory: {:?}", path);
                     let children_res = tokio::task::spawn_blocking(move || {
                         use rayon::prelude::*;
 
@@ -247,6 +252,7 @@ impl FSNodeStream {
                     match children_res {
                         Ok(children) => {
                             num_children = children.len();
+                            tracing::trace!(target: "fs", "Directory {:?} scanned: {} children", path, num_children);
                             // Yield the directory node NOW.
                             yield (path.clone(), Ok(StreamNode { node: node.clone(), num_children }));
 
@@ -259,6 +265,7 @@ impl FSNodeStream {
                             }
                         }
                         Err(e) => {
+                            tracing::warn!(target: "fs", "Failed to scan directory {:?}: {}", path, e);
                             yield (path.clone(), Ok(StreamNode { node, num_children: 0 }));
                             yield (path, Err(e));
                         }

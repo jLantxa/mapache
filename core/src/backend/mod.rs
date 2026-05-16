@@ -241,8 +241,12 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
     let backend_url = BackendUrl::from(&opts.repo_path)?;
 
     let backend: Arc<dyn StorageBackend> = match &backend_url {
-        BackendUrl::Local(repo_path) => Arc::new(LocalFS::new(repo_path.to_path_buf())),
+        BackendUrl::Local(repo_path) => {
+            tracing::info!(target: "backend", "Initializing LocalFS backend at {:?}", repo_path);
+            Arc::new(LocalFS::new(repo_path.to_path_buf()))
+        }
         BackendUrl::Sftp(username, host, port, repo_path) => {
+            tracing::info!(target: "backend", "Initializing SFTP backend at {username}@{host}:{port}{:?}", repo_path);
             const MAX_PASSWORD_RETRIES: usize = 3;
             let mut password_try_count = 0;
             loop {
@@ -281,6 +285,7 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
             }
         }
         BackendUrl::S3(bucket, prefix) => {
+            tracing::info!(target: "backend", "Initializing S3 backend (bucket: {}, prefix: {:?})", bucket, prefix);
             let endpoint = match std::env::var("AWS_ENDPOINT_URL") {
                 Ok(v) => v,
                 Err(_) => ui::cli::request_input("S3 Endpoint (leave empty for AWS)")?

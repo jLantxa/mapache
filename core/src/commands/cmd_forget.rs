@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use anyhow::{Result, bail};
 use chrono::{Duration, Local};
 use clap::{ArgGroup, Parser};
@@ -119,6 +121,7 @@ pub fn parse_retention_number(s: &str) -> Result<usize> {
 const FORGET_MSG: &str = "forget";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "forget", "Starting forget command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -134,6 +137,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         true,
         global_args.retry_lock_duration,
         |repo, _secure_storage, lock_handle| async move {
+            let start_time = Instant::now();
             let cleanup_handler = CleanupHandler::new().map_err(|e| {
                 fail(
                     format!("Failed to initialize cleanup handler: {}", e),
@@ -142,6 +146,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             })?;
             cleanup_handler.add_lock(lock_handle.clone());
 
+            tracing::info!(target: "forget", "Loading snapshots");
             let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
                 .await
                 .map_err(|e| {
@@ -162,6 +167,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let mut ids_to_keep: IdSet<ID> = IdSet::default();
 
             if !args.forget.is_empty() {
+                tracing::info!(target: "forget", "Forgetting specific snapshots: {:?}", args.forget);
                 let mut forget_ids = IdSet::default();
                 for prefix in &args.forget {
                     let (id, _) =
@@ -181,6 +187,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                 }
             } else {
+                tracing::info!(target: "forget", "Applying retention rules");
                 let mut retention_rules = Vec::new();
                 if let Some(n) = args.keep_last {
                     retention_rules.push(RetentionRule::KeepLast(n));
@@ -226,8 +233,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 };
             }
 
+            tracing::info!(target: "forget", "Kept {} snapshots, removed {} snapshots", kept_snapshots.len(), removed_snapshots.len());
+
             if !args.dry_run && !removed_snapshots.is_empty() {
+                tracing::info!(target: "forget", "Updating repository (removing {} snapshots)", removed_snapshots.len());
                 for entry in &removed_snapshots {
+                    tracing::info!(target: "forget", "Removing snapshot {} ({:?}, tags={:?})", entry.id, entry.snapshot.timestamp, entry.snapshot.tags);
                     if args.force {
                         repo.delete_file(ContentIdType::Snapshot, &entry.id, None)
                             .await
@@ -282,6 +293,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             }
 
             if args.run_gc {
+                tracing::info!(target: "forget", "Starting post-forget garbage collection");
                 let gc_args = commands::cmd_clean::CmdArgs {
                     tolerance: args.tolerance,
                     dry_run: args.dry_run,
@@ -302,6 +314,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 commands::cmd_clean::run_with_repo(global_args, &gc_args, repo).await?;
             }
 
+            tracing::info!(target: "forget", "Forget command completed in {:?}", start_time.elapsed());
             Ok(())
         },
     )

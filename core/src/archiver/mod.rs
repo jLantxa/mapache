@@ -96,6 +96,7 @@ impl PipelineStatus {
         if !already_errored {
             // Only the first task to "flip" the switch gets to log the error.
             self.progress_reporter.error(&format!("{err:#}"));
+            tracing::error!(target: "archiver", "Fatal error in pipeline: {err:#}");
             if let Ok(mut guard) = self.first_error.lock() {
                 *guard = Some(err);
             }
@@ -121,6 +122,7 @@ pub(crate) async fn snapshot(
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Snapshot> {
+    tracing::info!(target: "archiver", "Starting snapshot archival (root={:?})", snapshot_options.snapshot_root_path);
     let status = Arc::new(PipelineStatus::new(
         progress,
         progress_reporter.clone(),
@@ -129,6 +131,7 @@ pub(crate) async fn snapshot(
 
     // Start Background Scanner early so it counts files concurrently
     // with the stream setup and the backup pipeline.
+    tracing::info!(target: "archiver", "Starting background scanner");
     spawn_scanner_task(
         snapshot_options.no_scan,
         snapshot_options.absolute_source_paths.clone(),
@@ -138,6 +141,7 @@ pub(crate) async fn snapshot(
     );
 
     // Setup Input Streams
+    tracing::info!(target: "archiver", "Setting up input streams");
     let fs_stream = FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
@@ -165,34 +169,43 @@ pub(crate) async fn snapshot(
     // ---------------------------------------------------------------------
     // Stage 1: Diff Producer Task
     // ---------------------------------------------------------------------
+    tracing::info!(target: "archiver", "Starting Stage 1: Diff Producer");
     let producer_status = status.clone();
     let producer_task = tokio::spawn(async move {
+        tracing::trace!(target: "archiver", "Diff Producer task started");
         while let Some(item) = diff_stream.next().await {
             // Check for shutdown/failure before every send
             if producer_status.is_failed() {
+                tracing::trace!(target: "archiver", "Diff Producer: status failed, aborting");
                 break;
             }
 
             match item {
                 Ok(diff) => {
+                    tracing::trace!(target: "archiver", "Diff Producer: sending item {:?}", diff.0);
                     if diff_tx.send(diff).await.is_err() {
+                        tracing::trace!(target: "archiver", "Diff Producer: channel closed");
                         break;
                     }
                 }
                 Err(e) => {
+                    tracing::error!(target: "archiver", "Diff Producer error: {e}");
                     producer_status.signal_fatal(e);
                     break;
                 }
             }
         }
+        tracing::trace!(target: "archiver", "Diff Producer task finished");
     });
 
     // ---------------------------------------------------------------------
     // Stage 2: Concurrent Processor Task
     // ---------------------------------------------------------------------
+    tracing::info!(target: "archiver", "Starting Stage 2: Concurrent Processor ({} readers)", num_readers);
     let processor_blob_saver: Arc<dyn BlobSaver> = repo.clone();
     let processor_status = status.clone();
     let processor_task = tokio::spawn(async move {
+        tracing::trace!(target: "archiver", "Concurrent Processor task started");
         let stream = ReceiverStream::new(diff_rx);
 
         stream
@@ -206,6 +219,7 @@ pub(crate) async fn snapshot(
                         return;
                     }
 
+                    tracing::trace!(target: "archiver", "Processing item: {:?}", path);
                     match processor::process_item(
                         (path.as_path(), prev, next, diff),
                         blob_saver,
@@ -216,21 +230,29 @@ pub(crate) async fn snapshot(
                     .await
                     {
                         Ok(Some(node)) => {
+                            tracing::trace!(target: "archiver", "Item processed successfully: {:?}", path);
                             let _ = tx.send((path, node)).await;
                         }
-                        Ok(None) => {}
-                        Err(e) => status.signal_fatal(e),
+                        Ok(None) => {
+                            tracing::trace!(target: "archiver", "Item skipped (no node produced): {:?}", path);
+                        }
+                        Err(e) => {
+                            tracing::error!(target: "archiver", "Processor error for {:?}: {e}", path);
+                            status.signal_fatal(e);
+                        }
                     }
                 }
             })
             .await;
 
+        tracing::trace!(target: "archiver", "Concurrent Processor task finished");
         drop(processed_tx);
     });
 
     // ---------------------------------------------------------------------
     // Stage 3: Tree Serializer (Main Loop)
     // ---------------------------------------------------------------------
+    tracing::info!(target: "archiver", "Starting Stage 3: Tree Serializer");
     let mut tree_serializer = TreeSerializer::new(
         repo.clone() as Arc<dyn BlobSaver>,
         snapshot_options.snapshot_root_path.clone(),
@@ -258,6 +280,7 @@ pub(crate) async fn snapshot(
     // ---------------------------------------------------------------------
     // Finalization
     // ---------------------------------------------------------------------
+    tracing::info!(target: "archiver", "Finalizing snapshot tree");
 
     // Check if we aborted due to failure or shutdown signal
     if status.is_failed() {
@@ -273,6 +296,7 @@ pub(crate) async fn snapshot(
         .context("Root tree ID not set")?;
 
     status.signal_finished();
+    tracing::info!(target: "archiver", "Snapshot tree finalized: {root_tree_id}");
     let (hostname, username) = utils::get_system_info();
 
     Ok(Snapshot {
@@ -330,6 +354,7 @@ fn spawn_scanner_task(
             status.signal_fatal(anyhow!("Scanner panicked or failed: {e}"));
         }
 
+        tracing::info!(target: "archiver", "Background scanner finished");
         progress_reporter.scan_finished();
     });
 }

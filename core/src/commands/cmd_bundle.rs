@@ -157,6 +157,7 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
 }
 
 async fn run_create(args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "bundle", "Starting bundle create command");
     let output = args
         .output
         .as_ref()
@@ -368,6 +369,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
 }
 
 async fn run_extract(args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "bundle", "Starting bundle extract command (bundle={:?}, target={:?})", args.input[0], args.output);
     if args.input.len() != 1 {
         bail!("Extract mode requires exactly one bundle file as input");
     }
@@ -433,12 +435,14 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
 
     crate::ui::cli::log!("{}", data_table.render());
     crate::ui::cli::log!("{}", "Extraction completed successfully!".green().bold());
+    tracing::info!(target: "bundle", "Bundle extraction completed");
 
     Ok(())
 }
 
 #[cfg(all(feature = "fuse", unix))]
 async fn run_mount(args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "bundle", "Starting bundle mount command (bundle={:?})", args.input[0]);
     if args.input.len() != 2 {
         bail!("Mount mode requires: bundle.mapache <mountpoint>");
     }
@@ -483,6 +487,7 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
     let mp_clone = canonical_mountpoint.clone();
 
     run_mount_loop(&canonical_mountpoint, cleanup_handler, move |mp| {
+        tracing::info!(target: "bundle", "Mounting bundle at {:?}", mp);
         MapacheFS::mount_loader(
             loader,
             None,
@@ -552,6 +557,7 @@ async fn writer_finalize(
     output_path: &PathBuf,
     progress: &SnapshotProgress,
 ) -> Result<()> {
+    tracing::info!(target: "bundle", "Finalizing bundle with root tree {}", root_tree_id.to_short_hex(8));
     writer.finalize(root_tree_id)?;
 
     let final_size = std::fs::metadata(output_path)?.len();
@@ -598,6 +604,7 @@ async fn writer_finalize(
 
     crate::ui::cli::log!("{}", data_table.render());
     crate::ui::cli::log!("{}", "Bundle completed successfully!".green().bold());
+    tracing::info!(target: "bundle", "Bundle creation completed (size={})", final_size);
 
     Ok(())
 }

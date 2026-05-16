@@ -238,8 +238,10 @@ impl LockHandle {
                     break;
                 }
 
+                tracing::debug!(target: "repo", "Refreshing lock {}", lock.lock().id().to_short_hex(8));
                 if let Err(e) = repo.refresh_lock(&lock).await {
                     ui::cli::warning!("Failed to refresh lock: {}", e);
+                    tracing::warn!(target: "repo", "Failed to refresh lock: {}", e);
                 }
             }
         });
@@ -248,6 +250,7 @@ impl LockHandle {
     pub async fn unlock(&self) {
         let _guard = self.unlock_mutex.lock().await;
         if self.alive_flag.swap(false, Ordering::SeqCst) && !self.dry_run {
+            tracing::info!(target: "repo", "Releasing lock {}", self.lock.lock().id().to_short_hex(8));
             self.perform_delete().await;
         }
     }
@@ -280,6 +283,7 @@ impl LockHandle {
                         *lock_guard.id()
                     };
 
+                    tracing::info!(target: "repo", "Releasing lock {} (triggered)", lock_id.to_short_hex(8));
                     let _ = repo.delete_file(ContentIdType::Lock, &lock_id, None).await;
                 }
             });

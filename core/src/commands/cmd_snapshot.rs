@@ -110,6 +110,7 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    tracing::info!(target: "snapshot", "Starting snapshot command");
     if args.paths.is_empty() {
         return Err(fail(
             "No source paths provided.",
@@ -134,9 +135,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         |repo, _, lock_handle| async move {
             let start = Instant::now();
 
+            tracing::info!(target: "snapshot", "Reloading master index");
             repo.reload_master_index().await?;
 
             // Get source paths from arguments or readdir root path
+            tracing::info!(target: "snapshot", "Processing source paths: {:?}", args.paths);
             let source_paths = if !args.as_root {
                 args.paths.clone()
             } else {
@@ -205,11 +208,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!();
             if args.dry_run {
                 ui::cli::log!("{}", "[DRY RUN]".bold().purple());
+                tracing::info!(target: "snapshot", "Dry run enabled");
             }
 
+            tracing::info!(target: "snapshot", "Finding parent snapshot (parent={:?})", args.parent);
             let parent_snapshot_pair: Option<SnapshotPair> = match args.no_parent {
                 true => {
                     ui::cli::log!("Full scan");
+                    tracing::info!(target: "snapshot", "Full scan requested (no parent)");
                     None
                 }
                 false => match find_use_snapshot(repo.clone(), &args.parent).await {
@@ -218,10 +224,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                             "Using snapshot {} as parent",
                             id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
                         );
+                        tracing::info!(target: "snapshot", "Parent snapshot found: {id} (root={:?})", snapshot.root);
                         Some(SnapshotPair { id, snapshot })
                     }
                     Ok(None) => {
                         ui::cli::log!("{} This is the first snapshot.", "[!]".bold().cyan());
+                        tracing::info!(target: "snapshot", "No parent snapshot found (first snapshot)");
                         None
                     }
                     Err(e) => {
@@ -234,6 +242,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             };
 
             // Run Archiver
+            tracing::info!(target: "snapshot", "Initializing archiver");
             let progress = Arc::new(SnapshotProgress::new());
             let progress_reporter: Arc<dyn SnapshotProgressReporter> = if global_args.json {
                 Arc::new(JsonSnapshotProgressReporter::new(None, None))
@@ -266,6 +275,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             })?;
 
             // Process and save new snapshot
+            tracing::info!(target: "snapshot", "Starting archival process");
             let snapshot_result = archiver::snapshot(
                 repo.clone(),
                 SnapshotOptions {
@@ -285,6 +295,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .await;
 
             // Flush repo and finalize pack saver
+            tracing::info!(target: "snapshot", "Flushing and finalizing repository");
             let repo_stats = repo.flush_and_finalize_pack_saver().await.map_err(|e| {
                 fail(
                     format!("Failed to finalize snapshot: {}", e),
@@ -297,10 +308,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Ok(s) => s,
                 Err(e) => {
                     if cleanup_handler.is_interrupted() {
+                        tracing::info!(target: "snapshot", "Snapshot interrupted by user");
                         return Ok(());
                     }
 
                     progress_reporter.finalize();
+                    tracing::error!(target: "snapshot", "Snapshot archival failed: {e}");
                     return Err(fail(
                         format!("Snapshot failed: {}", e),
                         SnapshotError::SnapshotFailed,
@@ -332,6 +345,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
 
             if should_save_snapshot {
+                tracing::info!(target: "snapshot", "Saving new snapshot");
                 let (new_snapshot_id, new_snapshot_size) = repo
                     .save_file(
                         &mapache::SaveID::CalculateID,
@@ -344,6 +358,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     )
                     .await?;
                 progress_reporter.finalize();
+                tracing::info!(target: "snapshot", "Snapshot saved: {new_snapshot_id}");
 
                 // Add the size of the snapshot file and index for display
                 new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw + repo_stats.index.raw;
@@ -380,6 +395,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             } else {
                 progress_reporter.finalize();
                 ui::cli::log!("No changes detected since parent. Skipping snapshot.");
+                tracing::info!(target: "snapshot", "No changes detected. Snapshot skipped.");
             }
 
             let prefix = if args.dry_run {
@@ -394,6 +410,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 utils::format_size_binary(new_snapshot.summary.processed_bytes, 3).cyan(),
                 utils::pretty_print_duration(start.elapsed()).cyan()
             );
+            tracing::info!(target: "snapshot", "Snapshot command completed in {:?}", start.elapsed());
             Ok(())
         },
     )

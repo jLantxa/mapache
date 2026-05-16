@@ -336,6 +336,7 @@ impl Restorer {
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
     ) -> Result<()> {
+        tracing::info!(target: "restorer", "Starting restoration of tree {tree_id}");
         let node_stream = SerializedNodeStream::new(
             self.repo.clone(),
             Some(tree_id),
@@ -350,7 +351,14 @@ impl Restorer {
         }
 
         let index = self.repo.index();
+        tracing::info!(target: "restorer", "Building restoration plan");
         let plan = self.build_plan(node_stream, index).await?;
+        tracing::info!(
+            target: "restorer",
+            "Plan built: {} items, {}",
+            plan.total_items,
+            utils::format_size_binary(plan.total_bytes, 1)
+        );
 
         // Initialize progress reporter with stats gathered during planning
         self.progress_reporter
@@ -361,11 +369,14 @@ impl Restorer {
         let dry_run = self.opts.dry_run;
         let secure_storage = self.repo.secure_storage();
 
+        tracing::info!(target: "restorer", "Restoring data packs");
         self.restore_packs(plan_files, plan_packs, secure_storage, dry_run)
             .await?;
+        tracing::info!(target: "restorer", "Restoring metadata");
         self.restore_metadata(tree_id, include, exclude, plan.directories)
             .await?;
 
+        tracing::info!(target: "restorer", "Restoration finished");
         Ok(())
     }
 
@@ -863,6 +874,8 @@ impl Restorer {
                     .acquire_many_owned(permit_units)
                     .await
                     .map_err(|_| anyhow!("Interrupted while reserving restore memory"))?;
+
+                tracing::debug!(target: "restorer", "Downloading {} segments from pack {} ({} bytes)", segments.len(), pack_id.to_short_hex(8), requested_bytes);
                 let segments = loader::download_pack_segments(repo, segments).await;
                 segments.map(|segments| (segments, permit))
             }

@@ -32,6 +32,7 @@ def cleanup():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build Mapache artifacts using Docker.")
     parser.add_argument("-l", "--local", action="store_true", help="Use local source from current directory.")
+    parser.add_argument("-d", "--debug", action="store_true", help="Build in debug mode instead of release.")
     parser.add_argument("ref", nargs="?", default="main", help="Git ref to build (default: main).")
     parser.add_argument("features", nargs="?", default="default", help="Features to enable (default: default).")
 
@@ -74,11 +75,13 @@ if __name__ == "__main__":
     try:
         # Build the image
         cache_breaker = int(time.time())
+        release_arg = f"--build-arg MAPACHE_RELEASE_BUILD=true " if not args.debug else ""
         build_cmd = (
             f"docker build "
             f"--build-arg BUILD_SOURCE={build_source} "
             f"--build-arg GIT_REF={ref} "
             f"--build-arg FEATURES={features} "
+            f"{release_arg}"
             f"--build-arg CACHE_BREAKER={cache_breaker} "
             f"--tag {IMAGE_NAME} "
             f"--file {DOCKERFILE_PATH} ."

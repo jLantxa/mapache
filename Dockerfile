@@ -44,32 +44,62 @@ COPY . /mapache
 FROM source-${BUILD_SOURCE} AS builder
 WORKDIR /mapache
 ARG FEATURES="default"
-ENV MAPACHE_RELEASE_BUILD=true
+ARG MAPACHE_RELEASE_BUILD
 
 # Run tests
-RUN cargo test --features $FEATURES --release -- --skip integration_tests::test_cmd_mount
+RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo test --features $FEATURES --release -- --skip integration_tests::test_cmd_mount; \
+    else \
+    cargo test --features $FEATURES --release -- --skip integration_tests::test_cmd_mount; \
+    fi
 
 # Apply high optimizations
 ENV CARGO_PROFILE_RELEASE_LTO="true"
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
 
 # Build Linux x64 (Static Musl)
-RUN CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static" \
-    cargo build --features $FEATURES --release --target x86_64-unknown-linux-musl -p mapache
+RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static" \
+    MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo build --features $FEATURES --release --target x86_64-unknown-linux-musl -p mapache; \
+    else \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static" \
+    cargo build --features $FEATURES --release --target x86_64-unknown-linux-musl -p mapache; \
+    fi
 
 # Build Linux ARM64 (Static Musl)
-RUN cargo zigbuild --features $FEATURES --release --target aarch64-unknown-linux-musl -p mapache
+RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo zigbuild --features $FEATURES --release --target aarch64-unknown-linux-musl -p mapache; \
+    else \
+    cargo zigbuild --features $FEATURES --release --target aarch64-unknown-linux-musl -p mapache; \
+    fi
 
 # Build Linux ARMv7 (Static Musl)
-RUN cargo zigbuild --features $FEATURES --release --target armv7-unknown-linux-musleabihf -p mapache
+RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo zigbuild --features $FEATURES --release --target armv7-unknown-linux-musleabihf -p mapache; \
+    else \
+    cargo zigbuild --features $FEATURES --release --target armv7-unknown-linux-musleabihf -p mapache; \
+    fi
 
 # Build Windows MSVC x64 (Static CRT)
-RUN RUSTFLAGS="-C target-feature=+crt-static" \
-    cargo xwin build --features $FEATURES --release --target x86_64-pc-windows-msvc -p mapache
+RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    RUSTFLAGS="-C target-feature=+crt-static" \
+    MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo xwin build --features $FEATURES --release --target x86_64-pc-windows-msvc -p mapache; \
+    else \
+    RUSTFLAGS="-C target-feature=+crt-static" \
+    cargo xwin build --features $FEATURES --release --target x86_64-pc-windows-msvc -p mapache; \
+    fi
 
 # Build Mac Intel and Apple Silicon
-RUN cargo zigbuild --release --target x86_64-apple-darwin -p mapache --no-default-features
-RUN cargo zigbuild --release --target aarch64-apple-darwin -p mapache --no-default-features
+RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo zigbuild --release --target x86_64-apple-darwin -p mapache --no-default-features; \
+    else \
+    cargo zigbuild --release --target x86_64-apple-darwin -p mapache --no-default-features; \
+    fi
+RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo zigbuild --release --target aarch64-apple-darwin -p mapache --no-default-features; \
+    else \
+    cargo zigbuild --release --target aarch64-apple-darwin -p mapache --no-default-features; \
+    fi
 
 # --- Final Image ---
 FROM alpine:latest

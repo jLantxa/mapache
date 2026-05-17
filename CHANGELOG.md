@@ -20,6 +20,9 @@
 - **Enhanced Retention Rules**: Added `--host` (multiple), `--keep-hourly`, and
   `--keep-min` flags to the forget command for more granular snapshot retention
   control.
+- **Memory-Efficient Restore**: Blobs are now written immediately after
+  decoding, reducing peak memory from O(all blobs in segment) to O(1 blob).
+  Cuts restore memory usage without sacrificing parallelism.
 
 ## v0.3.0
 

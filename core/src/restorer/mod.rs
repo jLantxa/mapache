@@ -891,9 +891,6 @@ impl Restorer {
             for (pack_segment, segment_data) in segments {
                 let data_arc = Arc::new(segment_data);
 
-                // Group all blobs in this segment by target file_idx
-                let mut file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
-
                 for (blob_id, locator, targets) in pack_segment.blobs {
                     let start = (locator.offset as u64 - pack_segment.min_offset) as usize;
                     let end = start + locator.length as usize;
@@ -903,62 +900,83 @@ impl Restorer {
                         .decode_owned(encoded_blob.to_vec())
                         .with_context(|| format!("Failed to decode blob {blob_id}"))?;
 
-                    for target in targets {
-                        file_batches
-                            .entry(target.file_idx)
-                            .or_default()
-                            .push((decoded_data.clone(), target.offset_in_file));
-                    }
-                }
+                    let raw_len = decoded_data.len() as u64;
 
-                // Process each file batch in parallel
-                let mut batch_stream = futures::stream::iter(file_batches)
-                    .map(|(file_idx, writes)| {
+                    if targets.len() == 1 {
+                        let target = &targets[0];
+                        let file_path = files[target.file_idx].path.clone();
+                        let offset = target.offset_in_file;
+                        let file_idx = target.file_idx;
                         let handle_cache = handle_cache.clone();
-                        let files = files.clone();
                         let progress_reporter = self.progress_reporter.clone();
                         let quit_on_error = self.opts.quit_on_error;
 
-                        async move {
-                            let write_result =
-                                spawn_blocking(move || -> Result<u64, anyhow::Error> {
-                                    let file_plan = &files[file_idx];
-                                    let mut cache_guard = handle_cache.get_shard(file_idx).lock();
-                                    let file = cache_guard.get_handle(file_idx, &file_plan.path)?;
-
-                                    let mut total_written = 0;
-                                    for (data, offset) in writes {
-                                        #[cfg(unix)]
-                                        file.write_at(&data, offset).map_err(|e| anyhow!(e))?;
-                                        #[cfg(windows)]
-                                        file.seek_write(&data, offset).map_err(|e| anyhow!(e))?;
-                                        total_written += data.len() as u64;
-                                    }
-                                    Ok(total_written)
-                                })
-                                .await
+                        let write_result = spawn_blocking(move || -> Result<u64, anyhow::Error> {
+                            let mut cache_guard = handle_cache.get_shard(file_idx).lock();
+                            let file = cache_guard.get_handle(file_idx, &file_path)?;
+                            #[cfg(unix)]
+                            file.write_at(&decoded_data, offset)
                                 .map_err(|e| anyhow!(e))?;
+                            #[cfg(windows)]
+                            file.seek_write(&decoded_data, offset)
+                                .map_err(|e| anyhow!(e))?;
+                            Ok(raw_len)
+                        })
+                        .await
+                        .map_err(|e| anyhow!(e))?;
 
-                            match write_result {
+                        match write_result {
+                            Ok(bytes) => {
+                                progress_reporter.processed_bytes(bytes);
+                            }
+                            Err(e) => {
+                                let err_msg =
+                                    format!("Failed to write to file index {file_idx}: {e}");
+                                if quit_on_error {
+                                    bail!(err_msg);
+                                }
+                                progress_reporter.error(&err_msg);
+                            }
+                        }
+                    } else {
+                        let shared_data = Arc::new(decoded_data);
+                        let mut write_handles = Vec::with_capacity(targets.len());
+
+                        for target in &targets {
+                            let data = shared_data.clone();
+                            let file_path = files[target.file_idx].path.clone();
+                            let offset = target.offset_in_file;
+                            let file_idx = target.file_idx;
+                            let handle_cache = handle_cache.clone();
+
+                            let handle = spawn_blocking(move || -> Result<u64, anyhow::Error> {
+                                let mut cache_guard = handle_cache.get_shard(file_idx).lock();
+                                let file = cache_guard.get_handle(file_idx, &file_path)?;
+                                #[cfg(unix)]
+                                file.write_at(&data, offset).map_err(|e| anyhow!(e))?;
+                                #[cfg(windows)]
+                                file.seek_write(&data, offset).map_err(|e| anyhow!(e))?;
+                                Ok(raw_len)
+                            });
+                            write_handles.push((file_idx, handle));
+                        }
+
+                        for (file_idx, handle) in write_handles {
+                            match handle.await.map_err(|e| anyhow!(e))? {
                                 Ok(bytes) => {
-                                    progress_reporter.processed_bytes(bytes);
+                                    self.progress_reporter.processed_bytes(bytes);
                                 }
                                 Err(e) => {
                                     let err_msg =
                                         format!("Failed to write to file index {file_idx}: {e}");
-                                    if quit_on_error {
+                                    if self.opts.quit_on_error {
                                         bail!(err_msg);
                                     }
-                                    progress_reporter.error(&err_msg);
+                                    self.progress_reporter.error(&err_msg);
                                 }
                             }
-                            Ok::<(), anyhow::Error>(())
                         }
-                    })
-                    .buffer_unordered(DEFAULT_RESTORE_BLOB_CONCURRENCY);
-
-                while let Some(res) = batch_stream.next().await {
-                    res?;
+                    }
                 }
             }
         }

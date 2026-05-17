@@ -68,10 +68,10 @@ validation before relying on it for primary backups.
 ## Benchmarks
 
 This is a non-exhaustive set of benchmarks run on my development hardware. They
-serve as a baseline for comparing performance between versions, using restic as
-a base.
+serve as a baseline for comparing performance between versions, using restic
+v0.18.1 as a base.
 
-**Test environment:** Fedora 43, AMD Ryzen 9 3900X (24 threads), SanDisk Extreme
+**Test environment:** Fedora 44, AMD Ryzen 9 3900X (24 threads), SanDisk Extreme
 PRO NVMe.
 
 Each result is the average of 3 runs following a warmup run, all on local
@@ -86,25 +86,24 @@ Workloads:
 - **kernel** — Linux kernel source tree (~1.6 GB, 99'131 objects)
 - **enron** — Enron email corpus (~1.4 GB, 520'901 objects)
 
-### v0.3.0 baseline (vs restic v0.18.1)
 
-#### kernel
-
-| Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
-|---------|-----------|--------|-------|----------|-----------|
-| mapache | backup    | 3.40s  | 1118% | 485 MB   | 304.1 MB  |
-| restic  | backup    | 4.45s  | 1058% | 575 MB   | 308.9 MB  |
-| mapache | restore   | 15.57s | 144%  | 715 MB   | —         |
-| restic  | restore   | 17.32s | 141%  | 242 MB   | —         |
-
-#### enron
+### kernel
 
 | Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
 |---------|-----------|--------|-------|----------|-----------|
-| mapache | backup    | 8.23s  | 1055% | 512 MB   | 717.3 MB  |
-| restic  | backup    | 13.03s | 990%  | 426 MB   | 724.9 MB  |
-| mapache | restore   | 69.75s | 135%  | 543 MB   | —         |
-| restic  | restore   | 82.20s | 142%  | 418 MB   | —         |
+| mapache | backup    | 2.34s  | 1194% | 566 MB   | 304.1 MB  |
+| restic  | backup    | 3.66s  | 1246% | 612 MB   | 308.8 MB  |
+| mapache | restore   | 9.96s  | 117%  | 268 MB   | —         |
+| restic  | restore   | 10.57s | 133%  | 255 MB   | —         |
+
+### enron
+
+| Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
+|---------|-----------|--------|-------|----------|-----------|
+| mapache | backup    | 5.54s  | 1162% | 594 MB   | 717.0 MB  |
+| restic  | backup    | 9.48s  | 1198% | 413 MB   | 724.9 MB  |
+| mapache | restore   | 32.90s | 127%  | 373 MB   | —         |
+| restic  | restore   | 41.62s | 114%  | 445 MB   | —         |
 
 ## Roadmap
 

@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
     time::Instant,
 };
@@ -7,7 +8,8 @@ use std::{
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
-use serde::Serialize;
+use conflate::Merge;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -59,41 +61,53 @@ impl std::fmt::Display for Strategy {
     }
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Merge, Deserialize, Default)]
 #[clap(
     about = "Restore a snapshot in a target path",
     long_about = "Restore a snapshot in a target path. Running this command in \
     --dry-run mode simulates the restoration of a snapshot, and can be used to \
     detect errors before running the actual restore."
 )]
+#[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
     #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
+    #[merge(skip)]
+    #[serde(default)]
     pub snapshot: UseSnapshot,
 
     /// A path where the files will be restored.
-    #[clap(long, required = true)]
-    pub target: PathBuf,
+    #[clap(long)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
+    pub target: Option<PathBuf>,
 
     /// A list of paths to restore: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
+    #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
+    #[merge(strategy = conflate::option::overwrite_none)]
     pub include: Option<Vec<String>>,
 
     /// A file containing a list of paths to include, one per line.
     #[clap(long, value_parser)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
     pub include_file: Option<PathBuf>,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
-    #[clap(long, value_parser, required = false, value_delimiter = ',', num_args = 1..)]
+    #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
+    #[merge(strategy = conflate::option::overwrite_none)]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Strip the longest common prefix from all restored routes.
-    #[clap(long, value_parser, default_value_t = false)]
-    pub strip_prefix: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub strip_prefix: Option<bool>,
 
     /// Method for conflict resolution in case a file or directory already exists in the target location.
     ///
@@ -101,42 +115,77 @@ pub struct CmdArgs {
     /// skip: Skips restoring and keeps the local item.
     /// overwrite: Overwrites the item in the target location with the node from the snapshot.
     /// newer: Keeps the item with the more recent modified time.
-    #[clap(long = "strategy", default_value_t=Strategy::Fail)]
-    pub strategy: Strategy,
+    #[clap(long = "strategy")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "deserialize_strategy_opt")]
+    pub strategy: Option<Strategy>,
 
     /// Delete files in the target directory that are not present in the snapshot.
     /// Use with caution.
-    #[clap(long, value_parser, default_value_t = false)]
-    pub delete: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub delete: Option<bool>,
 
     /// When used with --delete, also delete nodes in the same level as the root.
-    #[clap(long, value_parser, default_value_t = false, requires = "delete")]
-    pub no_preserve_root: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", requires = "delete")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub no_preserve_root: Option<bool>,
 
     /// Quit immediately if a restore error occurs
-    #[clap(long, default_value_t = false)]
-    pub quit_on_error: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub quit_on_error: Option<bool>,
 
     /// Create sparse files instead of preallocating them.
     /// This is faster on some filesystems but may cause higher disk fragmentation.
-    #[clap(long, default_value_t = false)]
-    pub sparse: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub sparse: Option<bool>,
 
     /// Force verification of existing files by content (hashing) even if mtime matches.
-    #[clap(long, default_value_t = false)]
-    pub verify: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub verify: Option<bool>,
 
     /// Dry run
-    #[clap(long, default_value_t = false)]
+    #[clap(long)]
+    #[merge(skip)]
     pub dry_run: bool,
+}
+
+fn deserialize_strategy_opt<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Strategy>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    opt.map(|s| Strategy::from_str(&s).map_err(serde::de::Error::custom))
+        .transpose()
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "restore", "Starting restore command");
+
+    let target = args.target.as_ref().ok_or_else(|| {
+        fail(
+            "Target path is required. Use --target or set it in config file.",
+            RestoreError::TargetError,
+        )
+    })?;
+    let strategy = args.strategy.clone().unwrap_or(Strategy::Fail);
+    let dry_run = args.dry_run;
+    let delete = args.delete.unwrap_or(false);
+    let no_preserve_root = args.no_preserve_root.unwrap_or(false);
+    let quit_on_error = args.quit_on_error.unwrap_or(false);
+    let sparse = args.sparse.unwrap_or(false);
+    let verify = args.verify.unwrap_or(false);
+    let strip_prefix = args.strip_prefix.unwrap_or(false);
+
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(args.dry_run))
+        new_backend_with_prompt(global_args.backend_options(dry_run))
             .await
             .map_err(|e| {
                 fail(
@@ -185,7 +234,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             )
             .await?;
 
-            let common_prefix: Option<PathBuf> = if args.strip_prefix {
+            let common_prefix: Option<PathBuf> = if strip_prefix {
                 parsed_includes
                     .as_ref()
                     .map(|includes| calculate_lcp(includes, false))
@@ -194,7 +243,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             };
 
             let abs_normalized_target =
-                get_absolute_normalized_path(&args.target).map_err(|e| {
+                get_absolute_normalized_path(target).map_err(|e| {
                     fail(
                         format!("Invalid target path: {}", e),
                         RestoreError::TargetError,
@@ -203,7 +252,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             tracing::info!(target: "restore", "Restoring snapshot {snapshot_id} (root={:?}) to {:?}", snapshot.root, abs_normalized_target);
 
-            emit_restore_start(global_args.json, args, &snapshot_id, &abs_normalized_target);
+            emit_restore_start(global_args.json, &snapshot_id, &abs_normalized_target, dry_run, &strategy);
 
             // We initialize the reporter with 0 totals. The Restorer will resize_workload it
             // with actual totals once it finishes planning (which is now the same as scanning).
@@ -229,12 +278,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 parsed_includes.clone(),
                 parsed_excludes.clone(),
                 RestoreOptions {
-                    dry_run: args.dry_run,
-                    strategy: args.strategy.clone(),
-                    quit_on_error: args.quit_on_error,
+                    dry_run,
+                    strategy,
+                    quit_on_error,
                     strip_prefix: common_prefix,
-                    preallocate: !args.sparse,
-                    verify: args.verify,
+                    preallocate: !sparse,
+                    verify,
                 },
                 progress_reporter.clone(),
                 cleanup_handler.interrupted.clone(),
@@ -245,7 +294,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let warning_count = progress_reporter.warning_count();
             let error_count = progress_reporter.error_count();
 
-            if args.delete {
+            if delete {
                 // Delete local nodes not present in the snapshot tree
                 tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
                 restorer::sync::delete_nodes(
@@ -254,8 +303,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     &snapshot.tree,
                     parsed_includes,
                     parsed_excludes,
-                    args.dry_run,
-                    args.no_preserve_root,
+                    dry_run,
+                    no_preserve_root,
                     cleanup_handler.interrupted.clone(),
                 )
                 .await?;
@@ -270,7 +319,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 start.elapsed().as_secs_f64(),
                 error_count,
                 warning_count,
-                args.dry_run,
+                dry_run,
             );
             tracing::info!(target: "restore", "Restore command completed in {:?}", start.elapsed());
 
@@ -292,7 +341,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-fn emit_restore_start(json: bool, args: &CmdArgs, snapshot_id: &ID, target: &Path) {
+fn emit_restore_start(
+    json: bool,
+    snapshot_id: &ID,
+    target: &Path,
+    dry_run: bool,
+    strategy: &Strategy,
+) {
     if json {
         #[derive(Serialize)]
         struct RestoreStartMsg {
@@ -307,12 +362,12 @@ fn emit_restore_start(json: bool, args: &CmdArgs, snapshot_id: &ID, target: &Pat
             &RestoreStartMsg {
                 snapshot: snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
                 target: target.display().to_string(),
-                dry_run: args.dry_run,
-                strategy: args.strategy.to_string(),
+                dry_run,
+                strategy: strategy.to_string(),
             },
         );
     } else {
-        if args.dry_run {
+        if dry_run {
             ui::cli::log!("{}", "[DRY RUN]".bold().purple());
         }
 

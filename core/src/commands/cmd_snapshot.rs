@@ -1,15 +1,17 @@
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc, time::Instant};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
+use conflate::Merge;
+use serde::Deserialize;
 
 use crate::{
     archiver::{self, SnapshotOptions, progress::SnapshotProgress},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, ToExitCode, cleanup::CleanupHandler, fail, find_use_snapshot, parse_tags,
-        with_repository_lock,
+        EMPTY_TAG_MARK, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, find_use_snapshot,
+        parse_tags, with_repository_lock,
     },
     fs::{
         self, calculate_lcp,
@@ -34,7 +36,7 @@ use crate::{
     utils::{self},
 };
 
-use super::{GlobalArgs, UseSnapshot};
+use super::UseSnapshot;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SnapshotError {
@@ -51,62 +53,90 @@ impl ToExitCode for SnapshotError {
     }
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Merge, Deserialize, Default)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
 #[clap(about = "Create a new snapshot")]
+#[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {
     /// List of paths to backup
-    #[clap(value_parser, required = true)]
+    #[clap(value_parser)]
+    #[merge(strategy = conflate::vec::overwrite_empty)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_paths_vec")]
     pub paths: Vec<PathBuf>,
 
     /// Use a single directory path as the snapshot root
-    #[clap(long = "as-root", value_parser, default_value_t = false)]
-    pub as_root: bool,
+    #[clap(long = "as-root", value_parser, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub as_root: Option<bool>,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
+    #[merge(strategy = crate::config::merge_option_vec)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_string_vec_opt")]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Tags
-    #[clap(long = "tags", value_parser, default_value_t = EMPTY_TAG_MARK.to_string())]
-    pub tags_str: String,
+    #[clap(long = "tags", value_parser)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub tags_str: Option<String>,
 
     /// Snapshot description
     #[clap(long, value_parser)]
+    #[merge(strategy = conflate::option::overwrite_none)]
     pub description: Option<String>,
 
     /// Force a complete analysis of all files and directories
     #[clap(long, group = "scan_mode")]
+    #[merge(skip)]
     pub no_parent: bool,
 
     /// Don't scan the file system
-    #[clap(long, value_parser, default_value_t = false)]
-    pub no_scan: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub no_scan: Option<bool>,
 
     /// Don't create a snapshot if there are no changes since the parent snapshot
-    #[clap(long, default_value_t = false)]
-    pub skip_if_unchanged: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub skip_if_unchanged: Option<bool>,
 
     /// Use a snapshot as parent (ID or 'latest'). This snapshot will be the base when analyzing differences.
-    #[clap(long, group = "scan_mode", value_parser = clap::value_parser!(UseSnapshot),
-           default_value_t = UseSnapshot::Latest )]
-    pub parent: UseSnapshot,
+    #[clap(long, group = "scan_mode", value_parser = clap::value_parser!(UseSnapshot))]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "deserialize_use_snapshot_opt")]
+    pub parent: Option<UseSnapshot>,
 
     /// Number of files to process in parallel.
-    #[clap(long = "readers", default_value_t = DEFAULT_SNAPSHOT_READERS)]
-    pub num_readers: usize,
+    #[clap(long = "readers")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub num_readers: Option<usize>,
 
     /// Number of writer threads.
-    #[clap(long = "packers", default_value_t = mapache::defaults::DEFAULT_SNAPSHOT_PACKERS)]
-    pub num_packers: usize,
+    #[clap(long = "packers")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub num_packers: Option<usize>,
 
     /// Dry run
-    #[clap(long, default_value_t = false)]
+    #[clap(long)]
+    #[merge(skip)]
     pub dry_run: bool,
+}
+
+fn deserialize_use_snapshot_opt<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<UseSnapshot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    opt.map(|s| UseSnapshot::from_str(&s).map_err(serde::de::Error::custom))
+        .transpose()
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
@@ -118,10 +148,25 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ));
     };
 
+    let as_root = args.as_root.unwrap_or(false);
+    let no_scan = args.no_scan.unwrap_or(false);
+    let skip_if_unchanged = args.skip_if_unchanged.unwrap_or(false);
+    let parent = args.parent.clone().unwrap_or(UseSnapshot::Latest);
+    let no_parent = args.no_parent;
+    let num_readers = args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS);
+    let num_packers = args
+        .num_packers
+        .unwrap_or(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS);
+    let dry_run = args.dry_run;
+    let tags_str = args
+        .tags_str
+        .clone()
+        .unwrap_or_else(|| EMPTY_TAG_MARK.to_string());
+
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(args.dry_run))
+        new_backend_with_prompt(global_args.backend_options(dry_run))
             .await
             .map_err(|e| {
                 fail(
@@ -140,7 +185,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             // Get source paths from arguments or readdir root path
             tracing::info!(target: "snapshot", "Processing source paths: {:?}", args.paths);
-            let source_paths = if !args.as_root {
+            let source_paths = if !as_root {
                 args.paths.clone()
             } else {
                 // Use path as root and readdir
@@ -161,7 +206,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
             };
 
-            let mut tags: BTreeSet<String> = parse_tags(Some(&args.tags_str));
+            let mut tags: BTreeSet<String> = parse_tags(Some(&tags_str));
             tags.retain(|tag| tag != EMPTY_TAG_MARK);
 
             // Canonicalize and deduplicate source paths
@@ -206,19 +251,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let snapshot_root_path = calculate_lcp(&absolute_source_paths, false);
 
             ui::cli::log!();
-            if args.dry_run {
+            if dry_run {
                 ui::cli::log!("{}", "[DRY RUN]".bold().purple());
                 tracing::info!(target: "snapshot", "Dry run enabled");
             }
 
-            tracing::info!(target: "snapshot", "Finding parent snapshot (parent={:?})", args.parent);
-            let parent_snapshot_pair: Option<SnapshotPair> = match args.no_parent {
+            tracing::info!(target: "snapshot", "Finding parent snapshot (parent={:?})", parent);
+            let parent_snapshot_pair: Option<SnapshotPair> = match no_parent {
                 true => {
                     ui::cli::log!("Full scan");
                     tracing::info!(target: "snapshot", "Full scan requested (no parent)");
                     None
                 }
-                false => match find_use_snapshot(repo.clone(), &args.parent).await {
+                false => match find_use_snapshot(repo.clone(), &parent).await {
                     Ok(Some((id, snapshot))) => {
                         ui::cli::log!(
                             "Using snapshot {} as parent",
@@ -250,7 +295,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Arc::new(CliSnapshotProgressReporter::new(
                     None,
                     None,
-                    args.num_readers,
+                    num_readers,
                 ))
             };
 
@@ -267,7 +312,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             })?;
             cleanup_handler.add_lock(lock_handle.clone());
 
-            repo.init_pack_saver(args.num_packers).map_err(|e| {
+            repo.init_pack_saver(num_packers).map_err(|e| {
                 fail(
                     format!("Failed to initialize pack saver: {}", e),
                     SnapshotError::SnapshotFailed,
@@ -285,9 +330,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     parent_snapshot: parent_snapshot_pair.as_ref(),
                     tags,
                     description: args.description.clone(),
-                    no_scan: args.no_scan,
+                    no_scan,
                 },
-                args.num_readers,
+                num_readers,
                 progress.clone(),
                 progress_reporter.clone(),
                 cleanup_handler.interrupted.clone(),
@@ -340,7 +385,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             new_snapshot.summary.data_blobs = repo_stats.blobs;
             new_snapshot.summary.meta_blobs = repo_stats.meta_blobs;
 
-            let should_save_snapshot = !args.skip_if_unchanged
+            let should_save_snapshot = !skip_if_unchanged
                 || parent_snapshot_pair.is_none()
                 || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
 

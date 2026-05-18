@@ -357,17 +357,17 @@ impl SnapshotBuilder {
         Self {
             args: cmd_snapshot::CmdArgs {
                 paths,
-                as_root: false,
+                as_root: Some(false),
                 exclude: None,
                 exclude_file: None,
-                tags_str: String::new(),
+                tags_str: Some(String::new()),
                 description: None,
                 no_parent: false,
-                skip_if_unchanged: false,
-                no_scan: false,
-                parent: UseSnapshot::Latest,
-                num_readers: 2,
-                num_packers: 2,
+                skip_if_unchanged: Some(false),
+                no_scan: Some(false),
+                parent: Some(UseSnapshot::Latest),
+                num_readers: Some(2),
+                num_packers: Some(2),
                 dry_run: false,
             },
         }
@@ -389,22 +389,22 @@ impl SnapshotBuilder {
     }
 
     pub fn skip_if_unchanged(mut self, skip: bool) -> Self {
-        self.args.skip_if_unchanged = skip;
+        self.args.skip_if_unchanged = Some(skip);
         self
     }
 
     pub fn no_scan(mut self, no_scan: bool) -> Self {
-        self.args.no_scan = no_scan;
+        self.args.no_scan = Some(no_scan);
         self
     }
 
     pub fn root(mut self, as_root: bool) -> Self {
-        self.args.as_root = as_root;
+        self.args.as_root = Some(as_root);
         self
     }
 
     pub fn tags(mut self, tags: String) -> Self {
-        self.args.tags_str = tags;
+        self.args.tags_str = Some(tags);
         self
     }
 
@@ -414,17 +414,17 @@ impl SnapshotBuilder {
     }
 
     pub fn parent(mut self, parent: mapache::commands::UseSnapshot) -> Self {
-        self.args.parent = parent;
+        self.args.parent = Some(parent);
         self
     }
 
     pub fn num_readers(mut self, num: usize) -> Self {
-        self.args.num_readers = num;
+        self.args.num_readers = Some(num);
         self
     }
 
     pub fn num_packers(mut self, num: usize) -> Self {
-        self.args.num_packers = num;
+        self.args.num_packers = Some(num);
         self
     }
 
@@ -444,26 +444,26 @@ impl RestoreBuilder {
         use mapache::restorer::Strategy;
         Self {
             args: cmd_restore::CmdArgs {
-                sparse: false,
-                target,
+                sparse: Some(false),
+                target: Some(target),
                 snapshot: UseSnapshot::Latest,
                 dry_run: false,
-                verify: false,
+                verify: Some(false),
                 include: None,
                 exclude: None,
                 include_file: None,
                 exclude_file: None,
-                strip_prefix: false,
-                strategy: Strategy::Skip,
-                quit_on_error: true,
-                delete: false,
-                no_preserve_root: false,
+                strip_prefix: Some(false),
+                strategy: Some(Strategy::Skip),
+                quit_on_error: Some(true),
+                delete: Some(false),
+                no_preserve_root: Some(false),
             },
         }
     }
 
     pub fn strip_prefix(mut self, strip: bool) -> Self {
-        self.args.strip_prefix = strip;
+        self.args.strip_prefix = Some(strip);
         self
     }
 
@@ -483,32 +483,32 @@ impl RestoreBuilder {
     }
 
     pub fn verify(mut self, verify: bool) -> Self {
-        self.args.verify = verify;
+        self.args.verify = Some(verify);
         self
     }
 
     pub fn delete(mut self, delete: bool) -> Self {
-        self.args.delete = delete;
+        self.args.delete = Some(delete);
         self
     }
 
     pub fn strategy(mut self, strategy: mapache::restorer::Strategy) -> Self {
-        self.args.strategy = strategy;
+        self.args.strategy = Some(strategy);
         self
     }
 
     pub fn sparse(mut self, sparse: bool) -> Self {
-        self.args.sparse = sparse;
+        self.args.sparse = Some(sparse);
         self
     }
 
     pub fn quit_on_error(mut self, quit: bool) -> Self {
-        self.args.quit_on_error = quit;
+        self.args.quit_on_error = Some(quit);
         self
     }
 
     pub fn no_preserve_root(mut self, no_preserve: bool) -> Self {
-        self.args.no_preserve_root = no_preserve;
+        self.args.no_preserve_root = Some(no_preserve);
         self
     }
 
@@ -634,9 +634,9 @@ impl ForgetBuilder {
                 keep_hourly: None,
                 run_gc: false,
                 dry_run: false,
-                tolerance: 0.0,
+                tolerance: Some(0.0),
                 tags_str: None,
-                keep_tags_str: None,
+                keep_tags: None,
                 hosts: Vec::new(),
                 keep_min: None,
             },

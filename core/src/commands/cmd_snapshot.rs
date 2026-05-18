@@ -126,6 +126,12 @@ pub struct CmdArgs {
     #[clap(long)]
     #[merge(skip)]
     pub dry_run: bool,
+
+    /// Store the access time for all files and directories.
+    /// Enabling this may result in significantly more metadata, so it's off by default.
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub with_atime: Option<bool>,
 }
 
 fn deserialize_use_snapshot_opt<'de, D>(
@@ -151,6 +157,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let as_root = args.as_root.unwrap_or(false);
     let no_scan = args.no_scan.unwrap_or(false);
     let skip_if_unchanged = args.skip_if_unchanged.unwrap_or(false);
+    let with_atime = args.with_atime.unwrap_or(false);
     let parent = args.parent.clone().unwrap_or(UseSnapshot::Latest);
     let no_parent = args.no_parent;
     let num_readers = args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS);
@@ -331,6 +338,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     tags,
                     description: args.description.clone(),
                     no_scan,
+                    with_atime,
                 },
                 num_readers,
                 progress.clone(),

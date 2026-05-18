@@ -8,23 +8,27 @@
   `.mapache` bundle files with full deduplication and encryption.
 - **FUSE Bundle Mount**: Mount `.mapache` bundles as read-only filesystems
   via the `mount` command.
-- **Memory-Efficient Verification**: Refactored verification to use a streaming
-  approach, capping memory usage for large packs.
-- **Enhanced Atomic Locks**: Added better metadata and robust stale lock
-  detection with detailed conflict reporting.
+- **TOML Config File**: Added support for a `.toml` configuration file to
+  centralize repository settings and runtime defaults.
+- **Enhanced Retention Rules**: Added `--host` (multiple), `--keep-hourly`, and
+  `--keep-min` flags to the forget command for more granular snapshot retention
+  control.
+- **Memory-Efficient Restore**: Blobs are now written immediately after
+  decoding, reducing peak memory from O(all blobs in segment) to O(1 blob).
+  Cuts restore memory usage without sacrificing parallelism.
 - **Robust S3 Backend**: Implemented multipart uploads for files >= 128 MiB
   and recursive listing to avoid hundreds of directory requests during
   garbage collection.
 - **Improved GC Efficiency**: Stream snapshots instead of loading all into
   memory upfront and process repack chunks in parallel with pipelining.
-- **Enhanced Retention Rules**: Added `--host` (multiple), `--keep-hourly`, and
-  `--keep-min` flags to the forget command for more granular snapshot retention
-  control.
-- **TOML Config File**: Added support for a `.toml` configuration file to
-  centralize repository settings and runtime defaults.
-- **Memory-Efficient Restore**: Blobs are now written immediately after
-  decoding, reducing peak memory from O(all blobs in segment) to O(1 blob).
-  Cuts restore memory usage without sacrificing parallelism.
+- **Memory-Efficient Verification**: Refactored verification to use a streaming
+  approach, capping memory usage for large packs.
+- **Enhanced Atomic Locks**: Added better metadata and robust stale lock
+  detection with detailed conflict reporting.
+- **Access Time Preservation**: Added `--with-atime` flag to `snapshot` to
+  optionally store and restore file access times. atime is not stored by default
+  to avoid unnecessary metadata growth. On Linux, `O_NOATIME` is used when
+  reading files to prevent the backup process from modifying access times.
 
 ## v0.3.0
 

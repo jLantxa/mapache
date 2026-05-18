@@ -369,6 +369,7 @@ impl SnapshotBuilder {
                 num_readers: Some(2),
                 num_packers: Some(2),
                 dry_run: false,
+                with_atime: None,
             },
         }
     }
@@ -425,6 +426,11 @@ impl SnapshotBuilder {
 
     pub fn num_packers(mut self, num: usize) -> Self {
         self.args.num_packers = Some(num);
+        self
+    }
+
+    pub fn with_atime(mut self, with_atime: bool) -> Self {
+        self.args.with_atime = Some(with_atime);
         self
     }
 

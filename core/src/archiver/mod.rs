@@ -52,6 +52,8 @@ pub struct SnapshotOptions<'a> {
     pub description: Option<String>,
     /// If true, skip the initial filesystem scan (estimated progress will be less accurate).
     pub no_scan: bool,
+    /// If true, store the access time (atime) for all files and directories.
+    pub with_atime: bool,
 }
 
 /// Internal state used to coordinate multiple concurrent tasks in the archiver pipeline.
@@ -145,6 +147,7 @@ pub(crate) async fn snapshot(
     let fs_stream = FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
+        snapshot_options.with_atime,
     )
     .await?;
 
@@ -374,7 +377,7 @@ fn scan_recursive(
         return;
     }
 
-    match crate::fs::node::Node::from_path_sync(path) {
+    match crate::fs::node::Node::from_path_sync(path, false) {
         Ok(node) => {
             progress_reporter.add_expected_items(1);
             if node.is_file() {

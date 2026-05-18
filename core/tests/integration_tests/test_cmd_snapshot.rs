@@ -527,4 +527,121 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_snapshot_with_atime_capture_and_restore() -> Result<()> {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        let file_path = backup_path.join("test.txt");
+        std::fs::write(&file_path, "atime test content")?;
+
+        let original_atime = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let original_mtime = UNIX_EPOCH + Duration::from_secs(1_100_000_000);
+
+        let ft_atime = filetime::FileTime::from(original_atime);
+        let ft_mtime = filetime::FileTime::from(original_mtime);
+        filetime::set_file_times(&file_path, ft_atime, ft_mtime)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .with_atime(true)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        let restored_path = restore_path.join("test.txt");
+        assert!(restored_path.exists());
+
+        let restored_meta = restored_path.symlink_metadata()?;
+        let restored_atime = restored_meta.accessed()?;
+        let restored_mtime = restored_meta.modified()?;
+
+        let atime_diff = restored_atime
+            .duration_since(original_atime)
+            .unwrap_or_else(|_| original_atime.duration_since(restored_atime).unwrap());
+        assert!(
+            atime_diff.as_secs() <= 1,
+            "restored atime differs by {:?}",
+            atime_diff
+        );
+
+        let mtime_diff = restored_mtime
+            .duration_since(original_mtime)
+            .unwrap_or_else(|_| original_mtime.duration_since(restored_mtime).unwrap());
+        assert!(
+            mtime_diff.as_secs() <= 1,
+            "restored mtime differs by {:?}",
+            mtime_diff
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_without_atime_does_not_store_it() -> Result<()> {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        let file_path = backup_path.join("test.txt");
+        std::fs::write(&file_path, "no atime test")?;
+
+        let original_atime = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let original_mtime = UNIX_EPOCH + Duration::from_secs(1_100_000_000);
+
+        let ft_atime = filetime::FileTime::from(original_atime);
+        let ft_mtime = filetime::FileTime::from(original_mtime);
+        filetime::set_file_times(&file_path, ft_atime, ft_mtime)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .with_atime(false)
+            .run(&ctx.global)
+            .await?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        let restored_path = restore_path.join("test.txt");
+        assert!(restored_path.exists());
+
+        let restored_meta = restored_path.symlink_metadata()?;
+        let restored_atime = restored_meta.accessed()?;
+        let restored_mtime = restored_meta.modified()?;
+
+        let mtime_diff = restored_mtime
+            .duration_since(original_mtime)
+            .unwrap_or_else(|_| original_mtime.duration_since(restored_mtime).unwrap());
+        assert!(
+            mtime_diff.as_secs() <= 1,
+            "restored mtime differs by {:?}",
+            mtime_diff
+        );
+
+        let atime_diff = restored_atime
+            .duration_since(restored_mtime)
+            .unwrap_or_else(|_| restored_mtime.duration_since(restored_atime).unwrap());
+        assert!(
+            atime_diff.as_secs() <= 1,
+            "without --with-atime, restored atime should equal mtime"
+        );
+
+        Ok(())
+    }
 }

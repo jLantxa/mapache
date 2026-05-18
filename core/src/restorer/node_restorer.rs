@@ -505,7 +505,7 @@ mod tests {
         let file_path = temp_dir.path().join("file.txt");
 
         std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
-        let mut node = Node::from_path(&file_path).await?;
+        let mut node = Node::from_path(&file_path, false).await?;
 
         // Change mtime to 1 day before now
         let prev_mtime: SystemTime = (Local::now() - Duration::days(1)).into();
@@ -529,6 +529,64 @@ mod tests {
         assert_eq!(
             original_mtime,
             file_path.symlink_metadata().unwrap().modified().unwrap()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_restore_atime() -> Result<()> {
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir()?;
+        let file_path = temp_dir.path().join("file.txt");
+
+        std::fs::write(&file_path, b"Mapachito").expect("Expected to write to file");
+
+        // Set specific atime and mtime (1 day and 2 days ago respectively)
+        let original_atime: SystemTime = (Local::now() - Duration::days(1)).into();
+        let original_mtime: SystemTime = (Local::now() - Duration::days(2)).into();
+
+        let ft_atime = FileTime::from(original_atime);
+        let ft_mtime = FileTime::from(original_mtime);
+        set_file_times(&file_path, ft_atime, ft_mtime)
+            .with_context(|| format!("Could not set file times for {}", file_path.display()))?;
+
+        // Capture node metadata WITH atime
+        let node = Node::from_path(&file_path, true).await?;
+        let captured_atime = node.metadata.accessed_time.unwrap();
+        let captured_mtime = node.metadata.modified_time.unwrap();
+
+        // Now change the file times to something else (now)
+        let now: SystemTime = Local::now().into();
+        let ft_now = FileTime::from(now);
+        set_file_times(&file_path, ft_now, ft_now)?;
+
+        // Restore metadata from the captured node
+        let reporter = ui::restore::CliRestoreProgressReporter::new(None, None);
+        try_restore_node_metadata(&node.metadata, false, &file_path, &reporter);
+
+        // Verify both atime and mtime were restored
+        let restored_meta = file_path.symlink_metadata()?;
+        let restored_atime = restored_meta.accessed()?;
+        let restored_mtime = restored_meta.modified()?;
+
+        let atime_diff = captured_atime
+            .duration_since(restored_atime)
+            .unwrap_or_else(|_| restored_atime.duration_since(captured_atime).unwrap());
+        assert!(
+            atime_diff.as_secs() <= 1,
+            "restored atime differs by {:?}",
+            atime_diff
+        );
+
+        let mtime_diff = captured_mtime
+            .duration_since(restored_mtime)
+            .unwrap_or_else(|_| restored_mtime.duration_since(captured_mtime).unwrap());
+        assert!(
+            mtime_diff.as_secs() <= 1,
+            "restored mtime differs by {:?}",
+            mtime_diff
         );
 
         Ok(())

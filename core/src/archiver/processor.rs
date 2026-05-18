@@ -259,24 +259,32 @@ fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
             .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
             .open(path)
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
+        use std::os::unix::io::AsRawFd;
+
         let file = std::fs::File::open(path)?;
+
+        // Try to set O_NOATIME to prevent updating the file's access time on read.
+        // This call fails when we're not the owner of the file or root, which is fine.
+        let fd = file.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags >= 0 {
+            unsafe {
+                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NOATIME);
+            }
+        }
 
         // Inform the kernel that we will read this file sequentially.
         // This triggers the kernel's internal read-ahead optimization.
-        #[cfg(not(target_os = "macos"))]
         unsafe {
-            use std::os::unix::io::AsRawFd;
-
-            libc::posix_fadvise(
-                file.as_raw_fd(),
-                0,
-                0, // 0 means until end of file
-                libc::POSIX_FADV_SEQUENTIAL,
-            );
+            libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_SEQUENTIAL);
         }
 
         Ok(file)
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        std::fs::File::open(path)
     }
 }

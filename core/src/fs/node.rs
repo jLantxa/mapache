@@ -65,9 +65,9 @@ pub struct SymlinkInfo {
 
 /// Node metadata. This struct is serialized; keep field order stable.
 ///
-/// We ignore the accessed time. This field changes everytime we analyze a file for backup,
-/// altering the hash of the node. The accessed time will be updated after restoring the
-/// file anyway. We don't include it in the metadata, but we still have it here.
+/// The accessed time is only captured when `--with-atime` is passed to the snapshot command.
+/// Without this flag, atime is omitted to avoid metadata churn on incremental backups,
+/// since reading files during backup would update atime anyway (unless O_NOATIME is used).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Metadata {
@@ -215,10 +215,14 @@ mod linux_statx {
 }
 
 impl Metadata {
-    fn from_fs(meta: &FsMetadata) -> Self {
+    fn from_fs(meta: &FsMetadata, with_atime: bool) -> Self {
         Self {
             size: meta.len(),
-            accessed_time: None, // atime is disabled
+            accessed_time: if with_atime {
+                meta.accessed().ok()
+            } else {
+                None
+            },
             created_time: meta.created().ok(),
             modified_time: meta.modified().ok(),
 
@@ -285,10 +289,14 @@ impl Metadata {
     }
 
     #[cfg(target_os = "linux")]
-    fn from_statx(sx: &linux_statx::statx) -> Self {
+    fn from_statx(sx: &linux_statx::statx, with_atime: bool) -> Self {
         let mut m = Self {
             size: sx.stx_size,
-            accessed_time: None, // atime is disabled
+            accessed_time: if with_atime && (sx.stx_mask & linux_statx::STATX_ATIME) != 0 {
+                Some(Self::statx_to_system_time(sx.stx_atime))
+            } else {
+                None
+            },
             modified_time: Some(Self::statx_to_system_time(sx.stx_mtime)),
             mode: Some(sx.stx_mode as u32),
             owner_uid: Some(sx.stx_uid),
@@ -366,17 +374,17 @@ impl Metadata {
 }
 
 impl Node {
-    /// Build a `Node` from any path on disk.
-    pub async fn from_path(path: &Path) -> Result<Self> {
+    /// Build a `Node` from any path on disk, optionally capturing access time.
+    pub async fn from_path(path: &Path, with_atime: bool) -> Result<Self> {
         let path_owned = path.to_owned();
-        tokio::task::spawn_blocking(move || Self::from_path_sync(&path_owned))
+        tokio::task::spawn_blocking(move || Self::from_path_sync(&path_owned, with_atime))
             .await
             .context("Node creation panicked")?
     }
 
-    /// Synchronous version of `from_path`.
-    pub fn from_path_sync(path: &Path) -> Result<Self> {
-        let (metadata, node_type) = Self::fetch_metadata_and_type_sync(path, false)?;
+    /// Synchronous version of `from_path`, optionally capturing access time.
+    pub fn from_path_sync(path: &Path, with_atime: bool) -> Result<Self> {
+        let (metadata, node_type) = Self::fetch_metadata_and_type_sync(path, false, with_atime)?;
 
         let name = path
             .file_name()
@@ -410,10 +418,11 @@ impl Node {
     async fn fetch_metadata_and_type(
         path: &Path,
         follow_symlinks: bool,
+        with_atime: bool,
     ) -> Result<(Metadata, NodeType)> {
         let path_owned = path.to_owned();
         tokio::task::spawn_blocking(move || {
-            Self::fetch_metadata_and_type_sync(&path_owned, follow_symlinks)
+            Self::fetch_metadata_and_type_sync(&path_owned, follow_symlinks, with_atime)
         })
         .await
         .context("Metadata fetching panicked")?
@@ -422,6 +431,7 @@ impl Node {
     fn fetch_metadata_and_type_sync(
         path: &Path,
         follow_symlinks: bool,
+        with_atime: bool,
     ) -> Result<(Metadata, NodeType)> {
         #[cfg(target_os = "linux")]
         {
@@ -433,9 +443,7 @@ impl Node {
                 libc::AT_SYMLINK_NOFOLLOW
             } | linux_statx::AT_STATX_DONT_SYNC;
 
-            // We only request the fields we actually use.
-            // STATX_BASIC_STATS (0x7ff) includes atime and ctime which we don't need.
-            const REQ_MASK: u32 = linux_statx::STATX_TYPE
+            let mut req_mask = linux_statx::STATX_TYPE
                 | linux_statx::STATX_MODE
                 | linux_statx::STATX_NLINK
                 | linux_statx::STATX_UID
@@ -445,12 +453,16 @@ impl Node {
                 | linux_statx::STATX_SIZE
                 | linux_statx::STATX_BTIME;
 
+            if with_atime {
+                req_mask |= linux_statx::STATX_ATIME;
+            }
+
             let res = unsafe {
-                linux_statx::statx(libc::AT_FDCWD, c_path.as_ptr(), flags, REQ_MASK, &mut sx)
+                linux_statx::statx(libc::AT_FDCWD, c_path.as_ptr(), flags, req_mask, &mut sx)
             };
 
             if res == 0 {
-                let meta = Metadata::from_statx(&sx);
+                let meta = Metadata::from_statx(&sx, with_atime);
                 let mode = sx.stx_mode as u32;
                 let node_type = if (mode & libc::S_IFMT) == libc::S_IFDIR {
                     NodeType::Directory
@@ -486,7 +498,7 @@ impl Node {
             std::fs::symlink_metadata(path)
         }?;
         let node_type = get_node_type(&meta)?;
-        Ok((Metadata::from_fs(&meta), node_type))
+        Ok((Metadata::from_fs(&meta, with_atime), node_type))
     }
 
     pub fn fetch_xattrs(&mut self, path: &Path) {
@@ -559,7 +571,7 @@ impl Node {
         if let Some(parent) = path.parent() {
             let full_target_path = parent.join(&target);
             if let Ok((_, target_type)) =
-                Self::fetch_metadata_and_type_sync(&full_target_path, true)
+                Self::fetch_metadata_and_type_sync(&full_target_path, true, false)
             {
                 info.target_type = Some(target_type);
             }
@@ -611,7 +623,7 @@ impl Node {
         // - symlink -> symlink_metadata
         // - otherwise -> entry.metadata
         // Our fetch_metadata_and_type handles this correctly.
-        let (metadata, node_type) = Self::fetch_metadata_and_type(path, false).await?;
+        let (metadata, node_type) = Self::fetch_metadata_and_type(path, false, false).await?;
 
         let mut node = Self {
             name,
@@ -802,14 +814,14 @@ mod tests {
         let file_path = tmp_dir.path().join("file.txt");
         std::fs::write(&file_path, "hello").unwrap();
 
-        let node = Node::from_path(&file_path).await.unwrap();
+        let node = Node::from_path(&file_path, false).await.unwrap();
         assert_eq!(node.name, "file.txt");
         assert!(node.is_file());
         assert_eq!(node.metadata.size, 5);
 
         let dir_path = tmp_dir.path().join("subdir");
         std::fs::create_dir(&dir_path).unwrap();
-        let node_dir = Node::from_path(&dir_path).await.unwrap();
+        let node_dir = Node::from_path(&dir_path, false).await.unwrap();
         assert_eq!(node_dir.name, "subdir");
         assert!(node_dir.is_dir());
     }
@@ -821,7 +833,7 @@ mod tests {
         let file_path = tmp_dir.path().join("parity.txt");
         std::fs::write(&file_path, "parity test").unwrap();
 
-        let node = Node::from_path(&file_path).await.unwrap();
+        let node = Node::from_path(&file_path, false).await.unwrap();
         let meta = std::fs::symlink_metadata(&file_path).unwrap();
 
         assert_eq!(node.metadata.size, meta.len());

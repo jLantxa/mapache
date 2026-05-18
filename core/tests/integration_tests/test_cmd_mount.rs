@@ -121,6 +121,7 @@ async fn inner_test_mount(auto_mount: bool) -> Result<()> {
         num_readers: Some(2),
         num_packers: Some(2),
         dry_run: false,
+        with_atime: None,
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await
@@ -239,6 +240,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         num_readers: Some(2),
         num_packers: Some(2),
         dry_run: false,
+        with_atime: None,
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await
@@ -252,7 +254,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
             backup_data_tmp_path.join("0"),
             backup_data_tmp_path.join("1"),
             backup_data_tmp_path.join("2"),
-            // file.txt not included in this snapshot
+            backup_data_tmp_path.join("file.txt"),
         ],
         as_root: Some(false),
         exclude: None,
@@ -266,6 +268,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         num_readers: Some(2),
         num_packers: Some(2),
         dry_run: false,
+        with_atime: None,
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await

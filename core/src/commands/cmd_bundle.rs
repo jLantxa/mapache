@@ -231,11 +231,13 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         tags: Default::default(),
         description: Some(format!("Bundle of {:?}", args.input)),
         no_scan: false,
+        with_atime: false,
     };
 
     let fs_stream = crate::fs::tree::FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
+        false,
     )
     .await?;
 
@@ -847,7 +849,7 @@ fn scan_recursive(
         return;
     }
 
-    if let Ok(node) = crate::fs::node::Node::from_path_sync(path) {
+    if let Ok(node) = crate::fs::node::Node::from_path_sync(path, false) {
         reporter.add_expected_items(1);
         if node.is_file() {
             reporter.add_expected_bytes(node.metadata.size);

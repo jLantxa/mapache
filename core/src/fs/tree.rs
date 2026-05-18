@@ -87,6 +87,7 @@ struct FSNodeState {
     stack: Vec<(Arc<PathBuf>, std::ffi::OsString, Option<Node>)>,
     intermediate_paths: Vec<(PathBuf, usize, Option<Node>)>,
     filter: Arc<PathFilter>,
+    with_atime: bool,
 }
 
 /// A depth‑first pre‑order filesystem stream.
@@ -98,8 +99,12 @@ pub struct FSNodeStream {
 }
 
 impl FSNodeStream {
-    pub async fn from_paths(paths: Vec<PathBuf>, exclude_paths: Vec<PathBuf>) -> Result<Self> {
-        tracing::debug!(target: "fs", "Creating FSNodeStream from paths: {:?} (excludes: {:?})", paths, exclude_paths);
+    pub async fn from_paths(
+        paths: Vec<PathBuf>,
+        exclude_paths: Vec<PathBuf>,
+        with_atime: bool,
+    ) -> Result<Self> {
+        tracing::debug!(target: "fs", "Creating FSNodeStream from paths: {:?} (excludes: {:?}, with_atime: {})", paths, exclude_paths, with_atime);
         let mut exclude_paths = exclude_paths;
         exclude_paths.sort_unstable();
         let filter = Arc::new(PathFilter::new(None, Some(exclude_paths.clone())));
@@ -112,7 +117,7 @@ impl FSNodeStream {
                     .into_par_iter()
                     .filter(|path| filter.allow(path))
                     .map(|path| {
-                        let node = Node::from_path_sync(&path).with_context(|| {
+                        let node = Node::from_path_sync(&path, with_atime).with_context(|| {
                             format!("Path {} does not exist or is inaccessible", path.display())
                         })?;
                         Ok((path, node))
@@ -154,6 +159,7 @@ impl FSNodeStream {
             stack,
             intermediate_paths,
             filter,
+            with_atime,
         };
 
         Ok(Self {
@@ -177,10 +183,11 @@ impl FSNodeStream {
                     let (path, num_children, maybe_node) = state.intermediate_paths.pop().unwrap();
                     if state.filter.allow(&path) {
                         tracing::trace!(target: "fs", "Emitting intermediate path: {:?} (children={})", path, num_children);
+                        let with_atime = state.with_atime;
                         let node_res = if let Some(n) = maybe_node {
                             Ok(n)
                         } else {
-                            Node::from_path(&path).await
+                            Node::from_path(&path, with_atime).await
                         };
 
                         match node_res {
@@ -199,10 +206,11 @@ impl FSNodeStream {
                 }
 
                 tracing::trace!(target: "fs", "Processing path: {:?}", path);
+                let with_atime = state.with_atime;
                 let node_res = if let Some(n) = maybe_node {
                     Ok(n)
                 } else {
-                    Node::from_path(&path).await
+                    Node::from_path(&path, with_atime).await
                 };
 
                 let node = match node_res {
@@ -218,6 +226,7 @@ impl FSNodeStream {
                 if node.is_dir() {
                     let filter = state.filter.clone();
                     let path_clone = path.clone();
+                    let with_atime = state.with_atime;
 
                     tracing::trace!(target: "fs", "Scanning directory: {:?}", path);
                     let children_res = tokio::task::spawn_blocking(move || {
@@ -235,7 +244,7 @@ impl FSNodeStream {
                             .filter(|entry| filter.allow(&entry.path()))
                             .map(|entry| {
                                 let child_path = entry.path();
-                                let child_node = Node::from_path_sync(&child_path).with_context(
+                                let child_node = Node::from_path_sync(&child_path, with_atime).with_context(
                                     || format!("Failed to build node for: {}", child_path.display()),
                                 )?;
                                 Ok((entry.file_name(), child_node))
@@ -760,7 +769,7 @@ mod tests {
         create_tree(tmp_path)?;
 
         let nodes: Vec<Result<(PathBuf, Result<StreamNode>)>> =
-            FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())
+            FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new(), false)
                 .await?
                 .collect()
                 .await;
@@ -806,6 +815,7 @@ mod tests {
         let nodes: Vec<Result<(PathBuf, Result<StreamNode>)>> = FSNodeStream::from_paths(
             vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
             Vec::new(),
+            false,
         )
         .await?
         .collect()
@@ -862,6 +872,7 @@ mod tests {
                 tmp_path.join("dir_a").join("dir2").join("file1"),
             ],
             Vec::new(),
+            false,
         )
         .await?
         .collect()
@@ -894,11 +905,11 @@ mod tests {
         create_tree(tmp_path)?;
 
         // Box the streams so they satisfy NodeDiffStream's `Unpin` bounds.
-        let dir_a = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())
+        let dir_a = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new(), false)
             .await?
             .boxed_local();
 
-        let dir_b = FSNodeStream::from_paths(vec![tmp_path.join("dir_b")], Vec::new())
+        let dir_b = FSNodeStream::from_paths(vec![tmp_path.join("dir_b")], Vec::new(), false)
             .await?
             .boxed_local();
 
@@ -923,11 +934,11 @@ mod tests {
         let tmp_path = temp_dir.path();
         create_tree(tmp_path)?;
 
-        let dir_a1 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())
+        let dir_a1 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new(), false)
             .await?
             .boxed_local();
 
-        let dir_a2 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new())
+        let dir_a2 = FSNodeStream::from_paths(vec![tmp_path.join("dir_a")], Vec::new(), false)
             .await?
             .boxed_local();
 
@@ -953,6 +964,7 @@ mod tests {
         let nodes: Vec<Result<(PathBuf, Result<StreamNode>)>> = FSNodeStream::from_paths(
             vec![tmp_path.join("dir_a"), tmp_path.join("dir_b")],
             vec![tmp_path.join("dir_b")],
+            false,
         )
         .await?
         .collect()

@@ -141,7 +141,8 @@ impl JsonSnapshotProgressReporter {
 
 impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     fn processing_node(&self, path: &std::path::Path, _diff: NodeDiff, size_hint: Option<u64>) {
-        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+        let is_slow = defaults::runtime()
+            .ui_snapshot_progress_item_min_size
             .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if is_slow {
@@ -187,7 +188,8 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     fn processed_node(&self, path: &std::path::Path, _diff: NodeDiff, size_hint: Option<u64>) {
         self.processed_items.fetch_add(1, Ordering::Relaxed);
 
-        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+        let is_slow = defaults::runtime()
+            .ui_snapshot_progress_item_min_size
             .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if is_slow {

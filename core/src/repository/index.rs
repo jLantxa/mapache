@@ -136,7 +136,7 @@ impl Index {
     /// Returns true if the index contains enough blobs to be considered full
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.num_blobs() >= mapache::defaults::BLOBS_PER_INDEX_FILE
+        self.num_blobs() >= crate::mapache::defaults::runtime().blobs_per_index_file
     }
 
     /// Creates an `Index` from a serialized `IndexFile`.
@@ -525,8 +525,8 @@ impl MasterIndex {
             pending_index.add_pack(pack_id, descriptors);
 
             let is_full = pending_index.is_full();
-            let is_timed_out =
-                pending_index.create_time.elapsed() >= mapache::defaults::INDEX_FLUSH_TIMEOUT;
+            let is_timed_out = pending_index.create_time.elapsed()
+                >= crate::mapache::defaults::runtime().index_flush_timeout;
 
             if self.auto_save && (is_full || is_timed_out) {
                 let reason = if is_full { "full" } else { "timeout" };

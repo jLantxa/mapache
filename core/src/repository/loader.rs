@@ -6,10 +6,7 @@ use futures::stream::{self, StreamExt};
 use crate::{
     backend::Handle,
     mapache::{
-        defaults::{
-            DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD, DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE,
-        },
-        {BlobType, ContentIdType, ID},
+        defaults, {BlobType, ContentIdType, ID},
     },
     repository::{index::BlobLocator, repo::Repository},
 };
@@ -35,6 +32,10 @@ pub fn segment_blobs<T>(
     pack_id: ID,
     mut blob_locators: Vec<(ID, BlobLocator, T)>,
 ) -> Vec<PackSegment<T>> {
+    let d = defaults::runtime();
+    let merge_threshold = d.restore_pack_read_merge_threshold;
+    let segment_max_size = d.restore_pack_segment_max_size;
+
     blob_locators.sort_by_key(|(_, loc, _)| loc.offset);
 
     let mut segments = Vec::new();
@@ -54,8 +55,7 @@ pub fn segment_blobs<T>(
             let next_segment_max = segment_max.max(blob_end);
             let next_segment_size = next_segment_max - segment_min;
 
-            if blob_start <= segment_max + DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD
-                && next_segment_size <= DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE
+            if blob_start <= segment_max + merge_threshold && next_segment_size <= segment_max_size
             {
                 segment_max = next_segment_max;
                 current_blobs.push((id, loc, attachment));

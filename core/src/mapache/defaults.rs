@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use chunker::Normalization;
@@ -85,3 +86,94 @@ pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {
     use_cache: false,
     compression: Compression::Fastest,
 };
+
+// --- Runtime defaults (configurable via TOML) ---
+
+/// Runtime-configurable defaults. These override the compile-time constants
+/// when set in the `[runtime]` section of the config file.
+#[derive(Debug, Clone)]
+pub struct RuntimeDefaults {
+    // Restore
+    pub restore_pack_prefetch: usize,
+    pub restore_blob_concurrency: usize,
+    pub restore_max_open_files: usize,
+    pub restore_pack_prefetch_memory_bytes: usize,
+    pub restore_pack_prefetch_memory_unit: usize,
+    pub restore_pack_segment_max_size: u64,
+    pub restore_pack_read_merge_threshold: u64,
+    // GC
+    pub min_pack_size_factor: f32,
+    // Index
+    pub blobs_per_index_file: usize,
+    pub index_flush_timeout: Duration,
+    // S3
+    pub s3_multipart_threshold: u64,
+    pub s3_multipart_part_size: u64,
+    // UI
+    pub max_path_display_len: usize,
+    pub ui_snapshot_progress_item_min_size: Option<u64>,
+}
+
+impl RuntimeDefaults {
+    pub fn new(config: Option<&crate::config::RuntimeConfig>) -> Self {
+        let c = config;
+        Self {
+            restore_pack_prefetch: c
+                .and_then(|c| c.restore_pack_prefetch)
+                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH),
+            restore_blob_concurrency: c
+                .and_then(|c| c.restore_blob_concurrency)
+                .unwrap_or(DEFAULT_RESTORE_BLOB_CONCURRENCY),
+            restore_max_open_files: c
+                .and_then(|c| c.restore_max_open_files)
+                .unwrap_or(DEFAULT_RESTORE_MAX_OPEN_FILES),
+            restore_pack_prefetch_memory_bytes: c
+                .and_then(|c| c.restore_pack_prefetch_memory_bytes)
+                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES),
+            restore_pack_prefetch_memory_unit: c
+                .and_then(|c| c.restore_pack_prefetch_memory_unit)
+                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT),
+            restore_pack_segment_max_size: c
+                .and_then(|c| c.restore_pack_segment_max_size)
+                .unwrap_or(DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE),
+            restore_pack_read_merge_threshold: c
+                .and_then(|c| c.restore_pack_read_merge_threshold)
+                .unwrap_or(DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD),
+            min_pack_size_factor: c
+                .and_then(|c| c.min_pack_size_factor)
+                .unwrap_or(DEFAULT_MIN_PACK_SIZE_FACTOR),
+            blobs_per_index_file: c
+                .and_then(|c| c.blobs_per_index_file)
+                .unwrap_or(BLOBS_PER_INDEX_FILE),
+            index_flush_timeout: c
+                .and_then(|c| c.index_flush_timeout_secs)
+                .map(Duration::from_secs)
+                .unwrap_or(INDEX_FLUSH_TIMEOUT),
+            s3_multipart_threshold: c
+                .and_then(|c| c.s3_multipart_threshold)
+                .unwrap_or(S3_MULTIPART_THRESHOLD),
+            s3_multipart_part_size: c
+                .and_then(|c| c.s3_multipart_part_size)
+                .unwrap_or(S3_MULTIPART_PART_SIZE),
+            max_path_display_len: c
+                .and_then(|c| c.max_path_display_len)
+                .unwrap_or(MAX_PATH_DISPLAY_LEN),
+            ui_snapshot_progress_item_min_size: c
+                .and_then(|c| c.ui_snapshot_progress_item_min_size)
+                .or(UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE),
+        }
+    }
+}
+
+static RUNTIME_DEFAULTS: OnceLock<RuntimeDefaults> = OnceLock::new();
+
+/// Initialize the runtime defaults. Must be called once before any use.
+pub fn init_runtime_defaults(config: Option<&crate::config::RuntimeConfig>) {
+    let _ = RUNTIME_DEFAULTS.set(RuntimeDefaults::new(config));
+}
+
+/// Get a reference to the runtime defaults. Auto-initializes with compile-time
+/// defaults if not yet set (useful for tests).
+pub fn runtime() -> &'static RuntimeDefaults {
+    RUNTIME_DEFAULTS.get_or_init(|| RuntimeDefaults::new(None))
+}

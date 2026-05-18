@@ -141,7 +141,7 @@ endeavor.
 Other planned features (non-exhaustive):
 
 - [ ] incremental restore
-- [ ] configuration files
+- [x] configuration files
 - [ ] master key rotation
 
 ## Getting Started

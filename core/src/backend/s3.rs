@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     backend::{BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry},
-    mapache::defaults::{S3_MULTIPART_PART_SIZE, S3_MULTIPART_THRESHOLD},
+    mapache::defaults,
 };
 
 /// A storage backend that interacts with S3-compatible APIs.
@@ -151,7 +151,8 @@ impl StorageBackend for S3Backend {
         let content_len = contents.len();
         tracing::trace!(target: "backend", "S3: write {:?} ({} bytes)", handle.path, content_len);
 
-        if (content_len as u64) < S3_MULTIPART_THRESHOLD {
+        let d = defaults::runtime();
+        if (content_len as u64) < d.s3_multipart_threshold {
             self.retry(|| async {
                 let response = self.bucket.put_object(&key, &contents).await?;
                 if response.status_code() >= 400 {
@@ -178,7 +179,7 @@ impl StorageBackend for S3Backend {
             let mut current_offset: usize = 0;
 
             while current_offset < content_len {
-                let end = (current_offset + S3_MULTIPART_PART_SIZE as usize).min(content_len);
+                let end = (current_offset + d.s3_multipart_part_size as usize).min(content_len);
                 let part_data = &contents[current_offset..end];
 
                 let etag_res = self

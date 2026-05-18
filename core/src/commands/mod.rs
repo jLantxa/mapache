@@ -14,7 +14,7 @@ use crate::{
         ContentIdType, ID,
         defaults::{
             DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
-            MIN_CONFIGURABLE_PACK_SIZE_MIB,
+            MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
         },
         global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
     },
@@ -445,12 +445,15 @@ pub async fn parse_and_run() -> i32 {
         Some(path) => match load_config(path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Error loading config file: {e}");
+                ui::cli::error!("{e}");
                 return 1;
             }
         },
         None => MapacheConfig::default(),
     };
+
+    // Initialize runtime defaults from config
+    init_runtime_defaults(config.runtime.as_ref());
 
     let (global_result, command_result) = match args.command {
         Command::Amend(cmd) => {
@@ -621,7 +624,7 @@ pub async fn parse_and_run() -> i32 {
     let global = match global_result {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("Error: {e}");
+            ui::cli::error!("{e}");
             return 1;
         }
     };

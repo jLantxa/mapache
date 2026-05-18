@@ -20,6 +20,8 @@
 - **Enhanced Retention Rules**: Added `--host` (multiple), `--keep-hourly`, and
   `--keep-min` flags to the forget command for more granular snapshot retention
   control.
+- **TOML Config File**: Added support for a `.toml` configuration file to
+  centralize repository settings and runtime defaults.
 - **Memory-Efficient Restore**: Blobs are now written immediately after
   decoding, reducing peak memory from O(all blobs in segment) to O(1 blob).
   Cuts restore memory usage without sacrificing parallelism.

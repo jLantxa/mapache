@@ -80,7 +80,10 @@ fn ui_loop(
                     display_queue.pop_front().unwrap_or_default()
                 };
 
-                spinner.set_message(abbreviate_path(&path, defaults::MAX_PATH_DISPLAY_LEN));
+                spinner.set_message(abbreviate_path(
+                    &path,
+                    defaults::runtime().max_path_display_len,
+                ));
             }
             last_redraw = now;
         }
@@ -340,7 +343,8 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
 
         // Optimization: Only show "slow" items in the spinner.
         // Files under the threshold are sampled.
-        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+        let is_slow = defaults::runtime()
+            .ui_snapshot_progress_item_min_size
             .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if !self.file_spinners.is_empty()
@@ -388,7 +392,8 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
             self.companion_bar.inc(1);
         }
 
-        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+        let is_slow = defaults::runtime()
+            .ui_snapshot_progress_item_min_size
             .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if !self.ui_stop.load(Ordering::Relaxed)

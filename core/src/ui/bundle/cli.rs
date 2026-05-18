@@ -99,7 +99,10 @@ impl BundleCliProgressReporter {
                         {
                             let pb = mp_clone.add(ProgressBar::new_spinner());
                             pb.set_style(file_style.clone());
-                            pb.set_message(abbreviate_path(&path, defaults::MAX_PATH_DISPLAY_LEN));
+                            pb.set_message(abbreviate_path(
+                                &path,
+                                defaults::runtime().max_path_display_len,
+                            ));
                             pb.enable_steady_tick(refresh_interval);
                             active_spinners.insert(path, pb);
                         }
@@ -138,7 +141,8 @@ impl SnapshotProgressReporter for BundleCliProgressReporter {
             return;
         }
 
-        let is_slow = defaults::UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE
+        let is_slow = defaults::runtime()
+            .ui_snapshot_progress_item_min_size
             .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if is_slow {

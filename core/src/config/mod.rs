@@ -87,11 +87,37 @@ pub(crate) fn config_path(s: &str) -> Result<PathBuf> {
     crate::fs::get_absolute_normalized_path(&path)
 }
 
+/// Runtime-configurable defaults (the `[runtime]` section in the TOML config).
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct RuntimeConfig {
+    // Restore
+    pub restore_pack_prefetch: Option<usize>,
+    pub restore_blob_concurrency: Option<usize>,
+    pub restore_max_open_files: Option<usize>,
+    pub restore_pack_prefetch_memory_bytes: Option<usize>,
+    pub restore_pack_prefetch_memory_unit: Option<usize>,
+    pub restore_pack_segment_max_size: Option<u64>,
+    pub restore_pack_read_merge_threshold: Option<u64>,
+    // GC
+    pub min_pack_size_factor: Option<f32>,
+    // Index
+    pub blobs_per_index_file: Option<usize>,
+    pub index_flush_timeout_secs: Option<u64>,
+    // S3
+    pub s3_multipart_threshold: Option<u64>,
+    pub s3_multipart_part_size: Option<u64>,
+    // UI
+    pub max_path_display_len: Option<usize>,
+    pub ui_snapshot_progress_item_min_size: Option<u64>,
+}
+
 /// Top-level config structure. Sections map to command names.
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct MapacheConfig {
     pub global: Option<crate::commands::CliGlobalArgs>,
+    pub runtime: Option<RuntimeConfig>,
     pub snapshot: Option<crate::commands::cmd_snapshot::CmdArgs>,
     pub restore: Option<crate::commands::cmd_restore::CmdArgs>,
     pub forget: Option<crate::commands::cmd_forget::CmdArgs>,

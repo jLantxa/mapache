@@ -34,11 +34,7 @@ use crate::{
     fs::{self as repo_fs, node::Node, tree::SerializedNodeStream},
     mapache::{
         BlobType, ID,
-        defaults::{
-            DEFAULT_RESTORE_BLOB_CONCURRENCY, DEFAULT_RESTORE_MAX_OPEN_FILES,
-            DEFAULT_RESTORE_PACK_PREFETCH, DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES,
-            DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT,
-        },
+        defaults::{self},
         hash,
     },
     repository::{
@@ -413,7 +409,8 @@ impl Restorer {
         self.progress_reporter
             .set_message("Planning...".to_string());
 
-        let num_workers = DEFAULT_RESTORE_BLOB_CONCURRENCY;
+        let d = defaults::runtime();
+        let num_workers = d.restore_blob_concurrency;
 
         node_stream
             .for_each_concurrent(num_workers, |node_res| {
@@ -840,11 +837,12 @@ impl Restorer {
         self.progress_reporter
             .set_message("Restoring...".to_string());
 
-        let handle_cache = Arc::new(ShardedFileHandleCache::new(DEFAULT_RESTORE_MAX_OPEN_FILES));
+        let d = defaults::runtime();
+        let handle_cache = Arc::new(ShardedFileHandleCache::new(d.restore_max_open_files));
         let mut packs_iter = packs.iter();
 
         let max_memory_units =
-            DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES / DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT;
+            d.restore_pack_prefetch_memory_bytes / d.restore_pack_prefetch_memory_unit;
         let memory_budget = Arc::new(Semaphore::new(max_memory_units));
 
         let mut download_stream = futures::stream::iter(std::iter::from_fn(|| {
@@ -882,7 +880,7 @@ impl Restorer {
                     .map(|segment| segment.source_len() as u64)
                     .sum();
                 let requested_units = (requested_bytes as usize)
-                    .div_ceil(DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT)
+                    .div_ceil(d.restore_pack_prefetch_memory_unit)
                     .max(1);
                 let permit_units = requested_units.min(max_memory_units) as u32;
 
@@ -896,7 +894,7 @@ impl Restorer {
                 segments.map(|segments| (segments, permit))
             }
         })
-        .buffer_unordered(DEFAULT_RESTORE_PACK_PREFETCH);
+        .buffer_unordered(d.restore_pack_prefetch);
 
         while let Some(res) = download_stream.next().await {
             if self.shutdown_signal.load(Ordering::Relaxed) {
@@ -1025,8 +1023,9 @@ impl Restorer {
 
         // Restore file and symlink metadata in parallel using a second pass.
         // This avoids keeping all metadata in RAM.
+        let d = defaults::runtime();
         node_stream
-            .for_each_concurrent(DEFAULT_RESTORE_BLOB_CONCURRENCY, |node_res| {
+            .for_each_concurrent(d.restore_blob_concurrency, |node_res| {
                 let progress_reporter = self.progress_reporter.clone();
                 let target_path = self.target_path.clone();
                 let opts_strip_prefix = self.opts.strip_prefix.clone();

@@ -9,7 +9,7 @@ use crate::{
     backend::WriteContents,
     mapache::{
         self, ContentIdType, ID, SaveID,
-        defaults::{DEFAULT_MIN_PACK_SIZE_FACTOR, DEFAULT_PACK_SIZE},
+        defaults::{self, DEFAULT_PACK_SIZE},
         global::GlobalOpts,
     },
     repository::{
@@ -103,8 +103,9 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
 
     // Find small packs to repack
     let current_pack_size = repo.pack_size();
+    let min_pack_size_factor = defaults::runtime().min_pack_size_factor;
     for (pack_id, size) in kept_pack_size {
-        if (size as f32 / current_pack_size as f32) < DEFAULT_MIN_PACK_SIZE_FACTOR {
+        if (size as f32 / current_pack_size as f32) < min_pack_size_factor {
             plan.small_packs.insert(pack_id);
         }
     }

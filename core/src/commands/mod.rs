@@ -1,13 +1,15 @@
-use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc};
+use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Error, Result, anyhow, bail};
 use chrono::Duration;
 use clap::{ArgGroup, Parser, Subcommand};
 use colored::Colorize;
-use serde::Serialize;
+use conflate::Merge;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{BackendOptions, StorageBackend},
+    config::{MapacheConfig, load_config},
     mapache::{
         ContentIdType, ID,
         defaults::{
@@ -68,6 +70,10 @@ pub(crate) use error::{ToExitCode, fail};
         to make backup copies of your files."
 )]
 pub struct Cli {
+    /// Path to a TOML configuration file
+    #[clap(long, global = true)]
+    pub config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -104,67 +110,146 @@ pub enum Command {
 #[derive(Parser, Debug)]
 pub struct WithGlobal<T: clap::Args> {
     #[clap(flatten)]
-    pub global: GlobalArgs,
+    pub global: CliGlobalArgs,
 
     #[clap(flatten)]
     pub args: T,
 }
 
-/// Global options
-#[derive(Parser, Debug, Clone)]
+/// CLI-parsable global options (all configurable fields are Option<T>)
+#[derive(Parser, Debug, Clone, Merge, Deserialize, Default)]
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
-pub struct GlobalArgs {
+#[serde(default, rename_all = "kebab-case")]
+pub struct CliGlobalArgs {
     /// Repository path
-    #[clap(short, long, env = "MAPACHE_REPOSITORY")]
-    pub repo: String,
+    #[clap(short, long)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub repo: Option<String>,
 
     /// Disable cache
-    #[clap(long)]
-    pub no_cache: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub no_cache: Option<bool>,
 
     /// SSH private key
     #[clap(long)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
     pub ssh_privatekey: Option<PathBuf>,
 
     /// Path to a file to read repository authentication credentials
     #[clap(long)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
     pub auth_file: Option<PathBuf>,
 
     /// Pack target size in MiB
-    #[clap(long = "pack-size", value_parser = pack_size_parser, default_value_t = DEFAULT_PACK_SIZE_MIB)]
-    pub pack_size_mib: f32,
+    #[clap(long = "pack-size", value_parser = pack_size_parser)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub pack_size_mib: Option<f32>,
 
     /// Path to a KeyFile
     #[clap(short = 'k', long = "key-file")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(
+        rename = "key-file",
+        deserialize_with = "crate::config::deserialize_config_path_opt"
+    )]
     pub key: Option<PathBuf>,
 
     /// Disable logging (verbosity = 0)
-    #[clap(long, group = "verbosity_group")]
-    pub quiet: bool,
+    #[clap(long, group = "verbosity_group", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub quiet: Option<bool>,
 
     /// Enable json output
-    #[clap(long)]
-    pub json: bool,
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    pub json: Option<bool>,
 
     /// Set the verbosity level [0-3]
     #[clap(short, long, group = "verbosity_group")]
+    #[merge(strategy = conflate::option::overwrite_none)]
     pub verbosity: Option<u32>,
 
     /// Compression level [fastest|fast|balanced|better|best|level:val]
-    #[clap(long = "compression", value_parser = parse_compression_level,  default_value_t = DEFAULT_COMPRESSION)]
-    pub compression_level: Compression,
+    #[clap(long = "compression", value_parser = parse_compression_level)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "deserialize_compression_opt")]
+    pub compression_level: Option<Compression>,
 
     /// Retry acquiring a lock if the repository is already locked. Takes a duration
     /// string like 5m, 30s or 5m30s.
     #[clap(long = "retry-lock", value_parser = utils::parse_duration_string)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(rename = "retry-lock", deserialize_with = "deserialize_duration_opt")]
     pub retry_lock_duration: Option<Duration>,
 
     /// Limit upload speed (e.g. 10MB/s, 500KB/s)
     #[clap(long = "limit-upload", value_parser = parse_bandwidth)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(
+        rename = "limit-upload",
+        deserialize_with = "deserialize_bandwidth_opt"
+    )]
     pub limit_upload: Option<u64>,
 
     /// Limit download speed (e.g. 10MB/s, 500KB/s)
     #[clap(long = "limit-download", value_parser = parse_bandwidth)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(
+        rename = "limit-download",
+        deserialize_with = "deserialize_bandwidth_opt"
+    )]
+    pub limit_download: Option<u64>,
+}
+
+fn deserialize_compression_opt<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Compression>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    opt.map(|s| Compression::from_str(&s).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+fn deserialize_duration_opt<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Duration>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    opt.map(|s| utils::parse_duration_string(&s).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+fn deserialize_bandwidth_opt<'de, D>(deserializer: D) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    opt.map(|s| utils::parse_bandwidth(&s).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+/// Resolved global options (concrete values after merging CLI + config + env + defaults)
+#[derive(Debug, Clone)]
+pub struct GlobalArgs {
+    pub repo: String,
+    pub no_cache: bool,
+    pub ssh_privatekey: Option<PathBuf>,
+    pub auth_file: Option<PathBuf>,
+    pub pack_size_mib: f32,
+    pub key: Option<PathBuf>,
+    pub quiet: bool,
+    pub json: bool,
+    pub verbosity: Option<u32>,
+    pub compression_level: Compression,
+    pub retry_lock_duration: Option<Duration>,
+    pub limit_upload: Option<u64>,
     pub limit_download: Option<u64>,
 }
 
@@ -188,32 +273,37 @@ impl GlobalArgs {
     }
 }
 
+/// Converts merged CLI+config global options into concrete GlobalArgs.
+/// Applies defaults for any remaining None values.
+fn cli_to_global_args(cli: &CliGlobalArgs) -> Result<GlobalArgs> {
+    let repo = cli
+        .repo
+        .clone()
+        .or_else(|| env::var("MAPACHE_REPOSITORY").ok())
+        .ok_or_else(|| anyhow!("Repository path is required. Use --repo, set MAPACHE_REPOSITORY, or add it to config file."))?;
+
+    let pack_size_mib = cli.pack_size_mib.unwrap_or(DEFAULT_PACK_SIZE_MIB);
+    let compression_level = cli.compression_level.unwrap_or(DEFAULT_COMPRESSION);
+
+    Ok(GlobalArgs {
+        repo,
+        no_cache: cli.no_cache.unwrap_or(false),
+        ssh_privatekey: cli.ssh_privatekey.clone(),
+        auth_file: cli.auth_file.clone(),
+        pack_size_mib,
+        key: cli.key.clone(),
+        quiet: cli.quiet.unwrap_or(false),
+        json: cli.json.unwrap_or(false),
+        verbosity: cli.verbosity,
+        compression_level,
+        retry_lock_duration: cli.retry_lock_duration,
+        limit_upload: cli.limit_upload,
+        limit_download: cli.limit_download,
+    })
+}
+
 fn parse_bandwidth(s: &str) -> Result<u64, String> {
-    let s = s.to_uppercase();
-    let (num_str, unit) = if let Some(idx) = s.find(|c: char| !c.is_ascii_digit() && c != '.') {
-        s.split_at(idx)
-    } else {
-        (s.as_str(), "")
-    };
-
-    let num: f64 = num_str
-        .parse()
-        .map_err(|_| format!("Invalid number: {}", num_str))?;
-
-    let multiplier = match unit.trim() {
-        "" | "B" | "B/S" => 1u64,
-        "K" | "KIB" | "KIB/S" => size::KiB,
-        "KB" | "KB/S" => size::kB,
-        "M" | "MIB" | "MIB/S" => size::MiB,
-        "MB" | "MB/S" => size::MB,
-        "G" | "GIB" | "GIB/S" => size::GiB,
-        "GB" | "GB/S" => size::GB,
-        "T" | "TIB" | "TIB/S" => size::TiB,
-        "TB" | "TB/S" => size::TB,
-        _ => return Err(format!("Invalid unit: {}", unit)),
-    };
-
-    Ok((num * multiplier as f64) as u64)
+    utils::parse_bandwidth(s).map_err(|e| e.to_string())
 }
 
 fn pack_size_parser(s: &str) -> Result<f32> {
@@ -293,8 +383,9 @@ fn parse_compression_level(s: &str) -> Result<Compression> {
     Compression::from_str(s)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 pub enum UseSnapshot {
+    #[default]
     Latest,
     SnapshotId(String),
 }
@@ -349,43 +440,225 @@ fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 pub async fn parse_and_run() -> i32 {
     let args = Cli::parse();
 
-    let json_enabled = extract_global(&args.command)
-        .map(|g| g.json)
-        .unwrap_or(false);
+    // Load config if --config provided
+    let config = match &args.config {
+        Some(path) => match load_config(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error loading config file: {e}");
+                return 1;
+            }
+        },
+        None => MapacheConfig::default(),
+    };
 
-    if let Some(global_ref) = extract_global(&args.command) {
-        set_global_opts_with_args(global_ref);
-    }
+    let (global_result, command_result) = match args.command {
+        Command::Amend(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            let global = cli_to_global_args(&g);
+            (global, Command::Amend(cmd))
+        }
+        Command::Bundle(cmd) => (Ok(GlobalArgs::default_for_bundle()), Command::Bundle(cmd)),
+        Command::Cache(cmd) => (Ok(GlobalArgs::default_for_cache()), Command::Cache(cmd)),
+        Command::Cat(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Cat(cmd))
+        }
+        Command::Clean(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Clean(cmd))
+        }
+        Command::Completion(cmd) => (
+            Ok(GlobalArgs::default_for_completion()),
+            Command::Completion(cmd),
+        ),
+        Command::Diff(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Diff(cmd))
+        }
+        Command::Find(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Find(cmd))
+        }
+        Command::Forget(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            let global = cli_to_global_args(&g);
+            let mut cmd = cmd;
+            if let Some(cfg) = &config.forget {
+                cmd.args.merge(cfg.clone());
+            }
+            (global, Command::Forget(cmd))
+        }
+        Command::Init(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Init(cmd))
+        }
+        Command::Key(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Key(cmd))
+        }
+        Command::Log(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Log(cmd))
+        }
+        Command::Ls(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Ls(cmd))
+        }
+        #[cfg(all(feature = "fuse", unix))]
+        Command::Mount(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Mount(cmd))
+        }
+        Command::RebuildIndex(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::RebuildIndex(cmd))
+        }
+        Command::Recall(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Recall(cmd))
+        }
+        Command::Rechunk(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Rechunk(cmd))
+        }
+        Command::Restore(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            let global = cli_to_global_args(&g);
+            let mut cmd = cmd;
+            if let Some(cfg) = &config.restore {
+                cmd.args.merge(cfg.clone());
+            }
+            (global, Command::Restore(cmd))
+        }
+        Command::Snapshot(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            let global = cli_to_global_args(&g);
+            let mut cmd = cmd;
+            if let Some(cfg) = &config.snapshot {
+                cmd.args.merge(cfg.clone());
+            }
+            (global, Command::Snapshot(cmd))
+        }
+        Command::Stats(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Stats(cmd))
+        }
+        Command::Sync(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Sync(cmd))
+        }
+        Command::Unlock(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Unlock(cmd))
+        }
+        Command::Verify(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Verify(cmd))
+        }
+    };
+
+    let global = match global_result {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return 1;
+        }
+    };
+
+    let json_enabled = global.json;
+
+    set_global_opts_with_args(&global);
 
     ui::debug::init_debugger();
 
     tracing::info!(target: "mapache", "called with args: {}", std::env::args().collect::<Vec<_>>().join(" "));
 
-    let result = match args.command {
-        Command::Amend(cmd) => cmd_amend::run(&cmd.global, &cmd.args).await,
+    let result = match command_result {
+        Command::Amend(cmd) => cmd_amend::run(&global, &cmd.args).await,
         Command::Bundle(cmd) => cmd_bundle::run(&cmd).await,
-        Command::Cat(cmd) => cmd_cat::run(&cmd.global, &cmd.args).await,
+        Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args).await,
         Command::Cache(cmd) => cmd_cache::run(&cmd),
         Command::Completion(cmd) => cmd_completion::run(&cmd),
-        Command::Clean(cmd) => cmd_clean::run(&cmd.global, &cmd.args).await,
-        Command::Diff(cmd) => cmd_diff::run(&cmd.global, &cmd.args).await,
-        Command::Find(cmd) => cmd_find::run(&cmd.global, &cmd.args).await,
-        Command::Forget(cmd) => cmd_forget::run(&cmd.global, &cmd.args).await,
-        Command::Init(cmd) => cmd_init::run(&cmd.global, &cmd.args).await,
-        Command::Key(cmd) => cmd_key::run(&cmd.global, &cmd.args).await,
-        Command::Log(cmd) => cmd_log::run(&cmd.global, &cmd.args).await,
-        Command::Ls(cmd) => cmd_ls::run(&cmd.global, &cmd.args).await,
+        Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args).await,
+        Command::Diff(cmd) => cmd_diff::run(&global, &cmd.args).await,
+        Command::Find(cmd) => cmd_find::run(&global, &cmd.args).await,
+        Command::Forget(cmd) => cmd_forget::run(&global, &cmd.args).await,
+        Command::Init(cmd) => cmd_init::run(&global, &cmd.args).await,
+        Command::Key(cmd) => cmd_key::run(&global, &cmd.args).await,
+        Command::Log(cmd) => cmd_log::run(&global, &cmd.args).await,
+        Command::Ls(cmd) => cmd_ls::run(&global, &cmd.args).await,
         #[cfg(all(feature = "fuse", unix))]
-        Command::Mount(cmd) => cmd_mount::run(&cmd.global, &cmd.args).await,
-        Command::RebuildIndex(cmd) => cmd_rebuild_index::run(&cmd.global, &cmd.args).await,
-        Command::Recall(cmd) => cmd_recall::run(&cmd.global, &cmd.args).await,
-        Command::Rechunk(cmd) => cmd_rechunk::run(&cmd.global, &cmd.args).await,
-        Command::Restore(cmd) => cmd_restore::run(&cmd.global, &cmd.args).await,
-        Command::Snapshot(cmd) => cmd_snapshot::run(&cmd.global, &cmd.args).await,
-        Command::Stats(cmd) => cmd_stats::run(&cmd.global, &cmd.args).await,
-        Command::Sync(cmd) => cmd_sync::run(&cmd.global, &cmd.args).await,
-        Command::Unlock(cmd) => cmd_unlock::run(&cmd.global, &cmd.args).await,
-        Command::Verify(cmd) => cmd_verify::run(&cmd.global, &cmd.args).await,
+        Command::Mount(cmd) => cmd_mount::run(&global, &cmd.args).await,
+        Command::RebuildIndex(cmd) => cmd_rebuild_index::run(&global, &cmd.args).await,
+        Command::Recall(cmd) => cmd_recall::run(&global, &cmd.args).await,
+        Command::Rechunk(cmd) => cmd_rechunk::run(&global, &cmd.args).await,
+        Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args).await,
+        Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args).await,
+        Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args).await,
+        Command::Sync(cmd) => cmd_sync::run(&global, &cmd.args).await,
+        Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args).await,
+        Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args).await,
     };
 
     if let Err(ref e) = result {
@@ -420,43 +693,60 @@ pub async fn parse_and_run() -> i32 {
     0
 }
 
-macro_rules! extract_global {
-    ($cmd:expr, { $($(#[$meta:meta])* $variant:ident),* $(,)? }) => {
-        match $cmd {
-            $(
-                $(#[$meta])*
-                Command::$variant(inner) => Some(&inner.global),
-            )*
-            _=>None
+impl GlobalArgs {
+    fn default_for_bundle() -> Self {
+        Self {
+            repo: String::new(),
+            no_cache: false,
+            ssh_privatekey: None,
+            auth_file: None,
+            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
+            key: None,
+            quiet: false,
+            json: false,
+            verbosity: None,
+            compression_level: DEFAULT_COMPRESSION,
+            retry_lock_duration: None,
+            limit_upload: None,
+            limit_download: None,
         }
-    };
-}
+    }
 
-/// Returns Some(&GlobalArgs) if command has them
-fn extract_global(command: &Command) -> Option<&GlobalArgs> {
-    extract_global!(command, {
-        Amend,
-        Cat,
-        Clean,
-        Diff,
-        Find,
-        Forget,
-        Init,
-        Key,
-        Log,
-        Ls,
-        #[cfg(all(feature = "fuse", unix))]
-        Mount,
-        RebuildIndex,
-        Recall,
-        Rechunk,
-        Restore,
-        Snapshot,
-        Stats,
-        Sync,
-        Unlock,
-        Verify,
-    })
+    fn default_for_cache() -> Self {
+        Self {
+            repo: String::new(),
+            no_cache: false,
+            ssh_privatekey: None,
+            auth_file: None,
+            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
+            key: None,
+            quiet: false,
+            json: false,
+            verbosity: None,
+            compression_level: DEFAULT_COMPRESSION,
+            retry_lock_duration: None,
+            limit_upload: None,
+            limit_download: None,
+        }
+    }
+
+    fn default_for_completion() -> Self {
+        Self {
+            repo: String::new(),
+            no_cache: false,
+            ssh_privatekey: None,
+            auth_file: None,
+            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
+            key: None,
+            quiet: false,
+            json: false,
+            verbosity: None,
+            compression_level: DEFAULT_COMPRESSION,
+            retry_lock_duration: None,
+            limit_upload: None,
+            limit_download: None,
+        }
+    }
 }
 
 /// Helper to open a repository with interactive authentication if needed.

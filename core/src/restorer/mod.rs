@@ -65,6 +65,22 @@ pub enum Strategy {
     Newer,
 }
 
+impl std::str::FromStr for Strategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "fail" => Ok(Self::Fail),
+            "overwrite" => Ok(Self::Overwrite),
+            "skip" => Ok(Self::Skip),
+            "newer" => Ok(Self::Newer),
+            _ => Err(format!(
+                "Invalid strategy: {s}. Must be one of: fail, overwrite, skip, newer"
+            )),
+        }
+    }
+}
+
 /// Options for the restoration process.
 pub struct RestoreOptions {
     /// How to handle existing files.

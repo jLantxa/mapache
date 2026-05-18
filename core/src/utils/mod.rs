@@ -241,6 +241,35 @@ pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
     Ok(total_duration)
 }
 
+/// Parses a bandwidth string (e.g., "10MB/s", "500KB/s", "1G") into bytes per second.
+pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
+    let s = s.to_uppercase();
+    let (num_str, unit) = if let Some(idx) = s.find(|c: char| !c.is_ascii_digit() && c != '.') {
+        s.split_at(idx)
+    } else {
+        (s.as_str(), "")
+    };
+
+    let num: f64 = num_str
+        .parse()
+        .with_context(|| format!("Invalid number: {num_str}"))?;
+
+    let multiplier = match unit.trim() {
+        "" | "B" | "B/S" => 1u64,
+        "K" | "KIB" | "KIB/S" => size::KiB,
+        "KB" | "KB/S" => size::kB,
+        "M" | "MIB" | "MIB/S" => size::MiB,
+        "MB" | "MB/S" => size::MB,
+        "G" | "GIB" | "GIB/S" => size::GiB,
+        "GB" | "GB/S" => size::GB,
+        "T" | "TIB" | "TIB/S" => size::TiB,
+        "TB" | "TB/S" => size::TB,
+        _ => bail!("Invalid unit: {unit}"),
+    };
+
+    Ok((num * multiplier as f64) as u64)
+}
+
 // --- Permissions Utilities ---
 
 /// Converts a Unix file mode (as `u32`) into a human-readable permission string
@@ -611,6 +640,24 @@ mod tests {
         assert!(parse_duration_string("1as").is_err());
         assert!(parse_duration_string("1d1").is_err());
         assert!(parse_duration_string("1d 2h").is_err()); // spaces are not supported
+    }
+
+    #[test]
+    fn test_parse_bandwidth() {
+        assert_eq!(parse_bandwidth("1000").unwrap(), 1000);
+        assert_eq!(parse_bandwidth("1K").unwrap(), 1024);
+        assert_eq!(parse_bandwidth("1KB").unwrap(), 1000);
+        assert_eq!(parse_bandwidth("1M").unwrap(), 1024 * 1024);
+        assert_eq!(parse_bandwidth("1MB").unwrap(), 1000 * 1000);
+        assert_eq!(parse_bandwidth("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_bandwidth("1GB").unwrap(), 1000 * 1000 * 1000);
+        assert_eq!(
+            parse_bandwidth("1.5M").unwrap(),
+            (1.5 * 1024.0 * 1024.0) as u64
+        );
+        assert_eq!(parse_bandwidth("10MiB/s").unwrap(), 10 * 1024 * 1024);
+        assert!(parse_bandwidth("abc").is_err());
+        assert!(parse_bandwidth("10XX").is_err());
     }
 
     #[test]

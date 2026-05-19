@@ -25,11 +25,8 @@ use crate::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotStream},
     },
-    ui::{
-        self,
-        snapshot::{SnapshotProgressReporter, cli::CliSnapshotProgressReporter},
-    },
-    utils::{self},
+    ui::{self, SnapshotProgressReporter, cli::snapshot::CliSnapshotProgressReporter},
+    utils,
 };
 
 #[derive(Args, Debug, Clone)]

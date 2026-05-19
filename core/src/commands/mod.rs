@@ -691,7 +691,7 @@ pub async fn parse_and_run() -> i32 {
                 exit_code: i32,
             }
 
-            ui::json_reporter::emit_static(
+            ui::json::emit_static(
                 "exit_error",
                 &ErrorMessage {
                     msg: &e.to_string(),

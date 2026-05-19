@@ -17,7 +17,7 @@ use tokio::{
 };
 
 use crate::{
-    backend::{Handle, NodeAttr, StorageBackend, WriteContents},
+    backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents},
     utils::size,
 };
 
@@ -329,7 +329,7 @@ impl StorageBackend for ThrottledBackend {
         self.inner.rename(from, to).await
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<crate::backend::BackendNode>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         self.inner.list_dir(path).await
     }
 

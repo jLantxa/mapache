@@ -4,8 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    fs::tree::NodeDiff, repository::snapshot::DiffCountsAtomic,
-    ui::snapshot::SnapshotProcessSummary,
+    fs::tree::NodeDiff, repository::snapshot::DiffCountsAtomic, ui::SnapshotProcessSummary,
 };
 /// Centralized snapshot progress counters owned by the archiver.
 #[derive(Debug, Default)]

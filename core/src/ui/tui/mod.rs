@@ -1,16 +1,13 @@
-use anyhow::Result;
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use std::io;
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
-use crate::repository::lock::LockHandle;
-use crate::repository::repo::Repository;
-use crate::repository::storage::SecureStorage;
+use anyhow::Result;
+use crossterm::{
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
+
+use crate::repository::{lock::LockHandle, repo::Repository, storage::SecureStorage};
 
 mod app;
 mod screens;

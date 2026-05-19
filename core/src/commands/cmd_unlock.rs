@@ -10,7 +10,7 @@ use crate::{
     utils::{self, size},
 };
 
-use super::GlobalArgs;
+use crate::commands::GlobalArgs;
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Remove existing locks")]

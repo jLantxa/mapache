@@ -5,17 +5,15 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{cleanup::CleanupHandler, parse_tags},
+    commands::{GlobalArgs, cleanup::CleanupHandler, parse_tags, with_repository_lock},
     mapache::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::REPO_DROPPED_EXTENSION,
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
-    ui::{self, log_snapshots_compact},
-    utils::{self},
+    ui::{self, cli::log_snapshots_compact},
+    utils,
 };
-
-use super::GlobalArgs;
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Show all snapshots present in the repository")]
@@ -45,7 +43,7 @@ pub struct CmdArgs {
 const LOG_MSG: &str = "log";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    crate::commands::with_repository_lock(
+    with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(false)).await?,
@@ -127,7 +125,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
                 ui::cli::log!("{} snapshots", snapshots_sorted.len());
             } else {
-                ui::json_reporter::emit_static(
+                ui::json::emit_static(
                     LOG_MSG,
                     &MsgSnapshots {
                         snapshots: snapshots_sorted,

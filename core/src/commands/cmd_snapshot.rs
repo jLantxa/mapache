@@ -10,8 +10,8 @@ use crate::{
     archiver::{self, SnapshotOptions, progress::SnapshotProgress},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, find_use_snapshot,
-        parse_tags, with_repository_lock,
+        EMPTY_TAG_MARK, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        find_use_snapshot, parse_tags, with_repository_lock,
     },
     fs::{
         self, calculate_lcp,
@@ -26,17 +26,15 @@ use crate::{
     },
     repository::snapshot::{SnapshotPair, SnapshotSummary},
     ui::{
-        self,
-        snapshot::{
-            SnapshotProgressReporter, cli::CliSnapshotProgressReporter,
-            json::JsonSnapshotProgressReporter,
+        self, SnapshotProgressReporter,
+        cli::{
+            snapshot::CliSnapshotProgressReporter,
+            table::{Alignment, Table},
         },
-        table::{Alignment, Table},
+        json::snapshot::JsonSnapshotProgressReporter,
     },
-    utils::{self},
+    utils,
 };
-
-use super::UseSnapshot;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SnapshotError {
@@ -421,7 +419,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 if global_args.json {
                     #[derive(serde::Serialize)]
                     struct SnapshotCompleteMsg {
-                        summary: crate::ui::snapshot::SnapshotProcessSummary,
+                        summary: crate::ui::SnapshotProcessSummary,
                         raw_bytes_data: u64,
                         compressed_bytes_data: u64,
                         raw_bytes_meta: u64,
@@ -429,7 +427,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         time_taken_seconds: f64,
                     }
 
-                    ui::json_reporter::emit_static(
+                    ui::json::emit_static(
                         "snapshot_complete",
                         &SnapshotCompleteMsg {
                             summary: snapshot_report_summary_clone,

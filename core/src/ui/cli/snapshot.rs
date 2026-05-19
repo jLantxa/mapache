@@ -17,11 +17,9 @@ use parking_lot::Mutex;
 use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     mapache::{defaults, global::GlobalOpts},
-    ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{SPINNER_TICK_CHARS, SnapshotProgressReporter, default_bar_draw_target},
     utils,
 };
-
-use super::SnapshotProgressReporter;
 
 enum UiEvent {
     Start(PathBuf),

@@ -25,13 +25,17 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
     archiver::{progress::SnapshotProgress, tree_serializer::TreeSerializer},
-    fs::tree::{FSNodeStream, NodeDiffStream, SerializedNodeStream},
+    fs::{
+        filter::PathFilter,
+        node::Node,
+        tree::{FSNodeStream, NodeDiffStream, SerializedNodeStream},
+    },
     mapache::{global::THIS_MAPACHE_VERSION, traits::BlobSaver},
     repository::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
     },
-    ui::snapshot::SnapshotProgressReporter,
+    ui::SnapshotProgressReporter,
     utils,
 };
 
@@ -332,10 +336,7 @@ fn spawn_scanner_task(
             return;
         }
 
-        let filter = Arc::new(crate::fs::filter::PathFilter::new(
-            None,
-            Some(exclude_paths),
-        ));
+        let filter = Arc::new(PathFilter::new(None, Some(exclude_paths)));
 
         let status_for_blocking = status.clone();
         let reporter_for_blocking = progress_reporter.clone();
@@ -364,7 +365,7 @@ fn spawn_scanner_task(
 
 fn scan_recursive(
     path: &Path,
-    filter: Arc<crate::fs::filter::PathFilter>,
+    filter: Arc<PathFilter>,
     status: Arc<PipelineStatus>,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
 ) {
@@ -377,7 +378,7 @@ fn scan_recursive(
         return;
     }
 
-    match crate::fs::node::Node::from_path_sync(path, false) {
+    match Node::from_path_sync(path, false) {
         Ok(node) => {
             progress_reporter.add_expected_items(1);
             if node.is_file() {

@@ -12,12 +12,9 @@ use parking_lot::RwLock;
 use serde::Serialize;
 
 use crate::{
-    mapache::defaults,
-    {
-        fs::tree::NodeDiff,
-        mapache::global::GlobalOpts,
-        ui::{json_reporter::JsonReporter, snapshot::SnapshotProgressReporter},
-    },
+    fs::tree::NodeDiff,
+    mapache::{defaults, global::GlobalOpts},
+    ui::{SnapshotProgressReporter, json::JsonReporter},
 };
 
 #[derive(Serialize)]

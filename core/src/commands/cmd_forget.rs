@@ -18,7 +18,7 @@ use crate::{
         retention::{RetentionRule, apply_retention_rules, filter_snapshots_by_hosts},
         snapshot::{SnapshotEntryList, SnapshotStream},
     },
-    ui::{self, log_snapshots_compact},
+    ui::{self, cli::log_snapshots_compact},
     utils::{self, collections::IdSet},
 };
 
@@ -364,7 +364,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             }
 
             if global_args.json {
-                ui::json_reporter::emit_static(
+                ui::json::emit_static(
                     FORGET_MSG,
                     &MsgForget {
                         kept: kept_snapshots,

@@ -1,25 +1,24 @@
+use std::{sync::Arc, time::Duration};
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::Terminal;
-use ratatui::backend::Backend;
-use std::sync::Arc;
-use std::time::Duration;
+use ratatui::{Terminal, backend::Backend};
 
-use crate::mapache::ID;
-use crate::repository::lock::LockHandle;
-use crate::repository::repo::Repository;
-use crate::repository::storage::SecureStorage;
+use crate::repository::{lock::LockHandle, repo::Repository, storage::SecureStorage};
 
-use super::screens::dashboard::DashboardScreen;
+use crate::ui::tui::screens::{
+    dashboard::{DashboardAction, DashboardScreen},
+    snapshot_detail::{DetailAction, SnapshotDetailScreen},
+};
 
-#[derive(Debug, Clone, PartialEq)]
-enum AppScreen {
+enum ActiveScreen {
     Dashboard,
+    SnapshotDetail(Box<SnapshotDetailScreen>),
 }
 
 pub struct App {
-    current_screen: AppScreen,
     dashboard: DashboardScreen,
+    active: ActiveScreen,
     should_quit: bool,
 }
 
@@ -32,8 +31,8 @@ impl App {
     ) -> Self {
         let repo_id = repo.manifest().id().to_hex();
         Self {
-            current_screen: AppScreen::Dashboard,
             dashboard: DashboardScreen::new(repo, repo_path, repo_id),
+            active: ActiveScreen::Dashboard,
             should_quit: false,
         }
     }
@@ -59,40 +58,42 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyCode) {
-        match self.current_screen {
-            AppScreen::Dashboard => {
+        match &mut self.active {
+            ActiveScreen::Dashboard => {
                 if let Some(action) = self.dashboard.handle_key(key) {
                     match action {
                         DashboardAction::Quit => self.should_quit = true,
+                        DashboardAction::SnapshotDetail(id) => {
+                            if let Some(entry) = self.dashboard.get_entry(id) {
+                                self.active = ActiveScreen::SnapshotDetail(Box::new(
+                                    SnapshotDetailScreen::new(entry),
+                                ));
+                            }
+                        }
                         DashboardAction::Snapshot
                         | DashboardAction::Restore
                         | DashboardAction::Stats
                         | DashboardAction::Verify
                         | DashboardAction::Forget
-                        | DashboardAction::Clean
-                        | DashboardAction::SnapshotDetail(_) => {}
+                        | DashboardAction::Clean => {}
+                    }
+                }
+            }
+            ActiveScreen::SnapshotDetail(screen) => {
+                if let Some(action) = screen.handle_key(key) {
+                    match action {
+                        DetailAction::Back => self.active = ActiveScreen::Dashboard,
+                        DetailAction::Quit => self.should_quit = true,
                     }
                 }
             }
         }
     }
 
-    fn render(&self, frame: &mut ratatui::Frame) {
-        match self.current_screen {
-            AppScreen::Dashboard => self.dashboard.render(frame),
+    fn render(&mut self, frame: &mut ratatui::Frame) {
+        match &mut self.active {
+            ActiveScreen::Dashboard => self.dashboard.render(frame),
+            ActiveScreen::SnapshotDetail(screen) => screen.render(frame),
         }
     }
-}
-
-#[derive(Debug)]
-pub enum DashboardAction {
-    Quit,
-    Snapshot,
-    Restore,
-    Stats,
-    Verify,
-    Forget,
-    Clean,
-    #[allow(dead_code)]
-    SnapshotDetail(ID),
 }

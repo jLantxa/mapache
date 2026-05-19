@@ -28,12 +28,10 @@ use crate::{
     mapache::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
-        self,
-        restore::{
-            CliRestoreProgressReporter, JsonRestoreProgressReporter, RestoreProgressReporter,
-        },
+        self, RestoreProgressReporter, cli::restore::CliRestoreProgressReporter,
+        json::restore::JsonRestoreProgressReporter,
     },
-    utils::{self},
+    utils,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -357,7 +355,7 @@ fn emit_restore_start(
             strategy: String,
         }
 
-        ui::json_reporter::emit_static(
+        ui::json::emit_static(
             "restore_start",
             &RestoreStartMsg {
                 snapshot: snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
@@ -415,7 +413,7 @@ fn emit_restore_complete(
             dry_run: bool,
         }
 
-        ui::json_reporter::emit_static(
+        ui::json::emit_static(
             "restore_complete",
             &RestoreCompleteMsg {
                 duration_seconds,

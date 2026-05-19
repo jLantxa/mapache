@@ -22,7 +22,7 @@ use crate::{
     },
     mapache::traits::BlobSaver,
     mapache::{self, BlobType, ID, SaveID},
-    ui::snapshot::SnapshotProgressReporter,
+    ui::SnapshotProgressReporter,
 };
 
 /// Reusable chunker instance.

@@ -449,7 +449,7 @@ async fn stats_repository(
             total_repo_bytes: total_size,
         };
 
-        ui::json_reporter::emit_static("stats", &out);
+        ui::json::emit_static("stats", &out);
         return Ok(());
     }
 

@@ -1,24 +1,41 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use chrono::Local;
 use crossterm::event::KeyCode;
-use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-    TableState,
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Margin},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{
+        Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+        TableState,
+    },
 };
-use std::sync::Arc;
 
-use crate::mapache::defaults::SHORT_SNAPSHOT_ID_LEN;
-use crate::mapache::global::THIS_MAPACHE_VERSION;
-use crate::repository::repo::Repository;
-use crate::repository::snapshot::{SnapshotEntryList, SnapshotStream};
-use crate::utils;
+use crate::{
+    mapache::{ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::THIS_MAPACHE_VERSION},
+    repository::{
+        repo::Repository,
+        snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
+    },
+    utils,
+};
 
-use super::super::app::DashboardAction;
-use super::super::theme;
+use crate::ui::tui::theme;
+
+#[derive(Debug)]
+pub enum DashboardAction {
+    Quit,
+    Snapshot,
+    Restore,
+    Stats,
+    Verify,
+    Forget,
+    Clean,
+    SnapshotDetail(ID),
+}
 
 const MENU_ITEMS: &[(char, &str)] = &[
     ('1', "Snapshot"),
@@ -107,6 +124,14 @@ impl DashboardScreen {
         }
     }
 
+    fn display_list(&self) -> &SnapshotEntryList {
+        if self.filter.is_some() {
+            &self.filtered_snapshots
+        } else {
+            &self.snapshots
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyCode) -> Option<DashboardAction> {
         if self.filter.is_some() {
             return self.handle_filter_key(key);
@@ -126,9 +151,10 @@ impl DashboardScreen {
                 None
             }
             KeyCode::Down => {
-                if !self.filtered_snapshots.is_empty() {
+                let list = self.display_list();
+                if !list.is_empty() {
                     let current = self.table_state.selected().unwrap_or(0);
-                    let next = if current >= self.filtered_snapshots.len().saturating_sub(1) {
+                    let next = if current >= list.len().saturating_sub(1) {
                         0
                     } else {
                         current + 1
@@ -138,10 +164,11 @@ impl DashboardScreen {
                 None
             }
             KeyCode::Up => {
-                if !self.filtered_snapshots.is_empty() {
+                let list = self.display_list();
+                if !list.is_empty() {
                     let current = self.table_state.selected().unwrap_or(0);
                     let prev = if current == 0 {
-                        self.filtered_snapshots.len().saturating_sub(1)
+                        list.len().saturating_sub(1)
                     } else {
                         current - 1
                     };
@@ -150,12 +177,11 @@ impl DashboardScreen {
                 None
             }
             KeyCode::Enter => {
+                let list = self.display_list();
                 if let Some(idx) = self.table_state.selected()
-                    && idx < self.filtered_snapshots.len()
+                    && idx < list.len()
                 {
-                    return Some(DashboardAction::SnapshotDetail(
-                        self.filtered_snapshots[idx].id,
-                    ));
+                    return Some(DashboardAction::SnapshotDetail(list[idx].id));
                 }
                 None
             }
@@ -176,12 +202,8 @@ impl DashboardScreen {
                 if let Some(ref mut query) = self.filter
                     && self.filter_cursor > 0
                     && !query.is_empty()
+                    && let Some((pos, _)) = query.char_indices().nth(self.filter_cursor - 1)
                 {
-                    let pos = query
-                        .char_indices()
-                        .nth(self.filter_cursor - 1)
-                        .map(|(i, _)| i)
-                        .unwrap_or(query.len());
                     query.remove(pos);
                     self.filter_cursor -= 1;
                     self.apply_filter();
@@ -191,12 +213,8 @@ impl DashboardScreen {
                 if let Some(ref mut query) = self.filter
                     && self.filter_cursor < query.chars().count()
                     && !query.is_empty()
+                    && let Some((pos, _)) = query.char_indices().nth(self.filter_cursor)
                 {
-                    let pos = query
-                        .char_indices()
-                        .nth(self.filter_cursor)
-                        .map(|(i, _)| i)
-                        .unwrap_or(query.len());
                     query.remove(pos);
                     self.apply_filter();
                 }
@@ -269,7 +287,7 @@ impl DashboardScreen {
             .first()
             .map(|e| {
                 let elapsed = Local::now() - e.snapshot.timestamp;
-                let ago = Self::format_duration(elapsed);
+                let ago = utils::pretty_print_duration_chrono(elapsed, 1);
                 format!("Last: {} ago", ago)
             })
             .unwrap_or_default();
@@ -290,57 +308,19 @@ impl DashboardScreen {
 
     fn render_snapshot_list(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let max_rows = (area.height.saturating_sub(2)) as usize;
-        let display_list = if self.filter.is_some() {
-            &self.filtered_snapshots
-        } else {
-            &self.snapshots
-        };
+        let display_list = self.display_list();
 
         let title = if self.filter.is_some() {
             format!(
                 " Snapshots ({}/{}) ",
-                self.filtered_snapshots.len(),
+                display_list.len(),
                 self.snapshots.len()
             )
         } else {
             format!(" Snapshots ({}) ", self.snapshots.len())
         };
 
-        let rows: Vec<Row> = display_list
-            .iter()
-            .map(|entry| {
-                let active = if entry.active { "*" } else { "-" };
-                let id_str = entry.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
-                let date = utils::pretty_print_timestamp(&entry.snapshot.timestamp, None);
-                let host = entry.snapshot.hostname.clone().unwrap_or_default();
-                let size = utils::format_size_binary(entry.snapshot.size(), 3);
-                let tags = entry
-                    .snapshot
-                    .tags
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                let active_style = if entry.active {
-                    Style::default().fg(ratatui::style::Color::Green)
-                } else {
-                    Style::default().fg(ratatui::style::Color::DarkGray)
-                };
-
-                Row::new(vec![
-                    Span::styled(active, active_style),
-                    Span::styled(id_str, Style::default().fg(theme::SNAPSHOT_ID)),
-                    Span::styled(date, Style::default().fg(theme::SNAPSHOT_DATE)),
-                    Span::styled(host, Style::default().fg(theme::SNAPSHOT_HOST)),
-                    Span::styled(
-                        format!("{:>14}", size),
-                        Style::default().fg(theme::SNAPSHOT_SIZE),
-                    ),
-                    Span::raw(tags),
-                ])
-            })
-            .collect();
+        let rows = self.render_snapshot_rows(display_list);
 
         let header_row = Row::new(vec![
             Span::styled(" ", Style::default().fg(theme::TABLE_HEADER).bold()),
@@ -421,38 +401,8 @@ impl DashboardScreen {
             return;
         };
 
-        let max_paths_len = area.width.saturating_sub(9) as usize;
-        let paths_str = if entry.snapshot.paths.is_empty() {
-            "(none)".to_string()
-        } else {
-            let mut parts = Vec::new();
-            let mut len = 0;
-            let suffix = ", ...";
-            for p in &entry.snapshot.paths {
-                let formatted = format!("\"{}\"", p.display());
-                let needed = if parts.is_empty() {
-                    formatted.len()
-                } else {
-                    formatted.len() + 2
-                };
-                let limit = if parts.len() + 1 < entry.snapshot.paths.len() {
-                    max_paths_len.saturating_sub(suffix.len())
-                } else {
-                    max_paths_len
-                };
-                if len + needed > limit {
-                    break;
-                }
-                len += needed;
-                parts.push(formatted);
-            }
-            let joined = parts.join(", ");
-            if parts.len() < entry.snapshot.paths.len() {
-                format!("{}{}", joined, suffix)
-            } else {
-                joined
-            }
-        };
+        let paths_str =
+            self.format_paths(&entry.snapshot.paths, area.width.saturating_sub(9) as usize);
 
         let lines = vec![
             Line::from(vec![
@@ -517,48 +467,104 @@ impl DashboardScreen {
     }
 
     fn selected_entry(&self) -> Option<&crate::repository::snapshot::SnapshotEntry> {
-        let display_list = if self.filter.is_some() {
-            &self.filtered_snapshots
-        } else {
-            &self.snapshots
-        };
+        let list = self.display_list();
+        self.table_state.selected().and_then(|idx| list.get(idx))
+    }
 
-        self.table_state
-            .selected()
-            .and_then(|idx| display_list.get(idx))
+    pub fn get_entry(&self, id: ID) -> Option<SnapshotEntry> {
+        self.snapshots.iter().find(|e| e.id == id).cloned()
+    }
+
+    fn render_snapshot_rows<'a>(&self, list: &'a SnapshotEntryList) -> Vec<Row<'a>> {
+        list.iter()
+            .map(|entry| {
+                let active = if entry.active { "*" } else { "-" };
+                let id_str = entry.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
+                let date = utils::pretty_print_timestamp(&entry.snapshot.timestamp, None);
+                let host = entry.snapshot.hostname.as_deref().unwrap_or_default();
+                let size = utils::format_size_binary(entry.snapshot.size(), 3);
+                let tags = entry
+                    .snapshot
+                    .tags
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                let active_style = if entry.active {
+                    Style::default().fg(ratatui::style::Color::Green)
+                } else {
+                    Style::default().fg(ratatui::style::Color::DarkGray)
+                };
+
+                Row::new(vec![
+                    Span::styled(active, active_style),
+                    Span::styled(id_str, Style::default().fg(theme::SNAPSHOT_ID)),
+                    Span::styled(date, Style::default().fg(theme::SNAPSHOT_DATE)),
+                    Span::styled(host, Style::default().fg(theme::SNAPSHOT_HOST)),
+                    Span::styled(
+                        format!("{:>14}", size),
+                        Style::default().fg(theme::SNAPSHOT_SIZE),
+                    ),
+                    Span::raw(tags),
+                ])
+            })
+            .collect()
+    }
+
+    fn format_paths(&self, paths: &[std::path::PathBuf], max_width: usize) -> String {
+        if paths.is_empty() {
+            return "(none)".to_string();
+        }
+
+        let mut parts = Vec::new();
+        let mut len = 0;
+        let suffix = ", ...";
+
+        for p in paths {
+            let formatted = format!("\"{}\"", p.display());
+            let needed = if parts.is_empty() {
+                formatted.len()
+            } else {
+                formatted.len() + 2
+            };
+
+            let limit = if parts.len() + 1 < paths.len() {
+                max_width.saturating_sub(suffix.len())
+            } else {
+                max_width
+            };
+
+            if len + needed > limit {
+                break;
+            }
+            len += needed;
+            parts.push(formatted);
+        }
+
+        let joined = parts.join(", ");
+        if parts.len() < paths.len() {
+            format!("{}{}", joined, suffix)
+        } else {
+            joined
+        }
     }
 
     fn build_menu_text() -> Vec<Line<'static>> {
-        let build_line = |items: &[(char, &str)]| -> Line<'static> {
-            let mut spans = Vec::new();
-            for (i, (key, label)) in items.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::raw("    "));
-                }
-                spans.push(Span::styled(
-                    format!("[{}]", key),
-                    theme::menu_key_style().bold(),
-                ));
-                spans.push(Span::styled(
-                    format!(" {}", label),
-                    theme::menu_text_style(),
-                ));
+        let mut spans = Vec::new();
+        for (i, (key, label)) in MENU_ITEMS.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("    "));
             }
-            Line::from(spans)
-        };
-
-        vec![build_line(MENU_ITEMS)]
-    }
-
-    fn format_duration(duration: chrono::Duration) -> String {
-        if duration.num_seconds() < 60 {
-            format!("{}s", duration.num_seconds())
-        } else if duration.num_minutes() < 60 {
-            format!("{}m", duration.num_minutes())
-        } else if duration.num_hours() < 24 {
-            format!("{}h", duration.num_hours())
-        } else {
-            format!("{}d", duration.num_days())
+            spans.push(Span::styled(
+                format!("[{}]", key),
+                theme::menu_key_style().bold(),
+            ));
+            spans.push(Span::styled(
+                format!(" {}", label),
+                theme::menu_text_style(),
+            ));
         }
+        vec![Line::from(spans)]
     }
 }

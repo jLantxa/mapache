@@ -9,9 +9,10 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{mapache::global::GlobalOpts, ui::json_reporter::JsonReporter};
-
-use super::RestoreProgressReporter;
+use crate::{
+    mapache::global::GlobalOpts,
+    ui::{RestoreProgressReporter, json::JsonReporter},
+};
 
 #[derive(Serialize)]
 struct RestoreStatusUpdateMsg {

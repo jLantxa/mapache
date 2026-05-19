@@ -166,7 +166,7 @@ pub async fn run_with_repo(
 
     if global_args.json {
         let net_freed = deleted_bytes as i64 - added_bytes as i64;
-        ui::json_reporter::emit_static(
+        ui::json::emit_static(
             "clean",
             &CleanOutput {
                 total_packs,

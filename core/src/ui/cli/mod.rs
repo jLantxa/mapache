@@ -1,9 +1,66 @@
 use std::io::{self, BufRead, Write};
 
 use anyhow::Result;
+use colored::Colorize;
 use zeroize::Zeroizing;
 
-use crate::repository::repo::Auth;
+use crate::{
+    mapache,
+    repository::{repo::Auth, snapshot::SnapshotEntryList},
+    ui::cli::table::{Alignment, Table},
+    utils,
+};
+
+pub mod bundle;
+pub mod restore;
+pub mod snapshot;
+pub mod table;
+
+/// Logs a list of snapshots in the form of a compact table.
+pub fn log_snapshots_compact(snapshots: &SnapshotEntryList) {
+    let mut table = Table::new_with_alignments(vec![
+        Alignment::Left,
+        Alignment::Left,
+        Alignment::Left,
+        Alignment::Right,
+        Alignment::Left,
+    ]);
+
+    table.set_headers(vec![
+        "ID".bold().to_string(),
+        "Date ▼".bold().to_string(),
+        "Host".bold().to_string(),
+        "Size".bold().to_string(),
+        "Tags".bold().to_string(),
+    ]);
+
+    for entry in snapshots {
+        let id_str = entry
+            .id
+            .to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN);
+        let id_str = if entry.active {
+            id_str.bold().yellow().to_string()
+        } else {
+            (id_str + " (dropped)").bold().dimmed().to_string()
+        };
+
+        table.add_row(vec![
+            id_str,
+            utils::pretty_print_timestamp(&entry.snapshot.timestamp, None),
+            entry.snapshot.hostname.clone().unwrap_or_default(),
+            utils::format_size_binary(entry.snapshot.size(), 3),
+            entry
+                .snapshot
+                .tags
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ]);
+    }
+
+    log!("{}", table.render());
+}
 
 fn read_line(prompt: &str) -> Result<String> {
     let stdout = io::stdout();

@@ -622,9 +622,18 @@ impl Restorer {
             })
             .await;
 
-        let files = Arc::into_inner(files).unwrap().into_inner();
-        let directories = Arc::into_inner(directories).unwrap().into_inner();
-        let packs_map = Arc::into_inner(packs).unwrap().into_iter().collect();
+        let files = Arc::into_inner(files)
+            .context("Internal error: multiple Arc references to files remained after planning")?
+            .into_inner();
+        let directories = Arc::into_inner(directories)
+            .context(
+                "Internal error: multiple Arc references to directories remained after planning",
+            )?
+            .into_inner();
+        let packs_map = Arc::into_inner(packs)
+            .context("Internal error: multiple Arc references to packs remained after planning")?
+            .into_iter()
+            .collect();
 
         Ok(RestorePlan {
             files: Arc::new(files),

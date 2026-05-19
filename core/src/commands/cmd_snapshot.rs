@@ -61,7 +61,7 @@ pub struct CmdArgs {
     /// List of paths to backup
     #[clap(value_parser)]
     #[merge(strategy = conflate::vec::overwrite_empty)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_paths_vec")]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_paths_vec")]
     pub paths: Vec<PathBuf>,
 
     /// Use a single directory path as the snapshot root
@@ -71,14 +71,14 @@ pub struct CmdArgs {
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
-    #[merge(strategy = crate::config::merge_option_vec)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_string_vec_opt")]
+    #[merge(strategy = crate::mapache::config::merge_option_vec)]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_string_vec_opt")]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
     #[merge(strategy = conflate::option::overwrite_none)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Tags

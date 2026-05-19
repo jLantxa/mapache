@@ -1,3 +1,4 @@
+pub(crate) mod config;
 pub mod defaults;
 pub mod global;
 pub mod hash;

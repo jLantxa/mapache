@@ -79,7 +79,7 @@ pub struct CmdArgs {
     /// A path where the files will be restored.
     #[clap(long)]
     #[merge(strategy = conflate::option::overwrite_none)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub target: Option<PathBuf>,
 
     /// A list of paths to restore: path[,path,...]. Can be used multiple times.
@@ -90,7 +90,7 @@ pub struct CmdArgs {
     /// A file containing a list of paths to include, one per line.
     #[clap(long, value_parser)]
     #[merge(strategy = conflate::option::overwrite_none)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub include_file: Option<PathBuf>,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
@@ -101,7 +101,7 @@ pub struct CmdArgs {
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
     #[merge(strategy = conflate::option::overwrite_none)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Strip the longest common prefix from all restored routes.

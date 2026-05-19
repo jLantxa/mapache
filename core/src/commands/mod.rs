@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{BackendOptions, StorageBackend},
-    config::{MapacheConfig, load_config},
     mapache::{
         ContentIdType, ID,
+        config::{MapacheConfig, load_config},
         defaults::{
             DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
             MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
@@ -134,13 +134,13 @@ pub struct CliGlobalArgs {
     /// SSH private key
     #[clap(long)]
     #[merge(strategy = conflate::option::overwrite_none)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub ssh_privatekey: Option<PathBuf>,
 
     /// Path to a file to read repository authentication credentials
     #[clap(long)]
     #[merge(strategy = conflate::option::overwrite_none)]
-    #[serde(deserialize_with = "crate::config::deserialize_config_path_opt")]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub auth_file: Option<PathBuf>,
 
     /// Pack target size in MiB
@@ -153,7 +153,7 @@ pub struct CliGlobalArgs {
     #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(
         rename = "key-file",
-        deserialize_with = "crate::config::deserialize_config_path_opt"
+        deserialize_with = "crate::mapache::config::deserialize_config_path_opt"
     )]
     pub key: Option<PathBuf>,
 

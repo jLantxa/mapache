@@ -2,7 +2,6 @@ pub mod archiver;
 pub mod backend;
 pub mod bundle;
 pub mod commands;
-pub mod config;
 pub mod fs;
 pub mod mapache;
 pub mod repository;

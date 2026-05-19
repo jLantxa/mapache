@@ -115,7 +115,7 @@ pub struct RuntimeDefaults {
 }
 
 impl RuntimeDefaults {
-    pub fn new(config: Option<&crate::config::RuntimeConfig>) -> Self {
+    pub fn new(config: Option<&crate::mapache::config::RuntimeConfig>) -> Self {
         let c = config;
         Self {
             restore_pack_prefetch: c
@@ -168,7 +168,7 @@ impl RuntimeDefaults {
 static RUNTIME_DEFAULTS: OnceLock<RuntimeDefaults> = OnceLock::new();
 
 /// Initialize the runtime defaults. Must be called once before any use.
-pub fn init_runtime_defaults(config: Option<&crate::config::RuntimeConfig>) {
+pub fn init_runtime_defaults(config: Option<&crate::mapache::config::RuntimeConfig>) {
     let _ = RUNTIME_DEFAULTS.set(RuntimeDefaults::new(config));
 }
 

@@ -1,0 +1,26 @@
+use anyhow::Result;
+use clap::Args;
+
+use crate::{backend::new_backend_with_prompt, commands::GlobalArgs, ui::tui};
+
+#[derive(Args, Debug, Clone)]
+#[clap(about = "Launch interactive terminal user interface")]
+pub struct CmdArgs;
+
+pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
+    let repo_path = global_args.repo.clone();
+
+    crate::commands::with_repository_lock(
+        global_args.auth_file.as_ref(),
+        global_args.key.as_ref(),
+        backend,
+        global_args.to_repo_config(),
+        false,
+        global_args.retry_lock_duration,
+        |repo, secure_storage, lock_handle| async move {
+            tui::run(repo, secure_storage, lock_handle, repo_path).await
+        },
+    )
+    .await
+}

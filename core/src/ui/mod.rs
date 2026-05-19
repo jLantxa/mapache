@@ -18,6 +18,7 @@ pub(crate) mod json_reporter;
 pub(crate) mod restore;
 pub(crate) mod snapshot;
 pub mod table;
+pub mod tui;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 

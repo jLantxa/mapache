@@ -52,6 +52,7 @@ pub mod cmd_restore;
 pub mod cmd_snapshot;
 pub mod cmd_stats;
 pub mod cmd_sync;
+pub mod cmd_tui;
 pub mod cmd_unlock;
 pub mod cmd_verify;
 
@@ -103,6 +104,7 @@ pub enum Command {
     Snapshot(WithGlobal<cmd_snapshot::CmdArgs>),
     Stats(WithGlobal<cmd_stats::CmdArgs>),
     Sync(WithGlobal<cmd_sync::CmdArgs>),
+    Tui(WithGlobal<cmd_tui::CmdArgs>),
     Unlock(WithGlobal<cmd_unlock::CmdArgs>),
     Verify(WithGlobal<cmd_verify::CmdArgs>),
 }
@@ -619,6 +621,13 @@ pub async fn parse_and_run() -> i32 {
             }
             (cli_to_global_args(&g), Command::Verify(cmd))
         }
+        Command::Tui(cmd) => {
+            let mut g = cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::Tui(cmd))
+        }
     };
 
     let global = match global_result {
@@ -660,6 +669,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args).await,
         Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args).await,
         Command::Sync(cmd) => cmd_sync::run(&global, &cmd.args).await,
+        Command::Tui(cmd) => cmd_tui::run(&global, &cmd.args).await,
         Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args).await,
         Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args).await,
     };

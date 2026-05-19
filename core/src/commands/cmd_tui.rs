@@ -1,3 +1,4 @@
+#![cfg(feature = "tui")]
 use anyhow::Result;
 use clap::Args;
 

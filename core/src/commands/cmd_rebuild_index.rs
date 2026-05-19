@@ -102,6 +102,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             tracing::info!(target: "rebuild-index", "Pack scanning finished");
 
             // Populate the new index
+            let populate_bar = ProgressBar::with_draw_target(
+                Some(all_pack_ids.len() as u64),
+                default_bar_draw_target(),
+            )
+            .with_style(
+                ProgressStyle::default_bar()
+                    .template("[{bar:20.cyan/white}] Building index: {pos}/{len}")
+                    .unwrap()
+                    .progress_chars("=> "),
+            );
+
             let mut blob_count = 0;
             let mut error_count = 0;
 
@@ -122,7 +133,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         ui::cli::error!("Error reading pack {pack_id}: {e}");
                     }
                 }
+                populate_bar.inc(1);
             }
+
+            populate_bar.finish_and_clear();
 
             ui::cli::log!("Found {} blobs", blob_count);
             tracing::info!(target: "rebuild-index", "Rebuild summary: {} blobs found, {} packs skipped due to errors", blob_count, error_count);

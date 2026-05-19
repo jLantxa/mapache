@@ -8,12 +8,14 @@ use crate::repository::{lock::LockHandle, repo::Repository, storage::SecureStora
 
 use crate::ui::tui::screens::{
     dashboard::{DashboardAction, DashboardScreen},
+    file_explorer::{FileExplorerAction, FileExplorerScreen},
     snapshot_detail::{DetailAction, SnapshotDetailScreen},
 };
 
 enum ActiveScreen {
     Dashboard,
     SnapshotDetail(Box<SnapshotDetailScreen>),
+    FileExplorer(Box<FileExplorerScreen>, Box<SnapshotDetailScreen>),
 }
 
 pub struct App {
@@ -48,16 +50,16 @@ impl App {
 
             if event::poll(Duration::from_millis(100))?
                 && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
+                && key.kind != KeyEventKind::Release
             {
-                self.handle_key(key.code);
+                self.handle_key(key.code).await;
             }
         }
 
         Ok(())
     }
 
-    fn handle_key(&mut self, key: KeyCode) {
+    async fn handle_key(&mut self, key: KeyCode) {
         match &mut self.active {
             ActiveScreen::Dashboard => {
                 if let Some(action) = self.dashboard.handle_key(key) {
@@ -84,6 +86,42 @@ impl App {
                     match action {
                         DetailAction::Back => self.active = ActiveScreen::Dashboard,
                         DetailAction::Quit => self.should_quit = true,
+                        DetailAction::Explore => {
+                            let root_tree_id = screen.get_snapshot().tree;
+                            match FileExplorerScreen::new(self.dashboard.get_repo(), &root_tree_id)
+                                .await
+                            {
+                                Ok(explorer) => {
+                                    // Move the current detail screen into the FileExplorer state
+                                    if let ActiveScreen::SnapshotDetail(detail_screen) =
+                                        std::mem::replace(&mut self.active, ActiveScreen::Dashboard)
+                                    {
+                                        self.active = ActiveScreen::FileExplorer(
+                                            Box::new(explorer),
+                                            detail_screen,
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to load file explorer: {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ActiveScreen::FileExplorer(screen, _detail_screen) => {
+                if let Some(action) = screen.handle_key(key).await {
+                    match action {
+                        FileExplorerAction::Back => {
+                            // Restore the detail screen
+                            if let ActiveScreen::FileExplorer(_, detail) =
+                                std::mem::replace(&mut self.active, ActiveScreen::Dashboard)
+                            {
+                                self.active = ActiveScreen::SnapshotDetail(detail);
+                            }
+                        }
+                        FileExplorerAction::Quit => self.should_quit = true,
                     }
                 }
             }
@@ -94,6 +132,7 @@ impl App {
         match &mut self.active {
             ActiveScreen::Dashboard => self.dashboard.render(frame),
             ActiveScreen::SnapshotDetail(screen) => screen.render(frame),
+            ActiveScreen::FileExplorer(screen, _) => screen.render(frame),
         }
     }
 }

@@ -20,10 +20,9 @@ use crate::{
         repo::Repository,
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
+    ui::tui::theme,
     utils,
 };
-
-use crate::ui::tui::theme;
 
 #[derive(Debug)]
 pub enum DashboardAction {
@@ -58,6 +57,7 @@ pub struct DashboardScreen {
     table_state: TableState,
     filter: Option<String>,
     filter_cursor: usize,
+    last_height: u16,
 }
 
 impl DashboardScreen {
@@ -71,10 +71,12 @@ impl DashboardScreen {
             table_state: TableState::default(),
             filter: None,
             filter_cursor: 0,
+            last_height: 10,
         }
     }
 
     pub async fn load_snapshots(&mut self) -> Result<()> {
+        self.repo.reload_master_index().await?;
         let mut entries = SnapshotStream::new(self.repo.clone())
             .await?
             .collect_entries(true)
@@ -176,6 +178,25 @@ impl DashboardScreen {
                 }
                 None
             }
+            KeyCode::PageDown => {
+                let list = self.display_list();
+                if !list.is_empty() {
+                    let current = self.table_state.selected().unwrap_or(0);
+                    let next =
+                        (current + self.last_height as usize).min(list.len().saturating_sub(1));
+                    self.table_state.select(Some(next));
+                }
+                None
+            }
+            KeyCode::PageUp => {
+                let list = self.display_list();
+                if !list.is_empty() {
+                    let current = self.table_state.selected().unwrap_or(0);
+                    let prev = current.saturating_sub(self.last_height as usize);
+                    self.table_state.select(Some(prev));
+                }
+                None
+            }
             KeyCode::Enter => {
                 let list = self.display_list();
                 if let Some(idx) = self.table_state.selected()
@@ -254,7 +275,9 @@ impl DashboardScreen {
         None
     }
 
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        self.last_height = area.height.saturating_sub(10); // Rough estimate of table height
         let has_filter = self.filter.is_some();
         let filter_height = if has_filter { 3 } else { 0 };
         let info_lines = self.info_line_count();
@@ -466,9 +489,13 @@ impl DashboardScreen {
         frame.render_widget(hints, chunks[1]);
     }
 
-    fn selected_entry(&self) -> Option<&crate::repository::snapshot::SnapshotEntry> {
+    fn selected_entry(&self) -> Option<&SnapshotEntry> {
         let list = self.display_list();
         self.table_state.selected().and_then(|idx| list.get(idx))
+    }
+
+    pub fn get_repo(&self) -> Arc<Repository> {
+        self.repo.clone()
     }
 
     pub fn get_entry(&self, id: ID) -> Option<SnapshotEntry> {

@@ -8,20 +8,24 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-use crate::{repository::snapshot::SnapshotEntry, utils};
-
-use crate::ui::tui::theme;
+use crate::{
+    repository::snapshot::{Snapshot, SnapshotEntry},
+    ui::tui::theme,
+    utils,
+};
 
 #[derive(Debug)]
 pub enum DetailAction {
     Back,
     Quit,
+    Explore,
 }
 
 pub struct SnapshotDetailScreen {
     entry: SnapshotEntry,
     scroll: usize,
     max_scroll: usize,
+    page_size: usize,
 }
 
 impl SnapshotDetailScreen {
@@ -30,19 +34,33 @@ impl SnapshotDetailScreen {
             entry,
             scroll: 0,
             max_scroll: 0,
+            page_size: 10,
         }
+    }
+
+    pub fn get_snapshot(&self) -> &Snapshot {
+        &self.entry.snapshot
     }
 
     pub fn handle_key(&mut self, key: KeyCode) -> Option<DetailAction> {
         match key {
             KeyCode::Esc => Some(DetailAction::Back),
             KeyCode::Char('q') => Some(DetailAction::Quit),
+            KeyCode::Enter => Some(DetailAction::Explore),
             KeyCode::Down => {
                 self.scroll = (self.scroll + 1).min(self.max_scroll);
                 None
             }
             KeyCode::Up => {
                 self.scroll = self.scroll.saturating_sub(1);
+                None
+            }
+            KeyCode::PageDown => {
+                self.scroll = (self.scroll + self.page_size).min(self.max_scroll);
+                None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(self.page_size);
                 None
             }
             _ => None,
@@ -185,6 +203,7 @@ impl SnapshotDetailScreen {
         );
 
         self.max_scroll = lines.len().saturating_sub(content_height);
+        self.page_size = content_height;
 
         let total_lines = lines.len();
         let start = self.scroll.min(total_lines.saturating_sub(1));
@@ -235,6 +254,9 @@ impl SnapshotDetailScreen {
         let title = ratatui::text::Line::from(vec![
             Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" back"),
+            Span::raw("    "),
+            Span::styled("[Enter]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" explore"),
             Span::raw("    "),
             Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" close"),

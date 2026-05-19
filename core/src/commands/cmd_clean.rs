@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Instant};
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -100,7 +101,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
 /// Run the command with an initialized repository object.
 pub async fn run_with_repo(
-    _global_args: &GlobalArgs,
+    global_args: &GlobalArgs,
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
 ) -> Result<()> {
@@ -123,28 +124,32 @@ pub async fn run_with_repo(
     })?;
     tracing::info!(target: "clean", "GC scan finished. Plan: {} packs to remove, {} to repack", plan.unused_packs.len() + plan.obsolete_packs.len(), plan.small_packs.len());
 
-    ui::cli::log!();
-    ui::cli::log!("Total packs: {}", plan.total_packs.to_string(),);
-    ui::cli::log!(
-        "Referenced blobs: {}",
-        plan.referenced_blobs.len().to_string(),
-    );
-    ui::cli::log!(
-        "Referenced packs: {}",
-        plan.referenced_packs.len().to_string(),
-    );
-    ui::cli::log!("Unused packs: {}", plan.unused_packs.len().to_string(),);
-    ui::cli::log!("Obsolete packs: {}", plan.obsolete_packs.len().to_string(),);
-    ui::cli::log!("Small packs: {}", plan.small_packs.len().to_string(),);
-    ui::cli::log!(
-        "Tolerated packs: {}",
-        plan.tolerated_packs.len().to_string(),
-    );
+    let total_packs = plan.total_packs;
+    let referenced_blobs = plan.referenced_blobs.len();
+    let referenced_packs = plan.referenced_packs.len();
+    let unused_packs = plan.unused_packs.len();
+    let obsolete_packs = plan.obsolete_packs.len();
+    let small_packs = plan.small_packs.len();
+    let tolerated_packs = plan.tolerated_packs.len();
 
-    ui::cli::log!();
-    if args.dry_run {
-        ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
+    if !global_args.json {
+        ui::cli::log!();
+        ui::cli::log!("Total packs: {}", total_packs.to_string());
+        ui::cli::log!("Referenced blobs: {}", referenced_blobs.to_string());
+        ui::cli::log!("Referenced packs: {}", referenced_packs.to_string());
+        ui::cli::log!("Unused packs: {}", unused_packs.to_string());
+        ui::cli::log!("Obsolete packs: {}", obsolete_packs.to_string());
+        ui::cli::log!("Small packs: {}", small_packs.to_string());
+        ui::cli::log!("Tolerated packs: {}", tolerated_packs.to_string());
+        ui::cli::log!();
+    }
+
+    let (added_bytes, deleted_bytes) = if args.dry_run {
+        if !global_args.json {
+            ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
+        }
         tracing::info!(target: "clean", "Dry run enabled. GC not executed.");
+        (0, 0)
     } else {
         tracing::info!(target: "clean", "Executing GC plan");
         let gc_sizes = plan.execute().await.map_err(|e| {
@@ -154,21 +159,41 @@ pub async fn run_with_repo(
             )
         })?;
         tracing::info!(target: "clean", "GC execution finished. Added: {}, Deleted: {}", utils::format_size_binary(gc_sizes.added_bytes, 1), utils::format_size_binary(gc_sizes.deleted_bytes, 1));
-        let net_deleted_bytes = gc_sizes.deleted_bytes as i64 - gc_sizes.added_bytes as i64;
+        (gc_sizes.added_bytes, gc_sizes.deleted_bytes)
+    };
 
-        // Report the total written and deleted bytes.
-        // The net balance can be 0, but the user might like to know how much
-        // we are writing/deleting in the backend.
+    let duration = start.elapsed();
+
+    if global_args.json {
+        let net_freed = deleted_bytes as i64 - added_bytes as i64;
+        ui::json_reporter::emit_static(
+            "clean",
+            &CleanOutput {
+                total_packs,
+                referenced_blobs,
+                referenced_packs,
+                unused_packs,
+                obsolete_packs,
+                small_packs,
+                tolerated_packs,
+                added_bytes,
+                deleted_bytes,
+                net_freed_bytes: net_freed,
+                duration_secs: duration.as_secs_f64(),
+            },
+        );
+    } else {
+        let net_deleted_bytes = deleted_bytes as i64 - added_bytes as i64;
+
         ui::cli::log!(
             "Written new bytes: {}",
-            utils::format_size_binary(gc_sizes.added_bytes, 3)
+            utils::format_size_binary(added_bytes, 3)
         );
         ui::cli::log!(
             "Deleted bytes: {}",
-            utils::format_size_binary(gc_sizes.deleted_bytes, 3)
+            utils::format_size_binary(deleted_bytes, 3)
         );
 
-        // Report net freed/added space
         if net_deleted_bytes >= 0 {
             ui::cli::log!(
                 "Net freed space: {}",
@@ -185,12 +210,25 @@ pub async fn run_with_repo(
             );
         }
         ui::cli::log!();
-        ui::cli::log!(
-            "Finished in {}",
-            utils::pretty_print_duration(start.elapsed())
-        );
+        ui::cli::log!("Finished in {}", utils::pretty_print_duration(duration));
     }
-    tracing::info!(target: "clean", "Clean command completed in {:?}", start.elapsed());
+
+    tracing::info!(target: "clean", "Clean command completed in {:?}", duration);
 
     Ok(())
+}
+
+#[derive(Serialize)]
+struct CleanOutput {
+    total_packs: usize,
+    referenced_blobs: usize,
+    referenced_packs: usize,
+    unused_packs: usize,
+    obsolete_packs: usize,
+    small_packs: usize,
+    tolerated_packs: usize,
+    added_bytes: u64,
+    deleted_bytes: u64,
+    net_freed_bytes: i64,
+    duration_secs: f64,
 }

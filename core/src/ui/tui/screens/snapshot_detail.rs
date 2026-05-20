@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::{
-    repository::snapshot::{Snapshot, SnapshotEntry},
+    repository::snapshot::{Snapshot, SnapshotEntry, SnapshotEntryList},
     ui::tui::theme,
     utils,
 };
@@ -19,19 +19,23 @@ pub enum DetailAction {
     Back,
     Quit,
     Explore,
+    PrevSnapshot,
+    NextSnapshot,
 }
 
 pub struct SnapshotDetailScreen {
-    entry: SnapshotEntry,
+    snapshots: SnapshotEntryList,
+    current_index: usize,
     scroll: usize,
     max_scroll: usize,
     page_size: usize,
 }
 
 impl SnapshotDetailScreen {
-    pub fn new(entry: SnapshotEntry) -> Self {
+    pub fn new(snapshots: SnapshotEntryList, current_index: usize) -> Self {
         Self {
-            entry,
+            snapshots,
+            current_index,
             scroll: 0,
             max_scroll: 0,
             page_size: 10,
@@ -39,7 +43,11 @@ impl SnapshotDetailScreen {
     }
 
     pub fn get_snapshot(&self) -> &Snapshot {
-        &self.entry.snapshot
+        &self.snapshots[self.current_index].snapshot
+    }
+
+    pub fn get_entry(&self) -> &SnapshotEntry {
+        &self.snapshots[self.current_index]
     }
 
     pub fn handle_key(&mut self, key: KeyCode) -> Option<DetailAction> {
@@ -47,6 +55,24 @@ impl SnapshotDetailScreen {
             KeyCode::Esc => Some(DetailAction::Back),
             KeyCode::Char('q') => Some(DetailAction::Quit),
             KeyCode::Enter => Some(DetailAction::Explore),
+            KeyCode::Char('<') | KeyCode::Char(',') => {
+                if self.current_index > 0 {
+                    self.current_index -= 1;
+                    self.scroll = 0;
+                    Some(DetailAction::PrevSnapshot)
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('>') | KeyCode::Char('.') => {
+                if self.current_index < self.snapshots.len().saturating_sub(1) {
+                    self.current_index += 1;
+                    self.scroll = 0;
+                    Some(DetailAction::NextSnapshot)
+                } else {
+                    None
+                }
+            }
             KeyCode::Down => {
                 self.scroll = (self.scroll + 1).min(self.max_scroll);
                 None
@@ -55,12 +81,20 @@ impl SnapshotDetailScreen {
                 self.scroll = self.scroll.saturating_sub(1);
                 None
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown | KeyCode::Char(' ') => {
                 self.scroll = (self.scroll + self.page_size).min(self.max_scroll);
                 None
             }
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(self.page_size);
+                None
+            }
+            KeyCode::Home => {
+                self.scroll = 0;
+                None
+            }
+            KeyCode::End => {
+                self.scroll = self.max_scroll;
                 None
             }
             _ => None,
@@ -82,7 +116,8 @@ impl SnapshotDetailScreen {
         let content_height = content_area.height.saturating_sub(2) as usize;
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        let s = &self.entry.snapshot;
+        let s = self.get_snapshot();
+        let entry = self.get_entry();
 
         let mut add_line = |label: Option<&str>, spans: Vec<Span<'static>>| {
             let mut line_spans = Vec::new();
@@ -99,7 +134,7 @@ impl SnapshotDetailScreen {
         add_line(
             Some("ID:"),
             vec![Span::styled(
-                self.entry.id.to_hex(),
+                entry.id.to_hex(),
                 Style::default().fg(theme::SNAPSHOT_ID),
             )],
         );
@@ -165,7 +200,7 @@ impl SnapshotDetailScreen {
 
         add_line(
             Some("Active:"),
-            vec![Span::raw(if self.entry.active { "yes" } else { "no" })],
+            vec![Span::raw(if entry.active { "yes" } else { "no" })],
         );
 
         add_line(
@@ -251,12 +286,32 @@ impl SnapshotDetailScreen {
     }
 
     fn render_title(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let has_prev = self.current_index > 0;
+        let has_next = self.current_index < self.snapshots.len().saturating_sub(1);
+
+        let prev_style = if has_prev {
+            Style::default().fg(theme::MENU_KEY).bold()
+        } else {
+            Style::default().fg(theme::FOOTER_FG)
+        };
+        let next_style = if has_next {
+            Style::default().fg(theme::MENU_KEY).bold()
+        } else {
+            Style::default().fg(theme::FOOTER_FG)
+        };
+
         let title = ratatui::text::Line::from(vec![
             Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" back"),
             Span::raw("    "),
             Span::styled("[Enter]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" explore"),
+            Span::raw("    "),
+            Span::styled("<", prev_style),
+            Span::raw(" prev"),
+            Span::raw("    "),
+            Span::styled(">", next_style),
+            Span::raw(" next"),
             Span::raw("    "),
             Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" close"),

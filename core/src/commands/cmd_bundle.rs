@@ -10,6 +10,7 @@ use futures::StreamExt;
 #[cfg(all(feature = "fuse", unix))]
 use crate::{
     commands::cleanup::CleanupHandler,
+    fs::{get_absolute_normalized_path, path_exists},
     fuse::fs::{MapacheFS, MountOptions},
     utils::size,
 };
@@ -23,9 +24,7 @@ use crate::{
     fs::{
         calculate_lcp,
         filter::PathFilter,
-        get_absolute_normalized_path,
         node::{Metadata, Node},
-        path_exists,
         tree::{FSNodeStream, NodeDiff, StreamNode, Tree},
     },
     mapache::{

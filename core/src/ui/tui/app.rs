@@ -65,10 +65,11 @@ impl App {
                 if let Some(action) = self.dashboard.handle_key(key) {
                     match action {
                         DashboardAction::Quit => self.should_quit = true,
-                        DashboardAction::SnapshotDetail(id) => {
-                            if let Some(entry) = self.dashboard.get_entry(id) {
+                        DashboardAction::SnapshotDetail(_id) => {
+                            if let Some(index) = self.dashboard.get_current_index() {
+                                let snapshots = self.dashboard.get_snapshots().clone();
                                 self.active = ActiveScreen::SnapshotDetail(Box::new(
-                                    SnapshotDetailScreen::new(entry),
+                                    SnapshotDetailScreen::new(snapshots, index),
                                 ));
                             }
                         }
@@ -106,6 +107,9 @@ impl App {
                                     tracing::error!("Failed to load file explorer: {:?}", e);
                                 }
                             }
+                        }
+                        DetailAction::PrevSnapshot | DetailAction::NextSnapshot => {
+                            // The screen already updated its current_index, just reset scroll
                         }
                     }
                 }

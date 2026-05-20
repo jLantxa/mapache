@@ -497,8 +497,16 @@ impl DashboardScreen {
         self.repo.clone()
     }
 
-    pub fn get_entry(&self, id: ID) -> Option<SnapshotEntry> {
-        self.snapshots.iter().find(|e| e.id == id).cloned()
+    pub fn get_snapshots(&self) -> &SnapshotEntryList {
+        &self.snapshots
+    }
+
+    pub fn get_current_index(&self) -> Option<usize> {
+        let list = self.display_list();
+        self.table_state.selected().and_then(|idx| {
+            let entry = list.get(idx)?;
+            self.snapshots.iter().position(|e| e.id == entry.id)
+        })
     }
 
     fn render_snapshot_rows<'a>(&self, list: &'a SnapshotEntryList) -> Vec<Row<'a>> {

@@ -24,6 +24,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, secure_storage, lock_handle| async move {
+            repo.reload_master_index().await?;
             tui::run(repo, secure_storage, lock_handle, repo_path).await
         },
     )

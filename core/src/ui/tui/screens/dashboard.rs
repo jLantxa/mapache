@@ -76,7 +76,6 @@ impl DashboardScreen {
     }
 
     pub async fn load_snapshots(&mut self) -> Result<()> {
-        self.repo.reload_master_index().await?;
         let mut entries = SnapshotStream::new(self.repo.clone())
             .await?
             .collect_entries(true)

@@ -18,7 +18,7 @@ use crate::{
     },
     ui::tui::{
         app::{Screen, Transition},
-        screens::file_explorer::FileExplorerScreen,
+        screens::{file_explorer::FileExplorerScreen, restore::RestoreScreen},
         theme,
     },
     utils,
@@ -92,6 +92,9 @@ impl SnapshotDetailScreen {
             Span::raw("    "),
             Span::styled("[Enter]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" explore"),
+            Span::raw("    "),
+            Span::styled("[r]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" restore"),
             Span::raw("    "),
             Span::styled("<", prev_style),
             Span::raw(" prev"),
@@ -278,15 +281,23 @@ impl Screen for SnapshotDetailScreen {
             KeyCode::Esc => Some(Transition::Pop),
             KeyCode::Char('q') => Some(Transition::Quit),
             KeyCode::Enter => {
-                let snapshot = self.get_snapshot();
-                let tree_id = snapshot.tree;
-                match FileExplorerScreen::new(self.repo.clone(), &tree_id).await {
+                let entry = self.get_entry().clone();
+                let tree_id = entry.snapshot.tree;
+                match FileExplorerScreen::new(self.repo.clone(), entry, &tree_id).await {
                     Ok(explorer) => Some(Transition::Push(Box::new(explorer))),
                     Err(e) => {
                         tracing::error!("Failed to load file explorer: {:?}", e);
                         None
                     }
                 }
+            }
+            KeyCode::Char('r') => {
+                let entry = self.get_entry().clone();
+                Some(Transition::Push(Box::new(RestoreScreen::new(
+                    self.repo.clone(),
+                    entry,
+                    None,
+                ))))
             }
             KeyCode::Char('<') | KeyCode::Char(',') => {
                 self.navigate_snapshot(-1);

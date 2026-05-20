@@ -14,9 +14,10 @@ use ratatui::{
 use crate::{
     fs::{node::Node, tree::Tree},
     mapache::ID,
-    repository::repo::Repository,
+    repository::{repo::Repository, snapshot::SnapshotEntry},
     ui::tui::{
         app::{Screen, Transition},
+        screens::restore::RestoreScreen,
         theme,
     },
     utils,
@@ -34,6 +35,7 @@ struct PathStackEntry {
 
 pub struct FileExplorerScreen {
     repo: Arc<Repository>,
+    snapshot: SnapshotEntry,
     current_tree: Tree,
     path_stack: Vec<PathStackEntry>,
     current_path: PathBuf,
@@ -42,7 +44,11 @@ pub struct FileExplorerScreen {
 }
 
 impl FileExplorerScreen {
-    pub async fn new(repo: Arc<Repository>, root_tree_id: &ID) -> Result<Self> {
+    pub async fn new(
+        repo: Arc<Repository>,
+        snapshot: SnapshotEntry,
+        root_tree_id: &ID,
+    ) -> Result<Self> {
         let mut root_tree = Tree::load_from_repo(&repo, root_tree_id).await?;
         Self::sort_nodes(&mut root_tree.nodes);
         let mut list_state = ListState::default();
@@ -52,6 +58,7 @@ impl FileExplorerScreen {
 
         Ok(Self {
             repo,
+            snapshot,
             current_tree: root_tree,
             path_stack: Vec::new(),
             current_path: PathBuf::from("/"),
@@ -134,6 +141,9 @@ impl FileExplorerScreen {
             Span::raw("    "),
             Span::styled("[Backsp/←]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" up"),
+            Span::raw("    "),
+            Span::styled("[r]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" restore"),
             Span::raw("    "),
             Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" quit"),
@@ -280,6 +290,24 @@ impl Screen for FileExplorerScreen {
                     }
                 }
                 None
+            }
+            KeyCode::Char('r') => {
+                if let Some(i) = self.list_state.selected() {
+                    let node_name = &self.current_tree.nodes[i].name;
+                    let mut path = self.current_path.clone();
+                    if path.starts_with("/") {
+                        path = path.strip_prefix("/").unwrap().to_path_buf();
+                    }
+                    let restore_path = path.join(node_name);
+
+                    Some(Transition::Push(Box::new(RestoreScreen::new(
+                        self.repo.clone(),
+                        self.snapshot.clone(),
+                        Some(vec![restore_path]),
+                    ))))
+                } else {
+                    None
+                }
             }
             KeyCode::Backspace | KeyCode::Left => {
                 if let Some(entry) = self.path_stack.pop() {

@@ -45,7 +45,7 @@ use crate::ui::tui::{
     theme,
 };
 
-const PROGRESS_BAR_WIDTH: usize = 30;
+const PROGRESS_BAR_WIDTH: usize = 35;
 const POPUP_WIDTH: u16 = 60;
 const POPUP_HEIGHT: u16 = 10;
 const POPUP_MARGIN: u16 = 4;
@@ -1284,8 +1284,10 @@ impl SnapshotCreateScreen {
 
     fn render_progress_bar(&self, frame: &mut Frame, area: Rect) {
         let bar_width = PROGRESS_BAR_WIDTH;
-        let cyan_style = Style::default().fg(Color::Green);
-        let white_style = Style::default().fg(Color::White);
+        let cyan_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let white_style = Style::default().fg(Color::DarkGray);
 
         let (bar_spans, info_text) =
             if self.progress.scan_finished && self.progress.expected_bytes > 0 {

@@ -24,7 +24,7 @@ use crate::{
     ui::tui::{
         app::{Screen, Transition},
         screens::{
-            forget::ForgetScreen, snapshot_create::SnapshotCreateScreen,
+            forget::ForgetScreen, restore::RestoreScreen, snapshot_create::SnapshotCreateScreen,
             snapshot_detail::SnapshotDetailScreen,
         },
         theme,
@@ -534,7 +534,18 @@ impl Screen for DashboardScreen {
                     config,
                 ))))
             }
-            KeyCode::Char('2') => None, // Restore
+            KeyCode::Char('2') => {
+                let entry = self.selected_entry().cloned();
+                if let Some(entry) = entry {
+                    Some(Transition::Push(Box::new(RestoreScreen::new(
+                        self.repo.clone(),
+                        entry,
+                        None,
+                    ))))
+                } else {
+                    None
+                }
+            }
             KeyCode::Char('3') => None, // Stats
             KeyCode::Char('4') => None, // Verify
             KeyCode::Char('5') => {

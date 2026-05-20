@@ -675,7 +675,8 @@ pub async fn parse_and_run() -> i32 {
         #[cfg(feature = "tui")]
         Command::Tui(cmd) => {
             let snapshot_cfg = config.snapshot.clone();
-            cmd_tui::run(&global, &cmd.args, snapshot_cfg).await
+            let forget_cfg = config.forget.clone();
+            cmd_tui::run(&global, &cmd.args, snapshot_cfg, forget_cfg).await
         }
         Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args).await,
         Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args).await,

@@ -34,11 +34,7 @@ use crate::{
         self, ContentIdType, ID,
         defaults::{DEFAULT_SNAPSHOT_PACKERS, DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
     },
-    repository::{
-        lock::LockHandle,
-        repo::Repository,
-        snapshot::SnapshotSummary,
-    },
+    repository::{lock::LockHandle, repo::Repository, snapshot::SnapshotSummary},
     ui::SnapshotProgressReporter,
     utils,
 };
@@ -46,9 +42,8 @@ use crate::{
 use crate::ui::tui::theme;
 
 const PROGRESS_BAR_WIDTH: usize = 30;
-const TEXT_INPUT_WIDTH: usize = 56;
 const POPUP_WIDTH: u16 = 60;
-const POPUP_HEIGHT: u16 = 12;
+const POPUP_HEIGHT: u16 = 10;
 const POPUP_MARGIN: u16 = 4;
 const MAX_ERRORS: usize = 3;
 const MAX_WARNINGS: usize = 3;
@@ -106,13 +101,12 @@ impl FormField {
     fn is_text_input(&self) -> bool {
         matches!(
             self,
-            FormField::Paths
-                | FormField::Tags
-                | FormField::Description
-                | FormField::Exclude
-                | FormField::Readers
-                | FormField::Packers
+            FormField::Paths | FormField::Tags | FormField::Description | FormField::Exclude
         )
+    }
+
+    fn is_number_field(&self) -> bool {
+        matches!(self, FormField::Readers | FormField::Packers)
     }
 
     fn is_toggle(&self) -> bool {
@@ -167,16 +161,6 @@ impl SnapshotForm {
                 readers: DEFAULT_SNAPSHOT_READERS as u32,
                 packers: DEFAULT_SNAPSHOT_PACKERS as u32,
             })
-    }
-
-    fn cursor(&self, field: &FormField) -> usize {
-        match field {
-            FormField::Paths => self.paths.len(),
-            FormField::Tags => self.tags.len(),
-            FormField::Description => self.description.len(),
-            FormField::Exclude => self.exclude.len(),
-            _ => 0,
-        }
     }
 }
 
@@ -393,18 +377,13 @@ pub struct SnapshotCreateScreen {
     phase: SnapshotPhase,
     form: SnapshotForm,
     focused_field: FormField,
-    text_cursor: usize,
-    text_input: Option<TextInputState>,
+    editing: Option<FormField>,
+    edit_buffer: String,
+    edit_cursor: usize,
     progress: ProgressState,
     shutdown_signal: Arc<AtomicBool>,
     rx: Option<mpsc::UnboundedReceiver<SnapshotEvent>>,
     summary: Option<SummaryResult>,
-}
-
-struct TextInputState {
-    field: FormField,
-    value: String,
-    cursor: usize,
 }
 
 impl SnapshotCreateScreen {
@@ -419,8 +398,9 @@ impl SnapshotCreateScreen {
             phase: SnapshotPhase::Config,
             form: SnapshotForm::new(config_defaults.as_ref()),
             focused_field: FormField::Paths,
-            text_cursor: 0,
-            text_input: None,
+            editing: None,
+            edit_buffer: String::new(),
+            edit_cursor: 0,
             progress: ProgressState::new(),
             shutdown_signal: Arc::new(AtomicBool::new(false)),
             rx: None,
@@ -437,8 +417,8 @@ impl SnapshotCreateScreen {
     }
 
     fn handle_config_key(&mut self, key: KeyEvent) -> Option<SnapshotCreateAction> {
-        if self.text_input.is_some() {
-            return self.handle_text_input_key(key);
+        if let Some(editing) = self.editing {
+            return self.handle_edit_key(key, editing);
         }
 
         match key.code {
@@ -447,8 +427,8 @@ impl SnapshotCreateScreen {
             KeyCode::Enter => {
                 if self.focused_field.is_start() {
                     self.start_snapshot();
-                } else if self.focused_field.is_text_input() {
-                    self.open_text_input();
+                } else if self.focused_field.is_text_input() || self.focused_field.is_number_field() {
+                    self.start_editing();
                 } else if self.focused_field.is_toggle() {
                     self.toggle_bool_field();
                 }
@@ -456,23 +436,37 @@ impl SnapshotCreateScreen {
             }
             KeyCode::Tab | KeyCode::Down => {
                 self.focused_field = self.focused_field.next();
-                self.text_cursor = self.form.cursor(&self.focused_field);
                 None
             }
             KeyCode::BackTab | KeyCode::Up => {
                 self.focused_field = self.focused_field.prev();
-                self.text_cursor = self.form.cursor(&self.focused_field);
                 None
             }
             KeyCode::Char(' ') => {
-                self.toggle_bool_field();
+                if self.focused_field.is_toggle() {
+                    self.toggle_bool_field();
+                } else if self.focused_field.is_text_input() || self.focused_field.is_number_field() {
+                    self.start_editing();
+                }
+                None
+            }
+            KeyCode::Left => {
+                if self.focused_field.is_number_field() {
+                    self.decrement_number_field();
+                }
+                None
+            }
+            KeyCode::Right => {
+                if self.focused_field.is_number_field() {
+                    self.increment_number_field();
+                }
                 None
             }
             _ => None,
         }
     }
 
-    fn open_text_input(&mut self) {
+    fn start_editing(&mut self) {
         let value = match self.focused_field {
             FormField::Paths => self.form.paths.clone(),
             FormField::Tags => self.form.tags.clone(),
@@ -482,148 +476,121 @@ impl SnapshotCreateScreen {
             FormField::Packers => self.form.packers.to_string(),
             FormField::AsRoot | FormField::NoParent | FormField::Start => String::new(),
         };
-        let cursor = value.chars().count();
-        self.text_input = Some(TextInputState {
-            field: self.focused_field,
-            value,
-            cursor,
-        });
+        self.edit_cursor = value.chars().count();
+        self.edit_buffer = value;
+        self.editing = Some(self.focused_field);
     }
 
-    fn handle_text_input_key(&mut self, key: KeyEvent) -> Option<SnapshotCreateAction> {
-        let Some(input) = &mut self.text_input else {
-            return None;
-        };
-
+    fn handle_edit_key(
+        &mut self,
+        key: KeyEvent,
+        editing: FormField,
+    ) -> Option<SnapshotCreateAction> {
         match key.code {
             KeyCode::Esc => {
-                self.text_input = None;
+                self.editing = None;
+                self.edit_buffer.clear();
+                self.edit_cursor = 0;
                 None
             }
             KeyCode::Enter => {
-                self.apply_text_input();
+                self.apply_edit(editing);
                 None
             }
             KeyCode::Char(c) => {
-                self.text_input_insert(c);
+                self.edit_insert(c);
                 None
             }
             KeyCode::Backspace => {
-                self.text_input_delete_before();
+                self.edit_delete_before();
                 None
             }
             KeyCode::Delete => {
-                self.text_input_delete_at();
+                self.edit_delete_at();
                 None
             }
             KeyCode::Left => {
-                if input.cursor > 0 {
-                    input.cursor -= 1;
+                if self.edit_cursor > 0 {
+                    self.edit_cursor -= 1;
                 }
                 None
             }
             KeyCode::Right => {
-                if input.cursor < input.value.chars().count() {
-                    input.cursor += 1;
+                if self.edit_cursor < self.edit_buffer.chars().count() {
+                    self.edit_cursor += 1;
                 }
                 None
             }
             KeyCode::Home => {
-                input.cursor = 0;
+                self.edit_cursor = 0;
                 None
             }
             KeyCode::End => {
-                input.cursor = input.value.chars().count();
-                None
-            }
-            KeyCode::Up => {
-                if input.cursor >= TEXT_INPUT_WIDTH {
-                    input.cursor -= TEXT_INPUT_WIDTH;
-                } else {
-                    input.cursor = 0;
-                }
-                None
-            }
-            KeyCode::Down => {
-                let total = input.value.chars().count();
-                if input.cursor + TEXT_INPUT_WIDTH < total {
-                    input.cursor += TEXT_INPUT_WIDTH;
-                } else {
-                    input.cursor = total;
-                }
+                self.edit_cursor = self.edit_buffer.chars().count();
                 None
             }
             _ => None,
         }
     }
 
-    fn text_input_insert(&mut self, c: char) {
-        let Some(input) = &mut self.text_input else {
-            return;
-        };
-        let byte_pos = input
-            .value
+    fn edit_insert(&mut self, c: char) {
+        let byte_pos = self
+            .edit_buffer
             .char_indices()
-            .nth(input.cursor)
+            .nth(self.edit_cursor)
             .map(|(i, _)| i)
-            .unwrap_or(input.value.len());
-        input.value.insert(byte_pos, c);
-        input.cursor += 1;
+            .unwrap_or(self.edit_buffer.len());
+        self.edit_buffer.insert(byte_pos, c);
+        self.edit_cursor += 1;
     }
 
-    fn text_input_delete_before(&mut self) {
-        let Some(input) = &mut self.text_input else {
-            return;
-        };
-        if input.cursor == 0 {
+    fn edit_delete_before(&mut self) {
+        if self.edit_cursor == 0 {
             return;
         }
-        if let Some((pos, _)) = input.value.char_indices().nth(input.cursor - 1) {
-            input.value.remove(pos);
-            input.cursor -= 1;
+        if let Some((pos, _)) = self.edit_buffer.char_indices().nth(self.edit_cursor - 1) {
+            self.edit_buffer.remove(pos);
+            self.edit_cursor -= 1;
         }
     }
 
-    fn text_input_delete_at(&mut self) {
-        let Some(input) = &mut self.text_input else {
-            return;
-        };
-        if input.cursor < input.value.chars().count()
-            && let Some((pos, _)) = input.value.char_indices().nth(input.cursor)
+    fn edit_delete_at(&mut self) {
+        if self.edit_cursor < self.edit_buffer.chars().count()
+            && let Some((pos, _)) = self.edit_buffer.char_indices().nth(self.edit_cursor)
         {
-            input.value.remove(pos);
+            self.edit_buffer.remove(pos);
         }
     }
 
-    fn apply_text_input(&mut self) {
-        let Some(input) = self.text_input.take() else {
-            return;
-        };
-        match input.field {
+    fn apply_edit(&mut self, field: FormField) {
+        match field {
             FormField::Paths => {
-                self.form.paths = input.value;
+                self.form.paths = self.edit_buffer.clone();
             }
             FormField::Tags => {
-                self.form.tags = input.value;
+                self.form.tags = self.edit_buffer.clone();
             }
             FormField::Description => {
-                self.form.description = input.value;
+                self.form.description = self.edit_buffer.clone();
             }
             FormField::Exclude => {
-                self.form.exclude = input.value;
+                self.form.exclude = self.edit_buffer.clone();
             }
             FormField::Readers => {
-                if let Ok(n) = input.value.trim().parse::<u32>() {
+                if let Ok(n) = self.edit_buffer.trim().parse::<u32>() {
                     self.form.readers = n.max(1);
                 }
             }
             FormField::Packers => {
-                if let Ok(n) = input.value.trim().parse::<u32>() {
+                if let Ok(n) = self.edit_buffer.trim().parse::<u32>() {
                     self.form.packers = n.max(1);
                 }
             }
             FormField::AsRoot | FormField::NoParent | FormField::Start => {}
         }
+        self.editing = None;
+        self.edit_buffer.clear();
+        self.edit_cursor = 0;
     }
 
     fn handle_progress_key(&mut self, key: KeyEvent) -> Option<SnapshotCreateAction> {
@@ -652,6 +619,30 @@ impl SnapshotCreateScreen {
             }
             FormField::NoParent => {
                 self.form.no_parent = !self.form.no_parent;
+            }
+            _ => {}
+        }
+    }
+
+    fn increment_number_field(&mut self) {
+        match self.focused_field {
+            FormField::Readers => {
+                self.form.readers = self.form.readers.saturating_add(1);
+            }
+            FormField::Packers => {
+                self.form.packers = self.form.packers.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn decrement_number_field(&mut self) {
+        match self.focused_field {
+            FormField::Readers => {
+                self.form.readers = self.form.readers.saturating_sub(1).max(1);
+            }
+            FormField::Packers => {
+                self.form.packers = self.form.packers.saturating_sub(1).max(1);
             }
             _ => {}
         }
@@ -984,8 +975,8 @@ impl SnapshotCreateScreen {
         self.render_config_form(frame, chunks[0]);
         self.render_config_footer(frame, chunks[1]);
 
-        if self.text_input.is_some() {
-            self.render_text_input_popup(frame, area);
+        if self.editing.is_some() {
+            self.render_edit_popup(frame, area);
         }
     }
 
@@ -1038,16 +1029,32 @@ impl SnapshotCreateScreen {
                 ]));
             };
 
-        let add_number_field =
-            |lines: &mut Vec<Line<'static>>, label: &str, value: u32, focused: bool| {
-                let label_style = if focused { focus_style } else { normal_style };
-                let marker = if focused { "▶ " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(marker, Style::default().fg(theme::SNAPSHOT_DATE)),
-                    Span::styled(format!("{:<13}", label), label_style.bold()),
-                    Span::raw(value.to_string()),
-                ]));
+        let add_number_field = |lines: &mut Vec<Line<'static>>,
+                                label: &str,
+                                value: u32,
+                                field: FormField,
+                                focused: bool,
+                                editing: Option<FormField>,
+                                edit_buffer: &str| {
+            let label_style = if focused { focus_style } else { normal_style };
+            let marker = if focused { "▶ " } else { "  " };
+            let is_editing = editing == Some(field);
+            let value_str = if is_editing {
+                format!("[ {}█]", edit_buffer)
+            } else {
+                format!("[ {} ]", value)
             };
+            let value_style = if focused {
+                Style::default().fg(theme::SNAPSHOT_DATE)
+            } else {
+                normal_style
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme::SNAPSHOT_DATE)),
+                Span::styled(format!("{:<13}", label), label_style.bold()),
+                Span::styled(value_str, value_style),
+            ]));
+        };
 
         add_text_field(
             &mut lines,
@@ -1089,13 +1096,19 @@ impl SnapshotCreateScreen {
             &mut lines,
             "Readers:",
             self.form.readers,
+            FormField::Readers,
             is_focused(&FormField::Readers),
+            self.editing,
+            &self.edit_buffer,
         );
         add_number_field(
             &mut lines,
             "Packers:",
             self.form.packers,
+            FormField::Packers,
             is_focused(&FormField::Packers),
+            self.editing,
+            &self.edit_buffer,
         );
 
         let start_style = if is_focused(&FormField::Start) {
@@ -1118,13 +1131,30 @@ impl SnapshotCreateScreen {
     }
 
     fn render_config_footer(&self, frame: &mut Frame, area: Rect) {
-        let footer = if self.text_input.is_some() {
+        let footer = if self.editing.is_some() {
             Line::from(vec![
                 Span::styled("[Enter]", Style::default().fg(theme::MENU_KEY).bold()),
                 Span::raw(" confirm"),
                 Span::raw("    "),
                 Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
                 Span::raw(" cancel edit"),
+            ])
+        } else if self.focused_field.is_number_field() {
+            Line::from(vec![
+                Span::styled("[Left]", Style::default().fg(theme::MENU_KEY).bold()),
+                Span::raw(" dec"),
+                Span::raw("    "),
+                Span::styled("[Right]", Style::default().fg(theme::MENU_KEY).bold()),
+                Span::raw(" inc"),
+                Span::raw("    "),
+                Span::styled("[Enter]", Style::default().fg(theme::MENU_KEY).bold()),
+                Span::raw(" edit"),
+                Span::raw("    "),
+                Span::styled("[Tab]", Style::default().fg(theme::MENU_KEY).bold()),
+                Span::raw(" next"),
+                Span::raw("    "),
+                Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
+                Span::raw(" quit"),
             ])
         } else {
             Line::from(vec![
@@ -1147,8 +1177,8 @@ impl SnapshotCreateScreen {
         frame.render_widget(Paragraph::new(footer), area);
     }
 
-    fn render_text_input_popup(&self, frame: &mut Frame, _area: Rect) {
-        let Some(input) = &self.text_input else {
+    fn render_edit_popup(&self, frame: &mut Frame, _area: Rect) {
+        let Some(editing) = &self.editing else {
             return;
         };
 
@@ -1165,27 +1195,25 @@ impl SnapshotCreateScreen {
             height: popup_height,
         };
 
-        let label = match input.field {
+        let label = match editing {
             FormField::Paths => "Paths",
             FormField::Tags => "Tags",
             FormField::Description => "Description",
             FormField::Exclude => "Exclude",
-            FormField::Readers => "Readers",
-            FormField::Packers => "Packers",
-            FormField::AsRoot | FormField::NoParent | FormField::Start => return,
+            FormField::Readers | FormField::Packers | FormField::AsRoot | FormField::NoParent | FormField::Start => return,
         };
 
         let inner_width = (popup_width as usize).saturating_sub(2);
-        let lines: Vec<String> = input
-            .value
+        let lines: Vec<String> = self
+            .edit_buffer
             .chars()
             .collect::<Vec<char>>()
             .chunks(inner_width)
             .map(|chunk| chunk.iter().collect())
             .collect();
 
-        let cursor_line = input.cursor / inner_width;
-        let cursor_col = input.cursor % inner_width;
+        let cursor_line = self.edit_cursor / inner_width;
+        let cursor_col = self.edit_cursor % inner_width;
 
         let visible_lines = popup_height.saturating_sub(2) as usize;
         let scroll_start = cursor_line.saturating_sub(visible_lines / 2);

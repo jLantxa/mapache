@@ -220,7 +220,7 @@ pub fn filter_snapshots_by_hosts<'a>(
 /// Generic helper function to abstract the common logic for period-based retention.
 ///
 /// It finds the latest snapshot for each unique period (defined by `key_extractor`)
-/// and then keeps the latest `n` of those periods.
+/// and then keeps snapshots that are within the cutoff.
 fn keep_latest_per_period<K, F>(
     snapshots_sorted: &[SnapshotEntry],
     key_extractor: F,

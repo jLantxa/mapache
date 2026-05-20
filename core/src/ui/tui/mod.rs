@@ -38,6 +38,7 @@ pub async fn run(
     lock_handle: LockHandle,
     repo_path: String,
     snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,
+    forget_config: Option<crate::commands::cmd_forget::CmdArgs>,
 ) -> Result<()> {
     let _guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -49,6 +50,7 @@ pub async fn run(
         lock_handle,
         repo_path,
         snapshot_config,
+        forget_config,
     )
     .run(&mut terminal)
     .await;

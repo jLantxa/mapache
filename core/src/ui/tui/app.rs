@@ -9,10 +9,12 @@ use crate::repository::{lock::LockHandle, repo::Repository};
 use crate::ui::tui::screens::{
     dashboard::{DashboardAction, DashboardScreen},
     file_explorer::{FileExplorerAction, FileExplorerScreen},
+    forget::{ForgetAction, ForgetScreen},
     snapshot_create::{SnapshotCreateAction, SnapshotCreateScreen},
     snapshot_detail::{DetailAction, SnapshotDetailScreen},
 };
 
+use crate::commands::cmd_forget::CmdArgs as ForgetCmdArgs;
 use crate::commands::cmd_snapshot::CmdArgs as SnapshotCmdArgs;
 
 enum ActiveScreen {
@@ -20,6 +22,7 @@ enum ActiveScreen {
     SnapshotDetail(Box<SnapshotDetailScreen>),
     FileExplorer(Box<FileExplorerScreen>, Box<SnapshotDetailScreen>),
     SnapshotCreate(Box<SnapshotCreateScreen>),
+    Forget(Box<ForgetScreen>),
 }
 
 pub struct App {
@@ -29,6 +32,7 @@ pub struct App {
     repo: Arc<Repository>,
     lock_handle: LockHandle,
     snapshot_config: Option<SnapshotCmdArgs>,
+    forget_config: Option<ForgetCmdArgs>,
 }
 
 impl App {
@@ -38,6 +42,7 @@ impl App {
         lock_handle: LockHandle,
         repo_path: String,
         snapshot_config: Option<SnapshotCmdArgs>,
+        forget_config: Option<ForgetCmdArgs>,
     ) -> Self {
         let repo_id = repo.manifest().id().to_hex();
         Self {
@@ -47,6 +52,7 @@ impl App {
             repo,
             lock_handle,
             snapshot_config,
+            forget_config,
         }
     }
 
@@ -101,8 +107,13 @@ impl App {
                         DashboardAction::Restore
                         | DashboardAction::Stats
                         | DashboardAction::Verify
-                        | DashboardAction::Forget
                         | DashboardAction::Clean => {}
+                        DashboardAction::Forget => {
+                            let config = self.forget_config.clone();
+                            self.transition_to(ActiveScreen::Forget(Box::new(
+                                ForgetScreen::new(self.repo.clone(), config).await,
+                            )));
+                        }
                     }
                 }
             }
@@ -160,6 +171,17 @@ impl App {
                     }
                 }
             }
+            ActiveScreen::Forget(screen) => {
+                if let Some(action) = screen.handle_key(key) {
+                    match action {
+                        ForgetAction::Back => {
+                            self.transition_to(ActiveScreen::Dashboard);
+                            let _ = self.dashboard.load_snapshots().await;
+                        }
+                        ForgetAction::Quit => self.should_quit = true,
+                    }
+                }
+            }
         }
     }
 
@@ -169,6 +191,7 @@ impl App {
             ActiveScreen::SnapshotDetail(screen) => screen.render(frame),
             ActiveScreen::FileExplorer(screen, _) => screen.render(frame),
             ActiveScreen::SnapshotCreate(screen) => screen.render(frame),
+            ActiveScreen::Forget(screen) => screen.render(frame),
         }
     }
 }

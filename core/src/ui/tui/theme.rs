@@ -1,5 +1,5 @@
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Scrollbar, ScrollbarOrientation};
 
 pub const HEADER_FG: Color = Color::Rgb(137, 180, 250);
@@ -50,6 +50,17 @@ pub fn key_hint(key: &str, label: &str) -> Vec<Span<'static>> {
         Span::styled(format!("[{}]", key), menu_key_style()),
         Span::raw(format!(" {}", label)),
     ]
+}
+
+pub fn key_hints(pairs: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (key, label)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("    "));
+        }
+        spans.extend(key_hint(key, label));
+    }
+    Line::from(spans)
 }
 
 pub fn format_tags(tags: impl IntoIterator<Item = impl AsRef<str>>) -> String {

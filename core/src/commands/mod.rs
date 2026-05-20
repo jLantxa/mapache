@@ -415,7 +415,7 @@ impl std::fmt::Display for UseSnapshot {
     }
 }
 
-async fn find_use_snapshot(
+pub(crate) async fn find_use_snapshot(
     repo: Arc<Repository>,
     use_snapshot: &UseSnapshot,
 ) -> Result<Option<(ID, Snapshot)>> {
@@ -431,7 +431,7 @@ async fn find_use_snapshot(
 
 pub(crate) const EMPTY_TAG_MARK: &str = "[]";
 
-fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
+pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
     s.unwrap_or("")
         .split(',')
         .map(str::trim)
@@ -673,7 +673,10 @@ pub async fn parse_and_run() -> i32 {
         Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args).await,
         Command::Sync(cmd) => cmd_sync::run(&global, &cmd.args).await,
         #[cfg(feature = "tui")]
-        Command::Tui(cmd) => cmd_tui::run(&global, &cmd.args).await,
+        Command::Tui(cmd) => {
+            let snapshot_cfg = config.snapshot.clone();
+            cmd_tui::run(&global, &cmd.args, snapshot_cfg).await
+        }
         Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args).await,
         Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args).await,
     };

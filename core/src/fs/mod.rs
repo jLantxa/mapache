@@ -12,6 +12,24 @@ pub mod node;
 use crate::utils::collections::{FxHashMap, FxHashSet};
 pub mod tree;
 
+#[cfg(windows)]
+fn convert_msys_path(path: &Path) -> Option<PathBuf> {
+    let s = path.to_str()?;
+    if s.starts_with('/')
+        && s.len() >= 3
+        && s.as_bytes()[1].is_ascii_alphabetic()
+        && s.as_bytes()[2] == b'/'
+    {
+        let drive = s.as_bytes()[1].to_ascii_uppercase() as char;
+        let rest = &s[3..];
+        let mut result = format!("{}:\\", drive);
+        result.push_str(&rest.replace('/', "\\"));
+        Some(PathBuf::from(result))
+    } else {
+        None
+    }
+}
+
 pub async fn path_exists(path: &Path) -> bool {
     tokio::fs::symlink_metadata(path).await.is_ok()
 }
@@ -26,14 +44,18 @@ pub async fn path_exists(path: &Path) -> bool {
 /// filesystem access and will not resolve symbolic links.
 ///
 /// This implementation is designed to work correctly on both Linux and Windows,
-/// handling platform-specific path conventions like Windows drive letters and UNC paths.
+/// handling platform-specific path conventions like Windows drive letters, UNC paths,
+/// and MSYS2-style paths (e.g., /c/path → C:\path on Windows).
 pub fn get_absolute_normalized_path(path: &Path) -> Result<PathBuf> {
+    #[cfg(windows)]
+    let path = convert_msys_path(path).unwrap_or_else(|| path.to_path_buf());
+
     // Get an absolute path.
     // If the path is not absolute, prepend the current working directory.
     let absolute_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()?.join(path)
+        std::env::current_dir()?.join(&path)
     };
 
     // Normalize the path components.

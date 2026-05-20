@@ -6,12 +6,9 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-        TableState,
-    },
+    widgets::{Paragraph, Row, ScrollbarState, Table, TableState},
 };
 
 use crate::{
@@ -23,6 +20,11 @@ use crate::{
     ui::tui::theme,
     utils,
 };
+
+const TABLE_HEIGHT_ESTIMATE: u16 = 10;
+const FILTER_INPUT_HEIGHT: u16 = 3;
+const HEADER_HEIGHT: u16 = 3;
+const MENU_HEIGHT: u16 = 2;
 
 #[derive(Debug)]
 pub enum DashboardAction {
@@ -71,7 +73,7 @@ impl DashboardScreen {
             table_state: TableState::default(),
             filter: None,
             filter_cursor: 0,
-            last_height: 10,
+            last_height: TABLE_HEIGHT_ESTIMATE,
         }
     }
 
@@ -276,19 +278,19 @@ impl DashboardScreen {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        self.last_height = area.height.saturating_sub(10); // Rough estimate of table height
+        self.last_height = area.height.saturating_sub(HEADER_HEIGHT + MENU_HEIGHT);
         let has_filter = self.filter.is_some();
-        let filter_height = if has_filter { 3 } else { 0 };
+        let filter_height = if has_filter { FILTER_INPUT_HEIGHT } else { 0 };
         let info_lines = self.info_line_count();
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(HEADER_HEIGHT),
                 Constraint::Min(3),
                 Constraint::Length(info_lines as u16),
                 Constraint::Length(filter_height),
-                Constraint::Length(2),
+                Constraint::Length(MENU_HEIGHT),
             ])
             .split(frame.area());
 
@@ -373,12 +375,7 @@ impl DashboardScreen {
             ],
         )
         .header(header_row)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(theme::border_style()),
-        )
+        .block(theme::themed_block(&title))
         .row_highlight_style(theme::selected_row_style())
         .highlight_symbol(">> ");
 
@@ -391,12 +388,7 @@ impl DashboardScreen {
         frame.render_stateful_widget(table, area, &mut state);
 
         if display_list.len() > max_rows {
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_symbol(Some("│"))
-                .thumb_symbol("█")
-                .style(theme::border_style());
+            let scrollbar = theme::create_scrollbar();
 
             let mut scrollbar_state = ScrollbarState::new(display_list.len())
                 .position(selected)
@@ -441,12 +433,9 @@ impl DashboardScreen {
             ]),
         ];
 
-        let info = Paragraph::new(lines).alignment(Alignment::Left).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Snapshot Info ")
-                .border_style(theme::border_style()),
-        );
+        let info = Paragraph::new(lines)
+            .alignment(Alignment::Left)
+            .block(theme::themed_block("Snapshot Info"));
         frame.render_widget(info, area);
     }
 
@@ -455,17 +444,12 @@ impl DashboardScreen {
             let filter_text = if query.is_empty() {
                 Line::from(Span::styled(
                     "> Filter by host, tag, path, or ID...",
-                    Style::default().fg(ratatui::style::Color::DarkGray),
+                    Style::default().fg(Color::DarkGray),
                 ))
             } else {
                 Line::from(Span::raw(format!("> {}", query)))
             };
-            let filter_widget = Paragraph::new(filter_text).style(Style::default()).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Filter ")
-                    .border_style(theme::border_style()),
-            );
+            let filter_widget = Paragraph::new(filter_text).block(theme::themed_block("Filter"));
             frame.render_widget(filter_widget, area);
         }
     }
@@ -517,18 +501,12 @@ impl DashboardScreen {
                 let date = utils::pretty_print_timestamp(&entry.snapshot.timestamp, None);
                 let host = entry.snapshot.hostname.as_deref().unwrap_or_default();
                 let size = utils::format_size_binary(entry.snapshot.size(), 3);
-                let tags = entry
-                    .snapshot
-                    .tags
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let tags = theme::format_tags(&entry.snapshot.tags);
 
                 let active_style = if entry.active {
-                    Style::default().fg(ratatui::style::Color::Green)
+                    Style::default().fg(Color::Green)
                 } else {
-                    Style::default().fg(ratatui::style::Color::DarkGray)
+                    Style::default().fg(Color::DarkGray)
                 };
 
                 Row::new(vec![
@@ -590,14 +568,7 @@ impl DashboardScreen {
             if i > 0 {
                 spans.push(Span::raw("    "));
             }
-            spans.push(Span::styled(
-                format!("[{}]", key),
-                theme::menu_key_style().bold(),
-            ));
-            spans.push(Span::styled(
-                format!(" {}", label),
-                theme::menu_text_style(),
-            ));
+            spans.extend(theme::key_hint(&key.to_string(), label));
         }
         vec![Line::from(spans)]
     }

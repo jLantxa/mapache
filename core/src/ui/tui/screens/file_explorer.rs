@@ -7,10 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
-    },
+    widgets::{List, ListItem, ListState, Paragraph, ScrollbarState},
 };
 
 use crate::{
@@ -21,16 +18,26 @@ use crate::{
     utils,
 };
 
+const METADATA_HEIGHT: u16 = 7;
+const TITLE_HEIGHT: u16 = 1;
+const BREADCRUMB_HEIGHT: u16 = 1;
+const LIST_HEIGHT_ESTIMATE: u16 = 10;
+
 #[derive(Debug)]
 pub enum FileExplorerAction {
     Back,
     Quit,
 }
 
+struct PathStackEntry {
+    tree: Tree,
+    previous_selection: usize,
+}
+
 pub struct FileExplorerScreen {
     repo: Arc<Repository>,
     current_tree: Tree,
-    path_stack: Vec<(String, Tree, usize)>, // (folder_name, tree, previous_selection)
+    path_stack: Vec<PathStackEntry>,
     current_path: PathBuf,
     list_state: ListState,
     last_height: u16,
@@ -51,7 +58,7 @@ impl FileExplorerScreen {
             path_stack: Vec::new(),
             current_path: PathBuf::from("/"),
             list_state,
-            last_height: 10,
+            last_height: LIST_HEIGHT_ESTIMATE,
         })
     }
 
@@ -107,7 +114,8 @@ impl FileExplorerScreen {
             }
             KeyCode::End => {
                 if !self.current_tree.nodes.is_empty() {
-                    self.list_state.select(Some(self.current_tree.nodes.len().saturating_sub(1)));
+                    self.list_state
+                        .select(Some(self.current_tree.nodes.len().saturating_sub(1)));
                 }
                 None
             }
@@ -124,12 +132,15 @@ impl FileExplorerScreen {
                                 Self::sort_nodes(&mut new_tree.nodes);
                                 let old_tree = std::mem::replace(&mut self.current_tree, new_tree);
                                 let prev_sel = self.list_state.selected().unwrap_or(0);
-                                self.path_stack.push((node_name.clone(), old_tree, prev_sel));
+                                self.path_stack.push(PathStackEntry {
+                                    tree: old_tree,
+                                    previous_selection: prev_sel,
+                                });
                                 self.current_path.push(&node_name);
                                 self.list_state.select(Some(0));
                             }
-                            Err(_) => {
-                                // Handle error?
+                            Err(e) => {
+                                tracing::warn!("Failed to load tree for '{}': {}", node_name, e);
                             }
                         }
                     }
@@ -137,10 +148,10 @@ impl FileExplorerScreen {
                 None
             }
             KeyCode::Backspace | KeyCode::Left => {
-                if let Some((_name, prev_tree, prev_sel)) = self.path_stack.pop() {
-                    self.current_tree = prev_tree;
+                if let Some(entry) = self.path_stack.pop() {
+                    self.current_tree = entry.tree;
                     self.current_path.pop();
-                    self.list_state.select(Some(prev_sel));
+                    self.list_state.select(Some(entry.previous_selection));
                 }
                 None
             }
@@ -152,19 +163,18 @@ impl FileExplorerScreen {
         let area = frame.area();
         let inner = area.inner(ratatui::layout::Margin::new(2, 1));
 
-        let selected_is_file = self.list_state.selected().is_some_and(|i| {
-            self.current_tree.nodes.get(i).is_some_and(|n| n.is_file())
-        });
+        let selected_is_file = self
+            .list_state
+            .selected()
+            .is_some_and(|i| self.current_tree.nodes.get(i).is_some_and(|n| n.is_file()));
 
-        let metadata_height = if selected_is_file { 7 } else { 0 };
-        let title_height = 1;
-        let breadcrumb_height = 1;
+        let metadata_height = if selected_is_file { METADATA_HEIGHT } else { 0 };
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(title_height),
-                Constraint::Length(breadcrumb_height),
+                Constraint::Length(TITLE_HEIGHT),
+                Constraint::Length(BREADCRUMB_HEIGHT),
                 Constraint::Min(3),
                 Constraint::Length(metadata_height),
             ])
@@ -184,7 +194,7 @@ impl FileExplorerScreen {
                 let size = if node.is_file() {
                     format!(" ({})", utils::format_size_binary(node.metadata.size, 1))
                 } else {
-                    "".to_string()
+                    String::new()
                 };
 
                 let color = if node.is_dir() {
@@ -201,13 +211,9 @@ impl FileExplorerScreen {
             })
             .collect();
 
+        let title = format!("Explorer: {}", self.current_path.display());
         let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Explorer: {} ", self.current_path.display()))
-                    .border_style(theme::border_style()),
-            )
+            .block(theme::themed_block(&title))
             .highlight_style(
                 Style::default()
                     .bg(Color::DarkGray)
@@ -219,12 +225,7 @@ impl FileExplorerScreen {
 
         let total_items = self.current_tree.nodes.len();
         if total_items > chunks[2].height.saturating_sub(2) as usize {
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_symbol(Some("│"))
-                .thumb_symbol("█")
-                .style(theme::border_style());
+            let scrollbar = theme::create_scrollbar();
 
             let mut scrollbar_state =
                 ScrollbarState::new(total_items).position(self.list_state.selected().unwrap_or(0));
@@ -274,7 +275,10 @@ impl FileExplorerScreen {
             .map(|c| c.as_os_str().to_string_lossy().to_string())
             .collect();
 
-        spans.push(Span::styled("/", Style::default().fg(theme::MENU_KEY).bold()));
+        spans.push(Span::styled(
+            "/",
+            Style::default().fg(theme::MENU_KEY).bold(),
+        ));
 
         for (i, comp) in components.iter().enumerate() {
             if comp == "/" {
@@ -289,13 +293,7 @@ impl FileExplorerScreen {
             }
         }
 
-        let breadcrumb = Paragraph::new(Line::from(spans))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Path ")
-                    .border_style(theme::border_style()),
-            );
+        let breadcrumb = Paragraph::new(Line::from(spans)).block(theme::themed_block("Path"));
         frame.render_widget(breadcrumb, area);
     }
 
@@ -346,13 +344,8 @@ impl FileExplorerScreen {
             ]));
         }
 
-        let metadata_widget = Paragraph::new(Text::from(lines))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" File Info ")
-                    .border_style(theme::border_style()),
-            );
+        let metadata_widget =
+            Paragraph::new(Text::from(lines)).block(theme::themed_block("File Info"));
         frame.render_widget(metadata_widget, area);
     }
 }

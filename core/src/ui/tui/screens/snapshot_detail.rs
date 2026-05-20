@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Paragraph, ScrollbarState},
 };
 
 use crate::{
@@ -13,6 +13,8 @@ use crate::{
     ui::tui::theme,
     utils,
 };
+
+const DEFAULT_PAGE_SIZE: usize = 10;
 
 #[derive(Debug)]
 pub enum DetailAction {
@@ -38,7 +40,7 @@ impl SnapshotDetailScreen {
             current_index,
             scroll: 0,
             max_scroll: 0,
-            page_size: 10,
+            page_size: DEFAULT_PAGE_SIZE,
         }
     }
 
@@ -50,29 +52,34 @@ impl SnapshotDetailScreen {
         &self.snapshots[self.current_index]
     }
 
+    fn navigate_snapshot(&mut self, direction: i32) -> Option<DetailAction> {
+        let new_index = if direction < 0 {
+            if self.current_index == 0 {
+                return None;
+            }
+            self.current_index - 1
+        } else {
+            if self.current_index >= self.snapshots.len().saturating_sub(1) {
+                return None;
+            }
+            self.current_index + 1
+        };
+        self.current_index = new_index;
+        self.scroll = 0;
+        if direction < 0 {
+            Some(DetailAction::PrevSnapshot)
+        } else {
+            Some(DetailAction::NextSnapshot)
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyCode) -> Option<DetailAction> {
         match key {
             KeyCode::Esc => Some(DetailAction::Back),
             KeyCode::Char('q') => Some(DetailAction::Quit),
             KeyCode::Enter => Some(DetailAction::Explore),
-            KeyCode::Char('<') | KeyCode::Char(',') => {
-                if self.current_index > 0 {
-                    self.current_index -= 1;
-                    self.scroll = 0;
-                    Some(DetailAction::PrevSnapshot)
-                } else {
-                    None
-                }
-            }
-            KeyCode::Char('>') | KeyCode::Char('.') => {
-                if self.current_index < self.snapshots.len().saturating_sub(1) {
-                    self.current_index += 1;
-                    self.scroll = 0;
-                    Some(DetailAction::NextSnapshot)
-                } else {
-                    None
-                }
-            }
+            KeyCode::Char('<') | KeyCode::Char(',') => self.navigate_snapshot(-1),
+            KeyCode::Char('>') | KeyCode::Char('.') => self.navigate_snapshot(1),
             KeyCode::Down => {
                 self.scroll = (self.scroll + 1).min(self.max_scroll);
                 None
@@ -194,7 +201,7 @@ impl SnapshotDetailScreen {
         let tags = if s.tags.is_empty() {
             "(none)".to_string()
         } else {
-            s.tags.iter().cloned().collect::<Vec<_>>().join(", ")
+            theme::format_tags(&s.tags)
         };
         add_line(Some("Tags:"), vec![Span::raw(tags)]);
 
@@ -256,22 +263,12 @@ impl SnapshotDetailScreen {
 
         let paragraph = Paragraph::new(Text::from(visible))
             .alignment(Alignment::Left)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Snapshot ")
-                    .border_style(theme::border_style()),
-            );
+            .block(theme::themed_block("Snapshot"));
 
         frame.render_widget(paragraph, content_area);
 
         if self.max_scroll > 0 {
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_symbol(Some("│"))
-                .thumb_symbol("█")
-                .style(theme::border_style());
+            let scrollbar = theme::create_scrollbar();
 
             let mut scrollbar_state = ScrollbarState::new(total_lines)
                 .position(self.scroll)
@@ -300,7 +297,7 @@ impl SnapshotDetailScreen {
             Style::default().fg(theme::FOOTER_FG)
         };
 
-        let title = ratatui::text::Line::from(vec![
+        let title = Line::from(vec![
             Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
             Span::raw(" back"),
             Span::raw("    "),

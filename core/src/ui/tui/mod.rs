@@ -14,24 +14,45 @@ mod screens;
 mod theme;
 mod widgets;
 
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        Ok(TerminalGuard)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+}
+
 pub async fn run(
     repo: Arc<Repository>,
     secure_storage: Arc<SecureStorage>,
     lock_handle: LockHandle,
     repo_path: String,
+    snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,
 ) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
+    let _guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = app::App::new(repo, secure_storage, lock_handle, repo_path)
-        .run(&mut terminal)
-        .await;
+    let result = app::App::new(
+        repo,
+        secure_storage,
+        lock_handle,
+        repo_path,
+        snapshot_config,
+    )
+    .run(&mut terminal)
+    .await;
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result

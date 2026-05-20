@@ -12,7 +12,11 @@ use crate::{
 #[clap(about = "Launch interactive terminal user interface")]
 pub struct CmdArgs;
 
-pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub async fn run(
+    global_args: &GlobalArgs,
+    _args: &CmdArgs,
+    snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,
+) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
     let repo_path = global_args.repo.clone();
 
@@ -25,7 +29,14 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         |repo, secure_storage, lock_handle| async move {
             repo.reload_master_index().await?;
-            tui::run(repo, secure_storage, lock_handle, repo_path).await
+            tui::run(
+                repo,
+                secure_storage,
+                lock_handle,
+                repo_path,
+                snapshot_config,
+            )
+            .await
         },
     )
     .await

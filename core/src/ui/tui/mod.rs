@@ -34,7 +34,7 @@ impl Drop for TerminalGuard {
 
 pub async fn run(
     repo: Arc<Repository>,
-    secure_storage: Arc<SecureStorage>,
+    _secure_storage: Arc<SecureStorage>,
     lock_handle: LockHandle,
     repo_path: String,
     snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,
@@ -44,16 +44,9 @@ pub async fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = app::App::new(
-        repo,
-        secure_storage,
-        lock_handle,
-        repo_path,
-        snapshot_config,
-        forget_config,
-    )
-    .run(&mut terminal)
-    .await;
+    let result = app::App::new(repo, lock_handle, repo_path, snapshot_config, forget_config)
+        .run(&mut terminal)
+        .await;
 
     terminal.show_cursor()?;
 

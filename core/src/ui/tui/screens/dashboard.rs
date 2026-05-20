@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::Local;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin},
@@ -12,12 +13,23 @@ use ratatui::{
 };
 
 use crate::{
-    mapache::{ID, defaults::SHORT_SNAPSHOT_ID_LEN, global::THIS_MAPACHE_VERSION},
+    commands::cmd_forget::CmdArgs as ForgetCmdArgs,
+    commands::cmd_snapshot::CmdArgs as SnapshotCmdArgs,
+    mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, global::THIS_MAPACHE_VERSION},
     repository::{
+        lock::LockHandle,
         repo::Repository,
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
-    ui::tui::theme,
+    ui::tui::{
+        app::{Screen, Transition},
+        screens::{
+            forget::ForgetScreen, snapshot_create::SnapshotCreateScreen,
+            snapshot_detail::SnapshotDetailScreen,
+        },
+        theme,
+        widgets::StateNavigation,
+    },
     utils,
 };
 
@@ -25,18 +37,6 @@ const TABLE_HEIGHT_ESTIMATE: u16 = 10;
 const FILTER_INPUT_HEIGHT: u16 = 3;
 const HEADER_HEIGHT: u16 = 3;
 const MENU_HEIGHT: u16 = 2;
-
-#[derive(Debug)]
-pub enum DashboardAction {
-    Quit,
-    Snapshot,
-    Restore,
-    Stats,
-    Verify,
-    Forget,
-    Clean,
-    SnapshotDetail(ID),
-}
 
 const MENU_ITEMS: &[(char, &str)] = &[
     ('1', "Snapshot"),
@@ -52,10 +52,14 @@ const KEY_HINTS: &str = "[↑↓] navigate  [Enter] details  [/] filter  [Esc] c
 
 pub struct DashboardScreen {
     repo: Arc<Repository>,
+    lock_handle: LockHandle,
     repo_path: String,
     repo_id: String,
+    snapshot_config: Option<SnapshotCmdArgs>,
+    forget_config: Option<ForgetCmdArgs>,
     snapshots: SnapshotEntryList,
     filtered_snapshots: SnapshotEntryList,
+    search_cache: Vec<String>,
     table_state: TableState,
     filter: Option<String>,
     filter_cursor: usize,
@@ -63,13 +67,24 @@ pub struct DashboardScreen {
 }
 
 impl DashboardScreen {
-    pub fn new(repo: Arc<Repository>, repo_path: String, repo_id: String) -> Self {
+    pub fn new(
+        repo: Arc<Repository>,
+        lock_handle: LockHandle,
+        repo_path: String,
+        repo_id: String,
+        snapshot_config: Option<SnapshotCmdArgs>,
+        forget_config: Option<ForgetCmdArgs>,
+    ) -> Self {
         Self {
             repo,
+            lock_handle,
             repo_path,
             repo_id,
+            snapshot_config,
+            forget_config,
             snapshots: Vec::new(),
             filtered_snapshots: Vec::new(),
+            search_cache: Vec::new(),
             table_state: TableState::default(),
             filter: None,
             filter_cursor: 0,
@@ -84,8 +99,31 @@ impl DashboardScreen {
             .await?;
         entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.snapshot.timestamp));
         self.snapshots = entries;
+        self.update_search_cache();
         self.apply_filter();
         Ok(())
+    }
+
+    fn update_search_cache(&mut self) {
+        self.search_cache = self
+            .snapshots
+            .iter()
+            .map(|e| {
+                format!(
+                    "{} {} {} {}",
+                    e.snapshot.hostname.as_deref().unwrap_or_default(),
+                    e.snapshot
+                        .tags
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    e.snapshot.root.to_string_lossy(),
+                    e.id.to_hex()
+                )
+                .to_lowercase()
+            })
+            .collect();
     }
 
     fn apply_filter(&mut self) {
@@ -97,23 +135,9 @@ impl DashboardScreen {
                 self.filtered_snapshots = self
                     .snapshots
                     .iter()
-                    .filter(|e| {
-                        e.snapshot
-                            .hostname
-                            .as_ref()
-                            .is_some_and(|h| h.to_lowercase().contains(&query))
-                            || e.snapshot
-                                .tags
-                                .iter()
-                                .any(|t| t.to_lowercase().contains(&query))
-                            || e.snapshot
-                                .root
-                                .to_string_lossy()
-                                .to_lowercase()
-                                .contains(&query)
-                            || e.id.to_hex().to_lowercase().contains(&query)
-                    })
-                    .cloned()
+                    .enumerate()
+                    .filter(|(i, _)| self.search_cache[*i].contains(&query))
+                    .map(|(_, e)| e.clone())
                     .collect();
             }
         } else {
@@ -135,83 +159,7 @@ impl DashboardScreen {
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyCode) -> Option<DashboardAction> {
-        if self.filter.is_some() {
-            return self.handle_filter_key(key);
-        }
-
-        match key {
-            KeyCode::Char('q') => Some(DashboardAction::Quit),
-            KeyCode::Char('1') => Some(DashboardAction::Snapshot),
-            KeyCode::Char('2') => Some(DashboardAction::Restore),
-            KeyCode::Char('3') => Some(DashboardAction::Stats),
-            KeyCode::Char('4') => Some(DashboardAction::Verify),
-            KeyCode::Char('5') => Some(DashboardAction::Forget),
-            KeyCode::Char('6') => Some(DashboardAction::Clean),
-            KeyCode::Char('/') => {
-                self.filter = Some(String::new());
-                self.filter_cursor = 0;
-                None
-            }
-            KeyCode::Down => {
-                let list = self.display_list();
-                if !list.is_empty() {
-                    let current = self.table_state.selected().unwrap_or(0);
-                    let next = if current >= list.len().saturating_sub(1) {
-                        0
-                    } else {
-                        current + 1
-                    };
-                    self.table_state.select(Some(next));
-                }
-                None
-            }
-            KeyCode::Up => {
-                let list = self.display_list();
-                if !list.is_empty() {
-                    let current = self.table_state.selected().unwrap_or(0);
-                    let prev = if current == 0 {
-                        list.len().saturating_sub(1)
-                    } else {
-                        current - 1
-                    };
-                    self.table_state.select(Some(prev));
-                }
-                None
-            }
-            KeyCode::PageDown => {
-                let list = self.display_list();
-                if !list.is_empty() {
-                    let current = self.table_state.selected().unwrap_or(0);
-                    let next =
-                        (current + self.last_height as usize).min(list.len().saturating_sub(1));
-                    self.table_state.select(Some(next));
-                }
-                None
-            }
-            KeyCode::PageUp => {
-                let list = self.display_list();
-                if !list.is_empty() {
-                    let current = self.table_state.selected().unwrap_or(0);
-                    let prev = current.saturating_sub(self.last_height as usize);
-                    self.table_state.select(Some(prev));
-                }
-                None
-            }
-            KeyCode::Enter => {
-                let list = self.display_list();
-                if let Some(idx) = self.table_state.selected()
-                    && idx < list.len()
-                {
-                    return Some(DashboardAction::SnapshotDetail(list[idx].id));
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    fn handle_filter_key(&mut self, key: KeyCode) -> Option<DashboardAction> {
+    fn handle_filter_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Esc => {
                 self.filter = None;
@@ -273,36 +221,6 @@ impl DashboardScreen {
             }
             _ => {}
         }
-        None
-    }
-
-    pub fn render(&mut self, frame: &mut Frame) {
-        let area = frame.area();
-        self.last_height = area.height.saturating_sub(HEADER_HEIGHT + MENU_HEIGHT);
-        let has_filter = self.filter.is_some();
-        let filter_height = if has_filter { FILTER_INPUT_HEIGHT } else { 0 };
-        let info_lines = self.info_line_count();
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(HEADER_HEIGHT),
-                Constraint::Min(3),
-                Constraint::Length(info_lines as u16),
-                Constraint::Length(filter_height),
-                Constraint::Length(MENU_HEIGHT),
-            ])
-            .split(frame.area());
-
-        self.render_header(frame, chunks[0]);
-        self.render_snapshot_list(frame, chunks[1]);
-        if info_lines > 0 {
-            self.render_snapshot_info(frame, chunks[2]);
-        }
-        if has_filter {
-            self.render_filter(frame, chunks[3]);
-        }
-        self.render_menu(frame, chunks[4]);
     }
 
     fn render_header(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -402,41 +320,40 @@ impl DashboardScreen {
         }
     }
 
-    fn info_line_count(&self) -> usize {
-        if self.selected_entry().is_some() {
-            5
-        } else {
-            0
-        }
-    }
-
     fn render_snapshot_info(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let Some(entry) = self.selected_entry() else {
-            return;
+        let entry = self.selected_entry();
+        let info_text = if let Some(e) = entry {
+            let mut info = Vec::new();
+            info.push(format!("ID: {}", e.id.to_hex()));
+            if let Some(desc) = &e.snapshot.description {
+                info.push(format!("Description: {}", desc));
+            }
+            info.push(format!(
+                "Paths: {}",
+                self.format_paths(&e.snapshot.paths, area.width as usize - 10)
+            ));
+            info.join("\n")
+        } else {
+            "No snapshot selected".to_string()
         };
 
-        let paths_str =
-            self.format_paths(&entry.snapshot.paths, area.width.saturating_sub(9) as usize);
-
-        let lines = vec![
-            Line::from(vec![
-                Span::styled("ID:    ", Style::default().bold()),
-                Span::styled(entry.id.to_hex(), Style::default().fg(theme::SNAPSHOT_ID)),
-            ]),
-            Line::from(vec![
-                Span::styled("Root:  ", Style::default().bold()),
-                Span::raw(entry.snapshot.root.to_string_lossy()),
-            ]),
-            Line::from(vec![
-                Span::styled("Paths: ", Style::default().bold()),
-                Span::raw(paths_str),
-            ]),
-        ];
-
-        let info = Paragraph::new(lines)
+        let info = Paragraph::new(info_text)
             .alignment(Alignment::Left)
             .block(theme::themed_block("Snapshot Info"));
         frame.render_widget(info, area);
+    }
+
+    fn info_line_count(&self) -> usize {
+        let entry = self.selected_entry();
+        if let Some(e) = entry {
+            let mut count = 2; // ID and Paths
+            if e.snapshot.description.is_some() {
+                count += 1;
+            }
+            count + 2 // Borders
+        } else {
+            3
+        }
     }
 
     fn render_filter(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -475,10 +392,6 @@ impl DashboardScreen {
     fn selected_entry(&self) -> Option<&SnapshotEntry> {
         let list = self.display_list();
         self.table_state.selected().and_then(|idx| list.get(idx))
-    }
-
-    pub fn get_repo(&self) -> Arc<Repository> {
-        self.repo.clone()
     }
 
     pub fn get_snapshots(&self) -> &SnapshotEntryList {
@@ -571,5 +484,123 @@ impl DashboardScreen {
             spans.extend(theme::key_hint(&key.to_string(), label));
         }
         vec![Line::from(spans)]
+    }
+}
+
+#[async_trait]
+impl Screen for DashboardScreen {
+    fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        self.last_height = area.height.saturating_sub(HEADER_HEIGHT + MENU_HEIGHT);
+        let has_filter = self.filter.is_some();
+        let filter_height = if has_filter { FILTER_INPUT_HEIGHT } else { 0 };
+        let info_lines = self.info_line_count();
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(HEADER_HEIGHT),
+                Constraint::Min(3),
+                Constraint::Length(info_lines as u16),
+                Constraint::Length(filter_height),
+                Constraint::Length(MENU_HEIGHT),
+            ])
+            .split(frame.area());
+
+        self.render_header(frame, chunks[0]);
+        self.render_snapshot_list(frame, chunks[1]);
+        if info_lines > 0 {
+            self.render_snapshot_info(frame, chunks[2]);
+        }
+        if has_filter {
+            self.render_filter(frame, chunks[3]);
+        }
+        self.render_menu(frame, chunks[4]);
+    }
+
+    async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
+        if self.filter.is_some() {
+            self.handle_filter_key(key.code);
+            return None;
+        }
+
+        match key.code {
+            KeyCode::Char('q') => Some(Transition::Quit),
+            KeyCode::Char('1') => {
+                let config = self.snapshot_config.clone();
+                Some(Transition::Push(Box::new(SnapshotCreateScreen::new(
+                    self.repo.clone(),
+                    self.lock_handle.clone(),
+                    config,
+                ))))
+            }
+            KeyCode::Char('2') => None, // Restore
+            KeyCode::Char('3') => None, // Stats
+            KeyCode::Char('4') => None, // Verify
+            KeyCode::Char('5') => {
+                let config = self.forget_config.clone();
+                Some(Transition::Push(Box::new(
+                    ForgetScreen::new(self.repo.clone(), config).await,
+                )))
+            }
+            KeyCode::Char('6') => None, // Clean
+            KeyCode::Char('/') => {
+                self.filter = Some(String::new());
+                self.filter_cursor = 0;
+                None
+            }
+            KeyCode::Down => {
+                let list = self.display_list();
+                self.table_state.next(list.len());
+                None
+            }
+            KeyCode::Up => {
+                let list = self.display_list();
+                self.table_state.previous(list.len());
+                None
+            }
+            KeyCode::PageDown => {
+                let list = self.display_list();
+                self.table_state
+                    .page_next(list.len(), self.last_height as usize);
+                None
+            }
+            KeyCode::PageUp => {
+                let list = self.display_list();
+                self.table_state
+                    .page_previous(list.len(), self.last_height as usize);
+                None
+            }
+            KeyCode::Home => {
+                let list = self.display_list();
+                self.table_state.home(list.len());
+                None
+            }
+            KeyCode::End => {
+                let list = self.display_list();
+                self.table_state.end(list.len());
+                None
+            }
+            KeyCode::Enter => {
+                let list = self.display_list();
+                if let Some(idx) = self.table_state.selected()
+                    && idx < list.len()
+                    && let Some(index) = self.get_current_index()
+                {
+                    let snapshots = self.get_snapshots().clone();
+                    return Some(Transition::Push(Box::new(SnapshotDetailScreen::new(
+                        self.repo.clone(),
+                        snapshots,
+                        index,
+                    ))));
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    async fn on_become_active(&mut self) -> Result<()> {
+        self.load_snapshots().await
     }
 }

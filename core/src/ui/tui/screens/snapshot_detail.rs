@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use chrono::Local;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -9,23 +12,22 @@ use ratatui::{
 };
 
 use crate::{
-    repository::snapshot::{Snapshot, SnapshotEntry, SnapshotEntryList},
-    ui::tui::theme,
+    repository::{
+        repo::Repository,
+        snapshot::{Snapshot, SnapshotEntry, SnapshotEntryList},
+    },
+    ui::tui::{
+        app::{Screen, Transition},
+        screens::file_explorer::FileExplorerScreen,
+        theme,
+    },
     utils,
 };
 
 const DEFAULT_PAGE_SIZE: usize = 10;
 
-#[derive(Debug)]
-pub enum DetailAction {
-    Back,
-    Quit,
-    Explore,
-    PrevSnapshot,
-    NextSnapshot,
-}
-
 pub struct SnapshotDetailScreen {
+    repo: Arc<Repository>,
     snapshots: SnapshotEntryList,
     current_index: usize,
     scroll: usize,
@@ -34,8 +36,9 @@ pub struct SnapshotDetailScreen {
 }
 
 impl SnapshotDetailScreen {
-    pub fn new(snapshots: SnapshotEntryList, current_index: usize) -> Self {
+    pub fn new(repo: Arc<Repository>, snapshots: SnapshotEntryList, current_index: usize) -> Self {
         Self {
+            repo,
             snapshots,
             current_index,
             scroll: 0,
@@ -52,63 +55,64 @@ impl SnapshotDetailScreen {
         &self.snapshots[self.current_index]
     }
 
-    fn navigate_snapshot(&mut self, direction: i32) -> Option<DetailAction> {
+    fn navigate_snapshot(&mut self, direction: i32) {
         let new_index = if direction < 0 {
             if self.current_index == 0 {
-                return None;
+                return;
             }
             self.current_index - 1
         } else {
             if self.current_index >= self.snapshots.len().saturating_sub(1) {
-                return None;
+                return;
             }
             self.current_index + 1
         };
         self.current_index = new_index;
         self.scroll = 0;
-        if direction < 0 {
-            Some(DetailAction::PrevSnapshot)
+    }
+
+    fn render_title(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let has_prev = self.current_index > 0;
+        let has_next = self.current_index < self.snapshots.len().saturating_sub(1);
+
+        let prev_style = if has_prev {
+            Style::default().fg(theme::MENU_KEY).bold()
         } else {
-            Some(DetailAction::NextSnapshot)
-        }
-    }
+            Style::default().fg(theme::FOOTER_FG)
+        };
+        let next_style = if has_next {
+            Style::default().fg(theme::MENU_KEY).bold()
+        } else {
+            Style::default().fg(theme::FOOTER_FG)
+        };
 
-    pub fn handle_key(&mut self, key: KeyCode) -> Option<DetailAction> {
-        match key {
-            KeyCode::Esc => Some(DetailAction::Back),
-            KeyCode::Char('q') => Some(DetailAction::Quit),
-            KeyCode::Enter => Some(DetailAction::Explore),
-            KeyCode::Char('<') | KeyCode::Char(',') => self.navigate_snapshot(-1),
-            KeyCode::Char('>') | KeyCode::Char('.') => self.navigate_snapshot(1),
-            KeyCode::Down => {
-                self.scroll = (self.scroll + 1).min(self.max_scroll);
-                None
-            }
-            KeyCode::Up => {
-                self.scroll = self.scroll.saturating_sub(1);
-                None
-            }
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.scroll = (self.scroll + self.page_size).min(self.max_scroll);
-                None
-            }
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_sub(self.page_size);
-                None
-            }
-            KeyCode::Home => {
-                self.scroll = 0;
-                None
-            }
-            KeyCode::End => {
-                self.scroll = self.max_scroll;
-                None
-            }
-            _ => None,
-        }
+        let title = Line::from(vec![
+            Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" back"),
+            Span::raw("    "),
+            Span::styled("[Enter]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" explore"),
+            Span::raw("    "),
+            Span::styled("<", prev_style),
+            Span::raw(" prev"),
+            Span::raw("    "),
+            Span::styled(">", next_style),
+            Span::raw(" next"),
+            Span::raw("    "),
+            Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" close"),
+            Span::raw("    "),
+            Span::styled("[↑↓]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" scroll"),
+        ])
+        .alignment(Alignment::Left);
+        frame.render_widget(Paragraph::new(title), area);
     }
+}
 
-    pub fn render(&mut self, frame: &mut Frame) {
+#[async_trait]
+impl Screen for SnapshotDetailScreen {
+    fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
         let inner = area.inner(ratatui::layout::Margin::new(2, 1));
 
@@ -247,30 +251,17 @@ impl SnapshotDetailScreen {
         self.max_scroll = lines.len().saturating_sub(content_height);
         self.page_size = content_height;
 
-        let total_lines = lines.len();
-        let start = self.scroll.min(total_lines.saturating_sub(1));
-        let end = (start + content_height).min(total_lines);
-        let visible: Vec<_> = if start < end {
-            lines
-                .iter()
-                .skip(start)
-                .take(end - start)
-                .cloned()
-                .collect()
-        } else {
-            lines.clone()
-        };
-
-        let paragraph = Paragraph::new(Text::from(visible))
+        let paragraph = Paragraph::new(Text::from(lines))
             .alignment(Alignment::Left)
-            .block(theme::themed_block("Snapshot"));
+            .block(theme::themed_block("Snapshot"))
+            .scroll((self.scroll as u16, 0));
 
         frame.render_widget(paragraph, content_area);
 
         if self.max_scroll > 0 {
             let scrollbar = theme::create_scrollbar();
 
-            let mut scrollbar_state = ScrollbarState::new(total_lines)
+            let mut scrollbar_state = ScrollbarState::new(self.max_scroll + content_height)
                 .position(self.scroll)
                 .viewport_content_length(content_height);
 
@@ -282,41 +273,54 @@ impl SnapshotDetailScreen {
         }
     }
 
-    fn render_title(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let has_prev = self.current_index > 0;
-        let has_next = self.current_index < self.snapshots.len().saturating_sub(1);
-
-        let prev_style = if has_prev {
-            Style::default().fg(theme::MENU_KEY).bold()
-        } else {
-            Style::default().fg(theme::FOOTER_FG)
-        };
-        let next_style = if has_next {
-            Style::default().fg(theme::MENU_KEY).bold()
-        } else {
-            Style::default().fg(theme::FOOTER_FG)
-        };
-
-        let title = Line::from(vec![
-            Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" back"),
-            Span::raw("    "),
-            Span::styled("[Enter]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" explore"),
-            Span::raw("    "),
-            Span::styled("<", prev_style),
-            Span::raw(" prev"),
-            Span::raw("    "),
-            Span::styled(">", next_style),
-            Span::raw(" next"),
-            Span::raw("    "),
-            Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" close"),
-            Span::raw("    "),
-            Span::styled("[↑↓]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" scroll"),
-        ])
-        .alignment(Alignment::Left);
-        frame.render_widget(Paragraph::new(title), area);
+    async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
+        match key.code {
+            KeyCode::Esc => Some(Transition::Pop),
+            KeyCode::Char('q') => Some(Transition::Quit),
+            KeyCode::Enter => {
+                let snapshot = self.get_snapshot();
+                let tree_id = snapshot.tree;
+                match FileExplorerScreen::new(self.repo.clone(), &tree_id).await {
+                    Ok(explorer) => Some(Transition::Push(Box::new(explorer))),
+                    Err(e) => {
+                        tracing::error!("Failed to load file explorer: {:?}", e);
+                        None
+                    }
+                }
+            }
+            KeyCode::Char('<') | KeyCode::Char(',') => {
+                self.navigate_snapshot(-1);
+                None
+            }
+            KeyCode::Char('>') | KeyCode::Char('.') => {
+                self.navigate_snapshot(1);
+                None
+            }
+            KeyCode::Down => {
+                self.scroll = (self.scroll + 1).min(self.max_scroll);
+                None
+            }
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                None
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.scroll = (self.scroll + self.page_size).min(self.max_scroll);
+                None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(self.page_size);
+                None
+            }
+            KeyCode::Home => {
+                self.scroll = 0;
+                None
+            }
+            KeyCode::End => {
+                self.scroll = self.max_scroll;
+                None
+            }
+            _ => None,
+        }
     }
 }

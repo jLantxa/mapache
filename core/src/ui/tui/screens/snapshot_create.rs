@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::Result;
+use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -39,7 +40,10 @@ use crate::{
     utils,
 };
 
-use crate::ui::tui::theme;
+use crate::ui::tui::{
+    app::{Screen, Transition},
+    theme,
+};
 
 const PROGRESS_BAR_WIDTH: usize = 30;
 const POPUP_WIDTH: u16 = 60;
@@ -408,7 +412,7 @@ impl SnapshotCreateScreen {
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<SnapshotCreateAction> {
+    fn handle_key_internal(&mut self, key: KeyEvent) -> Option<SnapshotCreateAction> {
         match self.phase {
             SnapshotPhase::Config => self.handle_config_key(key),
             SnapshotPhase::Progress => self.handle_progress_key(key),
@@ -427,7 +431,8 @@ impl SnapshotCreateScreen {
             KeyCode::Enter => {
                 if self.focused_field.is_start() {
                     self.start_snapshot();
-                } else if self.focused_field.is_text_input() || self.focused_field.is_number_field() {
+                } else if self.focused_field.is_text_input() || self.focused_field.is_number_field()
+                {
                     self.start_editing();
                 } else if self.focused_field.is_toggle() {
                     self.toggle_bool_field();
@@ -445,7 +450,8 @@ impl SnapshotCreateScreen {
             KeyCode::Char(' ') => {
                 if self.focused_field.is_toggle() {
                     self.toggle_bool_field();
-                } else if self.focused_field.is_text_input() || self.focused_field.is_number_field() {
+                } else if self.focused_field.is_text_input() || self.focused_field.is_number_field()
+                {
                     self.start_editing();
                 }
                 None
@@ -694,7 +700,7 @@ impl SnapshotCreateScreen {
         self.shutdown_signal.store(false, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            Self::run_snapshot_task(
+            let _ = Self::run_snapshot_task(
                 repo,
                 lock_handle,
                 paths,
@@ -708,7 +714,7 @@ impl SnapshotCreateScreen {
                 reporter,
                 shutdown_signal,
             )
-            .await
+            .await;
         });
     }
 
@@ -953,16 +959,6 @@ impl SnapshotCreateScreen {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame) {
-        self.check_completion();
-
-        match self.phase {
-            SnapshotPhase::Config => self.render_config(frame),
-            SnapshotPhase::Progress => self.render_progress(frame),
-            SnapshotPhase::Summary => self.render_summary(frame),
-        }
-    }
-
     fn render_config(&self, frame: &mut Frame) {
         let area = frame.area();
         let inner = area.inner(ratatui::layout::Margin::new(2, 1));
@@ -1200,7 +1196,11 @@ impl SnapshotCreateScreen {
             FormField::Tags => "Tags",
             FormField::Description => "Description",
             FormField::Exclude => "Exclude",
-            FormField::Readers | FormField::Packers | FormField::AsRoot | FormField::NoParent | FormField::Start => return,
+            FormField::Readers
+            | FormField::Packers
+            | FormField::AsRoot
+            | FormField::NoParent
+            | FormField::Start => return,
         };
 
         let inner_width = (popup_width as usize).saturating_sub(2);
@@ -1719,6 +1719,27 @@ impl SnapshotCreateScreen {
             ]),
         };
         frame.render_widget(Paragraph::new(footer), area);
+    }
+}
+
+#[async_trait]
+impl Screen for SnapshotCreateScreen {
+    fn render(&mut self, frame: &mut Frame) {
+        self.check_completion();
+
+        match self.phase {
+            SnapshotPhase::Config => self.render_config(frame),
+            SnapshotPhase::Progress => self.render_progress(frame),
+            SnapshotPhase::Summary => self.render_summary(frame),
+        }
+    }
+
+    async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
+        self.handle_key_internal(key).map(|action| match action {
+            SnapshotCreateAction::Quit => Transition::Quit,
+            SnapshotCreateAction::Cancel => Transition::Pop,
+            SnapshotCreateAction::Done => Transition::PopAndReload,
+        })
     }
 }
 

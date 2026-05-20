@@ -1,7 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
-use crossterm::event::KeyCode;
+use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -14,7 +15,10 @@ use crate::{
     fs::{node::Node, tree::Tree},
     mapache::ID,
     repository::repo::Repository,
-    ui::tui::theme,
+    ui::tui::{
+        app::{Screen, Transition},
+        theme,
+    },
     utils,
 };
 
@@ -22,12 +26,6 @@ const METADATA_HEIGHT: u16 = 7;
 const TITLE_HEIGHT: u16 = 1;
 const BREADCRUMB_HEIGHT: u16 = 1;
 const LIST_HEIGHT_ESTIMATE: u16 = 10;
-
-#[derive(Debug)]
-pub enum FileExplorerAction {
-    Back,
-    Quit,
-}
 
 struct PathStackEntry {
     tree: Tree,
@@ -62,61 +60,197 @@ impl FileExplorerScreen {
         })
     }
 
-    pub async fn handle_key(&mut self, key: KeyCode) -> Option<FileExplorerAction> {
-        match key {
-            KeyCode::Esc => Some(FileExplorerAction::Back),
-            KeyCode::Char('q') => Some(FileExplorerAction::Quit),
+    fn sort_nodes(nodes: &mut [Node]) {
+        nodes.sort_unstable_by(|a, b| {
+            if a.is_dir() && !b.is_dir() {
+                std::cmp::Ordering::Less
+            } else if !a.is_dir() && b.is_dir() {
+                std::cmp::Ordering::Greater
+            } else {
+                a.name.cmp(&b.name)
+            }
+        });
+    }
+
+    fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
+        let breadcrumb = Paragraph::new(format!(" Path: {}", self.current_path.display())).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+        frame.render_widget(breadcrumb, area);
+    }
+
+    fn render_metadata(&self, frame: &mut Frame, area: Rect, node: &Node) {
+        let mut lines = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled(" Name: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&node.name),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Size: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(utils::format_size_binary(node.metadata.size, 3)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" Mode: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{:o}", node.metadata.mode.unwrap_or(0))),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" UID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(
+                node.metadata
+                    .owner_uid
+                    .map_or("unknown".to_string(), |u| u.to_string()),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(" GID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(
+                node.metadata
+                    .owner_gid
+                    .map_or("unknown".to_string(), |g| g.to_string()),
+            ),
+        ]));
+
+        if let Some(mtime) = node.metadata.modified_time {
+            let ts = utils::pretty_print_timestamp(&mtime.into(), None);
+            lines.push(Line::from(vec![
+                Span::styled(" Modified: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(ts.to_string()),
+            ]));
+        }
+
+        let widget = Paragraph::new(Text::from(lines)).block(theme::themed_block("Metadata"));
+        frame.render_widget(widget, area);
+    }
+
+    fn render_title(&self, frame: &mut Frame, area: Rect) {
+        let footer = Line::from(vec![
+            Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" back"),
+            Span::raw("    "),
+            Span::styled("[Enter/→]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" open"),
+            Span::raw("    "),
+            Span::styled("[Backsp/←]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" up"),
+            Span::raw("    "),
+            Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
+            Span::raw(" quit"),
+        ]);
+        frame.render_widget(Paragraph::new(footer), area);
+    }
+}
+
+#[async_trait]
+impl Screen for FileExplorerScreen {
+    fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let inner = area.inner(ratatui::layout::Margin::new(2, 0));
+
+        let selected_is_file = self
+            .list_state
+            .selected()
+            .is_some_and(|i| self.current_tree.nodes.get(i).is_some_and(|n| n.is_file()));
+
+        let metadata_height = if selected_is_file { METADATA_HEIGHT } else { 0 };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(BREADCRUMB_HEIGHT),
+                Constraint::Min(3),
+                Constraint::Length(metadata_height),
+                Constraint::Length(TITLE_HEIGHT),
+            ])
+            .split(inner);
+
+        self.last_height = chunks[1].height.saturating_sub(2);
+        self.render_breadcrumb(frame, chunks[0]);
+
+        let items: Vec<ListItem> = self
+            .current_tree
+            .nodes
+            .iter()
+            .map(|node| {
+                let icon = if node.is_dir() { "📁 " } else { "📄 " };
+                let name = &node.name;
+                let size = if node.is_file() {
+                    format!(" ({})", utils::format_size_binary(node.metadata.size, 1))
+                } else {
+                    String::new()
+                };
+
+                let color = if node.is_dir() {
+                    Color::Cyan
+                } else {
+                    Color::White
+                };
+
+                ListItem::new(Line::from(vec![
+                    Span::styled(icon, Style::default().fg(Color::Yellow)),
+                    Span::styled(name.to_string(), Style::default().fg(color)),
+                    Span::styled(size, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(theme::themed_block("File Explorer"))
+            .highlight_style(theme::selected_row_style())
+            .highlight_symbol(">> ");
+
+        frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
+
+        if self.current_tree.nodes.len() > self.last_height as usize {
+            let scrollbar = theme::create_scrollbar();
+            let mut scrollbar_state = ScrollbarState::new(self.current_tree.nodes.len())
+                .position(self.list_state.selected().unwrap_or(0))
+                .viewport_content_length(self.last_height as usize);
+
+            frame.render_stateful_widget(
+                scrollbar,
+                chunks[1].inner(ratatui::layout::Margin::new(1, 1)),
+                &mut scrollbar_state,
+            );
+        }
+
+        if selected_is_file && let Some(i) = self.list_state.selected() {
+            self.render_metadata(frame, chunks[2], &self.current_tree.nodes[i]);
+        }
+
+        self.render_title(frame, chunks[3]);
+    }
+
+    async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
+        use crate::ui::tui::widgets::StateNavigation;
+        match key.code {
+            KeyCode::Esc => Some(Transition::Pop),
+            KeyCode::Char('q') => Some(Transition::Quit),
             KeyCode::Up => {
-                if let Some(i) = self.list_state.selected() {
-                    let prev = if i == 0 {
-                        self.current_tree.nodes.len().saturating_sub(1)
-                    } else {
-                        i - 1
-                    };
-                    self.list_state.select(Some(prev));
-                }
+                self.list_state.previous(self.current_tree.nodes.len());
                 None
             }
             KeyCode::Down => {
-                let i = match self.list_state.selected() {
-                    Some(i) => {
-                        if i >= self.current_tree.nodes.len().saturating_sub(1) {
-                            0
-                        } else {
-                            i + 1
-                        }
-                    }
-                    None => 0,
-                };
-                self.list_state.select(Some(i));
+                self.list_state.next(self.current_tree.nodes.len());
                 None
             }
             KeyCode::PageDown | KeyCode::Char(' ') => {
-                if let Some(i) = self.list_state.selected() {
-                    let next = (i + self.last_height as usize)
-                        .min(self.current_tree.nodes.len().saturating_sub(1));
-                    self.list_state.select(Some(next));
-                }
+                self.list_state
+                    .page_next(self.current_tree.nodes.len(), self.last_height as usize);
                 None
             }
             KeyCode::PageUp => {
-                if let Some(i) = self.list_state.selected() {
-                    let prev = i.saturating_sub(self.last_height as usize);
-                    self.list_state.select(Some(prev));
-                }
+                self.list_state
+                    .page_previous(self.current_tree.nodes.len(), self.last_height as usize);
                 None
             }
             KeyCode::Home => {
-                if !self.current_tree.nodes.is_empty() {
-                    self.list_state.select(Some(0));
-                }
+                self.list_state.home(self.current_tree.nodes.len());
                 None
             }
             KeyCode::End => {
-                if !self.current_tree.nodes.is_empty() {
-                    self.list_state
-                        .select(Some(self.current_tree.nodes.len().saturating_sub(1)));
-                }
+                self.list_state.end(self.current_tree.nodes.len());
                 None
             }
             KeyCode::Enter | KeyCode::Right => {
@@ -157,195 +291,5 @@ impl FileExplorerScreen {
             }
             _ => None,
         }
-    }
-
-    pub fn render(&mut self, frame: &mut Frame) {
-        let area = frame.area();
-        let inner = area.inner(ratatui::layout::Margin::new(2, 1));
-
-        let selected_is_file = self
-            .list_state
-            .selected()
-            .is_some_and(|i| self.current_tree.nodes.get(i).is_some_and(|n| n.is_file()));
-
-        let metadata_height = if selected_is_file { METADATA_HEIGHT } else { 0 };
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(TITLE_HEIGHT),
-                Constraint::Length(BREADCRUMB_HEIGHT),
-                Constraint::Min(3),
-                Constraint::Length(metadata_height),
-            ])
-            .split(inner);
-
-        self.last_height = chunks[2].height.saturating_sub(2);
-        self.render_title(frame, chunks[0]);
-        self.render_breadcrumb(frame, chunks[1]);
-
-        let items: Vec<ListItem> = self
-            .current_tree
-            .nodes
-            .iter()
-            .map(|node| {
-                let icon = if node.is_dir() { "📁 " } else { "📄 " };
-                let name = node.name.clone();
-                let size = if node.is_file() {
-                    format!(" ({})", utils::format_size_binary(node.metadata.size, 1))
-                } else {
-                    String::new()
-                };
-
-                let color = if node.is_dir() {
-                    Color::Cyan
-                } else {
-                    Color::White
-                };
-
-                ListItem::new(Line::from(vec![
-                    Span::styled(icon, Style::default()),
-                    Span::styled(name, Style::default().fg(color)),
-                    Span::styled(size, Style::default().fg(theme::SNAPSHOT_SIZE)),
-                ]))
-            })
-            .collect();
-
-        let title = format!("Explorer: {}", self.current_path.display());
-        let list = List::new(items)
-            .block(theme::themed_block(&title))
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(">> ");
-
-        frame.render_stateful_widget(list, chunks[2], &mut self.list_state);
-
-        let total_items = self.current_tree.nodes.len();
-        if total_items > chunks[2].height.saturating_sub(2) as usize {
-            let scrollbar = theme::create_scrollbar();
-
-            let mut scrollbar_state =
-                ScrollbarState::new(total_items).position(self.list_state.selected().unwrap_or(0));
-
-            frame.render_stateful_widget(
-                scrollbar,
-                chunks[2].inner(ratatui::layout::Margin::new(0, 1)),
-                &mut scrollbar_state,
-            );
-        }
-
-        if selected_is_file {
-            self.render_file_metadata(frame, chunks[3]);
-        }
-    }
-
-    fn sort_nodes(nodes: &mut [Node]) {
-        nodes.sort_by(|a, b| match (a.is_dir(), b.is_dir()) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        });
-    }
-
-    fn render_title(&self, frame: &mut Frame, area: Rect) {
-        let title = Line::from(vec![
-            Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" back"),
-            Span::raw("    "),
-            Span::styled("[Enter/→]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" open"),
-            Span::raw("    "),
-            Span::styled("[Backspace/←]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" up"),
-            Span::raw("    "),
-            Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" close"),
-        ]);
-        frame.render_widget(Paragraph::new(title), area);
-    }
-
-    fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
-        let mut spans = Vec::new();
-        let components: Vec<_> = self
-            .current_path
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .collect();
-
-        spans.push(Span::styled(
-            "/",
-            Style::default().fg(theme::MENU_KEY).bold(),
-        ));
-
-        for (i, comp) in components.iter().enumerate() {
-            if comp == "/" {
-                continue;
-            }
-            spans.push(Span::styled(
-                comp.to_string(),
-                Style::default().fg(theme::MENU_KEY).bold(),
-            ));
-            if i < components.len() - 1 {
-                spans.push(Span::raw(" / "));
-            }
-        }
-
-        let breadcrumb = Paragraph::new(Line::from(spans)).block(theme::themed_block("Path"));
-        frame.render_widget(breadcrumb, area);
-    }
-
-    fn render_file_metadata(&self, frame: &mut Frame, area: Rect) {
-        let Some(idx) = self.list_state.selected() else {
-            return;
-        };
-        let Some(node) = self.current_tree.nodes.get(idx) else {
-            return;
-        };
-        if !node.is_file() {
-            return;
-        }
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-
-        lines.push(Line::from(vec![
-            Span::styled("Name:     ", Style::default().bold()),
-            Span::raw(node.name.clone()),
-        ]));
-
-        lines.push(Line::from(vec![
-            Span::styled("Size:     ", Style::default().bold()),
-            Span::raw(utils::format_size_binary(node.metadata.size, 3)),
-        ]));
-
-        if let Some(mode) = node.metadata.mode {
-            let mode_str = utils::mode_to_permissions_string(mode);
-            lines.push(Line::from(vec![
-                Span::styled("Mode:     ", Style::default().bold()),
-                Span::raw(format!("{} ({:#05o})", mode_str, mode)),
-            ]));
-        }
-
-        if let Some(mtime) = node.metadata.modified_time {
-            let ts = utils::pretty_print_system_time(mtime, None).unwrap_or_default();
-            lines.push(Line::from(vec![
-                Span::styled("Modified: ", Style::default().bold()),
-                Span::raw(ts),
-            ]));
-        }
-
-        if let Some(ctime) = node.metadata.created_time {
-            let ts = utils::pretty_print_system_time(ctime, None).unwrap_or_default();
-            lines.push(Line::from(vec![
-                Span::styled("Created:  ", Style::default().bold()),
-                Span::raw(ts),
-            ]));
-        }
-
-        let metadata_widget =
-            Paragraph::new(Text::from(lines)).block(theme::themed_block("File Info"));
-        frame.render_widget(metadata_widget, area);
     }
 }

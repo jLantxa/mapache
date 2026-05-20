@@ -420,6 +420,10 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
             .println(format!("{} {msg}", "Warning:".bold().yellow()));
     }
 
+    fn log(&self, msg: String) {
+        let _ = self.mp.println(msg);
+    }
+
     fn finalize(&self) {
         self.ui_stop.store(true, Ordering::Relaxed);
         let _ = self.ui_tx.try_send(UiEvent::Shutdown);

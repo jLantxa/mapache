@@ -83,7 +83,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 )
             })?;
 
-            run_with_repo(global_args, args, repo).await
+            execute(global_args.json, args, repo).await
         },
     )
     .await
@@ -100,8 +100,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 /// Run the command with an initialized repository object.
-pub async fn run_with_repo(
-    global_args: &GlobalArgs,
+pub async fn execute(
+    json_output: bool,
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
 ) -> Result<()> {
@@ -114,7 +114,9 @@ pub async fn run_with_repo(
     };
 
     let start = Instant::now();
-    ui::cli::log!();
+    if !json_output {
+        ui::cli::log!();
+    }
 
     let plan = gc::scan(repo.clone(), tolerance).await.map_err(|e| {
         fail(
@@ -132,7 +134,7 @@ pub async fn run_with_repo(
     let small_packs = plan.small_packs.len();
     let tolerated_packs = plan.tolerated_packs.len();
 
-    if !global_args.json {
+    if !json_output {
         ui::cli::log!();
         ui::cli::log!("Total packs: {}", total_packs.to_string());
         ui::cli::log!("Referenced blobs: {}", referenced_blobs.to_string());
@@ -145,7 +147,7 @@ pub async fn run_with_repo(
     }
 
     let (added_bytes, deleted_bytes) = if args.dry_run {
-        if !global_args.json {
+        if !json_output {
             ui::cli::log!("{} GC not executed", "[DRY RUN]".bold().purple());
         }
         tracing::info!(target: "clean", "Dry run enabled. GC not executed.");
@@ -164,7 +166,7 @@ pub async fn run_with_repo(
 
     let duration = start.elapsed();
 
-    if global_args.json {
+    if json_output {
         let net_freed = deleted_bytes as i64 - added_bytes as i64;
         ui::json::emit_static(
             "clean",

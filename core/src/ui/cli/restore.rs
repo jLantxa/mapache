@@ -175,6 +175,10 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
         self.warning_counter.load(Ordering::Relaxed)
     }
 
+    fn log(&self, msg: String) {
+        let _ = self.mp.println(msg);
+    }
+
     fn finalize(&self) {
         self.companion_bar.finish_and_clear();
         self.progress_bar.finish_and_clear();

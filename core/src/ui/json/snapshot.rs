@@ -242,6 +242,14 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
             .emit("warning", &ErrorMsg { message: msg });
     }
 
+    fn log(&self, msg: String) {
+        #[derive(Serialize)]
+        struct LogMsg {
+            message: String,
+        }
+        self.json_reporter.emit("log", &LogMsg { message: msg });
+    }
+
     fn finalize(&self) {
         // Emit final status update
         self.emit_status_update();

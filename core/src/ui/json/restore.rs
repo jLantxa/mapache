@@ -151,6 +151,14 @@ impl RestoreProgressReporter for JsonRestoreProgressReporter {
         self.warning_counter.load(Ordering::Relaxed)
     }
 
+    fn log(&self, msg: String) {
+        #[derive(Serialize)]
+        struct LogMsg {
+            message: String,
+        }
+        self.json_reporter.emit("log", &LogMsg { message: msg });
+    }
+
     fn finalize(&self) {
         self.emit_status_update();
         self.json_reporter.flush();

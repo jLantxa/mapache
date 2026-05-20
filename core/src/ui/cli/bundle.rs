@@ -184,6 +184,10 @@ impl SnapshotProgressReporter for BundleCliProgressReporter {
             .println(format!("{} {msg}", "Warning:".bold().yellow()));
     }
 
+    fn log(&self, msg: String) {
+        let _ = self.mp.println(msg);
+    }
+
     fn finalize(&self) {
         if self.ui_stop.swap(true, Ordering::Relaxed) {
             return;

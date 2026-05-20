@@ -34,6 +34,7 @@ pub trait RestoreProgressReporter: Send + Sync {
     fn warning(&self, msg: &str);
     fn error_count(&self) -> u64;
     fn warning_count(&self) -> u64;
+    fn log(&self, msg: String);
     fn finalize(&self);
 }
 
@@ -71,6 +72,9 @@ pub trait SnapshotProgressReporter: Send + Sync {
 
     /// Called when a warning occurs
     fn warning(&self, msg: &str);
+
+    /// Log a message
+    fn log(&self, msg: String);
 
     /// Finalize the reporter (cleanup resources)
     fn finalize(&self);

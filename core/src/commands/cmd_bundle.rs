@@ -44,21 +44,33 @@ struct BundleRestoreReporterAdapter {
 
 impl RestoreProgressReporter for BundleRestoreReporterAdapter {
     fn set_message(&self, _msg: String) {}
+
     fn resize_workload(&self, _num_expected_items: u64, _num_expected_bytes: u64) {}
+
     fn processed_item(&self, _path: &Path) {}
+
     fn processed_bytes(&self, _bytes: u64) {}
+
     fn error(&self, msg: &str) {
         self.inner.error(msg);
     }
+
     fn warning(&self, msg: &str) {
         self.inner.warning(msg);
     }
+
     fn error_count(&self) -> u64 {
         0
     }
+
     fn warning_count(&self) -> u64 {
         0
     }
+
+    fn log(&self, msg: String) {
+        self.inner.log(msg);
+    }
+
     fn finalize(&self) {}
 }
 

@@ -26,6 +26,7 @@ use crate::{
         get_absolute_normalized_path,
     },
     mapache::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    repository::repo::Repository,
     restorer::{self, RestoreOptions, Strategy},
     ui::{
         self, RestoreProgressReporter, cli::restore::CliRestoreProgressReporter,
@@ -165,25 +166,10 @@ where
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "restore", "Starting restore command");
 
-    let target = args.target.as_ref().ok_or_else(|| {
-        fail(
-            "Target path is required. Use --target or set it in config file.",
-            RestoreError::TargetError,
-        )
-    })?;
-    let strategy = args.strategy.clone().unwrap_or(Strategy::Fail);
-    let dry_run = args.dry_run;
-    let delete = args.delete.unwrap_or(false);
-    let no_preserve_root = args.no_preserve_root.unwrap_or(false);
-    let quit_on_error = args.quit_on_error.unwrap_or(false);
-    let sparse = args.sparse.unwrap_or(false);
-    let verify = args.verify.unwrap_or(false);
-    let strip_prefix = args.strip_prefix.unwrap_or(false);
-
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(dry_run))
+        new_backend_with_prompt(global_args.backend_options(false))
             .await
             .map_err(|e| {
                 fail(
@@ -195,139 +181,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, _secure_storage, lock_handle| async move {
-            let start = Instant::now();
-
-            tracing::info!(target: "restore", "Reloading master index");
-            repo.reload_master_index().await?;
-
-            tracing::info!(target: "restore", "Finding snapshot to restore (snapshot={:?})", args.snapshot);
-            let (snapshot_id, snapshot) =
-                match find_use_snapshot(repo.clone(), &args.snapshot).await {
-                    Ok(Some((id, snap))) => (id, snap),
-                    Ok(None) | Err(_) => {
-                        return Err(fail("Snapshot not found", RestoreError::SnapshotNotFound));
-                    }
-                };
-
-            // Read include and exclude paths from files if provided.
-            let excludes_from_file = match &args.exclude_file {
-                Some(path) => Some(read_filtered_paths_from_file(path)?),
-                None => None,
-            };
-            let all_excludes =
-                merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
-            let includes_from_file = match &args.include_file {
-                Some(path) => Some(read_filtered_paths_from_file(path)?),
-                None => None,
-            };
-            let all_includes =
-                merge_filtered_paths(args.include.as_ref(), includes_from_file.as_ref());
-
-            let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
-            let parsed_includes = expand_include_paths(
-                repo.clone(),
-                &snapshot_id,
-                all_includes.as_deref(),
-                parsed_excludes.clone(),
-            )
-            .await?;
-
-            let common_prefix: Option<PathBuf> = if strip_prefix {
-                parsed_includes
-                    .as_ref()
-                    .map(|includes| calculate_lcp(includes, false))
+            let progress_reporter: Arc<dyn RestoreProgressReporter> = if global_args.json {
+                Arc::new(JsonRestoreProgressReporter::new(None, None))
             } else {
-                None
+                Arc::new(CliRestoreProgressReporter::new(None, None))
             };
 
-            let abs_normalized_target =
-                get_absolute_normalized_path(target).map_err(|e| {
-                    fail(
-                        format!("Invalid target path: {}", e),
-                        RestoreError::TargetError,
-                    )
-                })?;
-
-            tracing::info!(target: "restore", "Restoring snapshot {snapshot_id} (root={:?}) to {:?}", snapshot.root, abs_normalized_target);
-
-            emit_restore_start(global_args.json, &snapshot_id, &abs_normalized_target, dry_run, &strategy);
-
-            // We initialize the reporter with 0 totals. The Restorer will resize_workload it
-            // with actual totals once it finishes planning (which is now the same as scanning).
-            let progress_reporter = make_restore_progress_reporter(global_args.json, None, None);
-
-            let json_mode = global_args.json;
-            let reporter_clone = progress_reporter.clone();
-            let cleanup_handler = CleanupHandler::new_with_callback(move || {
-                reporter_clone.finalize();
-                if !json_mode {
-                    ui::cli::log!(
-                        "\n{}",
-                        "Process interrupted. Cleaning up...".bold().yellow()
-                    );
-                }
-            })?;
-            cleanup_handler.add_lock(lock_handle.clone());
-
-            restorer::restore(
-                repo.clone(),
-                &snapshot,
-                &abs_normalized_target,
-                parsed_includes.clone(),
-                parsed_excludes.clone(),
-                RestoreOptions {
-                    dry_run,
-                    strategy,
-                    quit_on_error,
-                    strip_prefix: common_prefix,
-                    preallocate: !sparse,
-                    verify,
-                },
-                progress_reporter.clone(),
-                cleanup_handler.interrupted.clone(),
-            )
-            .await?;
-
-            progress_reporter.finalize();
-            let warning_count = progress_reporter.warning_count();
-            let error_count = progress_reporter.error_count();
-
-            if delete {
-                // Delete local nodes not present in the snapshot tree
-                tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
-                restorer::sync::delete_nodes(
-                    repo,
-                    abs_normalized_target.clone(),
-                    &snapshot.tree,
-                    parsed_includes,
-                    parsed_excludes,
-                    dry_run,
-                    no_preserve_root,
-                    cleanup_handler.interrupted.clone(),
-                )
-                .await?;
-
-                if !global_args.json {
-                    ui::cli::log!();
-                }
-            }
-
-            emit_restore_complete(
-                global_args.json,
-                start.elapsed().as_secs_f64(),
-                error_count,
-                warning_count,
-                dry_run,
-            );
-            tracing::info!(target: "restore", "Restore command completed in {:?}", start.elapsed());
-
-            Ok(())
+            execute(repo, lock_handle, args, progress_reporter, global_args.json).await
         },
     )
     .await
     .map_err(|e| {
-        // If it's already a MapacheError (e.g. from fail calls inside), keep it.
-        // Otherwise, it might be an open error.
         if e.is::<crate::commands::error::MapacheError>() {
             e
         } else {
@@ -339,12 +203,164 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
+pub async fn execute(
+    repo: Arc<Repository>,
+    lock_handle: crate::repository::lock::LockHandle,
+    args: &CmdArgs,
+    progress_reporter: Arc<dyn RestoreProgressReporter>,
+    json_output: bool,
+) -> Result<()> {
+    tracing::info!(target: "restore", "Reloading master index");
+    repo.reload_master_index().await?;
+
+    let start = Instant::now();
+
+    tracing::info!(target: "restore", "Finding snapshot to restore (snapshot={:?})", args.snapshot);
+    let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot).await {
+        Ok(Some((id, snap))) => (id, snap),
+        Ok(None) | Err(_) => {
+            return Err(fail("Snapshot not found", RestoreError::SnapshotNotFound));
+        }
+    };
+
+    let target = args.target.as_ref().ok_or_else(|| {
+        fail(
+            "Target path is required. Use --target or set it in config file.",
+            RestoreError::TargetError,
+        )
+    })?;
+
+    let strategy = args.strategy.clone().unwrap_or(Strategy::Fail);
+    let dry_run = args.dry_run;
+    let delete = args.delete.unwrap_or(false);
+    let no_preserve_root = args.no_preserve_root.unwrap_or(false);
+    let quit_on_error = args.quit_on_error.unwrap_or(false);
+    let sparse = args.sparse.unwrap_or(false);
+    let verify = args.verify.unwrap_or(false);
+    let strip_prefix = args.strip_prefix.unwrap_or(false);
+
+    // Read include and exclude paths from files if provided.
+    let excludes_from_file = match &args.exclude_file {
+        Some(path) => Some(read_filtered_paths_from_file(path)?),
+        None => None,
+    };
+    let all_excludes = merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
+    let includes_from_file = match &args.include_file {
+        Some(path) => Some(read_filtered_paths_from_file(path)?),
+        None => None,
+    };
+    let all_includes = merge_filtered_paths(args.include.as_ref(), includes_from_file.as_ref());
+
+    let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
+    let parsed_includes = expand_include_paths(
+        repo.clone(),
+        &snapshot_id,
+        all_includes.as_deref(),
+        parsed_excludes.clone(),
+    )
+    .await?;
+
+    let common_prefix: Option<PathBuf> = if strip_prefix {
+        parsed_includes
+            .as_ref()
+            .map(|includes| calculate_lcp(includes, false))
+    } else {
+        None
+    };
+
+    let abs_normalized_target = get_absolute_normalized_path(target).map_err(|e| {
+        fail(
+            format!("Invalid target path: {}", e),
+            RestoreError::TargetError,
+        )
+    })?;
+
+    tracing::info!(target: "restore", "Restoring snapshot {snapshot_id} (root={:?}) to {:?}", snapshot.root, abs_normalized_target);
+
+    emit_restore_start(
+        json_output,
+        &snapshot_id,
+        &abs_normalized_target,
+        dry_run,
+        &strategy,
+        progress_reporter.clone(),
+    );
+
+    let reporter_clone = progress_reporter.clone();
+    let cleanup_handler = CleanupHandler::new_with_callback(move || {
+        reporter_clone.finalize();
+        if !json_output {
+            reporter_clone.log(format!(
+                "\n{}",
+                "Process interrupted. Cleaning up...".bold().yellow()
+            ));
+        }
+    })?;
+    cleanup_handler.add_lock(lock_handle.clone());
+
+    restorer::restore(
+        repo.clone(),
+        &snapshot,
+        &abs_normalized_target,
+        parsed_includes.clone(),
+        parsed_excludes.clone(),
+        RestoreOptions {
+            dry_run,
+            strategy,
+            quit_on_error,
+            strip_prefix: common_prefix,
+            preallocate: !sparse,
+            verify,
+        },
+        progress_reporter.clone(),
+        cleanup_handler.interrupted.clone(),
+    )
+    .await?;
+
+    progress_reporter.finalize();
+    let warning_count = progress_reporter.warning_count();
+    let error_count = progress_reporter.error_count();
+
+    if delete {
+        // Delete local nodes not present in the snapshot tree
+        tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
+        restorer::sync::delete_nodes(
+            repo,
+            abs_normalized_target.clone(),
+            &snapshot.tree,
+            parsed_includes,
+            parsed_excludes,
+            dry_run,
+            no_preserve_root,
+            cleanup_handler.interrupted.clone(),
+        )
+        .await?;
+
+        if !json_output {
+            progress_reporter.log(String::new());
+        }
+    }
+
+    emit_restore_complete(
+        json_output,
+        start.elapsed().as_secs_f64(),
+        error_count,
+        warning_count,
+        dry_run,
+        progress_reporter.clone(),
+    );
+    tracing::info!(target: "restore", "Restore command completed in {:?}", start.elapsed());
+
+    Ok(())
+}
+
 fn emit_restore_start(
     json: bool,
     snapshot_id: &ID,
     target: &Path,
     dry_run: bool,
     strategy: &Strategy,
+    progress_reporter: Arc<dyn RestoreProgressReporter>,
 ) {
     if json {
         #[derive(Serialize)]
@@ -366,34 +382,16 @@ fn emit_restore_start(
         );
     } else {
         if dry_run {
-            ui::cli::log!("{}", "[DRY RUN]".bold().purple());
+            progress_reporter.log(format!("{}", "[DRY RUN]".bold().purple()));
         }
 
-        ui::cli::log!(
+        progress_reporter.log(format!(
             "Restoring snapshot {}",
             snapshot_id
                 .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
                 .bold()
                 .yellow()
-        );
-    }
-}
-
-fn make_restore_progress_reporter(
-    json: bool,
-    num_expected_items: Option<u64>,
-    total_bytes: Option<u64>,
-) -> Arc<dyn RestoreProgressReporter> {
-    if json {
-        Arc::new(JsonRestoreProgressReporter::new(
-            num_expected_items,
-            total_bytes,
-        ))
-    } else {
-        Arc::new(CliRestoreProgressReporter::new(
-            num_expected_items,
-            total_bytes,
-        ))
+        ));
     }
 }
 
@@ -403,6 +401,7 @@ fn emit_restore_complete(
     errors: u64,
     warnings: u64,
     dry_run: bool,
+    progress_reporter: Arc<dyn RestoreProgressReporter>,
 ) {
     if json {
         #[derive(Serialize)]
@@ -429,12 +428,12 @@ fn emit_restore_complete(
             String::new()
         };
 
-        ui::cli::log!(
+        progress_reporter.log(format!(
             "{}Finished in {} with {} and {}",
             prefix,
             utils::pretty_print_duration(std::time::Duration::from_secs_f64(duration_seconds)),
             utils::format_count(errors, "error", "errors"),
             utils::format_count(warnings, "warning", "warnings")
-        );
+        ));
     }
 }

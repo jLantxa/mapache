@@ -60,11 +60,9 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
 ///
 /// It also performs tilde expansion for paths starting with `~`.
 pub fn get_absolute_normalized_path(path: &Path) -> Result<PathBuf> {
-    // 1. Expand tilde if present.
     let path_buf = expand_tilde(path);
     let path_ref = path_buf.as_path();
 
-    // 2. On Windows, convert MSYS2 paths.
     #[cfg(windows)]
     let msys_path;
     #[cfg(windows)]
@@ -75,14 +73,14 @@ pub fn get_absolute_normalized_path(path: &Path) -> Result<PathBuf> {
         path_ref = msys_path.as_path();
     }
 
-    // 3. Make absolute by joining with CWD if relative.
+    // Make absolute by joining with CWD if relative.
     let absolute_path = if path_ref.is_absolute() {
         path_ref.to_path_buf()
     } else {
         std::env::current_dir()?.join(path_ref)
     };
 
-    // 4. Lexically normalize components (resolve . and ..).
+    // Lexically normalize components (resolve . and ..).
     let mut components = Vec::new();
     for component in absolute_path.components() {
         match component {
@@ -209,18 +207,29 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
         left_idx = 2;
     }
 
+    let sep = if cfg!(windows) { "\\" } else { "/" };
+
     loop {
-        let sep = if cfg!(windows) { "\\" } else { "/" };
         let next_left = if left_idx <= right_idx {
             let s = components[left_idx].as_os_str().to_string_lossy();
-            format!("{}{}{}", result_left, sep, s)
+            let mut res = result_left.clone();
+            if !res.ends_with(['/', '\\']) && !matches!(components[left_idx], Component::RootDir) {
+                res.push_str(sep);
+            }
+            res.push_str(&s);
+            res
         } else {
             result_left.clone()
         };
 
         let next_right = if right_idx >= left_idx {
             let s = components[right_idx].as_os_str().to_string_lossy();
-            format!("{}{}{}", s, sep, result_right)
+            let mut res = s.to_string();
+            if !res.ends_with(['/', '\\']) {
+                res.push_str(sep);
+            }
+            res.push_str(&result_right);
+            res
         } else {
             result_right.clone()
         };
@@ -243,8 +252,16 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
         break;
     }
 
-    let sep = if cfg!(windows) { "\\" } else { "/" };
-    format!("{}{}{}{}{}", result_left, sep, "...", sep, result_right)
+    let mut final_left = result_left;
+    if !final_left.ends_with(['/', '\\']) {
+        final_left.push_str(sep);
+    }
+
+    let final_right = result_right;
+    let mut final_ellipsis = "...".to_string();
+    final_ellipsis.push_str(sep);
+
+    format!("{}{}{}", final_left, final_ellipsis, final_right)
 }
 
 /// Helper function to build intermediate path maps for streaming.
@@ -279,130 +296,61 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        collections::BTreeMap,
+        env,
+        path::{Path, PathBuf},
+    };
 
     #[test]
-    fn test_get_absolute_normalized_path() {
-        let cwd = std::env::current_dir().unwrap();
+    fn test_get_absolute_normalized_path() -> Result<()> {
+        let cwd = env::current_dir()?;
 
-        // Relative path
-        let path = Path::new("some/path");
-        assert_eq!(
-            get_absolute_normalized_path(path).unwrap(),
-            cwd.join("some/path")
-        );
+        // Define test cases as (input_path, expected_path)
+        let mut cases = vec![
+            // Basic relative path normalization
+            ("foo/bar/../baz", cwd.join("foo").join("baz")),
+            ("./test/././file.txt", cwd.join("test").join("file.txt")),
+            // Parent directory traversal at CWD level
+            ("..", cwd.parent().unwrap_or(&cwd).to_path_buf()),
+            // Redundant slashes
+            ("foo//bar///baz/", cwd.join("foo").join("bar").join("baz")),
+            // Empty and dot paths
+            (".", cwd.clone()),
+            ("", cwd.clone()),
+        ];
 
-        // Path with .
-        let path = Path::new("./some/./path");
-        assert_eq!(
-            get_absolute_normalized_path(path).unwrap(),
-            cwd.join("some/path")
-        );
+        // Platform-specific absolute paths
+        if cfg!(windows) {
+            cases.extend(vec![
+                ("C:\\\\prj\\\\.\\\\foo", PathBuf::from("C:\\prj\\foo")),
+                (
+                    "C:/Users//Admin/../Public",
+                    PathBuf::from("C:\\Users\\Public"),
+                ),
+                ("C:\\..\\..\\..\\Windows", PathBuf::from("C:\\Windows")),
+            ]);
+        } else {
+            cases.extend(vec![
+                ("/usr/local/../bin", PathBuf::from("/usr/bin")),
+                ("/../../../../etc/passwd", PathBuf::from("/etc/passwd")),
+                ("///etc//hosts", PathBuf::from("/etc/hosts")),
+            ]);
+        }
 
-        // Path with ..
-        let path = Path::new("some/other/../path");
-        assert_eq!(
-            get_absolute_normalized_path(path).unwrap(),
-            cwd.join("some/path")
-        );
+        for (input, expected) in cases {
+            let result = get_absolute_normalized_path(Path::new(input))
+                .map_err(|e| format!("Failed to process '{}': {}", input, e))
+                .unwrap();
 
-        // Absolute path
-        #[cfg(unix)]
-        {
-            let path = Path::new("/absolute/path");
             assert_eq!(
-                get_absolute_normalized_path(path).unwrap(),
-                PathBuf::from("/absolute/path")
+                result, expected,
+                "\nNormalization mismatch!\nInput:    {:?}\nExpected: {:?}\nActual:   {:?}",
+                input, expected, result
             );
         }
 
-        #[cfg(windows)]
-        {
-            let path = Path::new(r"C:\absolute\path");
-            assert_eq!(
-                get_absolute_normalized_path(path).unwrap(),
-                PathBuf::from(r"C:\absolute\path")
-            );
-        }
-    }
-
-    #[test]
-    fn test_calculate_lcp() {
-        // Multiple paths
-        let paths = vec![
-            PathBuf::from("/home/user/project/file1.txt"),
-            PathBuf::from("/home/user/project/subdir/file2.txt"),
-            PathBuf::from("/home/user/project/file3.txt"),
-        ];
-        assert_eq!(
-            calculate_lcp(&paths, false),
-            PathBuf::from("/home/user/project")
-        );
-
-        // Single path
-        let paths = vec![PathBuf::from("/home/user/file.txt")];
-        assert_eq!(calculate_lcp(&paths, false), PathBuf::from("/home/user"));
-        assert_eq!(
-            calculate_lcp(&paths, true),
-            PathBuf::from("/home/user/file.txt")
-        );
-
-        // No common prefix
-        let paths = vec![PathBuf::from("/a/b"), PathBuf::from("/c/d")];
-        #[cfg(unix)]
-        assert_eq!(calculate_lcp(&paths, false), PathBuf::from("/"));
-    }
-
-    #[test]
-    fn test_get_intermediate_paths() {
-        let root = PathBuf::from("/a");
-        let paths = vec![
-            PathBuf::from("/a/b/c"),
-            PathBuf::from("/a/b/d"),
-            PathBuf::from("/a/e"),
-        ];
-
-        let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
-
-        let mut expected = BTreeMap::new();
-        expected.insert(PathBuf::from("/a/b"), 2);
-        assert_eq!(root_children_count, 3); // 'b/c', 'b/d', and 'e' are children
-        assert_eq!(intermediate_paths, expected);
-
-        // Test with empty root (virtual root)
-        let root = PathBuf::from("");
-        let paths = vec![
-            PathBuf::from("/a/b"),
-            PathBuf::from("/a/c"),
-            PathBuf::from("/d"),
-        ];
-        let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
-        let mut expected = BTreeMap::new();
-        expected.insert(PathBuf::from("/a"), 2); // children of /a: b and c
-        assert_eq!(root_children_count, 3); // children of virtual root are /a and /d
-        assert_eq!(intermediate_paths, expected);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_abbreviate_path_unix() {
-        // Note: On Unix, the first component of "/home/user" is "/"
-
-        assert_eq!(abbreviate_path(Path::new("short/path"), 5), "short/path");
-
-        let path = Path::new("/home/user/some/path/to/a/file.txt");
-        // max_len=20: "/home/.../a/file.txt" (20 chars)
-        assert_eq!(abbreviate_path(path, 20), "/home/.../a/file.txt");
-        // max_len=30: "/home/user/some/.../a/file.txt" (30 chars)
-        assert_eq!(abbreviate_path(path, 30), "/home/user/some/.../a/file.txt");
-
-        let long_path_str = "/home/user/projects/backup_tool/src/core/permissions.rs";
-        let long_path = Path::new(long_path_str);
-
-        // max_len=30: "/home/user/.../permissions.rs"
-        assert_eq!(
-            abbreviate_path(long_path, 30),
-            "/home/user/.../permissions.rs"
-        );
+        Ok(())
     }
 
     #[test]
@@ -426,5 +374,122 @@ mod tests {
         let path = Path::new("~/..");
         let result = get_absolute_normalized_path(path).unwrap();
         assert_eq!(result, home_path.parent().unwrap_or(&home_path));
+    }
+
+    #[test]
+    fn test_normalization_is_lexical_only() -> Result<()> {
+        let path = Path::new("non_existent_7788/../exists_only_in_memory");
+        let result = get_absolute_normalized_path(path)?;
+
+        assert!(result.to_string_lossy().contains("exists_only_in_memory"));
+        assert!(!result.to_string_lossy().contains("non_existent_7788"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_calculate_lcp() {
+        let paths: Vec<PathBuf> = vec![];
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
+
+        let paths = vec![PathBuf::from("/home/user/docs")];
+        assert_eq!(
+            calculate_lcp(&paths, true),
+            PathBuf::from("/home/user/docs")
+        );
+
+        let paths = vec![PathBuf::from("/home/user/docs")];
+        assert_eq!(calculate_lcp(&paths, false), PathBuf::from("/home/user"));
+
+        let paths = vec![
+            PathBuf::from("/home/user/a"),
+            PathBuf::from("/home/user/b/file.txt"),
+            PathBuf::from("/home/user/c"),
+        ];
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::from("/home/user"));
+
+        let paths = vec![
+            PathBuf::from("/home/user/docs"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/var/log"),
+        ];
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::from("/"));
+
+        let paths = vec![
+            PathBuf::from("a/b/c"),
+            PathBuf::from("a/b/d"),
+            PathBuf::from("a/b"),
+        ];
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::from("a/b"));
+
+        let paths = vec![PathBuf::from("a/b"), PathBuf::from("x/y")];
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
+
+        let paths = vec![PathBuf::from("C:\\a\\b"), PathBuf::from("D:\\x\\y")];
+        assert_eq!(calculate_lcp(&paths, true), PathBuf::new());
+    }
+
+    #[test]
+    fn test_get_intermediate_paths() {
+        let root = PathBuf::from("/a");
+        let paths = vec![
+            PathBuf::from("/a/b/c"),
+            PathBuf::from("/a/b/d"),
+            PathBuf::from("/a/e"),
+        ];
+
+        let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
+
+        let mut expected = BTreeMap::new();
+        expected.insert(PathBuf::from("/a/b"), 2);
+        assert_eq!(root_children_count, 3);
+        assert_eq!(intermediate_paths, expected);
+
+        // Test with empty root (virtual root)
+        let root = PathBuf::from("");
+        let paths = vec![
+            PathBuf::from("/a/b"),
+            PathBuf::from("/a/c"),
+            PathBuf::from("/d"),
+        ];
+        let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
+        let mut expected = BTreeMap::new();
+        expected.insert(PathBuf::from("/a"), 2);
+        assert_eq!(root_children_count, 3);
+        assert_eq!(intermediate_paths, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_abbreviate_path_unix() {
+        assert_eq!(abbreviate_path(Path::new("short/path"), 5), "short/path");
+
+        let path = Path::new("/home/user/some/path/to/a/file.txt");
+        assert_eq!(abbreviate_path(path, 20), "/home/.../a/file.txt");
+        assert_eq!(abbreviate_path(path, 30), "/home/user/some/.../a/file.txt");
+
+        let long_path_str = "/home/user/projects/backup_tool/src/core/permissions.rs";
+        let long_path = Path::new(long_path_str);
+
+        assert_eq!(
+            abbreviate_path(long_path, 30),
+            "/home/user/.../permissions.rs"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_abbreviate_path_windows() {
+        let path = Path::new(r"C:\Users\Admin\Documents\file.txt");
+        let result = abbreviate_path(path, 20);
+        assert_eq!(result, r"C:\...\file.txt");
+        assert!(!result.contains(r"\\"));
+
+        let result = abbreviate_path(path, 25);
+        assert_eq!(result, r"C:\Users\...\file.txt");
+        assert!(!result.contains(r"\\"));
+
+        let result = abbreviate_path(path, 30);
+        assert_eq!(result, r"C:\Users\Admin\...\file.txt");
+        assert!(!result.contains(r"\\"));
     }
 }

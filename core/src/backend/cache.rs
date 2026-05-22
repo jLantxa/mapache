@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use crate::{
-    backend::{Handle, StorageBackend, WriteContents, localfs::LocalFS},
+    backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents, localfs::LocalFS},
     mapache::{ContentIdType, defaults::APP_NAME, global::BASE_DIRS},
 };
 
@@ -200,7 +200,7 @@ impl StorageBackend for CacheBackend {
         Ok(())
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<crate::backend::BackendNode>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         self.backend.list_dir(path).await
     }
 
@@ -249,7 +249,7 @@ impl StorageBackend for CacheBackend {
         self.backend.is_dir(path).await
     }
 
-    async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
+    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
         self.backend.lstat(path).await
     }
 

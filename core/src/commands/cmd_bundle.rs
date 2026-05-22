@@ -8,41 +8,68 @@ use colored::Colorize;
 use futures::StreamExt;
 
 #[cfg(all(feature = "fuse", unix))]
-use crate::{commands::cleanup::CleanupHandler, fuse::fs::MapacheFS, utils::size};
+use crate::{
+    commands::cleanup::CleanupHandler,
+    fs::{get_absolute_normalized_path, path_exists},
+    fuse::fs::{MapacheFS, MountOptions},
+    utils::size,
+};
 
 use crate::{
-    archiver::{SnapshotOptions, progress::SnapshotProgress},
-    bundle::reader::BundleReader,
-    bundle::writer::BundleWriter,
-    fs::{node::Metadata, tree::Tree},
+    archiver::{
+        SnapshotOptions, processor, progress::SnapshotProgress, tree_serializer::TreeSerializer,
+    },
+    bundle::{reader::BundleReader, writer::BundleWriter},
+    commands::{Compression, DEFAULT_COMPRESSION, parse_compression_level},
+    fs::{
+        calculate_lcp,
+        filter::PathFilter,
+        node::{Metadata, Node},
+        tree::{FSNodeStream, NodeDiff, StreamNode, Tree},
+    },
     mapache::{
         ID,
+        defaults::DEFAULT_SNAPSHOT_READERS,
         traits::{BlobLoader, BlobSaver},
     },
-    ui::snapshot::SnapshotProgressReporter,
+    restorer::node_restorer,
+    ui::{RestoreProgressReporter, SnapshotProgressReporter, cli},
+    utils::format_size_binary,
 };
 
 struct BundleRestoreReporterAdapter {
     inner: Arc<dyn SnapshotProgressReporter>,
 }
 
-impl crate::ui::restore::RestoreProgressReporter for BundleRestoreReporterAdapter {
+impl RestoreProgressReporter for BundleRestoreReporterAdapter {
     fn set_message(&self, _msg: String) {}
+
     fn resize_workload(&self, _num_expected_items: u64, _num_expected_bytes: u64) {}
+
     fn processed_item(&self, _path: &Path) {}
+
     fn processed_bytes(&self, _bytes: u64) {}
+
     fn error(&self, msg: &str) {
         self.inner.error(msg);
     }
+
     fn warning(&self, msg: &str) {
         self.inner.warning(msg);
     }
+
     fn error_count(&self) -> u64 {
         0
     }
+
     fn warning_count(&self) -> u64 {
         0
     }
+
+    fn log(&self, msg: String) {
+        self.inner.log(msg);
+    }
+
     fn finalize(&self) {}
 }
 
@@ -78,11 +105,11 @@ pub struct CmdArgs {
     pub exclude: Vec<PathBuf>,
 
     /// Compression level [fastest|fast|balanced|better|best|level:val] (bundle mode only)
-    #[clap(long = "compression", value_parser = crate::commands::parse_compression_level, default_value_t = crate::commands::DEFAULT_COMPRESSION)]
-    pub compression_level: crate::commands::Compression,
+    #[clap(long = "compression", value_parser = parse_compression_level, default_value_t = DEFAULT_COMPRESSION)]
+    pub compression_level: Compression,
 
     /// Number of parallel readers
-    #[clap(long, default_value_t = crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS)]
+    #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS)]
     pub readers: usize,
 
     /// Create mountpoint if it does not exist (mount mode only, passes to mount -c)
@@ -119,8 +146,8 @@ impl Default for CmdArgs {
             input: vec![],
             output: None,
             exclude: vec![],
-            compression_level: crate::commands::Compression::Balanced,
-            readers: crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS,
+            compression_level: Compression::Balanced,
+            readers: DEFAULT_SNAPSHOT_READERS,
             create: false,
             allow_other: false,
             metadata_only: false,
@@ -139,8 +166,8 @@ impl Default for CmdArgs {
             input: vec![],
             output: None,
             exclude: vec![],
-            compression_level: crate::commands::Compression::Balanced,
-            readers: crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS,
+            compression_level: Compression::Balanced,
+            readers: DEFAULT_SNAPSHOT_READERS,
             internal_password: None,
         }
     }
@@ -165,7 +192,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_new_password("Enter bundle password", "Confirm password")?,
+        None => cli::request_new_password("Enter bundle password", "Confirm password")?,
     };
 
     let bundle_writer = Arc::new(BundleWriter::new(
@@ -186,10 +213,10 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         let p = &absolute_source_paths[0];
         p.parent().unwrap_or(p).to_path_buf()
     } else {
-        crate::fs::calculate_lcp(&absolute_source_paths, false)
+        calculate_lcp(&absolute_source_paths, false)
     };
 
-    crate::ui::cli::log!(
+    cli::log!(
         "{} Creating bundle from {} to {}...",
         "[1/1]".bold().cyan(),
         args.input
@@ -202,8 +229,8 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
     );
 
     let progress_reporter: Arc<dyn SnapshotProgressReporter> =
-        Arc::new(crate::ui::bundle::cli::BundleCliProgressReporter::new(
-            crate::ui::bundle::cli::BundleMode::Create,
+        Arc::new(cli::bundle::BundleCliProgressReporter::new(
+            cli::bundle::BundleMode::Create,
             0,
             0,
             args.readers,
@@ -234,7 +261,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         with_atime: false,
     };
 
-    let fs_stream = crate::fs::tree::FSNodeStream::from_paths(
+    let fs_stream = FSNodeStream::from_paths(
         snapshot_options.absolute_source_paths.clone(),
         snapshot_options.exclude_paths.clone(),
         false,
@@ -282,7 +309,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                     if !stream_node.node.is_dir() {
                         reporter.processing_node(
                             &path,
-                            crate::fs::tree::NodeDiff::New,
+                            NodeDiff::New,
                             Some(stream_node.node.metadata.size),
                         );
                     }
@@ -298,7 +325,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
 
                         let blobs_res = tokio::task::spawn_blocking(move || {
                             let file = std::fs::File::open(&path_str)?;
-                            crate::archiver::processor::chunk_and_store_file(
+                            processor::chunk_and_store_file(
                                 saver_clone,
                                 file,
                                 file_size,
@@ -324,16 +351,12 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                     }
 
                     progress.processed_node();
-                    reporter.processed_node(
-                        &path,
-                        crate::fs::tree::NodeDiff::New,
-                        Some(node.metadata.size),
-                    );
+                    reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
 
                     let _ = tx
                         .send((
                             path,
-                            crate::fs::tree::StreamNode {
+                            StreamNode {
                                 node,
                                 num_children: stream_node.num_children,
                             },
@@ -344,7 +367,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
             .await;
     });
 
-    let mut tree_serializer = crate::archiver::tree_serializer::TreeSerializer::new(
+    let mut tree_serializer = TreeSerializer::new(
         bundle_writer.clone(),
         snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,
@@ -380,17 +403,17 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_password("Enter bundle password")?,
+        None => cli::request_password("Enter bundle password")?,
     };
 
     let reader = BundleReader::open(bundle, &password)?;
     let root_tree_id = reader.trailer.root_tree;
     let loader = Arc::new(reader);
 
-    crate::ui::cli::log!("{} Analyzing bundle...", "[1/2]".bold().cyan());
+    cli::log!("{} Analyzing bundle...", "[1/2]".bold().cyan());
     let (total_items, total_bytes) = scan_bundle_tree(loader.clone(), &root_tree_id).await?;
 
-    crate::ui::cli::log!(
+    cli::log!(
         "{} Extracting {} to {}...",
         "[2/2]".bold().cyan(),
         bundle.display().to_string().bold(),
@@ -401,8 +424,8 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
         std::fs::create_dir_all(destination)?;
     }
 
-    let progress_reporter = Arc::new(crate::ui::bundle::cli::BundleCliProgressReporter::new(
-        crate::ui::bundle::cli::BundleMode::Extract,
+    let progress_reporter = Arc::new(cli::bundle::BundleCliProgressReporter::new(
+        cli::bundle::BundleMode::Extract,
         total_items as u64,
         total_bytes,
         args.readers,
@@ -419,24 +442,24 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
 
     progress_reporter.finalize();
 
-    crate::ui::cli::log!();
-    crate::ui::cli::log!("{}", "Extraction Summary:".bold().cyan());
+    cli::log!();
+    cli::log!("{}", "Extraction Summary:".bold().cyan());
 
-    let mut data_table = crate::ui::table::Table::new();
+    let mut data_table = cli::table::Table::new();
     data_table.add_row(vec![
         "Extracted items".to_string(),
         total_items.to_string().bold().white().to_string(),
     ]);
     data_table.add_row(vec![
         "Total size".to_string(),
-        crate::utils::format_size_binary(total_bytes, 3)
+        format_size_binary(total_bytes, 3)
             .bold()
             .white()
             .to_string(),
     ]);
 
-    crate::ui::cli::log!("{}", data_table.render());
-    crate::ui::cli::log!("{}", "Extraction completed successfully!".green().bold());
+    cli::log!("{}", data_table.render());
+    cli::log!("{}", "Extraction completed successfully!".green().bold());
     tracing::info!(target: "bundle", "Bundle extraction completed");
 
     Ok(())
@@ -454,7 +477,7 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
     let actual_mountpoint = mountpoint.clone();
     let mut created_mountpoint = false;
 
-    if !crate::fs::path_exists(&actual_mountpoint).await {
+    if !path_exists(&actual_mountpoint).await {
         if args.create {
             std::fs::create_dir_all(&actual_mountpoint).context("Could not create mount point")?;
             created_mountpoint = true;
@@ -465,11 +488,11 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
         bail!("Mountpoint must be a directory");
     }
 
-    let canonical_mountpoint = crate::fs::get_absolute_normalized_path(&actual_mountpoint)?;
+    let canonical_mountpoint = get_absolute_normalized_path(&actual_mountpoint)?;
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_password("Enter bundle password")?,
+        None => cli::request_password("Enter bundle password")?,
     };
 
     let reader = BundleReader::open(bundle, &password)?;
@@ -477,7 +500,7 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 
     let cleanup_handler = CleanupHandler::new()?;
-    crate::ui::cli::log!(
+    cli::log!(
         "Mounting bundle {} in {}",
         bundle.display().to_string().bold(),
         canonical_mountpoint.display()
@@ -495,7 +518,7 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
             None,
             Some(root_tree_id),
             mp,
-            crate::fuse::fs::MountOptions {
+            MountOptions {
                 allow_other,
                 metadata_only,
                 data_cache_size,
@@ -526,7 +549,7 @@ async fn run_mount_loop<F>(
 where
     F: FnOnce(&std::path::Path) -> Result<()> + Send + 'static,
 {
-    crate::ui::cli::log!(
+    cli::log!(
         "Press {} to finish or unmount the filesystem manually.",
         "Ctrl+C".bold()
     );
@@ -546,7 +569,7 @@ where
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         } => {
-            crate::ui::cli::log!("Interrupt received. Unmounting...");
+            cli::log!("Interrupt received. Unmounting...");
             let _ = MapacheFS::<dyn BlobLoader>::unmount(mountpoint);
         }
     }
@@ -565,10 +588,10 @@ async fn writer_finalize(
     let final_size = std::fs::metadata(output_path)?.len();
     let summary = progress.summary();
 
-    crate::ui::cli::log!("");
-    crate::ui::cli::log!("{}", "Bundle Summary:".bold().cyan());
+    cli::log!("");
+    cli::log!("{}", "Bundle Summary:".bold().cyan());
 
-    let mut data_table = crate::ui::table::Table::new();
+    let mut data_table = cli::table::Table::new();
     data_table.add_row(vec![
         "Processed items".to_string(),
         summary
@@ -580,17 +603,14 @@ async fn writer_finalize(
     ]);
     data_table.add_row(vec![
         "Original size".to_string(),
-        crate::utils::format_size_binary(summary.processed_bytes, 3)
+        format_size_binary(summary.processed_bytes, 3)
             .bold()
             .white()
             .to_string(),
     ]);
     data_table.add_row(vec![
         "Bundle size".to_string(),
-        crate::utils::format_size_binary(final_size, 3)
-            .bold()
-            .green()
-            .to_string(),
+        format_size_binary(final_size, 3).bold().green().to_string(),
     ]);
 
     let ratio = if summary.processed_bytes > 0 {
@@ -604,8 +624,8 @@ async fn writer_finalize(
         format!("{:.1}%", ratio).bold().yellow().to_string(),
     ]);
 
-    crate::ui::cli::log!("{}", data_table.render());
-    crate::ui::cli::log!("{}", "Bundle completed successfully!".green().bold());
+    cli::log!("{}", data_table.render());
+    cli::log!("{}", "Bundle completed successfully!".green().bold());
     tracing::info!(target: "bundle", "Bundle creation completed (size={})", final_size);
 
     Ok(())
@@ -647,7 +667,7 @@ async fn extract_nodes_parallel<L>(
 where
     L: BlobLoader + ?Sized + 'static,
 {
-    let (tx, rx) = tokio::sync::mpsc::channel::<(PathBuf, crate::fs::node::Node)>(4096);
+    let (tx, rx) = tokio::sync::mpsc::channel::<(PathBuf, Node)>(4096);
     let (dir_tx, dir_rx) = tokio::sync::mpsc::channel::<(PathBuf, Metadata)>(4096);
 
     let loader_clone = loader.clone();
@@ -692,10 +712,9 @@ where
         }
     });
 
-    let meta_reporter: Arc<dyn crate::ui::restore::RestoreProgressReporter> =
-        Arc::new(BundleRestoreReporterAdapter {
-            inner: reporter.clone(),
-        });
+    let meta_reporter: Arc<dyn RestoreProgressReporter> = Arc::new(BundleRestoreReporterAdapter {
+        inner: reporter.clone(),
+    });
 
     let process_future = async {
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -705,11 +724,7 @@ where
                 let reporter = reporter.clone();
                 let meta_reporter = meta_reporter.clone();
                 async move {
-                    reporter.processing_node(
-                        &path,
-                        crate::fs::tree::NodeDiff::New,
-                        Some(node.metadata.size),
-                    );
+                    reporter.processing_node(&path, NodeDiff::New, Some(node.metadata.size));
 
                     if node.is_file() {
                         if let Some(blobs) = &node.blobs {
@@ -746,7 +761,7 @@ where
                                 }
                                 drop(file);
                                 if success {
-                                    crate::restorer::node_restorer::try_restore_node_metadata(
+                                    node_restorer::try_restore_node_metadata(
                                         &node.metadata,
                                         false,
                                         &path,
@@ -768,7 +783,7 @@ where
                         {
                             use std::os::unix::fs::symlink;
                             if symlink(&symlink_info.target_path, &path).is_ok() {
-                                crate::restorer::node_restorer::try_restore_node_metadata(
+                                node_restorer::try_restore_node_metadata(
                                     &node.metadata,
                                     true,
                                     &path,
@@ -781,11 +796,7 @@ where
                         let _ = symlink_info;
                     }
 
-                    reporter.processed_node(
-                        &path,
-                        crate::fs::tree::NodeDiff::New,
-                        Some(node.metadata.size),
-                    );
+                    reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
                 }
             })
             .await;
@@ -801,12 +812,7 @@ where
 
     directories.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
     for (p, meta) in directories {
-        crate::restorer::node_restorer::try_restore_node_metadata(
-            &meta,
-            false,
-            &p,
-            meta_reporter.as_ref(),
-        );
+        node_restorer::try_restore_node_metadata(&meta, false, &p, meta_reporter.as_ref());
     }
 
     Ok(())
@@ -818,7 +824,7 @@ async fn spawn_background_scanner(
     reporter: Arc<dyn SnapshotProgressReporter>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let filter = Arc::new(crate::fs::filter::PathFilter::new(None, Some(exclude)));
+    let filter = Arc::new(PathFilter::new(None, Some(exclude)));
     let reporter_for_scan = reporter.clone();
 
     let res = tokio::task::spawn_blocking(move || {
@@ -838,7 +844,7 @@ async fn spawn_background_scanner(
 
 fn scan_recursive(
     path: &std::path::Path,
-    filter: &Arc<crate::fs::filter::PathFilter>,
+    filter: &Arc<PathFilter>,
     reporter: &Arc<dyn SnapshotProgressReporter>,
     shutdown: &Arc<AtomicBool>,
 ) {
@@ -849,7 +855,7 @@ fn scan_recursive(
         return;
     }
 
-    if let Ok(node) = crate::fs::node::Node::from_path_sync(path, false) {
+    if let Ok(node) = Node::from_path_sync(path, false) {
         reporter.add_expected_items(1);
         if node.is_file() {
             reporter.add_expected_bytes(node.metadata.size);

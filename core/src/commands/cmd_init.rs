@@ -8,11 +8,11 @@ use crate::{
     commands::{ToExitCode, fail},
     mapache::{ID, defaults::SHORT_REPO_ID_LEN},
     repository::repo::Repository,
-    ui::{self, json_reporter::emit_static},
+    ui::{self, json::emit_static},
     utils,
 };
 
-use super::GlobalArgs;
+use crate::commands::GlobalArgs;
 
 #[derive(Debug, Clone, Copy)]
 pub enum InitError {

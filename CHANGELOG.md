@@ -4,6 +4,9 @@
 
 ### Changes
 
+- **Experimental TUI**: Introduced a modular Terminal User Interface for
+  interactive repository management. Includes a dashboard, snapshot creation,
+  restoration, and retention management. Enable via `--features tui`.
 - **Bundle command**: New `bundle` command to create and restore standalone
   `.mapache` bundle files with full deduplication and encryption.
 - **FUSE Bundle Mount**: Mount `.mapache` bundles as read-only filesystems

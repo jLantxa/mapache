@@ -11,11 +11,9 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 
 use crate::{
     mapache::global::GlobalOpts,
-    ui::{SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{RestoreProgressReporter, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils,
 };
-
-use super::RestoreProgressReporter;
 
 pub struct CliRestoreProgressReporter {
     processed_items_count: Arc<AtomicU64>,
@@ -175,6 +173,10 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
 
     fn warning_count(&self) -> u64 {
         self.warning_counter.load(Ordering::Relaxed)
+    }
+
+    fn log(&self, msg: String) {
+        let _ = self.mp.println(msg);
     }
 
     fn finalize(&self) {

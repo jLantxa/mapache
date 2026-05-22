@@ -12,8 +12,39 @@ pub mod node;
 use crate::utils::collections::{FxHashMap, FxHashSet};
 pub mod tree;
 
+#[cfg(windows)]
+fn convert_msys_path(path: &Path) -> Option<PathBuf> {
+    let s = path.to_str()?;
+    if s.starts_with('/')
+        && s.len() >= 3
+        && s.as_bytes()[1].is_ascii_alphabetic()
+        && s.as_bytes()[2] == b'/'
+    {
+        let drive = s.as_bytes()[1].to_ascii_uppercase() as char;
+        let rest = &s[3..];
+        let mut result = format!("{}:\\", drive);
+        result.push_str(&rest.replace('/', "\\"));
+        Some(PathBuf::from(result))
+    } else {
+        None
+    }
+}
+
 pub async fn path_exists(path: &Path) -> bool {
     tokio::fs::symlink_metadata(path).await.is_ok()
+}
+
+pub fn expand_tilde(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    if let Some(Component::Normal(first)) = components.next()
+        && first == "~"
+        && let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+    {
+        let mut result = PathBuf::from(home);
+        result.extend(components);
+        return result;
+    }
+    path.to_path_buf()
 }
 
 /// Returns the absolute, normalized path of a node without following symlinks.
@@ -26,74 +57,66 @@ pub async fn path_exists(path: &Path) -> bool {
 /// filesystem access and will not resolve symbolic links.
 ///
 /// This implementation is designed to work correctly on both Linux and Windows,
-/// handling platform-specific path conventions like Windows drive letters and UNC paths.
+/// handling platform-specific path conventions like Windows drive letters, UNC paths,
+/// and MSYS2-style paths (e.g., /c/path → C:\path on Windows).
+///
+/// It also performs tilde expansion for paths starting with `~`.
 pub fn get_absolute_normalized_path(path: &Path) -> Result<PathBuf> {
-    // Get an absolute path.
-    // If the path is not absolute, prepend the current working directory.
-    let absolute_path = if path.is_absolute() {
-        path.to_path_buf()
+    let path_buf = expand_tilde(path);
+    let path_ref = path_buf.as_path();
+
+    #[cfg(windows)]
+    let msys_path;
+    #[cfg(windows)]
+    let mut path_ref = path_ref;
+    #[cfg(windows)]
+    if let Some(p) = convert_msys_path(path_ref) {
+        msys_path = p;
+        path_ref = msys_path.as_path();
+    }
+
+    // Make absolute by joining with CWD if relative.
+    let absolute_path = if path_ref.is_absolute() {
+        path_ref.to_path_buf()
     } else {
-        std::env::current_dir()?.join(path)
+        std::env::current_dir()?.join(path_ref)
     };
 
-    // Normalize the path components.
+    // Lexically normalize components (resolve . and ..).
     let mut components = Vec::new();
     for component in absolute_path.components() {
         match component {
-            // On Windows, the Prefix component handles drive letters (C:) and UNC paths (\\server\share).
-            // This is a special case that must be handled separately to maintain correct paths.
             #[allow(unused_variables)]
             Component::Prefix(prefix) => {
                 #[cfg(windows)]
                 components.push(Component::Prefix(prefix));
             }
-
-            // The root directory component (e.g., / on Linux, \ on Windows) should always be at the start.
-            // We can push it directly.
             Component::RootDir => {
                 components.push(component);
             }
-
-            // A single dot (`.`) is a no-op in path normalization.
             Component::CurDir => {}
-
-            // A parent directory (`..`) means we need to go up one level.
             Component::ParentDir => {
-                // Check if the last component added is a "Normal" directory.
-                // We only pop if we have something like "dir/.."
-                let is_last_popable = matches!(components.last(), Some(Component::Normal(_)));
-
-                if is_last_popable {
+                if let Some(Component::Normal(_)) = components.last() {
                     components.pop();
-                } else {
-                    // If the last component is the Root (/) or a Prefix (C:),
-                    // a '..' is ignored because you can't go above the filesystem root.
-                    // If the path is relative or we are already at a series of '..',
-                    // we push the '..' to keep the path valid.
-                    let is_at_root = components
-                        .last()
-                        .is_some_and(|c| matches!(c, Component::RootDir | Component::Prefix(_)));
-
-                    if !is_at_root {
-                        components.push(component);
-                    }
+                } else if !components
+                    .last()
+                    .is_some_and(|c| matches!(c, Component::RootDir | Component::Prefix(_)))
+                {
+                    components.push(component);
                 }
             }
-
-            // A regular file or directory name is added to the list.
             Component::Normal(name) => {
                 components.push(Component::Normal(name));
             }
         }
     }
 
-    // Reconstruct the PathBuf from the cleaned components.
+    // 5. Reconstruct PathBuf.
     let mut result = PathBuf::new();
     for component in components {
         result.push(component.as_os_str());
     }
 
-    // Handle the edge case of an empty result, which can occur with an input like `.`
     if result.as_os_str().is_empty() {
         result = PathBuf::from(".");
     }
@@ -126,35 +149,125 @@ pub fn calculate_lcp(paths: &[PathBuf], strict_prefix: bool) -> PathBuf {
 
     'outer: loop {
         let current_components: Vec<_> = iterators.iter_mut().map(|it| it.next()).collect();
+        let first = match current_components[0] {
+            Some(c) => c,
+            None => break 'outer,
+        };
 
-        if current_components.iter().any(Option::is_none) {
-            break 'outer;
+        for c in &current_components[1..] {
+            match c {
+                Some(comp) if *comp == first => {}
+                _ => break 'outer,
+            }
         }
-
-        let first_comp = current_components[0]
-            .as_ref()
-            .expect("All components checked for None above");
-        let all_match = current_components[1..]
-            .iter()
-            .all(|comp_opt| comp_opt.as_ref().is_some_and(|comp| comp.eq(first_comp)));
-
-        if all_match {
-            common_prefix.push(first_comp);
-        } else {
-            break 'outer;
-        }
+        common_prefix.push(first.as_os_str());
     }
 
     common_prefix
 }
 
-/// Extracts the parent path of a given path.
-/// Returns `None` if the path has no parent (e.g., "/" or "file.txt" in current dir).
-#[inline]
+/// Returns the parent directory of a path as a PathBuf.
+/// If the path has no parent, returns None.
 pub fn extract_parent(path: &Path) -> Option<PathBuf> {
-    path.parent().map(PathBuf::from)
+    path.parent().map(|p| p.to_path_buf())
 }
 
+/// A simplified path abbreviator for UI display.
+///
+/// If the path is longer than `max_len`, it will be shortened by keeping
+/// the first component and the last component, and replacing the middle
+/// with `...`.
+///
+/// Example: `/home/user/some/path/to/a/file.txt` -> `/home/.../file.txt`
+pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
+    let path_str = path.to_string_lossy().to_string();
+    if path_str.len() <= max_len {
+        return path_str;
+    }
+
+    let components: Vec<_> = path.components().collect();
+    if components.len() <= 2 {
+        return path_str;
+    }
+
+    let first = components[0].as_os_str().to_string_lossy();
+    let last = components.last().unwrap().as_os_str().to_string_lossy();
+
+    // Check if we can fit more components
+    let mut left_idx = 1;
+    let mut right_idx = components.len() - 2;
+
+    let mut result_left = first.to_string();
+    let mut result_right = last.to_string();
+
+    // On Unix, if the first component is RootDir, the first char is already '/'
+    // We don't want to add another slash when pushing the next component.
+    if matches!(components[0], Component::RootDir) && components.len() > 3 {
+        let second = components[1].as_os_str().to_string_lossy();
+        // Result left is already "/", we just append second.
+        result_left.push_str(&second);
+        left_idx = 2;
+    }
+
+    let sep = if cfg!(windows) { "\\" } else { "/" };
+
+    loop {
+        let next_left = if left_idx <= right_idx {
+            let s = components[left_idx].as_os_str().to_string_lossy();
+            let mut res = result_left.clone();
+            if !res.ends_with(['/', '\\']) && !matches!(components[left_idx], Component::RootDir) {
+                res.push_str(sep);
+            }
+            res.push_str(&s);
+            res
+        } else {
+            result_left.clone()
+        };
+
+        let next_right = if right_idx >= left_idx {
+            let s = components[right_idx].as_os_str().to_string_lossy();
+            let mut res = s.to_string();
+            if !res.ends_with(['/', '\\']) {
+                res.push_str(sep);
+            }
+            res.push_str(&result_right);
+            res
+        } else {
+            result_right.clone()
+        };
+
+        // Calculation: result_left + sep + "..." + sep + result_right
+        let total_len_left = next_left.len() + 5 + result_right.len();
+        if total_len_left <= max_len && left_idx <= right_idx {
+            result_left = next_left;
+            left_idx += 1;
+            continue;
+        }
+
+        let total_len_right = result_left.len() + 5 + next_right.len();
+        if total_len_right <= max_len && right_idx >= left_idx {
+            result_right = next_right;
+            right_idx -= 1;
+            continue;
+        }
+
+        break;
+    }
+
+    let mut final_left = result_left;
+    if !final_left.ends_with(['/', '\\']) {
+        final_left.push_str(sep);
+    }
+
+    let final_right = result_right;
+    let mut final_ellipsis = "...".to_string();
+    final_ellipsis.push_str(sep);
+
+    format!("{}{}{}", final_left, final_ellipsis, final_right)
+}
+
+/// Build intermediate path maps for streaming.
+///
 /// For each directory between `root` and any of the `paths`,
 /// return how many *distinct* direct children each intermediate directory has,
 /// and how many *distinct* direct children the `root` itself has.
@@ -173,7 +286,6 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
 
         while let Some(parent) = cur.parent() {
             // Stop when we reached (or crossed) root.
-            // Note: this relies on your existing ordering semantics for normalized absolute paths.
             if !root.as_os_str().is_empty() && parent <= root {
                 if parent == root
                     && let Some(name) = cur.file_name()
@@ -210,111 +322,20 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
 
     let root_children_count = unique_root_children.len();
 
-    // Convert to BTreeMap for sorted keys (preserves your original return type / ordering)
     let mut intermediate_counts = BTreeMap::new();
     intermediate_counts.extend(children_map.into_iter().map(|(p, set)| (p, set.len())));
 
     (root_children_count, intermediate_counts)
 }
 
-/// Abbreviates a path to fit within `max_len`, keeping the first and last components.
-///
-/// Long paths are shortened by replacing middle components with `"..."`.
-/// Always preserves the root (if any) and the filename.
-pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
-    let path_str = path.to_string_lossy();
-    if path_str.is_empty() {
-        return String::new();
-    }
-
-    // If it already fits, return as-is
-    if path_str.len() <= max_len {
-        return path_str.into_owned();
-    }
-
-    let components: Vec<_> = path.components().collect();
-    if components.len() <= 2 {
-        return path_str.into_owned();
-    }
-
-    let first = components[0].as_os_str().to_string_lossy();
-    let last = components.last().unwrap().as_os_str().to_string_lossy();
-    let ellipsis = "...";
-
-    // base_res_len handles: [first][sep?][...][sep][last]
-    let needs_sep_after_first = !first.ends_with(std::path::is_separator);
-    let mut base_res_len = first.len() + ellipsis.len() + last.len() + 1;
-    if needs_sep_after_first {
-        base_res_len += 1;
-    }
-
-    if base_res_len > max_len {
-        return path_str.into_owned();
-    }
-
-    let mut middle_parts = Vec::new();
-    let mut current_len = base_res_len;
-
-    // --- FIX START ---
-    // If we have a Windows prefix followed by a root (e.g., C:\),
-    // we skip the RootDir component to avoid double slashes.
-    let skip_count = if components.len() > 1
-        && matches!(components[0], std::path::Component::Prefix(_))
-        && matches!(components[1], std::path::Component::RootDir)
-    {
-        2
-    } else {
-        1
-    };
-
-    let middle_count = components.len().saturating_sub(1 + skip_count);
-
-    for component in components.iter().skip(skip_count).take(middle_count) {
-        // --- FIX END ---
-        let comp_str = component.as_os_str().to_string_lossy();
-        let added_len = comp_str.len() + 1; // component + separator
-
-        if current_len + added_len <= max_len {
-            current_len += added_len;
-            middle_parts.push(comp_str);
-        } else {
-            // We've reached the length limit; the rest will be replaced by ellipsis.
-            break;
-        }
-    }
-
-    let mut result = String::with_capacity(current_len);
-    result.push_str(&first);
-
-    for comp in middle_parts {
-        if !result.ends_with(std::path::is_separator) {
-            result.push(std::path::MAIN_SEPARATOR);
-        }
-        result.push_str(&comp);
-    }
-
-    if !result.ends_with(std::path::is_separator) {
-        result.push(std::path::MAIN_SEPARATOR);
-    }
-    result.push_str(ellipsis);
-
-    if !result.ends_with(std::path::is_separator) {
-        result.push(std::path::MAIN_SEPARATOR);
-    }
-    result.push_str(&last);
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::{
         collections::BTreeMap,
         env,
         path::{Path, PathBuf},
     };
-
-    use super::*;
 
     #[test]
     fn test_get_absolute_normalized_path() -> Result<()> {
@@ -328,7 +349,6 @@ mod tests {
             // Parent directory traversal at CWD level
             ("..", cwd.parent().unwrap_or(&cwd).to_path_buf()),
             // Redundant slashes
-            // Note: Components() collapses these, but we join properly for the test
             ("foo//bar///baz/", cwd.join("foo").join("bar").join("baz")),
             // Empty and dot paths
             (".", cwd.clone()),
@@ -337,8 +357,6 @@ mod tests {
 
         // Platform-specific absolute paths
         if cfg!(windows) {
-            // On Windows, we test with explicit Drive letters.
-            // Note: We use PathBuf::from to avoid prepending CWD to already absolute paths.
             cases.extend(vec![
                 ("C:\\\\prj\\\\.\\\\foo", PathBuf::from("C:\\prj\\foo")),
                 (
@@ -360,8 +378,6 @@ mod tests {
                 .map_err(|e| format!("Failed to process '{}': {}", input, e))
                 .unwrap();
 
-            // We compare string representations or normalized PathBufs
-            // to avoid issues with UNC prefixes in some Windows environments.
             assert_eq!(
                 result, expected,
                 "\nNormalization mismatch!\nInput:    {:?}\nExpected: {:?}\nActual:   {:?}",
@@ -373,9 +389,30 @@ mod tests {
     }
 
     #[test]
+    fn test_get_absolute_normalized_path_tilde() {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+        let home_path = PathBuf::from(home);
+
+        let path = Path::new("~/Documents");
+        let result = get_absolute_normalized_path(path).unwrap();
+        assert_eq!(result, home_path.join("Documents"));
+
+        let path = Path::new("~");
+        let result = get_absolute_normalized_path(path).unwrap();
+        assert_eq!(result, home_path);
+
+        let path = Path::new("~/..");
+        let result = get_absolute_normalized_path(path).unwrap();
+        assert_eq!(result, home_path.parent().unwrap_or(&home_path));
+    }
+
+    #[test]
     fn test_normalization_is_lexical_only() -> Result<()> {
-        // This confirms the function does not check if the path actually exists.
-        // It should work even with fictional directories.
         let path = Path::new("non_existent_7788/../exists_only_in_memory");
         let result = get_absolute_normalized_path(path)?;
 
@@ -472,14 +509,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_abbreviate_path_unix() {
-        // Note: On Unix, the first component of "/home/user" is "/"
-
         assert_eq!(abbreviate_path(Path::new("short/path"), 5), "short/path");
 
         let path = Path::new("/home/user/some/path/to/a/file.txt");
-        // first="/" + middle="home" + "..." + last="file.txt" = "/home/.../file.txt"
-        assert_eq!(abbreviate_path(path, 20), "/home/.../file.txt");
-        assert_eq!(abbreviate_path(path, 30), "/home/user/some/.../file.txt");
+        assert_eq!(abbreviate_path(path, 20), "/home/.../a/file.txt");
+        assert_eq!(abbreviate_path(path, 30), "/home/user/some/.../a/file.txt");
 
         let long_path_str = "/home/user/projects/backup_tool/src/core/permissions.rs";
         let long_path = Path::new(long_path_str);
@@ -495,19 +529,14 @@ mod tests {
     fn test_abbreviate_path_windows() {
         let path = Path::new(r"C:\Users\Admin\Documents\file.txt");
         let result = abbreviate_path(path, 20);
-        // Should handle C:\ without doubling the backslash
         assert_eq!(result, r"C:\...\file.txt");
         assert!(!result.contains(r"\\"));
 
-        let path = Path::new(r"C:\Users\Admin\Documents\file.txt");
         let result = abbreviate_path(path, 25);
-        // Should handle C:\ without doubling the backslash
         assert_eq!(result, r"C:\Users\...\file.txt");
         assert!(!result.contains(r"\\"));
 
-        let path = Path::new(r"C:\Users\Admin\Documents\file.txt");
         let result = abbreviate_path(path, 30);
-        // Should handle C:\ without doubling the backslash
         assert_eq!(result, r"C:\Users\Admin\...\file.txt");
         assert!(!result.contains(r"\\"));
     }

@@ -8,11 +8,9 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::{
-    backend::{BackendNode, Handle, NodeAttr, WriteContents},
+    backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents},
     repository::repo::REPO_TMP_EXTENSION,
 };
-
-use super::StorageBackend;
 
 /// A local file system backend.
 ///
@@ -361,7 +359,7 @@ impl StorageBackend for LocalFS {
         }
     }
 
-    async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
+    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
         let full_path = self.full_path(path);
         let meta = tokio::fs::symlink_metadata(&full_path)
             .await

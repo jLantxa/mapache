@@ -11,10 +11,7 @@ use crate::{
     commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
     mapache::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::snapshot::SnapshotStream,
-    ui::{
-        self,
-        snapshot::{SnapshotProgressReporter, cli::CliSnapshotProgressReporter},
-    },
+    ui::{self, SnapshotProgressReporter, cli::snapshot::CliSnapshotProgressReporter},
     utils::{self},
 };
 

@@ -22,7 +22,7 @@ use crate::{
     },
     mapache::traits::BlobSaver,
     mapache::{self, BlobType, ID, SaveID},
-    ui::snapshot::SnapshotProgressReporter,
+    ui::SnapshotProgressReporter,
 };
 
 /// Reusable chunker instance.
@@ -166,8 +166,10 @@ pub(crate) async fn process_item(
         }
     };
 
-    progress.processed_node();
-    progress_reporter.processed_node(path, diff_type, size_hint);
+    if diff_type != NodeDiff::Deleted {
+        progress.processed_node();
+        progress_reporter.processed_node(path, diff_type, size_hint);
+    }
 
     Ok(out)
 }

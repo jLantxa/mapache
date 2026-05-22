@@ -1,6 +1,7 @@
 /target
 /build
 
+.antigravitycli
 .vscode
 
 /_*

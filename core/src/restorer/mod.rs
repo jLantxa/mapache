@@ -44,7 +44,7 @@ use crate::{
         snapshot::Snapshot,
         storage::SecureStorage,
     },
-    ui::restore::RestoreProgressReporter,
+    ui::RestoreProgressReporter,
     utils::{self, size},
 };
 

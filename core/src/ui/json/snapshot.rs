@@ -12,12 +12,9 @@ use parking_lot::RwLock;
 use serde::Serialize;
 
 use crate::{
-    mapache::defaults,
-    {
-        fs::tree::NodeDiff,
-        mapache::global::GlobalOpts,
-        ui::{json_reporter::JsonReporter, snapshot::SnapshotProgressReporter},
-    },
+    fs::tree::NodeDiff,
+    mapache::{defaults, global::GlobalOpts},
+    ui::{SnapshotProgressReporter, json::JsonReporter},
 };
 
 #[derive(Serialize)]
@@ -243,6 +240,14 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
     fn warning(&self, msg: &str) {
         self.json_reporter
             .emit("warning", &ErrorMsg { message: msg });
+    }
+
+    fn log(&self, msg: String) {
+        #[derive(Serialize)]
+        struct LogMsg {
+            message: String,
+        }
+        self.json_reporter.emit("log", &LogMsg { message: msg });
     }
 
     fn finalize(&self) {

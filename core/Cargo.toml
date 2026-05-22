@@ -21,15 +21,15 @@ clap_complete = "4.6.5"
 colored = "3.1.1"
 conflate = "0.3.3"
 crossbeam-channel = "0.5.15"
+crossterm = { version = "0.29", optional = true }
 dashmap = "6.2.1"
 filetime = "0.2.29"
 futures = "0.3.32"
 indicatif = "0.18.4"
 libc = { version = "0.2.186" }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["fmt"] }
 parking_lot = "0.12.5"
 rand = "0.10.1"
+ratatui = { version = "0.30", optional = true }
 rayon = "1.12.0"
 russh = { version = "0.61.0", default-features = false, features = [
   "flate2",
@@ -53,6 +53,8 @@ tokio = { version = "1.52", features = [
 ] }
 tokio-stream = "0.1.18"
 toml = "1.1.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["fmt"] }
 url = "2.5.8"
 zeroize = { version = "1.8.2", features = ["derive"] }
 zstd = "0.13.3"
@@ -83,3 +85,4 @@ xz2 = "0.1.7"
 [features]
 default = ["fuse"]
 fuse = ["fuser"] #FUSE for mount command
+tui = ["dep:ratatui", "dep:crossterm"]

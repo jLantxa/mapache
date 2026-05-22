@@ -13,7 +13,7 @@ use crate::{
     repository::snapshot::DiffCounts,
     ui::{
         self,
-        table::{Alignment, Table},
+        cli::table::{Alignment, Table},
     },
     utils::format_size_binary,
 };

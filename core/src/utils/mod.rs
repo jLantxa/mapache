@@ -190,6 +190,44 @@ pub(crate) fn pretty_print_duration(duration: std::time::Duration) -> String {
     parts.join(" ")
 }
 
+/// Pretty prints a `chrono::Duration` in a human-readable format.
+/// Shows up to `max_parts` most significant units.
+#[cfg(feature = "tui")]
+pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts: usize) -> String {
+    let total_seconds = duration.num_seconds().unsigned_abs();
+    let millis = (duration.num_milliseconds() as u64) % 1000;
+
+    if total_seconds == 0 && millis > 0 {
+        return format!("{}ms", millis);
+    }
+
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+
+    let mut parts = Vec::with_capacity(max_parts);
+
+    if days > 0 {
+        parts.push(format!("{days}d"));
+    }
+    if hours > 0 && parts.len() < max_parts {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 && parts.len() < max_parts {
+        parts.push(format!("{minutes}m"));
+    }
+    if seconds > 0 && parts.len() < max_parts {
+        parts.push(format!("{seconds}s"));
+    }
+
+    if parts.is_empty() {
+        "0s".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
 /// Parses a duration string (e.g., "1d", "2w", "3m", "4y", "5h", "6s") into a `chrono::Duration`.
 /// Supports combinations like "1d12h".
 ///

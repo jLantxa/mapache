@@ -28,7 +28,7 @@ use crate::{
         tree::{NodeDiff, SerializedNodeDataReader, SerializedNodeStream},
     },
     repository::{repo::Repository, snapshot::Snapshot},
-    ui::snapshot::SnapshotProgressReporter,
+    ui::SnapshotProgressReporter,
     utils::{self},
 };
 

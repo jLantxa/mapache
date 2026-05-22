@@ -12,7 +12,7 @@ use crate::{
     mapache::defaults::SHORT_REPO_ID_LEN,
     ui::{
         self,
-        table::{Alignment, Table},
+        cli::table::{Alignment, Table},
     },
     utils,
 };

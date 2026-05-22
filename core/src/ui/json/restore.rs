@@ -9,9 +9,10 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{mapache::global::GlobalOpts, ui::json_reporter::JsonReporter};
-
-use super::RestoreProgressReporter;
+use crate::{
+    mapache::global::GlobalOpts,
+    ui::{RestoreProgressReporter, json::JsonReporter},
+};
 
 #[derive(Serialize)]
 struct RestoreStatusUpdateMsg {
@@ -148,6 +149,14 @@ impl RestoreProgressReporter for JsonRestoreProgressReporter {
 
     fn warning_count(&self) -> u64 {
         self.warning_counter.load(Ordering::Relaxed)
+    }
+
+    fn log(&self, msg: String) {
+        #[derive(Serialize)]
+        struct LogMsg {
+            message: String,
+        }
+        self.json_reporter.emit("log", &LogMsg { message: msg });
     }
 
     fn finalize(&self) {

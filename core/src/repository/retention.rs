@@ -42,7 +42,7 @@ pub enum RetentionRule {
 /// `policies`: A slice of `RetentionRule` to apply.
 /// `now`: The current time to use for `KeepWithin` policy.
 pub fn apply_retention_rules(
-    snapshots_sorted: &[SnapshotEntry],
+    snapshots_sorted: &[&SnapshotEntry],
     rules: &[RetentionRule],
     keep_min: Option<usize>,
     now: DateTime<Local>,
@@ -220,9 +220,9 @@ pub fn filter_snapshots_by_hosts<'a>(
 /// Generic helper function to abstract the common logic for period-based retention.
 ///
 /// It finds the latest snapshot for each unique period (defined by `key_extractor`)
-/// and then keeps the latest `n` of those periods.
+/// and then keeps snapshots that are within the cutoff.
 fn keep_latest_per_period<K, F>(
-    snapshots_sorted: &[SnapshotEntry],
+    snapshots_sorted: &[&SnapshotEntry],
     key_extractor: F,
     cut_off: DateTime<Local>,
 ) -> IdSet<ID>
@@ -419,7 +419,12 @@ mod tests {
     fn test_keep_last() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepLast(4)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         // Keeps the last four
         let expected_keep_ids = create_expected_ids(&[22, 21, 20, 19]);
@@ -432,7 +437,12 @@ mod tests {
         let snapshots = create_mock_snapshots();
 
         let rules = vec![RetentionRule::KeepYearly(5)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         let expected_ids = create_expected_ids(&[
             0,  // Latest in 2021
@@ -449,7 +459,12 @@ mod tests {
     fn test_keep_monthly() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepMonthly(5)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         let expected_ids = create_expected_ids(&[
             16, // Latest in Jan 2025
@@ -464,7 +479,12 @@ mod tests {
     fn test_keep_weekly() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepWeekly(8)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         let expected_ids = create_expected_ids(&[
             17, // Latest in Week 15 (Apr 13)
@@ -480,7 +500,12 @@ mod tests {
     fn test_keep_daily() {
         let snapshots = create_mock_snapshots();
         let rules = vec![RetentionRule::KeepDaily(10)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         let expected_ids = create_expected_ids(&[22]);
 
@@ -493,14 +518,24 @@ mod tests {
 
         // Keep within 1 day
         let rules = vec![RetentionRule::KeepWithin(Duration::days(1))];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
         // Cutoff: 2025-05-24 21:58:00
         let expected_ids = create_expected_ids(&[20, 21, 22]);
         assert_eq!(kept_ids, expected_ids);
 
         // Keep within 30 days
         let rules = vec![RetentionRule::KeepWithin(Duration::days(30))];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
         // Cutoff: 2025-04-25 21:58:00
         let expected_ids = create_expected_ids(&[19, 20, 21, 22]);
         assert_eq!(kept_ids, expected_ids);
@@ -512,7 +547,12 @@ mod tests {
         let rules = vec![RetentionRule::KeepTags(
             ["tag0"].into_iter().map(|s| s.to_string()).collect(),
         )];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         let expected_ids = create_expected_ids(&[10]);
 
@@ -527,7 +567,12 @@ mod tests {
             RetentionRule::KeepMonthly(5), // Keeps {16, 18, 22}
             RetentionRule::KeepTags(["tag1"].into_iter().map(|s| s.to_string()).collect()), // Keeps {10}
         ];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         // Union: {10, 16, 18, 20, 21, 22}
         let expected_ids = create_expected_ids(&[
@@ -555,7 +600,8 @@ mod tests {
         ];
 
         let rules = vec![RetentionRule::KeepHourly(3)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, now);
+        let kept_ids =
+            apply_retention_rules(&snapshots.iter().collect::<Vec<_>>(), &rules, None, now);
 
         // Keeps the latest snapshot per hour for the last 3 hours
         let expected_ids = create_expected_ids(&[3, 4, 5]);
@@ -592,7 +638,12 @@ mod tests {
 
         // KeepLast(2) would keep only {22, 21}
         let rules = vec![RetentionRule::KeepLast(2)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, Some(5), test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            Some(5),
+            test_now(),
+        );
 
         // With keep_min=5, should have 5 snapshots: {22, 21} + {20, 19, 18}
         assert_eq!(kept_ids.len(), 5);
@@ -609,7 +660,12 @@ mod tests {
 
         // KeepLast(10) already keeps more than 5
         let rules = vec![RetentionRule::KeepLast(10)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, Some(5), test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            Some(5),
+            test_now(),
+        );
 
         // Should keep 10, not reduced to 5
         assert_eq!(kept_ids.len(), 10);
@@ -620,7 +676,12 @@ mod tests {
         let snapshots = create_mock_snapshots();
 
         let rules = vec![RetentionRule::KeepLast(2)];
-        let kept_ids = apply_retention_rules(&snapshots, &rules, None, test_now());
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
 
         // No minimum, so just KeepLast(2)
         assert_eq!(kept_ids.len(), 2);

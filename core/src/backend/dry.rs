@@ -3,9 +3,7 @@ use std::{path::Path, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::backend::{Handle, WriteContents};
-
-use super::StorageBackend;
+use crate::backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents};
 
 /// A dummy storage backend that sets itself before another backend, redirecting
 /// reads but ignoring writes.
@@ -57,7 +55,7 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    async fn list_dir(&self, path: &Path) -> Result<Vec<super::BackendNode>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
         self.backend.list_dir(path).await
     }
 
@@ -72,7 +70,7 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    async fn lstat(&self, path: &Path) -> Result<super::NodeAttr> {
+    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
         self.backend.lstat(path).await
     }
 

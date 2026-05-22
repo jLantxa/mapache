@@ -22,7 +22,7 @@ use crate::{
     utils::{self},
 };
 
-use super::GlobalArgs;
+use crate::commands::GlobalArgs;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SyncError {

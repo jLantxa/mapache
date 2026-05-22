@@ -1,9 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-    time::Instant,
-};
+use std::{path::PathBuf, str::FromStr, sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
@@ -25,8 +20,8 @@ use crate::{
         },
         get_absolute_normalized_path,
     },
-    mapache::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
-    repository::repo::Repository,
+    mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
+    repository::{repo::Repository, snapshot::SnapshotPair},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
         self, RestoreProgressReporter, cli::restore::CliRestoreProgressReporter,
@@ -34,6 +29,9 @@ use crate::{
     },
     utils,
 };
+
+use crate::log;
+use crate::log_always;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RestoreError {
@@ -166,6 +164,8 @@ where
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "restore", "Starting restore command");
 
+    let json_output = global_args.json;
+
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -181,13 +181,93 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, _secure_storage, lock_handle| async move {
-            let progress_reporter: Arc<dyn RestoreProgressReporter> = if global_args.json {
+            repo.reload_master_index().await?;
+
+            let (id, snap) = find_use_snapshot(repo.clone(), &args.snapshot)
+                .await
+                .map_err(|_| fail("Snapshot not found", RestoreError::SnapshotNotFound))?
+                .ok_or_else(|| fail("Snapshot not found", RestoreError::SnapshotNotFound))?;
+            let pair = SnapshotPair { id, snapshot: snap };
+
+            let target = args.target.as_ref().ok_or_else(|| {
+                fail(
+                    "Target path is required. Use --target or set it in config file.",
+                    RestoreError::TargetError,
+                )
+            })?;
+
+            if json_output {
+                #[derive(Serialize)]
+                struct RestoreStartMsg {
+                    snapshot: String,
+                    target: String,
+                    dry_run: bool,
+                    strategy: String,
+                }
+
+                ui::json::emit_static(
+                    "restore_start",
+                    &RestoreStartMsg {
+                        snapshot: pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
+                        target: target.display().to_string(),
+                        dry_run: args.dry_run,
+                        strategy: args.strategy.clone().unwrap_or(Strategy::Fail).to_string(),
+                    },
+                );
+            } else {
+                if args.dry_run {
+                    log!("{}", "[DRY RUN]".bold().purple());
+                }
+                log_always!(
+                    "Restoring snapshot {}",
+                    pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
+                );
+            }
+
+            let progress_reporter: Arc<dyn RestoreProgressReporter> = if json_output {
                 Arc::new(JsonRestoreProgressReporter::new(None, None))
             } else {
                 Arc::new(CliRestoreProgressReporter::new(None, None))
             };
 
-            run_with_repo(repo, lock_handle, args, progress_reporter, global_args.json).await
+            let start = Instant::now();
+
+            run_with_repo(repo, lock_handle, args, progress_reporter.clone(), pair).await?;
+
+            if json_output {
+                #[derive(Serialize)]
+                struct RestoreCompleteMsg {
+                    duration_seconds: f64,
+                    errors: u64,
+                    warnings: u64,
+                    dry_run: bool,
+                }
+
+                ui::json::emit_static(
+                    "restore_complete",
+                    &RestoreCompleteMsg {
+                        duration_seconds: start.elapsed().as_secs_f64(),
+                        errors: progress_reporter.error_count(),
+                        warnings: progress_reporter.warning_count(),
+                        dry_run: args.dry_run,
+                    },
+                );
+            } else {
+                let prefix = if args.dry_run {
+                    format!("{} ", "[DRY RUN]".bold().purple())
+                } else {
+                    String::new()
+                };
+                ui::cli::log!(
+                    "{}Finished in {} with {} and {}",
+                    prefix,
+                    utils::pretty_print_duration(start.elapsed()),
+                    utils::format_count(progress_reporter.error_count(), "error", "errors"),
+                    utils::format_count(progress_reporter.warning_count(), "warning", "warnings"),
+                );
+            }
+
+            Ok(())
         },
     )
     .await
@@ -208,21 +288,8 @@ pub async fn run_with_repo(
     lock_handle: crate::repository::lock::LockHandle,
     args: &CmdArgs,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
-    json_output: bool,
+    pair: SnapshotPair,
 ) -> Result<()> {
-    tracing::info!(target: "restore", "Reloading master index");
-    repo.reload_master_index().await?;
-
-    let start = Instant::now();
-
-    tracing::info!(target: "restore", "Finding snapshot to restore (snapshot={:?})", args.snapshot);
-    let (snapshot_id, snapshot) = match find_use_snapshot(repo.clone(), &args.snapshot).await {
-        Ok(Some((id, snap))) => (id, snap),
-        Ok(None) | Err(_) => {
-            return Err(fail("Snapshot not found", RestoreError::SnapshotNotFound));
-        }
-    };
-
     let target = args.target.as_ref().ok_or_else(|| {
         fail(
             "Target path is required. Use --target or set it in config file.",
@@ -254,7 +321,7 @@ pub async fn run_with_repo(
     let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
     let parsed_includes = expand_include_paths(
         repo.clone(),
-        &snapshot_id,
+        &pair.id,
         all_includes.as_deref(),
         parsed_excludes.clone(),
     )
@@ -275,32 +342,17 @@ pub async fn run_with_repo(
         )
     })?;
 
-    tracing::info!(target: "restore", "Restoring snapshot {snapshot_id} (root={:?}) to {:?}", snapshot.root, abs_normalized_target);
-
-    emit_restore_start(
-        json_output,
-        &snapshot_id,
-        &abs_normalized_target,
-        dry_run,
-        &strategy,
-        progress_reporter.clone(),
-    );
+    tracing::info!(target: "restore", "Restoring snapshot {} (root={:?}) to {:?}", pair.id, pair.snapshot.root, abs_normalized_target);
 
     let reporter_clone = progress_reporter.clone();
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         reporter_clone.finalize();
-        if !json_output {
-            reporter_clone.log(format!(
-                "\n{}",
-                "Process interrupted. Cleaning up...".bold().yellow()
-            ));
-        }
     })?;
     cleanup_handler.add_lock(lock_handle.clone());
 
     restorer::restore(
         repo.clone(),
-        &snapshot,
+        &pair.snapshot,
         &abs_normalized_target,
         parsed_includes.clone(),
         parsed_excludes.clone(),
@@ -318,16 +370,13 @@ pub async fn run_with_repo(
     .await?;
 
     progress_reporter.finalize();
-    let warning_count = progress_reporter.warning_count();
-    let error_count = progress_reporter.error_count();
 
     if delete {
-        // Delete local nodes not present in the snapshot tree
         tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
         restorer::sync::delete_nodes(
             repo,
             abs_normalized_target.clone(),
-            &snapshot.tree,
+            &pair.snapshot.tree,
             parsed_includes,
             parsed_excludes,
             dry_run,
@@ -335,105 +384,8 @@ pub async fn run_with_repo(
             cleanup_handler.interrupted.clone(),
         )
         .await?;
-
-        if !json_output {
-            progress_reporter.log(String::new());
-        }
     }
 
-    emit_restore_complete(
-        json_output,
-        start.elapsed().as_secs_f64(),
-        error_count,
-        warning_count,
-        dry_run,
-        progress_reporter.clone(),
-    );
-    tracing::info!(target: "restore", "Restore command completed in {:?}", start.elapsed());
-
+    tracing::info!(target: "restore", "Restore command completed");
     Ok(())
-}
-
-fn emit_restore_start(
-    json: bool,
-    snapshot_id: &ID,
-    target: &Path,
-    dry_run: bool,
-    strategy: &Strategy,
-    progress_reporter: Arc<dyn RestoreProgressReporter>,
-) {
-    if json {
-        #[derive(Serialize)]
-        struct RestoreStartMsg {
-            snapshot: String,
-            target: String,
-            dry_run: bool,
-            strategy: String,
-        }
-
-        ui::json::emit_static(
-            "restore_start",
-            &RestoreStartMsg {
-                snapshot: snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
-                target: target.display().to_string(),
-                dry_run,
-                strategy: strategy.to_string(),
-            },
-        );
-    } else {
-        if dry_run {
-            progress_reporter.log(format!("{}", "[DRY RUN]".bold().purple()));
-        }
-
-        progress_reporter.log(format!(
-            "Restoring snapshot {}",
-            snapshot_id
-                .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
-                .bold()
-                .yellow()
-        ));
-    }
-}
-
-fn emit_restore_complete(
-    json: bool,
-    duration_seconds: f64,
-    errors: u64,
-    warnings: u64,
-    dry_run: bool,
-    progress_reporter: Arc<dyn RestoreProgressReporter>,
-) {
-    if json {
-        #[derive(Serialize)]
-        struct RestoreCompleteMsg {
-            duration_seconds: f64,
-            errors: u64,
-            warnings: u64,
-            dry_run: bool,
-        }
-
-        ui::json::emit_static(
-            "restore_complete",
-            &RestoreCompleteMsg {
-                duration_seconds,
-                errors,
-                warnings,
-                dry_run,
-            },
-        );
-    } else {
-        let prefix = if dry_run {
-            format!("{} ", "[DRY RUN]".bold().purple())
-        } else {
-            String::new()
-        };
-
-        progress_reporter.log(format!(
-            "{}Finished in {} with {} and {}",
-            prefix,
-            utils::pretty_print_duration(std::time::Duration::from_secs_f64(duration_seconds)),
-            utils::format_count(errors, "error", "errors"),
-            utils::format_count(warnings, "warning", "warnings")
-        ));
-    }
 }

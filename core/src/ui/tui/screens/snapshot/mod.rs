@@ -69,7 +69,8 @@ impl SnapshotCreateScreen {
         let repo = self.repo.clone();
         let lock_handle = self.lock_handle.clone();
         let shutdown_signal = self.shutdown_signal.clone();
-        let cmd_args = self.form.to_cmd_args();
+        let options = self.form.to_snapshot_options();
+        let no_parent = self.form.form.get_toggle(5).unwrap_or(false);
 
         let (tx, rx) = mpsc::unbounded_channel();
         let reporter = Arc::new(TuiSnapshotProgressReporter { tx: tx.clone() });
@@ -81,8 +82,23 @@ impl SnapshotCreateScreen {
         self.shutdown_signal.store(false, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            let result =
-                cmd_snapshot::run_with_repo(repo, lock_handle, &cmd_args, reporter, false).await;
+            let parent_snapshot_pair =
+                match cmd_snapshot::resolve_parent_snapshot(repo.clone(), no_parent, None).await {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let _ = tx.send(SnapshotEvent::Completed(Box::new(Err(e.to_string()))));
+                        return;
+                    }
+                };
+
+            let result = cmd_snapshot::run_with_repo(
+                repo,
+                lock_handle,
+                options,
+                reporter,
+                parent_snapshot_pair,
+            )
+            .await;
             let summary_result = match result {
                 Ok(Some(completion)) => SummaryResult::Success {
                     summary: Box::new(completion.summary),

@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::{
-    commands::EMPTY_TAG_MARK,
+    commands::cmd_snapshot::SnapshotRunOptions,
     mapache::defaults::{DEFAULT_SNAPSHOT_PACKERS, DEFAULT_SNAPSHOT_READERS},
     ui::tui::{
         theme,
@@ -119,7 +119,7 @@ impl SnapshotForm {
         }
     }
 
-    pub fn to_cmd_args(&self) -> crate::commands::cmd_snapshot::CmdArgs {
+    pub fn to_snapshot_options(&self) -> SnapshotRunOptions {
         let paths: Vec<PathBuf> = self
             .form
             .get_text(0)
@@ -130,10 +130,10 @@ impl SnapshotForm {
             .map(PathBuf::from)
             .collect();
 
-        let tags_str = if self.form.get_text(1).unwrap_or("").is_empty() {
-            EMPTY_TAG_MARK.to_string()
+        let tags = if self.form.get_text(1).unwrap_or("").is_empty() {
+            None
         } else {
-            self.form.get_text(1).unwrap_or("").to_string()
+            Some(self.form.get_text(1).unwrap_or("").to_string())
         };
 
         let description = if self.form.get_text(2).unwrap_or("").is_empty() {
@@ -152,33 +152,28 @@ impl SnapshotForm {
             .map(String::from)
             .collect();
 
-        crate::commands::cmd_snapshot::CmdArgs {
+        SnapshotRunOptions {
             paths,
-            as_root: Some(self.form.get_toggle(4).unwrap_or(false)),
+            as_root: self.form.get_toggle(4).unwrap_or(false),
             exclude: if exclude.is_empty() {
                 None
             } else {
                 Some(exclude)
             },
             exclude_file: None,
-            tags_str: Some(tags_str),
+            tags,
             description,
-            no_parent: self.form.get_toggle(5).unwrap_or(false),
-            no_scan: Some(false),
-            skip_if_unchanged: Some(false),
-            parent: None,
-            num_readers: Some(
-                self.form
-                    .get_number(6)
-                    .unwrap_or(DEFAULT_SNAPSHOT_READERS as u32) as usize,
-            ),
-            num_packers: Some(
-                self.form
-                    .get_number(7)
-                    .unwrap_or(DEFAULT_SNAPSHOT_PACKERS as u32) as usize,
-            ),
-            dry_run: false,
-            with_atime: Some(false),
+            no_scan: false,
+            skip_if_unchanged: false,
+            with_atime: false,
+            num_readers: self
+                .form
+                .get_number(6)
+                .unwrap_or(DEFAULT_SNAPSHOT_READERS as u32) as usize,
+            num_packers: self
+                .form
+                .get_number(7)
+                .unwrap_or(DEFAULT_SNAPSHOT_PACKERS as u32) as usize,
         }
     }
 }

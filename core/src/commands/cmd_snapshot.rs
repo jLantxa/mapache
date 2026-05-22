@@ -27,7 +27,7 @@ use crate::{
     repository::snapshot::{SnapshotPair, SnapshotSummary},
     repository::{lock::LockHandle, repo::Repository},
     ui::{
-        self, SnapshotProgressReporter,
+        self, SnapshotProcessSummary, SnapshotProgressReporter,
         cli::{
             snapshot::CliSnapshotProgressReporter,
             table::{Alignment, Table},
@@ -144,6 +144,40 @@ where
         .transpose()
 }
 
+pub struct SnapshotRunOptions {
+    pub paths: Vec<PathBuf>,
+    pub as_root: bool,
+    pub exclude: Option<Vec<String>>,
+    pub exclude_file: Option<PathBuf>,
+    pub tags: Option<String>,
+    pub description: Option<String>,
+    pub no_scan: bool,
+    pub skip_if_unchanged: bool,
+    pub with_atime: bool,
+    pub num_readers: usize,
+    pub num_packers: usize,
+}
+
+impl From<&CmdArgs> for SnapshotRunOptions {
+    fn from(args: &CmdArgs) -> Self {
+        Self {
+            paths: args.paths.clone(),
+            as_root: args.as_root.unwrap_or(false),
+            exclude: args.exclude.clone(),
+            exclude_file: args.exclude_file.clone(),
+            tags: args.tags_str.clone(),
+            description: args.description.clone(),
+            no_scan: args.no_scan.unwrap_or(false),
+            skip_if_unchanged: args.skip_if_unchanged.unwrap_or(false),
+            with_atime: args.with_atime.unwrap_or(false),
+            num_readers: args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS),
+            num_packers: args
+                .num_packers
+                .unwrap_or(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS),
+        }
+    }
+}
+
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "snapshot", "Starting snapshot command");
     if args.paths.is_empty() {
@@ -155,6 +189,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let dry_run = args.dry_run;
     let num_readers = args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS);
+    let json_output = global_args.json;
 
     with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -171,15 +206,84 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, _, lock_handle| async move {
-            let progress_reporter: Arc<dyn SnapshotProgressReporter> = if global_args.json {
+            let parent_snapshot_pair =
+                resolve_parent_snapshot(repo.clone(), args.no_parent, args.parent.clone()).await?;
+
+            if !json_output {
+                ui::cli::log!("");
+                if dry_run {
+                    ui::cli::log!("{}", "[DRY RUN]".bold().purple());
+                }
+                if args.no_parent {
+                    ui::cli::log!("Full scan");
+                } else if let Some(ref pair) = parent_snapshot_pair {
+                    ui::cli::log!(
+                        "Using snapshot {} as parent",
+                        pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
+                    );
+                } else {
+                    ui::cli::log!("{} This is the first snapshot.", "[!]".bold().cyan());
+                }
+            }
+
+            let progress_reporter: Arc<dyn SnapshotProgressReporter> = if json_output {
                 Arc::new(JsonSnapshotProgressReporter::new(None, None))
             } else {
                 Arc::new(CliSnapshotProgressReporter::new(None, None, num_readers))
             };
 
-            run_with_repo(repo, lock_handle, args, progress_reporter, global_args.json)
-                .await
-                .map(|_| ())
+            let result = run_with_repo(
+                repo,
+                lock_handle,
+                SnapshotRunOptions::from(args),
+                progress_reporter,
+                parent_snapshot_pair,
+            )
+            .await?;
+
+            if let Some(ref completion) = result {
+                if json_output {
+                    #[derive(serde::Serialize)]
+                    struct SnapshotCompleteMsg {
+                        summary: SnapshotProcessSummary,
+                        raw_bytes_data: u64,
+                        compressed_bytes_data: u64,
+                        raw_bytes_meta: u64,
+                        compressed_bytes_meta: u64,
+                        time_taken_seconds: f64,
+                    }
+
+                    ui::json::emit_static(
+                        "snapshot_complete",
+                        &SnapshotCompleteMsg {
+                            summary: completion.process_summary.clone(),
+                            raw_bytes_data: completion.summary.raw_bytes,
+                            compressed_bytes_data: completion.summary.encoded_bytes,
+                            raw_bytes_meta: completion.meta_without_index_raw,
+                            compressed_bytes_meta: completion.meta_without_index_encoded,
+                            time_taken_seconds: completion.duration.as_secs_f64(),
+                        },
+                    );
+                } else {
+                    ui::cli::log!("");
+                    show_cli_summary(completion, args.dry_run);
+                    let prefix = if args.dry_run {
+                        format!("{} ", "[DRY RUN]".bold().purple())
+                    } else {
+                        String::new()
+                    };
+                    ui::cli::log!(
+                        "{}Processed {} in {}",
+                        prefix,
+                        utils::format_size_binary(completion.summary.processed_bytes, 3).cyan(),
+                        utils::pretty_print_duration(completion.duration).cyan(),
+                    );
+                }
+            } else if !json_output {
+                ui::cli::log!("No changes detected since parent. Skipping snapshot.");
+            }
+
+            Ok(())
         },
     )
     .await
@@ -188,31 +292,26 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 pub struct SnapshotCompletion {
     pub snapshot_id: ID,
     pub summary: SnapshotSummary,
+    pub process_summary: SnapshotProcessSummary,
+    pub meta_without_index_raw: u64,
+    pub meta_without_index_encoded: u64,
     pub duration: std::time::Duration,
 }
 
 pub async fn run_with_repo(
     repo: Arc<Repository>,
     lock_handle: LockHandle,
-    args: &CmdArgs,
+    options: SnapshotRunOptions,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
-    json_output: bool,
+    parent_snapshot_pair: Option<SnapshotPair>,
 ) -> Result<Option<SnapshotCompletion>> {
-    let as_root = args.as_root.unwrap_or(false);
-    let no_scan = args.no_scan.unwrap_or(false);
-    let skip_if_unchanged = args.skip_if_unchanged.unwrap_or(false);
-    let with_atime = args.with_atime.unwrap_or(false);
-    let parent = args.parent.clone().unwrap_or(UseSnapshot::Latest);
-    let no_parent = args.no_parent;
-    let num_readers = args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS);
-    let num_packers = args
-        .num_packers
-        .unwrap_or(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS);
-    let dry_run = args.dry_run;
-    let tags_str = args
-        .tags_str
-        .clone()
-        .unwrap_or_else(|| EMPTY_TAG_MARK.to_string());
+    let as_root = options.as_root;
+    let no_scan = options.no_scan;
+    let skip_if_unchanged = options.skip_if_unchanged;
+    let with_atime = options.with_atime;
+    let num_readers = options.num_readers;
+    let num_packers = options.num_packers;
+    let tags_str = options.tags.unwrap_or_else(|| EMPTY_TAG_MARK.to_string());
 
     let start = Instant::now();
 
@@ -220,15 +319,14 @@ pub async fn run_with_repo(
     repo.reload_master_index().await?;
 
     // Get source paths from arguments or readdir root path
-    tracing::info!(target: "snapshot", "Processing source paths: {:?}", args.paths);
+    tracing::info!(target: "snapshot", "Processing source paths: {:?}", options.paths);
     let source_paths = if !as_root {
-        args.paths.clone()
+        options.paths.clone()
     } else {
-        // Use path as root and readdir
-        if args.paths.len() != 1 {
+        if options.paths.len() != 1 {
             bail!("Only one path can be the snapshot root");
         } else {
-            let root = args.paths.last().unwrap();
+            let root = options.paths.last().unwrap();
             if !root.is_dir() {
                 bail!("The snapshot root must be a directory");
             }
@@ -262,7 +360,7 @@ pub async fn run_with_repo(
     }
 
     // Read exclude paths from file if provided.
-    let excludes_from_file = match &args.exclude_file {
+    let excludes_from_file = match &options.exclude_file {
         Some(path) => Some(read_filtered_paths_from_file(path).map_err(|e| {
             fail(
                 format!("Error reading exclude file: {}", e),
@@ -272,7 +370,7 @@ pub async fn run_with_repo(
         None => None,
     };
 
-    let all_excludes = merge_filtered_paths(args.exclude.as_ref(), excludes_from_file.as_ref());
+    let all_excludes = merge_filtered_paths(options.exclude.as_ref(), excludes_from_file.as_ref());
 
     // Normalize the exclude paths and filter the source paths using the excludes
     let normalized_excludes: Option<Vec<PathBuf>> =
@@ -285,59 +383,14 @@ pub async fn run_with_repo(
     // Extract the snapshot root path
     let snapshot_root_path = calculate_lcp(&absolute_source_paths, false);
 
-    progress_reporter.log(String::new());
-    if dry_run {
-        progress_reporter.log(format!("{}", "[DRY RUN]".bold().purple()));
-        tracing::info!(target: "snapshot", "Dry run enabled");
-    }
-
-    tracing::info!(target: "snapshot", "Finding parent snapshot (parent={:?})", parent);
-    let parent_snapshot_pair: Option<SnapshotPair> = match no_parent {
-        true => {
-            progress_reporter.log("Full scan".to_string());
-            tracing::info!(target: "snapshot", "Full scan requested (no parent)");
-            None
-        }
-        false => match find_use_snapshot(repo.clone(), &parent).await {
-            Ok(Some((id, snapshot))) => {
-                progress_reporter.log(format!(
-                    "Using snapshot {} as parent",
-                    id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
-                ));
-                tracing::info!(target: "snapshot", "Parent snapshot found: {id} (root={:?})", snapshot.root);
-                Some(SnapshotPair { id, snapshot })
-            }
-            Ok(None) => {
-                progress_reporter.log(format!(
-                    "{} This is the first snapshot.",
-                    "[!]".bold().cyan()
-                ));
-                tracing::info!(target: "snapshot", "No parent snapshot found (first snapshot)");
-                None
-            }
-            Err(e) => {
-                return Err(fail(
-                    format!("Parent snapshot not found: {}", e),
-                    SnapshotError::ParentNotFound,
-                ));
-            }
-        },
-    };
-
     // Run Archiver
     tracing::info!(target: "snapshot", "Initializing archiver");
     let progress = Arc::new(SnapshotProgress::new());
 
     // Init cleanup handler
-    // We pass the reporter to the handler so it can clear the bars and print the message
-    // immediately upon signal reception, instead of waiting for the main thread loop.
     let reporter_clone = progress_reporter.clone();
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         reporter_clone.finalize();
-        reporter_clone.log(format!(
-            "\n{}",
-            "Process interrupted. Cleaning up...".bold().yellow()
-        ));
     })?;
     cleanup_handler.add_lock(lock_handle.clone());
 
@@ -358,7 +411,7 @@ pub async fn run_with_repo(
             exclude_paths: normalized_excludes.unwrap_or_default(),
             parent_snapshot: parent_snapshot_pair.as_ref(),
             tags,
-            description: args.description.clone(),
+            description: options.description.clone(),
             no_scan,
             with_atime,
         },
@@ -397,7 +450,7 @@ pub async fn run_with_repo(
     };
 
     let snapshot_report_summary = progress.summary();
-    let snapshot_report_summary_clone = snapshot_report_summary.clone();
+    let process_summary = snapshot_report_summary.clone();
 
     // Fill snapshot summary
     new_snapshot.summary.processed_items_count = snapshot_report_summary.processed_items_count;
@@ -434,78 +487,57 @@ pub async fn run_with_repo(
         progress_reporter.finalize();
         tracing::info!(target: "snapshot", "Snapshot saved: {new_snapshot_id}");
 
-        // Add the size of the snapshot file and index for display
+        let meta_without_index_raw = new_snapshot.summary.meta_raw_bytes + new_snapshot_size.raw;
+        let meta_without_index_encoded =
+            new_snapshot.summary.meta_encoded_bytes + new_snapshot_size.encoded;
+
+        // Add the size of the snapshot file and index for persistence
         new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw + repo_stats.index.raw;
         new_snapshot.summary.meta_encoded_bytes +=
             new_snapshot_size.encoded + repo_stats.index.encoded;
 
-        if json_output {
-            #[derive(serde::Serialize)]
-            struct SnapshotCompleteMsg {
-                summary: crate::ui::SnapshotProcessSummary,
-                raw_bytes_data: u64,
-                compressed_bytes_data: u64,
-                raw_bytes_meta: u64,
-                compressed_bytes_meta: u64,
-                time_taken_seconds: f64,
-            }
-
-            ui::json::emit_static(
-                "snapshot_complete",
-                &SnapshotCompleteMsg {
-                    summary: snapshot_report_summary_clone,
-                    raw_bytes_data: repo_stats.data.raw,
-                    compressed_bytes_data: repo_stats.data.encoded,
-                    raw_bytes_meta: repo_stats.meta.raw + new_snapshot_size.raw,
-                    compressed_bytes_meta: repo_stats.meta.encoded + new_snapshot_size.encoded,
-                    time_taken_seconds: start.elapsed().as_secs_f64(),
-                },
-            );
-        }
-
-        progress_reporter.log(String::new());
-        show_final_report(
-            &new_snapshot_id,
-            &new_snapshot.summary,
-            args,
-            progress_reporter.clone(),
-        );
-
         Some(SnapshotCompletion {
             snapshot_id: new_snapshot_id,
             summary: new_snapshot.summary.clone(),
+            process_summary,
+            meta_without_index_raw,
+            meta_without_index_encoded,
             duration: start.elapsed(),
         })
     } else {
         progress_reporter.finalize();
-        progress_reporter.log("No changes detected since parent. Skipping snapshot.".to_string());
         tracing::info!(target: "snapshot", "No changes detected. Snapshot skipped.");
         None
     };
 
-    let prefix = if args.dry_run {
-        format!("{} ", "[DRY RUN]".bold().purple())
-    } else {
-        String::new()
-    };
-
-    progress_reporter.log(format!(
-        "{}Processed {} in {}",
-        prefix,
-        utils::format_size_binary(new_snapshot.summary.processed_bytes, 3).cyan(),
-        utils::pretty_print_duration(start.elapsed()).cyan()
-    ));
     tracing::info!(target: "snapshot", "Snapshot command completed in {:?}", start.elapsed());
     Ok(completion)
 }
 
-fn show_final_report(
-    snapshot_id: &ID,
-    summary: &SnapshotSummary,
-    args: &CmdArgs,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
-) {
-    progress_reporter.log(format!("{}", "Changes since parent snapshot:".bold()));
+pub(crate) async fn resolve_parent_snapshot(
+    repo: Arc<Repository>,
+    no_parent: bool,
+    parent: Option<UseSnapshot>,
+) -> Result<Option<SnapshotPair>> {
+    if no_parent {
+        return Ok(None);
+    }
+    let use_snapshot = parent.unwrap_or(UseSnapshot::Latest);
+    match find_use_snapshot(repo, &use_snapshot).await {
+        Ok(Some((id, snapshot))) => Ok(Some(SnapshotPair { id, snapshot })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(fail(
+            format!("Parent snapshot not found: {}", e),
+            SnapshotError::ParentNotFound,
+        )),
+    }
+}
+
+fn show_cli_summary(completion: &SnapshotCompletion, dry_run: bool) {
+    let summary = &completion.summary;
+    let snapshot_id = &completion.snapshot_id;
+
+    ui::cli::log!("{}", "Changes since parent snapshot:".bold());
 
     let mut table = Table::new_with_alignments(vec![
         Alignment::Left,
@@ -536,20 +568,20 @@ fn show_final_report(
         summary.diff_counts.deleted_dirs.to_string(),
         summary.diff_counts.unchanged_dirs.to_string(),
     ]);
-    progress_reporter.log(table.render());
+    ui::cli::log!("{}", table.render());
 
-    if !args.dry_run {
-        progress_reporter.log(format!(
+    if !dry_run {
+        ui::cli::log!(
             "Created snapshot {}",
             snapshot_id
                 .to_short_hex(mapache::defaults::SHORT_SNAPSHOT_ID_LEN)
                 .to_string()
                 .bold()
                 .green()
-        ));
-        progress_reporter.log("This snapshot added:".to_string());
+        );
+        ui::cli::log!("This snapshot added:");
     } else {
-        progress_reporter.log("This snapshot would add:".to_string());
+        ui::cli::log!("This snapshot would add:");
     }
 
     let mut data_table =
@@ -589,5 +621,5 @@ fn show_final_report(
             .green()
             .to_string(),
     ]);
-    progress_reporter.log(data_table.render());
+    ui::cli::log!("{}", data_table.render());
 }

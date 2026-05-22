@@ -31,17 +31,17 @@ tracing-subscriber = { version = "0.3.23", features = ["fmt"] }
 parking_lot = "0.12.5"
 rand = "0.10.1"
 rayon = "1.12.0"
-russh = { version = "0.60.3", default-features = false, features = [
+russh = { version = "0.61.0", default-features = false, features = [
   "flate2",
   "ring",
   "rsa",
 ] }
-russh-sftp = "2.1.2"
+russh-sftp = "2.2.2"
 rust-s3 = { version = "0.37.2", default-features = false, features = [
   "with-tokio",
 ] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 signal-hook-registry = "1.4.8"
 tokio = { version = "1.52", features = [
   "rt",
@@ -76,7 +76,7 @@ windows-sys = { version = "0.61.2", features = [
 [dev-dependencies]
 rstest = "0.26.1"
 scopeguard = "1.2.0"
-tar = "0.4.45"
+tar = "0.4.46"
 tempfile = "3.27.0"
 xz2 = "0.1.7"
 

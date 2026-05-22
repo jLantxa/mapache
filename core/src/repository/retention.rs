@@ -590,7 +590,7 @@ mod tests {
     #[test]
     fn test_keep_hourly() {
         let now = test_now();
-        let snapshots = vec![
+        let snapshots = [
             create_snapshot(0, now - Duration::hours(5), &[], None),
             create_snapshot(1, now - Duration::hours(4), &[], None),
             create_snapshot(2, now - Duration::hours(3), &[], None),

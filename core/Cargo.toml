@@ -83,6 +83,6 @@ tempfile = "3.27.0"
 xz2 = "0.1.7"
 
 [features]
-default = ["fuse"]
-fuse = ["fuser"] #FUSE for mount command
+default = ["fuse", "tui"]
+fuse = ["fuser"]                       #FUSE for mount command
 tui = ["dep:ratatui", "dep:crossterm"]

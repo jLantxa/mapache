@@ -220,7 +220,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         true,
         global_args.retry_lock_duration,
         |repo, _secure_storage, lock_handle| async move {
-            execute(repo, lock_handle, args, global_args.json).await
+            run_with_repo(repo, lock_handle, args, global_args.json).await
         },
     )
     .await
@@ -236,7 +236,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-pub async fn execute(
+pub async fn run_with_repo(
     repo: Arc<crate::repository::repo::Repository>,
     lock_handle: crate::repository::lock::LockHandle,
     args: &CmdArgs,
@@ -339,7 +339,7 @@ pub async fn execute(
         }
 
         ids_to_keep = apply_retention_rules(
-            &snapshots_sorted,
+            &snapshots_sorted.iter().collect::<Vec<_>>(),
             &retention_rules,
             args.keep_min,
             Local::now(),
@@ -433,7 +433,7 @@ pub async fn execute(
                 ForgetError::ForgetFailed,
             )
         })?; // We need to load the index for the garbage collector
-        commands::cmd_clean::execute(json_output, &gc_args, repo).await?;
+        commands::cmd_clean::run_with_repo(json_output, &gc_args, repo).await?;
     }
 
     tracing::info!(target: "forget", "Forget command completed in {:?}", start_time.elapsed());

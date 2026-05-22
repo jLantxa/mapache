@@ -187,7 +187,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Arc::new(CliRestoreProgressReporter::new(None, None))
             };
 
-            execute(repo, lock_handle, args, progress_reporter, global_args.json).await
+            run_with_repo(repo, lock_handle, args, progress_reporter, global_args.json).await
         },
     )
     .await
@@ -203,7 +203,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-pub async fn execute(
+pub async fn run_with_repo(
     repo: Arc<Repository>,
     lock_handle: crate::repository::lock::LockHandle,
     args: &CmdArgs,

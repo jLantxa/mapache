@@ -83,7 +83,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 )
             })?;
 
-            execute(global_args.json, args, repo).await
+            run_with_repo(global_args.json, args, repo).await
         },
     )
     .await
@@ -100,7 +100,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 /// Run the command with an initialized repository object.
-pub async fn execute(
+pub async fn run_with_repo(
     json_output: bool,
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded

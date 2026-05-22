@@ -132,7 +132,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, secure_storage, lock_handle| async move {
-            execute(repo, secure_storage, lock_handle, args).await
+            run_with_repo(repo, secure_storage, lock_handle, args).await
         },
     )
     .await
@@ -148,7 +148,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-pub async fn execute(
+pub async fn run_with_repo(
     repo: Arc<Repository>,
     secure_storage: Arc<crate::repository::storage::SecureStorage>,
     lock_handle: crate::repository::lock::LockHandle,

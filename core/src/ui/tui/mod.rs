@@ -7,7 +7,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use crate::repository::{lock::LockHandle, repo::Repository, storage::SecureStorage};
+use crate::repository::{lock::LockHandle, repo::Repository};
 
 mod app;
 mod screens;
@@ -34,7 +34,6 @@ impl Drop for TerminalGuard {
 
 pub async fn run(
     repo: Arc<Repository>,
-    _secure_storage: Arc<SecureStorage>,
     lock_handle: LockHandle,
     repo_path: String,
     snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,

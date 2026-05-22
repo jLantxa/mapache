@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{List, ListItem, ListState, Paragraph, ScrollbarState},
+    widgets::{List, ListItem, ListState, Paragraph},
 };
 
 use crate::{
@@ -26,7 +26,9 @@ use crate::{
 const METADATA_HEIGHT: u16 = 7;
 const TITLE_HEIGHT: u16 = 1;
 const BREADCRUMB_HEIGHT: u16 = 1;
-const LIST_HEIGHT_ESTIMATE: u16 = 10;
+
+const ICON_DIR: &str = "📁";
+const ICON_FILE: &str = "📄";
 
 struct PathStackEntry {
     tree: Tree,
@@ -63,7 +65,7 @@ impl FileExplorerScreen {
             path_stack: Vec::new(),
             current_path: PathBuf::from("/"),
             list_state,
-            last_height: LIST_HEIGHT_ESTIMATE,
+            last_height: 0,
         })
     }
 
@@ -89,40 +91,38 @@ impl FileExplorerScreen {
     }
 
     fn render_metadata(&self, frame: &mut Frame, area: Rect, node: &Node) {
-        let mut lines = Vec::new();
+        let mut lines = Vec::with_capacity(6);
         lines.push(Line::from(vec![
-            Span::styled(" Name: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" Name: ", Style::default().bold()),
             Span::raw(&node.name),
         ]));
         lines.push(Line::from(vec![
-            Span::styled(" Size: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" Size: ", Style::default().bold()),
             Span::raw(utils::format_size_binary(node.metadata.size, 3)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled(" Mode: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" Mode: ", Style::default().bold()),
             Span::raw(format!("{:o}", node.metadata.mode.unwrap_or(0))),
         ]));
         lines.push(Line::from(vec![
-            Span::styled(" UID: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(
-                node.metadata
-                    .owner_uid
-                    .map_or("unknown".to_string(), |u| u.to_string()),
-            ),
+            Span::styled(" UID: ", Style::default().bold()),
+            Span::raw(match node.metadata.owner_uid {
+                Some(u) => u.to_string(),
+                None => "unknown".to_string(),
+            }),
         ]));
         lines.push(Line::from(vec![
-            Span::styled(" GID: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(
-                node.metadata
-                    .owner_gid
-                    .map_or("unknown".to_string(), |g| g.to_string()),
-            ),
+            Span::styled(" GID: ", Style::default().bold()),
+            Span::raw(match node.metadata.owner_gid {
+                Some(g) => g.to_string(),
+                None => "unknown".to_string(),
+            }),
         ]));
 
         if let Some(mtime) = node.metadata.modified_time {
             let ts = utils::pretty_print_timestamp(&mtime.into(), None);
             lines.push(Line::from(vec![
-                Span::styled(" Modified: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(" Modified: ", Style::default().bold()),
                 Span::raw(ts.to_string()),
             ]));
         }
@@ -132,21 +132,12 @@ impl FileExplorerScreen {
     }
 
     fn render_title(&self, frame: &mut Frame, area: Rect) {
-        let footer = Line::from(vec![
-            Span::styled("[Esc]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" back"),
-            Span::raw("    "),
-            Span::styled("[Enter/→]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" open"),
-            Span::raw("    "),
-            Span::styled("[Backsp/←]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" up"),
-            Span::raw("    "),
-            Span::styled("[r]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" restore"),
-            Span::raw("    "),
-            Span::styled("[q]", Style::default().fg(theme::MENU_KEY).bold()),
-            Span::raw(" quit"),
+        let footer = theme::key_hint_footer(&[
+            ("Esc", "back"),
+            ("Enter/→", "open"),
+            ("Backsp/←", "up"),
+            ("r", "restore"),
+            ("q", "quit"),
         ]);
         frame.render_widget(Paragraph::new(footer), area);
     }
@@ -178,12 +169,12 @@ impl Screen for FileExplorerScreen {
         self.last_height = chunks[1].height.saturating_sub(2);
         self.render_breadcrumb(frame, chunks[0]);
 
-        let items: Vec<ListItem> = self
+        let items: Vec<ListItem<'_>> = self
             .current_tree
             .nodes
             .iter()
             .map(|node| {
-                let icon = if node.is_dir() { "📁 " } else { "📄 " };
+                let icon = if node.is_dir() { ICON_DIR } else { ICON_FILE };
                 let name = &node.name;
                 let size = if node.is_file() {
                     format!(" ({})", utils::format_size_binary(node.metadata.size, 1))
@@ -207,21 +198,17 @@ impl Screen for FileExplorerScreen {
 
         let list = List::new(items)
             .block(theme::themed_block("File Explorer"))
-            .highlight_style(theme::selected_row_style())
+            .highlight_style(theme::STYLE_SELECTED_ROW)
             .highlight_symbol(">> ");
 
         frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
 
         if self.current_tree.nodes.len() > self.last_height as usize {
-            let scrollbar = theme::create_scrollbar();
-            let mut scrollbar_state = ScrollbarState::new(self.current_tree.nodes.len())
-                .position(self.list_state.selected().unwrap_or(0))
-                .viewport_content_length(self.last_height as usize);
-
-            frame.render_stateful_widget(
-                scrollbar,
-                chunks[1].inner(ratatui::layout::Margin::new(1, 1)),
-                &mut scrollbar_state,
+            theme::render_scrollbar(
+                frame,
+                chunks[1],
+                self.current_tree.nodes.len(),
+                self.list_state.selected().unwrap_or(0),
             );
         }
 

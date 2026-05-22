@@ -24,7 +24,6 @@ pub trait Screen: Send {
 pub enum Transition {
     Push(Box<dyn Screen>),
     Pop,
-    PopAndReload,
     Quit,
 }
 
@@ -89,24 +88,20 @@ impl App {
             match t {
                 Transition::Push(s) => {
                     self.stack.push(s);
-                    if let Some(active) = self.stack.last_mut() {
-                        let _ = active.on_become_active().await;
+                    if let Some(active) = self.stack.last_mut()
+                        && let Err(e) = active.on_become_active().await
+                    {
+                        tracing::error!("Failed to activate screen: {}", e);
                     }
                 }
                 Transition::Pop => {
                     self.stack.pop();
                     if self.stack.is_empty() {
                         self.should_quit = true;
-                    } else if let Some(active) = self.stack.last_mut() {
-                        let _ = active.on_become_active().await;
-                    }
-                }
-                Transition::PopAndReload => {
-                    self.stack.pop();
-                    if self.stack.is_empty() {
-                        self.should_quit = true;
-                    } else if let Some(active) = self.stack.last_mut() {
-                        let _ = active.on_become_active().await;
+                    } else if let Some(active) = self.stack.last_mut()
+                        && let Err(e) = active.on_become_active().await
+                    {
+                        tracing::error!("Failed to activate screen: {}", e);
                     }
                 }
                 Transition::Quit => self.should_quit = true,

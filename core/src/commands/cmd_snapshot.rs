@@ -177,19 +177,27 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Arc::new(CliSnapshotProgressReporter::new(None, None, num_readers))
             };
 
-            execute(repo, lock_handle, args, progress_reporter, global_args.json).await
+            run_with_repo(repo, lock_handle, args, progress_reporter, global_args.json)
+                .await
+                .map(|_| ())
         },
     )
     .await
 }
 
-pub async fn execute(
+pub struct SnapshotCompletion {
+    pub snapshot_id: ID,
+    pub summary: SnapshotSummary,
+    pub duration: std::time::Duration,
+}
+
+pub async fn run_with_repo(
     repo: Arc<Repository>,
     lock_handle: LockHandle,
     args: &CmdArgs,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     json_output: bool,
-) -> Result<()> {
+) -> Result<Option<SnapshotCompletion>> {
     let as_root = args.as_root.unwrap_or(false);
     let no_scan = args.no_scan.unwrap_or(false);
     let skip_if_unchanged = args.skip_if_unchanged.unwrap_or(false);
@@ -376,7 +384,7 @@ pub async fn execute(
         Err(e) => {
             if cleanup_handler.is_interrupted() {
                 tracing::info!(target: "snapshot", "Snapshot interrupted by user");
-                return Ok(());
+                return Ok(None);
             }
 
             progress_reporter.finalize();
@@ -410,7 +418,7 @@ pub async fn execute(
         || parent_snapshot_pair.is_none()
         || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
 
-    if should_save_snapshot {
+    let completion = if should_save_snapshot {
         tracing::info!(target: "snapshot", "Saving new snapshot");
         let (new_snapshot_id, new_snapshot_size) = repo
             .save_file(
@@ -462,11 +470,18 @@ pub async fn execute(
             args,
             progress_reporter.clone(),
         );
+
+        Some(SnapshotCompletion {
+            snapshot_id: new_snapshot_id,
+            summary: new_snapshot.summary.clone(),
+            duration: start.elapsed(),
+        })
     } else {
         progress_reporter.finalize();
         progress_reporter.log("No changes detected since parent. Skipping snapshot.".to_string());
         tracing::info!(target: "snapshot", "No changes detected. Snapshot skipped.");
-    }
+        None
+    };
 
     let prefix = if args.dry_run {
         format!("{} ", "[DRY RUN]".bold().purple())
@@ -481,7 +496,7 @@ pub async fn execute(
         utils::pretty_print_duration(start.elapsed()).cyan()
     ));
     tracing::info!(target: "snapshot", "Snapshot command completed in {:?}", start.elapsed());
-    Ok(())
+    Ok(completion)
 }
 
 fn show_final_report(

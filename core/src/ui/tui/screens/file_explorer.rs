@@ -210,7 +210,8 @@ impl Screen for FileExplorerScreen {
                 }
 
                 ListItem::new(Line::from(vec![
-                    Span::styled(icon, Style::default().fg(Color::Yellow)),
+                    Span::styled(icon, Style::default().fg(Color::DarkGray)),
+                    Span::raw(" "),
                     Span::styled(name, style),
                     Span::styled(size, Style::default().fg(Color::DarkGray)),
                 ]))

@@ -27,8 +27,9 @@ const METADATA_HEIGHT: u16 = 7;
 const TITLE_HEIGHT: u16 = 1;
 const BREADCRUMB_HEIGHT: u16 = 1;
 
-const ICON_DIR: &str = "📁";
-const ICON_FILE: &str = "📄";
+const ICON_DIR: &str = "[+]";
+const ICON_FILE: &str = "[ ]";
+const ICON_SYMLINK: &str = "[~]";
 
 struct PathStackEntry {
     tree: Tree,
@@ -174,8 +175,19 @@ impl Screen for FileExplorerScreen {
             .nodes
             .iter()
             .map(|node| {
-                let icon = if node.is_dir() { ICON_DIR } else { ICON_FILE };
-                let name = &node.name;
+                let icon = if node.is_dir() {
+                    ICON_DIR
+                } else if node.is_symlink() {
+                    ICON_SYMLINK
+                } else {
+                    ICON_FILE
+                };
+
+                let name = if node.is_dir() {
+                    format!("{}/", &node.name)
+                } else {
+                    node.name.clone()
+                };
                 let size = if node.is_file() {
                     format!(" ({})", utils::format_size_binary(node.metadata.size, 1))
                 } else {
@@ -184,13 +196,22 @@ impl Screen for FileExplorerScreen {
 
                 let color = if node.is_dir() {
                     Color::Cyan
+                } else if node.is_symlink() {
+                    Color::Magenta
                 } else {
                     Color::White
                 };
 
+                let mut style = Style::default().fg(color);
+                if node.is_dir() {
+                    style = style.add_modifier(Modifier::BOLD);
+                } else if node.is_symlink() {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+
                 ListItem::new(Line::from(vec![
                     Span::styled(icon, Style::default().fg(Color::Yellow)),
-                    Span::styled(name.to_string(), Style::default().fg(color)),
+                    Span::styled(name, style),
                     Span::styled(size, Style::default().fg(Color::DarkGray)),
                 ]))
             })

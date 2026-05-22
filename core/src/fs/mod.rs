@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     path::{Component, Path, PathBuf},
 };
 
@@ -8,6 +9,7 @@ use anyhow::Result;
 pub mod filter;
 pub mod node;
 
+use crate::utils::collections::{FxHashMap, FxHashSet};
 pub mod tree;
 
 #[cfg(windows)]
@@ -264,33 +266,66 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
     format!("{}{}{}", final_left, final_ellipsis, final_right)
 }
 
-/// Helper function to build intermediate path maps for streaming.
+/// Build intermediate path maps for streaming.
+///
+/// For each directory between `root` and any of the `paths`,
+/// return how many *distinct* direct children each intermediate directory has,
+/// and how many *distinct* direct children the `root` itself has.
+///
+/// The returned `BTreeMap` keys are the intermediate parent paths.
+/// The `usize` value is the count of distinct direct children under that parent.
+/// The first element of the tuple is the count of distinct direct children under `root`.
 pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMap<PathBuf, usize>) {
-    let mut map = BTreeMap::new();
-    let mut root_children = 0;
+    // parent dir -> set of *child names* (single component) directly under that parent
+    let mut children_map: FxHashMap<PathBuf, FxHashSet<OsString>> = FxHashMap::default();
+    let mut unique_root_children: FxHashSet<OsString> = FxHashSet::default();
 
-    for path in paths {
-        if let Ok(relative) = path.strip_prefix(root) {
-            let components: Vec<_> = relative.components().collect();
-            if components.is_empty() {
-                continue;
+    for full_path in paths {
+        let mut cur = full_path.as_path();
+        let mut direct_root_child_name: Option<OsString> = None;
+
+        while let Some(parent) = cur.parent() {
+            // Stop when we reached (or crossed) root.
+            if !root.as_os_str().is_empty() && parent <= root {
+                if parent == root
+                    && let Some(name) = cur.file_name()
+                {
+                    direct_root_child_name = Some(name.to_os_string());
+                }
+                break;
             }
 
-            root_children += 1; // Direct child of root
+            // Insert the child name under its parent.
+            if let Some(name) = cur.file_name() {
+                children_map
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .insert(name.to_os_string());
+            }
 
-            let mut current = root.to_path_buf();
-            for component in components.iter().take(components.len().saturating_sub(1)) {
-                current.push(component);
-                // Don't add the root directory itself to the intermediate map
-                if matches!(component, Component::RootDir) {
-                    continue;
-                }
-                *map.entry(current.clone()).or_insert(0) += 1;
+            cur = parent;
+        }
+
+        if let Some(name) = direct_root_child_name {
+            unique_root_children.insert(name);
+        } else if root.as_os_str().is_empty() {
+            // We reached the top (parent is None) and root is empty.
+            // Treat 'cur' as a direct child of the virtual root.
+            if let Some(name) = cur.file_name() {
+                unique_root_children.insert(name.to_os_string());
+            } else if let Some(comp) = cur.components().next() {
+                // It's a root prefix like "C:\" or "/"
+                unique_root_children.insert(comp.as_os_str().to_os_string());
             }
         }
     }
 
-    (root_children, map)
+    let root_children_count = unique_root_children.len();
+
+    let mut intermediate_counts = BTreeMap::new();
+    intermediate_counts.extend(children_map.into_iter().map(|(p, set)| (p, set.len())));
+
+    (root_children_count, intermediate_counts)
 }
 
 #[cfg(test)]
@@ -430,18 +465,30 @@ mod tests {
 
     #[test]
     fn test_get_intermediate_paths() {
+        let root = PathBuf::from("/");
+        let paths = vec![
+            PathBuf::from("/a/b/c"),
+            PathBuf::from("/a/b/d"),
+            PathBuf::from("/a/e"),
+        ];
+        let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
+        let mut expected = BTreeMap::new();
+        expected.insert(PathBuf::from("/a"), 2);
+        expected.insert(PathBuf::from("/a/b"), 2);
+        assert_eq!(root_children_count, 1);
+        assert_eq!(intermediate_paths, expected);
+
+        // Test with root as a subpath
         let root = PathBuf::from("/a");
         let paths = vec![
             PathBuf::from("/a/b/c"),
             PathBuf::from("/a/b/d"),
             PathBuf::from("/a/e"),
         ];
-
         let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
-
         let mut expected = BTreeMap::new();
         expected.insert(PathBuf::from("/a/b"), 2);
-        assert_eq!(root_children_count, 3);
+        assert_eq!(root_children_count, 2); // 'b' and 'e' are direct children of '/a'
         assert_eq!(intermediate_paths, expected);
 
         // Test with empty root (virtual root)
@@ -453,8 +500,9 @@ mod tests {
         ];
         let (root_children_count, intermediate_paths) = get_intermediate_paths(&root, &paths);
         let mut expected = BTreeMap::new();
-        expected.insert(PathBuf::from("/a"), 2);
-        assert_eq!(root_children_count, 3);
+        expected.insert(PathBuf::from("/"), 2); // children of /: a and d
+        expected.insert(PathBuf::from("/a"), 2); // children of /a: b and c
+        assert_eq!(root_children_count, 1); // the root children is just "/"
         assert_eq!(intermediate_paths, expected);
     }
 

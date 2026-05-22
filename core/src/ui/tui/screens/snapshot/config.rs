@@ -33,7 +33,7 @@ impl SnapshotForm {
                                 .iter()
                                 .map(|p| p.to_string_lossy().to_string())
                                 .collect::<Vec<_>>()
-                                .join(",")
+                                .join(", ")
                         })
                         .unwrap_or_default(),
                 )),

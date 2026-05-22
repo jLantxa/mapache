@@ -62,9 +62,9 @@ impl ProgressBar {
             .add_modifier(Modifier::BOLD);
         let empty_style = Style::default().fg(theme::PROGRESS_EMPTY);
 
-        let (bar_spans, info_text) = if self.scanning && self.expected_bytes == 0 {
+        let (bar_spans, info_text) = if self.scanning {
             let mut spans = Vec::new();
-            spans.push(Span::styled("\u{2501}".repeat(BAR_WIDTH), empty_style));
+            spans.push(Span::styled("\u{2500}".repeat(BAR_WIDTH), empty_style));
             (
                 spans,
                 format!(

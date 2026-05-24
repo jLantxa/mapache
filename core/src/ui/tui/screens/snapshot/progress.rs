@@ -82,6 +82,10 @@ impl SnapshotProgressReporter for TuiSnapshotProgressReporter {
 
     fn log(&self, _msg: String) {}
 
+    fn verbose_1(&self, _msg: String) {}
+
+    fn verbose_2(&self, _msg: String) {}
+
     fn finalize(&self) {}
 }
 

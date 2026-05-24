@@ -70,6 +70,14 @@ impl RestoreProgressReporter for BundleRestoreReporterAdapter {
         self.inner.log(msg);
     }
 
+    fn verbose_1(&self, msg: String) {
+        self.inner.verbose_1(msg);
+    }
+
+    fn verbose_2(&self, msg: String) {
+        self.inner.verbose_2(msg);
+    }
+
     fn finalize(&self) {}
 }
 

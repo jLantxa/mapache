@@ -35,7 +35,28 @@ pub trait RestoreProgressReporter: Send + Sync {
     fn error_count(&self) -> u64;
     fn warning_count(&self) -> u64;
     fn log(&self, msg: String);
+    fn verbose_1(&self, msg: String);
+    fn verbose_2(&self, msg: String);
     fn finalize(&self);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GcTask {
+    SearchingReferencedBlobs,
+    FindingObsoleteBlobs,
+    CheckingGarbageLevels,
+    DeletingUnusedPacks,
+    RepackingBlobs,
+    DeletingOldIndices,
+    DeletingObsoletePacks,
+}
+
+pub trait GcProgressReporter: Send + Sync {
+    fn log(&self, msg: String);
+    fn warning(&self, msg: String);
+    fn start_task(&self, task: GcTask, total: Option<u64>);
+    fn update_task(&self, task: GcTask, pos: u64);
+    fn finish_task(&self, task: GcTask);
 }
 
 /// Summary of snapshot processing statistics
@@ -75,6 +96,12 @@ pub trait SnapshotProgressReporter: Send + Sync {
 
     /// Log a message
     fn log(&self, msg: String);
+
+    /// Log a message at verbosity level 1
+    fn verbose_1(&self, msg: String);
+
+    /// Log a message at verbosity level 2
+    fn verbose_2(&self, msg: String);
 
     /// Finalize the reporter (cleanup resources)
     fn finalize(&self);

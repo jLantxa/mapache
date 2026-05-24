@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub mod bundle;
+pub mod gc;
 pub mod restore;
 pub mod snapshot;
 pub mod table;

@@ -163,6 +163,14 @@ impl RestoreProgressReporter for TuiRestoreProgressReporter {
         let _ = self.tx.send(RestoreEvent::Log(msg));
     }
 
+    fn verbose_1(&self, msg: String) {
+        let _ = self.tx.send(RestoreEvent::Verbose1(msg));
+    }
+
+    fn verbose_2(&self, msg: String) {
+        let _ = self.tx.send(RestoreEvent::Verbose2(msg));
+    }
+
     fn finalize(&self) {}
 }
 

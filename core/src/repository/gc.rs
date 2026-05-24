@@ -1,23 +1,20 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
-use colored::Colorize;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::WriteContents,
     mapache::{
         self, ContentIdType, ID, SaveID,
         defaults::{self, DEFAULT_PACK_SIZE},
-        global::GlobalOpts,
     },
     repository::{
         loader,
         repo::{REPO_DROPPED_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
-    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui,
     utils::{
         self,
         collections::{IdMap, IdSet},
@@ -47,9 +44,14 @@ pub struct GcSizes {
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
-pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
+pub async fn scan(
+    repo: Arc<Repository>,
+    tolerance: f32,
+    reporter: Arc<dyn ui::GcProgressReporter>,
+) -> Result<Plan> {
     tracing::info!(target: "gc", "Starting garbage collection scan (tolerance={:.1}%)", tolerance * 100.0);
-    let (referenced_blobs, referenced_packs) = get_referenced_blobs_and_packs(repo.clone()).await?;
+    let (referenced_blobs, referenced_packs) =
+        get_referenced_blobs_and_packs(repo.clone(), reporter.clone()).await?;
 
     let (keep_packs, object_trash) = repo.list_packs_and_trash().await?;
     let mut keep_packs = keep_packs;
@@ -77,16 +79,8 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
     let mut pack_garbage: IdMap<ID, u64> = IdMap::default();
 
     // Find obsolete packs and blobs in index
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Finding obsolete blobs: {pos}")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
-    // for (id, locator) in repo.index().read().iter_ids() {
+    reporter.start_task(ui::GcTask::FindingObsoleteBlobs, None);
+    let mut obsolete_blobs_count = 0;
 
     repo.index().for_each_id(|id, locator| {
         *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
@@ -96,10 +90,11 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
                 .entry(locator.pack_id)
                 .and_modify(|size| *size += locator.length as u64)
                 .or_insert(locator.length as u64);
-            spinner.inc(1);
+            obsolete_blobs_count += 1;
+            reporter.update_task(ui::GcTask::FindingObsoleteBlobs, obsolete_blobs_count);
         }
     });
-    spinner.finish_and_clear();
+    reporter.finish_task(ui::GcTask::FindingObsoleteBlobs);
 
     // Find small packs to repack
     let current_pack_size = repo.pack_size();
@@ -110,25 +105,19 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
         }
     }
 
-    spinner.finish_and_clear();
-    tracing::debug!(target: "gc", "Found {} obsolete blobs in {} packs", spinner.position(), pack_garbage.len());
-    ui::cli::log!(
+    tracing::debug!(target: "gc", "Found {} obsolete blobs in {} packs", obsolete_blobs_count, pack_garbage.len());
+    reporter.log(format!(
         "Found {} obsolete blobs in {} packs",
-        spinner.position(),
+        obsolete_blobs_count,
         pack_garbage.len()
-    );
+    ));
 
     // Check garbage levels
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_length(pack_garbage.len() as u64);
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Checking garbage levels ({pos} / {len} packs)")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
+    reporter.start_task(
+        ui::GcTask::CheckingGarbageLevels,
+        Some(pack_garbage.len() as u64),
     );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+    let mut checked_packs_count = 0;
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
         if (garbage_bytes as f32 / DEFAULT_PACK_SIZE as f32) > tolerance {
             tracing::trace!(target: "gc", "Pack {} is obsolete (garbage bytes: {})", pack_id.to_short_hex(8), garbage_bytes);
@@ -137,9 +126,10 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
         } else {
             plan.tolerated_packs.insert(pack_id);
         }
-        spinner.inc(1);
+        checked_packs_count += 1;
+        reporter.update_task(ui::GcTask::CheckingGarbageLevels, checked_packs_count);
     }
-    spinner.finish_and_clear();
+    reporter.finish_task(ui::GcTask::CheckingGarbageLevels);
     tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small, {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_packs.len(), plan.tolerated_packs.len(), plan.unused_packs.len());
 
     Ok(plan)
@@ -148,21 +138,26 @@ pub async fn scan(repo: Arc<Repository>, tolerance: f32) -> Result<Plan> {
 impl Plan {
     /// Execute the plan. Calling this method consumes the plan so it cannot be
     /// executed more than once.
-    pub async fn execute(mut self) -> Result<GcSizes> {
+    pub async fn execute(mut self, reporter: Arc<dyn ui::GcProgressReporter>) -> Result<GcSizes> {
         tracing::info!(target: "gc", "Executing garbage collection plan");
         let mut gc_sizes = GcSizes::default();
 
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
-        gc_sizes.deleted_bytes += remove_expired_locks(&self.repo).await?;
-        delete_trash_files(&self.repo, Some(self.object_trash.drain(..).collect())).await?;
+        gc_sizes.deleted_bytes += remove_expired_locks(&self.repo, reporter.clone()).await?;
+        delete_trash_files(
+            &self.repo,
+            Some(self.object_trash.drain(..).collect()),
+            reporter.clone(),
+        )
+        .await?;
 
         if self.small_packs.len() > 1 {
             tracing::debug!(target: "gc", "Marking {} small packs as obsolete for repacking", self.small_packs.len());
             self.obsolete_packs.extend(self.small_packs.drain());
         }
 
-        gc_sizes.deleted_bytes += self.delete_unused_packs().await?;
+        gc_sizes.deleted_bytes += self.delete_unused_packs(reporter.clone()).await?;
 
         // No need to repack and rewrite the indices if there are no obsolete packs
         if !self.obsolete_packs.is_empty() {
@@ -170,13 +165,13 @@ impl Plan {
             self.repo
                 .init_pack_saver(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
 
-            self.repack().await?;
+            self.repack(reporter.clone()).await?;
 
             let repo_stats = self.repo.flush_and_finalize_pack_saver().await?;
 
             gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
-            gc_sizes.deleted_bytes += self.delete_old_indices().await?;
-            gc_sizes.deleted_bytes += self.delete_obsolete_packs().await?;
+            gc_sizes.deleted_bytes += self.delete_old_indices(reporter.clone()).await?;
+            gc_sizes.deleted_bytes += self.delete_obsolete_packs(reporter.clone()).await?;
         }
 
         tracing::info!(target: "gc", "Garbage collection execution finished");
@@ -184,31 +179,26 @@ impl Plan {
     }
 
     /// Delete packs that contain no referenced blobs.
-    async fn delete_unused_packs(&self) -> Result<u64> {
+    async fn delete_unused_packs(&self, reporter: Arc<dyn ui::GcProgressReporter>) -> Result<u64> {
         if self.unused_packs.is_empty() {
             return Ok(0);
         }
 
-        let unused_pack_delete_bar = ProgressBar::with_draw_target(
+        reporter.start_task(
+            ui::GcTask::DeletingUnusedPacks,
             Some(self.unused_packs.len() as u64),
-            default_bar_draw_target(),
-        )
-        .with_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "[{percent} %] [{bar:20.cyan/white}] Deleting unused packs: {pos} / {len}",
-                )
-                .unwrap()
-                .progress_chars("=> "),
         );
+        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         let deleted_size = stream::iter(&self.unused_packs)
             .map(|id| {
                 let repo = &self.repo;
-                let bar = &unused_pack_delete_bar;
+                let reporter = reporter.clone();
+                let pos = pos.clone();
                 Ok(async move {
                     let size = repo.delete_file(ContentIdType::Pack, id, None).await?;
-                    bar.inc(1);
+                    let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    reporter.update_task(ui::GcTask::DeletingUnusedPacks, current);
                     Ok::<u64, anyhow::Error>(size)
                 })
             })
@@ -216,15 +206,18 @@ impl Plan {
             .try_fold(0, |acc, size| async move { Ok(acc + size) })
             .await?;
 
-        unused_pack_delete_bar.finish_and_clear();
-        ui::cli::log!("Deleted {} unused packs", unused_pack_delete_bar.position());
+        reporter.finish_task(ui::GcTask::DeletingUnusedPacks);
+        reporter.log(format!(
+            "Deleted {} unused packs",
+            pos.load(std::sync::atomic::Ordering::Relaxed)
+        ));
 
         Ok(deleted_size)
     }
 
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
-    async fn repack(&mut self) -> Result<()> {
+    async fn repack(&mut self, reporter: Arc<dyn ui::GcProgressReporter>) -> Result<()> {
         // Gather locators while the index is still intact.
         // We use a Vec to preserve the exact metadata we need for the loader.
         let mut locators_to_repack = Vec::new();
@@ -248,28 +241,23 @@ impl Plan {
         // and ensures our new pack file becomes the primary source.
         self.repo.index().cleanup(Some(&self.obsolete_packs));
 
-        let repack_bar = ProgressBar::with_draw_target(
+        reporter.start_task(
+            ui::GcTask::RepackingBlobs,
             Some(locators_to_repack.len() as u64),
-            default_bar_draw_target(),
-        )
-        .with_style(
-            ProgressStyle::default_bar()
-                .template("[{percent} %] [{bar:20.cyan/white}] Repacking blobs: {pos} / {len}")
-                .unwrap()
-                .progress_chars("=> "),
         );
+        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // Process chunks in parallel with pipelining
         const CHUNK_SIZE: usize = 100;
         const MAX_CONCURRENT_CHUNKS: usize = 4;
 
         let chunks: Vec<_> = locators_to_repack.chunks(CHUNK_SIZE).collect();
-        let bar = Arc::new(repack_bar);
 
         stream::iter(chunks)
             .map(|chunk| {
                 let repo = self.repo.clone();
-                let bar = bar.clone();
+                let reporter = reporter.clone();
+                let pos = pos.clone();
 
                 async move {
                     let loader = loader::BlobLoader::new(repo.clone());
@@ -286,7 +274,8 @@ impl Plan {
                                 .unwrap_or(mapache::BlobType::Data);
 
                             let repo_clone = repo.clone();
-                            let bar_clone = bar.clone();
+                            let reporter_clone = reporter.clone();
+                            let pos_clone = pos.clone();
 
                             tokio::task::spawn_blocking(move || {
                                 let result = repo_clone.encode_and_save_blob(
@@ -294,7 +283,10 @@ impl Plan {
                                     WriteContents::Owned(data),
                                     SaveID::WithID(id),
                                 );
-                                bar_clone.inc(1);
+                                let current = pos_clone
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                    + 1;
+                                reporter_clone.update_task(ui::GcTask::RepackingBlobs, current);
                                 result
                             })
                         })
@@ -316,14 +308,17 @@ impl Plan {
             .try_collect::<Vec<_>>()
             .await?;
 
-        bar.finish_and_clear();
+        reporter.finish_task(ui::GcTask::RepackingBlobs);
         Ok(())
     }
 
     /// Delete old index files
     /// This operation must be performed after the master index has been cleaned up
     /// and all referenced packs have been repacked.
-    async fn delete_old_indices(&mut self) -> Result<u64> {
+    async fn delete_old_indices(
+        &mut self,
+        reporter: Arc<dyn ui::GcProgressReporter>,
+    ) -> Result<u64> {
         // Make sure that the new index files don't overlap the files to delete.
         let new_index_ids = self.repo.index().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
@@ -332,29 +327,24 @@ impl Plan {
             return Ok(0);
         }
 
-        let index_delete_bar = ProgressBar::with_draw_target(
+        reporter.start_task(
+            ui::GcTask::DeletingOldIndices,
             Some(self.index_ids.len() as u64),
-            default_bar_draw_target(),
-        )
-        .with_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "[{percent} %] [{bar:20.cyan/white}] Deleting old index files: {pos}/{len}",
-                )
-                .unwrap()
-                .progress_chars("=> "),
         );
+        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         let deleted_size = stream::iter(&self.index_ids)
             .map(|id| {
                 let repo = &self.repo;
-                let bar = &index_delete_bar;
+                let reporter = reporter.clone();
+                let pos = pos.clone();
                 async move {
                     let size = repo
                         .delete_file(ContentIdType::Index, id, None)
                         .await
                         .unwrap_or(0);
-                    bar.inc(1);
+                    let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    reporter.update_task(ui::GcTask::DeletingOldIndices, current);
                     size
                 }
             })
@@ -362,40 +352,38 @@ impl Plan {
             .fold(0u64, |acc, size| async move { acc + size })
             .await;
 
-        index_delete_bar.finish_and_clear();
+        reporter.finish_task(ui::GcTask::DeletingOldIndices);
 
-        ui::cli::log!(
+        reporter.log(format!(
             "Deleted {} obsolete index files",
-            index_delete_bar.position()
-        );
+            pos.load(std::sync::atomic::Ordering::Relaxed)
+        ));
 
         Ok(deleted_size)
     }
 
     /// Delete all pack files marked as obsolete.
-    async fn delete_obsolete_packs(&self) -> Result<u64> {
+    async fn delete_obsolete_packs(
+        &self,
+        reporter: Arc<dyn ui::GcProgressReporter>,
+    ) -> Result<u64> {
         if self.obsolete_packs.is_empty() {
             return Ok(0);
         }
 
-        // Initialize progress bar
-        let obsolete_pack_delete_bar = ProgressBar::with_draw_target(
-        Some(self.obsolete_packs.len() as u64),
-        default_bar_draw_target(),
-    )
-    .with_style(
-        ProgressStyle::default_bar()
-            .template("[{percent} %]  [{bar:20.cyan/white}] Deleting obsolete pack files: {pos}/{len}")
-            .unwrap()
-            .progress_chars("=> "),
-    );
+        reporter.start_task(
+            ui::GcTask::DeletingObsoletePacks,
+            Some(self.obsolete_packs.len() as u64),
+        );
+        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         // Convert the IdSet into an async stream.
         // We map each ID to an async delete operation and process them in parallel.
         let deleted_size = stream::iter(&self.obsolete_packs)
             .map(|id| {
                 let repo = &self.repo;
-                let bar = &obsolete_pack_delete_bar;
+                let reporter = reporter.clone();
+                let pos = pos.clone();
                 async move {
                     // Perform the async delete
                     let size = repo
@@ -403,7 +391,8 @@ impl Plan {
                         .await
                         .unwrap_or(0);
 
-                    bar.inc(1);
+                    let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    reporter.update_task(ui::GcTask::DeletingObsoletePacks, current);
                     size
                 }
             })
@@ -411,39 +400,34 @@ impl Plan {
             .fold(0u64, |acc, size| async move { acc + size })
             .await;
 
-        obsolete_pack_delete_bar.finish_and_clear();
+        reporter.finish_task(ui::GcTask::DeletingObsoletePacks);
 
-        ui::cli::log!(
+        reporter.log(format!(
             "Deleted {} obsolete packs",
-            obsolete_pack_delete_bar.position()
-        );
+            pos.load(std::sync::atomic::Ordering::Relaxed)
+        ));
 
         Ok(deleted_size)
     }
 }
 
 /// Returns all blobs and packs referenced by all existing snapshots in the repository.
-async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<ID>, IdSet<ID>)> {
+async fn get_referenced_blobs_and_packs(
+    repo: Arc<Repository>,
+    reporter: Arc<dyn ui::GcProgressReporter>,
+) -> Result<(IdSet<ID>, IdSet<ID>)> {
     let referenced_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
     let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_draw_target(default_bar_draw_target());
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} Searching referenced blobs: {pos}")
-            .unwrap()
-            .tick_chars(SPINNER_TICK_CHARS),
-    );
-    spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+    reporter.start_task(ui::GcTask::SearchingReferencedBlobs, None);
 
     snapshot_stream
         .map(|res| {
             let repo = repo.clone();
-            let spinner = spinner.clone();
+            let reporter = reporter.clone();
             let referenced_blobs = referenced_blobs.clone();
             let referenced_packs = referenced_packs.clone();
             let verified_trees = verified_trees.clone();
@@ -467,7 +451,7 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                             {
                                 let mut blobs = referenced_blobs.lock();
                                 if blobs.insert(tree_id) {
-                                    spinner.set_position(blobs.len() as u64);
+                                    reporter.update_task(ui::GcTask::SearchingReferencedBlobs, blobs.len() as u64);
                                 }
                             }
 
@@ -476,10 +460,10 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                                     referenced_packs.lock().insert(locator.pack_id);
                                 }
                                 None => {
-                                    ui::cli::warning!(
+                                    reporter.warning(format!(
                                         "Snapshot tree {} is referenced but not found in index",
                                         tree_id
-                                    );
+                                    ));
                                 }
                             }
 
@@ -508,7 +492,7 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
 
                                     for blob_id in blobs {
                                         if ref_blobs.insert(blob_id) {
-                                            spinner.set_position(ref_blobs.len() as u64);
+                                            reporter.update_task(ui::GcTask::SearchingReferencedBlobs, ref_blobs.len() as u64);
                                         }
 
                                         match index.get(&blob_id) {
@@ -516,10 +500,10 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
                                                 ref_packs.insert(locator.pack_id);
                                             }
                                             None => {
-                                                ui::cli::warning!(
+                                                reporter.warning(format!(
                                                     "Data blob {} is referenced but not found in index",
                                                     blob_id
-                                                );
+                                                ));
                                             }
                                         }
                                     }
@@ -535,7 +519,7 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
         .try_collect::<Vec<_>>()
         .await?;
 
-    spinner.finish_and_clear();
+    reporter.finish_task(ui::GcTask::SearchingReferencedBlobs);
 
     let final_blobs = Arc::try_unwrap(referenced_blobs)
         .map_err(|_| anyhow!("Internal error: could not unwrap referenced_blobs Arc"))?
@@ -544,17 +528,20 @@ async fn get_referenced_blobs_and_packs(repo: Arc<Repository>) -> Result<(IdSet<
         .map_err(|_| anyhow!("Internal error: could not unwrap referenced_packs Arc"))?
         .into_inner();
 
-    ui::cli::log!(
+    reporter.log(format!(
         "Found {} referenced blobs and {} packs",
         final_blobs.len(),
         final_packs.len()
-    );
+    ));
 
     Ok((final_blobs, final_packs))
 }
 
 /// Remove all expired locks from the repository
-async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
+async fn remove_expired_locks(
+    repo: &Arc<Repository>,
+    reporter: Arc<dyn ui::GcProgressReporter>,
+) -> Result<u64> {
     let locks = repo.get_locks().await?;
     let mut size_freed = 0;
     let mut num_deleted_locks = 0;
@@ -568,10 +555,10 @@ async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
         }
     }
 
-    ui::cli::log!(
+    reporter.log(format!(
         "Deleted {}",
         utils::format_count(num_deleted_locks, "stale lock", "stale locks")
-    );
+    ));
 
     Ok(size_freed)
 }
@@ -584,6 +571,7 @@ async fn remove_expired_locks(repo: &Arc<Repository>) -> Result<u64> {
 async fn delete_trash_files(
     repo: &Arc<Repository>,
     object_trash: Option<Vec<PathBuf>>,
+    reporter: Arc<dyn ui::GcProgressReporter>,
 ) -> Result<()> {
     let target_dirs = vec![
         repo.snapshot_path().to_path_buf(),
@@ -626,7 +614,7 @@ async fn delete_trash_files(
     // Delete found trash files
     for path in trash_files {
         if backend.remove(&path).await.is_err() {
-            ui::cli::warning!("Could not remove trash file {}", path.display());
+            reporter.warning(format!("Could not remove trash file {}", path.display()));
         }
     }
 

@@ -159,6 +159,40 @@ impl RestoreProgressReporter for JsonRestoreProgressReporter {
         self.json_reporter.emit("log", &LogMsg { message: msg });
     }
 
+    fn verbose_1(&self, msg: String) {
+        #[derive(Serialize)]
+        struct VerboseMsg {
+            message: String,
+            level: u32,
+        }
+        if GlobalOpts::verbosity() >= 2 {
+            self.json_reporter.emit(
+                "verbose",
+                &VerboseMsg {
+                    message: msg,
+                    level: 1,
+                },
+            );
+        }
+    }
+
+    fn verbose_2(&self, msg: String) {
+        #[derive(Serialize)]
+        struct VerboseMsg {
+            message: String,
+            level: u32,
+        }
+        if GlobalOpts::verbosity() >= 3 {
+            self.json_reporter.emit(
+                "verbose",
+                &VerboseMsg {
+                    message: msg,
+                    level: 2,
+                },
+            );
+        }
+    }
+
     fn finalize(&self) {
         self.emit_status_update();
         self.json_reporter.flush();

@@ -31,12 +31,12 @@ parking_lot = "0.12.5"
 rand = "0.10.1"
 ratatui = { version = "0.30", optional = true }
 rayon = "1.12.0"
-russh = { version = "0.61.0", default-features = false, features = [
+russh = { version = "0.61.1", default-features = false, features = [
   "flate2",
   "ring",
   "rsa",
 ] }
-russh-sftp = "2.2.2"
+russh-sftp = "2.3.0"
 rust-s3 = { version = "0.37.2", default-features = false, features = [
   "with-tokio",
 ] }

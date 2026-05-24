@@ -373,7 +373,7 @@ pub async fn run_with_repo(
 
     if delete {
         tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
-        restorer::sync::delete_nodes(
+        restorer::delete_nodes(
             repo,
             abs_normalized_target.clone(),
             &pair.snapshot.tree,
@@ -382,6 +382,7 @@ pub async fn run_with_repo(
             dry_run,
             no_preserve_root,
             cleanup_handler.interrupted.clone(),
+            progress_reporter,
         )
         .await?;
     }

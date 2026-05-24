@@ -250,6 +250,14 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
         self.json_reporter.emit("log", &LogMsg { message: msg });
     }
 
+    fn verbose_1(&self, msg: String) {
+        self.log(msg);
+    }
+
+    fn verbose_2(&self, msg: String) {
+        self.log(msg);
+    }
+
     fn finalize(&self) {
         // Emit final status update
         self.emit_status_update();

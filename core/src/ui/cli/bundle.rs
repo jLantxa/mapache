@@ -188,6 +188,14 @@ impl SnapshotProgressReporter for BundleCliProgressReporter {
         let _ = self.mp.println(msg);
     }
 
+    fn verbose_1(&self, msg: String) {
+        self.log(msg);
+    }
+
+    fn verbose_2(&self, msg: String) {
+        self.log(msg);
+    }
+
     fn finalize(&self) {
         if self.ui_stop.swap(true, Ordering::Relaxed) {
             return;

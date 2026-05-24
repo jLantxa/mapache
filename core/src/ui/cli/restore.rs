@@ -179,6 +179,18 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
         let _ = self.mp.println(msg);
     }
 
+    fn verbose_1(&self, msg: String) {
+        if GlobalOpts::verbosity() >= 2 {
+            let _ = self.mp.println(msg);
+        }
+    }
+
+    fn verbose_2(&self, msg: String) {
+        if GlobalOpts::verbosity() >= 3 {
+            let _ = self.mp.println(msg);
+        }
+    }
+
     fn finalize(&self) {
         self.companion_bar.finish_and_clear();
         self.progress_bar.finish_and_clear();

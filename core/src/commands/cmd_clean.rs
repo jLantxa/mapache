@@ -118,12 +118,16 @@ pub async fn run_with_repo(
         ui::cli::log!();
     }
 
-    let plan = gc::scan(repo.clone(), tolerance).await.map_err(|e| {
-        fail(
-            format!("Failed to scan repository: {}", e),
-            CleanError::ScanFailed,
-        )
-    })?;
+    let reporter = Arc::new(ui::cli::gc::CliGcProgressReporter::new());
+
+    let plan = gc::scan(repo.clone(), tolerance, reporter.clone())
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to scan repository: {}", e),
+                CleanError::ScanFailed,
+            )
+        })?;
     tracing::info!(target: "clean", "GC scan finished. Plan: {} packs to remove, {} to repack", plan.unused_packs.len() + plan.obsolete_packs.len(), plan.small_packs.len());
 
     let total_packs = plan.total_packs;
@@ -154,7 +158,7 @@ pub async fn run_with_repo(
         (0, 0)
     } else {
         tracing::info!(target: "clean", "Executing GC plan");
-        let gc_sizes = plan.execute().await.map_err(|e| {
+        let gc_sizes = plan.execute(reporter).await.map_err(|e| {
             fail(
                 format!("Failed to execute GC plan: {}", e),
                 CleanError::ExecuteFailed,

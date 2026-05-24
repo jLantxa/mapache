@@ -12,6 +12,8 @@ pub enum RestoreEvent {
     Error(String),
     Warning(String),
     Log(String),
+    Verbose1(String),
+    Verbose2(String),
     Completed(Option<String>),
 }
 
@@ -37,6 +39,12 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
             state.add_warning(warn);
         }
         RestoreEvent::Log(msg) => {
+            state.add_log(msg);
+        }
+        RestoreEvent::Verbose1(msg) => {
+            state.add_log(msg);
+        }
+        RestoreEvent::Verbose2(msg) => {
             state.add_log(msg);
         }
         RestoreEvent::Completed(_) => {

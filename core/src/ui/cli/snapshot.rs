@@ -424,6 +424,14 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
         let _ = self.mp.println(msg);
     }
 
+    fn verbose_1(&self, msg: String) {
+        self.log(msg);
+    }
+
+    fn verbose_2(&self, msg: String) {
+        self.log(msg);
+    }
+
     fn finalize(&self) {
         self.ui_stop.store(true, Ordering::Relaxed);
         let _ = self.ui_tx.try_send(UiEvent::Shutdown);

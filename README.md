@@ -212,13 +212,14 @@ Focused on new tooling, configuration, and performance optimizations.
 - [x] **S3 multipart uploads** — For files >= 128 MiB.
 - [x] **Access time preservation** — `--with-atime` flag for snapshot command.
 - [x] **JSON output** for `clean`, `stats`, and other commands.
-  index.
+- [x] **Experimental TUI** — Interactive terminal interface for snapshot
+  creation, restore, and retention management (may be removed or replaced).
 
 ### Future
 
 In the future, I want to polish all rough edges, like adding `json` output and
-error codes to all commands. Maybe a TUI, but that's a wholly different
-endeavor.
+error codes to all commands. The current TUI is experimental and may be
+replaced by a separate frontend that consumes the JSON output.
 
 Other planned features (non-exhaustive):
 

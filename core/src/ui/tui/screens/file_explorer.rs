@@ -27,10 +27,6 @@ const METADATA_HEIGHT: u16 = 7;
 const TITLE_HEIGHT: u16 = 1;
 const BREADCRUMB_HEIGHT: u16 = 1;
 
-const ICON_DIR: &str = "[+]";
-const ICON_FILE: &str = "[ ]";
-const ICON_SYMLINK: &str = "[~]";
-
 struct PathStackEntry {
     tree: Tree,
     previous_selection: usize,
@@ -175,14 +171,6 @@ impl Screen for FileExplorerScreen {
             .nodes
             .iter()
             .map(|node| {
-                let icon = if node.is_dir() {
-                    ICON_DIR
-                } else if node.is_symlink() {
-                    ICON_SYMLINK
-                } else {
-                    ICON_FILE
-                };
-
                 let name = if node.is_dir() {
                     format!("{}/", &node.name)
                 } else {
@@ -210,8 +198,6 @@ impl Screen for FileExplorerScreen {
                 }
 
                 ListItem::new(Line::from(vec![
-                    Span::styled(icon, Style::default().fg(Color::DarkGray)),
-                    Span::raw(" "),
                     Span::styled(name, style),
                     Span::styled(size, Style::default().fg(Color::DarkGray)),
                 ]))

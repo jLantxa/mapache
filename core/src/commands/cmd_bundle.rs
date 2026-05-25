@@ -334,12 +334,12 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                         let blobs_res = tokio::task::spawn_blocking(move || {
                             let file = std::fs::File::open(&path_str)?;
                             processor::chunk_and_store_file(
-                                saver_clone,
+                                saver_clone.as_ref(),
                                 file,
                                 file_size,
-                                progress_clone,
-                                reporter_clone,
-                                signal_clone,
+                                progress_clone.as_ref(),
+                                reporter_clone.as_ref(),
+                                signal_clone.as_ref(),
                             )
                         })
                         .await

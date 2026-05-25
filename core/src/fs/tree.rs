@@ -71,7 +71,7 @@ impl Tree {
 }
 
 /// Represents a file system node along with additional information needed for streaming.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StreamNode {
     pub node: Node,
     /// The number of children this node has that will be yielded by the stream.

@@ -15,7 +15,7 @@ use crate::{
     mapache::{self, BlobType, ContentIdType, ID},
     repository::packer::PackedBlobDescriptor,
     repository::repo::{Repository, SizePair},
-    utils::collections::{IdIndexSet, IdMap, IdSet, ShardedIdSet},
+    utils::collections::{BloomFilter, IdIndexSet, IdMap, IdSet, ShardedIdSet},
 };
 
 /// Internal optimized representation of a blob's location.
@@ -387,6 +387,8 @@ pub struct MasterIndex {
 struct MasterIndexInner {
     /// A list of individual indices, some of which might be pending.
     indices: Vec<Index>,
+    /// Bloom Filter for fast deduplication checks.
+    bloom_filter: Option<BloomFilter>,
 }
 
 impl Default for MasterIndex {
@@ -401,6 +403,7 @@ impl MasterIndex {
         Self {
             inner: Arc::new(RwLock::new(MasterIndexInner {
                 indices: Vec::with_capacity(1),
+                bloom_filter: None,
             })),
             pending_blobs: Arc::new(ShardedIdSet::new()),
             auto_save: true,
@@ -410,7 +413,14 @@ impl MasterIndex {
     pub fn clear(&self) {
         let mut lock = self.inner.write();
         lock.indices.clear();
+        lock.bloom_filter = None;
         self.pending_blobs.clear();
+    }
+
+    /// Returns the total number of blobs in all finalized indices.
+    pub fn num_blobs(&self) -> usize {
+        let lock = self.inner.read();
+        lock.indices.iter().map(|idx| idx.num_blobs()).sum()
     }
 
     /// Returns `true` if the object ID is known either in a finalized index
@@ -421,6 +431,11 @@ impl MasterIndex {
         }
 
         let lock = self.inner.read();
+        if let Some(bf) = &lock.bloom_filter
+            && !bf.contains(id)
+        {
+            return false;
+        }
         lock.indices.iter().rev().any(|idx| idx.contains(id))
     }
 
@@ -468,7 +483,29 @@ impl MasterIndex {
     pub fn add_index(&self, index: Index) {
         let mut lock = self.inner.write();
 
+        if let Some(bf) = &mut lock.bloom_filter {
+            for (id, _) in index.iter_ids() {
+                bf.insert(id);
+            }
+        }
+
         lock.indices.push(index);
+    }
+
+    /// Initializes a Bloom Filter for all blobs currently in the master index.
+    pub fn initialize_bloom_filter(&self, total_blobs: usize) {
+        const BLOOM_FILTER_FALSE_POSITIVE_RATE: f64 = 0.01;
+
+        let mut lock = self.inner.write();
+        let mut bf = BloomFilter::new(total_blobs, BLOOM_FILTER_FALSE_POSITIVE_RATE);
+
+        for idx in &lock.indices {
+            for (id, _) in idx.iter_ids() {
+                bf.insert(id);
+            }
+        }
+
+        lock.bloom_filter = Some(bf);
     }
 
     /// Adds a blob ID to the set of blobs that are waiting to be packed.
@@ -511,6 +548,13 @@ impl MasterIndex {
             }
 
             let mut lock = self.inner.write();
+
+            if let Some(bf) = &mut lock.bloom_filter {
+                for blob in &descriptors {
+                    bf.insert(&blob.id);
+                }
+            }
+
             if !lock.indices.iter().any(|idx| idx.is_pending()) {
                 lock.indices.push(Index::new());
             }
@@ -960,6 +1004,35 @@ mod tests {
         assert_eq!(deserialized.packs[0].blobs.len(), 1);
         assert_eq!(deserialized.packs[0].id, pack_id);
         assert_eq!(deserialized.packs[0].blobs[0].id, mock_id("b1"));
+    }
+
+    #[test]
+    fn test_master_index_bloom_filter() {
+        let mi = MasterIndex::new();
+        let pack1 = mock_id("pack1");
+        let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
+        let b2 = mock_blob_desc("b2", BlobType::Data, 100, 100);
+
+        let mut idx = Index::new();
+        idx.add_pack(&pack1, vec![b1.clone()]);
+        mi.add_index(idx);
+
+        // Bloom filter is initially None
+        assert!(mi.inner.read().bloom_filter.is_none());
+
+        mi.initialize_bloom_filter(10);
+        assert!(mi.inner.read().bloom_filter.is_some());
+
+        assert!(mi.contains(&b1.id));
+        assert!(!mi.contains(&b2.id));
+
+        // Adding an index should update the Bloom filter
+        let mut idx2 = Index::new();
+        let pack2 = mock_id("pack2");
+        idx2.add_pack(&pack2, vec![b2.clone()]);
+        mi.add_index(idx2);
+
+        assert!(mi.contains(&b2.id));
     }
 
     #[test]

@@ -1144,6 +1144,12 @@ impl Repository {
         tracing::info!(target: "repo", "Loaded {num_index_files} index files");
         ui::cli::verbose_1!("Loaded {} index files", num_index_files);
 
+        let total_blobs = self.master_index.num_blobs();
+        if total_blobs > 0 {
+            tracing::debug!(target: "repo", "Initializing Bloom Filter for {} blobs", total_blobs);
+            self.master_index.initialize_bloom_filter(total_blobs);
+        }
+
         Ok(())
     }
 

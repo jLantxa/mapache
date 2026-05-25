@@ -11,10 +11,9 @@ use std::os::unix::io::AsRawFd;
 
 use std::{fs::OpenOptions, io::Write, path::Path};
 
-use {
-    anyhow::{Context, Result},
-    filetime::{FileTime, set_file_times},
-};
+use anyhow::{Context, Result};
+use filetime::{FileTime, set_file_times};
+use futures::StreamExt;
 
 use crate::{
     fs::node::{Metadata, Node, NodeType},
@@ -61,16 +60,23 @@ pub(crate) async fn restore_node_to_path(
                 None
             };
 
-            for (index, blob_id) in blocks.iter().enumerate() {
-                let chunk_data = repo.load_blob(blob_id).await.with_context(|| {
-                    format!(
-                        "Could not load block #{} ({}) for restoring file {}",
-                        index + 1,
-                        blob_id,
-                        dst_path.display()
-                    )
-                })?;
+            let stream = futures::stream::iter(blocks.iter().cloned().enumerate())
+                .map(|(index, blob_id)| async move {
+                    let res = repo.load_blob(&blob_id).await.with_context(|| {
+                        format!(
+                            "Could not load block #{} ({}) for restoring file {}",
+                            index + 1,
+                            blob_id,
+                            dst_path.display()
+                        )
+                    });
+                    (index, blob_id, res)
+                })
+                .buffered(4); // Prefetch up to 4 blobs in parallel
 
+            futures::pin_mut!(stream);
+            while let Some((index, blob_id, chunk_data)) = stream.next().await {
+                let chunk_data = chunk_data?;
                 let chunk_size = chunk_data.len() as u64;
 
                 if !dry_run && let Some(mut file) = dst_file.as_ref() {

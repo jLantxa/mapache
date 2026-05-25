@@ -204,27 +204,27 @@ pub fn render_config(frame: &mut Frame, form: &SnapshotForm) {
 fn render_footer(frame: &mut Frame, area: Rect, form: &SnapshotForm) {
     let footer = if form.form.is_editing() {
         Line::from(vec![
-            Span::styled("[Enter]", theme::STYLE_MENU_KEY),
+            Span::styled("[Enter]", theme::THEME.style_menu_key),
             Span::raw(" confirm"),
             Span::raw("    "),
-            Span::styled("[Esc]", theme::STYLE_MENU_KEY),
+            Span::styled("[Esc]", theme::THEME.style_menu_key),
             Span::raw(" cancel edit"),
         ])
     } else {
         Line::from(vec![
-            Span::styled("[Tab]", theme::STYLE_MENU_KEY),
+            Span::styled("[Tab]", theme::THEME.style_menu_key),
             Span::raw(" next"),
             Span::raw("    "),
-            Span::styled("[Enter]", theme::STYLE_MENU_KEY),
+            Span::styled("[Enter]", theme::THEME.style_menu_key),
             Span::raw(" edit/start"),
             Span::raw("    "),
-            Span::styled("[Space]", theme::STYLE_MENU_KEY),
+            Span::styled("[Space]", theme::THEME.style_menu_key),
             Span::raw(" toggle"),
             Span::raw("    "),
-            Span::styled("[Esc]", theme::STYLE_MENU_KEY),
+            Span::styled("[Esc]", theme::THEME.style_menu_key),
             Span::raw(" cancel"),
             Span::raw("    "),
-            Span::styled("[q]", theme::STYLE_MENU_KEY),
+            Span::styled("[q]", theme::THEME.style_menu_key),
             Span::raw(" quit"),
         ])
     };

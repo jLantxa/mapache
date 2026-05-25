@@ -58,9 +58,9 @@ impl ProgressBar {
 
     pub fn render(&self) -> Paragraph<'static> {
         let filled_style = Style::default()
-            .fg(theme::PROGRESS_FILLED)
+            .fg(theme::THEME.progress_filled)
             .add_modifier(Modifier::BOLD);
-        let empty_style = Style::default().fg(theme::PROGRESS_EMPTY);
+        let empty_style = Style::default().fg(theme::THEME.progress_empty);
 
         let (bar_spans, info_text) = if self.scanning {
             let mut spans = Vec::new();

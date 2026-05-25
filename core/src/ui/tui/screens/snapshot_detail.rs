@@ -85,7 +85,7 @@ impl SnapshotDetailScreen {
 
         lines.push(Line::from(vec![
             Span::styled("ID:          ", Style::default().bold()),
-            Span::styled(entry.id.to_hex(), theme::STYLE_SNAPSHOT_ID),
+            Span::styled(entry.id.to_hex(), theme::THEME.style_snapshot_id),
         ]));
 
         let ts = utils::pretty_print_timestamp(&s.timestamp, None);
@@ -95,14 +95,14 @@ impl SnapshotDetailScreen {
             Span::styled("Date:        ", Style::default().bold()),
             Span::raw(ts.to_string()),
             Span::raw("  ("),
-            Span::styled(format!("{} ago", ago), theme::STYLE_SNAPSHOT_DATE),
+            Span::styled(format!("{} ago", ago), theme::THEME.style_snapshot_date),
             Span::raw(")"),
         ]));
 
         if let Some(ref parent) = s.parent {
             lines.push(Line::from(vec![
                 Span::styled("Parent:      ", Style::default().bold()),
-                Span::styled(parent.to_short_hex(12), theme::STYLE_SNAPSHOT_ID),
+                Span::styled(parent.to_short_hex(12), theme::THEME.style_snapshot_id),
             ]));
         }
 
@@ -151,7 +151,7 @@ impl SnapshotDetailScreen {
 
         lines.push(Line::from(vec![Span::styled(
             "Paths:",
-            Style::default().bold().fg(theme::SNAPSHOT_DATE),
+            Style::default().bold().fg(theme::THEME.snapshot_date),
         )]));
 
         for p in &s.paths {
@@ -165,7 +165,7 @@ impl SnapshotDetailScreen {
 
         lines.push(Line::from(vec![Span::styled(
             "Summary:",
-            Style::default().bold().fg(theme::SNAPSHOT_DATE),
+            Style::default().bold().fg(theme::THEME.snapshot_date),
         )]));
 
         lines.push(Line::from(vec![
@@ -185,24 +185,24 @@ impl SnapshotDetailScreen {
         let has_next = self.current_index < self.snapshots.len().saturating_sub(1);
 
         let prev_style = if has_prev {
-            theme::STYLE_MENU_KEY
+            theme::THEME.style_menu_key
         } else {
-            Style::default().fg(theme::FOOTER_FG)
+            Style::default().fg(theme::THEME.footer_fg)
         };
         let next_style = if has_next {
-            theme::STYLE_MENU_KEY
+            theme::THEME.style_menu_key
         } else {
-            Style::default().fg(theme::FOOTER_FG)
+            Style::default().fg(theme::THEME.footer_fg)
         };
 
         let title = Line::from(vec![
-            Span::styled("[Esc]", theme::STYLE_MENU_KEY),
+            Span::styled("[Esc]", theme::THEME.style_menu_key),
             Span::raw(" back"),
             Span::raw("    "),
-            Span::styled("[Enter]", theme::STYLE_MENU_KEY),
+            Span::styled("[Enter]", theme::THEME.style_menu_key),
             Span::raw(" explore"),
             Span::raw("    "),
-            Span::styled("[r]", theme::STYLE_MENU_KEY),
+            Span::styled("[r]", theme::THEME.style_menu_key),
             Span::raw(" restore"),
             Span::raw("    "),
             Span::styled("<", prev_style),
@@ -211,10 +211,10 @@ impl SnapshotDetailScreen {
             Span::styled(">", next_style),
             Span::raw(" next"),
             Span::raw("    "),
-            Span::styled("[q]", theme::STYLE_MENU_KEY),
+            Span::styled("[q]", theme::THEME.style_menu_key),
             Span::raw(" close"),
             Span::raw("    "),
-            Span::styled("[\u{2191}\u{2193}]", theme::STYLE_MENU_KEY),
+            Span::styled("[\u{2191}\u{2193}]", theme::THEME.style_menu_key),
             Span::raw(" scroll"),
         ])
         .alignment(Alignment::Left);

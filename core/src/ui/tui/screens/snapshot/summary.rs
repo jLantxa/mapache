@@ -42,7 +42,7 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
         Some(SummaryResult::Cancelled) => {
             Toast::with_text(
                 "Cancelled",
-                theme::TOAST_WARNING,
+                theme::THEME.toast_warning,
                 Text::from(vec![
                     Line::from("Snapshot was cancelled."),
                     Line::from(""),
@@ -53,12 +53,12 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
             .render(area, frame);
         }
         Some(SummaryResult::Error(msg)) => {
-            Toast::new("Error", theme::TOAST_ERROR, msg).render(area, frame);
+            Toast::new("Error", theme::THEME.toast_error, msg).render(area, frame);
         }
         Some(SummaryResult::NoChanges) => {
             Toast::with_text(
                 "No Changes",
-                theme::TOAST_INFO,
+                theme::THEME.toast_info,
                 Text::from(vec![
                     Line::from("No changes detected since parent."),
                     Line::from(""),
@@ -70,7 +70,7 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
         None => {
             Toast::new(
                 "Info",
-                theme::TOAST_INFO,
+                theme::THEME.toast_info,
                 "Waiting for snapshot to complete...",
             )
             .render(area, frame);
@@ -224,7 +224,7 @@ fn render_success(
         Span::styled("Snapshot ID: ", Style::default().bold()),
         Span::styled(
             snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
-            theme::STYLE_SNAPSHOT_ID,
+            theme::THEME.style_snapshot_id,
         ),
     ]);
     frame.render_widget(Paragraph::new(id_line), chunks[5]);

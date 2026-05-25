@@ -119,24 +119,24 @@ impl RestoreConfig {
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let footer = if self.form.is_editing() {
             Line::from(vec![
-                Span::styled("[Enter]", theme::STYLE_MENU_KEY),
+                Span::styled("[Enter]", theme::THEME.style_menu_key),
                 Span::raw(" confirm"),
                 Span::raw("    "),
-                Span::styled("[Esc]", theme::STYLE_MENU_KEY),
+                Span::styled("[Esc]", theme::THEME.style_menu_key),
                 Span::raw(" cancel edit"),
             ])
         } else {
             Line::from(vec![
-                Span::styled("[Tab/\u{2191}\u{2193}]", theme::STYLE_MENU_KEY),
+                Span::styled("[Tab/\u{2191}\u{2193}]", theme::THEME.style_menu_key),
                 Span::raw(" navigate"),
                 Span::raw("    "),
-                Span::styled("[Enter/Space]", theme::STYLE_MENU_KEY),
+                Span::styled("[Enter/Space]", theme::THEME.style_menu_key),
                 Span::raw(" edit/toggle/start"),
                 Span::raw("    "),
-                Span::styled("[Esc]", theme::STYLE_MENU_KEY),
+                Span::styled("[Esc]", theme::THEME.style_menu_key),
                 Span::raw(" cancel"),
                 Span::raw("    "),
-                Span::styled("[q]", theme::STYLE_MENU_KEY),
+                Span::styled("[q]", theme::THEME.style_menu_key),
                 Span::raw(" quit"),
             ])
         };

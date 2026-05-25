@@ -193,13 +193,13 @@ impl Form {
             let focused = i == self.focus;
             let m = if focused { marker } else { unfocused_marker };
             let label_style = if focused {
-                theme::STYLE_HEADER.bold()
+                theme::THEME.style_header.bold()
             } else {
                 Style::default().bold()
             };
 
             let mut spans = vec![
-                Span::styled(m, theme::STYLE_SNAPSHOT_DATE),
+                Span::styled(m, theme::THEME.style_snapshot_date),
                 Span::styled(
                     format!("{:<width$}", field.label, width = self.label_width),
                     label_style,
@@ -218,7 +218,7 @@ impl Form {
                 FormFieldType::Toggle(val) => {
                     let checkbox = if *val { "[X]" } else { "[ ]" };
                     let style = if focused {
-                        Style::default().fg(theme::SNAPSHOT_DATE)
+                        Style::default().fg(theme::THEME.snapshot_date)
                     } else {
                         Style::default()
                     };
@@ -226,7 +226,7 @@ impl Form {
                 }
                 FormFieldType::Choice(val, options) => {
                     let style = if focused {
-                        Style::default().fg(theme::SNAPSHOT_DATE)
+                        Style::default().fg(theme::THEME.snapshot_date)
                     } else {
                         Style::default()
                     };
@@ -235,7 +235,7 @@ impl Form {
                 }
                 FormFieldType::Number(val) => {
                     let style = if focused {
-                        Style::default().fg(theme::SNAPSHOT_DATE)
+                        Style::default().fg(theme::THEME.snapshot_date)
                     } else {
                         Style::default()
                     };
@@ -249,13 +249,13 @@ impl Form {
                 }
                 FormFieldType::Action(label) => {
                     let style = if focused {
-                        Style::default().fg(theme::SNAPSHOT_DATE).bold()
+                        Style::default().fg(theme::THEME.snapshot_date).bold()
                     } else {
                         Style::default().fg(Color::DarkGray).bold()
                     };
                     // Clear the previous spans for Action buttons to center them or just style them differently
                     spans = vec![
-                        Span::styled(m, theme::STYLE_SNAPSHOT_DATE),
+                        Span::styled(m, theme::THEME.style_snapshot_date),
                         Span::styled(label, style),
                     ];
                 }

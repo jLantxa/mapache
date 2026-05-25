@@ -296,7 +296,7 @@ impl ForgetScreen {
             selected,
             self.entries.len()
         ))
-        .style(theme::STYLE_HEADER);
+        .style(theme::THEME.style_header);
         frame.render_widget(header, chunks[0]);
 
         let rows: Vec<Row> = self
@@ -319,9 +319,9 @@ impl ForgetScreen {
 
                 Row::new(vec![
                     Span::styled(selected_str, style),
-                    Span::styled(id, theme::STYLE_SNAPSHOT_ID),
-                    Span::styled(date, theme::STYLE_SNAPSHOT_DATE),
-                    Span::styled(host, theme::STYLE_SNAPSHOT_HOST),
+                    Span::styled(id, theme::THEME.style_snapshot_id),
+                    Span::styled(date, theme::THEME.style_snapshot_date),
+                    Span::styled(host, theme::THEME.style_snapshot_host),
                     Span::raw(tags),
                 ])
             })
@@ -337,9 +337,11 @@ impl ForgetScreen {
                 Constraint::Min(20),
             ],
         )
-        .header(Row::new(vec!["", "ID", "Date", "Host", "Tags"]).style(theme::STYLE_TABLE_HEADER))
+        .header(
+            Row::new(vec!["", "ID", "Date", "Host", "Tags"]).style(theme::THEME.style_table_header),
+        )
         .block(theme::themed_block("Snapshots"))
-        .row_highlight_style(theme::STYLE_SELECTED_ROW);
+        .row_highlight_style(theme::THEME.style_selected_row);
 
         frame.render_stateful_widget(table, chunks[1], &mut self.table_state);
         theme::render_scrollbar(
@@ -378,9 +380,9 @@ impl ForgetScreen {
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("[Enter]", theme::STYLE_MENU_KEY),
+                Span::styled("[Enter]", theme::THEME.style_menu_key),
                 Span::raw(" to proceed, "),
-                Span::styled("[Esc]", theme::STYLE_MENU_KEY),
+                Span::styled("[Esc]", theme::THEME.style_menu_key),
                 Span::raw(" to cancel"),
             ]),
         ];
@@ -406,7 +408,7 @@ impl ForgetScreen {
                 Line::from(format!("Successfully forgot {} snapshots.", removed_count)),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("[Enter/Esc]", theme::STYLE_MENU_KEY),
+                    Span::styled("[Enter/Esc]", theme::THEME.style_menu_key),
                     Span::raw(" back to dashboard"),
                 ]),
             ],
@@ -419,7 +421,7 @@ impl ForgetScreen {
                 Line::from("No snapshots were selected or removed."),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("[Enter/Esc]", theme::STYLE_MENU_KEY),
+                    Span::styled("[Enter/Esc]", theme::THEME.style_menu_key),
                     Span::raw(" back to selection"),
                 ]),
             ],

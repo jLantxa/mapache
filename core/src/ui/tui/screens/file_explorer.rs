@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{List, ListItem, ListState, Paragraph},
 };
@@ -81,7 +81,7 @@ impl FileExplorerScreen {
     fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
         let breadcrumb = Paragraph::new(format!(" Path: {}", self.current_path.display())).style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme::THEME.breadcrumb_fg)
                 .add_modifier(Modifier::BOLD),
         );
         frame.render_widget(breadcrumb, area);
@@ -177,11 +177,11 @@ impl Screen for FileExplorerScreen {
                 };
 
                 let color = if node.is_dir() {
-                    Color::Cyan
+                    theme::THEME.dir_fg
                 } else if node.is_symlink() {
-                    Color::Magenta
+                    theme::THEME.symlink_fg
                 } else {
-                    Color::White
+                    theme::THEME.file_fg
                 };
 
                 let mut style = Style::default().fg(color);
@@ -193,14 +193,14 @@ impl Screen for FileExplorerScreen {
 
                 ListItem::new(Line::from(vec![
                     Span::styled(name, style),
-                    Span::styled(size, Style::default().fg(Color::DarkGray)),
+                    Span::styled(size, Style::default().fg(theme::THEME.file_size_fg)),
                 ]))
             })
             .collect();
 
         let list = List::new(items)
             .block(theme::themed_block("File Explorer"))
-            .highlight_style(theme::STYLE_SELECTED_ROW)
+            .highlight_style(theme::THEME.style_selected_row)
             .highlight_symbol(">> ");
 
         frame.render_stateful_widget(list, chunks[1], &mut self.list_state);

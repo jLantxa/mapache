@@ -39,6 +39,7 @@ pub async fn run(
     snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,
     forget_config: Option<crate::commands::cmd_forget::CmdArgs>,
 ) -> Result<()> {
+    theme::init();
     let _guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;

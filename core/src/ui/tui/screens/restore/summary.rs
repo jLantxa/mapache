@@ -98,7 +98,7 @@ pub fn render_summary(
     frame.render_widget(summary, chunks[0]);
 
     let footer = Line::from(vec![
-        Span::styled("[Enter/Esc]", theme::STYLE_MENU_KEY),
+        Span::styled("[Enter/Esc]", theme::THEME.style_menu_key),
         Span::raw(" back to dashboard"),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[1]);

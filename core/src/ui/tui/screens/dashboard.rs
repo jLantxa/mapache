@@ -191,7 +191,7 @@ impl DashboardScreen {
             self.repo_id.chars().take(8).collect::<String>(),
         );
         let header = Paragraph::new(header_text)
-            .style(theme::STYLE_HEADER)
+            .style(theme::THEME.style_header)
             .alignment(Alignment::Left);
         frame.render_widget(header, area);
     }
@@ -227,24 +227,24 @@ impl DashboardScreen {
 
                 Row::new(vec![
                     Span::styled(active, active_style),
-                    Span::styled(id_str, theme::STYLE_SNAPSHOT_ID),
-                    Span::styled(date, theme::STYLE_SNAPSHOT_DATE),
-                    Span::styled(host, theme::STYLE_SNAPSHOT_HOST),
-                    Span::styled(format!("{:>14}", size), theme::STYLE_SNAPSHOT_SIZE),
+                    Span::styled(id_str, theme::THEME.style_snapshot_id),
+                    Span::styled(date, theme::THEME.style_snapshot_date),
+                    Span::styled(host, theme::THEME.style_snapshot_host),
+                    Span::styled(format!("{:>14}", size), theme::THEME.style_snapshot_size),
                     Span::raw(tags_buf),
                 ])
             })
             .collect();
 
         let header_row = Row::new(vec![
-            Span::styled(" ", theme::STYLE_TABLE_HEADER),
-            Span::styled("ID", theme::STYLE_TABLE_HEADER),
-            Span::styled("Date", theme::STYLE_TABLE_HEADER),
-            Span::styled("Host", theme::STYLE_TABLE_HEADER),
-            Span::styled("Size", theme::STYLE_TABLE_HEADER),
-            Span::styled("Tags", theme::STYLE_TABLE_HEADER),
+            Span::styled(" ", theme::THEME.style_table_header),
+            Span::styled("ID", theme::THEME.style_table_header),
+            Span::styled("Date", theme::THEME.style_table_header),
+            Span::styled("Host", theme::THEME.style_table_header),
+            Span::styled("Size", theme::THEME.style_table_header),
+            Span::styled("Tags", theme::THEME.style_table_header),
         ])
-        .style(theme::STYLE_TABLE_HEADER);
+        .style(theme::THEME.style_table_header);
 
         let table = Table::new(
             rows,
@@ -259,7 +259,7 @@ impl DashboardScreen {
         )
         .header(header_row)
         .block(theme::themed_block(&title))
-        .row_highlight_style(theme::STYLE_SELECTED_ROW)
+        .row_highlight_style(theme::THEME.style_selected_row)
         .highlight_symbol(">> ");
 
         let mut state = self.table_state;
@@ -356,12 +356,12 @@ impl DashboardScreen {
 
         let menu_text = Self::build_menu_text();
         let menu = Paragraph::new(menu_text)
-            .style(Style::default().fg(theme::FOOTER_FG))
+            .style(Style::default().fg(theme::THEME.footer_fg))
             .alignment(Alignment::Left);
         frame.render_widget(menu, chunks[0]);
 
         let hints = Paragraph::new(KEY_HINTS)
-            .style(theme::STYLE_MENU_KEY)
+            .style(theme::THEME.style_menu_key)
             .alignment(Alignment::Left);
         frame.render_widget(hints, chunks[1]);
     }

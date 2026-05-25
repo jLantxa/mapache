@@ -88,7 +88,7 @@ impl FileExplorerScreen {
     }
 
     fn render_metadata(&self, frame: &mut Frame, area: Rect, node: &Node) {
-        let mut lines = Vec::with_capacity(6);
+        let mut lines = Vec::with_capacity(5);
         lines.push(Line::from(vec![
             Span::styled(" Name: ", Style::default().bold()),
             Span::raw(&node.name),
@@ -101,20 +101,14 @@ impl FileExplorerScreen {
             Span::styled(" Mode: ", Style::default().bold()),
             Span::raw(format!("{:o}", node.metadata.mode.unwrap_or(0))),
         ]));
-        lines.push(Line::from(vec![
-            Span::styled(" UID: ", Style::default().bold()),
-            Span::raw(match node.metadata.owner_uid {
-                Some(u) => u.to_string(),
-                None => "unknown".to_string(),
-            }),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(" GID: ", Style::default().bold()),
-            Span::raw(match node.metadata.owner_gid {
-                Some(g) => g.to_string(),
-                None => "unknown".to_string(),
-            }),
-        ]));
+
+        if let Some(ctime) = node.metadata.created_time {
+            let ts = utils::pretty_print_timestamp(&ctime.into(), None);
+            lines.push(Line::from(vec![
+                Span::styled(" Created: ", Style::default().bold()),
+                Span::raw(ts.to_string()),
+            ]));
+        }
 
         if let Some(mtime) = node.metadata.modified_time {
             let ts = utils::pretty_print_timestamp(&mtime.into(), None);

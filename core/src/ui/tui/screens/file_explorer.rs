@@ -284,8 +284,8 @@ impl Screen for FileExplorerScreen {
                 if let Some(i) = self.list_state.selected() {
                     let node_name = &self.current_tree.nodes[i].name;
                     let mut path = self.current_path.clone();
-                    if path.starts_with("/") {
-                        path = path.strip_prefix("/").unwrap().to_path_buf();
+                    if let Ok(stripped) = path.strip_prefix("/") {
+                        path = stripped.to_path_buf();
                     }
                     let restore_path = path.join(node_name);
 

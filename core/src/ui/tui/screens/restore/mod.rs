@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -92,7 +92,11 @@ impl RestoreScreen {
         };
 
         let tx = self.tx.clone();
-        let reporter = Arc::new(TuiRestoreProgressReporter { tx: tx.clone() });
+        let reporter = Arc::new(TuiRestoreProgressReporter {
+            tx: tx.clone(),
+            error_count: AtomicU64::new(0),
+            warning_count: AtomicU64::new(0),
+        });
         let shutdown_signal = self.shutdown_signal.clone();
         self.shutdown_signal.store(false, Ordering::SeqCst);
 
@@ -119,6 +123,8 @@ impl RestoreScreen {
 
 struct TuiRestoreProgressReporter {
     tx: mpsc::UnboundedSender<RestoreEvent>,
+    error_count: AtomicU64,
+    warning_count: AtomicU64,
 }
 
 impl RestoreProgressReporter for TuiRestoreProgressReporter {
@@ -144,19 +150,21 @@ impl RestoreProgressReporter for TuiRestoreProgressReporter {
     }
 
     fn error(&self, msg: &str) {
+        self.error_count.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(RestoreEvent::Error(msg.to_string()));
     }
 
     fn warning(&self, msg: &str) {
+        self.warning_count.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(RestoreEvent::Warning(msg.to_string()));
     }
 
     fn error_count(&self) -> u64 {
-        0
+        self.error_count.load(Ordering::Relaxed)
     }
 
     fn warning_count(&self) -> u64 {
-        0
+        self.warning_count.load(Ordering::Relaxed)
     }
 
     fn log(&self, msg: String) {

@@ -42,10 +42,6 @@ impl RestoreConfig {
                 field_type: FormFieldType::Toggle(false),
             },
             FormField {
-                label: "Delete Extra:".to_string(),
-                field_type: FormFieldType::Toggle(false),
-            },
-            FormField {
                 label: "Strip Prefix:".to_string(),
                 field_type: FormFieldType::Toggle(false),
             },
@@ -152,11 +148,11 @@ impl RestoreConfig {
     }
 
     pub fn get_strip_prefix(&self) -> bool {
-        self.form.get_toggle(3).unwrap_or(false)
+        self.form.get_toggle(2).unwrap_or(false)
     }
 
     pub fn get_strategy(&self) -> Strategy {
-        match self.form.get_choice(4).unwrap_or(1) {
+        match self.form.get_choice(3).unwrap_or(1) {
             0 => Strategy::Fail,
             1 => Strategy::Overwrite,
             2 => Strategy::Skip,

@@ -25,13 +25,17 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
-    archiver::{progress::SnapshotProgress, tree_serializer::TreeSerializer},
+    archiver::{
+        chunker_pool::{BATCH_SIZE, ChunkerPoolMsg},
+        progress::SnapshotProgress,
+        tree_serializer::TreeSerializer,
+    },
     fs::{
         filter::PathFilter,
         node::Node,
         tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream},
     },
-    mapache::{global::THIS_MAPACHE_VERSION, traits::BlobSaver},
+    mapache::{self, global::THIS_MAPACHE_VERSION, traits::BlobSaver},
     repository::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
@@ -221,6 +225,12 @@ pub(crate) async fn snapshot(
     let coordinator_status = status.clone();
     let coordinator_tx = processed_tx.clone();
     let forwarder_tx = processed_tx.clone();
+
+    // Shared batch accumulator for small files.
+    // Pool threads process batches sequentially, amortizing thread handoff overhead.
+    let batch_lock: Arc<std::sync::Mutex<Vec<chunker_pool::ChunkerJob>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
     let coordinator_task = tokio::spawn(async move {
         tracing::trace!(target: "archiver", "Coordinator task started");
         let stream = ReceiverStream::new(diff_rx);
@@ -234,6 +244,7 @@ pub(crate) async fn snapshot(
                 let progress = status.progress.clone();
                 let progress_reporter = status.progress_reporter.clone();
                 let shutdown_signal = status.shutdown_signal.clone();
+                let batch_lock = batch_lock.clone();
 
                 async move {
                     if status.is_failed() {
@@ -261,6 +272,10 @@ pub(crate) async fn snapshot(
                         && next_node.as_ref().is_some_and(|n| n.node.is_file());
 
                     if needs_chunking {
+                        let is_small = next_node
+                            .as_ref()
+                            .is_some_and(|n| n.node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE);
+
                         let job = chunker_pool::ChunkerJob {
                             path,
                             prev_node,
@@ -271,8 +286,33 @@ pub(crate) async fn snapshot(
                             progress_reporter,
                             shutdown_signal,
                         };
-                        if pool_sender.send(job).is_err() {
-                            status.signal_fatal(anyhow!("Chunker pool channel closed"));
+
+                        if is_small {
+                            // Accumulate small files into a batch.
+                            let mut batch = batch_lock.lock().unwrap();
+                            batch.push(job);
+                            if batch.len() >= BATCH_SIZE {
+                                let to_send = std::mem::take(&mut *batch);
+                                drop(batch);
+                                if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err() {
+                                    status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                                }
+                            }
+                        } else {
+                            // Large file: flush any pending batch first, then send as Single.
+                            let pending = {
+                                let mut batch = batch_lock.lock().unwrap();
+                                std::mem::take(&mut *batch)
+                            };
+                            if !pending.is_empty()
+                                && pool_sender.send(ChunkerPoolMsg::Batch(pending)).is_err()
+                            {
+                                status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                                return;
+                            }
+                            if pool_sender.send(ChunkerPoolMsg::Single(Box::new(job))).is_err() {
+                                status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                            }
                         }
                     } else {
                         tracing::trace!(target: "archiver", "Processing item inline: {:?}", path);
@@ -285,6 +325,7 @@ pub(crate) async fn snapshot(
                             &progress,
                             &*progress_reporter,
                             &shutdown_signal,
+                            None,
                         ) {
                             Ok(Some(node)) => {
                                 tracing::trace!(target: "archiver", "Item processed inline: {:?}", path);
@@ -304,6 +345,15 @@ pub(crate) async fn snapshot(
                 }
             })
             .await;
+
+        // Flush any remaining batch
+        let remaining = {
+            let mut batch = batch_lock.lock().unwrap();
+            std::mem::take(&mut *batch)
+        };
+        if !remaining.is_empty() {
+            let _ = chunker_pool.sender.send(ChunkerPoolMsg::Batch(remaining));
+        }
 
         tracing::trace!(target: "archiver", "Coordinator task finished");
     });

@@ -340,6 +340,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                                 progress_clone.as_ref(),
                                 reporter_clone.as_ref(),
                                 signal_clone.as_ref(),
+                                None,
                             )
                         })
                         .await

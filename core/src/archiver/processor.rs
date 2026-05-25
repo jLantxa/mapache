@@ -33,38 +33,19 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::CHUNKER_NORMALIZATION,
 );
 
-/// Processes an item (file, directory, or symlink) from the diff stream.
-/// This includes reading and chunking new/changed files.
-pub(crate) async fn process_item(
-    (path, prev_node_res, next_node_res, diff_type): (
-        &Path,
-        Option<Result<StreamNode>>,
-        Option<Result<StreamNode>>,
-        NodeDiff,
-    ),
+/// Core sync processing logic. No spawn_blocking, no async.
+/// Can be called from dedicated threadpool threads.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_item_sync(
+    path: &Path,
+    prev_node: Option<&StreamNode>,
+    next_node: Option<&StreamNode>,
+    diff_type: NodeDiff,
     blob_saver: Arc<dyn BlobSaver>,
-    progress: Arc<SnapshotProgress>,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
-    shutdown_signal: Arc<AtomicBool>,
+    progress: &SnapshotProgress,
+    progress_reporter: &dyn SnapshotProgressReporter,
+    shutdown_signal: &AtomicBool,
 ) -> Result<Option<StreamNode>> {
-    // Check if next_node has an error. If so, report it and skip the node.
-    let next_node = match next_node_res {
-        Some(Err(e)) => {
-            progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
-            tracing::warn!(target: "archiver", "Skipping {}: {}", path.display(), e);
-            progress.processed_node();
-            return Ok(None);
-        }
-        Some(Ok(n)) => Some(n),
-        None => None,
-    };
-
-    let prev_node = match prev_node_res {
-        Some(Ok(n)) => Some(n),
-        Some(Err(_)) => None, // Should not happen in practice for SerializedNodeStream
-        None => None,
-    };
-
     let size_hint = next_node
         .as_ref()
         .map(|n| n.node.metadata.size)
@@ -77,14 +58,16 @@ pub(crate) async fn process_item(
             let prev = prev_node.with_context(|| {
                 format!("Inconsistent state: Deleted diff but no prev_node for {path:?}")
             })?;
-            report_node_diff(&prev.node, diff_type, progress.as_ref());
+            report_node_diff(&prev.node, diff_type, progress);
             None
         }
 
         NodeDiff::Unchanged => {
-            let mut next = next_node.with_context(|| {
-                format!("Inconsistent state: Unchanged diff but no next_node for {path:?}")
-            })?;
+            let mut next = next_node
+                .with_context(|| {
+                    format!("Inconsistent state: Unchanged diff but no next_node for {path:?}")
+                })?
+                .clone();
             let prev = prev_node.with_context(|| {
                 format!("Inconsistent state: Unchanged diff but no prev_node for {path:?}")
             })?;
@@ -93,75 +76,61 @@ pub(crate) async fn process_item(
                 progress.processed_bytes(next.node.metadata.size);
                 progress_reporter.processed_bytes(next.node.metadata.size);
             }
-            report_node_diff(&next.node, diff_type, progress.as_ref());
+            report_node_diff(&next.node, diff_type, progress);
 
-            // Use the previous node's metadata to ensure bit-identical trees,
-            // but keep the current structure (like next.num_children) to allow
-            // correctly building the tree even if excludes changed.
-            next.node.metadata = prev.node.metadata;
-            // Also keep blobs if it's a file
+            next.node.metadata = prev.node.metadata.clone();
             if next.node.is_file() {
-                next.node.blobs = prev.node.blobs;
+                next.node.blobs = prev.node.blobs.clone();
             }
             Some(next)
         }
 
         NodeDiff::New | NodeDiff::Changed => {
-            let mut next = next_node.with_context(|| {
-                format!("Inconsistent state: New/Changed diff but no next_node for {path:?}")
-            })?;
+            let mut next = next_node
+                .with_context(|| {
+                    format!("Inconsistent state: New/Changed diff but no next_node for {path:?}")
+                })?
+                .clone();
 
             if next.node.is_file() {
                 let file_size = next.node.metadata.size;
-                let saver_clone = blob_saver.clone();
-                let path_clone = path.to_path_buf();
-                let progress_clone = progress.clone();
-                let reporter_clone = progress_reporter.clone();
-                let shutdown_signal_clone = shutdown_signal.clone();
 
-                let blobs_ids = match tokio::task::spawn_blocking(move || {
-                    let file = open_for_sequential_read(&path_clone)?;
+                let chunk_result = (|| -> Result<Vec<ID>> {
+                    let file = open_for_sequential_read(path)?;
 
                     if file_size <= mapache::defaults::MIN_CHUNK_SIZE {
                         store_small_file(
-                            saver_clone,
+                            blob_saver.as_ref(),
                             file,
                             file_size,
-                            progress_clone.as_ref(),
-                            reporter_clone.as_ref(),
+                            progress,
+                            progress_reporter,
                         )
                     } else {
                         chunk_and_store_file(
-                            saver_clone,
+                            blob_saver.as_ref(),
                             file,
                             file_size,
-                            progress_clone,
-                            reporter_clone,
-                            shutdown_signal_clone,
+                            progress,
+                            progress_reporter,
+                            shutdown_signal,
                         )
                     }
-                })
-                .await
-                {
-                    Ok(Ok(ids)) => Some(ids),
-                    Ok(Err(e)) => {
-                        progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
-                        progress.processed_bytes(file_size);
-                        progress_reporter.processed_bytes(file_size);
-                        None
+                })();
+
+                match chunk_result {
+                    Ok(ids) => {
+                        next.node.blobs = Some(ids);
                     }
                     Err(e) => {
                         progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
                         progress.processed_bytes(file_size);
                         progress_reporter.processed_bytes(file_size);
-                        None
                     }
-                };
-
-                next.node.blobs = blobs_ids;
+                }
             }
 
-            report_node_diff(&next.node, diff_type, progress.as_ref());
+            report_node_diff(&next.node, diff_type, progress);
             Some(next)
         }
     };
@@ -183,12 +152,12 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 
 /// Reads a file, chunks it using the CDC chunker, and stores the chunks in the repository.
 pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
-    blob_saver: Arc<dyn BlobSaver>,
+    blob_saver: &dyn BlobSaver,
     reader: R,
     file_size: u64,
-    progress: Arc<SnapshotProgress>,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
-    shutdown_signal: Arc<AtomicBool>,
+    progress: &SnapshotProgress,
+    progress_reporter: &dyn SnapshotProgressReporter,
+    shutdown_signal: &AtomicBool,
 ) -> Result<Vec<ID>> {
     let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
     let mut ids = Vec::new();
@@ -217,7 +186,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
 
 /// Stores a small file as a single blob without chunking.
 fn store_small_file<R: Read>(
-    blob_saver: Arc<dyn BlobSaver>,
+    blob_saver: &dyn BlobSaver,
     mut reader: R,
     file_size: u64,
     progress: &SnapshotProgress,

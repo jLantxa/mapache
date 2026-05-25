@@ -3,6 +3,7 @@
 //! a parent snapshot (if available), processes changed files into chunks, and
 //! serializes the resulting directory tree.
 
+pub(crate) mod chunker_pool;
 pub(crate) mod processor;
 pub(crate) mod progress;
 pub(crate) mod tree_serializer;
@@ -28,7 +29,7 @@ use crate::{
     fs::{
         filter::PathFilter,
         node::Node,
-        tree::{FSNodeStream, NodeDiffStream, SerializedNodeStream},
+        tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream},
     },
     mapache::{global::THIS_MAPACHE_VERSION, traits::BlobSaver},
     repository::{
@@ -167,11 +168,16 @@ pub(crate) async fn snapshot(
     let mut diff_stream = NodeDiffStream::new(previous_tree_stream, fs_stream);
 
     // ---------------------------------------------------------------------
-    // Pipeline Channels
+    // Pipeline Channels & Chunker Pool
     // ---------------------------------------------------------------------
     // We use a larger buffer for many small files to reduce backpressure on the producer.
     let (diff_tx, diff_rx) = mpsc::channel(num_readers * 128);
     let (processed_tx, mut processed_rx) = mpsc::channel(4096);
+
+    // Dedicated threadpool for CPU-bound chunking work.
+    // This avoids contention with tokio's blocking pool (used by FSNodeStream).
+    tracing::info!(target: "archiver", "Starting chunker pool ({} threads)", num_readers);
+    let chunker_pool = chunker_pool::ChunkerPool::new(num_readers);
 
     // ---------------------------------------------------------------------
     // Stage 1: Diff Producer Task
@@ -181,7 +187,6 @@ pub(crate) async fn snapshot(
     let producer_task = tokio::spawn(async move {
         tracing::trace!(target: "archiver", "Diff Producer task started");
         while let Some(item) = diff_stream.next().await {
-            // Check for shutdown/failure before every send
             if producer_status.is_failed() {
                 tracing::trace!(target: "archiver", "Diff Producer: status failed, aborting");
                 break;
@@ -206,55 +211,147 @@ pub(crate) async fn snapshot(
     });
 
     // ---------------------------------------------------------------------
-    // Stage 2: Concurrent Processor Task
+    // Stage 2a: Coordinator Task (lightweight routing)
     // ---------------------------------------------------------------------
-    tracing::info!(target: "archiver", "Starting Stage 2: Concurrent Processor ({} readers)", num_readers);
-    let processor_blob_saver: Arc<dyn BlobSaver> = repo.clone();
-    let processor_status = status.clone();
-    let processor_task = tokio::spawn(async move {
-        tracing::trace!(target: "archiver", "Concurrent Processor task started");
+    // Items that need chunking (new/changed files) are sent to the dedicated
+    // chunker threadpool. Everything else (unchanged, deleted, directories)
+    // is processed inline — no spawn_blocking overhead.
+    tracing::info!(target: "archiver", "Starting Stage 2: Coordinator ({} readers)", num_readers);
+    let coordinator_blob_saver: Arc<dyn BlobSaver> = repo.clone();
+    let coordinator_status = status.clone();
+    let coordinator_tx = processed_tx.clone();
+    let forwarder_tx = processed_tx.clone();
+    let coordinator_task = tokio::spawn(async move {
+        tracing::trace!(target: "archiver", "Coordinator task started");
         let stream = ReceiverStream::new(diff_rx);
 
         stream
-            .for_each_concurrent(num_readers, |(path, prev, next, diff)| {
-                let blob_saver = processor_blob_saver.clone();
-                let status = processor_status.clone();
-                let tx = processed_tx.clone();
+            .for_each_concurrent(num_readers * 2, |(path, prev_res, next_res, diff)| {
+                let blob_saver = coordinator_blob_saver.clone();
+                let status = coordinator_status.clone();
+                let pool_sender = chunker_pool.sender.clone();
+                let tx = coordinator_tx.clone();
+                let progress = status.progress.clone();
+                let progress_reporter = status.progress_reporter.clone();
+                let shutdown_signal = status.shutdown_signal.clone();
 
                 async move {
                     if status.is_failed() {
                         return;
                     }
 
-                    tracing::trace!(target: "archiver", "Processing item: {:?}", path);
-                    match processor::process_item(
-                        (path.as_path(), prev, next, diff),
-                        blob_saver,
-                        status.progress.clone(),
-                        status.progress_reporter.clone(),
-                        status.shutdown_signal.clone(),
-                    )
-                    .await
-                    {
-                        Ok(Some(node)) => {
-                            tracing::trace!(target: "archiver", "Item processed successfully: {:?}", path);
-                            let _ = tx.send((path, node)).await;
+                    // Resolve result wrappers
+                    let next_node = match next_res {
+                        Some(Err(e)) => {
+                            progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
+                            tracing::warn!(target: "archiver", "Skipping {}: {}", path.display(), e);
+                            progress.processed_node();
+                            return;
                         }
-                        Ok(None) => {
-                            tracing::trace!(target: "archiver", "Item skipped (no node produced): {:?}", path);
+                        Some(Ok(n)) => Some(n),
+                        None => None,
+                    };
+                    let prev_node = match prev_res {
+                        Some(Ok(n)) => Some(n),
+                        Some(Err(_)) => None,
+                        None => None,
+                    };
+
+                    let needs_chunking = matches!(diff, NodeDiff::New | NodeDiff::Changed)
+                        && next_node.as_ref().is_some_and(|n| n.node.is_file());
+
+                    if needs_chunking {
+                        let job = chunker_pool::ChunkerJob {
+                            path,
+                            prev_node,
+                            next_node,
+                            diff_type: diff,
+                            blob_saver,
+                            progress,
+                            progress_reporter,
+                            shutdown_signal,
+                        };
+                        if pool_sender.send(job).is_err() {
+                            status.signal_fatal(anyhow!("Chunker pool channel closed"));
                         }
-                        Err(e) => {
-                            tracing::error!(target: "archiver", "Processor error for {:?}: {e}", path);
-                            status.signal_fatal(e);
+                    } else {
+                        tracing::trace!(target: "archiver", "Processing item inline: {:?}", path);
+                        match processor::process_item_sync(
+                            path.as_path(),
+                            prev_node.as_ref(),
+                            next_node.as_ref(),
+                            diff,
+                            blob_saver,
+                            &progress,
+                            &*progress_reporter,
+                            &shutdown_signal,
+                        ) {
+                            Ok(Some(node)) => {
+                                tracing::trace!(target: "archiver", "Item processed inline: {:?}", path);
+                                if tx.send((path, node)).await.is_err() {
+                                    tracing::trace!(target: "archiver", "Serializer channel closed");
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::trace!(target: "archiver", "Item skipped (no node): {:?}", path);
+                            }
+                            Err(e) => {
+                                tracing::error!(target: "archiver", "Inline processor error for {:?}: {e}", path);
+                                status.signal_fatal(e);
+                            }
                         }
                     }
                 }
             })
             .await;
 
-        tracing::trace!(target: "archiver", "Concurrent Processor task finished");
-        drop(processed_tx);
+        tracing::trace!(target: "archiver", "Coordinator task finished");
     });
+
+    // ---------------------------------------------------------------------
+    // Stage 2b: Chunker Result Forwarder
+    // ---------------------------------------------------------------------
+    // Forwards processed results from the dedicated chunker pool to the
+    // tree serializer. Runs in a single spawn_blocking (not one per file).
+    let forwarder_status = status.clone();
+    let forwarder_task = tokio::spawn(async move {
+        tracing::trace!(target: "archiver", "Chunker forwarder task started");
+        let receiver = chunker_pool.receiver.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            while let Ok(chunker_result) = receiver.recv() {
+                if forwarder_status.is_failed() {
+                    return Ok::<(), anyhow::Error>(());
+                }
+
+                match chunker_result.result {
+                    Ok(Some(node)) => {
+                        if forwarder_tx
+                            .blocking_send((chunker_result.path, node))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        forwarder_status.signal_fatal(e);
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        })
+        .await;
+
+        if let Err(e) = result {
+            tracing::error!(target: "archiver", "Chunker forwarder panicked: {e}");
+        }
+        tracing::trace!(target: "archiver", "Chunker forwarder task finished");
+    });
+
+    // Drop our sender so the channel closes when all workers finish
+    drop(processed_tx);
 
     // ---------------------------------------------------------------------
     // Stage 3: Tree Serializer (Main Loop)
@@ -266,7 +363,6 @@ pub(crate) async fn snapshot(
         &snapshot_options.absolute_source_paths,
     );
 
-    // Receive nodes and build the tree structure
     while let Some((path, stream_node)) = processed_rx.recv().await {
         if status.is_failed() {
             break;
@@ -281,15 +377,13 @@ pub(crate) async fn snapshot(
         }
     }
 
-    // Wait for worker tasks to cleanup/exit
-    let _ = tokio::join!(producer_task, processor_task);
+    let _ = tokio::join!(producer_task, coordinator_task, forwarder_task);
 
     // ---------------------------------------------------------------------
     // Finalization
     // ---------------------------------------------------------------------
     tracing::info!(target: "archiver", "Finalizing snapshot tree");
 
-    // Check if we aborted due to failure or shutdown signal
     if status.is_failed() {
         if let Some(err) = status.first_error.lock().unwrap().take() {
             return Err(err);

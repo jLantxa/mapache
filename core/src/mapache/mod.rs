@@ -362,12 +362,12 @@ async fn run_rechunk_task(
     let size = node.metadata.size;
     tokio::task::spawn_blocking(move || {
         chunk_and_store_file(
-            repo,
+            repo.as_ref(),
             sync_reader,
             size,
-            progress,
-            progress_reporter,
-            shutdown_signal,
+            progress.as_ref(),
+            progress_reporter.as_ref(),
+            shutdown_signal.as_ref(),
         )
     })
     .await

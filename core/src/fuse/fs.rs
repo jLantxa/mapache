@@ -175,9 +175,13 @@ impl<L: BlobLoader + ?Sized> MapacheFS<L> {
                     let child_ino = stash.next_ino();
                     let attr = node_to_fileattr(child_ino, parent_crtime, n);
                     let kind = match n.node_type {
-                        NodeType::Directory => NodeKind::LazyDir {
-                            tree_id: n.tree.unwrap(),
-                        },
+                        NodeType::Directory => {
+                            let Some(tree_id) = n.tree else {
+                                tracing::error!(target: "fuse", "Directory node '{}' is missing tree ID -- skipping", n.name);
+                                continue;
+                            };
+                            NodeKind::LazyDir { tree_id }
+                        }
                         NodeType::Symlink => NodeKind::Symlink {
                             target: n
                                 .symlink_info

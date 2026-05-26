@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -57,6 +58,17 @@ pub struct CmdArgs {
     pub recursive: bool,
 }
 
+#[derive(Serialize)]
+struct LsEntry {
+    path: PathBuf,
+    node: Node,
+}
+
+#[derive(Serialize)]
+struct LsOutput {
+    entries: Vec<LsEntry>,
+}
+
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -106,9 +118,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 Node::new_root(&snapshot.tree)
             };
 
-            ls(&args.path.clone().unwrap_or_default(), &node, &repo, args)
-                .await
-                .map_err(|e| fail(format!("Listing failed: {}", e), LsError::LsFailed))?;
+            ls(
+                &args.path.clone().unwrap_or_default(),
+                &node,
+                &repo,
+                args,
+                global_args.json,
+            )
+            .await
+            .map_err(|e| fail(format!("Listing failed: {}", e), LsError::LsFailed))?;
 
             Ok(())
         },
@@ -127,7 +145,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 }
 
 /// List the contents of a node.
-async fn ls(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+async fn ls(
+    path: &Path,
+    node: &Node,
+    repo: &Repository,
+    args: &CmdArgs,
+    json_out: bool,
+) -> Result<()> {
+    if json_out {
+        return ls_json(path, node, repo, args).await;
+    }
+
     if !node.is_dir() {
         ui::cli::log!(
             "{}",
@@ -141,6 +169,46 @@ async fn ls(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Resu
     }
 
     ls_recursive(path, node, repo, args).await
+}
+
+/// JSON output for ls
+async fn ls_json(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+    if !node.is_dir() {
+        ui::json::emit_static(
+            "ls",
+            &LsOutput {
+                entries: vec![LsEntry {
+                    path: path.to_path_buf(),
+                    node: node.clone(),
+                }],
+            },
+        );
+        return Ok(());
+    }
+
+    if args.recursive {
+        let mut entries = Vec::new();
+        ls_recursive_json(path, node, repo, &mut entries).await?;
+        ui::json::emit_static("ls", &LsOutput { entries });
+    } else {
+        let tree_id = node
+            .tree
+            .as_ref()
+            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
+        let mut tree = Tree::load_from_repo(repo, tree_id).await?;
+        tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        let entries: Vec<LsEntry> = tree
+            .nodes
+            .iter()
+            .map(|n| LsEntry {
+                path: path.join(&n.name),
+                node: n.clone(),
+            })
+            .collect();
+        ui::json::emit_static("ls", &LsOutput { entries });
+    }
+
+    Ok(())
 }
 
 /// List a snapshot tree.
@@ -180,6 +248,43 @@ async fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArg
         for node in tree.nodes.into_iter().rev() {
             if node.is_dir() {
                 stack.push((current_path.clone(), node));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursive listing for JSON output
+async fn ls_recursive_json(
+    path: &Path,
+    node: &Node,
+    repo: &Repository,
+    entries: &mut Vec<LsEntry>,
+) -> Result<()> {
+    let mut stack: Vec<(PathBuf, Node)> = Vec::new();
+    stack.push((path.to_path_buf(), node.clone()));
+
+    while let Some((parent_path, node)) = stack.pop() {
+        let tree_id = node
+            .tree
+            .as_ref()
+            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
+        let current_path = parent_path.join(&node.name);
+
+        let mut tree = Tree::load_from_repo(repo, tree_id).await?;
+        tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+
+        for n in &tree.nodes {
+            entries.push(LsEntry {
+                path: current_path.join(&n.name),
+                node: n.clone(),
+            });
+        }
+
+        for n in tree.nodes.into_iter().rev() {
+            if n.is_dir() {
+                stack.push((current_path.clone(), n));
             }
         }
     }

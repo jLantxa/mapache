@@ -2,7 +2,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use clap::Args;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use serde::Serialize;
 
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
@@ -58,7 +59,28 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    if global_args.repo == args.target {
+    let json_out = global_args.json;
+
+    if json_out {
+        #[derive(Serialize)]
+        struct SyncStartMsg {
+            source: String,
+            target: String,
+            delete: bool,
+            dry_run: bool,
+        }
+        ui::json::emit_static(
+            "sync_start",
+            &SyncStartMsg {
+                source: global_args.repo.clone(),
+                target: args.target.clone(),
+                delete: args.delete,
+                dry_run: args.dry_run,
+            },
+        );
+    }
+
+    if !json_out && global_args.repo == args.target {
         ui::cli::warning!("The repo and target backend URLs are the same");
     }
 
@@ -154,6 +176,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         dst_backend.as_ref(),
         args.delete,
         cleanup_handler.interrupted.clone(),
+        json_out,
     )
     .await
     .map_err(|e| {
@@ -164,10 +187,23 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     });
 
     if res.is_ok() {
-        ui::cli::log!(
-            "Finished in {}",
-            utils::pretty_print_duration(start.elapsed())
-        );
+        if json_out {
+            #[derive(Serialize)]
+            struct SyncCompleteMsg {
+                duration_seconds: f64,
+            }
+            ui::json::emit_static(
+                "sync_complete",
+                &SyncCompleteMsg {
+                    duration_seconds: start.elapsed().as_secs_f64(),
+                },
+            );
+        } else {
+            ui::cli::log!(
+                "Finished in {}",
+                utils::pretty_print_duration(start.elapsed())
+            );
+        }
     }
     tracing::info!(target: "sync", "Sync command completed in {:?}", start.elapsed());
 
@@ -185,112 +221,226 @@ async fn sync_backends(
     dst_backend: &dyn StorageBackend,
     delete: bool,
     shutdown_signal: Arc<AtomicBool>,
+    json_out: bool,
 ) -> Result<()> {
     // Calculate diferences
     let (to_copy, to_delete) = diff(src_backend, dst_backend).await?;
 
-    ui::cli::log!(
-        "{} {}",
-        "To copy:".cyan().bold(),
-        utils::format_count(to_copy.len(), "item", "items")
-    );
-    if delete {
+    if json_out {
+        #[derive(Serialize)]
+        struct SyncDiffMsg {
+            to_copy: usize,
+            to_delete: usize,
+        }
+        ui::json::emit_static(
+            "sync_diff",
+            &SyncDiffMsg {
+                to_copy: to_copy.len(),
+                to_delete: to_delete.len(),
+            },
+        );
+    } else {
         ui::cli::log!(
             "{} {}",
-            "To delete:".cyan().bold(),
-            utils::format_count(to_delete.len(), "item", "items")
+            "To copy:".cyan().bold(),
+            utils::format_count(to_copy.len(), "item", "items")
         );
+        if delete {
+            ui::cli::log!(
+                "{} {}",
+                "To delete:".cyan().bold(),
+                utils::format_count(to_delete.len(), "item", "items")
+            );
+        }
     }
 
     // Delete obsolete objects first
     if delete && !to_delete.is_empty() {
         tracing::info!(target: "sync", "Deleting {} obsolete items from destination", to_delete.len());
-        let delete_progress_bar =
-            ProgressBar::with_draw_target(Some(to_delete.len() as u64), default_bar_draw_target())
-                .with_style(
-                    ProgressStyle::default_bar()
-                        .template("[{percent} %] [{bar:20.cyan/white}] Deleting files: {pos}/{len}")
-                        .unwrap()
-                        .progress_chars("=> "),
-                );
 
-        for node in to_delete {
-            if shutdown_signal.load(Ordering::Relaxed) {
-                bail!("Interrupted");
-            }
-
-            tracing::debug!(target: "sync", "Deleting {:?}", node.path());
-            match node {
-                BackendNode::File(path, _) => dst_backend.remove(&path).await?,
-                BackendNode::Dir(path) => dst_backend.remove(&path).await?,
-            }
-
-            delete_progress_bar.inc(1);
-        }
-
-        delete_progress_bar.finish_and_clear();
-    }
-
-    let copy_progress_bar =
-        ProgressBar::with_draw_target(Some(to_copy.len() as u64), default_bar_draw_target())
-            .with_style(
-                ProgressStyle::default_bar()
-                    .template(
-                        "[{percent} %] [{bar:20.cyan/white}] Copying files: {pos}/{len} [ETA: {custom_eta}]",
-                    )
-                    .unwrap()
-                    .progress_chars("=> ")
-                    .with_key(
-                    "custom_eta",
-                        move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                            let eta = state.eta();
-                            let custom_eta = utils::pretty_print_duration(eta);
-                            let _ = w.write_str(&custom_eta);
-                        },
-                    )
-
-            );
-
-    // Copy files from src to dst.
-    use futures::stream::{self, StreamExt};
-
-    let stream = stream::iter(to_copy)
-        .map(|node| {
-            let shutdown_signal = shutdown_signal.clone();
-            let bar = &copy_progress_bar;
-
-            async move {
+        if json_out {
+            let total = to_delete.len();
+            for (i, node) in to_delete.iter().enumerate() {
                 if shutdown_signal.load(Ordering::Relaxed) {
                     bail!("Interrupted");
                 }
 
+                tracing::debug!(target: "sync", "Deleting {:?}", node.path());
                 match node {
-                    BackendNode::Dir(path) => {
-                        tracing::debug!(target: "sync", "Creating directory {:?}", path);
-                        dst_backend.create_dir(&path).await?
-                    }
-                    BackendNode::File(path, _) => {
-                        tracing::debug!(target: "sync", "Copying file {:?}", path);
-                        let handle = Handle::new(&path);
-                        let data = src_backend.read(&handle, 0, 0).await?;
-                        dst_backend
-                            .write(&handle, backend::WriteContents::Owned(data))
-                            .await?;
-                    }
+                    BackendNode::File(path, _) => dst_backend.remove(path).await?,
+                    BackendNode::Dir(path) => dst_backend.remove(path).await?,
                 }
 
-                bar.inc(1);
-                Ok::<(), anyhow::Error>(())
+                let processed = i + 1;
+                if processed % 100 == 0 || processed == total {
+                    #[derive(Serialize)]
+                    struct SyncStatusMsg {
+                        phase: String,
+                        processed: usize,
+                        total: usize,
+                    }
+                    ui::json::emit_static(
+                        "sync_status",
+                        &SyncStatusMsg {
+                            phase: "delete".to_string(),
+                            processed,
+                            total,
+                        },
+                    );
+                }
             }
-        })
-        .buffer_unordered(4); // Use 4 concurrent copy operations
+        } else {
+            let delete_progress_bar = ProgressBar::with_draw_target(
+                Some(to_delete.len() as u64),
+                default_bar_draw_target(),
+            )
+            .with_style(
+                ProgressStyle::default_bar()
+                    .template("[{percent} %] [{bar:20.cyan/white}] Deleting files: {pos}/{len}")
+                    .unwrap()
+                    .progress_chars("=> "),
+            );
 
-    let results = stream.collect::<Vec<_>>().await;
-    for res in results {
-        res?;
+            for node in to_delete {
+                if shutdown_signal.load(Ordering::Relaxed) {
+                    bail!("Interrupted");
+                }
+
+                tracing::debug!(target: "sync", "Deleting {:?}", node.path());
+                match node {
+                    BackendNode::File(path, _) => dst_backend.remove(&path).await?,
+                    BackendNode::Dir(path) => dst_backend.remove(&path).await?,
+                }
+
+                delete_progress_bar.inc(1);
+            }
+
+            delete_progress_bar.finish_and_clear();
+        }
     }
 
-    copy_progress_bar.finish_and_clear();
+    let total_copy = to_copy.len();
+
+    if json_out {
+        let processed = Arc::new(AtomicU64::new(0));
+
+        use futures::stream::{self, StreamExt};
+
+        let stream = stream::iter(to_copy)
+            .map(|node| {
+                let shutdown_signal = shutdown_signal.clone();
+                let processed = processed.clone();
+
+                async move {
+                    if shutdown_signal.load(Ordering::Relaxed) {
+                        bail!("Interrupted");
+                    }
+
+                    match node {
+                        BackendNode::Dir(path) => {
+                            tracing::debug!(target: "sync", "Creating directory {:?}", path);
+                            dst_backend.create_dir(&path).await?
+                        }
+                        BackendNode::File(path, _) => {
+                            tracing::debug!(target: "sync", "Copying file {:?}", path);
+                            let handle = Handle::new(&path);
+                            let data = src_backend.read(&handle, 0, 0).await?;
+                            dst_backend
+                                .write(&handle, backend::WriteContents::Owned(data))
+                                .await?;
+                        }
+                    }
+
+                    processed.fetch_add(1, Ordering::Relaxed);
+                    Ok::<(), anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(4);
+
+        let results = stream.collect::<Vec<_>>().await;
+        for res in results {
+            res?;
+        }
+
+        let final_processed = processed.load(Ordering::Relaxed);
+        if final_processed > 0 {
+            #[derive(Serialize)]
+            struct SyncStatusMsg {
+                phase: String,
+                processed: u64,
+                total: usize,
+            }
+            ui::json::emit_static(
+                "sync_status",
+                &SyncStatusMsg {
+                    phase: "copy".to_string(),
+                    processed: final_processed,
+                    total: total_copy,
+                },
+            );
+        }
+    } else {
+        let copy_progress_bar = ProgressBar::with_draw_target(
+            Some(total_copy as u64),
+            default_bar_draw_target(),
+        )
+        .with_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "[{percent} %] [{bar:20.cyan/white}] Copying files: {pos}/{len} [ETA: {custom_eta}]",
+                )
+                .unwrap()
+                .progress_chars("=> ")
+                .with_key(
+                    "custom_eta",
+                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let eta = state.eta();
+                        let custom_eta = utils::pretty_print_duration(eta);
+                        let _ = w.write_str(&custom_eta);
+                    },
+                ),
+        );
+
+        use futures::stream::{self, StreamExt};
+
+        let stream = stream::iter(to_copy)
+            .map(|node| {
+                let shutdown_signal = shutdown_signal.clone();
+                let bar = &copy_progress_bar;
+
+                async move {
+                    if shutdown_signal.load(Ordering::Relaxed) {
+                        bail!("Interrupted");
+                    }
+
+                    match node {
+                        BackendNode::Dir(path) => {
+                            tracing::debug!(target: "sync", "Creating directory {:?}", path);
+                            dst_backend.create_dir(&path).await?
+                        }
+                        BackendNode::File(path, _) => {
+                            tracing::debug!(target: "sync", "Copying file {:?}", path);
+                            let handle = Handle::new(&path);
+                            let data = src_backend.read(&handle, 0, 0).await?;
+                            dst_backend
+                                .write(&handle, backend::WriteContents::Owned(data))
+                                .await?;
+                        }
+                    }
+
+                    bar.inc(1);
+                    Ok::<(), anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(4); // Use 4 concurrent copy operations
+
+        let results = stream.collect::<Vec<_>>().await;
+        for res in results {
+            res?;
+        }
+
+        copy_progress_bar.finish_and_clear();
+    }
 
     // Finally, synchronize the manifest file to ensure repo validity at destination
     let manifest_path = std::path::Path::new(repo::MANIFEST_PATH);

@@ -17,7 +17,7 @@ use futures::StreamExt;
 
 use crate::{
     fs::node::{Metadata, Node, NodeType},
-    repository::repo::Repository,
+    restorer::Restorer,
     ui::RestoreProgressReporter,
 };
 
@@ -25,7 +25,7 @@ use crate::{
 /// This function does not restore file times for directory nodes. This must be
 /// done in a reparate pass.
 pub(crate) async fn restore_node_to_path(
-    repo: &Repository,
+    restorer: &Restorer,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
     node: &Node,
     dst_path: &Path,
@@ -48,21 +48,21 @@ pub(crate) async fn restore_node_to_path(
                     })?;
                 }
 
-                let file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(dst_path)
-                    .with_context(|| format!("Could not create file {}", dst_path.display()))?;
-
-                Some(file)
+                Some(
+                    OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(dst_path)
+                        .with_context(|| format!("Could not create file {}", dst_path.display()))?,
+                )
             } else {
                 None
             };
 
             let stream = futures::stream::iter(blocks.iter().cloned().enumerate())
                 .map(|(index, blob_id)| async move {
-                    let res = repo.load_blob(&blob_id).await.with_context(|| {
+                    let res = restorer.repo.load_blob(&blob_id).await.with_context(|| {
                         format!(
                             "Could not load block #{} ({}) for restoring file {}",
                             index + 1,
@@ -77,10 +77,16 @@ pub(crate) async fn restore_node_to_path(
             futures::pin_mut!(stream);
             while let Some((index, blob_id, chunk_data)) = stream.next().await {
                 let chunk_data = chunk_data?;
-                let chunk_size = chunk_data.len() as u64;
+
+                // Get a buffer from the pool
+                let mut buf = restorer.get_buffer(chunk_data.len());
+                buf.clear();
+                buf.extend_from_slice(&chunk_data);
+
+                let chunk_size = buf.len() as u64;
 
                 if !dry_run && let Some(mut file) = dst_file.as_ref() {
-                    file.write_all(&chunk_data).with_context(|| {
+                    file.write_all(&buf).with_context(|| {
                         format!(
                             "Could not restore block #{} ({}) to file {}",
                             index + 1,
@@ -91,8 +97,10 @@ pub(crate) async fn restore_node_to_path(
                 }
 
                 progress_reporter.processed_bytes(chunk_size);
-            }
 
+                // Return the buffer to the pool
+                restorer.return_buffer(buf);
+            }
             // Restore metadata after content is written
             if !dry_run {
                 try_restore_node_metadata(

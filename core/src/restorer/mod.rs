@@ -124,12 +124,14 @@ pub async fn restore(
 /// 3. Downloads packs (or relevant ranges) sequentially.
 /// 4. Distributes downloaded blobs to their target files in parallel.
 /// 5. Restores metadata in a separate bottom-up pass.
-struct Restorer {
+pub(crate) struct Restorer {
     repo: Arc<Repository>,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
     target_path: PathBuf,
     opts: RestoreOptions,
+    /// Pool of reusable buffers to reduce allocations during restoration.
+    buffers: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
@@ -266,13 +268,34 @@ impl Restorer {
         progress_reporter: Arc<dyn RestoreProgressReporter>,
         shutdown_signal: Arc<AtomicBool>,
     ) -> Self {
+        let d = defaults::runtime();
+        // Allow up to concurrent_restores buffers in the pool
+        let num_buffers = d.restore_max_open_files;
         Self {
             repo,
             target_path,
             opts,
             progress_reporter,
             shutdown_signal,
+            buffers: Arc::new(Mutex::new(VecDeque::with_capacity(num_buffers))),
         }
+    }
+
+    fn get_buffer(&self, capacity: usize) -> Vec<u8> {
+        let mut buffers = self.buffers.lock();
+        if let Some(mut buf) = buffers.pop_front() {
+            if buf.capacity() < capacity {
+                buf.reserve(capacity - buf.capacity());
+            }
+            buf
+        } else {
+            Vec::with_capacity(capacity)
+        }
+    }
+
+    pub(crate) fn return_buffer(&self, mut buf: Vec<u8>) {
+        buf.clear();
+        self.buffers.lock().push_back(buf);
     }
 
     /// Preallocates disk space for a file.
@@ -605,7 +628,7 @@ impl Restorer {
 
                         if !self.opts.dry_run
                             && let Err(e) = node_restorer::restore_node_to_path(
-                                &self.repo,
+                                self,
                                 progress_reporter.clone(),
                                 &node,
                                 &restore_path,

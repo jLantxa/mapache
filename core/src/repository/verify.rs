@@ -243,7 +243,7 @@ async fn verify_pack_streaming(
                     pending_blobs_size += blob_acc.len();
                     pending_blobs.push((desc.id, std::mem::take(&mut blob_acc)));
                     // Pre-allocate for next potentially multi-chunk blob
-                    blob_acc = Vec::with_capacity(CHUNK_SIZE.min(1024 * 1024));
+                    blob_acc = Vec::with_capacity(CHUNK_SIZE.min(size::MiB as usize));
                     next_blob += 1;
                 } else {
                     break;

@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
 use futures::StreamExt;
+use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -127,6 +128,25 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     ui::cli::log!("{}  {}", "?".bold().white().on_red(), path.display());
                 }
 
+                if global_args.json {
+                    #[derive(Serialize)]
+                    struct DiffEntryMsg<'a> {
+                        path: String,
+                        diff_type: &'a str,
+                        is_dir: bool,
+                    }
+                    ui::json::emit_static("diff", &DiffEntryMsg {
+                        path: path.to_string_lossy().to_string(),
+                        diff_type: match &diff_type {
+                            NodeDiff::New => "new",
+                            NodeDiff::Deleted => "deleted",
+                            NodeDiff::Changed => "changed",
+                            NodeDiff::Unchanged => "unchanged",
+                        },
+                        is_dir: node.is_dir(),
+                    });
+                }
+
                 counts.increment(node.is_dir(), &diff_type);
             }
 
@@ -135,6 +155,30 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 "{}",
                 render_summary_table(&src_id, &tgt_id, src_snap.size(), tgt_snap.size())
             );
+
+            if global_args.json {
+                #[derive(Serialize)]
+                struct DiffSummaryMsg {
+                    new_files: u64,
+                    changed_files: u64,
+                    deleted_files: u64,
+                    unchanged_files: u64,
+                    new_dirs: u64,
+                    changed_dirs: u64,
+                    deleted_dirs: u64,
+                    unchanged_dirs: u64,
+                }
+                ui::json::emit_static("diff_summary", &DiffSummaryMsg {
+                    new_files: counts.new_files,
+                    changed_files: counts.changed_files,
+                    deleted_files: counts.deleted_files,
+                    unchanged_files: counts.unchanged_files,
+                    new_dirs: counts.new_dirs,
+                    changed_dirs: counts.changed_dirs,
+                    deleted_dirs: counts.deleted_dirs,
+                    unchanged_dirs: counts.unchanged_dirs,
+                });
+            }
 
             Ok(())
         },

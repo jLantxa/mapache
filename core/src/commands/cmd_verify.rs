@@ -12,6 +12,7 @@ use clap::Args;
 use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -104,8 +105,9 @@ impl VerifyStats {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+    let json_out = global_args.json;
     tracing::info!(target: "verify", "Starting verify command");
-    if global_args.no_cache {
+    if !json_out && global_args.no_cache {
         ui::cli::warning!(
             "--no-cache has no effect on this command. \
              The local cache is disabled by default. \
@@ -132,7 +134,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, secure_storage, lock_handle| async move {
-            run_with_repo(repo, secure_storage, lock_handle, args).await
+            run_with_repo(repo, secure_storage, lock_handle, args, json_out).await
         },
     )
     .await
@@ -153,8 +155,8 @@ pub async fn run_with_repo(
     secure_storage: Arc<crate::repository::storage::SecureStorage>,
     lock_handle: crate::repository::lock::LockHandle,
     args: &CmdArgs,
+    json_out: bool,
 ) -> Result<()> {
-    // Init cleanup handler
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         ui::cli::log!(
             "\n{}",
@@ -165,14 +167,27 @@ pub async fn run_with_repo(
 
     let start = Instant::now();
 
+    if json_out {
+        #[derive(Serialize)]
+        struct VerifyStartMsg {
+            read_packs: bool,
+            sample: Option<f64>,
+        }
+        ui::json::emit_static(
+            "verify_start",
+            &VerifyStartMsg {
+                read_packs: args.read_packs,
+                sample: args.sample,
+            },
+        );
+    }
+
     repo.reload_master_index().await?;
 
     let stats = VerifyStats::new();
     let packs_all = repo.list_packs().await?;
 
-    // ------------------------------------------
     // Sampling (Optional)
-    // ------------------------------------------
     let mut packs_to_verify = packs_all.iter().cloned().collect::<Vec<_>>();
     if let Some(sample_pct) = args.sample {
         use rand::seq::SliceRandom;
@@ -194,9 +209,7 @@ pub async fn run_with_repo(
     let mut physical_failed_early = false;
     let corrupt_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
-    // ------------------------------------------
     // Index Consistency (Blobs -> Packs)
-    // ------------------------------------------
     ui::cli::log!("{}", "Verifying Index Consistency...".bold());
     tracing::info!(target: "verify", "Verifying index consistency");
     let mut missing_packs = IdSet::default();
@@ -212,7 +225,7 @@ pub async fn run_with_repo(
             "Index refers to {} missing packs!",
             missing_packs.len().to_string().bold().red()
         );
-        for p in missing_packs {
+        for p in &missing_packs {
             ui::cli::log!("  - Missing Pack: {}", p);
         }
         if args.fail_early {
@@ -226,11 +239,25 @@ pub async fn run_with_repo(
             "All indexed blobs point to existing packs."
         );
     }
+
+    if json_out {
+        #[derive(Serialize)]
+        struct VerifyProgressMsg {
+            phase: &'static str,
+            missing_packs: usize,
+        }
+        ui::json::emit_static(
+            "verify_progress",
+            &VerifyProgressMsg {
+                phase: "index",
+                missing_packs: missing_packs.len(),
+            },
+        );
+    }
+
     ui::cli::log!();
 
-    // --------------------------------
     // Physical Verification (Optional)
-    // --------------------------------
     if args.read_packs {
         let suffix = if args.sample.is_none() {
             ""
@@ -266,14 +293,10 @@ pub async fn run_with_repo(
         bar.set_style(style);
         bar.set_message("OK");
 
-        // Atomic flag to stop scheduling new work if fail_early is set
         let stop_flag = AtomicBool::new(false);
         let interrupted_flag = cleanup_handler.interrupted.clone();
+        let total_packs = packs_to_verify.len();
 
-        // I/O & CPU Pipelining:
-        // buffer_unordered(N) effectively pipelines up to N packs.
-        // Some will be in the 'await backend.read()' stage (I/O bound),
-        // while others will be in the 'Rayon par_iter' stage (CPU bound).
         futures::stream::iter(packs_to_verify.iter())
             .take_while(|_| {
                 futures::future::ready(
@@ -317,6 +340,26 @@ pub async fn run_with_repo(
                                         );
                                     }
                                 });
+
+                                if json_out {
+                                    let mut parts = Vec::new();
+                                    if pack_stats.bit_rot {
+                                        parts.push("Bit-rot detected".to_string());
+                                    }
+                                    if !pack_stats.corrupt_blobs.is_empty() {
+                                        parts.push(format!("{} damaged blob(s)", pack_stats.corrupt_blobs.len()));
+                                    }
+                                    #[derive(Serialize)]
+                                    struct VerifyErrorMsg {
+                                        pack_id: String,
+                                        error: String,
+                                    }
+                                    ui::json::emit_static("verify_error", &VerifyErrorMsg {
+                                        pack_id: pack_id.to_hex(),
+                                        error: parts.join("; "),
+                                    });
+                                }
+
                                 stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
 
                                 if !pack_stats.corrupt_blobs.is_empty() {
@@ -335,6 +378,19 @@ pub async fn run_with_repo(
                             bar.suspend(|| {
                                 ui::cli::error!("Failed to process pack {}: {}", pack_id, e);
                             });
+
+                            if json_out {
+                                #[derive(Serialize)]
+                                struct VerifyErrorMsg {
+                                    pack_id: String,
+                                    error: String,
+                                }
+                                ui::json::emit_static("verify_error", &VerifyErrorMsg {
+                                    pack_id: pack_id.to_hex(),
+                                    error: e.to_string(),
+                                });
+                            }
+
                             stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
 
                             if args.fail_early {
@@ -343,7 +399,6 @@ pub async fn run_with_repo(
                         }
                     }
 
-                    // Update bar message
                     let corrupt = stats.packs_corrupt.load(Ordering::Relaxed);
                     if corrupt > 0 {
                         bar.set_message(
@@ -355,6 +410,30 @@ pub async fn run_with_repo(
                         bar.set_message("OK".to_string());
                     }
                     bar.inc(1);
+
+                    if json_out {
+                        #[derive(Serialize)]
+                        struct VerifyProgressMsg {
+                            phase: &'static str,
+                            pack_id: String,
+                            packs_total: usize,
+                            packs_processed: usize,
+                            packs_corrupt: usize,
+                            blobs_verified: usize,
+                            blobs_dangling: usize,
+                            failed_early: bool,
+                        }
+                        ui::json::emit_static("verify_progress", &VerifyProgressMsg {
+                            phase: "physical",
+                            pack_id: pack_id.to_hex(),
+                            packs_total: total_packs,
+                            packs_processed: stats.packs_processed.load(Ordering::Relaxed),
+                            packs_corrupt: stats.packs_corrupt.load(Ordering::Relaxed),
+                            blobs_verified: stats.blobs_verified.load(Ordering::Relaxed),
+                            blobs_dangling: stats.blobs_dangling.load(Ordering::Relaxed),
+                            failed_early: stop_flag.load(Ordering::Relaxed),
+                        });
+                    }
                 }
             })
             .buffer_unordered(args.parallel)
@@ -386,9 +465,7 @@ pub async fn run_with_repo(
         ui::cli::log!();
     }
 
-    // ------------------------------------------
     // Logical Verification (Snapshot References)
-    // ------------------------------------------
     let mut logical_failed_early = false;
     let snapshots_corrupt = AtomicUsize::new(0);
     let mut num_snapshots_total = 0;
@@ -405,6 +482,20 @@ pub async fn run_with_repo(
                 Ok((id, snapshot)) => snapshots.push((id, snapshot.timestamp)),
                 Err(e) => {
                     ui::cli::error!("Failed to load snapshot: {:?}", e);
+
+                    if json_out {
+                        #[derive(Serialize)]
+                        struct VerifyErrorMsg {
+                            error: String,
+                        }
+                        ui::json::emit_static(
+                            "verify_error",
+                            &VerifyErrorMsg {
+                                error: format!("Failed to load snapshot: {:?}", e),
+                            },
+                        );
+                    }
+
                     snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
                     if args.fail_early {
                         bail!("Verification halted due to corrupted snapshot.");
@@ -413,7 +504,6 @@ pub async fn run_with_repo(
             }
         }
 
-        // Sort snapshots by timestamp (oldest first)
         snapshots.sort_by_key(|(_, timestamp)| *timestamp);
         num_snapshots_total = snapshots.len();
 
@@ -435,12 +525,12 @@ pub async fn run_with_repo(
                     let res =
                         verify_snapshot_refs(repo.clone(), &snapshot_id, packs, verified_trees)
                             .await;
-                    (i, snapshot_id, res)
+                    (i, snapshot_id, res, json_out)
                 }
             })
             .buffered(4);
 
-        while let Some((i, snapshot_id, res)) = stream.next().await {
+        while let Some((i, snapshot_id, res, json_out)) = stream.next().await {
             let msg = format!(
                 "{} {}",
                 snapshot_id.to_short_hex(12).bold().yellow(),
@@ -448,10 +538,28 @@ pub async fn run_with_repo(
             );
 
             match res {
-                Ok(_) => ui::cli::log!("{} {}", msg, "[OK]".bold().green()),
+                Ok(_) => {
+                    ui::cli::log!("{} {}", msg, "[OK]".bold().green());
+                }
                 Err(e) => {
                     ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
                     ui::cli::error!("{:?}", e);
+
+                    if json_out {
+                        #[derive(Serialize)]
+                        struct VerifyErrorMsg {
+                            snapshot: String,
+                            error: String,
+                        }
+                        ui::json::emit_static(
+                            "verify_error",
+                            &VerifyErrorMsg {
+                                snapshot: snapshot_id.to_short_hex(12),
+                                error: format!("{:?}", e),
+                            },
+                        );
+                    }
+
                     snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
 
                     if args.fail_early {
@@ -459,17 +567,51 @@ pub async fn run_with_repo(
                     }
                 }
             }
+
+            if json_out {
+                #[derive(Serialize)]
+                struct VerifyProgressMsg {
+                    phase: &'static str,
+                    snapshot_id: String,
+                    snapshots_total: usize,
+                    snapshots_processed: usize,
+                    snapshots_corrupt: usize,
+                }
+                ui::json::emit_static(
+                    "verify_progress",
+                    &VerifyProgressMsg {
+                        phase: "logical",
+                        snapshot_id: snapshot_id.to_short_hex(12),
+                        snapshots_total: num_snapshots_total,
+                        snapshots_processed: i + 1,
+                        snapshots_corrupt: snapshots_corrupt.load(Ordering::Relaxed),
+                    },
+                );
+            }
         }
 
         logical_failed_early = stop_flag.load(Ordering::Relaxed);
     }
 
-    // ------------------------------------------
     // Back-referencing Corruption
-    // ------------------------------------------
     if !corrupt_blobs.lock().is_empty() {
         ui::cli::log!();
         ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
+
+        if json_out {
+            #[derive(Serialize)]
+            struct VerifyProgressMsg {
+                phase: &'static str,
+                corrupt_blobs: usize,
+            }
+            ui::json::emit_static(
+                "verify_progress",
+                &VerifyProgressMsg {
+                    phase: "corruption",
+                    corrupt_blobs: corrupt_blobs.lock().len(),
+                },
+            );
+        }
 
         let snapshot_ids = repo.list_snapshot_ids().await?;
 
@@ -501,6 +643,25 @@ pub async fn run_with_repo(
                                         path.display().to_string().bold(),
                                         snapshot_id.to_short_hex(12).yellow()
                                     );
+
+                                    if json_out {
+                                        #[derive(Serialize)]
+                                        struct VerifyErrorMsg {
+                                            blob_id: String,
+                                            path: String,
+                                            snapshot: String,
+                                            error: String,
+                                        }
+                                        ui::json::emit_static(
+                                            "verify_error",
+                                            &VerifyErrorMsg {
+                                                blob_id: blob_id.to_short_hex(8),
+                                                path: path.display().to_string(),
+                                                snapshot: snapshot_id.to_short_hex(12),
+                                                error: "Corrupt blob affects this file".to_string(),
+                                            },
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -513,9 +674,43 @@ pub async fn run_with_repo(
             .await;
     }
 
-    // -------------
     // FINAL REPORT
-    // -------------
+    if json_out {
+        let packs_corrupt_count = stats.packs_corrupt.load(Ordering::Relaxed);
+        let dangling_count = stats.blobs_dangling.load(Ordering::Relaxed);
+        let snapshots_corrupt_count = snapshots_corrupt.load(Ordering::Relaxed);
+        let passed = packs_corrupt_count == 0 && snapshots_corrupt_count == 0;
+
+        #[derive(Serialize)]
+        struct VerifyCompleteMsg {
+            duration_seconds: f64,
+            packs_processed: usize,
+            packs_corrupt: usize,
+            blobs_verified: usize,
+            blobs_dangling: usize,
+            snapshots_verified: usize,
+            snapshots_corrupt: usize,
+            passed: bool,
+            failed_early: bool,
+            read_packs: bool,
+        }
+        ui::json::emit_static(
+            "verify_complete",
+            &VerifyCompleteMsg {
+                duration_seconds: start.elapsed().as_secs_f64(),
+                packs_processed: stats.packs_processed.load(Ordering::Relaxed),
+                packs_corrupt: packs_corrupt_count,
+                blobs_verified: stats.blobs_verified.load(Ordering::Relaxed),
+                blobs_dangling: dangling_count,
+                snapshots_verified: num_snapshots_total,
+                snapshots_corrupt: snapshots_corrupt_count,
+                passed,
+                failed_early: physical_failed_early || logical_failed_early,
+                read_packs: args.read_packs,
+            },
+        );
+    }
+
     if cleanup_handler.is_interrupted() {
         return Ok(());
     }

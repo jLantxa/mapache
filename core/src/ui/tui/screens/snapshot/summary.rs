@@ -91,22 +91,12 @@ fn render_success(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Length(5),
-            Constraint::Length(1),
-            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "Changes since parent snapshot:",
-            Style::default().bold(),
-        )),
-        chunks[0],
-    );
 
     let col_label: u16 = 10;
     let avail = inner.width.saturating_sub(col_label + 4);
@@ -152,13 +142,8 @@ fn render_success(
             Constraint::Length(col_w),
         ],
     )
-    .block(theme::themed_block(""));
-    frame.render_widget(table, chunks[1]);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled("Data:", Style::default().bold())),
-        chunks[2],
-    );
+    .block(theme::themed_block("Changes since parent snapshot"));
+    frame.render_widget(table, chunks[0]);
 
     let raw_data_str = utils::format_size_binary(summary.raw_bytes, 3);
     let enc_data_str = utils::format_size_binary(summary.encoded_bytes, 3);
@@ -209,8 +194,8 @@ fn render_success(
             Constraint::Length(data_col_w),
         ],
     )
-    .block(theme::themed_block(""));
-    frame.render_widget(data_table, chunks[3]);
+    .block(theme::themed_block("Totals"));
+    frame.render_widget(data_table, chunks[1]);
 
     let stats_line = Line::from(vec![Span::raw(format!(
         "Processed {} and {} items in {}",
@@ -218,7 +203,7 @@ fn render_success(
         summary.processed_items_count,
         utils::pretty_print_duration(duration),
     ))]);
-    frame.render_widget(Paragraph::new(stats_line), chunks[4]);
+    frame.render_widget(Paragraph::new(stats_line), chunks[2]);
 
     let id_line = Line::from(vec![
         Span::styled("Snapshot ID: ", Style::default().bold()),
@@ -227,7 +212,7 @@ fn render_success(
             theme::THEME.style_snapshot_id,
         ),
     ]);
-    frame.render_widget(Paragraph::new(id_line), chunks[5]);
+    frame.render_widget(Paragraph::new(id_line), chunks[3]);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, summary: &Option<SummaryResult>) {

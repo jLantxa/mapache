@@ -240,6 +240,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     duration_seconds: f64,
                     errors: u64,
                     warnings: u64,
+                    total_items: u64,
+                    total_bytes: u64,
                     dry_run: bool,
                 }
 
@@ -249,6 +251,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         duration_seconds: start.elapsed().as_secs_f64(),
                         errors: progress_reporter.error_count(),
                         warnings: progress_reporter.warning_count(),
+                        total_items: progress_reporter.total_items(),
+                        total_bytes: progress_reporter.total_bytes(),
                         dry_run: args.dry_run,
                     },
                 );

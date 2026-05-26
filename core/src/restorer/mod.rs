@@ -452,8 +452,9 @@ impl Restorer {
                     }
 
                     let count = node_count.fetch_add(1, Ordering::Relaxed);
+                    let visited = count + 1;
                     if count.is_multiple_of(100) {
-                        progress_reporter.set_message(format!("Planning... ({} nodes)", count));
+                        progress_reporter.set_visited_nodes(visited);
                     }
 
                     let (mut path, stream_node_res) = match node_res {
@@ -508,13 +509,7 @@ impl Restorer {
                         .await
                     {
                         Ok(true) => {}
-                        Ok(false) => {
-                            progress_reporter.processed_item(&path);
-                            if node.is_file() {
-                                progress_reporter.processed_bytes(node.metadata.size);
-                            }
-                            return;
-                        }
+                        Ok(false) => return,
                         Err(e) => {
                             progress_reporter.error(&format!(
                                 "Error checking {}: {}",
@@ -537,7 +532,6 @@ impl Restorer {
                             return;
                         }
                         directories.lock().push((restore_path, node.metadata));
-                        progress_reporter.processed_item(&path);
                         return;
                     }
 
@@ -638,11 +632,13 @@ impl Restorer {
                         {
                             progress_reporter.error(&e.to_string());
                         }
-                        progress_reporter.processed_item(&path);
                     }
                 }
             })
             .await;
+
+        let final_visited = node_count.load(Ordering::Relaxed);
+        self.progress_reporter.set_visited_nodes(final_visited);
 
         let files = Arc::into_inner(files)
             .context("Internal error: multiple Arc references to files remained after planning")?

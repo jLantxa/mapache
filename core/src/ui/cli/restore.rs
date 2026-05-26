@@ -25,6 +25,7 @@ pub struct CliRestoreProgressReporter {
     companion_bar: ProgressBar,
     current_stage: Arc<Mutex<String>>,
     num_expected_items: Arc<AtomicU64>,
+    num_expected_bytes: Arc<AtomicU64>,
 }
 
 impl CliRestoreProgressReporter {
@@ -37,6 +38,7 @@ impl CliRestoreProgressReporter {
         let error_counter = Arc::new(AtomicU64::new(0));
         let warning_counter = Arc::new(AtomicU64::new(0));
         let num_expected_items_atom = Arc::new(AtomicU64::new(num_expected_items.unwrap_or(0)));
+        let num_expected_bytes_atom = Arc::new(AtomicU64::new(num_expected_bytes.unwrap_or(0)));
 
         let progress_bar = if num_expected_items.is_none() || num_expected_bytes.is_none() {
             mp.add(ProgressBar::no_length())
@@ -124,6 +126,7 @@ impl CliRestoreProgressReporter {
             companion_bar,
             current_stage: Arc::new(Mutex::new(String::new())),
             num_expected_items: num_expected_items_atom,
+            num_expected_bytes: num_expected_bytes_atom,
         }
     }
 }
@@ -138,6 +141,8 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
     fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
         self.num_expected_items
             .store(num_expected_items, Ordering::Relaxed);
+        self.num_expected_bytes
+            .store(num_expected_bytes, Ordering::Relaxed);
         self.progress_bar.set_length(num_expected_bytes);
     }
 
@@ -195,6 +200,14 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
         self.companion_bar.finish_and_clear();
         self.progress_bar.finish_and_clear();
         let _ = self.mp.clear();
+    }
+
+    fn total_items(&self) -> u64 {
+        self.num_expected_items.load(Ordering::Relaxed)
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.num_expected_bytes.load(Ordering::Relaxed)
     }
 }
 

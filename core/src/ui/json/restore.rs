@@ -17,6 +17,8 @@ use crate::{
 #[derive(Serialize)]
 struct RestoreStatusUpdateMsg {
     stage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visited_nodes: Option<u64>,
     processed_items: u64,
     processed_bytes: u64,
     total_items: u64,
@@ -38,6 +40,7 @@ struct WarningMsg<'a> {
 
 pub struct JsonRestoreProgressReporter {
     json_reporter: JsonReporter,
+    visited_nodes: AtomicU64,
     processed_items_count: AtomicU64,
     processed_bytes_count: AtomicU64,
     error_counter: AtomicU64,
@@ -53,6 +56,7 @@ impl JsonRestoreProgressReporter {
     pub(crate) fn new(num_expected_items: Option<u64>, num_expected_bytes: Option<u64>) -> Self {
         Self {
             json_reporter: JsonReporter::new(true),
+            visited_nodes: AtomicU64::new(0),
             processed_items_count: AtomicU64::new(0),
             processed_bytes_count: AtomicU64::new(0),
             error_counter: AtomicU64::new(0),
@@ -76,6 +80,8 @@ impl JsonRestoreProgressReporter {
 
     fn emit_status_update(&self) {
         let stage = self.current_stage.lock().unwrap().clone();
+        let visited = self.visited_nodes.load(Ordering::Relaxed);
+        let visited_nodes = if visited > 0 { Some(visited) } else { None };
         let processed_items = self.processed_items_count.load(Ordering::Relaxed);
         let processed_bytes = self.processed_bytes_count.load(Ordering::Relaxed);
         let errors = self.error_counter.load(Ordering::Relaxed);
@@ -87,6 +93,7 @@ impl JsonRestoreProgressReporter {
             "restore_status",
             &RestoreStatusUpdateMsg {
                 stage,
+                visited_nodes,
                 processed_items,
                 processed_bytes,
                 total_items,
@@ -101,8 +108,10 @@ impl JsonRestoreProgressReporter {
 
 impl RestoreProgressReporter for JsonRestoreProgressReporter {
     fn set_message(&self, msg: String) {
-        let mut stage = self.current_stage.lock().unwrap();
-        *stage = msg;
+        {
+            let mut stage = self.current_stage.lock().unwrap();
+            *stage = msg;
+        }
 
         if self.should_emit_update() {
             self.emit_status_update();
@@ -110,6 +119,7 @@ impl RestoreProgressReporter for JsonRestoreProgressReporter {
     }
 
     fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
+        self.visited_nodes.store(0, Ordering::Relaxed);
         self.num_expected_items
             .store(num_expected_items, Ordering::Relaxed);
         self.num_expected_bytes
@@ -141,6 +151,13 @@ impl RestoreProgressReporter for JsonRestoreProgressReporter {
         self.warning_counter.fetch_add(1, Ordering::Relaxed);
         self.json_reporter
             .emit("warning", &WarningMsg { message: msg });
+    }
+
+    fn set_visited_nodes(&self, count: u64) {
+        self.visited_nodes.store(count, Ordering::Relaxed);
+        if self.should_emit_update() {
+            self.emit_status_update();
+        }
     }
 
     fn error_count(&self) -> u64 {
@@ -196,5 +213,13 @@ impl RestoreProgressReporter for JsonRestoreProgressReporter {
     fn finalize(&self) {
         self.emit_status_update();
         self.json_reporter.flush();
+    }
+
+    fn total_items(&self) -> u64 {
+        self.num_expected_items.load(Ordering::Relaxed)
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.num_expected_bytes.load(Ordering::Relaxed)
     }
 }

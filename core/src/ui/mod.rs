@@ -38,6 +38,15 @@ pub trait RestoreProgressReporter: Send + Sync {
     fn verbose_1(&self, msg: String);
     fn verbose_2(&self, msg: String);
     fn finalize(&self);
+    fn set_visited_nodes(&self, _count: u64) {}
+
+    fn total_items(&self) -> u64 {
+        0
+    }
+
+    fn total_bytes(&self) -> u64 {
+        0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

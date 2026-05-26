@@ -140,8 +140,8 @@ impl Lock {
     /// Checks if the lock is expired based on the refresh timestamp.
     pub fn is_expired(&self) -> bool {
         let now = Local::now();
-        let expire_timeout_chrono = chrono::Duration::from_std(LOCK_EXPIRE_TIMEOUT)
-            .expect("LOCK_EXPIRE_TIMEOUT should fit into chrono::Duration");
+        // LOCK_EXPIRE_TIMEOUT is a compile-time constant, so from_std cannot fail.
+        let expire_timeout_chrono = chrono::Duration::from_std(LOCK_EXPIRE_TIMEOUT).unwrap();
 
         now.signed_duration_since(self.timestamp) > expire_timeout_chrono
     }

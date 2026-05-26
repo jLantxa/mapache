@@ -49,7 +49,7 @@ impl CliRestoreProgressReporter {
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template("{spinner:.cyan} {msg}\n[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
-                .expect("progress bar template")
+                .expect("Invalid progress bar template for restore progress")
                 .progress_chars("=> ")
                 .tick_chars(SPINNER_TICK_CHARS)
                 .with_key("custom_elapsed", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -85,7 +85,7 @@ impl CliRestoreProgressReporter {
         companion_bar.set_style(
             ProgressStyle::default_bar()
                 .template("[{processed_items_fmt}] [{errors} errors, {warnings} warnings]")
-                .expect("companion bar template")
+                .expect("Invalid progress bar template for restore companion bar")
                 .with_key(
                     "processed_items_fmt",
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {

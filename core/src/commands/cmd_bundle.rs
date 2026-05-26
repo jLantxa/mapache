@@ -331,7 +331,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                         let reporter_clone = reporter.clone();
                         let signal_clone = signal.clone();
 
-                        let blobs_res = tokio::task::spawn_blocking(move || {
+                        let blobs_res = match tokio::task::spawn_blocking(move || {
                             let file = std::fs::File::open(&path_str)?;
                             processor::chunk_and_store_file(
                                 saver_clone.as_ref(),
@@ -344,7 +344,17 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                             )
                         })
                         .await
-                        .expect("Task panicked");
+                        {
+                            Ok(res) => res,
+                            Err(e) => {
+                                reporter.error(&format!(
+                                    "Chunking task panicked for {}: {}",
+                                    path.display(),
+                                    e
+                                ));
+                                return;
+                            }
+                        };
 
                         match blobs_res {
                             Ok(blobs) => node.blobs = Some(blobs),

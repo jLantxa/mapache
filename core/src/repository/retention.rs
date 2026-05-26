@@ -77,57 +77,52 @@ pub fn apply_retention_rules(
             RetentionRule::KeepYearly(n) => {
                 // Cutoff is Jan 1st of the year (N-1) years ago.
                 let target_year = now.year() - ((*n - 1) as i32);
-                let naive_date = NaiveDate::from_ymd_opt(target_year, 1, 1).unwrap();
-                let naive_datetime = naive_date.and_hms_opt(0, 0, 0).unwrap();
-
-                let cutoff = timezone
-                    .from_local_datetime(&naive_datetime)
-                    .earliest()
-                    .unwrap_or_else(|| {
-                        // DST spring-forward: the local time falls in a clock gap
-                        // and doesn't exist. Advance by the gap size (1 hour) to the
-                        // first valid local time. The ultimate fallback interprets the
-                        // naive time as UTC -- yields a cutoff off by the UTC offset,
-                        // acceptable for this extremely rare edge case.
-                        timezone
-                            .from_local_datetime(&(naive_datetime + Duration::hours(1)))
-                            .earliest()
-                            .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
-                    });
+                let cutoff = match NaiveDate::from_ymd_opt(target_year, 1, 1)
+                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+                {
+                    Some(naive_datetime) => timezone
+                        .from_local_datetime(&naive_datetime)
+                        .earliest()
+                        .unwrap_or_else(|| {
+                            timezone
+                                .from_local_datetime(&(naive_datetime + Duration::hours(1)))
+                                .earliest()
+                                .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
+                        }),
+                    None => now,
+                };
 
                 keep_latest_per_period(snapshots_sorted, |s| s.timestamp.year(), cutoff)
             }
             RetentionRule::KeepMonthly(n) => {
                 // Cutoff is the 1st of the month N months ago.
-                let mut target_date: NaiveDate = now_date.with_day(1).unwrap();
-
-                // Manual month decrement logic remains, as this requires calendar arithmetic
-                for _ in 1..*n {
-                    let month = target_date.month();
-                    let year = target_date.year();
-                    if month == 1 {
-                        target_date = target_date
-                            .with_year(year - 1)
-                            .unwrap()
-                            .with_month(12)
-                            .unwrap();
-                    } else {
-                        target_date = target_date.with_month(month - 1).unwrap();
+                let cutoff = match (|| {
+                    let mut target_date: NaiveDate = now_date.with_day(1)?;
+                    for _ in 1..*n {
+                        let month = target_date.month();
+                        let year = target_date.year();
+                        if month == 1 {
+                            target_date = target_date.with_year(year - 1)?.with_month(12)?;
+                        } else {
+                            target_date = target_date.with_month(month - 1)?;
+                        }
                     }
-                }
-
-                let naive_datetime = target_date.and_hms_opt(0, 0, 0).unwrap();
-
-                let cutoff = timezone
-                    .from_local_datetime(&naive_datetime)
-                    .earliest()
-                    .unwrap_or_else(|| {
-                        // DST spring-forward gap: same as KeepYearly above.
+                    let naive_datetime = target_date.and_hms_opt(0, 0, 0)?;
+                    Some(
                         timezone
-                            .from_local_datetime(&(naive_datetime + Duration::hours(1)))
+                            .from_local_datetime(&naive_datetime)
                             .earliest()
-                            .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
-                    });
+                            .unwrap_or_else(|| {
+                                timezone
+                                    .from_local_datetime(&(naive_datetime + Duration::hours(1)))
+                                    .earliest()
+                                    .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
+                            }),
+                    )
+                })() {
+                    Some(cutoff) => cutoff,
+                    None => now,
+                };
 
                 keep_latest_per_period(
                     snapshots_sorted,
@@ -142,18 +137,18 @@ pub fn apply_retention_rules(
 
                 let target_monday_date = current_monday_date - Duration::weeks((*n - 1) as i64);
 
-                let naive_datetime = target_monday_date.and_hms_opt(0, 0, 0).unwrap();
-
-                let cutoff = timezone
-                    .from_local_datetime(&naive_datetime)
-                    .earliest()
-                    .unwrap_or_else(|| {
-                        // DST spring-forward gap: same as KeepYearly above.
-                        timezone
-                            .from_local_datetime(&(naive_datetime + Duration::hours(1)))
-                            .earliest()
-                            .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
-                    });
+                let cutoff = match target_monday_date.and_hms_opt(0, 0, 0) {
+                    Some(naive_datetime) => timezone
+                        .from_local_datetime(&naive_datetime)
+                        .earliest()
+                        .unwrap_or_else(|| {
+                            timezone
+                                .from_local_datetime(&(naive_datetime + Duration::hours(1)))
+                                .earliest()
+                                .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
+                        }),
+                    None => now,
+                };
 
                 keep_latest_per_period(
                     snapshots_sorted,
@@ -163,20 +158,22 @@ pub fn apply_retention_rules(
             }
             RetentionRule::KeepDaily(n) => {
                 // Calculate midnight of the current day for the anchor.
-                let naive_midnight = now_date.and_hms_opt(0, 0, 0).unwrap();
-                let now_midnight = naive_midnight
-                    .and_local_timezone(timezone)
-                    .earliest()
-                    .unwrap_or_else(|| {
-                        // DST spring-forward gap: same as KeepYearly above.
-                        (naive_midnight + Duration::hours(1))
+                let cutoff = match now_date.and_hms_opt(0, 0, 0) {
+                    Some(naive_midnight) => {
+                        let now_midnight = naive_midnight
                             .and_local_timezone(timezone)
                             .earliest()
-                            .unwrap_or(naive_midnight.and_utc().with_timezone(&timezone))
-                    });
-
-                // Cutoff is midnight of the day N days ago.
-                let cutoff = now_midnight - Duration::days((*n - 1) as i64);
+                            .unwrap_or_else(|| {
+                                (naive_midnight + Duration::hours(1))
+                                    .and_local_timezone(timezone)
+                                    .earliest()
+                                    .unwrap_or(naive_midnight.and_utc().with_timezone(&timezone))
+                            });
+                        // Cutoff is midnight of the day N days ago.
+                        now_midnight - Duration::days((*n - 1) as i64)
+                    }
+                    None => now,
+                };
 
                 keep_latest_per_period(snapshots_sorted, |s| s.timestamp.date_naive(), cutoff)
             }

@@ -201,12 +201,12 @@ impl CliSnapshotProgressReporter {
 
         let determined_style = base_style.clone()
         .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
-        .expect("template");
+        .expect("Invalid progress bar template for snapshot progress (determined)");
 
         let undetermined_style = base_style
             .clone()
             .template("[{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s]")
-            .expect("template");
+            .expect("Invalid progress bar template for snapshot progress (undetermined)");
 
         progress_bar.set_style(undetermined_style.clone());
 
@@ -215,7 +215,7 @@ impl CliSnapshotProgressReporter {
         companion_bar.set_style(
             ProgressStyle::default_bar()
                 .template("[{items_info}] [{errors} errors]")
-                .expect("template")
+                .expect("Invalid progress bar template for snapshot companion bar")
                 .with_key(
                     "items_info",
                     |state: &ProgressState, w: &mut dyn std::fmt::Write| {

@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -180,29 +180,30 @@ impl Index {
     }
 
     /// Helper to resolve internal location to a public BlobLocator.
-    fn resolve_location(&self, loc: &BlobLocationInternal, blob_type: BlobType) -> BlobLocator {
-        let pack_id = self
-            .pack_ids
-            .get_value(loc.pack_array_index as usize)
-            .expect("Index invariant violated: pack_index out of bounds");
+    fn resolve_location(
+        &self,
+        loc: &BlobLocationInternal,
+        blob_type: BlobType,
+    ) -> Option<BlobLocator> {
+        let pack_id = self.pack_ids.get_value(loc.pack_array_index as usize)?;
 
-        BlobLocator {
+        Some(BlobLocator {
             pack_id: *pack_id,
             blob_type,
             offset: loc.offset,
             length: loc.length,
             raw_length: loc.raw_length,
-        }
+        })
     }
 
     pub fn get(&self, id: &ID) -> Option<BlobLocator> {
         self.data_ids
             .get(id)
-            .map(|l| self.resolve_location(l, BlobType::Data))
+            .and_then(|l| self.resolve_location(l, BlobType::Data))
             .or_else(|| {
                 self.tree_ids
                     .get(id)
-                    .map(|l| self.resolve_location(l, BlobType::Tree))
+                    .and_then(|l| self.resolve_location(l, BlobType::Tree))
             })
     }
 
@@ -320,14 +321,12 @@ impl Index {
     }
 
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
-        let data = self
-            .data_ids
-            .iter()
-            .map(move |(id, loc)| (id, self.resolve_location(loc, BlobType::Data)));
-        let trees = self
-            .tree_ids
-            .iter()
-            .map(move |(id, loc)| (id, self.resolve_location(loc, BlobType::Tree)));
+        let data = self.data_ids.iter().filter_map(move |(id, loc)| {
+            self.resolve_location(loc, BlobType::Data).map(|l| (id, l))
+        });
+        let trees = self.tree_ids.iter().filter_map(move |(id, loc)| {
+            self.resolve_location(loc, BlobType::Tree).map(|l| (id, l))
+        });
         data.chain(trees)
     }
 
@@ -340,10 +339,10 @@ impl Index {
 
         let mut process_map = |map: &IdMap<ID, BlobLocationInternal>, b_type: BlobType| {
             for (id, loc) in map {
-                let pack_id = self
-                    .pack_ids
-                    .get_value(loc.pack_array_index as usize)
-                    .expect("Index invariant violated");
+                let Some(pack_id) = self.pack_ids.get_value(loc.pack_array_index as usize) else {
+                    tracing::error!(target: "index", "Corrupt index: pack_array_index {} out of bounds, skipping blob {}", loc.pack_array_index, id);
+                    continue;
+                };
 
                 if let Some(obsolete) = obsolete_packs
                     && obsolete.contains(pack_id)
@@ -446,7 +445,7 @@ impl MasterIndex {
         lock.indices.iter().rev().find_map(|idx| {
             idx.data_ids
                 .get(id)
-                .map(|l| idx.resolve_location(l, BlobType::Data))
+                .and_then(|l| idx.resolve_location(l, BlobType::Data))
         })
     }
 
@@ -457,7 +456,7 @@ impl MasterIndex {
         lock.indices.iter().rev().find_map(|idx| {
             idx.tree_ids
                 .get(id)
-                .map(|l| idx.resolve_location(l, BlobType::Tree))
+                .and_then(|l| idx.resolve_location(l, BlobType::Tree))
         })
     }
 
@@ -563,7 +562,7 @@ impl MasterIndex {
                 .indices
                 .iter_mut()
                 .find(|idx| idx.is_pending())
-                .expect("There should be a pending index");
+                .ok_or_else(|| anyhow!("No pending index available to add pack {pack_id}"))?;
 
             tracing::debug!(target: "index", "Adding pack {} ({} blobs) to pending index #{}", pack_id.to_short_hex(8), num_blobs, pending_index.instance_id);
             pending_index.add_pack(pack_id, descriptors);

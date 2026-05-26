@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Duration;
 use colored::Colorize;
 use futures::{StreamExt, stream};
@@ -670,11 +670,10 @@ impl Repository {
         let mut index_ids = Vec::with_capacity(index_paths.len());
 
         for file_path in index_paths {
-            let file_name = file_path
-                .file_name()
-                .expect("Could not read index file name")
-                .to_string_lossy()
-                .clone();
+            let Some(file_name) = file_path.file_name() else {
+                continue;
+            };
+            let file_name = file_name.to_string_lossy().to_string();
 
             match ID::from_hex(&file_name) {
                 Ok(id) => index_ids.push(id),
@@ -821,7 +820,9 @@ impl Repository {
             bail!("File type {file_type} with prefix {prefix} doesn't exist");
         }
 
-        let (file_stem, filepath) = matches.pop().unwrap();
+        let (file_stem, filepath) = matches.pop().ok_or_else(|| {
+            anyhow!("Expected to find matching file after successful prefix search")
+        })?;
         let id = ID::from_hex(&file_stem)?;
 
         Ok((id, filepath))
@@ -954,7 +955,10 @@ impl Repository {
         let entries = self.backend.list_dir_recursive(&self.objects_path).await?;
         for node in entries {
             let path = node.into_path();
-            let filename = path.file_name().unwrap().to_string_lossy().to_string();
+            let Some(filename) = path.file_name() else {
+                continue;
+            };
+            let filename = filename.to_string_lossy().to_string();
             if let Ok(id) = ID::from_hex(&filename) {
                 packs.insert(id);
             } else if let Some(ext) = path.extension() {
@@ -1097,11 +1101,10 @@ impl Repository {
                 let secure_storage = self.secure_storage.clone();
 
                 async move {
-                    let file_name = file_path
-                        .file_name()
-                        .expect("Could not read index file name")
-                        .to_string_lossy()
-                        .to_string();
+                    let Some(file_name) = file_path.file_name() else {
+                        return Ok(None);
+                    };
+                    let file_name = file_name.to_string_lossy().to_string();
 
                     let id = match ID::from_hex(&file_name) {
                         Ok(id) => id,
@@ -1453,7 +1456,7 @@ mod tests {
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
 
         let intermediate_key =
-            SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params())?;
+            SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params()?)?;
         let ss = SecureStorage::new()
             .with_compression(Compression::Fast.to_level())
             .with_key(&*intermediate_key);

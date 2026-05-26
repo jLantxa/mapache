@@ -189,9 +189,10 @@ fn log_snapshots_full(snapshots: &SnapshotEntryList) {
         ui::cli::log!("{}", "Paths:".bold());
         for path in &snapshot.paths {
             // This should work, since all paths have the common root
-            let relative_path = path
-                .strip_prefix(&snapshot.root)
-                .expect("Could not strip snapshot root from path");
+            let relative_path = match path.strip_prefix(&snapshot.root) {
+                Ok(p) => p.to_path_buf(),
+                Err(_) => path.clone(),
+            };
             ui::cli::log!("  {}", relative_path.display());
         }
 

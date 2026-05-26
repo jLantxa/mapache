@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use argon2;
 use chrono::{DateTime, Local};
 use colored::Colorize;
@@ -113,13 +113,13 @@ pub struct KeyFile {
 }
 
 impl KeyFile {
-    pub fn argon2_params(&self) -> argon2::Params {
+    pub fn argon2_params(&self) -> Result<argon2::Params> {
         argon2::ParamsBuilder::new()
             .m_cost(self.m)
             .t_cost(self.t)
             .p_cost(self.p)
             .build()
-            .expect("Parameters should be valid")
+            .map_err(|e| anyhow!("Invalid Argon2 parameters: {e}"))
     }
 }
 
@@ -218,7 +218,7 @@ impl KeyManager {
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
 
         let intermediate_key =
-            SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params())?;
+            SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params()?)?;
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&*intermediate_key);
@@ -371,7 +371,7 @@ impl KeyManager {
 
         match matches.len() {
             0 => Ok(None),
-            1 => Ok(Some(matches.pop().unwrap())),
+            1 => Ok(Some(matches.swap_remove(0))),
             _ => bail!("More than one Keyfile found for username {username}"),
         }
     }
@@ -455,7 +455,9 @@ impl KeyManager {
             bail!("Prefix {prefix} is ambiguous");
         }
 
-        let (filename, filepath) = matches.pop().unwrap();
+        let (filename, filepath) = matches
+            .pop()
+            .ok_or_else(|| anyhow!("Keyfile match set is empty"))?;
         let id = ID::from_hex(&filename)?;
         Ok((id, filepath))
     }
@@ -506,7 +508,7 @@ mod tests {
             encrypted_key: "".to_string(),
         };
 
-        let params = kf.argon2_params();
+        let params = kf.argon2_params().unwrap();
         assert_eq!(params.m_cost(), 1024);
         assert_eq!(params.t_cost(), 1);
         assert_eq!(params.p_cost(), 1);

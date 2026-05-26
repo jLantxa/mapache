@@ -428,14 +428,28 @@ where
             // prev errored: consume it and return error
             (Some(Err(_)), _) => {
                 let item = futures::ready!(Pin::new(&mut this.prev).poll_next(cx));
-                let err = item.expect("peeked Some").unwrap_err();
+                let err = match item {
+                    Some(Err(e)) => e,
+                    _ => {
+                        return Poll::Ready(Some(Err(anyhow!(
+                            "Stream state inconsistency in 'previous' stream"
+                        ))));
+                    }
+                };
                 Poll::Ready(Some(Err(Self::with_ctx(err, "Error in 'previous' stream"))))
             }
 
             // next errored: consume it and return error
             (_, Some(Err(_))) => {
                 let item = futures::ready!(Pin::new(&mut this.next).poll_next(cx));
-                let err = item.expect("peeked Some").unwrap_err();
+                let err = match item {
+                    Some(Err(e)) => e,
+                    _ => {
+                        return Poll::Ready(Some(Err(anyhow!(
+                            "Stream state inconsistency in 'next' stream"
+                        ))));
+                    }
+                };
                 Poll::Ready(Some(Err(Self::with_ctx(err, "Error in 'next' stream"))))
             }
 
@@ -443,20 +457,48 @@ where
             (Some(Ok((path_p, _))), Some(Ok((path_n, _)))) => match path_p.cmp(path_n) {
                 Ordering::Less => {
                     let item = futures::ready!(Pin::new(&mut this.prev).poll_next(cx));
-                    let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                    let (path, node_res) = match item {
+                        Some(Ok(t)) => t,
+                        _ => {
+                            return Poll::Ready(Some(Err(anyhow!(
+                                "Stream state inconsistency in 'previous' stream"
+                            ))));
+                        }
+                    };
                     Poll::Ready(Some(Ok((path, Some(node_res), None, NodeDiff::Deleted))))
                 }
                 Ordering::Greater => {
                     let item = futures::ready!(Pin::new(&mut this.next).poll_next(cx));
-                    let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                    let (path, node_res) = match item {
+                        Some(Ok(t)) => t,
+                        _ => {
+                            return Poll::Ready(Some(Err(anyhow!(
+                                "Stream state inconsistency in 'next' stream"
+                            ))));
+                        }
+                    };
                     Poll::Ready(Some(Ok((path, None, Some(node_res), NodeDiff::New))))
                 }
                 Ordering::Equal => {
                     let p_item = futures::ready!(Pin::new(&mut this.prev).poll_next(cx));
                     let n_item = futures::ready!(Pin::new(&mut this.next).poll_next(cx));
 
-                    let (path, node_p_res) = p_item.expect("peeked Some").expect("peeked Ok");
-                    let (_, node_n_res) = n_item.expect("peeked Some").expect("peeked Ok");
+                    let (path, node_p_res) = match p_item {
+                        Some(Ok(t)) => t,
+                        _ => {
+                            return Poll::Ready(Some(Err(anyhow!(
+                                "Stream state inconsistency in 'previous' stream"
+                            ))));
+                        }
+                    };
+                    let (_, node_n_res) = match n_item {
+                        Some(Ok(t)) => t,
+                        _ => {
+                            return Poll::Ready(Some(Err(anyhow!(
+                                "Stream state inconsistency in 'next' stream"
+                            ))));
+                        }
+                    };
 
                     let diff = match (&node_p_res, &node_n_res) {
                         (Ok(node_p), Ok(node_n)) => {
@@ -476,14 +518,28 @@ where
             // only prev left
             (Some(Ok(_)), None) => {
                 let item = futures::ready!(Pin::new(&mut this.prev).poll_next(cx));
-                let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                let (path, node_res) = match item {
+                    Some(Ok(t)) => t,
+                    _ => {
+                        return Poll::Ready(Some(Err(anyhow!(
+                            "Stream state inconsistency in 'previous' stream"
+                        ))));
+                    }
+                };
                 Poll::Ready(Some(Ok((path, Some(node_res), None, NodeDiff::Deleted))))
             }
 
             // only next left
             (None, Some(Ok(_))) => {
                 let item = futures::ready!(Pin::new(&mut this.next).poll_next(cx));
-                let (path, node_res) = item.expect("peeked Some").expect("peeked Ok");
+                let (path, node_res) = match item {
+                    Some(Ok(t)) => t,
+                    _ => {
+                        return Poll::Ready(Some(Err(anyhow!(
+                            "Stream state inconsistency in 'next' stream"
+                        ))));
+                    }
+                };
                 Poll::Ready(Some(Ok((path, None, Some(node_res), NodeDiff::New))))
             }
         }

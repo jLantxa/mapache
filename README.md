@@ -99,19 +99,19 @@ Workloads:
 
 | Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
 |---------|-----------|--------|-------|----------|-----------|
-| mapache | backup    | 2.34s  | 1194% | 566 MB   | 304.1 MB  |
-| restic  | backup    | 3.66s  | 1246% | 612 MB   | 308.8 MB  |
-| mapache | restore   | 9.96s  | 117%  | 268 MB   | —         |
-| restic  | restore   | 10.57s | 133%  | 255 MB   | —         |
+| mapache | backup    | 2.18s  | 1255% | 379 MB   | 304.1 MB  |
+| restic  | backup    | 3.97s  | 1152% | 598 MB   | 308.9 MB  |
+| mapache | restore   | 17.81s | 111%  | 190 MB   | —         |
+| restic  | restore   | 18.53s | 145%  | 254 MB   | —         |
 
 ### enron
 
 | Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
 |---------|-----------|--------|-------|----------|-----------|
-| mapache | backup    | 5.54s  | 1162% | 594 MB   | 717.0 MB  |
-| restic  | backup    | 9.48s  | 1198% | 413 MB   | 724.9 MB  |
-| mapache | restore   | 32.90s | 127%  | 373 MB   | —         |
-| restic  | restore   | 41.62s | 114%  | 445 MB   | —         |
+| mapache | backup    | 4.76s  | 1281% | 435 MB   | 717.2 MB  |
+| restic  | backup    | 11.85s | 1000% | 437 MB   | 725.3 MB  |
+| mapache | restore   | 79.34s | 113%  | 365 MB   | —         |
+| restic  | restore   | 82.67s | 142%  | 435 MB   | —         |
 
 ## Getting Started
 

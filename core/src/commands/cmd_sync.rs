@@ -272,22 +272,20 @@ async fn sync_backends(
                 }
 
                 let processed = i + 1;
-                if processed % 100 == 0 || processed == total {
-                    #[derive(Serialize)]
-                    struct SyncStatusMsg {
-                        phase: String,
-                        processed: usize,
-                        total: usize,
-                    }
-                    ui::json::emit_static(
-                        "sync_status",
-                        &SyncStatusMsg {
-                            phase: "delete".to_string(),
-                            processed,
-                            total,
-                        },
-                    );
+                #[derive(Serialize)]
+                struct SyncStatusMsg {
+                    phase: String,
+                    processed: usize,
+                    total: usize,
                 }
+                ui::json::emit_static(
+                    "sync_status",
+                    &SyncStatusMsg {
+                        phase: "delete".to_string(),
+                        processed,
+                        total,
+                    },
+                );
             }
         } else {
             let delete_progress_bar = ProgressBar::with_draw_target(
@@ -351,7 +349,21 @@ async fn sync_backends(
                         }
                     }
 
-                    processed.fetch_add(1, Ordering::Relaxed);
+                    let p = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    #[derive(Serialize)]
+                    struct SyncStatusMsg {
+                        phase: String,
+                        processed: u64,
+                        total: usize,
+                    }
+                    ui::json::emit_static(
+                        "sync_status",
+                        &SyncStatusMsg {
+                            phase: "copy".to_string(),
+                            processed: p,
+                            total: total_copy,
+                        },
+                    );
                     Ok::<(), anyhow::Error>(())
                 }
             })
@@ -360,24 +372,6 @@ async fn sync_backends(
         let results = stream.collect::<Vec<_>>().await;
         for res in results {
             res?;
-        }
-
-        let final_processed = processed.load(Ordering::Relaxed);
-        if final_processed > 0 {
-            #[derive(Serialize)]
-            struct SyncStatusMsg {
-                phase: String,
-                processed: u64,
-                total: usize,
-            }
-            ui::json::emit_static(
-                "sync_status",
-                &SyncStatusMsg {
-                    phase: "copy".to_string(),
-                    processed: final_processed,
-                    total: total_copy,
-                },
-            );
         }
     } else {
         let copy_progress_bar = ProgressBar::with_draw_target(

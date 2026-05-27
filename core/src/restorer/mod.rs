@@ -154,6 +154,8 @@ struct RestorePlan {
     total_items: u64,
     /// Total number of bytes to be restored.
     total_bytes: u64,
+    /// Hardlinks to create after data restoration: (secondary_file_idx, primary_file_idx).
+    hardlinks: Vec<(usize, usize)>,
 }
 
 /// A request to restore a specific blob into a file.
@@ -406,6 +408,37 @@ impl Restorer {
         tracing::info!(target: "restorer", "Restoring data packs");
         self.restore_packs(plan_files, plan_packs, secure_storage, dry_run)
             .await?;
+
+        // Create hardlinks for secondary hardlink files (they share inode with the primary)
+        if !self.opts.dry_run && !plan.hardlinks.is_empty() {
+            tracing::info!(
+                target: "restorer",
+                "Creating {} hardlinks",
+                plan.hardlinks.len()
+            );
+            for (sec_idx, prim_idx) in &plan.hardlinks {
+                let primary_path = &plan.files[*prim_idx].path;
+                let secondary_path = &plan.files[*sec_idx].path;
+                if let Some(parent) = secondary_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                // Remove destination if it already exists (e.g. from a previous restore)
+                let _ = fs::remove_file(secondary_path);
+                if let Err(e) = fs::hard_link(primary_path, secondary_path) {
+                    let err_msg = format!(
+                        "Failed to create hardlink {} -> {}: {}",
+                        secondary_path.display(),
+                        primary_path.display(),
+                        e
+                    );
+                    if self.opts.quit_on_error {
+                        bail!(err_msg);
+                    }
+                    self.progress_reporter.error(&err_msg);
+                }
+            }
+        }
+
         tracing::info!(target: "restorer", "Restoring metadata");
         self.restore_metadata(tree_id, include, exclude, plan.directories)
             .await?;
@@ -427,6 +460,9 @@ impl Restorer {
         let node_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let total_items = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let total_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        // HardlinkIndex: (dev, inode) → file_idx of first occurrence
+        let hardlink_index = Arc::new(parking_lot::Mutex::new(HashMap::<(u64, u64), usize>::new()));
+        let hardlinks = Arc::new(parking_lot::Mutex::new(Vec::<(usize, usize)>::new()));
 
         self.progress_reporter
             .set_message("Planning...".to_string());
@@ -445,6 +481,8 @@ impl Restorer {
                 let total_bytes = total_bytes.clone();
                 let progress_reporter = self.progress_reporter.clone();
                 let shutdown_signal = self.shutdown_signal.clone();
+                let hardlink_index = hardlink_index.clone();
+                let hardlinks = hardlinks.clone();
 
                 async move {
                     if shutdown_signal.load(Ordering::Relaxed) {
@@ -562,56 +600,90 @@ impl Restorer {
                             idx
                         };
 
-                        // Populate packs map with pre-fetched locators
-                        for (blob_id, locator, offset_in_file) in file_blobs {
-                            packs.entry(locator.pack_id).or_default().push((
-                                blob_id,
-                                BlobRestoreRequest {
-                                    file_idx,
-                                    offset_in_file,
-                                    blob_offset: locator.offset,
-                                    blob_length: locator.length,
-                                    raw_length: locator.raw_length,
-                                },
-                            ));
-                        }
+                        // Check if this is a secondary hardlink (same dev,inode seen before)
+                        let is_hardlink_secondary = {
+                            if let (Some(dev), Some(inode)) =
+                                (node.metadata.dev, node.metadata.inode)
+                            {
+                                let nlink = node.metadata.nlink;
+                                // Fast-path: nlink <= 1 means no hardlinks
+                                if nlink.unwrap_or(0) > 1 {
+                                    let mut idx = hardlink_index.lock();
+                                    if let Some(&primary_idx) = idx.get(&(dev, inode)) {
+                                        hardlinks.lock().push((file_idx, primary_idx));
+                                        true
+                                    } else {
+                                        idx.insert((dev, inode), file_idx);
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        };
 
-                        if !self.opts.dry_run {
-                            if let Some(parent) = restore_path.parent() {
+                        if is_hardlink_secondary {
+                            // Secondary hardlink: no content to restore, just count size
+                            total_bytes.fetch_add(node.metadata.size, Ordering::Relaxed);
+                            if !self.opts.dry_run
+                                && let Some(parent) = restore_path.parent()
+                            {
                                 let _ = fs::create_dir_all(parent);
                             }
-
-                            // If the file exists, it might be a symlink or read-only.
-                            // We must NOT follow symlinks when restoring to prevent overwriting
-                            // files outside the target directory.
-                            if let Ok(m) = fs::symlink_metadata(&restore_path) {
-                                if m.file_type().is_symlink() {
-                                    let _ = fs::remove_file(&restore_path);
-                                } else {
-                                    let _ = self.clear_readonly_attribute(&restore_path);
-                                }
+                        } else {
+                            // Primary hardlink or non-hardlink: register blobs and create file
+                            for (blob_id, locator, offset_in_file) in file_blobs {
+                                packs.entry(locator.pack_id).or_default().push((
+                                    blob_id,
+                                    BlobRestoreRequest {
+                                        file_idx,
+                                        offset_in_file,
+                                        blob_offset: locator.offset,
+                                        blob_length: locator.length,
+                                        raw_length: locator.raw_length,
+                                    },
+                                ));
                             }
 
-                            match OpenOptions::new()
-                                .create(true)
-                                .write(true)
-                                .truncate(true)
-                                .open(&restore_path)
-                            {
-                                Ok(mut file) => {
-                                    if self.opts.preallocate {
-                                        let _ =
-                                            self.preallocate_file(&mut file, node.metadata.size);
+                            if !self.opts.dry_run {
+                                if let Some(parent) = restore_path.parent() {
+                                    let _ = fs::create_dir_all(parent);
+                                }
+
+                                // If the file exists, it might be a symlink or read-only.
+                                // We must NOT follow symlinks when restoring to prevent overwriting
+                                // files outside the target directory.
+                                if let Ok(m) = fs::symlink_metadata(&restore_path) {
+                                    if m.file_type().is_symlink() {
+                                        let _ = fs::remove_file(&restore_path);
                                     } else {
-                                        let _ = file.set_len(node.metadata.size);
+                                        let _ = self.clear_readonly_attribute(&restore_path);
                                     }
                                 }
-                                Err(e) => {
-                                    progress_reporter.error(&format!(
-                                        "Failed to create file {}: {}",
-                                        restore_path.display(),
-                                        e
-                                    ));
+
+                                match OpenOptions::new()
+                                    .create(true)
+                                    .write(true)
+                                    .truncate(true)
+                                    .open(&restore_path)
+                                {
+                                    Ok(mut file) => {
+                                        if self.opts.preallocate {
+                                            let _ = self
+                                                .preallocate_file(&mut file, node.metadata.size);
+                                        } else {
+                                            let _ = file.set_len(node.metadata.size);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        progress_reporter.error(&format!(
+                                            "Failed to create file {}: {}",
+                                            restore_path.display(),
+                                            e
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -652,6 +724,11 @@ impl Restorer {
             .context("Internal error: multiple Arc references to packs remained after planning")?
             .into_iter()
             .collect();
+        let hardlinks = Arc::into_inner(hardlinks)
+            .context(
+                "Internal error: multiple Arc references to hardlinks remained after planning",
+            )?
+            .into_inner();
 
         Ok(RestorePlan {
             files: Arc::new(files),
@@ -659,6 +736,7 @@ impl Restorer {
             directories,
             total_items: total_items.load(Ordering::Relaxed),
             total_bytes: total_bytes.load(Ordering::Relaxed),
+            hardlinks,
         })
     }
 

@@ -759,4 +759,110 @@ mod tests {
 
         Ok(())
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_restore_hardlinks() -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        // Create two files with the same content and hardlink a third to the first
+        let file_a = backup_path.join("file_a.txt");
+        std::fs::write(&file_a, "shared content")?;
+
+        let file_b = backup_path.join("file_b.txt");
+        std::fs::write(&file_b, "other content")?;
+
+        // Hardlink: file_c -> file_a (same inode)
+        let file_c = backup_path.join("file_c.txt");
+        std::fs::hard_link(&file_a, &file_c)?;
+
+        // Hardlink: file_d -> file_a (same inode)
+        let file_d = backup_path.join("subdir").join("file_d.txt");
+        std::fs::create_dir_all(file_d.parent().unwrap())?;
+        std::fs::hard_link(&file_a, &file_d)?;
+
+        // Verify hardlinks were created correctly
+        let meta_a = std::fs::metadata(&file_a)?;
+        let meta_c = std::fs::metadata(&file_c)?;
+        let meta_d = std::fs::metadata(&file_d)?;
+        assert_eq!(
+            meta_a.ino(),
+            meta_c.ino(),
+            "file_a and file_c must share inode"
+        );
+        assert_eq!(
+            meta_a.ino(),
+            meta_d.ino(),
+            "file_a and file_d must share inode"
+        );
+        assert_ne!(meta_a.ino(), std::fs::metadata(&file_b)?.ino());
+
+        // Init repo
+        ctx.init_repo().await?;
+
+        // Snapshot
+        ctx.snapshot_builder(vec![backup_path.clone()])
+            .root(true)
+            .num_readers(1)
+            .num_packers(1)
+            .no_scan(true)
+            .run(&ctx.global)
+            .await?;
+
+        // Restore
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .strategy(mapache::restorer::Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
+
+        // Verify restored paths exist
+        let restored_a = restore_path.join("file_a.txt");
+        let restored_b = restore_path.join("file_b.txt");
+        let restored_c = restore_path.join("file_c.txt");
+        let restored_d = restore_path.join("subdir").join("file_d.txt");
+        assert!(restored_a.exists());
+        assert!(restored_b.exists());
+        assert!(restored_c.exists());
+        assert!(restored_d.exists());
+
+        // Verify content
+        assert_eq!(std::fs::read_to_string(&restored_a)?, "shared content");
+        assert_eq!(std::fs::read_to_string(&restored_b)?, "other content");
+        assert_eq!(std::fs::read_to_string(&restored_c)?, "shared content");
+        assert_eq!(std::fs::read_to_string(&restored_d)?, "shared content");
+
+        // Verify hardlinks were restored: same inode
+        let restored_meta_a = std::fs::metadata(&restored_a)?;
+        let restored_meta_c = std::fs::metadata(&restored_c)?;
+        let restored_meta_d = std::fs::metadata(&restored_d)?;
+        let restored_meta_b = std::fs::metadata(&restored_b)?;
+        assert_eq!(
+            restored_meta_a.ino(),
+            restored_meta_c.ino(),
+            "restored file_a and file_c must share inode"
+        );
+        assert_eq!(
+            restored_meta_a.ino(),
+            restored_meta_d.ino(),
+            "restored file_a and file_d must share inode"
+        );
+        assert_ne!(
+            restored_meta_a.ino(),
+            restored_meta_b.ino(),
+            "file_b must have different inode"
+        );
+
+        // Verify nlink count is correct (3 for the hardlinked files, 1 for file_b)
+        assert_eq!(restored_meta_a.nlink(), 3, "file_a should have nlink=3");
+        assert_eq!(restored_meta_c.nlink(), 3, "file_c should have nlink=3");
+        assert_eq!(restored_meta_d.nlink(), 3, "file_d should have nlink=3");
+        assert_eq!(restored_meta_b.nlink(), 1, "file_b should have nlink=1");
+
+        Ok(())
+    }
 }

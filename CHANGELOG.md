@@ -29,6 +29,8 @@
   approach, capping memory usage for large packs.
 - **Enhanced Atomic Locks**: Added better metadata and robust stale lock
   detection with detailed conflict reporting.
+- **Hardlink Restoration**: Restorer now detects and recreates hardlinks from
+  snapshots, preserving inode sharing and nlink counts on Unix.
 - **Access Time Preservation**: Added `--with-atime` flag to `snapshot` to
   optionally store and restore file access times. atime is not stored by default
   to avoid unnecessary metadata growth. On Linux, `O_NOATIME` is used when

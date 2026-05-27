@@ -35,6 +35,8 @@
   optionally store and restore file access times. atime is not stored by default
   to avoid unnecessary metadata growth. On Linux, `O_NOATIME` is used when
   reading files to prevent the backup process from modifying access times.
+- **Key export**: Added `key export` subcommand to extract a key file from the
+  repository and save it locally.
 
 ## v0.3.0
 

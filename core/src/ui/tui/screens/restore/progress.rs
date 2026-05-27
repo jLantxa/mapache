@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use ratatui::{Frame, layout::Rect};
 
@@ -19,9 +20,8 @@ pub enum RestoreEvent {
 
 pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
     match event {
-        RestoreEvent::ProcessedItem(path) => {
+        RestoreEvent::ProcessedItem(_path) => {
             state.add_processed_items(1);
-            state.set_message(path.to_string_lossy().into_owned());
         }
         RestoreEvent::ProcessedBytes(bytes) => {
             state.add_processed_bytes(bytes);
@@ -30,6 +30,10 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
             state.set_message(msg);
         }
         RestoreEvent::ResizeWorkload(items, bytes) => {
+            // Reset items counter from planning phase
+            state.processed_items = 0;
+            // Reset start time so ETA doesn't include planning phase (0 bytes/sec)
+            state.start_time = Instant::now();
             state.set_expected(items, bytes);
         }
         RestoreEvent::Error(err) => {

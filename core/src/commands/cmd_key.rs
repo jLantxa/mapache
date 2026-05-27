@@ -38,6 +38,17 @@ pub struct DeleteArgs {
 #[derive(Args, Debug, Clone)]
 pub struct PasswordChangeArgs {}
 
+#[derive(Args, Debug, Clone)]
+pub struct ExportArgs {
+    /// ID (or prefix) of the key to export
+    #[clap(value_parser)]
+    id: String,
+
+    /// Path to save the exported key file
+    #[clap(short, long = "output", default_value = "keyfile")]
+    output_path: PathBuf,
+}
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum KeySubcommand {
     /// List all existing keys
@@ -51,6 +62,9 @@ pub enum KeySubcommand {
 
     /// Change the password for a user's key
     ChangePassword(PasswordChangeArgs),
+
+    /// Export a key file from the repository and save it locally
+    Export(ExportArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -67,6 +81,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         KeySubcommand::Add(args) => run_add(global_args, args).await,
         KeySubcommand::Delete(args) => run_delete(global_args, args).await,
         KeySubcommand::ChangePassword(args) => run_password_change(global_args, args).await,
+        KeySubcommand::Export(args) => run_export(global_args, args).await,
     }
 }
 
@@ -161,6 +176,24 @@ async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArg
     key_manager.save_keyfile(&new_keyfile).await?;
     tracing::info!(target: "key", "Deleting old key file {}", old_id.to_short_hex(8));
     key_manager.delete_keyfile_with_id(&old_id).await?;
+
+    Ok(())
+}
+
+async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<()> {
+    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
+    let key_manager = KeyManager::new(backend.clone());
+
+    let (id, _path) = key_manager.find_id_with_prefix(&args.id).await?;
+    let raw_keyfile = key_manager.load_raw_keyfile(&id).await?;
+
+    std::fs::write(&args.output_path, &raw_keyfile)?;
+
+    ui::cli::log!(
+        "Exported key {} to {}",
+        id.to_short_hex(8).italic(),
+        args.output_path.display().to_string().bold()
+    );
 
     Ok(())
 }

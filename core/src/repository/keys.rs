@@ -275,20 +275,22 @@ impl KeyManager {
     ) -> std::result::Result<(Option<ID>, Zeroizing<Vec<u8>>), KeyManagerError> {
         match keyfile_path {
             Some(path) => {
-                tracing::debug!(target: "keys", "Reading key file from path: {:?}", path);
+                tracing::debug!(target: "keys", "Reading key file from local path: {:?}", path);
+
+                let keyfile_data =
+                    std::fs::read(path).map_err(|e| KeyManagerError::Other(e.into()))?;
+
                 let ss = SecureStorage::new();
-                let handle = Handle::new_with_hint(path, ContentIdType::Key, true);
-                let keyfile_data = self
-                    .backend
-                    .read(&handle, 0, 0)
-                    .await
-                    .map_err(KeyManagerError::Other)?;
                 let keyfile_bytes = ss
                     .decompress(&keyfile_data)
                     .map_err(KeyManagerError::Other)?;
                 let keyfile: KeyFile = serde_json::from_slice(&keyfile_bytes).map_err(|e| {
                     KeyManagerError::InvalidKeyfile(format!("KeyFile at {path:?} is invalid: {e}"))
                 })?;
+
+                if keyfile.username != auth.username {
+                    return Err(KeyManagerError::NoMatchingKeyfile);
+                }
 
                 Self::decode_master_key(&auth.password, &keyfile)
                     .map(|key| (None, key))
@@ -401,6 +403,15 @@ impl KeyManager {
             self.delete_keyfile_with_id(&id).await?;
         }
         Ok(())
+    }
+
+    /// Load a keyfile as raw compressed bytes (without decompressing)
+    pub async fn load_raw_keyfile(&self, id: &ID) -> Result<Vec<u8>> {
+        let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
+        tracing::debug!(target: "keys", "Loading raw key file {}", id.to_short_hex(8));
+        let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
+        let data = self.backend.read(&handle, 0, 0).await?;
+        Ok(data)
     }
 
     /// Save a KeyFile

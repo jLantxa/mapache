@@ -129,12 +129,22 @@ impl SecureStorage {
 
     /// Compress using a reusable context. Returns owned Vec.
     pub fn compress_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
-        let temp_ss = Self {
-            compression_level: self.compression_level,
-            cipher: None,
-            compressor_pool: Mutex::new(Vec::new()),
-        };
-        temp_ss.transform_into(Some(ctx), data)
+        let bound = zstd::zstd_safe::compress_bound(data.len());
+        let mut out = Vec::with_capacity(bound);
+
+        unsafe {
+            // SAFETY: We reserved at least `bound` bytes of capacity.
+            // zstd::compress_to_buffer writes to this uninitialized region.
+            // We only set the length after zstd has successfully written `n` bytes.
+            let dest = std::slice::from_raw_parts_mut(out.as_mut_ptr(), bound);
+            let n = ctx
+                .compressor
+                .compress_to_buffer(data, dest)
+                .map_err(|e| anyhow!("zstd failed: {e}"))?;
+            out.set_len(n);
+        }
+
+        Ok(out)
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {

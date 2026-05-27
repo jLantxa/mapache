@@ -99,11 +99,11 @@ impl PipelineStatus {
     }
 
     fn signal_finished(&self) {
-        self.finished_flag.store(true, Ordering::SeqCst);
+        self.finished_flag.store(true, Ordering::Release);
     }
 
     fn signal_fatal(&self, err: anyhow::Error) {
-        let already_errored = self.fatal_error_flag.swap(true, Ordering::SeqCst);
+        let already_errored = self.fatal_error_flag.swap(true, Ordering::Release);
         if !already_errored {
             // Only the first task to "flip" the switch gets to log the error.
             self.progress_reporter.error(&format!("{err:#}"));
@@ -119,7 +119,8 @@ impl PipelineStatus {
     }
 
     fn is_failed(&self) -> bool {
-        self.fatal_error_flag.load(Ordering::Relaxed) || self.shutdown_signal.load(Ordering::SeqCst)
+        self.fatal_error_flag.load(Ordering::Acquire)
+            || self.shutdown_signal.load(Ordering::Relaxed)
     }
 }
 

@@ -777,11 +777,17 @@ impl Restorer {
 
                 // If mtime differs but size is the same, OR if --verify is set,
                 // we check the actual content hashes.
-                if self
+                let content_matches = match self
                     .verify_file_content(node, restore_path, index)
                     .await
-                    .unwrap_or(false)
                 {
+                    Ok(matches) => matches,
+                    Err(e) => {
+                        tracing::warn!(target: "restorer", "Could not verify file {:?}: {e}", restore_path);
+                        false
+                    }
+                };
+                if content_matches {
                     // Content matches! Skip restoration of this file.
                     return Ok(false);
                 }

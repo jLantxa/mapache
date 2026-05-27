@@ -1,6 +1,6 @@
 use std::{ffi::OsStr, path::Path, sync::Arc};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use colored::Colorize;
 use fuser::{
     Config, Errno, FileHandle, Filesystem, FopenFlags, Generation, INodeNo, KernelConfig,
@@ -42,44 +42,8 @@ pub struct MountOptions {
 }
 
 impl MapacheFS<dyn BlobLoader> {
-    /// Mounts a `Repository` in `mountpoint`
-    pub fn mount(
-        repo: Arc<Repository>,
-        mountpoint: &Path,
-        allow_other: bool,
-        metadata_only: bool,
-        data_cache_size: u64,
-    ) -> Result<()> {
-        tracing::info!(target: "fuse", "Mounting repository at {:?}", mountpoint);
-        let created_time = repo.manifest().created_time();
-
-        Self::mount_loader_generic(
-            repo.clone(),
-            Some(repo),
-            None,
-            mountpoint,
-            MountOptions {
-                allow_other,
-                metadata_only,
-                data_cache_size,
-                created_time,
-            },
-        )
-    }
-
     /// Mounts a `BlobLoader` in `mountpoint`
-    pub fn mount_loader(
-        loader: Arc<dyn BlobLoader>,
-        repo: Option<Arc<Repository>>,
-        archive_root_tree: Option<ID>,
-        mountpoint: &Path,
-        options: MountOptions,
-    ) -> Result<()> {
-        tracing::info!(target: "fuse", "Mounting loader at {:?}", mountpoint);
-        Self::mount_loader_generic(loader, repo, archive_root_tree, mountpoint, options)
-    }
-
-    fn mount_loader_generic<L>(
+    pub fn mount<L>(
         loader: Arc<L>,
         repo: Option<Arc<Repository>>,
         archive_root_tree: Option<ID>,
@@ -89,6 +53,8 @@ impl MapacheFS<dyn BlobLoader> {
     where
         L: BlobLoader + ?Sized + 'static,
     {
+        tracing::info!(target: "fuse", "Mounting loader at {:?}", mountpoint);
+
         let stash = Stash::new(options.created_time.into());
         let rt_handle = tokio::runtime::Handle::current();
 
@@ -122,7 +88,9 @@ impl MapacheFS<dyn BlobLoader> {
 
         tracing::debug!(target: "fuse", "Starting FUSE session at {:?}", mountpoint);
         if let Err(e) = fuser::mount2(filesystem, mountpoint, &config) {
-            Self::unmount(mountpoint).context("Failed to unmount after error.")?;
+            if let Err(unmount_err) = Self::unmount(mountpoint) {
+                tracing::warn!(target: "fuse", "Failed to unmount after mount error: {unmount_err}");
+            }
             return Err(anyhow!("FUSE error: {}", e));
         }
 

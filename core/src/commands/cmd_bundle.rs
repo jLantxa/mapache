@@ -532,7 +532,7 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
 
     run_mount_loop(&canonical_mountpoint, cleanup_handler, move |mp| {
         tracing::info!(target: "bundle", "Mounting bundle at {:?}", mp);
-        MapacheFS::mount_loader(
+        MapacheFS::mount(
             loader,
             None,
             Some(root_tree_id),

@@ -13,10 +13,12 @@ use std::{
     path::Path,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
+
+use parking_lot::Mutex;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
@@ -108,9 +110,7 @@ impl PipelineStatus {
             // Only the first task to "flip" the switch gets to log the error.
             self.progress_reporter.error(&format!("{err:#}"));
             tracing::error!(target: "archiver", "Fatal error in pipeline: {err:#}");
-            if let Ok(mut guard) = self.first_error.lock() {
-                *guard = Some(err);
-            }
+            *self.first_error.lock() = Some(err);
         }
     }
 
@@ -229,8 +229,7 @@ pub(crate) async fn snapshot(
 
     // Shared batch accumulator for small files.
     // Pool threads process batches sequentially, amortizing thread handoff overhead.
-    let batch_lock: Arc<std::sync::Mutex<Vec<chunker_pool::ChunkerJob>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let batch_lock: Arc<Mutex<Vec<chunker_pool::ChunkerJob>>> = Arc::new(Mutex::new(Vec::new()));
 
     let coordinator_task = tokio::spawn(async move {
         tracing::trace!(target: "archiver", "Coordinator task started");
@@ -290,7 +289,7 @@ pub(crate) async fn snapshot(
 
                         if is_small {
                             // Accumulate small files into a batch.
-                            let mut batch = batch_lock.lock().unwrap();
+                            let mut batch = batch_lock.lock();
                             batch.push(job);
                             if batch.len() >= BATCH_SIZE {
                                 let to_send = std::mem::take(&mut *batch);
@@ -302,7 +301,7 @@ pub(crate) async fn snapshot(
                         } else {
                             // Large file: flush any pending batch first, then send as Single.
                             let pending = {
-                                let mut batch = batch_lock.lock().unwrap();
+                                let mut batch = batch_lock.lock();
                                 std::mem::take(&mut *batch)
                             };
                             if !pending.is_empty()
@@ -349,7 +348,7 @@ pub(crate) async fn snapshot(
 
         // Flush any remaining batch
         let remaining = {
-            let mut batch = batch_lock.lock().unwrap();
+            let mut batch = batch_lock.lock();
             std::mem::take(&mut *batch)
         };
         if !remaining.is_empty() {
@@ -436,7 +435,7 @@ pub(crate) async fn snapshot(
     tracing::info!(target: "archiver", "Finalizing snapshot tree");
 
     if status.is_failed() {
-        if let Some(err) = status.first_error.lock().unwrap().take() {
+        if let Some(err) = status.first_error.lock().take() {
             return Err(err);
         }
         bail!("Snapshot aborted by user or fatal error");

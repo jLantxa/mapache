@@ -173,7 +173,10 @@ impl FSNodeStream {
         try_stream! {
             while state.intermediate_paths.last().is_some() || state.stack.last().is_some() {
                 let take_intermediate = match (state.intermediate_paths.last(), state.stack.last()) {
-                    (None, None) => unreachable!(),
+                    (None, None) => {
+                        yield (PathBuf::new(), Err(anyhow!("Internal error: both intermediate_paths and stack are empty")));
+                        continue;
+                    }
                     (Some(_), None) => true,
                     (None, Some(_)) => false,
                     (Some((ip, _, _)), Some((parent, name, _))) => ip < &parent.join(name),

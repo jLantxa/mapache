@@ -16,7 +16,7 @@ use crate::{
     utils::size,
 };
 
-pub use crate::fuse::fs::MapacheFS;
+pub use crate::fuse::fs::{MapacheFS, MountOptions};
 
 #[derive(Args, Debug)]
 #[clap(about = "Mount the repository or a .mapache bundle as a file system")]
@@ -96,13 +96,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             ui::cli::log!("Mounting repository in {}", canonical_mountpoint.display());
             tracing::info!(target: "mount", "Mounting repository at {:?}", canonical_mountpoint);
+            let created_time = repo.manifest().created_time();
             run_mount_loop(&canonical_mountpoint, cleanup_handler, move |mp| {
-                MapacheFS::<dyn BlobLoader>::mount(
-                    repo,
+                MapacheFS::mount(
+                    repo.clone() as Arc<dyn BlobLoader>,
+                    Some(repo),
+                    None,
                     mp,
-                    allow_other,
-                    metadata_only,
-                    data_cache_size,
+                    MountOptions {
+                        allow_other,
+                        metadata_only,
+                        data_cache_size,
+                        created_time,
+                    },
                 )
             })
             .await?;
@@ -145,12 +151,12 @@ async fn mount_bundle(
     let mp_clone = mountpoint.to_path_buf();
 
     run_mount_loop(mountpoint, cleanup_handler, move |mp| {
-        MapacheFS::mount_loader(
+        MapacheFS::mount(
             loader,
             None,
             Some(root_tree_id),
             mp,
-            crate::fuse::fs::MountOptions {
+            MountOptions {
                 allow_other,
                 metadata_only,
                 data_cache_size,

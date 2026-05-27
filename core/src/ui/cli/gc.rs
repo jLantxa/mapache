@@ -1,7 +1,6 @@
-use std::sync::Mutex;
-
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
+use parking_lot::Mutex;
 
 use crate::{
     mapache::global::GlobalOpts,
@@ -87,18 +86,18 @@ impl GcProgressReporter for CliGcProgressReporter {
         };
         new_pb.enable_steady_tick(GlobalOpts::progress_refresh_interval());
 
-        let mut pb = self.pb.lock().unwrap();
+        let mut pb = self.pb.lock();
         pb.finish_and_clear();
         *pb = new_pb;
     }
 
     fn update_task(&self, _task: GcTask, pos: u64) {
-        let pb = self.pb.lock().unwrap();
+        let pb = self.pb.lock();
         pb.set_position(pos);
     }
 
     fn finish_task(&self, _task: GcTask) {
-        let pb = self.pb.lock().unwrap();
+        let pb = self.pb.lock();
         pb.finish_and_clear();
     }
 }

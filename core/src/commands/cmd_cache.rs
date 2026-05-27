@@ -116,10 +116,19 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
 
     let delete_all = folder_prefixes.is_empty();
     let entries: Vec<(String, PathBuf)> = std::fs::read_dir(cache_base)?
-        .filter_map(|e| {
-            let e = e.ok()?;
+        .filter_map(|entry| {
+            let e = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    tracing::warn!(target: "cache", "Error reading cache entry: {err}");
+                    return None;
+                }
+            };
             let p = e.path();
-            let n = p.file_name()?.to_str()?.to_owned();
+            let n = match p.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n.to_owned(),
+                None => return None,
+            };
             p.is_dir().then_some((n, p))
         })
         .collect();

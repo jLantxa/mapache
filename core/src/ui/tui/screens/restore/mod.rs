@@ -132,6 +132,11 @@ impl RestoreProgressReporter for TuiRestoreProgressReporter {
         let _ = self.tx.send(RestoreEvent::SetMessage(msg));
     }
 
+    fn set_visited_nodes(&self, _count: u64) {
+        // Update items count so the TUI shows progress during planning
+        let _ = self.tx.send(RestoreEvent::ProcessedItem(PathBuf::new()));
+    }
+
     fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
         let _ = self.tx.send(RestoreEvent::ResizeWorkload(
             num_expected_items,

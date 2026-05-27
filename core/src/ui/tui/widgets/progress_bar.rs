@@ -117,6 +117,8 @@ impl ProgressBar {
                 "Items: {}/{}",
                 self.processed_items, self.expected_items
             ));
+        } else if self.processed_items > 0 {
+            status_parts.push(format!("Items: {}", self.processed_items));
         }
 
         let status = status_parts.join("   ");

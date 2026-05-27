@@ -138,12 +138,18 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
         *stage = msg;
     }
 
+    fn set_visited_nodes(&self, count: u64) {
+        self.processed_items_count.store(count, Ordering::Relaxed);
+    }
+
     fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
         self.num_expected_items
             .store(num_expected_items, Ordering::Relaxed);
         self.num_expected_bytes
             .store(num_expected_bytes, Ordering::Relaxed);
         self.progress_bar.set_length(num_expected_bytes);
+        self.progress_bar.set_message(String::new());
+        self.processed_items_count.store(0, Ordering::Relaxed);
     }
 
     fn processed_item(&self, _path: &Path) {

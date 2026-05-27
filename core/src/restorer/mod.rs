@@ -140,6 +140,8 @@ type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
 struct FileRestorePlan {
     /// Full path to the file in the target filesystem.
     path: PathBuf,
+    /// Number of blobs this file expects (0 for hardlink secondaries, symlinks, empty files).
+    num_blobs: u32,
 }
 
 /// The complete plan for the restoration process.
@@ -409,7 +411,9 @@ impl Restorer {
         self.restore_packs(plan_files, plan_packs, secure_storage, dry_run)
             .await?;
 
-        // Create hardlinks for secondary hardlink files (they share inode with the primary)
+        // Create hardlinks for secondary hardlink files (they share inode with the primary).
+        // Must happen before metadata restoration, as creating a hardlink modifies the
+        // parent directory's mtime.
         if !self.opts.dry_run && !plan.hardlinks.is_empty() {
             tracing::info!(
                 target: "restorer",
@@ -489,11 +493,8 @@ impl Restorer {
                         return;
                     }
 
-                    let count = node_count.fetch_add(1, Ordering::Relaxed);
-                    let visited = count + 1;
-                    if count.is_multiple_of(100) {
-                        progress_reporter.set_visited_nodes(visited);
-                    }
+                    let visited = node_count.fetch_add(1, Ordering::Relaxed) + 1;
+                    progress_reporter.set_visited_nodes(visited);
 
                     let (mut path, stream_node_res) = match node_res {
                         Ok(res) => res,
@@ -596,6 +597,7 @@ impl Restorer {
                             let idx = files_lock.len();
                             files_lock.push(FileRestorePlan {
                                 path: restore_path.clone(),
+                                num_blobs: 0,
                             });
                             idx
                         };
@@ -633,6 +635,7 @@ impl Restorer {
                                 let _ = fs::create_dir_all(parent);
                             }
                         } else {
+                            let num_blobs = file_blobs.len() as u32;
                             // Primary hardlink or non-hardlink: register blobs and create file
                             for (blob_id, locator, offset_in_file) in file_blobs {
                                 packs.entry(locator.pack_id).or_default().push((
@@ -676,6 +679,8 @@ impl Restorer {
                                         } else {
                                             let _ = file.set_len(node.metadata.size);
                                         }
+
+                                        files.lock()[file_idx].num_blobs = num_blobs;
                                     }
                                     Err(e) => {
                                         progress_reporter.error(&format!(
@@ -690,6 +695,7 @@ impl Restorer {
                     } else if node.is_symlink() {
                         files.lock().push(FileRestorePlan {
                             path: restore_path.clone(),
+                            num_blobs: 0,
                         });
 
                         if !self.opts.dry_run
@@ -936,7 +942,23 @@ impl Restorer {
                         .processed_bytes(request.raw_length as u64);
                 }
             }
+            for file in files.iter() {
+                self.progress_reporter.processed_item(&file.path);
+            }
             return Ok(());
+        }
+
+        // Track remaining blobs per file to detect completion
+        let remaining: Vec<std::sync::atomic::AtomicU32> = files
+            .iter()
+            .map(|f| std::sync::atomic::AtomicU32::new(f.num_blobs))
+            .collect();
+
+        // Count files with 0 blobs (empty files, symlinks, hardlink secondaries) as completed
+        for file in files.iter() {
+            if file.num_blobs == 0 {
+                self.progress_reporter.processed_item(&file.path);
+            }
         }
 
         self.progress_reporter
@@ -1047,6 +1069,9 @@ impl Restorer {
                         match write_result {
                             Ok(bytes) => {
                                 progress_reporter.processed_bytes(bytes);
+                                if remaining[file_idx].fetch_sub(1, Ordering::Relaxed) == 1 {
+                                    progress_reporter.processed_item(&files[file_idx].path);
+                                }
                             }
                             Err(e) => {
                                 let err_msg =
@@ -1084,6 +1109,10 @@ impl Restorer {
                             match handle.await.map_err(|e| anyhow!(e))? {
                                 Ok(bytes) => {
                                     self.progress_reporter.processed_bytes(bytes);
+                                    if remaining[file_idx].fetch_sub(1, Ordering::Relaxed) == 1 {
+                                        self.progress_reporter
+                                            .processed_item(&files[file_idx].path);
+                                    }
                                 }
                                 Err(e) => {
                                     let err_msg =
@@ -1115,7 +1144,7 @@ impl Restorer {
         }
 
         self.progress_reporter
-            .set_message("Restoring metadata...".to_string());
+            .set_message("Finishing metadata...".to_string());
 
         let node_stream = SerializedNodeStream::new(
             self.repo.clone(),
@@ -1177,7 +1206,10 @@ impl Restorer {
                             progress_reporter.as_ref(),
                         );
                     }
-                    progress_reporter.processed_item(&path);
+                    // Files and symlinks were counted in restore_packs; only count dirs here
+                    if node.is_dir() {
+                        progress_reporter.processed_item(&path);
+                    }
                 }
             })
             .await;

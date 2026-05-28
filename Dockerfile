@@ -2,7 +2,7 @@
 # We define ARGs at the top so they can be used in FROM
 ARG BUILD_SOURCE="remote"
 
-FROM fedora:43 AS build-env
+FROM fedora:44 AS build-env
 LABEL "Author"="Leuqar"
 
 RUN dnf update -y && \

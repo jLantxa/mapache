@@ -514,7 +514,7 @@ be a snapshot ID prefix or `latest` (default).
 |---|---|
 | `--target <PATH>` | Restore destination (required) |
 | `--include PATH[,PATH,...]` | Only restore these paths (repeatable, or comma-separated within a single flag) |
-
+| `--include-file <PATH>` | File with paths to include, one per line |
 | `--exclude PATH[,PATH,...]` | Exclude these paths (repeatable, or comma-separated within a single flag) |
 | `--exclude-file <PATH>` | File with paths to exclude, one per line |
 | `--strip-prefix` | Strip the longest common prefix from restored paths |
@@ -1097,6 +1097,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `--retry-lock <DUR>` | Retry acquiring a lock for a duration (e.g., `5m`, `30s`, `5m30s`) |
 | `--limit-upload <SPEED>` | Upload bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
 | `--limit-download <SPEED>` | Download bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
+| `--json` | Output results in JSON format (supported by most commands) |
 
 ### Compression Levels
 
@@ -1204,7 +1205,6 @@ mapache forget [SNAPSHOT_IDS...] -r <URL>
   --dry-run               Show what would be removed
   --clean                 Run garbage collector after
   -t, --tolerance <%>     GC garbage tolerance (0–100)
-  --no-repack             Skip repacking during GC
 ```
 
 ### `mapache log`

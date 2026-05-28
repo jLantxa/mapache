@@ -436,6 +436,8 @@ impl Node {
         #[cfg(target_os = "linux")]
         {
             let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+            // SAFETY: `statx` is a C struct containing only integer types; zeroed is
+            // a valid initial state. It is overwritten by `statx()` before any reads.
             let mut sx: linux_statx::statx = unsafe { std::mem::zeroed() };
             let flags = if follow_symlinks {
                 0

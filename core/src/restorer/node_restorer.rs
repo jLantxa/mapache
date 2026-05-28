@@ -532,7 +532,9 @@ mod tests {
 
         // Create a dummy node with the original metadata to restore from
         let original_metadata = node.metadata.clone();
-        let original_mtime = original_metadata.modified_time.unwrap();
+        let original_mtime = original_metadata
+            .modified_time
+            .expect("file node must have modified_time");
         node.metadata = original_metadata;
 
         // Now restore the metadata from the node
@@ -542,7 +544,11 @@ mod tests {
         // Check if the mtime was restored back to the node's original mtime
         assert_eq!(
             original_mtime,
-            file_path.symlink_metadata().unwrap().modified().unwrap()
+            file_path
+                .symlink_metadata()
+                .expect("file exists after write")
+                .modified()
+                .expect("file must have modified time")
         );
 
         Ok(())
@@ -568,8 +574,14 @@ mod tests {
 
         // Capture node metadata WITH atime
         let node = Node::from_path(&file_path, true).await?;
-        let captured_atime = node.metadata.accessed_time.unwrap();
-        let captured_mtime = node.metadata.modified_time.unwrap();
+        let captured_atime = node
+            .metadata
+            .accessed_time
+            .expect("captured with atime=true, so accessed_time must be Some");
+        let captured_mtime = node
+            .metadata
+            .modified_time
+            .expect("file node must have modified_time");
 
         // Now change the file times to something else (now)
         let now: SystemTime = Local::now().into();

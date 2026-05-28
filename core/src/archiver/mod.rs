@@ -294,8 +294,10 @@ pub(crate) async fn snapshot(
                             if batch.len() >= BATCH_SIZE {
                                 let to_send = std::mem::take(&mut *batch);
                                 drop(batch);
-                                if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err() {
-                                    status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                                if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err()
+                                    && !status.is_failed() {
+                                        status.signal_fatal(anyhow!("Chunker pool channel closed"));
+
                                 }
                             }
                         } else {
@@ -306,12 +308,14 @@ pub(crate) async fn snapshot(
                             };
                             if !pending.is_empty()
                                 && pool_sender.send(ChunkerPoolMsg::Batch(pending)).is_err()
-                            {
-                                status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                                && !status.is_failed() {
+                                    status.signal_fatal(anyhow!("Chunker pool channel closed"));
+
                                 return;
                             }
-                            if pool_sender.send(ChunkerPoolMsg::Single(Box::new(job))).is_err() {
-                                status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                            if pool_sender.send(ChunkerPoolMsg::Single(Box::new(job))).is_err()
+                                && !status.is_failed() {
+                                    status.signal_fatal(anyhow!("Chunker pool channel closed"));
                             }
                         }
                     } else {

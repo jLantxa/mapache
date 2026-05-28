@@ -46,7 +46,7 @@ pub(crate) static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cache")))
     }
-    .expect("No home or cache directory found. Set $HOME, $XDG_CACHE_HOME, $LOCALAPPDATA, or $USERPROFILE.");
+    .unwrap_or_else(std::env::temp_dir);
 
     BaseDirs { cache_dir }
 });

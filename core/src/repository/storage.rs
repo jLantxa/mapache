@@ -90,20 +90,15 @@ impl SecureStorage {
             }
 
             unsafe {
-                // SAFETY: We have reserved at least `bound` bytes of capacity starting at `data_start`.
-                // zstd::compress_to_buffer is called with a pointer to this uninitialized region.
-                // We only set the length of the vector AFTER zstd has successfully written `n` bytes,
-                // which is safe as those bytes are now initialized.
-                let dest_ptr = out.as_mut_ptr().add(data_start);
-                let dest_slice = std::slice::from_raw_parts_mut(dest_ptr, bound);
-
-                let n = c
-                    .compressor
-                    .compress_to_buffer(data, dest_slice)
-                    .map_err(|e| anyhow!("zstd failed: {e}"))?;
-
-                out.set_len(data_start + n);
+                // SAFETY: set_len extends the Vec into reserved capacity; u8 accepts garbage.
+                // compress_to_buffer writes into the extended region; on error the Vec is dropped.
+                out.set_len(data_start + bound);
             }
+            let n = c
+                .compressor
+                .compress_to_buffer(data, &mut out[data_start..])
+                .map_err(|e| anyhow!("zstd failed: {e}"))?;
+            out.truncate(data_start + n);
         } else {
             out.extend_from_slice(data);
         }
@@ -131,19 +126,16 @@ impl SecureStorage {
     pub fn compress_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
         let bound = zstd::zstd_safe::compress_bound(data.len());
         let mut out = Vec::with_capacity(bound);
-
+        // SAFETY: u8 accepts any bit pattern; compress_to_buffer overwrites before any reads.
+        let out_dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr(), bound) };
+        let n = ctx
+            .compressor
+            .compress_to_buffer(data, out_dst)
+            .map_err(|e| anyhow!("zstd failed: {e}"))?;
+        // SAFETY: compress_to_buffer wrote `n` bytes.
         unsafe {
-            // SAFETY: We reserved at least `bound` bytes of capacity.
-            // zstd::compress_to_buffer writes to this uninitialized region.
-            // We only set the length after zstd has successfully written `n` bytes.
-            let dest = std::slice::from_raw_parts_mut(out.as_mut_ptr(), bound);
-            let n = ctx
-                .compressor
-                .compress_to_buffer(data, dest)
-                .map_err(|e| anyhow!("zstd failed: {e}"))?;
             out.set_len(n);
         }
-
         Ok(out)
     }
 

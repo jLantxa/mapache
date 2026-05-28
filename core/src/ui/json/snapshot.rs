@@ -2,13 +2,13 @@ use std::{
     collections::HashSet,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 
 use crate::{
@@ -78,7 +78,7 @@ impl JsonSnapshotProgressReporter {
     }
 
     fn should_emit_update(&self) -> bool {
-        let mut last_update = self.last_update.lock().unwrap();
+        let mut last_update = self.last_update.lock();
         if last_update.elapsed() >= self.refresh_interval {
             *last_update = Instant::now();
             true
@@ -102,7 +102,7 @@ impl JsonSnapshotProgressReporter {
             .map(|a| a.load(Ordering::Relaxed));
 
         let mut active_files_vec = {
-            let active = self.active_files.lock().unwrap();
+            let active = self.active_files.lock();
             active
                 .iter()
                 .map(|p| p.display().to_string())
@@ -111,7 +111,7 @@ impl JsonSnapshotProgressReporter {
 
         // Add sampled paths to the list
         {
-            let mut sampled = self.sampled_paths.lock().unwrap();
+            let mut sampled = self.sampled_paths.lock();
             for p in sampled.drain(..) {
                 active_files_vec.push(p.display().to_string());
             }
@@ -143,7 +143,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
             .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if is_slow {
-            let mut active = self.active_files.lock().unwrap();
+            let mut active = self.active_files.lock();
             active.insert(path.to_path_buf());
         } else {
             // Budgeted sampling for small files (Global N per T)
@@ -164,7 +164,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
                     .is_ok()
                 {
                     self.sampling_count.store(1, Ordering::Relaxed);
-                    let mut guard = self.sampled_paths.lock().unwrap();
+                    let mut guard = self.sampled_paths.lock();
                     guard.clear();
                     guard.push(path.to_path_buf());
                 }
@@ -172,7 +172,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
                 // Current time slot: check remaining budget
                 let count = self.sampling_count.fetch_add(1, Ordering::Relaxed);
                 if (count as usize) < self.sampling_limit {
-                    let mut guard = self.sampled_paths.lock().unwrap();
+                    let mut guard = self.sampled_paths.lock();
                     guard.push(path.to_path_buf());
                 }
             }
@@ -190,7 +190,7 @@ impl SnapshotProgressReporter for JsonSnapshotProgressReporter {
             .is_none_or(|t| size_hint.is_none_or(|s| s >= t));
 
         if is_slow {
-            let mut active = self.active_files.lock().unwrap();
+            let mut active = self.active_files.lock();
             active.remove(path);
         }
         if self.should_emit_update() {

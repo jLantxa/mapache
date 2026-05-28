@@ -232,44 +232,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             let start = Instant::now();
 
-            run_with_repo(repo, lock_handle, args, progress_reporter.clone(), pair).await?;
-
-            if json_output {
-                #[derive(Serialize)]
-                struct RestoreCompleteMsg {
-                    duration_seconds: f64,
-                    errors: u64,
-                    warnings: u64,
-                    total_items: u64,
-                    total_bytes: u64,
-                    dry_run: bool,
-                }
-
-                ui::json::emit_static(
-                    "restore_complete",
-                    &RestoreCompleteMsg {
-                        duration_seconds: start.elapsed().as_secs_f64(),
-                        errors: progress_reporter.error_count(),
-                        warnings: progress_reporter.warning_count(),
-                        total_items: progress_reporter.total_items(),
-                        total_bytes: progress_reporter.total_bytes(),
-                        dry_run: args.dry_run,
-                    },
-                );
-            } else {
-                let prefix = if args.dry_run {
-                    format!("{} ", "[DRY RUN]".bold().purple())
-                } else {
-                    String::new()
-                };
-                ui::cli::log!(
-                    "{}Finished in {} with {} and {}",
-                    prefix,
-                    utils::pretty_print_duration(start.elapsed()),
-                    utils::format_count(progress_reporter.error_count(), "error", "errors"),
-                    utils::format_count(progress_reporter.warning_count(), "warning", "warnings"),
-                );
-            }
+            run_with_repo(
+                repo,
+                lock_handle,
+                args,
+                progress_reporter.clone(),
+                pair,
+                start,
+                json_output,
+            )
+            .await?;
 
             Ok(())
         },
@@ -293,6 +265,8 @@ pub async fn run_with_repo(
     args: &CmdArgs,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
     pair: SnapshotPair,
+    start: std::time::Instant,
+    json_output: bool,
 ) -> Result<()> {
     let target = args.target.as_ref().ok_or_else(|| {
         fail(
@@ -354,7 +328,7 @@ pub async fn run_with_repo(
     })?;
     cleanup_handler.add_lock(lock_handle.clone());
 
-    restorer::restore(
+    let restore_result = restorer::restore(
         repo.clone(),
         &pair.snapshot,
         &abs_normalized_target,
@@ -371,13 +345,23 @@ pub async fn run_with_repo(
         progress_reporter.clone(),
         cleanup_handler.interrupted.clone(),
     )
-    .await?;
+    .await;
+
+    if restore_result.is_err() && cleanup_handler.is_interrupted() {
+        tracing::info!(target: "restore", "Restore interrupted by user");
+        if !json_output {
+            ui::cli::log!("Restore interrupted by user.");
+        }
+        progress_reporter.finalize();
+        return Ok(());
+    }
+    restore_result?;
 
     progress_reporter.finalize();
 
     if delete {
         tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
-        restorer::delete_nodes(
+        let delete_result = restorer::delete_nodes(
             repo,
             abs_normalized_target.clone(),
             &pair.snapshot.tree,
@@ -386,11 +370,56 @@ pub async fn run_with_repo(
             dry_run,
             no_preserve_root,
             cleanup_handler.interrupted.clone(),
-            progress_reporter,
+            progress_reporter.clone(),
         )
-        .await?;
+        .await;
+
+        if delete_result.is_err() && cleanup_handler.is_interrupted() {
+            tracing::info!(target: "restore", "Post-restore cleanup interrupted by user");
+            if !json_output {
+                ui::cli::log!("Post-restore cleanup interrupted by user.");
+            }
+            return Ok(());
+        }
+        delete_result?;
     }
 
     tracing::info!(target: "restore", "Restore command completed");
+    if json_output {
+        #[derive(Serialize)]
+        struct RestoreCompleteMsg {
+            duration_seconds: f64,
+            errors: u64,
+            warnings: u64,
+            total_items: u64,
+            total_bytes: u64,
+            dry_run: bool,
+        }
+
+        ui::json::emit_static(
+            "restore_complete",
+            &RestoreCompleteMsg {
+                duration_seconds: start.elapsed().as_secs_f64(),
+                errors: progress_reporter.error_count(),
+                warnings: progress_reporter.warning_count(),
+                total_items: progress_reporter.total_items(),
+                total_bytes: progress_reporter.total_bytes(),
+                dry_run,
+            },
+        );
+    } else {
+        let prefix = if dry_run {
+            format!("{} ", "[DRY RUN]".bold().purple())
+        } else {
+            String::new()
+        };
+        ui::cli::log!(
+            "{}Finished in {} with {} and {}",
+            prefix,
+            utils::pretty_print_duration(start.elapsed()),
+            utils::format_count(progress_reporter.error_count(), "error", "errors"),
+            utils::format_count(progress_reporter.warning_count(), "warning", "warnings"),
+        );
+    }
     Ok(())
 }

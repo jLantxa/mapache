@@ -241,46 +241,53 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             )
             .await?;
 
-            if let Some(ref completion) = result {
-                if json_output {
-                    #[derive(serde::Serialize)]
-                    struct SnapshotCompleteMsg {
-                        summary: SnapshotProcessSummary,
-                        raw_bytes_data: u64,
-                        compressed_bytes_data: u64,
-                        raw_bytes_meta: u64,
-                        compressed_bytes_meta: u64,
-                        time_taken_seconds: f64,
-                    }
+            match result {
+                SnapshotOutcome::Saved(ref completion) => {
+                    if json_output {
+                        #[derive(serde::Serialize)]
+                        struct SnapshotCompleteMsg {
+                            summary: SnapshotProcessSummary,
+                            raw_bytes_data: u64,
+                            compressed_bytes_data: u64,
+                            raw_bytes_meta: u64,
+                            compressed_bytes_meta: u64,
+                            time_taken_seconds: f64,
+                        }
 
-                    ui::json::emit_static(
-                        "snapshot_complete",
-                        &SnapshotCompleteMsg {
-                            summary: completion.process_summary.clone(),
-                            raw_bytes_data: completion.summary.raw_bytes,
-                            compressed_bytes_data: completion.summary.encoded_bytes,
-                            raw_bytes_meta: completion.meta_without_index_raw,
-                            compressed_bytes_meta: completion.meta_without_index_encoded,
-                            time_taken_seconds: completion.duration.as_secs_f64(),
-                        },
-                    );
-                } else {
-                    ui::cli::log!("");
-                    show_cli_summary(completion, args.dry_run);
-                    let prefix = if args.dry_run {
-                        format!("{} ", "[DRY RUN]".bold().purple())
+                        ui::json::emit_static(
+                            "snapshot_complete",
+                            &SnapshotCompleteMsg {
+                                summary: completion.process_summary.clone(),
+                                raw_bytes_data: completion.summary.raw_bytes,
+                                compressed_bytes_data: completion.summary.encoded_bytes,
+                                raw_bytes_meta: completion.meta_without_index_raw,
+                                compressed_bytes_meta: completion.meta_without_index_encoded,
+                                time_taken_seconds: completion.duration.as_secs_f64(),
+                            },
+                        );
                     } else {
-                        String::new()
-                    };
-                    ui::cli::log!(
-                        "{}Processed {} in {}",
-                        prefix,
-                        utils::format_size_binary(completion.summary.processed_bytes, 3).cyan(),
-                        utils::pretty_print_duration(completion.duration).cyan(),
-                    );
+                        ui::cli::log!("");
+                        show_cli_summary(completion, args.dry_run);
+                        let prefix = if args.dry_run {
+                            format!("{} ", "[DRY RUN]".bold().purple())
+                        } else {
+                            String::new()
+                        };
+                        ui::cli::log!(
+                            "{}Processed {} in {}",
+                            prefix,
+                            utils::format_size_binary(completion.summary.processed_bytes, 3).cyan(),
+                            utils::pretty_print_duration(completion.duration).cyan(),
+                        );
+                    }
                 }
-            } else if !json_output {
-                ui::cli::log!("No changes detected since parent. Skipping snapshot.");
+                SnapshotOutcome::SkippedNoChanges if !json_output => {
+                    ui::cli::log!("No changes detected since parent. Skipping snapshot.");
+                }
+                SnapshotOutcome::Interrupted if !json_output => {
+                    ui::cli::log!("Snapshot interrupted by user.");
+                }
+                _ => {}
             }
 
             Ok(())
@@ -298,13 +305,19 @@ pub struct SnapshotCompletion {
     pub duration: std::time::Duration,
 }
 
+pub enum SnapshotOutcome {
+    Saved(Box<SnapshotCompletion>),
+    SkippedNoChanges,
+    Interrupted,
+}
+
 pub async fn run_with_repo(
     repo: Arc<Repository>,
     lock_handle: LockHandle,
     options: SnapshotRunOptions,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     parent_snapshot_pair: Option<SnapshotPair>,
-) -> Result<Option<SnapshotCompletion>> {
+) -> Result<SnapshotOutcome> {
     let as_root = options.as_root;
     let no_scan = options.no_scan;
     let skip_if_unchanged = options.skip_if_unchanged;
@@ -326,7 +339,10 @@ pub async fn run_with_repo(
         if options.paths.len() != 1 {
             bail!("Only one path can be the snapshot root");
         } else {
-            let root = options.paths.last().unwrap();
+            let root = options
+                .paths
+                .last()
+                .expect("paths must have exactly one element in as_root mode");
             if !root.is_dir() {
                 bail!("The snapshot root must be a directory");
             }
@@ -437,7 +453,7 @@ pub async fn run_with_repo(
         Err(e) => {
             if cleanup_handler.is_interrupted() {
                 tracing::info!(target: "snapshot", "Snapshot interrupted by user");
-                return Ok(None);
+                return Ok(SnapshotOutcome::Interrupted);
             }
 
             progress_reporter.finalize();
@@ -469,7 +485,11 @@ pub async fn run_with_repo(
 
     let should_save_snapshot = !skip_if_unchanged
         || parent_snapshot_pair.is_none()
-        || (parent_snapshot_pair.unwrap().snapshot.tree != new_snapshot.tree);
+        || (parent_snapshot_pair
+            .expect("parent_snapshot_pair is Some if skip_if_unchanged and parent exists")
+            .snapshot
+            .tree
+            != new_snapshot.tree);
 
     let completion = if should_save_snapshot {
         tracing::info!(target: "snapshot", "Saving new snapshot");
@@ -496,18 +516,18 @@ pub async fn run_with_repo(
         new_snapshot.summary.meta_encoded_bytes +=
             new_snapshot_size.encoded + repo_stats.index.encoded;
 
-        Some(SnapshotCompletion {
+        SnapshotOutcome::Saved(Box::new(SnapshotCompletion {
             snapshot_id: new_snapshot_id,
             summary: new_snapshot.summary.clone(),
             process_summary,
             meta_without_index_raw,
             meta_without_index_encoded,
             duration: start.elapsed(),
-        })
+        }))
     } else {
         progress_reporter.finalize();
         tracing::info!(target: "snapshot", "No changes detected. Snapshot skipped.");
-        None
+        SnapshotOutcome::SkippedNoChanges
     };
 
     tracing::info!(target: "snapshot", "Snapshot command completed in {:?}", start.elapsed());

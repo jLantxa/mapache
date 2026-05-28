@@ -171,39 +171,46 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     let start = Instant::now();
 
-    let res = sync_backends(
+    let sync_result = sync_backends(
         src_backend.as_ref(),
         dst_backend.as_ref(),
         args.delete,
         cleanup_handler.interrupted.clone(),
         json_out,
     )
-    .await
-    .map_err(|e| {
+    .await;
+
+    if sync_result.is_err() && cleanup_handler.is_interrupted() {
+        tracing::info!(target: "sync", "Sync interrupted by user");
+        src_lock.unlock().await;
+        if let Some(lock) = dst_lock {
+            lock.unlock().await;
+        }
+        return Ok(());
+    }
+    sync_result.map_err(|e| {
         fail(
             format!("Synchronization failed: {}", e),
             SyncError::SyncFailed,
         )
-    });
+    })?;
 
-    if res.is_ok() {
-        if json_out {
-            #[derive(Serialize)]
-            struct SyncCompleteMsg {
-                duration_seconds: f64,
-            }
-            ui::json::emit_static(
-                "sync_complete",
-                &SyncCompleteMsg {
-                    duration_seconds: start.elapsed().as_secs_f64(),
-                },
-            );
-        } else {
-            ui::cli::log!(
-                "Finished in {}",
-                utils::pretty_print_duration(start.elapsed())
-            );
+    if json_out {
+        #[derive(Serialize)]
+        struct SyncCompleteMsg {
+            duration_seconds: f64,
         }
+        ui::json::emit_static(
+            "sync_complete",
+            &SyncCompleteMsg {
+                duration_seconds: start.elapsed().as_secs_f64(),
+            },
+        );
+    } else {
+        ui::cli::log!(
+            "Finished in {}",
+            utils::pretty_print_duration(start.elapsed())
+        );
     }
     tracing::info!(target: "sync", "Sync command completed in {:?}", start.elapsed());
 
@@ -212,7 +219,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         lock.unlock().await;
     }
 
-    res
+    Ok(())
 }
 
 /// Synchronize a repository to a destination backend.
@@ -502,16 +509,28 @@ async fn diff(
         match (src_iter.peek(), dst_iter.peek()) {
             (Some(src_node), Some(dst_node)) => match src_node.path().cmp(dst_node.path()) {
                 std::cmp::Ordering::Less => {
-                    to_copy.push(src_iter.next().unwrap());
+                    to_copy.push(
+                        src_iter
+                            .next()
+                            .expect("src_iter has next (peek returned Some)"),
+                    );
                     num_to_copy += 1;
                 }
                 std::cmp::Ordering::Greater => {
-                    to_delete.push(dst_iter.next().unwrap());
+                    to_delete.push(
+                        dst_iter
+                            .next()
+                            .expect("dst_iter has next (peek returned Some)"),
+                    );
                     num_to_delete += 1;
                 }
                 std::cmp::Ordering::Equal => {
-                    let src = src_iter.next().unwrap();
-                    let dst = dst_iter.next().unwrap();
+                    let src = src_iter
+                        .next()
+                        .expect("src_iter has next (peek returned Some)");
+                    let dst = dst_iter
+                        .next()
+                        .expect("dst_iter has next (peek returned Some)");
                     match (&src, &dst) {
                         (BackendNode::File(_, _), BackendNode::File(_, _)) => {
                             if src != dst {
@@ -533,11 +552,19 @@ async fn diff(
                 }
             },
             (Some(_), None) => {
-                to_copy.push(src_iter.next().unwrap());
+                to_copy.push(
+                    src_iter
+                        .next()
+                        .expect("src_iter has next (peek returned Some)"),
+                );
                 num_to_copy += 1;
             }
             (None, Some(_)) => {
-                to_delete.push(dst_iter.next().unwrap());
+                to_delete.push(
+                    dst_iter
+                        .next()
+                        .expect("dst_iter has next (peek returned Some)"),
+                );
                 num_to_delete += 1;
             }
             (None, None) => break,

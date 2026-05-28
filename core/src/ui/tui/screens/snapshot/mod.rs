@@ -100,12 +100,13 @@ impl SnapshotCreateScreen {
             )
             .await;
             let summary_result = match result {
-                Ok(Some(completion)) => SummaryResult::Success {
+                Ok(cmd_snapshot::SnapshotOutcome::Saved(completion)) => SummaryResult::Success {
                     summary: Box::new(completion.summary),
                     snapshot_id: completion.snapshot_id,
                     duration: completion.duration,
                 },
-                Ok(None) => SummaryResult::NoChanges,
+                Ok(cmd_snapshot::SnapshotOutcome::SkippedNoChanges) => SummaryResult::NoChanges,
+                Ok(cmd_snapshot::SnapshotOutcome::Interrupted) => SummaryResult::Cancelled,
                 Err(e) => {
                     if shutdown_signal.load(Ordering::SeqCst) {
                         SummaryResult::Cancelled

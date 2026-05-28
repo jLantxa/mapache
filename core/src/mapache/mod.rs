@@ -97,8 +97,12 @@ impl ID {
         let mut chars = hex_str.chars();
 
         for byte in bytes.iter_mut().take(ID_LENGTH) {
-            let high_nibble_char = chars.next().unwrap(); // Should be OK due to length check
-            let low_nibble_char = chars.next().unwrap(); // Should be OK due to length check
+            let high_nibble_char = chars
+                .next()
+                .expect("valid hex string length guarantees enough chars");
+            let low_nibble_char = chars
+                .next()
+                .expect("valid hex string length guarantees enough chars");
 
             let high_nibble = Self::hex_char_to_byte(high_nibble_char)
                 .with_context(|| format!("Invalid hexadecimal character: '{high_nibble_char}'"))?;

@@ -227,7 +227,7 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
                 }
 
                 if !snapshots.is_empty() {
-                    let (latest_id, latest_snapshot) = snapshots.last().unwrap().clone();
+                    let (latest_id, latest_snapshot) = snapshots.last().expect("snapshots is non-empty (guarded by is_empty check)").clone();
                     stash.add_symlink(ids_ino, String::from("latest"), latest_id.to_hex());
                     let by_date_name = format!(
                         "{} - {}",

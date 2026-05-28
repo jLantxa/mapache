@@ -1,10 +1,12 @@
 use std::{
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
+
+use parking_lot::Mutex;
 
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
@@ -134,7 +136,7 @@ impl CliRestoreProgressReporter {
 impl RestoreProgressReporter for CliRestoreProgressReporter {
     fn set_message(&self, msg: String) {
         self.progress_bar.set_message(msg.clone());
-        let mut stage = self.current_stage.lock().unwrap();
+        let mut stage = self.current_stage.lock();
         *stage = msg;
     }
 

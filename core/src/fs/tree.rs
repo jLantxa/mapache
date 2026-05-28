@@ -183,7 +183,7 @@ impl FSNodeStream {
                 };
 
                 if take_intermediate {
-                    let (path, num_children, maybe_node) = state.intermediate_paths.pop().unwrap();
+                    let (path, num_children, maybe_node) = state.intermediate_paths.pop().expect("intermediate_paths is non-empty (checked via take_intermediate)");
                     if state.filter.allow(&path) {
                         tracing::trace!(target: "fs", "Emitting intermediate path: {:?} (children={})", path, num_children);
                         let with_atime = state.with_atime;
@@ -201,7 +201,7 @@ impl FSNodeStream {
                     continue;
                 }
 
-                let (parent, name, maybe_node) = state.stack.pop().unwrap();
+                let (parent, name, maybe_node) = state.stack.pop().expect("stack is non-empty (checked via take_intermediate)");
                 let path = parent.join(&name);
                 if !state.filter.allow(&path) {
                     tracing::trace!(target: "fs", "Path excluded by filter: {:?}", path);

@@ -191,7 +191,11 @@ pub fn abbreviate_path(path: &Path, max_len: usize) -> String {
     }
 
     let first = components[0].as_os_str().to_string_lossy();
-    let last = components.last().unwrap().as_os_str().to_string_lossy();
+    let last = components
+        .last()
+        .expect("components has at least 3 elements (guarded by len check)")
+        .as_os_str()
+        .to_string_lossy();
 
     // Check if we can fit more components
     let mut left_idx = 1;

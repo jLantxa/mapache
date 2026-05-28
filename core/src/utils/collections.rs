@@ -237,7 +237,10 @@ where
                 // The new index for this element is 'value_index'.
                 self.values.swap_remove(value_index);
                 let moved_item = &self.values[value_index];
-                *self.map.get_mut(moved_item).unwrap() = value_index;
+                *self
+                    .map
+                    .get_mut(moved_item)
+                    .expect("moved_item must exist in map after swap_remove") = value_index;
             } else {
                 // The item to be removed is the last element.
                 // Just pop it, no other indices need updating.

@@ -1,7 +1,9 @@
 use std::sync::{
-    Arc, Mutex, Once,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use signal_hook_registry::{SigId, register, unregister};
@@ -15,42 +17,28 @@ pub struct CleanupHandler {
     locks: Arc<Mutex<Vec<LockHandle>>>,
 }
 
-static CLEANUP_ONCE: Once = Once::new();
-
 impl CleanupHandler {
     /// Register callbacks for the SIGINT and SIGTERM signals.
     pub fn new() -> Result<Self> {
         let interrupted = Arc::new(AtomicBool::new(false));
         let locks = Arc::new(Mutex::new(Vec::<LockHandle>::new()));
 
-        let clone_for_sigint = interrupted.clone();
-        let locks_clone = locks.clone();
         let sigint_handler = unsafe {
-            // SAFETY: register is a wrapper around signal handlers. The closure
-            // provided is thread-safe and only performs atomic operations and
-            // non-blocking mutex locks, which is safe in this context.
-            register(libc::SIGINT, move || {
-                clone_for_sigint.store(true, Ordering::SeqCst);
-                if let Ok(locks) = locks_clone.lock() {
-                    for lock in locks.iter() {
-                        lock.trigger_unlock();
-                    }
-                }
+            // SAFETY: the closure only sets an atomic flag, which is async-signal-safe.
+            register(libc::SIGINT, {
+                let flag = interrupted.clone();
+                move || flag.store(true, Ordering::SeqCst)
+            })?
+        };
+        let sigterm_handler = unsafe {
+            // SAFETY: the closure only sets an atomic flag, which is async-signal-safe.
+            register(libc::SIGTERM, {
+                let flag = interrupted.clone();
+                move || flag.store(true, Ordering::SeqCst)
             })?
         };
 
-        let clone_for_sigterm = Arc::clone(&interrupted);
-        let locks_clone = locks.clone();
-        let sigterm_handler = unsafe {
-            register(libc::SIGTERM, move || {
-                clone_for_sigterm.store(true, Ordering::SeqCst);
-                if let Ok(locks) = locks_clone.lock() {
-                    for lock in locks.iter() {
-                        lock.trigger_unlock();
-                    }
-                }
-            })?
-        };
+        spawn_cleanup_worker(interrupted.clone(), locks.clone());
 
         Ok(CleanupHandler {
             sigint_handler,
@@ -61,50 +49,32 @@ impl CleanupHandler {
     }
 
     /// Register callbacks for the SIGINT and SIGTERM signals with an immediate UI callback.
+    ///
+    /// The callback runs on a dedicated daemon thread after the signal fires, not inside the
+    /// signal handler itself, so it may use any Rust construct safely.
     pub fn new_with_callback<F>(callback: F) -> Result<Self>
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn() + Send + 'static,
     {
         let interrupted = Arc::new(AtomicBool::new(false));
         let locks = Arc::new(Mutex::new(Vec::<LockHandle>::new()));
-        let callback = Arc::new(callback);
 
-        let clone_for_sigint = interrupted.clone();
-        let locks_clone = locks.clone();
-        let cb_sigint = callback.clone();
         let sigint_handler = unsafe {
-            // SAFETY: register is a wrapper around signal handlers. The closure
-            // provided is thread-safe and only performs atomic operations and
-            // non-blocking mutex locks, which is safe in this context.
-            register(libc::SIGINT, move || {
-                clone_for_sigint.store(true, Ordering::SeqCst);
-                CLEANUP_ONCE.call_once(|| {
-                    cb_sigint();
-                    if let Ok(locks) = locks_clone.lock() {
-                        for lock in locks.iter() {
-                            lock.trigger_unlock();
-                        }
-                    }
-                });
+            // SAFETY: the closure only sets an atomic flag, which is async-signal-safe.
+            register(libc::SIGINT, {
+                let flag = interrupted.clone();
+                move || flag.store(true, Ordering::SeqCst)
+            })?
+        };
+        let sigterm_handler = unsafe {
+            // SAFETY: the closure only sets an atomic flag, which is async-signal-safe.
+            register(libc::SIGTERM, {
+                let flag = interrupted.clone();
+                move || flag.store(true, Ordering::SeqCst)
             })?
         };
 
-        let clone_for_sigterm = interrupted.clone();
-        let locks_clone = locks.clone();
-        let cb_sigterm = callback.clone();
-        let sigterm_handler = unsafe {
-            register(libc::SIGTERM, move || {
-                clone_for_sigterm.store(true, Ordering::SeqCst);
-                CLEANUP_ONCE.call_once(|| {
-                    cb_sigterm();
-                    if let Ok(locks) = locks_clone.lock() {
-                        for lock in locks.iter() {
-                            lock.trigger_unlock();
-                        }
-                    }
-                });
-            })?
-        };
+        spawn_cleanup_worker_with_callback(interrupted.clone(), locks.clone(), callback);
 
         Ok(CleanupHandler {
             sigint_handler,
@@ -125,14 +95,61 @@ impl CleanupHandler {
     }
 }
 
+/// Spawns a daemon thread that polls the interrupted flag and releases all tracked locks.
+fn spawn_cleanup_worker(interrupted: Arc<AtomicBool>, locks: Arc<Mutex<Vec<LockHandle>>>) {
+    thread::Builder::new()
+        .name("cleanup".into())
+        .spawn(move || {
+            loop {
+                if interrupted.load(Ordering::Relaxed) {
+                    if let Ok(locks) = locks.lock() {
+                        for lock in locks.iter() {
+                            lock.trigger_unlock();
+                        }
+                    }
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .ok();
+}
+
+/// Spawns a daemon thread that polls the interrupted flag, runs the callback, then releases locks.
+fn spawn_cleanup_worker_with_callback<F>(
+    interrupted: Arc<AtomicBool>,
+    locks: Arc<Mutex<Vec<LockHandle>>>,
+    callback: F,
+) where
+    F: Fn() + Send + 'static,
+{
+    thread::Builder::new()
+        .name("cleanup".into())
+        .spawn(move || {
+            loop {
+                if interrupted.load(Ordering::Relaxed) {
+                    callback();
+                    if let Ok(locks) = locks.lock() {
+                        for lock in locks.iter() {
+                            lock.trigger_unlock();
+                        }
+                    }
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .ok();
+}
+
 impl Drop for CleanupHandler {
     fn drop(&mut self) {
-        // Unregister previous handlers to drop the callbacks
         unregister(self.sigint_handler);
         unregister(self.sigterm_handler);
 
-        // Register default termination callbacks
         unsafe {
+            // SAFETY: std::process::exit terminates the process immediately; it is
+            // async-signal-safe and the only operation in these handlers.
             let _ = register(libc::SIGINT, move || {
                 std::process::exit(128 + libc::SIGINT);
             });

@@ -227,15 +227,14 @@ fn store_small_file<R: Read>(
     buf.clear();
     buf.reserve(size);
 
+    let buf_dst = unsafe {
+        // SAFETY: u8 accepts any bit pattern; read_exact overwrites the buffer before any reads.
+        std::slice::from_raw_parts_mut(buf.as_mut_ptr(), size)
+    };
+    reader.read_exact(buf_dst)?;
+
     unsafe {
-        // SAFETY: Memory is allocated but uninitialized; set_len is deferred until read_exact
-        // guarantees initialization, ensuring no UB if a panic or error occurs during I/O.
-        let slice = std::slice::from_raw_parts_mut(
-            buf.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
-            size,
-        );
-        let buffer = &mut *(slice as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]);
-        reader.read_exact(buffer)?;
+        // SAFETY: read_exact wrote `size` bytes.
         buf.set_len(size);
     }
 

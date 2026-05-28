@@ -1,11 +1,13 @@
 use std::{
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
 };
+
+use parking_lot::Mutex;
 
 use serde::Serialize;
 
@@ -70,7 +72,7 @@ impl JsonRestoreProgressReporter {
     }
 
     fn should_emit_update(&self) -> bool {
-        let mut last_update = self.last_update.lock().unwrap();
+        let mut last_update = self.last_update.lock();
         if last_update.elapsed() >= GlobalOpts::progress_refresh_interval() {
             *last_update = Instant::now();
             return true;
@@ -79,7 +81,7 @@ impl JsonRestoreProgressReporter {
     }
 
     fn emit_status_update(&self) {
-        let stage = self.current_stage.lock().unwrap().clone();
+        let stage = self.current_stage.lock().clone();
         let visited = self.visited_nodes.load(Ordering::Relaxed);
         let visited_nodes = if visited > 0 { Some(visited) } else { None };
         let processed_items = self.processed_items_count.load(Ordering::Relaxed);
@@ -109,7 +111,7 @@ impl JsonRestoreProgressReporter {
 impl RestoreProgressReporter for JsonRestoreProgressReporter {
     fn set_message(&self, msg: String) {
         {
-            let mut stage = self.current_stage.lock().unwrap();
+            let mut stage = self.current_stage.lock();
             *stage = msg;
         }
 

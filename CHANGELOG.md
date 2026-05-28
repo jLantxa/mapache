@@ -1,6 +1,6 @@
 # Changelog
 
-## Latest
+## v0.4.0
 
 ### Changes
 

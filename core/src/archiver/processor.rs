@@ -8,6 +8,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -29,7 +30,6 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct ReusableBuffers {
     pub small_buf: Vec<u8>,
-    pub chunk_buf: Vec<u8>,
 }
 
 /// Reusable chunker instance.
@@ -105,10 +105,9 @@ pub(crate) fn process_item_sync(
                 let file_size = next.node.metadata.size;
 
                 let mut fallback_small = Vec::new();
-                let mut fallback_chunk = Vec::new();
-                let (small_buf, chunk_buf) = match bufs.as_mut() {
-                    Some(b) => (&mut b.small_buf, &mut b.chunk_buf),
-                    None => (&mut fallback_small, &mut fallback_chunk),
+                let small_buf = match bufs.as_mut() {
+                    Some(b) => &mut b.small_buf,
+                    None => &mut fallback_small,
                 };
 
                 let chunk_result = (|| -> Result<Vec<ID>> {
@@ -131,7 +130,6 @@ pub(crate) fn process_item_sync(
                             progress,
                             progress_reporter,
                             shutdown_signal,
-                            Some(chunk_buf),
                         )
                     }
                 })();
@@ -169,48 +167,67 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 }
 
 /// Reads a file, chunks it using the CDC chunker, and stores the chunks in the repository.
-/// When `reusable` is provided, the largest chunk allocation is captured for reuse
-/// in a subsequent call (reducing memory allocation churn via the allocator).
-pub(crate) fn chunk_and_store_file<R: Read + Send + 'static>(
+///
+/// A background producer thread reads the file and runs the CDC chunker, sending raw
+/// chunk payloads over a bounded channel (capacity 2). The calling thread receives
+/// these chunks and performs the CPU-heavy work (zstd compression + AES encryption)
+/// via `save_blob`. This overlaps file I/O and chunk-boundary scanning with
+/// compression/encryption, improving throughput on multi-core systems.
+pub(crate) fn chunk_and_store_file<R: Read + Send>(
     blob_saver: &dyn BlobSaver,
     reader: R,
     file_size: u64,
     progress: &SnapshotProgress,
     progress_reporter: &dyn SnapshotProgressReporter,
     shutdown_signal: &AtomicBool,
-    mut reusable: Option<&mut Vec<u8>>,
 ) -> Result<Vec<ID>> {
-    let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
-    let mut ids = Vec::new();
+    let (chunk_tx, chunk_rx) = crossbeam_channel::bounded::<Result<Vec<u8>>>(2);
+    let rt_handle = tokio::runtime::Handle::try_current().ok();
 
-    for result in stream {
-        if shutdown_signal.load(Ordering::Relaxed) {
-            return Err(anyhow!("Shutdown signal received"));
+    thread::scope(|s| {
+        s.spawn(move || {
+            let _guard = rt_handle.as_ref().map(|h| h.enter());
+
+            let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
+            for result in stream {
+                let chunk = match result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = chunk_tx.send(Err(e));
+                        return;
+                    }
+                };
+                if chunk_tx.send(Ok(chunk.data)).is_err() {
+                    return;
+                }
+            }
+        });
+
+        let mut ids = Vec::new();
+
+        for msg in chunk_rx {
+            let chunk_data = msg?;
+
+            if shutdown_signal.load(Ordering::Relaxed) {
+                return Err(anyhow!("Shutdown signal received"));
+            }
+
+            let chunk_len = chunk_data.len() as u64;
+
+            let id = blob_saver.save_blob(
+                BlobType::Data,
+                WriteContents::Borrowed(&chunk_data),
+                SaveID::CalculateID,
+            )?;
+
+            ids.push(id);
+
+            progress.processed_bytes(chunk_len);
+            progress_reporter.processed_bytes(chunk_len);
         }
 
-        let chunk = result?;
-        let chunk_len = chunk.data.len() as u64;
-
-        // Perform the intensive save_blob directly in the worker thread.
-        let id = blob_saver.save_blob(
-            BlobType::Data,
-            WriteContents::Borrowed(&chunk.data),
-            SaveID::CalculateID,
-        )?;
-
-        ids.push(id);
-
-        // Keep the largest Vec allocation to seed the next ChunkStream.
-        if let Some(r) = reusable.as_mut()
-            && chunk.data.capacity() > r.capacity()
-        {
-            **r = chunk.data;
-        }
-
-        progress.processed_bytes(chunk_len);
-        progress_reporter.processed_bytes(chunk_len);
-    }
-    Ok(ids)
+        Ok(ids)
+    })
 }
 
 /// Stores a small file as a single blob without chunking.

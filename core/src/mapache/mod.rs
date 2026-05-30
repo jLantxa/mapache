@@ -372,7 +372,6 @@ async fn run_rechunk_task(
             progress.as_ref(),
             progress_reporter.as_ref(),
             shutdown_signal.as_ref(),
-            None,
         )
     })
     .await

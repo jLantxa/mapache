@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **Restorer Performance**: Fixed a regression introduced in v0.4.0 where
+  parallel file writes within pack segments were lost, degrading restore speed.
+  Per-file write batching with concurrent flush is now restored, and peak memory
+  is further reduced by streaming pack segments and tightening the decoded data
+  budget.
+
 ## v0.4.0
 
 ### Changes

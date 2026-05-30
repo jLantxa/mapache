@@ -157,6 +157,8 @@ struct RestorePlan {
     total_items: u64,
     /// Total number of bytes to be restored.
     total_bytes: u64,
+    /// Bytes skipped because the local file was already up to date.
+    skipped_bytes: u64,
     /// Hardlinks to create after data restoration: (secondary_file_idx, primary_file_idx).
     hardlinks: Vec<(usize, usize)>,
 }
@@ -403,6 +405,12 @@ impl Restorer {
         self.progress_reporter
             .resize_workload(plan.total_items, plan.total_bytes);
 
+        // Count bytes of files that were skipped (already up to date) as processed
+        // so the progress bar accurately reflects all included files.
+        if plan.skipped_bytes > 0 {
+            self.progress_reporter.processed_bytes(plan.skipped_bytes);
+        }
+
         let plan_files = plan.files.clone();
         let plan_packs = plan.packs.clone();
         let dry_run = self.opts.dry_run;
@@ -465,6 +473,7 @@ impl Restorer {
         let node_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let total_items = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let total_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let skipped_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         // HardlinkIndex: (dev, inode) → file_idx of first occurrence
         let hardlink_index = Arc::new(parking_lot::Mutex::new(HashMap::<(u64, u64), usize>::new()));
         let hardlinks = Arc::new(parking_lot::Mutex::new(Vec::<(usize, usize)>::new()));
@@ -484,6 +493,7 @@ impl Restorer {
                 let node_count = node_count.clone();
                 let total_items = total_items.clone();
                 let total_bytes = total_bytes.clone();
+                let skipped_bytes = skipped_bytes.clone();
                 let progress_reporter = self.progress_reporter.clone();
                 let shutdown_signal = self.shutdown_signal.clone();
                 let hardlink_index = hardlink_index.clone();
@@ -549,7 +559,12 @@ impl Restorer {
                         .await
                     {
                         Ok(true) => {}
-                        Ok(false) => return,
+                        Ok(false) => {
+                            if node.is_file() {
+                                skipped_bytes.fetch_add(node.metadata.size, Ordering::Relaxed);
+                            }
+                            return;
+                        }
                         Err(e) => {
                             progress_reporter.error(&format!(
                                 "Error checking {}: {}",
@@ -743,6 +758,7 @@ impl Restorer {
             directories,
             total_items: total_items.load(Ordering::Relaxed),
             total_bytes: total_bytes.load(Ordering::Relaxed),
+            skipped_bytes: skipped_bytes.load(Ordering::Relaxed),
             hardlinks,
         })
     }

@@ -27,12 +27,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use futures::StreamExt;
 use parking_lot::Mutex;
-use tokio::{sync::Semaphore, task::spawn_blocking};
+use tokio::task::spawn_blocking;
 
 use crate::{
+    backend::Handle,
     fs::{self as repo_fs, node::Node, tree::SerializedNodeStream, tree::SerializedTreeStream},
     mapache::{
-        BlobType, ID,
+        BlobType, ContentIdType, ID,
         defaults::{self},
         hash,
     },
@@ -954,11 +955,14 @@ impl Restorer {
             return Ok(());
         }
 
-        // Track remaining blobs per file to detect completion
-        let remaining: Vec<std::sync::atomic::AtomicU32> = files
-            .iter()
-            .map(|f| std::sync::atomic::AtomicU32::new(f.num_blobs))
-            .collect();
+        // Track remaining blobs per file to detect completion.
+        // Use Arc so concurrent pack futures can share it.
+        let remaining = Arc::new(
+            files
+                .iter()
+                .map(|f| std::sync::atomic::AtomicU32::new(f.num_blobs))
+                .collect::<Vec<_>>(),
+        );
 
         // Count files with 0 blobs (empty files, symlinks, hardlink secondaries) as completed
         for file in files.iter() {
@@ -973,10 +977,9 @@ impl Restorer {
         let d = defaults::runtime();
         let handle_cache = Arc::new(ShardedFileHandleCache::new(d.restore_max_open_files));
         let mut packs_iter = packs.iter();
-
-        let max_memory_units =
-            d.restore_pack_prefetch_memory_bytes / d.restore_pack_prefetch_memory_unit;
-        let memory_budget = Arc::new(Semaphore::new(max_memory_units));
+        let quit_on_error = self.opts.quit_on_error;
+        let progress_reporter = self.progress_reporter.clone();
+        let shutdown_signal = self.shutdown_signal.clone();
 
         let mut download_stream = futures::stream::iter(std::iter::from_fn(|| {
             packs_iter
@@ -985,7 +988,14 @@ impl Restorer {
         }))
         .map(move |(pack_id, blob_requests)| {
             let repo = self.repo.clone();
-            let memory_budget = memory_budget.clone();
+            let secure_storage = secure_storage.clone();
+            let handle_cache = handle_cache.clone();
+            let files = files.clone();
+            let remaining = remaining.clone();
+            let progress_reporter = progress_reporter.clone();
+            let shutdown_signal = shutdown_signal.clone();
+            let d = d.clone();
+
             async move {
                 let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
                 for (blob_id, req) in blob_requests {
@@ -1008,23 +1018,99 @@ impl Restorer {
                     .collect();
 
                 let segments = loader::segment_blobs(pack_id, blobs_vec);
-                let requested_bytes: u64 = segments
-                    .iter()
-                    .map(|segment| segment.source_len() as u64)
-                    .sum();
-                let requested_units = (requested_bytes as usize)
-                    .div_ceil(d.restore_pack_prefetch_memory_unit)
-                    .max(1);
-                let permit_units = requested_units.min(max_memory_units) as u32;
 
-                let permit = memory_budget
-                    .acquire_many_owned(permit_units)
-                    .await
-                    .map_err(|_| anyhow!("Interrupted while reserving restore memory"))?;
+                tracing::debug!(target: "restorer", "Processing {} segments from pack {} ({} bytes)", segments.len(), pack_id.to_short_hex(8),
+                    segments.iter().map(|s| s.source_len() as u64).sum::<u64>());
 
-                tracing::debug!(target: "restorer", "Downloading {} segments from pack {} ({} bytes)", segments.len(), pack_id.to_short_hex(8), requested_bytes);
-                let segments = loader::download_pack_segments(repo, segments).await;
-                segments.map(|segments| (segments, permit))
+                // Process each segment one at a time: download, decode, and flush
+                // before moving to the next, bounding encoded-data memory to a
+                // single segment's size rather than the whole pack.
+                let total_segments = segments.len();
+                for (segment_idx, segment) in segments.into_iter().enumerate() {
+                    if shutdown_signal.load(Ordering::Relaxed) {
+                        bail!("Interrupted");
+                    }
+
+                    let path = repo.get_path(ContentIdType::Pack, &segment.pack_id);
+                    let is_tree = segment
+                        .blobs
+                        .iter()
+                        .all(|(_, loc, _)| loc.blob_type == BlobType::Tree);
+
+                    let segment_data = repo
+                        .backend()
+                        .read(
+                            &Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
+                            segment.min_offset as isize,
+                            segment.source_len(),
+                        )
+                        .await
+                        .with_context(|| format!("Failed to read pack {}", segment.pack_id))?;
+
+                    tracing::debug!(target: "restorer", "Segment {}/{} from pack {} downloaded ({} bytes)",
+                        segment_idx + 1, total_segments, pack_id.to_short_hex(8), segment_data.len());
+
+                    let data_arc = Arc::new(segment_data);
+                    let mut file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
+                    let mut pending_decoded: u64 = 0;
+
+                    for (blob_id, locator, targets) in segment.blobs {
+                        let start = (locator.offset as u64 - segment.min_offset) as usize;
+                        let end = start + locator.length as usize;
+                        let encoded_blob = &data_arc[start..end];
+
+                        let decoded_data = secure_storage
+                            .decode_owned(encoded_blob.to_vec())
+                            .with_context(|| format!("Failed to decode blob {blob_id}"))?;
+
+                        let raw_len = decoded_data.len() as u64;
+
+                        if targets.len() == 1 {
+                            let target = &targets[0];
+                            file_batches
+                                .entry(target.file_idx)
+                                .or_default()
+                                .push((decoded_data, target.offset_in_file));
+                        } else {
+                            for target in &targets {
+                                file_batches
+                                    .entry(target.file_idx)
+                                    .or_default()
+                                    .push((decoded_data.clone(), target.offset_in_file));
+                        }
+                        }
+
+                        pending_decoded += raw_len;
+
+                        // Flush early if we've accumulated too much decoded data.
+                        if pending_decoded >= d.restore_decoded_budget {
+                            Self::flush_file_batches(
+                                &mut file_batches,
+                                &handle_cache,
+                                &files,
+                                remaining.as_ref(),
+                                &progress_reporter,
+                                quit_on_error,
+                                d.restore_blob_concurrency,
+                            )
+                            .await?;
+                            pending_decoded = 0;
+                        }
+                    }
+
+                    Self::flush_file_batches(
+                        &mut file_batches,
+                        &handle_cache,
+                        &files,
+                        remaining.as_ref(),
+                        &progress_reporter,
+                        quit_on_error,
+                        d.restore_blob_concurrency,
+                    )
+                    .await?;
+                }
+
+                Ok::<(), anyhow::Error>(())
             }
         })
         .buffer_unordered(d.restore_pack_prefetch);
@@ -1033,106 +1119,78 @@ impl Restorer {
             if self.shutdown_signal.load(Ordering::Relaxed) {
                 bail!("Interrupted");
             }
+            res?;
+        }
 
-            let (segments, _memory_permit) = res?;
-            for (pack_segment, segment_data) in segments {
-                let data_arc = Arc::new(segment_data);
+        Ok(())
+    }
 
-                for (blob_id, locator, targets) in pack_segment.blobs {
-                    let start = (locator.offset as u64 - pack_segment.min_offset) as usize;
-                    let end = start + locator.length as usize;
-                    let encoded_blob = &data_arc[start..end];
+    /// Flush accumulated file batches: write each file's blobs in a single
+    /// spawn_blocking, processing files concurrently.  This bounds peak memory
+    /// to the decoded data accumulated before the flush, preserving per-file
+    /// parallelism within the batch.
+    async fn flush_file_batches(
+        file_batches: &mut HashMap<usize, Vec<(Vec<u8>, u64)>>,
+        handle_cache: &Arc<ShardedFileHandleCache>,
+        files: &Arc<Vec<FileRestorePlan>>,
+        remaining: &[std::sync::atomic::AtomicU32],
+        progress_reporter: &Arc<dyn RestoreProgressReporter>,
+        quit_on_error: bool,
+        concurrency: usize,
+    ) -> Result<()> {
+        let batches = std::mem::take(file_batches);
 
-                    let decoded_data = secure_storage
-                        .decode_owned(encoded_blob.to_vec())
-                        .with_context(|| format!("Failed to decode blob {blob_id}"))?;
+        let mut batch_stream = futures::stream::iter(batches)
+            .map(|(file_idx, writes)| {
+                let num_blobs = writes.len() as u32;
+                let total_bytes: u64 = writes.iter().map(|(d, _)| d.len() as u64).sum();
+                let file_path = files[file_idx].path.clone();
+                let handle_cache = handle_cache.clone();
+                let files = files.clone();
+                let progress_reporter = progress_reporter.clone();
 
-                    let raw_len = decoded_data.len() as u64;
-
-                    if targets.len() == 1 {
-                        let target = &targets[0];
-                        let file_path = files[target.file_idx].path.clone();
-                        let offset = target.offset_in_file;
-                        let file_idx = target.file_idx;
-                        let handle_cache = handle_cache.clone();
-                        let progress_reporter = self.progress_reporter.clone();
-                        let quit_on_error = self.opts.quit_on_error;
-
-                        let write_result = spawn_blocking(move || -> Result<u64, anyhow::Error> {
-                            let mut cache_guard = handle_cache.get_shard(file_idx).lock();
-                            let file = cache_guard.get_handle(file_idx, &file_path)?;
+                async move {
+                    let write_result = spawn_blocking(move || -> Result<u64, anyhow::Error> {
+                        let mut cache_guard = handle_cache.get_shard(file_idx).lock();
+                        let file = cache_guard.get_handle(file_idx, &file_path)?;
+                        let mut written = 0u64;
+                        for (data, offset) in writes {
                             #[cfg(unix)]
-                            file.write_at(&decoded_data, offset)
-                                .map_err(|e| anyhow!(e))?;
+                            file.write_at(&data, offset).map_err(|e| anyhow!(e))?;
                             #[cfg(windows)]
-                            file.seek_write(&decoded_data, offset)
-                                .map_err(|e| anyhow!(e))?;
-                            Ok(raw_len)
-                        })
-                        .await
-                        .map_err(|e| anyhow!(e))?;
+                            file.seek_write(&data, offset).map_err(|e| anyhow!(e))?;
+                            written += data.len() as u64;
+                        }
+                        Ok(written)
+                    })
+                    .await
+                    .map_err(|e| anyhow!(e))?;
 
-                        match write_result {
-                            Ok(bytes) => {
-                                progress_reporter.processed_bytes(bytes);
-                                if remaining[file_idx].fetch_sub(1, Ordering::Relaxed) == 1 {
-                                    progress_reporter.processed_item(&files[file_idx].path);
-                                }
-                            }
-                            Err(e) => {
-                                let err_msg =
-                                    format!("Failed to write to file index {file_idx}: {e}");
-                                if quit_on_error {
-                                    bail!(err_msg);
-                                }
-                                progress_reporter.error(&err_msg);
+                    match write_result {
+                        Ok(_bytes) => {
+                            progress_reporter.processed_bytes(total_bytes);
+                            if remaining[file_idx].fetch_sub(num_blobs, Ordering::Relaxed)
+                                == num_blobs
+                            {
+                                progress_reporter.processed_item(&files[file_idx].path);
                             }
                         }
-                    } else {
-                        let shared_data = Arc::new(decoded_data);
-                        let mut write_handles = Vec::with_capacity(targets.len());
-
-                        for target in &targets {
-                            let data = shared_data.clone();
-                            let file_path = files[target.file_idx].path.clone();
-                            let offset = target.offset_in_file;
-                            let file_idx = target.file_idx;
-                            let handle_cache = handle_cache.clone();
-
-                            let handle = spawn_blocking(move || -> Result<u64, anyhow::Error> {
-                                let mut cache_guard = handle_cache.get_shard(file_idx).lock();
-                                let file = cache_guard.get_handle(file_idx, &file_path)?;
-                                #[cfg(unix)]
-                                file.write_at(&data, offset).map_err(|e| anyhow!(e))?;
-                                #[cfg(windows)]
-                                file.seek_write(&data, offset).map_err(|e| anyhow!(e))?;
-                                Ok(raw_len)
-                            });
-                            write_handles.push((file_idx, handle));
-                        }
-
-                        for (file_idx, handle) in write_handles {
-                            match handle.await.map_err(|e| anyhow!(e))? {
-                                Ok(bytes) => {
-                                    self.progress_reporter.processed_bytes(bytes);
-                                    if remaining[file_idx].fetch_sub(1, Ordering::Relaxed) == 1 {
-                                        self.progress_reporter
-                                            .processed_item(&files[file_idx].path);
-                                    }
-                                }
-                                Err(e) => {
-                                    let err_msg =
-                                        format!("Failed to write to file index {file_idx}: {e}");
-                                    if self.opts.quit_on_error {
-                                        bail!(err_msg);
-                                    }
-                                    self.progress_reporter.error(&err_msg);
-                                }
+                        Err(e) => {
+                            let err_msg = format!("Failed to write to file index {file_idx}: {e}");
+                            if quit_on_error {
+                                bail!(err_msg);
                             }
+                            progress_reporter.error(&err_msg);
                         }
                     }
+
+                    Ok::<(), anyhow::Error>(())
                 }
-            }
+            })
+            .buffer_unordered(concurrency);
+
+        while let Some(res) = batch_stream.next().await {
+            res?;
         }
 
         Ok(())

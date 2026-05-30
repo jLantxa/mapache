@@ -12,13 +12,12 @@ pub(crate) const DEFAULT_SNAPSHOT_READERS: usize = 4;
 pub(crate) const DEFAULT_SNAPSHOT_PACKERS: usize = 4;
 
 // --- Restore ---
-pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH: usize = 4;
 pub(crate) const DEFAULT_RESTORE_BLOB_CONCURRENCY: usize = 8;
+pub(crate) const DEFAULT_RESTORE_DECODED_BUDGET: u64 = 8 * size::MiB;
 pub(crate) const DEFAULT_RESTORE_MAX_OPEN_FILES: usize = 128;
-pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES: usize = (128 * size::MiB) as usize;
-pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT: usize = (256 * size::KiB) as usize;
-pub(crate) const DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE: u64 = 32 * size::MiB;
+pub(crate) const DEFAULT_RESTORE_PACK_PREFETCH: usize = 4;
 pub(crate) const DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD: u64 = 2 * size::MiB;
+pub(crate) const DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE: u64 = 32 * size::MiB;
 
 // --- Index ---
 pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -93,14 +92,23 @@ pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {
 /// when set in the `[runtime]` section of the config file.
 #[derive(Debug, Clone)]
 pub struct RuntimeDefaults {
-    // Restore
-    pub restore_pack_prefetch: usize,
+    /// Maximum concurrent file writes when flushing decoded blobs to disk.
     pub restore_blob_concurrency: usize,
+    /// Per-pack decoded (decompressed + decrypted) data budget in bytes.
+    /// When this budget is exceeded, accumulated blobs are flushed to disk,
+    /// bounding peak decoded memory across concurrent pack streams.
+    pub restore_decoded_budget: u64,
+    /// Maximum number of simultaneously open file handles during restore.
     pub restore_max_open_files: usize,
-    pub restore_pack_prefetch_memory_bytes: usize,
-    pub restore_pack_prefetch_memory_unit: usize,
-    pub restore_pack_segment_max_size: u64,
+    /// Number of packs to download and process concurrently during restore.
+    pub restore_pack_prefetch: usize,
+    /// Maximum gap (bytes) between consecutive blob reads to merge them
+    /// into one pack segment download.
     pub restore_pack_read_merge_threshold: u64,
+    /// Maximum byte size of a single pack segment. Larger segments reduce
+    /// the number of sequential reads per pack but increase per-segment
+    /// encoded memory.
+    pub restore_pack_segment_max_size: u64,
     // GC
     pub min_pack_size_factor: f32,
     // Index
@@ -118,27 +126,24 @@ impl RuntimeDefaults {
     pub fn new(config: Option<&crate::mapache::config::RuntimeConfig>) -> Self {
         let c = config;
         Self {
-            restore_pack_prefetch: c
-                .and_then(|c| c.restore_pack_prefetch)
-                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH),
             restore_blob_concurrency: c
                 .and_then(|c| c.restore_blob_concurrency)
                 .unwrap_or(DEFAULT_RESTORE_BLOB_CONCURRENCY),
+            restore_decoded_budget: c
+                .and_then(|c| c.restore_decoded_budget)
+                .unwrap_or(DEFAULT_RESTORE_DECODED_BUDGET),
             restore_max_open_files: c
                 .and_then(|c| c.restore_max_open_files)
                 .unwrap_or(DEFAULT_RESTORE_MAX_OPEN_FILES),
-            restore_pack_prefetch_memory_bytes: c
-                .and_then(|c| c.restore_pack_prefetch_memory_bytes)
-                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_BYTES),
-            restore_pack_prefetch_memory_unit: c
-                .and_then(|c| c.restore_pack_prefetch_memory_unit)
-                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH_MEMORY_UNIT),
-            restore_pack_segment_max_size: c
-                .and_then(|c| c.restore_pack_segment_max_size)
-                .unwrap_or(DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE),
+            restore_pack_prefetch: c
+                .and_then(|c| c.restore_pack_prefetch)
+                .unwrap_or(DEFAULT_RESTORE_PACK_PREFETCH),
             restore_pack_read_merge_threshold: c
                 .and_then(|c| c.restore_pack_read_merge_threshold)
                 .unwrap_or(DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD),
+            restore_pack_segment_max_size: c
+                .and_then(|c| c.restore_pack_segment_max_size)
+                .unwrap_or(DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE),
             min_pack_size_factor: c
                 .and_then(|c| c.min_pack_size_factor)
                 .unwrap_or(DEFAULT_MIN_PACK_SIZE_FACTOR),

@@ -92,13 +92,12 @@ pub(crate) fn config_path(s: &str) -> Result<PathBuf> {
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct RuntimeConfig {
     // Restore
-    pub restore_pack_prefetch: Option<usize>,
     pub restore_blob_concurrency: Option<usize>,
+    pub restore_decoded_budget: Option<u64>,
     pub restore_max_open_files: Option<usize>,
-    pub restore_pack_prefetch_memory_bytes: Option<usize>,
-    pub restore_pack_prefetch_memory_unit: Option<usize>,
-    pub restore_pack_segment_max_size: Option<u64>,
+    pub restore_pack_prefetch: Option<usize>,
     pub restore_pack_read_merge_threshold: Option<u64>,
+    pub restore_pack_segment_max_size: Option<u64>,
     // GC
     pub min_pack_size_factor: Option<f32>,
     // Index

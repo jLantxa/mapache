@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.1
 
 ### Fixes
 
@@ -9,6 +9,14 @@
   Per-file write batching with concurrent flush is now restored, and peak memory
   is further reduced by streaming pack segments and tightening the decoded data
   budget.
+- **Progress Bar**: Fixed progress bar never reaching 100% when restoring with
+  `--strategy newer` or `--strategy skip`. Skipped bytes are now correctly
+  reported as processed.
+
+### Changes
+
+- **Archiver Performance**: Overlap I/O and content-defined chunking with
+  compression and encryption for improved snapshot throughput.
 
 ## v0.4.0
 

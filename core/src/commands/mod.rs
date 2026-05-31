@@ -141,6 +141,12 @@ pub struct CliGlobalArgs {
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub ssh_privatekey: Option<PathBuf>,
 
+    /// SSH known_hosts file
+    #[clap(long)]
+    #[merge(strategy = conflate::option::overwrite_none)]
+    #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
+    pub ssh_known_hosts: Option<PathBuf>,
+
     /// Path to a file to read repository authentication credentials
     #[clap(long)]
     #[merge(strategy = conflate::option::overwrite_none)]
@@ -245,6 +251,7 @@ pub struct GlobalArgs {
     pub repo: String,
     pub no_cache: bool,
     pub ssh_privatekey: Option<PathBuf>,
+    pub ssh_known_hosts: Option<PathBuf>,
     pub auth_file: Option<PathBuf>,
     pub pack_size_mib: f32,
     pub key: Option<PathBuf>,
@@ -262,6 +269,7 @@ impl GlobalArgs {
         BackendOptions {
             repo_path: self.repo.clone(),
             ssh_privatekey: self.ssh_privatekey.clone(),
+            ssh_known_hosts: self.ssh_known_hosts.clone(),
             dry_backend: dry,
             limit_upload: self.limit_upload,
             limit_download: self.limit_download,
@@ -293,6 +301,7 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> Result<GlobalArgs> {
         repo,
         no_cache: cli.no_cache.unwrap_or(false),
         ssh_privatekey: cli.ssh_privatekey.clone(),
+        ssh_known_hosts: cli.ssh_known_hosts.clone(),
         auth_file: cli.auth_file.clone(),
         pack_size_mib,
         key: cli.key.clone(),
@@ -691,7 +700,7 @@ pub async fn parse_and_run() -> i32 {
         tracing::error!(target: "mapache", "return exit code {}: {}", exit_code, e);
 
         if !json_enabled {
-            ui::cli::error!("{}", e);
+            ui::cli::error!("{:#}", e);
         } else {
             #[derive(Serialize)]
             struct ErrorMessage<'a> {
@@ -720,6 +729,7 @@ impl GlobalArgs {
             repo: String::new(),
             no_cache: false,
             ssh_privatekey: None,
+            ssh_known_hosts: None,
             auth_file: None,
             pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             key: None,
@@ -738,6 +748,7 @@ impl GlobalArgs {
             repo: String::new(),
             no_cache: false,
             ssh_privatekey: None,
+            ssh_known_hosts: None,
             auth_file: None,
             pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             key: None,
@@ -756,6 +767,7 @@ impl GlobalArgs {
             repo: String::new(),
             no_cache: false,
             ssh_privatekey: None,
+            ssh_known_hosts: None,
             auth_file: None,
             pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             key: None,

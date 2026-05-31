@@ -213,6 +213,7 @@ pub trait StorageBackend: Send + Sync {
 pub struct BackendOptions {
     pub repo_path: String,
     pub ssh_privatekey: Option<PathBuf>,
+    pub ssh_known_hosts: Option<PathBuf>,
     /// If true, wraps the chosen backend in a `DryBackend` to prevent actual writes.
     pub dry_backend: bool,
     pub limit_upload: Option<u64>,

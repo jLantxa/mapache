@@ -205,7 +205,7 @@ macro_rules! log_always {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
-        eprintln!("{}: {}", "Error".red().bold(), format_args!($($arg)*))
+        eprintln!("{}: {:#}", "Error".red().bold(), format_args!($($arg)*))
     };
 }
 

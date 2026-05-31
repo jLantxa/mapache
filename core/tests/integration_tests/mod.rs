@@ -96,6 +96,7 @@ impl TestContext {
             json: false,
             verbosity: Some(3),
             ssh_privatekey: None,
+            ssh_known_hosts: None,
             pack_size_mib: DEFAULT_PACK_SIZE_MIB,
             no_cache: true,
             retry_lock_duration: None,
@@ -779,6 +780,7 @@ impl SyncBuilder {
                 target,
                 delete: false,
                 dst_ssh_privatekey: None,
+                dst_ssh_known_hosts: None,
                 dry_run: false,
             },
         }

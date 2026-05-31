@@ -53,6 +53,10 @@ pub struct CmdArgs {
     #[clap(long = "dst-ssh-privatekey", value_parser)]
     pub dst_ssh_privatekey: Option<PathBuf>,
 
+    /// SSH known_hosts file
+    #[clap(long = "dst-ssh-known-hosts", value_parser)]
+    pub dst_ssh_known_hosts: Option<PathBuf>,
+
     /// Dry run
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
@@ -96,6 +100,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.target.clone(),
         ssh_privatekey: args.dst_ssh_privatekey.clone(),
+        ssh_known_hosts: args.dst_ssh_known_hosts.clone(),
         dry_backend: args.dry_run,
         limit_upload: global_args.limit_upload,
         limit_download: global_args.limit_download,

@@ -73,16 +73,140 @@ pub enum AuthMethod {
 }
 
 #[derive(Clone)]
-struct MapacheSftpHandler;
+struct MapacheSftpHandler {
+    host: String,
+    port: u16,
+    known_hosts_path: Option<PathBuf>,
+}
 
 impl client::Handler for MapacheSftpHandler {
     type Error = anyhow::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        const SSH_KNOWN_HOSTS_PATH: &str = ".ssh/known_hosts";
+
+        let known_hosts_path = if let Some(ref path) = self.known_hosts_path {
+            path.clone()
+        } else {
+            // Logic for default known_hosts path
+            let mut path = None;
+            if let Ok(home) = std::env::var("HOME") {
+                path = Some(PathBuf::from(home).join(SSH_KNOWN_HOSTS_PATH));
+            } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
+                path = Some(PathBuf::from(user_profile).join(SSH_KNOWN_HOSTS_PATH));
+            }
+
+            // If the directory exists but the file doesn't, we can create it later
+            path.unwrap_or_else(|| PathBuf::from(SSH_KNOWN_HOSTS_PATH))
+        };
+
+        let content = if known_hosts_path.exists() {
+            std::fs::read_to_string(&known_hosts_path)?
+        } else {
+            String::new()
+        };
+
+        let mut found_host = false;
+        let host_port = if self.port == 22 {
+            self.host.clone()
+        } else {
+            format!("[{}]:{}", self.host, self.port)
+        };
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 3 {
+                continue;
+            }
+
+            let hosts = parts[0];
+            let host_match = hosts.split(',').any(|h| h == self.host || h == host_port);
+
+            if host_match {
+                found_host = true;
+                let key_type = parts[1];
+                let key_base64 = parts[2];
+
+                if let Ok(key_bytes) = crate::utils::base64::decode(key_base64)
+                    && server_public_key.algorithm().as_str() == key_type
+                    && server_public_key.to_bytes().as_deref() == Ok(&key_bytes[..])
+                {
+                    return Ok(true);
+                }
+            }
+        }
+
+        if found_host {
+            bail!(
+                "Security Alert: Remote host identification has changed for '{}'.\n\
+                 This could indicate a man-in-the-middle attack or a legitimate host key rotation.\n\
+                 The host key fingerprint received was {}.\n\
+                 Please verify the server's key or update your known_hosts file at {:?}.",
+                self.host,
+                crate::utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default()),
+                known_hosts_path
+            );
+        }
+
+        // Host not found in known_hosts. Prompt the user.
+        let fingerprint =
+            crate::utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default());
+        println!(
+            "The authenticity of host '{}' can't be established.",
+            host_port
+        );
+        println!(
+            "{} key fingerprint is {}.",
+            server_public_key.algorithm().as_str(),
+            fingerprint
+        );
+
+        let prompt = "Are you sure you want to continue connecting (yes/no/[fingerprint])?";
+        let input = ui::cli::request_input(prompt)?
+            .unwrap_or_default()
+            .to_lowercase();
+
+        if input == "yes" || input == fingerprint.to_lowercase() {
+            // Save to known_hosts
+            println!(
+                "Warning: Permanently added '{}' ({}) to the list of known hosts.",
+                self.host,
+                server_public_key.algorithm().as_str()
+            );
+
+            if let Some(parent) = known_hosts_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&known_hosts_path)?;
+
+            use std::io::Write;
+            let key_base64 = crate::utils::base64::encode(
+                &server_public_key.to_bytes().map_err(|e| anyhow!(e))?,
+            );
+            writeln!(
+                file,
+                "{} {} {}",
+                host_port,
+                server_public_key.algorithm().as_str(),
+                key_base64
+            )?;
+
+            Ok(true)
+        } else {
+            bail!("Host key verification failed.");
+        }
     }
 }
 
@@ -98,6 +222,7 @@ impl SftpConnection {
         username: &str,
         host: &str,
         port: u16,
+        known_hosts: Option<PathBuf>,
         auth_method: &AuthMethod,
     ) -> Result<Self> {
         let config = Arc::new(client::Config {
@@ -105,16 +230,21 @@ impl SftpConnection {
             ..Default::default()
         });
 
-        let mut session = client::connect(config, (host, port), MapacheSftpHandler)
+        let handler = MapacheSftpHandler {
+            host: host.to_string(),
+            port,
+            known_hosts_path: known_hosts,
+        };
+
+        let mut session = client::connect(config, (host, port), handler)
             .await
             .context("Failed to connect to SFTP server")?;
 
         let auth_res = match auth_method {
-            AuthMethod::Password(password) => {
-                session
-                    .authenticate_password(username, password.as_str())
-                    .await?
-            }
+            AuthMethod::Password(password) => session
+                .authenticate_password(username, password.as_str())
+                .await
+                .context("SSH password authentication failed")?,
             AuthMethod::PubKey {
                 private_key,
                 passphrase,
@@ -122,14 +252,16 @@ impl SftpConnection {
                 let key = load_secret_key(private_key, passphrase.as_ref().map(|p| p.as_str()))
                     .context("Failed to load private key")?;
                 let pk = PrivateKeyWithHashAlg::new(Arc::new(key), None);
-                session.authenticate_publickey(username, pk).await?
+                session
+                    .authenticate_publickey(username, pk)
+                    .await
+                    .context("SSH public key authentication failed")?
             }
         };
 
         if !auth_res.success() {
-            return Err(anyhow!(SftpError::AuthenticationFailed(
-                username.to_string()
-            )));
+            let user = username.to_string();
+            return Err(anyhow!(SftpError::AuthenticationFailed(user)));
         }
 
         let channel = session
@@ -177,6 +309,7 @@ pub struct SftpConnectionManager {
     username: String,
     host: String,
     port: u16,
+    known_hosts: Option<PathBuf>,
     auth_method: AuthMethod,
 }
 
@@ -186,6 +319,7 @@ impl SftpConnectionManager {
         username: String,
         host: String,
         port: u16,
+        known_hosts: Option<PathBuf>,
         auth_method: AuthMethod,
     ) -> Result<Self> {
         let mut connections = Vec::new();
@@ -194,7 +328,7 @@ impl SftpConnectionManager {
         // This prevents multiple failed authentication attempts if the password is wrong.
         let first_conn = timeout(
             CONNECTION_TIMEOUT,
-            SftpConnection::new(&username, &host, port, &auth_method),
+            SftpConnection::new(&username, &host, port, known_hosts.clone(), &auth_method),
         )
         .await
         .context("Timeout establishing initial SFTP connection")?
@@ -206,13 +340,19 @@ impl SftpConnectionManager {
         if capacity > 1 {
             let mut join_handles = Vec::new();
             let auth_method_arc = Arc::new(auth_method.clone());
+            let known_hosts_arc = Arc::new(known_hosts.clone());
 
             for _ in 1..capacity {
                 let u = username.clone();
                 let h = host.clone();
                 let am = auth_method_arc.clone();
+                let kh = known_hosts_arc.clone();
                 join_handles.push(tokio::spawn(async move {
-                    timeout(CONNECTION_TIMEOUT, SftpConnection::new(&u, &h, port, &am)).await
+                    timeout(
+                        CONNECTION_TIMEOUT,
+                        SftpConnection::new(&u, &h, port, (*kh).clone(), &am),
+                    )
+                    .await
                 }));
             }
 
@@ -241,6 +381,7 @@ impl SftpConnectionManager {
             username,
             host,
             port,
+            known_hosts,
             auth_method,
         })
     }
@@ -256,7 +397,13 @@ impl SftpConnectionManager {
             // Reconnect
             let conn = timeout(
                 CONNECTION_TIMEOUT,
-                SftpConnection::new(&self.username, &self.host, self.port, &self.auth_method),
+                SftpConnection::new(
+                    &self.username,
+                    &self.host,
+                    self.port,
+                    self.known_hosts.clone(),
+                    &self.auth_method,
+                ),
             )
             .await
             .context("Timeout re-establishing SFTP connection")?
@@ -287,8 +434,15 @@ impl SftpBackend {
         opts: &crate::backend::BackendOptions,
     ) -> Result<Self> {
         let manager = Arc::new(
-            SftpConnectionManager::new(MAX_SFTP_CONNECTIONS, username, host, port, auth_method)
-                .await?,
+            SftpConnectionManager::new(
+                MAX_SFTP_CONNECTIONS,
+                username,
+                host,
+                port,
+                opts.ssh_known_hosts.clone(),
+                auth_method,
+            )
+            .await?,
         );
 
         let retry_opts = RetryOptions {

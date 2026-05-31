@@ -38,9 +38,9 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false))
         .await
         .map_err(|e| {
-            tracing::error!(target: "init", "Backend initialization failed: {e}");
+            tracing::error!(target: "init", "Backend initialization failed: {:#}", e);
             fail(
-                format!("Failed to initialize backend: {}", e),
+                format!("Failed to initialize backend: {:#}", e),
                 InitError::BackendError,
             )
         })?;

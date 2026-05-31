@@ -1,6 +1,38 @@
 # Changelog
 
+## v0.4.2
+
+### Security
+
+- **Strict SSH Verification**: Implemented strict host key verification for the
+  SFTP backend. The system now verifies server keys against `known_hosts` and
+  prompts for confirmation on unknown hosts, preventing MITM attacks.
+  Added support for default `known_hosts` locations on Unix and Windows.
+- **Memory Safety**: Eliminated technical Undefined Behavior (UB) in
+  `SecureStorage` compression by refactoring uninitialized buffer management.
+  Maintained performance by avoiding zero-initialization while ensuring
+  Rust's safety guarantees.
+
+### Fixes
+
+- **SFTP Backend**: Improved error reporting in the SFTP backend to show the full
+  cause chain, making it easier to diagnose authentication and connection
+  failures. Fixed a bug where some authentication errors were partially swallowed.
+- **S3 Backend**: Fixed a bug where paths in the S3 backend were incorrectly
+  joined, potentially bypassing the prefix configuration.
+
 ## v0.4.1
+
+### Security
+
+- **Strict SSH Verification**: Implemented strict host key verification for the
+  SFTP backend. The system now verifies server keys against `known_hosts` and
+  prompts for confirmation on unknown hosts, preventing MITM attacks.
+  Added support for default `known_hosts` locations on Unix and Windows.
+- **Memory Safety**: Eliminated technical Undefined Behavior (UB) in
+  `SecureStorage` compression by refactoring uninitialized buffer management.
+  Maintained performance by avoiding zero-initialization while ensuring
+  Rust's safety guarantees.
 
 ### Fixes
 
@@ -12,6 +44,9 @@
 - **Progress Bar**: Fixed progress bar never reaching 100% when restoring with
   `--strategy newer` or `--strategy skip`. Skipped bytes are now correctly
   reported as processed.
+- **SFTP Backend**: Improved error reporting in the SFTP backend to show the full
+  cause chain, making it easier to diagnose authentication and connection
+  failures. Fixed a bug where some authentication errors were partially swallowed.
 
 ### Changes
 

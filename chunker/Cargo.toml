@@ -1,6 +1,6 @@
 [package]
 name = "chunker"
-version = "0.2.3"
+version = "0.2.4"
 publish = false
 edition = "2024"
 description = "FastCDC (Fast Content-Defined Chunking) implementation"

@@ -2136,6 +2136,7 @@ dependencies = [
  "indicatif",
  "libc",
  "parking_lot",
+ "percent-encoding",
  "rand 0.10.1",
  "ratatui",
  "rayon",

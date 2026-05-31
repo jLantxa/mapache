@@ -199,7 +199,7 @@ impl Form {
             };
 
             let mut spans = vec![
-                Span::styled(m, theme::THEME.style_snapshot_date),
+                Span::styled(m, theme::THEME.snapshot_date),
                 Span::styled(
                     format!("{:<width$}", field.label, width = self.label_width),
                     label_style,
@@ -255,7 +255,7 @@ impl Form {
                     };
                     // Clear the previous spans for Action buttons to center them or just style them differently
                     spans = vec![
-                        Span::styled(m, theme::THEME.style_snapshot_date),
+                        Span::styled(m, theme::THEME.snapshot_date),
                         Span::styled(label, style),
                     ];
                 }

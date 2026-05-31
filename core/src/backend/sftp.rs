@@ -156,18 +156,13 @@ impl SftpConnection {
     }
 }
 
-#[allow(dead_code)]
 trait FileAttributesExt {
     fn is_file(&self) -> bool;
-    fn is_dir(&self) -> bool;
 }
 
 impl FileAttributesExt for FileAttributes {
     fn is_file(&self) -> bool {
         self.permissions.is_some_and(|p| (p & 0o170000) == 0o100000)
-    }
-    fn is_dir(&self) -> bool {
-        self.permissions.is_some_and(|p| (p & 0o170000) == 0o040000)
     }
 }
 

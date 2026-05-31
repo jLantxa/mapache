@@ -130,7 +130,6 @@ pub struct Metadata {
 /// By talking directly to the kernel, we can reliably retrieve the birth time (creation time)
 /// of files, which is otherwise unavailable in such environments.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 mod linux_statx {
     pub const STATX_TYPE: u32 = 0x0001;
     pub const STATX_MODE: u32 = 0x0002;
@@ -139,12 +138,8 @@ mod linux_statx {
     pub const STATX_GID: u32 = 0x0010;
     pub const STATX_ATIME: u32 = 0x0020;
     pub const STATX_MTIME: u32 = 0x0040;
-    pub const STATX_CTIME: u32 = 0x0080;
     pub const STATX_INO: u32 = 0x0100;
     pub const STATX_SIZE: u32 = 0x0200;
-    pub const STATX_BLOCKS: u32 = 0x0400;
-    /// Mask for all "basic" stats available in a standard stat call.
-    pub const STATX_BASIC_STATS: u32 = 0x07ff;
     /// Mask for the file birth time (creation time).
     pub const STATX_BTIME: u32 = 0x0800;
 

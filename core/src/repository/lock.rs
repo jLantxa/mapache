@@ -138,6 +138,7 @@ impl Lock {
     }
 
     /// Checks if the lock is expired based on the refresh timestamp.
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         let now = Local::now();
         // LOCK_EXPIRE_TIMEOUT is a compile-time constant, so from_std cannot fail.
@@ -149,6 +150,7 @@ impl Lock {
     /// Checks if the process that acquired the lock is still alive.
     ///
     /// This only works if the lock was acquired on the same host.
+    #[must_use]
     pub fn process_alive(&self) -> bool {
         let (current_hostname, _) = utils::get_system_info();
         if self.hostname.is_empty()
@@ -192,6 +194,7 @@ impl Lock {
     }
 
     /// A lock is considered stale if it's expired OR if we can prove the process is dead.
+    #[must_use]
     pub fn is_stale(&self) -> bool {
         self.is_expired() || !self.process_alive()
     }

@@ -95,7 +95,7 @@ impl SnapshotDetailScreen {
             Span::styled("Date:        ", Style::default().bold()),
             Span::raw(ts.to_string()),
             Span::raw("  ("),
-            Span::styled(format!("{} ago", ago), theme::THEME.style_snapshot_date),
+            Span::styled(format!("{} ago", ago), theme::THEME.snapshot_date),
             Span::raw(")"),
         ]));
 

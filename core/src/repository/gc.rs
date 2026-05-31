@@ -451,7 +451,10 @@ async fn get_referenced_blobs_and_packs(
                             {
                                 let mut blobs = referenced_blobs.lock();
                                 if blobs.insert(tree_id) {
-                                    reporter.update_task(ui::GcTask::SearchingReferencedBlobs, blobs.len() as u64);
+                                    reporter.update_task(
+                                        ui::GcTask::SearchingReferencedBlobs,
+                                        blobs.len() as u64,
+                                    );
                                 }
                             }
 
@@ -479,34 +482,39 @@ async fn get_referenced_blobs_and_packs(
                         .buffer_unordered(8);
 
                     while let Some(tree_res) = fetch_stream.next().await {
-                        let maybe_tree = tree_res?;
-                        if let Some(tree) = maybe_tree {
-                            for node in tree.nodes {
-                                if let Some(subtree_id) = node.tree {
-                                    stack.push(subtree_id);
+                        let tree = match tree_res? {
+                            Some(t) => t,
+                            None => continue,
+                        };
+
+                        for node in tree.nodes {
+                            if let Some(subtree_id) = node.tree {
+                                stack.push(subtree_id);
+                            }
+
+                            let blobs = match node.blobs {
+                                Some(b) => b,
+                                None => continue,
+                            };
+
+                            let mut ref_blobs = referenced_blobs.lock();
+                            let mut ref_packs = referenced_packs.lock();
+
+                            for blob_id in blobs {
+                                if ref_blobs.insert(blob_id) {
+                                    reporter.update_task(
+                                        ui::GcTask::SearchingReferencedBlobs,
+                                        ref_blobs.len() as u64,
+                                    );
                                 }
 
-                                if let Some(blobs) = node.blobs {
-                                    let mut ref_blobs = referenced_blobs.lock();
-                                    let mut ref_packs = referenced_packs.lock();
-
-                                    for blob_id in blobs {
-                                        if ref_blobs.insert(blob_id) {
-                                            reporter.update_task(ui::GcTask::SearchingReferencedBlobs, ref_blobs.len() as u64);
-                                        }
-
-                                        match index.get(&blob_id) {
-                                            Some(locator) => {
-                                                ref_packs.insert(locator.pack_id);
-                                            }
-                                            None => {
-                                                reporter.warning(format!(
-                                                    "Data blob {} is referenced but not found in index",
-                                                    blob_id
-                                                ));
-                                            }
-                                        }
-                                    }
+                                if let Some(locator) = index.get(&blob_id) {
+                                    ref_packs.insert(locator.pack_id);
+                                } else {
+                                    reporter.warning(format!(
+                                        "Data blob {} is referenced but not found in index",
+                                        blob_id
+                                    ));
                                 }
                             }
                         }

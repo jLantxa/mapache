@@ -297,18 +297,13 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
 
             let to_read = needed.min(self.buffer.capacity() - cur_len);
 
-            // SAFETY: set_len marks the reserve capacity as initialized; u8 accepts garbage.
-            // On error we restore len to cur_len so the buffer remains coherent.
-            unsafe {
-                self.buffer.set_len(cur_len + to_read);
-            }
-            let buf = &mut self.buffer[cur_len..];
+            // Create a mutable slice of the spare capacity to read into
+            let buf = unsafe {
+                std::slice::from_raw_parts_mut(self.buffer.as_mut_ptr().add(cur_len), to_read)
+            };
 
             match self.source.read(buf) {
                 Ok(0) => {
-                    unsafe {
-                        self.buffer.set_len(cur_len);
-                    }
                     eof = true;
                     break;
                 }
@@ -316,15 +311,9 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                     self.buffer.set_len(cur_len + n);
                 },
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    unsafe {
-                        self.buffer.set_len(cur_len);
-                    }
                     continue;
                 }
                 Err(e) => {
-                    unsafe {
-                        self.buffer.set_len(cur_len);
-                    }
                     return Some(Err(anyhow!("Read error: {e}")));
                 }
             }

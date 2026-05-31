@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -270,7 +270,7 @@ pub async fn run_with_repo(
             .template(
                 "[{custom_elapsed}] [{bar:25.cyan/white}] [ETA: {custom_eta}] {pos}/{len} packs ({msg})",
             )
-            .unwrap()
+            .expect("invalid progress bar template for verify pack integrity")
             .progress_chars("=> ")
             .with_key(
                 "custom_elapsed",
@@ -633,36 +633,26 @@ pub async fn run_with_repo(
                         let (path, sn_node_res) = res?;
                         let sn_node = sn_node_res?;
                         let node = sn_node.node;
-                        if let Some(blobs) = node.blobs {
-                            let corrupt_ids = corrupt_blobs.lock();
-                            for blob_id in blobs {
-                                if corrupt_ids.contains(&blob_id) {
-                                    ui::cli::error!(
-                                        "Corrupt blob {} affects file \"{}\" in snapshot {}",
-                                        blob_id.to_short_hex(8).red(),
-                                        path.display().to_string().bold(),
-                                        snapshot_id.to_short_hex(12).yellow()
-                                    );
+                        let blobs = match node.blobs {
+                            Some(b) => b,
+                            None => continue,
+                        };
 
-                                    if json_out {
-                                        #[derive(Serialize)]
-                                        struct VerifyErrorMsg {
-                                            blob_id: String,
-                                            path: String,
-                                            snapshot: String,
-                                            error: String,
-                                        }
-                                        ui::json::emit_static(
-                                            "verify_error",
-                                            &VerifyErrorMsg {
-                                                blob_id: blob_id.to_short_hex(8),
-                                                path: path.display().to_string(),
-                                                snapshot: snapshot_id.to_short_hex(12),
-                                                error: "Corrupt blob affects this file".to_string(),
-                                            },
-                                        );
-                                    }
-                                }
+                        let corrupt_ids = corrupt_blobs.lock();
+                        for blob_id in blobs {
+                            if !corrupt_ids.contains(&blob_id) {
+                                continue;
+                            }
+
+                            ui::cli::error!(
+                                "Corrupt blob {} affects file \"{}\" in snapshot {}",
+                                blob_id.to_short_hex(8).red(),
+                                path.display().to_string().bold(),
+                                snapshot_id.to_short_hex(12).yellow()
+                            );
+
+                            if json_out {
+                                emit_blob_corruption_json(&blob_id, &path, &snapshot_id);
                             }
                         }
                     }
@@ -784,4 +774,24 @@ pub async fn run_with_repo(
     tracing::info!(target: "verify", "Verify command completed successfully in {:?}", start.elapsed());
 
     Ok(())
+}
+
+fn emit_blob_corruption_json(blob_id: &ID, path: &Path, snapshot_id: &ID) {
+    #[derive(Serialize)]
+    struct VerifyErrorMsg {
+        blob_id: String,
+        path: String,
+        snapshot: String,
+        error: String,
+    }
+
+    ui::json::emit_static(
+        "verify_error",
+        &VerifyErrorMsg {
+            blob_id: blob_id.to_short_hex(8),
+            path: path.display().to_string(),
+            snapshot: snapshot_id.to_short_hex(12),
+            error: "Corrupt blob affects this file".to_string(),
+        },
+    );
 }

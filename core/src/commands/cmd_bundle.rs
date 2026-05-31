@@ -559,7 +559,7 @@ async fn run_mount(_args: &CmdArgs) -> Result<()> {
 }
 
 #[cfg(all(feature = "fuse", unix))]
-async fn run_mount_loop<F>(
+pub(crate) async fn run_mount_loop<F>(
     mountpoint: &std::path::Path,
     cleanup_handler: CleanupHandler,
     mount_fn: F,
@@ -588,9 +588,11 @@ where
             }
         } => {
             cli::log!("Interrupt received. Unmounting...");
+            tracing::info!(target: "mount", "Interrupt received. Unmounting {:?}", mountpoint);
             let _ = MapacheFS::<dyn BlobLoader>::unmount(mountpoint);
         }
     }
+    tracing::info!(target: "mount", "Mount loop finished");
     Ok(())
 }
 
@@ -744,74 +746,88 @@ where
                 async move {
                     reporter.processing_node(&path, NodeDiff::New, Some(node.metadata.size));
 
-                    if node.is_file() {
-                        if let Some(blobs) = &node.blobs {
-                            let file_res = std::fs::File::create(&path);
-                            if let Ok(mut file) = file_res {
-                                let mut success = true;
-                                for blob_id in blobs {
-                                    match loader.load_blob(blob_id).await {
-                                        Ok(data) => {
-                                            use std::io::Write;
-                                            let data_len = data.len() as u64;
-                                            if let Err(e) = file.write_all(&data) {
-                                                reporter.error(&format!(
-                                                    "Failed to write to {}: {}",
-                                                    path.display(),
-                                                    e
-                                                ));
-                                                success = false;
-                                                break;
-                                            }
-                                            reporter.processed_bytes(data_len);
-                                        }
-                                        Err(e) => {
-                                            reporter.error(&format!(
-                                                "Failed to load blob {} for {}: {}",
-                                                blob_id,
-                                                path.display(),
-                                                e
-                                            ));
-                                            success = false;
-                                            break;
-                                        }
-                                    }
-                                }
-                                drop(file);
-                                if success {
+                    if !node.is_file() {
+                        if node.is_symlink()
+                            && let Some(symlink_info) = &node.symlink_info
+                        {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::symlink;
+                                if symlink(&symlink_info.target_path, &path).is_ok() {
                                     node_restorer::try_restore_node_metadata(
                                         &node.metadata,
-                                        false,
+                                        true,
                                         &path,
                                         meta_reporter.as_ref(),
                                     );
                                 }
-                            } else if let Err(e) = file_res {
+                            }
+
+                            #[cfg(not(unix))]
+                            let _ = symlink_info;
+                        }
+                        reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                        return;
+                    }
+
+                    let blobs = match &node.blobs {
+                        Some(b) => b,
+                        None => {
+                            reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                            return;
+                        }
+                    };
+
+                    let mut file = match std::fs::File::create(&path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            reporter.error(&format!(
+                                "Failed to create file {}: {}",
+                                path.display(),
+                                e
+                            ));
+                            reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                            return;
+                        }
+                    };
+
+                    let mut success = true;
+                    for blob_id in blobs {
+                        let data = match loader.load_blob(blob_id).await {
+                            Ok(d) => d,
+                            Err(e) => {
                                 reporter.error(&format!(
-                                    "Failed to create file {}: {}",
+                                    "Failed to load blob {} for {}: {}",
+                                    blob_id,
                                     path.display(),
                                     e
                                 ));
+                                success = false;
+                                break;
                             }
-                        }
-                    } else if node.is_symlink()
-                        && let Some(symlink_info) = &node.symlink_info
-                    {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::symlink;
-                            if symlink(&symlink_info.target_path, &path).is_ok() {
-                                node_restorer::try_restore_node_metadata(
-                                    &node.metadata,
-                                    true,
-                                    &path,
-                                    meta_reporter.as_ref(),
-                                );
-                            }
-                        }
+                        };
 
-                        #[cfg(not(unix))]
-                        let _ = symlink_info;
+                        use std::io::Write;
+                        if let Err(e) = file.write_all(&data) {
+                            reporter.error(&format!(
+                                "Failed to write to {}: {}",
+                                path.display(),
+                                e
+                            ));
+                            success = false;
+                            break;
+                        }
+                        reporter.processed_bytes(data.len() as u64);
+                    }
+
+                    drop(file);
+                    if success {
+                        node_restorer::try_restore_node_metadata(
+                            &node.metadata,
+                            false,
+                            &path,
+                            meta_reporter.as_ref(),
+                        );
                     }
 
                     reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));

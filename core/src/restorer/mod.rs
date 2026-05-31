@@ -432,11 +432,32 @@ impl Restorer {
             for (sec_idx, prim_idx) in &plan.hardlinks {
                 let primary_path = &plan.files[*prim_idx].path;
                 let secondary_path = &plan.files[*sec_idx].path;
-                if let Some(parent) = secondary_path.parent() {
-                    let _ = fs::create_dir_all(parent);
+                if let Some(parent) = secondary_path.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    let err_msg = format!(
+                        "Failed to create parent directory for hardlink {}: {}",
+                        secondary_path.display(),
+                        e
+                    );
+                    if self.opts.quit_on_error {
+                        bail!(err_msg);
+                    }
+                    self.progress_reporter.error(&err_msg);
                 }
-                // Remove destination if it already exists (e.g. from a previous restore)
-                let _ = fs::remove_file(secondary_path);
+                if let Err(e) = fs::remove_file(secondary_path)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    let err_msg = format!(
+                        "Failed to remove existing file for hardlink {}: {}",
+                        secondary_path.display(),
+                        e
+                    );
+                    if self.opts.quit_on_error {
+                        bail!(err_msg);
+                    }
+                    self.progress_reporter.error(&err_msg);
+                }
                 if let Err(e) = fs::hard_link(primary_path, secondary_path) {
                     let err_msg = format!(
                         "Failed to create hardlink {} -> {}: {}",
@@ -647,12 +668,15 @@ impl Restorer {
                             total_bytes.fetch_add(node.metadata.size, Ordering::Relaxed);
                             if !self.opts.dry_run
                                 && let Some(parent) = restore_path.parent()
-                            {
-                                let _ = fs::create_dir_all(parent);
+                                && let Err(e) = fs::create_dir_all(parent) {
+                                    progress_reporter.error(&format!(
+                                        "Failed to create parent directory for secondary hardlink {}: {}",
+                                        restore_path.display(),
+                                        e
+                                    ));
                             }
                         } else {
-                            let num_blobs = file_blobs.len() as u32;
-                            // Primary hardlink or non-hardlink: register blobs and create file
+                            let num_blobs = file_blobs.len().min(u32::MAX as usize) as u32;
                             for (blob_id, locator, offset_in_file) in file_blobs {
                                 packs.entry(locator.pack_id).or_default().push((
                                     blob_id,
@@ -666,47 +690,57 @@ impl Restorer {
                                 ));
                             }
 
-                            if !self.opts.dry_run {
-                                if let Some(parent) = restore_path.parent() {
-                                    let _ = fs::create_dir_all(parent);
-                                }
+                            if self.opts.dry_run {
+                                return;
+                            }
 
-                                // If the file exists, it might be a symlink or read-only.
-                                // We must NOT follow symlinks when restoring to prevent overwriting
-                                // files outside the target directory.
-                                if let Ok(m) = fs::symlink_metadata(&restore_path) {
-                                    if m.file_type().is_symlink() {
-                                        let _ = fs::remove_file(&restore_path);
-                                    } else {
-                                        let _ = self.clear_readonly_attribute(&restore_path);
-                                    }
-                                }
+                            if let Some(parent) = restore_path.parent()
+                                && let Err(e) = fs::create_dir_all(parent)
+                            {
+                                progress_reporter.error(&format!(
+                                    "Failed to create parent directory for {}: {}",
+                                    restore_path.display(), e
+                                ));
+                            }
 
-                                match OpenOptions::new()
-                                    .create(true)
-                                    .write(true)
-                                    .truncate(true)
-                                    .open(&restore_path)
-                                {
-                                    Ok(mut file) => {
-                                        if self.opts.preallocate {
-                                            let _ = self
-                                                .preallocate_file(&mut file, node.metadata.size);
-                                        } else {
-                                            let _ = file.set_len(node.metadata.size);
-                                        }
-
-                                        files.lock()[file_idx].num_blobs = num_blobs;
-                                    }
-                                    Err(e) => {
+                            if let Ok(m) = fs::symlink_metadata(&restore_path) {
+                                if m.file_type().is_symlink() {
+                                    if let Err(e) = fs::remove_file(&restore_path) {
                                         progress_reporter.error(&format!(
-                                            "Failed to create file {}: {}",
-                                            restore_path.display(),
-                                            e
+                                            "Failed to remove symlink {}: {}",
+                                            restore_path.display(), e
                                         ));
                                     }
+                                } else if let Err(e) = self.clear_readonly_attribute(&restore_path) {
+                                    progress_reporter.error(&format!(
+                                        "Failed to clear readonly attribute on {}: {}",
+                                        restore_path.display(), e
+                                    ));
                                 }
                             }
+
+                            let mut file = match OpenOptions::new()
+                                .create(true).write(true).truncate(true)
+                                .open(&restore_path)
+                            {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    progress_reporter.error(&format!(
+                                        "Failed to create file {}: {}", restore_path.display(), e
+                                    ));
+                                    return;
+                                }
+                            };
+
+                            if self.opts.preallocate {
+                                if let Err(e) = self.preallocate_file(&mut file, node.metadata.size) {
+                                    tracing::warn!(target: "restorer", "Failed to preallocate file {}: {e}", restore_path.display());
+                                }
+                            } else if let Err(e) = file.set_len(node.metadata.size) {
+                                tracing::warn!(target: "restorer", "Failed to set file length for {}: {e}", restore_path.display());
+                            }
+
+                            files.lock()[file_idx].num_blobs = num_blobs;
                         }
                     } else if node.is_symlink() {
                         files.lock().push(FileRestorePlan {
@@ -1158,7 +1192,7 @@ impl Restorer {
 
         let mut batch_stream = futures::stream::iter(batches)
             .map(|(file_idx, writes)| {
-                let num_blobs = writes.len() as u32;
+                let num_blobs = writes.len().min(u32::MAX as usize) as u32;
                 let total_bytes: u64 = writes.iter().map(|(d, _)| d.len() as u64).sum();
                 let file_path = files[file_idx].path.clone();
                 let handle_cache = handle_cache.clone();

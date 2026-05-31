@@ -53,7 +53,7 @@ impl BundleCliProgressReporter {
         data_bar.set_style(
             ProgressStyle::default_bar()
                 .template(&format!("{bytes_label:<6} [{{bar:20.cyan/white}}] [{{percent}}%] {{processed_bytes_fmt}} [{{bytes_per_sec}}]"))
-                .unwrap()
+                .expect("invalid progress bar template for bundle bytes")
                 .progress_chars("=> ")
                 .with_key("processed_bytes_fmt", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                     let bytes = state.pos();
@@ -73,7 +73,7 @@ impl BundleCliProgressReporter {
         items_bar.set_style(
             ProgressStyle::default_bar()
                 .template(&format!("{items_label:<6} {{pos}} / {{len}}"))
-                .unwrap()
+                .expect("invalid progress bar template for bundle items")
                 .tick_chars(SPINNER_TICK_CHARS)
                 .progress_chars("=> "),
         );
@@ -87,7 +87,7 @@ impl BundleCliProgressReporter {
 
             let file_style = ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
-                .unwrap()
+                .expect("invalid progress bar template for bundle spinner")
                 .tick_chars(SPINNER_TICK_CHARS);
 
             loop {

@@ -131,9 +131,18 @@ impl Packer {
     }
 
     /// Appends a new blob's data to the packer.
-    pub fn add_blob(&mut self, id: ID, blob_type: BlobType, encoded_data: &[u8], raw_size: u64) {
-        let offset = self.buffer.len() as u32;
-        let length = encoded_data.len() as u32;
+    pub fn add_blob(
+        &mut self,
+        id: ID,
+        blob_type: BlobType,
+        encoded_data: &[u8],
+        raw_size: u64,
+    ) -> Result<()> {
+        let offset =
+            u32::try_from(self.buffer.len()).context("Pack buffer offset exceeds u32::MAX")?;
+        let length =
+            u32::try_from(encoded_data.len()).context("Blob encoded length exceeds u32::MAX")?;
+        let raw_length = u32::try_from(raw_size).context("Blob raw size exceeds u32::MAX")?;
 
         self.buffer.extend_from_slice(encoded_data);
 
@@ -142,12 +151,14 @@ impl Packer {
             blob_type,
             offset,
             length,
-            raw_length: raw_size as u32,
+            raw_length,
         });
 
         self.raw_size += raw_size;
 
         tracing::trace!(target: "packer", "Packer #{} added blob {} ({} -> {} bytes)", self.instance_id, id.to_short_hex(8), raw_size, length);
+
+        Ok(())
     }
     /// Performs the CPU-intensive work of finalizing the pack.
     ///
@@ -395,12 +406,16 @@ impl PackSaver {
                         let result = match packer.finalize_and_extract() {
                             Ok(Some(res)) => res,
                             Ok(None) => {
-                                let _ = tx.send(packer);
+                                if tx.send(packer).is_err() {
+                                    tracing::warn!(target: "packer", "Failed to return empty packer to pool (channel closed)");
+                                }
                                 continue;
                             }
                             Err(e) => {
                                 *err_ptr.lock() = Some(e);
-                                let _ = tx.send(packer); // Return packer to avoid leak
+                                if tx.send(packer).is_err() {
+                                    tracing::warn!(target: "packer", "Failed to return packer to pool after error (channel closed)");
+                                }
                                 return Ok(());
                             }
                         };
@@ -408,7 +423,9 @@ impl PackSaver {
                         let repo = match repo_ptr.upgrade() {
                             Some(r) => r,
                             None => {
-                                let _ = tx.send(packer); // Return packer to avoid leak
+                                if tx.send(packer).is_err() {
+                                    tracing::warn!(target: "packer", "Failed to return packer to pool (repo dropped, channel closed)");
+                                }
                                 return Ok(());
                             }
                         };
@@ -466,7 +483,9 @@ impl PackSaver {
                                 tracing::error!(target: "packer", "Worker failed to save pack {}: {e}", pack_id.to_short_hex(8));
                                 *err_ptr.lock() = Some(e);
                                 packer.recycle_buffer(pack_data);
-                                let _ = tx.send(packer); // Return packer to avoid leak
+                                if tx.send(packer).is_err() {
+                                    tracing::warn!(target: "packer", "Failed to return packer to pool after upload error (channel closed)");
+                                }
                                 return Ok(());
                             }
                         };
@@ -534,7 +553,7 @@ impl PackSaver {
                         _ => continue,
                     };
 
-                    packer.add_blob(id, blob_type, &data, raw_length);
+                    packer.add_blob(id, blob_type, &data, raw_length)?;
 
                     if packer.size() >= self.max_packer_size {
                         self.dispatch_packer(blob_type)?;
@@ -654,7 +673,7 @@ mod tests {
             BlobType::Data,
             &encoded_data,
             raw_size,
-        );
+        )?;
         Ok(())
     }
 
@@ -718,7 +737,7 @@ mod tests {
             BlobType::Data,
             &encoded1,
             data1.len() as u64,
-        );
+        )?;
 
         assert_eq!(packer.size(), encoded1.len() as u64);
         assert_eq!(packer.num_objects(), 1);
@@ -730,7 +749,7 @@ mod tests {
             BlobType::Data,
             &encoded2,
             data2.len() as u64,
-        );
+        )?;
 
         assert_eq!(packer.size(), (encoded1.len() + encoded2.len()) as u64);
         assert_eq!(packer.num_objects(), 2);

@@ -8,18 +8,16 @@ use ratatui::{
     widgets::{Block, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-#[allow(dead_code)]
 pub(crate) struct Theme {
-    pub header_fg: Color,
-    pub footer_fg: Color,
-    pub menu_key: Color,
-    pub snapshot_id: Color,
-    pub snapshot_date: Color,
-    pub snapshot_host: Color,
-    pub snapshot_size: Color,
-    pub table_header: Color,
-    pub border_color: Color,
-    pub selected_row_bg: Color,
+    pub style_header: Style,
+    pub style_menu_key: Style,
+    pub style_selected_row: Style,
+    pub style_border: Style,
+    pub style_table_header: Style,
+    pub style_snapshot_id: Style,
+    pub style_snapshot_date: Style,
+    pub style_snapshot_host: Style,
+    pub style_snapshot_size: Style,
     pub progress_filled: Color,
     pub progress_empty: Color,
     pub toast_error: Color,
@@ -30,28 +28,12 @@ pub(crate) struct Theme {
     pub symlink_fg: Color,
     pub file_size_fg: Color,
     pub breadcrumb_fg: Color,
-    pub style_header: Style,
-    pub style_menu_key: Style,
-    pub style_selected_row: Style,
-    pub style_border: Style,
-    pub style_table_header: Style,
-    pub style_snapshot_id: Style,
-    pub style_snapshot_date: Style,
-    pub style_snapshot_host: Style,
-    pub style_snapshot_size: Style,
+    pub footer_fg: Color,
+    pub snapshot_date: Color,
 }
 
 const DARK_THEME: Theme = Theme {
-    header_fg: Color::Rgb(137, 180, 250),
     footer_fg: Color::Rgb(116, 120, 142),
-    menu_key: Color::Rgb(137, 180, 250),
-    snapshot_id: Color::Rgb(137, 180, 250),
-    snapshot_date: Color::Rgb(166, 227, 161),
-    snapshot_host: Color::Rgb(249, 226, 175),
-    snapshot_size: Color::Rgb(203, 166, 247),
-    table_header: Color::Rgb(205, 214, 244),
-    border_color: Color::Rgb(88, 91, 112),
-    selected_row_bg: Color::DarkGray,
     progress_filled: Color::Cyan,
     progress_empty: Color::DarkGray,
     toast_error: Color::Red,
@@ -62,6 +44,7 @@ const DARK_THEME: Theme = Theme {
     symlink_fg: Color::Magenta,
     file_size_fg: Color::DarkGray,
     breadcrumb_fg: Color::Yellow,
+    snapshot_date: Color::Rgb(166, 227, 161),
     style_header: Style::new()
         .fg(Color::Rgb(137, 180, 250))
         .add_modifier(Modifier::BOLD),
@@ -81,16 +64,7 @@ const DARK_THEME: Theme = Theme {
 };
 
 const LIGHT_THEME: Theme = Theme {
-    header_fg: Color::Rgb(0, 70, 180),
     footer_fg: Color::Rgb(60, 60, 60),
-    menu_key: Color::Rgb(0, 70, 180),
-    snapshot_id: Color::Rgb(0, 70, 180),
-    snapshot_date: Color::Rgb(0, 110, 0),
-    snapshot_host: Color::Rgb(170, 80, 0),
-    snapshot_size: Color::Rgb(100, 0, 160),
-    table_header: Color::Rgb(20, 20, 20),
-    border_color: Color::Rgb(80, 80, 80),
-    selected_row_bg: Color::Rgb(175, 180, 230),
     progress_filled: Color::Rgb(0, 90, 210),
     progress_empty: Color::Rgb(160, 160, 160),
     toast_error: Color::Rgb(200, 0, 0),
@@ -101,6 +75,7 @@ const LIGHT_THEME: Theme = Theme {
     symlink_fg: Color::Rgb(160, 0, 100),
     file_size_fg: Color::Rgb(80, 80, 80),
     breadcrumb_fg: Color::Rgb(0, 70, 180),
+    snapshot_date: Color::Rgb(0, 110, 0),
     style_header: Style::new()
         .fg(Color::Rgb(0, 70, 180))
         .add_modifier(Modifier::BOLD),

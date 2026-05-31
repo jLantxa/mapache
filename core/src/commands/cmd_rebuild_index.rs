@@ -70,7 +70,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .with_style(
                 ProgressStyle::default_bar()
                     .template("[{bar:20.cyan/white}] Scanning packs: {pos}/{len}")
-                    .unwrap()
+                    .expect("invalid progress bar template for rebuild scanning")
                     .progress_chars("=> "),
             );
 
@@ -109,7 +109,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             .with_style(
                 ProgressStyle::default_bar()
                     .template("[{bar:20.cyan/white}] Building index: {pos}/{len}")
-                    .unwrap()
+                    .expect("invalid progress bar template for rebuild building")
                     .progress_chars("=> "),
             );
 
@@ -168,7 +168,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     .template(
                         "[{percent} %] [{bar:20.cyan/white}] Deleting old index files: {pos}/{len}",
                     )
-                    .unwrap()
+                    .expect("invalid progress bar template for rebuild delete")
                     .progress_chars("=> "),
             );
 

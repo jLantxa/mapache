@@ -242,7 +242,7 @@ impl GlobRule {
         }
 
         let len_usize = tokens.len();
-        let len = len_usize as u8;
+        let len = len_usize.min(Self::MAX_TOKENS_U128) as u8;
 
         let mut ds_mask = 0u128;
         let accept = if len_usize <= Self::MAX_TOKENS_U128 {

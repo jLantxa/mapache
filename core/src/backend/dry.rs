@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents};
+use crate::backend::{Handle, StorageBackend, WriteContents};
 
 /// A dummy storage backend that sets itself before another backend, redirecting
 /// reads but ignoring writes.
@@ -19,6 +19,21 @@ impl DryBackend {
 
 #[async_trait]
 impl StorageBackend for DryBackend {
+    #[inline]
+    async fn path_exists(&self, path: &Path) -> bool {
+        self.backend.path_exists(path).await
+    }
+
+    #[inline]
+    async fn is_file(&self, path: &Path) -> bool {
+        self.backend.is_file(path).await
+    }
+
+    #[inline]
+    async fn is_dir(&self, path: &Path) -> bool {
+        self.backend.is_dir(path).await
+    }
+
     #[inline]
     async fn create(&self) -> Result<()> {
         Ok(())
@@ -50,27 +65,12 @@ impl StorageBackend for DryBackend {
     }
 
     #[inline]
-    async fn path_exists(&self, path: &Path) -> bool {
-        self.backend.path_exists(path).await
-    }
-
-    #[inline]
-    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
+    async fn list_dir(&self, path: &Path) -> Result<Vec<crate::backend::BackendNode>> {
         self.backend.list_dir(path).await
     }
 
     #[inline]
-    async fn is_file(&self, path: &Path) -> bool {
-        self.backend.is_file(path).await
-    }
-
-    #[inline]
-    async fn is_dir(&self, path: &Path) -> bool {
-        self.backend.is_dir(path).await
-    }
-
-    #[inline]
-    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
+    async fn lstat(&self, path: &Path) -> Result<crate::backend::NodeAttr> {
         self.backend.lstat(path).await
     }
 

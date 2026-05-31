@@ -20,15 +20,7 @@ fn generate_random_data(length: usize) -> Vec<u8> {
     data
 }
 
-// Define a struct to hold all collected statistics
-#[allow(dead_code)]
-struct DistributionStats {
-    chunk_lengths: Vec<usize>,
-    mean: f64,
-    std_dev: f64,
-}
-
-fn chunk_and_analyze(chunker: &Chunker, data: &[u8]) -> Result<DistributionStats> {
+fn chunk_and_analyze(chunker: &Chunker, data: &[u8]) -> Result<f64> {
     let reader = Cursor::new(data);
     let stream = chunker.stream(reader);
 
@@ -57,13 +49,7 @@ fn chunk_and_analyze(chunker: &Chunker, data: &[u8]) -> Result<DistributionStats
         .sum();
 
     let variance = variance_sum / count as f64;
-    let std_dev = variance.sqrt();
-
-    Ok(DistributionStats {
-        chunk_lengths,
-        mean,
-        std_dev,
-    })
+    Ok(variance.sqrt())
 }
 
 #[rstest]
@@ -198,28 +184,28 @@ fn test_normalization_spread_effect(#[case] normal_size: usize) -> Result<()> {
         "\n--- Spread Comparison (Normal size: {} B) ---",
         normal_size
     );
-    println!("L0 StdDev: {:.2} B", stats_l0.std_dev);
-    println!("L1 StdDev: {:.2} B", stats_l1.std_dev);
-    println!("L2 StdDev: {:.2} B", stats_l2.std_dev);
-    println!("L3 StdDev: {:.2} B", stats_l3.std_dev);
+    println!("L0 StdDev: {:.2} B", stats_l0);
+    println!("L1 StdDev: {:.2} B", stats_l1);
+    println!("L2 StdDev: {:.2} B", stats_l2);
+    println!("L3 StdDev: {:.2} B", stats_l3);
 
     assert!(
-        stats_l0.std_dev > stats_l1.std_dev,
+        stats_l0 > stats_l1,
         "Normalization L0 should have a LARGER standard deviation than L1. L0: {:.2}, L1: {:.2}",
-        stats_l0.std_dev,
-        stats_l1.std_dev
+        stats_l0,
+        stats_l1
     );
     assert!(
-        stats_l1.std_dev > stats_l2.std_dev,
+        stats_l1 > stats_l2,
         "Normalization L1 should have a LARGER standard deviation than L2. L1: {:.2}, L2: {:.2}",
-        stats_l1.std_dev,
-        stats_l2.std_dev
+        stats_l1,
+        stats_l2
     );
     assert!(
-        stats_l2.std_dev > stats_l3.std_dev,
+        stats_l2 > stats_l3,
         "Normalization L2 should have a LARGER standard deviation than L3. L2: {:.2}, L3: {:.2}",
-        stats_l2.std_dev,
-        stats_l3.std_dev
+        stats_l2,
+        stats_l3
     );
 
     Ok(())

@@ -47,7 +47,9 @@ impl S3Backend {
     }
 
     fn key_from_path(&self, path: &Path) -> String {
-        let full_path = self.prefix.join(path);
+        // Ensure path is relative before joining to prevent it from replacing the prefix
+        let relative_path = path.strip_prefix("/").unwrap_or(path);
+        let full_path = self.prefix.join(relative_path);
         let key = full_path.to_string_lossy().replace('\\', "/");
         key.trim_start_matches('/').to_string()
     }

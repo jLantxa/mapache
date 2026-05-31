@@ -302,7 +302,7 @@ async fn sync_backends(
             .with_style(
                 ProgressStyle::default_bar()
                     .template("[{percent} %] [{bar:20.cyan/white}] Deleting files: {pos}/{len}")
-                    .unwrap()
+                    .expect("invalid progress bar template for sync delete")
                     .progress_chars("=> "),
             );
 
@@ -390,7 +390,7 @@ async fn sync_backends(
                 .template(
                     "[{percent} %] [{bar:20.cyan/white}] Copying files: {pos}/{len} [ETA: {custom_eta}]",
                 )
-                .unwrap()
+                .expect("invalid progress bar template for sync copy")
                 .progress_chars("=> ")
                 .with_key(
                     "custom_eta",
@@ -467,7 +467,7 @@ async fn diff(
     let spinner = ProgressBar::new_spinner().with_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.cyan} {msg}")
-            .unwrap()
+            .expect("invalid progress bar template for sync spinner")
             .tick_chars(SPINNER_TICK_CHARS),
     );
     spinner.set_draw_target(default_bar_draw_target());

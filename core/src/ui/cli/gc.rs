@@ -59,7 +59,7 @@ impl GcProgressReporter for CliGcProgressReporter {
                 pb.set_style(
                     ProgressStyle::default_bar()
                         .template(template)
-                        .unwrap()
+                        .expect("invalid progress bar template for GC bar progress")
                         .progress_chars("=> ")
                         .tick_chars(SPINNER_TICK_CHARS),
                 );
@@ -78,7 +78,7 @@ impl GcProgressReporter for CliGcProgressReporter {
                 pb.set_style(
                     ProgressStyle::default_spinner()
                         .template(template)
-                        .unwrap()
+                        .expect("invalid progress bar template for GC spinner progress")
                         .tick_chars(SPINNER_TICK_CHARS),
                 );
                 pb

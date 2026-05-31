@@ -2,12 +2,12 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use anyhow::Result;
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 
 use crate::{
     backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents, localfs::LocalFS},
@@ -23,14 +23,13 @@ enum DownloadState {
     Failed,
 }
 
-const DOWNLOAD_WAIT_TIME: Duration = Duration::from_millis(10);
-
 /// A cache wrapper for backends. This backend caches selected files from the repository
 /// into a local cache folder to speed up reading and reduce download operations.
 pub struct CacheBackend {
     backend: Arc<dyn StorageBackend>,
     cache: LocalFS,
     download_queue: Mutex<HashMap<PathBuf, DownloadState>>,
+    download_notify: Notify,
 }
 
 impl CacheBackend {
@@ -41,6 +40,7 @@ impl CacheBackend {
             backend,
             cache,
             download_queue: Mutex::new(HashMap::new()),
+            download_notify: Notify::new(),
         }
     }
 
@@ -78,10 +78,11 @@ impl CacheBackend {
         let handle = Handle::new(path);
 
         tracing::debug!(target: "cache", "Caching file {:?}", path);
+
+        // Wait until we can claim this file for download
         loop {
             let should_wait = {
                 let mut queue = self.download_queue.lock();
-
                 match queue.get(&path_buf) {
                     Some(DownloadState::Downloading) => true,
                     _ => {
@@ -92,7 +93,7 @@ impl CacheBackend {
             };
 
             if should_wait {
-                tokio::time::sleep(DOWNLOAD_WAIT_TIME).await;
+                self.download_notify.notified().await;
             } else {
                 break;
             }
@@ -102,6 +103,7 @@ impl CacheBackend {
         if self.cache.path_exists(path).await {
             let mut queue = self.download_queue.lock();
             queue.remove(&path_buf);
+            self.download_notify.notify_waiters();
             return Ok(());
         }
 
@@ -131,6 +133,8 @@ impl CacheBackend {
                 queue.insert(path_buf, DownloadState::Failed);
             }
         }
+        drop(queue);
+        self.download_notify.notify_waiters();
 
         result
     }
@@ -138,14 +142,34 @@ impl CacheBackend {
 
 #[async_trait]
 impl StorageBackend for CacheBackend {
+    async fn path_exists(&self, path: &Path) -> bool {
+        self.backend.path_exists(path).await
+    }
+
+    async fn is_file(&self, path: &Path) -> bool {
+        self.backend.is_file(path).await
+    }
+
+    async fn is_dir(&self, path: &Path) -> bool {
+        self.backend.is_dir(path).await
+    }
+
     async fn create(&self) -> Result<()> {
         self.cache.create().await?;
         self.backend.create().await?;
         Ok(())
     }
 
-    async fn path_exists(&self, path: &Path) -> bool {
-        self.backend.path_exists(path).await
+    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
+        self.backend.list_dir(path).await
+    }
+
+    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
+        self.backend.lstat(path).await
+    }
+
+    fn is_dry_run(&self) -> bool {
+        self.backend.is_dry_run()
     }
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
@@ -200,10 +224,6 @@ impl StorageBackend for CacheBackend {
         Ok(())
     }
 
-    async fn list_dir(&self, path: &Path) -> Result<Vec<BackendNode>> {
-        self.backend.list_dir(path).await
-    }
-
     async fn create_dir(&self, path: &Path) -> Result<()> {
         self.backend.create_dir(path).await
     }
@@ -213,25 +233,20 @@ impl StorageBackend for CacheBackend {
         let path_buf = file_path.to_path_buf();
 
         loop {
-            let state = {
+            let should_wait = {
                 let mut queue = self.download_queue.lock();
-                match queue.get(&path_buf) {
-                    Some(DownloadState::Downloading) => Some(DownloadState::Downloading),
-                    Some(DownloadState::Failed) => {
-                        queue.remove(&path_buf);
-                        None
-                    }
-                    None => None,
+                if matches!(queue.get(&path_buf), Some(DownloadState::Downloading)) {
+                    true
+                } else {
+                    queue.remove(&path_buf);
+                    false
                 }
             };
 
-            match state {
-                Some(DownloadState::Downloading) => {
-                    tokio::time::sleep(DOWNLOAD_WAIT_TIME).await;
-                }
-                _ => {
-                    break;
-                }
+            if should_wait {
+                self.download_notify.notified().await;
+            } else {
+                break;
             }
         }
 
@@ -239,21 +254,5 @@ impl StorageBackend for CacheBackend {
         self.backend.remove(file_path).await?;
 
         Ok(())
-    }
-
-    async fn is_file(&self, path: &Path) -> bool {
-        self.backend.is_file(path).await
-    }
-
-    async fn is_dir(&self, path: &Path) -> bool {
-        self.backend.is_dir(path).await
-    }
-
-    async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
-        self.backend.lstat(path).await
-    }
-
-    fn is_dry_run(&self) -> bool {
-        self.backend.is_dry_run()
     }
 }

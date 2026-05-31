@@ -126,7 +126,7 @@ async fn stats_repository(
     spinner.set_style(
         ProgressStyle::default_spinner()
             .template("{spinner:.cyan} Collecting stats... ({msg})")
-            .unwrap()
+            .expect("invalid progress bar template for stats spinner")
             .tick_chars(SPINNER_TICK_CHARS),
     );
     spinner.enable_steady_tick(GlobalOpts::progress_refresh_interval());

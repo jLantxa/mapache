@@ -97,7 +97,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!("Mounting repository in {}", canonical_mountpoint.display());
             tracing::info!(target: "mount", "Mounting repository at {:?}", canonical_mountpoint);
             let created_time = repo.manifest().created_time();
-            run_mount_loop(&canonical_mountpoint, cleanup_handler, move |mp| {
+            super::cmd_bundle::run_mount_loop(&canonical_mountpoint, cleanup_handler, move |mp| {
                 MapacheFS::mount(
                     repo.clone() as Arc<dyn BlobLoader>,
                     Some(repo),
@@ -150,7 +150,7 @@ async fn mount_bundle(
     let metadata_only = args.metadata_only;
     let mp_clone = mountpoint.to_path_buf();
 
-    run_mount_loop(mountpoint, cleanup_handler, move |mp| {
+    super::cmd_bundle::run_mount_loop(mountpoint, cleanup_handler, move |mp| {
         MapacheFS::mount(
             loader,
             None,
@@ -170,42 +170,5 @@ async fn mount_bundle(
         let _ = std::fs::remove_dir_all(&mp_clone);
     }
 
-    Ok(())
-}
-
-async fn run_mount_loop<F>(
-    mountpoint: &std::path::Path,
-    cleanup_handler: CleanupHandler,
-    mount_fn: F,
-) -> Result<()>
-where
-    F: FnOnce(&std::path::Path) -> Result<()> + Send + 'static,
-{
-    ui::cli::log!(
-        "Press {} to finish or unmount the filesystem manually.",
-        "Ctrl+C".bold()
-    );
-
-    let mp_clone = mountpoint.to_path_buf();
-    let mount_res = tokio::task::spawn_blocking(move || mount_fn(&mp_clone));
-
-    tokio::select! {
-        res = mount_res => {
-            res.context("Mount task panicked")??;
-        }
-        _ = async {
-            loop {
-                if cleanup_handler.is_interrupted() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        } => {
-            ui::cli::log!("Interrupt received. Unmounting...");
-            tracing::info!(target: "mount", "Interrupt received. Unmounting {:?}", mountpoint);
-            let _ = MapacheFS::<dyn BlobLoader>::unmount(mountpoint);
-        }
-    }
-    tracing::info!(target: "mount", "Mount loop finished");
     Ok(())
 }

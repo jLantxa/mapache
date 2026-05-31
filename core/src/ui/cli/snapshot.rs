@@ -251,7 +251,7 @@ impl CliSnapshotProgressReporter {
             s.set_style(
                 ProgressStyle::default_spinner()
                     .template("{spinner:.cyan} {msg}")
-                    .unwrap()
+                    .expect("invalid progress bar template for snapshot spinner")
                     .tick_chars(SPINNER_TICK_CHARS),
             );
             s.enable_steady_tick(refresh_interval);

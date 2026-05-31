@@ -64,6 +64,7 @@ impl SecureStorage {
         Ok(EncodingContext::new(compressor))
     }
 
+    #[allow(clippy::uninit_vec)]
     fn transform_into(&self, ctx: Option<&mut EncodingContext>, data: &[u8]) -> Result<Vec<u8>> {
         let bound = if ctx.is_some() {
             zstd::zstd_safe::compress_bound(data.len())
@@ -90,8 +91,10 @@ impl SecureStorage {
             }
 
             unsafe {
-                // SAFETY: set_len extends the Vec into reserved capacity; u8 accepts garbage.
-                // compress_to_buffer writes into the extended region; on error the Vec is dropped.
+                // SAFETY: u8 accepts any bit pattern. We set the length to `data_start + bound`
+                // to obtain a mutable slice of the reserved capacity without zero-initializing.
+                // This memory is immediately passed to the zstd compressor which
+                // overwrites it. On error, the Vec is dropped.
                 out.set_len(data_start + bound);
             }
             let n = c
@@ -123,16 +126,25 @@ impl SecureStorage {
     }
 
     /// Compress using a reusable context. Returns owned Vec.
+    #[allow(clippy::uninit_vec)]
     pub fn compress_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
         let bound = zstd::zstd_safe::compress_bound(data.len());
         let mut out = Vec::with_capacity(bound);
-        // SAFETY: u8 accepts any bit pattern; compress_to_buffer overwrites before any reads.
-        let out_dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr(), bound) };
+
+        // SAFETY: u8 accepts any bit pattern. We set the length to `bound` to
+        // obtain a mutable slice of the reserved capacity without zero-initializing.
+        // This memory is immediately passed to the zstd compressor which
+        // overwrites it. On error, the Vec is dropped.
+        unsafe {
+            out.set_len(bound);
+        }
+
         let n = ctx
             .compressor
-            .compress_to_buffer(data, out_dst)
+            .compress_to_buffer(data, &mut out)
             .map_err(|e| anyhow!("zstd failed: {e}"))?;
-        // SAFETY: compress_to_buffer wrote `n` bytes.
+
+        // SAFETY: `compress_to_buffer` successfully wrote `n` bytes.
         unsafe {
             out.set_len(n);
         }
@@ -140,9 +152,7 @@ impl SecureStorage {
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut decompressed = Vec::with_capacity(data.len() * 2);
-        zstd::stream::copy_decode(data, &mut decompressed)?;
-        Ok(decompressed)
+        zstd::decode_all(data).map_err(|e| anyhow!("zstd decompression failed: {e}"))
     }
 
     /// Logic for encryption into a provided vector.

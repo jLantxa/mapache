@@ -16,26 +16,12 @@ use async_trait::async_trait;
 use dry::DryBackend;
 use limiter::ThrottledBackend;
 use localfs::LocalFS;
+use percent_encoding::percent_decode_str;
 use s3::S3Backend;
 use url::Url;
 use zeroize::Zeroizing;
 
 use crate::{backend::sftp::SftpBackend, mapache::ContentIdType, ui};
-
-fn percent_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hi = chars.next().and_then(|c| c.to_digit(16)).unwrap_or(0);
-            let lo = chars.next().and_then(|c| c.to_digit(16)).unwrap_or(0);
-            out.push((hi as u8 * 16 + lo as u8) as char);
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
 
 /// Configuration for retry logic.
 #[derive(Debug, Clone)]
@@ -373,7 +359,10 @@ impl BackendUrl {
                 Ok(BackendUrl::Local(path))
             }
             "sftp" => {
-                let user = percent_decode(parsed_url.username());
+                let user = percent_decode_str(parsed_url.username())
+                    .decode_utf8()
+                    .context("SFTP username contains invalid UTF-8")?
+                    .to_string();
 
                 let host = parsed_url
                     .host_str()
@@ -382,7 +371,10 @@ impl BackendUrl {
 
                 let port = parsed_url.port().unwrap_or(22);
 
-                let path_str = percent_decode(parsed_url.path());
+                let path_str = percent_decode_str(parsed_url.path())
+                    .decode_utf8()
+                    .context("SFTP path contains invalid UTF-8")?
+                    .to_string();
 
                 // Handle relative vs absolute path in SFTP
                 // Standard URL path always starts with /
@@ -402,7 +394,10 @@ impl BackendUrl {
                     .ok_or_else(|| anyhow!("S3 URL '{url_str}' requires a bucket name (host)"))?
                     .to_string();
 
-                let prefix_str = percent_decode(parsed_url.path());
+                let prefix_str = percent_decode_str(parsed_url.path())
+                    .decode_utf8()
+                    .context("S3 prefix contains invalid UTF-8")?
+                    .to_string();
                 let prefix = PathBuf::from(prefix_str.trim_start_matches('/'));
 
                 Ok(BackendUrl::S3(bucket, prefix))

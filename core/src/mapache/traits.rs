@@ -1,6 +1,10 @@
-use crate::backend::WriteContents;
-use crate::mapache::{BlobType, ID, SaveID};
 use anyhow::Result;
+use async_trait::async_trait;
+
+use crate::{
+    backend::WriteContents,
+    mapache::{BlobType, ID, SaveID},
+};
 
 pub trait BlobSaver: Send + Sync {
     fn save_blob(
@@ -11,7 +15,7 @@ pub trait BlobSaver: Send + Sync {
     ) -> Result<ID>;
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 pub trait BlobLoader: Send + Sync {
     async fn load_blob(&self, id: &ID) -> Result<Vec<u8>>;
 }

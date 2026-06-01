@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use chrono::Duration;
 use colored::Colorize;
 use futures::{StreamExt, stream};
@@ -199,7 +200,7 @@ impl BlobSaver for Repository {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl BlobLoader for Repository {
     async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
         self.load_blob(id).await

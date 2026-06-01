@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use argon2::ParamsBuilder;
+use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use crate::{
@@ -26,10 +27,34 @@ pub struct BundleReader {
     pub trailer: BundleTrailer,
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl BlobLoader for BundleReader {
     async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
-        self.load_blob_internal(id)
+        let idx = self
+            .index_map
+            .get(id)
+            .context("Blob not found in bundle index")?;
+        let entry = &self.index.entries[*idx];
+
+        let mut file = self.file.lock();
+        file.seek(SeekFrom::Start(entry.offset))?;
+        let mut encoded_data = vec![0u8; entry.length as usize];
+        file.read_exact(&mut encoded_data)?;
+
+        let data = self
+            .storage
+            .decode(&encoded_data)
+            .context("Failed to decode blob data")?;
+
+        if data.len() != entry.raw_length as usize {
+            bail!(
+                "Decoded blob length mismatch: expected {}, got {}",
+                entry.raw_length,
+                data.len()
+            );
+        }
+
+        Ok(data)
     }
 }
 
@@ -107,34 +132,6 @@ impl BundleReader {
             index_map,
             trailer,
         })
-    }
-
-    pub fn load_blob_internal(&self, id: &ID) -> Result<Vec<u8>> {
-        let idx = self
-            .index_map
-            .get(id)
-            .context("Blob not found in bundle index")?;
-        let entry = &self.index.entries[*idx];
-
-        let mut file = self.file.lock();
-        file.seek(SeekFrom::Start(entry.offset))?;
-        let mut encoded_data = vec![0u8; entry.length as usize];
-        file.read_exact(&mut encoded_data)?;
-
-        let data = self
-            .storage
-            .decode(&encoded_data)
-            .context("Failed to decode blob data")?;
-
-        if data.len() != entry.raw_length as usize {
-            bail!(
-                "Decoded blob length mismatch: expected {}, got {}",
-                entry.raw_length,
-                data.len()
-            );
-        }
-
-        Ok(data)
     }
 
     pub fn index(&self) -> &BundleIndex {

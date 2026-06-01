@@ -110,7 +110,7 @@ struct BlobCacheInner {
 }
 
 impl<L: BlobLoader + ?Sized> BlobCache<L> {
-    /// Creates a new TreeCache with a maximum `capacity`.
+    /// Creates a new BlobCache with a maximum `capacity`.
     pub(super) fn new(loader: Arc<L>, capacity: u64) -> Self {
         let inner = BlobCacheInner {
             size: 0,

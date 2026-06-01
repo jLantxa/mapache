@@ -297,7 +297,9 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
 
             let to_read = needed.min(self.buffer.capacity() - cur_len);
 
-            // Create a mutable slice of the spare capacity to read into
+            // SAFETY: `cur_len + to_read` ≤ `self.buffer.capacity()`, so the
+            // pointer range is within the pre-allocated spare capacity. The bytes
+            // in this region are uninitialized but that is fine for a read buffer.
             let buf = unsafe {
                 std::slice::from_raw_parts_mut(self.buffer.as_mut_ptr().add(cur_len), to_read)
             };
@@ -307,6 +309,9 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                     eof = true;
                     break;
                 }
+                // SAFETY: `cur_len + n` ≤ `to_read`, and we reserved enough
+                // capacity above to fit `max_size` bytes. `n` is the number
+                // of bytes actually written by `read()`, all within bounds.
                 Ok(n) => unsafe {
                     self.buffer.set_len(cur_len + n);
                 },

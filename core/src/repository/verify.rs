@@ -75,7 +75,7 @@ async fn verify_pack_inline(
                 || (0usize, Vec::new(), 0u64),
                 |(mut v, mut corrupt, mut bytes), desc| {
                     let start = desc.offset as usize;
-                    let end = (desc.offset + desc.length) as usize;
+                    let end = start + desc.length as usize;
 
                     if end > raw_data.len() {
                         corrupt.push(desc.id);

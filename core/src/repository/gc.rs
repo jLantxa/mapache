@@ -628,3 +628,248 @@ async fn delete_trash_files(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::Local;
+
+    use crate::{
+        backend::{StorageBackend, StorageHint, WriteContents, mock::MockBackend},
+        fs::node::{Node, NodeType},
+        fs::tree::Tree,
+        mapache::{
+            BlobType, ContentIdType, ID, SaveID, defaults::TEST_REPO_CONFIG, traits::BlobSaver,
+        },
+        repository::{
+            repo::{Auth, Repository},
+            snapshot::Snapshot,
+        },
+        ui::{GcProgressReporter, GcTask},
+    };
+
+    struct TestReporter;
+    impl GcProgressReporter for TestReporter {
+        fn log(&self, _: String) {}
+        fn warning(&self, _: String) {}
+        fn start_task(&self, _: GcTask, _: Option<u64>) {}
+        fn update_task(&self, _: GcTask, _: u64) {}
+        fn finish_task(&self, _: GcTask) {}
+    }
+
+    fn make_auth() -> Auth {
+        Auth {
+            username: "mapachito".to_string(),
+            password: zeroize::Zeroizing::new("password".to_string()),
+        }
+    }
+
+    async fn init_repo() -> anyhow::Result<(Arc<Repository>, Arc<dyn StorageBackend>)> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone()).await?;
+        let (repo, _ss) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        Ok((repo, backend))
+    }
+
+    fn make_node(name: &str, blobs: Vec<ID>) -> Node {
+        Node {
+            name: name.to_string(),
+            node_type: NodeType::File,
+            blobs: Some(blobs),
+            ..Default::default()
+        }
+    }
+
+    async fn save_snapshot(repo: &Arc<Repository>, tree_id: ID) -> anyhow::Result<()> {
+        let snapshot = Snapshot {
+            timestamp: Local::now(),
+            tree: tree_id,
+            root: std::path::PathBuf::from("/"),
+            paths: vec![std::path::PathBuf::from("/root")],
+            ..Default::default()
+        };
+        let snapshot_bytes = serde_json::to_vec(&snapshot)?;
+        let hint = StorageHint {
+            file_type: ContentIdType::Snapshot,
+            is_metadata: true,
+        };
+        repo.save_file(&SaveID::CalculateID, &snapshot_bytes, hint, None)
+            .await?;
+        repo.reload_master_index().await?;
+        Ok(())
+    }
+
+    /// Garbage collection: orphaned blobs removed, referenced blobs survive.
+    ///
+    /// Scenario: 3 data blobs saved, but only 1 is referenced by a snapshot.
+    /// The 2 orphaned blobs must be deleted by GC.
+    #[tokio::test]
+    async fn test_garbage_collection_removes_orphaned_blobs() -> anyhow::Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        // Pack 1: save A, B, C (no snapshot yet, so all three are in a pack but
+        // unreferenced)
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaaa"),
+            SaveID::CalculateID,
+        )?;
+        let blob_b = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"bbbb"),
+            SaveID::CalculateID,
+        )?;
+        let blob_c = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"cccc"),
+            SaveID::CalculateID,
+        )?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        // Pack 2: tree referencing only A → pack + snapshot make A reachable
+        repo.init_pack_saver(2)?;
+        let mut tree = Tree::new(vec![make_node("file_a.txt", vec![blob_a])]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        let plan = super::scan(repo.clone(), 0.0, Arc::new(TestReporter)).await?;
+
+        assert!(plan.referenced_blobs.contains(&blob_a));
+        assert!(!plan.referenced_blobs.contains(&blob_b));
+        assert!(!plan.referenced_blobs.contains(&blob_c));
+
+        let gc_sizes = plan.execute(Arc::new(TestReporter)).await?;
+        assert!(gc_sizes.deleted_bytes > 0);
+
+        assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
+        assert!(repo.load_blob(&blob_b).await.is_err());
+        assert!(repo.load_blob(&blob_c).await.is_err());
+
+        Ok(())
+    }
+
+    /// GC with all blobs referenced — no garbage-based obsolete packs, no unused packs.
+    ///
+    /// Packs may still be repacked if they fall below the small-pack threshold,
+    /// so deleted_bytes can be non-zero. What matters is that referenced blobs survive.
+    #[tokio::test]
+    async fn test_gc_no_garbage() -> anyhow::Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaaa"),
+            SaveID::CalculateID,
+        )?;
+        let blob_b = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"bbbb"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![
+            make_node("a.txt", vec![blob_a]),
+            make_node("b.txt", vec![blob_b]),
+        ]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        let plan = super::scan(repo.clone(), 0.0, Arc::new(TestReporter)).await?;
+
+        assert!(plan.referenced_blobs.contains(&blob_a));
+        assert!(plan.referenced_blobs.contains(&blob_b));
+        // No packs marked obsolete due to garbage
+        assert!(
+            plan.obsolete_packs.is_empty(),
+            "no garbage-based obsolete packs"
+        );
+        // No completely unused packs
+        assert!(plan.unused_packs.is_empty(), "no unused packs");
+
+        let _gc_sizes = plan.execute(Arc::new(TestReporter)).await?;
+
+        // Referenced blobs survive regardless of small-pack repacking
+        assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
+        assert_eq!(repo.load_blob(&blob_b).await?, b"bbbb");
+
+        Ok(())
+    }
+
+    /// GC with multiple snapshots — shared blobs survive.
+    #[tokio::test]
+    async fn test_gc_multiple_snapshots() -> anyhow::Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        // Pack 1: A, B + tree1 + snapshot1
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaaa"),
+            SaveID::CalculateID,
+        )?;
+        let blob_b = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"bbbb"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree1 = Tree::new(vec![
+            make_node("a.txt", vec![blob_a]),
+            make_node("b.txt", vec![blob_b]),
+        ]);
+        let tree1_id = tree1
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree1_id).await?;
+
+        // Pack 2: C + tree2 + snapshot2
+        repo.init_pack_saver(2)?;
+        let blob_c = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"cccc"),
+            SaveID::CalculateID,
+        )?;
+        let blob_d = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"dddd"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree2 = Tree::new(vec![
+            make_node("b.txt", vec![blob_b]), // shares blob_b with snapshot1
+            make_node("c.txt", vec![blob_c]),
+        ]);
+        let tree2_id = tree2
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree2_id).await?;
+
+        // blob_d is orphaned (not referenced by any snapshot)
+        let plan = super::scan(repo.clone(), 0.0, Arc::new(TestReporter)).await?;
+
+        assert!(plan.referenced_blobs.contains(&blob_a));
+        assert!(plan.referenced_blobs.contains(&blob_b));
+        assert!(plan.referenced_blobs.contains(&blob_c));
+        assert!(!plan.referenced_blobs.contains(&blob_d));
+
+        let gc_sizes = plan.execute(Arc::new(TestReporter)).await?;
+        assert!(gc_sizes.deleted_bytes > 0);
+
+        assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
+        assert_eq!(repo.load_blob(&blob_b).await?, b"bbbb");
+        assert_eq!(repo.load_blob(&blob_c).await?, b"cccc");
+        assert!(repo.load_blob(&blob_d).await.is_err());
+
+        Ok(())
+    }
+}

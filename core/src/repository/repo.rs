@@ -1377,40 +1377,31 @@ mod tests {
 
     use chrono::Local;
     use rstest::rstest;
-    use tempfile::tempdir;
 
     use crate::{
-        backend::localfs::LocalFS,
-        commands::Compression,
-        mapache::{defaults::TEST_REPO_CONFIG, global::set_global_opts_with_args},
-        repository::lock::LOCK_EXPIRE_TIMEOUT,
-        utils,
+        backend::mock::MockBackend, commands::Compression, mapache::defaults::TEST_REPO_CONFIG,
+        repository::lock::LOCK_EXPIRE_TIMEOUT, utils,
     };
 
     use super::*;
 
+    fn make_auth() -> Auth {
+        Auth {
+            username: "mapachito".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        }
+    }
+
     /// Test init a repo with password and open it
     #[tokio::test]
     async fn test_init_and_open_with_password() -> Result<()> {
-        let temp_repo_dir = tempdir()?;
-        let temp_repo_path = temp_repo_dir.path().join("repo");
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        let auth = Some(Auth {
-            username: String::from("mapachito"),
-            password: Zeroizing::new(String::from("password")),
-        });
-        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
-
-        Repository::init(auth.as_ref().unwrap(), None, backend.to_owned()).await?;
-        let (_, _, lock_handle) = Repository::try_open_with_lock(
-            auth.as_ref().unwrap(),
-            None,
-            backend,
-            TEST_REPO_CONFIG,
-            false,
-            None,
-        )
-        .await?;
+        Repository::init(&auth, None, backend.clone()).await?;
+        let (_, _, lock_handle) =
+            Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
+                .await?;
         lock_handle.unlock().await;
 
         Ok(())
@@ -1419,31 +1410,155 @@ mod tests {
     /// Test init a repo with password and open it using a password stored in a file
     #[tokio::test]
     async fn test_init_and_open_with_password_from_file() -> Result<()> {
-        let temp_dir = tempdir()?;
-        let temp_path = temp_dir.path();
-        let temp_repo_path = temp_path.join("repo");
-        let password_file_path = temp_path.join("repo_password");
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        // Write password to file
-        std::fs::write(&password_file_path, "mapachito")?;
-
-        let auth = Some(Auth {
-            username: String::from("mapachito"),
-            password: Zeroizing::new(String::from("password")),
-        });
-        let backend = Arc::new(LocalFS::new(temp_repo_path.to_owned()));
-
-        Repository::init(auth.as_ref().unwrap(), None, backend.to_owned()).await?;
-        let (_, _, lock_handle) = Repository::try_open_with_lock(
-            auth.as_ref().unwrap(),
-            None,
-            backend,
-            TEST_REPO_CONFIG,
-            false,
-            None,
-        )
-        .await?;
+        Repository::init(&auth, None, backend.clone()).await?;
+        let (_, _, lock_handle) =
+            Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
+                .await?;
         lock_handle.unlock().await;
+
+        Ok(())
+    }
+
+    /// Blob save, flush, and load cycle for data and tree blobs
+    #[tokio::test]
+    async fn test_blob_save_and_load_cycle() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone()).await?;
+        let (repo, _ss) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        repo.init_pack_saver(2)?;
+
+        let data = b"hello world, this is test data for blob cycle";
+        let id = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(data),
+            SaveID::CalculateID,
+        )?;
+
+        let stats = repo.flush_and_finalize_pack_saver().await?;
+        assert!(stats.data.raw > 0);
+        assert!(stats.blobs > 0);
+
+        let loaded = repo.load_blob(&id).await?;
+        assert_eq!(loaded, data);
+
+        // Tree blob
+        repo.init_pack_saver(1)?;
+        let tree_data = br#"{"nodes":[]}"#;
+        let tree_id = repo.encode_and_save_blob(
+            BlobType::Tree,
+            WriteContents::Borrowed(tree_data),
+            SaveID::CalculateID,
+        )?;
+        let _stats2 = repo.flush_and_finalize_pack_saver().await?;
+
+        let loaded_tree = repo.load_blob(&tree_id).await?;
+        assert_eq!(loaded_tree, tree_data);
+
+        Ok(())
+    }
+
+    /// Index persists across repository reopen
+    #[tokio::test]
+    async fn test_index_persistence_across_reopen() -> Result<()> {
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone()).await?;
+
+        // First session
+        let (repo, _ss) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        repo.init_pack_saver(2)?;
+
+        let data = b"persistent blob data";
+        let id = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(data),
+            SaveID::CalculateID,
+        )?;
+        repo.flush_and_finalize_pack_saver().await?;
+        drop(repo);
+
+        // Second session
+        let (repo2, _ss2) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        repo2.reload_master_index().await?;
+
+        assert!(repo2.index().contains(&id));
+
+        let loaded = repo2.load_blob(&id).await?;
+        assert_eq!(loaded, data);
+
+        Ok(())
+    }
+
+    /// Concurrent blob save and load
+    #[tokio::test]
+    async fn test_concurrent_blob_save_and_load() -> Result<()> {
+        use futures::future::join_all;
+
+        let auth = make_auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone()).await?;
+        let (repo, _ss) =
+            Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
+
+        repo.init_pack_saver(4)?;
+
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let r = repo.clone();
+            handles.push(tokio::spawn(async move {
+                let data = format!("concurrent blob {}", i);
+                let id = r.encode_and_save_blob(
+                    BlobType::Data,
+                    WriteContents::Borrowed(data.as_bytes()),
+                    SaveID::CalculateID,
+                )?;
+                Ok::<_, anyhow::Error>(id)
+            }));
+        }
+
+        let ids: Vec<ID> = join_all(handles)
+            .await
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        assert_eq!(ids.len(), 10);
+
+        let stats = repo.flush_and_finalize_pack_saver().await?;
+        assert!(stats.blobs > 0, "should have saved blobs");
+
+        // Load all blobs concurrently
+        let mut load_handles = Vec::new();
+        for id in &ids {
+            let r = repo.clone();
+            let id = *id;
+            load_handles.push(tokio::spawn(async move {
+                let loaded = r.load_blob(&id).await?;
+                Ok::<_, anyhow::Error>(loaded)
+            }));
+        }
+
+        let loaded_data: Vec<Vec<u8>> = join_all(load_handles)
+            .await
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        assert_eq!(loaded_data.len(), 10);
+        for (i, data) in loaded_data.iter().enumerate() {
+            let expected = format!("concurrent blob {}", i);
+            assert_eq!(data, expected.as_bytes(), "blob {} should match", i);
+        }
 
         Ok(())
     }
@@ -1483,51 +1598,13 @@ mod tests {
         #[case] own_lock_exclusive: bool,
         #[case] other_lock_exclusive: bool,
     ) -> Result<()> {
-        use crate::{
-            commands::{self, Compression, GlobalArgs, cmd_init::CmdArgs},
-            mapache::defaults::{DEFAULT_PACK_SIZE_MIB, TEST_REPO_CONFIG},
-        };
-
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
         let auth = Auth {
             username: "mapachito".to_string(),
             password: Zeroizing::new("password".to_string()),
         };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, *auth.password),
-        )?;
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: true,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            ssh_known_hosts: None,
-            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-            limit_upload: None,
-            limit_download: None,
-        };
-        let args = CmdArgs {};
-        set_global_opts_with_args(&global);
-
-        // Init repo
-        commands::cmd_init::run(&global, &args)
-            .await
-            .context("Failed to run cmd_init")?;
-
-        let backend = Arc::new(LocalFS::new(repo_path));
+        Repository::init(&auth, None, backend.clone()).await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
@@ -1564,51 +1641,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_acquire_lock_deletes_other_expired_lock() -> Result<()> {
-        use crate::{
-            commands::{self, GlobalArgs, cmd_init::CmdArgs},
-            mapache::defaults::DEFAULT_PACK_SIZE_MIB,
-        };
-
-        let tmp_dir = tempdir()?;
-        let tmp_path = tmp_dir.path();
         let auth = Auth {
             username: "mapachito".to_string(),
             password: Zeroizing::new("password".to_string()),
         };
-        let auth_file_path = tmp_path.join("auth");
-        std::fs::write(
-            &auth_file_path,
-            format!("{}\n{}", auth.username, *auth.password),
-        )?;
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        let repo = String::from("repo");
-        let repo_path = tmp_path.join(&repo);
-
-        let global = GlobalArgs {
-            repo: repo_path.to_string_lossy().to_string(),
-            auth_file: Some(auth_file_path),
-            key: None,
-            quiet: true,
-            json: false,
-            verbosity: Some(3),
-            ssh_privatekey: None,
-            ssh_known_hosts: None,
-            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
-            no_cache: true,
-            retry_lock_duration: None,
-            compression_level: Compression::Fastest,
-            limit_upload: None,
-            limit_download: None,
-        };
-        let args = CmdArgs {};
-        set_global_opts_with_args(&global);
-
-        // Init repo
-        commands::cmd_init::run(&global, &args)
-            .await
-            .context("Failed to run cmd_init")?;
-
-        let backend = Arc::new(LocalFS::new(repo_path));
+        Repository::init(&auth, None, backend.clone()).await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;

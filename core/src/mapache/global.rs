@@ -53,7 +53,11 @@ pub(crate) static BASE_DIRS: LazyLock<BaseDirs> = LazyLock::new(|| {
 
 /// Global Settings stored in Atomics for lock-free, thread-safe access.
 /// This allows logging macros to check verbosity without lock contention or deadlock risks.
+#[cfg(not(test))]
 static VERBOSITY: AtomicU32 = AtomicU32::new(DEFAULT_VERBOSITY);
+#[cfg(test)]
+static VERBOSITY: AtomicU32 = AtomicU32::new(0); // Tests default to quiet mode for cleaner output
+
 static REFRESH_INTERVAL_MS: AtomicU64 =
     AtomicU64::new((1000.0 / DEFAULT_PROGRESS_REFRESH_RATE_HZ) as u64);
 

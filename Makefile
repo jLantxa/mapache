@@ -63,7 +63,7 @@ clippy:
 	cargo clippy --all-targets --all-features -- -D warnings
 
 cov:
-	env MAPACHE_TEST_QUIET=false \
+	env MAPACHE_TEST_VERBOSE=true \
 		cargo llvm-cov --workspace --html --quiet \
 		< /dev/null 2> /dev/null
 	xdg-open ./target/llvm-cov/html/index.html

@@ -7,7 +7,7 @@ use crate::{
     backend::WriteContents,
     mapache::{
         self, ContentIdType, ID, SaveID,
-        defaults::{self, DEFAULT_PACK_SIZE},
+        defaults::{self},
     },
     repository::{
         loader,
@@ -119,7 +119,7 @@ pub async fn scan(
     );
     let mut checked_packs_count = 0;
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
-        if (garbage_bytes as f32 / DEFAULT_PACK_SIZE as f32) > tolerance {
+        if (garbage_bytes as f32 / current_pack_size as f32) > tolerance {
             tracing::trace!(target: "gc", "Pack {} is obsolete (garbage bytes: {})", pack_id.to_short_hex(8), garbage_bytes);
             keep_packs.remove(&pack_id);
             plan.obsolete_packs.insert(pack_id);

@@ -47,7 +47,9 @@ where
     pub fn insert(&mut self, key: K, value: Arc<V>) {
         let ts = self.next_timestamp;
         self.next_timestamp += 1;
-        self.entries.insert(key, (value, ts));
+        if let Some((_, old_ts)) = self.entries.insert(key, (value, ts)) {
+            self.order_map.remove(&old_ts);
+        }
         self.order_map.insert(ts, key);
     }
 
@@ -139,6 +141,24 @@ mod tests {
         assert!(lru.is_empty());
         lru.insert(1, Arc::new("x".to_string()));
         assert!(!lru.is_empty());
+    }
+
+    #[test]
+    fn test_lru_reinsert_same_key_removes_stale_timestamp() {
+        let mut lru = Lru::new();
+        lru.insert(1, Arc::new("a".to_string()));
+        lru.insert(1, Arc::new("b".to_string()));
+        lru.insert(2, Arc::new("c".to_string()));
+
+        let (key, val) = lru.evict_one().unwrap();
+        assert_eq!(key, 1);
+        assert_eq!(*val, "b");
+
+        let (key, val) = lru.evict_one().unwrap();
+        assert_eq!(key, 2);
+        assert_eq!(*val, "c");
+
+        assert!(lru.evict_one().is_none());
     }
 
     #[test]

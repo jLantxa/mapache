@@ -451,7 +451,7 @@ impl Repository {
         };
 
         // Fast path for existing blobs
-        if self.master_index.contains(&id) || !self.master_index.add_pending_blob(id) {
+        if self.master_index.contains(&id) {
             return Ok(id);
         }
 
@@ -473,6 +473,10 @@ impl Repository {
             raw_length,
         })
         .map_err(|_| anyhow::anyhow!("Packer channel closed"))?;
+
+        // Only mark as pending after the packer confirmed receipt,
+        // so a send failure doesn't orphan the blob.
+        self.master_index.add_pending_blob(id);
 
         Ok(id)
     }

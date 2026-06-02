@@ -501,20 +501,16 @@ fn try_restore_symlink_metadata(
 #[cfg(test)]
 #[allow(unused_imports)]
 mod tests {
-    use {
-        crate::ui,
-        chrono::{Duration, Local},
-        std::time::SystemTime,
-    };
+    use chrono::{Duration, Local};
+    use std::time::SystemTime;
+    use tempfile::tempdir;
+
+    use crate::{mapache::global::GlobalOpts, ui};
 
     use super::*;
 
     #[tokio::test]
     async fn test_restore_mtime() -> Result<()> {
-        use std::fs::File;
-
-        use tempfile::tempdir;
-
         let temp_dir = tempdir()?;
         let file_path = temp_dir.path().join("file.txt");
 
@@ -556,8 +552,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_restore_atime() -> Result<()> {
-        use tempfile::tempdir;
-
         let temp_dir = tempdir()?;
         let file_path = temp_dir.path().join("file.txt");
 

@@ -206,6 +206,21 @@ impl MockBackend {
         result
     }
 
+    /// Ensures all parent directories of `path` exist as MockNode::Dir,
+    /// matching LocalFS behavior where write/create_dir create parent dirs implicitly.
+    fn ensure_parent_dirs(nodes: &mut BTreeMap<PathBuf, MockNode>, path: &Path) {
+        let mut p = path.parent();
+        while let Some(parent) = p {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            nodes
+                .entry(parent.to_path_buf())
+                .or_insert_with(MockNode::dir);
+            p = parent.parent();
+        }
+    }
+
     /// Inserts a file node with default metadata.
     pub fn put_file(&self, path: impl AsRef<Path>, data: Vec<u8>) {
         self.nodes
@@ -376,6 +391,7 @@ impl StorageBackend for MockBackend {
                 ));
             }
 
+            Self::ensure_parent_dirs(&mut nodes, handle.path);
             nodes.insert(
                 handle.path.to_path_buf(),
                 MockNode::file(contents.into_owned()),
@@ -393,6 +409,8 @@ impl StorageBackend for MockBackend {
         };
         self.exec(op, || async {
             let mut nodes = self.nodes.write();
+
+            Self::ensure_parent_dirs(&mut nodes, to);
 
             let keys: Vec<PathBuf> = nodes
                 .keys()
@@ -426,8 +444,9 @@ impl StorageBackend for MockBackend {
     async fn create_dir(&self, path: &Path) -> Result<()> {
         let op = BackendOp::CreateDir(path.to_path_buf());
         self.exec(op, || async {
-            self.nodes
-                .write()
+            let mut nodes = self.nodes.write();
+            Self::ensure_parent_dirs(&mut nodes, path);
+            nodes
                 .entry(path.to_path_buf())
                 .or_insert_with(MockNode::dir);
             Ok(OpResult::Unit)

@@ -38,7 +38,7 @@ impl BloomFilter {
         let k = ((m as f64) / (num_items as f64)) * 2.0f64.ln();
         let k = k.ceil() as u32;
 
-        let num_u64s = (m / 64) as usize;
+        let num_u64s = ((m / 64) as usize).max(1);
         Self {
             bits: vec![0; num_u64s],
             num_hashes: k,
@@ -57,7 +57,7 @@ impl BloomFilter {
             let bit_idx = h1.wrapping_add((i as u64).wrapping_mul(h2)) & mask;
             let word_idx = (bit_idx >> 6) as usize;
             let bit_in_word = (bit_idx & 63) as u32;
-            self.bits[word_idx] |= 1 << bit_in_word;
+            self.bits[word_idx] |= 1u64 << bit_in_word;
         }
     }
 

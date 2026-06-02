@@ -277,12 +277,18 @@ impl LockHandle {
 
     pub fn trigger_unlock(&self) {
         if self.alive_flag.load(Ordering::SeqCst) && !self.dry_run {
+            // Prefer the current thread's runtime (covers the common case where
+            // LockHandle::drop runs during shutdown on a still-active runtime).
+            // Fall back to the captured handle from when the lock was acquired.
+            let handle =
+                tokio::runtime::Handle::try_current().unwrap_or(self.runtime_handle.clone());
+
             let repo = self.repo.clone();
             let lock = self.lock.clone();
             let alive_flag = self.alive_flag.clone();
             let unlock_mutex = self.unlock_mutex.clone();
 
-            self.runtime_handle.spawn(async move {
+            handle.spawn(async move {
                 let _guard = unlock_mutex.lock().await;
                 if alive_flag.swap(false, Ordering::SeqCst) {
                     let lock_id = {

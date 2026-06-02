@@ -542,11 +542,11 @@ impl MasterIndex {
 
         {
             let num_blobs = descriptors.len();
+            let mut lock = self.inner.write();
+
             for blob in &descriptors {
                 self.pending_blobs.remove(&blob.id);
             }
-
-            let mut lock = self.inner.write();
 
             if let Some(bf) = &mut lock.bloom_filter {
                 for blob in &descriptors {

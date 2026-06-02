@@ -555,3 +555,166 @@ fn scan_recursive(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::mock::{BackendOp, MockBackend, MockEffect};
+    use crate::mapache::defaults::TEST_REPO_CONFIG;
+    use crate::repository::repo::Auth;
+    use crate::ui::noop::NoopSnapshotReporter;
+    use std::fs;
+    use tempfile::tempdir;
+    use zeroize::Zeroizing;
+
+    #[tokio::test]
+    async fn test_archiver_atomic_ordering() -> Result<()> {
+        let auth = Auth {
+            username: "user".to_string(),
+            password: Zeroizing::new("pass".to_string()),
+        };
+        let backend = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone()).await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+
+        repo.init_pack_saver(1)?;
+
+        let tmp = tempdir()?;
+        let f1 = tmp.path().join("f1.txt");
+        fs::write(&f1, b"hello world")?;
+
+        let options = SnapshotOptions {
+            absolute_source_paths: vec![tmp.path().to_path_buf()],
+            snapshot_root_path: PathBuf::from("/"),
+            exclude_paths: Vec::new(),
+            parent_snapshot: None,
+            tags: BTreeSet::new(),
+            description: None,
+            no_scan: false,
+            with_atime: false,
+        };
+
+        let new_snapshot = snapshot(
+            repo.clone(),
+            options,
+            1,
+            Arc::new(SnapshotProgress::new()),
+            Arc::new(NoopSnapshotReporter),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await?;
+
+        // Finalize packs and indices
+        repo.flush_and_finalize_pack_saver().await?;
+
+        // Save snapshot file
+        repo.save_file(
+            &mapache::SaveID::CalculateID,
+            serde_json::to_string(&new_snapshot)?.as_bytes(),
+            crate::backend::StorageHint {
+                is_metadata: true,
+                file_type: crate::mapache::ContentIdType::Snapshot,
+            },
+            None,
+        )
+        .await?;
+
+        let history = backend.history();
+
+        // Find the index and snapshot writes
+        let snapshot_write_idx = history
+            .iter()
+            .rposition(|e| {
+                if let BackendOp::Write { path, .. } = &e.op {
+                    path.to_string_lossy().contains("snapshots")
+                } else {
+                    false
+                }
+            })
+            .expect("Should have written a snapshot");
+
+        // Verify that all data packs and index files were written BEFORE the snapshot
+        for (i, entry) in history.iter().enumerate() {
+            if let BackendOp::Write { path, .. } = &entry.op {
+                let p = path.to_string_lossy();
+                // Data packs are in "data/" or similar, indices in "index/"
+                if p.contains("data") || p.contains("index") {
+                    assert!(
+                        i < snapshot_write_idx,
+                        "Data/Index pack {} written after snapshot!",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_archiver_handles_write_failure() -> Result<()> {
+        let auth = Auth {
+            username: "user".to_string(),
+            password: Zeroizing::new("pass".to_string()),
+        };
+        let backend = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone()).await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+
+        repo.init_pack_saver(1)?;
+
+        // Inject failure on writing any file to the backend
+        backend.add_hook(Arc::new(|op| {
+            if let BackendOp::Write { .. } = op {
+                return MockEffect {
+                    result_override: Some(Err(anyhow!("write failed"))),
+                    ..Default::default()
+                };
+            }
+            MockEffect::default()
+        }));
+
+        let tmp = tempdir()?;
+        fs::write(tmp.path().join("f1.txt"), b"some data")?;
+
+        let options = SnapshotOptions {
+            absolute_source_paths: vec![tmp.path().to_path_buf()],
+            snapshot_root_path: PathBuf::from("/"),
+            exclude_paths: Vec::new(),
+            parent_snapshot: None,
+            tags: BTreeSet::new(),
+            description: None,
+            no_scan: false,
+            with_atime: false,
+        };
+
+        let res = snapshot(
+            repo.clone(),
+            options,
+            1,
+            Arc::new(SnapshotProgress::new()),
+            Arc::new(NoopSnapshotReporter),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+
+        if res.is_ok() {
+            let flush_res = repo.flush_and_finalize_pack_saver().await;
+            assert!(flush_res.is_err(), "Flush should have failed");
+        }
+
+        // Verify that at least one write operation failed in the backend.
+        let history = backend.history();
+        let write_failed = history
+            .iter()
+            .any(|entry| matches!(&entry.op, BackendOp::Write { .. }) && entry.result.is_err());
+        assert!(
+            write_failed,
+            "Expected at least one failed write in backend history"
+        );
+
+        Ok(())
+    }
+}

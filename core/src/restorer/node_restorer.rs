@@ -534,7 +534,7 @@ mod tests {
         node.metadata = original_metadata;
 
         // Now restore the metadata from the node
-        let reporter = ui::cli::restore::CliRestoreProgressReporter::new(None, None);
+        let reporter = ui::noop::NoopRestoreReporter;
         try_restore_node_metadata(&node.metadata, false, &file_path, &reporter);
 
         // Check if the mtime was restored back to the node's original mtime
@@ -583,7 +583,7 @@ mod tests {
         set_file_times(&file_path, ft_now, ft_now)?;
 
         // Restore metadata from the captured node
-        let reporter = ui::cli::restore::CliRestoreProgressReporter::new(None, None);
+        let reporter = ui::noop::NoopRestoreReporter;
         try_restore_node_metadata(&node.metadata, false, &file_path, &reporter);
 
         // Verify both atime and mtime were restored

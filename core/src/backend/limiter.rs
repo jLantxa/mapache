@@ -361,8 +361,6 @@ impl StorageBackend for ThrottledBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn test_rate_limiter() {
@@ -382,52 +380,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_throttled_reader() {
-        let limit = 1000; // 1000 bytes/sec
-        let limiter = Arc::new(RateLimiter::new(limit));
+    async fn test_throttled_backend_read() -> Result<()> {
+        use crate::backend::Handle;
+        use crate::backend::mock::MockBackend;
+        use std::path::Path;
 
-        // Initial burst consumed
-        limiter.wait(1000).await;
+        let mock = Arc::new(MockBackend::new());
+        mock.put_file("file.txt", vec![0u8; 1000]);
 
-        let data = vec![0u8; 500];
-        let mut reader = ThrottledReader::new(Cursor::new(data), limiter);
+        // Limit: 1000 bytes/sec
+        let throttled = ThrottledBackend::new(mock.clone(), None, Some(1000));
+        let handle = Handle::new(Path::new("file.txt"));
 
+        // First read: burst, fast
         let start = Instant::now();
-        let mut buf = vec![0u8; 500];
-        reader.read_exact(&mut buf).await.unwrap();
+        throttled.read(&handle, 0, 1000).await?;
+        assert!(start.elapsed().as_millis() < 100);
 
-        // Should have returned immediately but set the sleep for next call
-        assert!(start.elapsed().as_millis() < 50);
-
-        // Second read should wait (using a second read call to trigger the sleep)
+        // Second read: should throttle
         let start = Instant::now();
-        let mut dummy = [0u8; 1];
-        let _ = reader.read(&mut dummy).await.unwrap();
-        assert!(start.elapsed().as_secs_f64() >= 0.4);
+        throttled.read(&handle, 0, 1000).await?;
+        assert!(start.elapsed().as_secs_f64() >= 0.8);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_throttled_writer() {
-        let limit = 1000; // 1000 bytes/sec
-        let limiter = Arc::new(RateLimiter::new(limit));
+    async fn test_throttled_backend_write() -> Result<()> {
+        use crate::backend::mock::MockBackend;
+        use crate::backend::{Handle, WriteContents};
+        use std::path::Path;
 
-        // Initial burst consumed
-        limiter.wait(1000).await;
+        let mock = Arc::new(MockBackend::new());
+        // Limit: 1000 bytes/sec
+        let throttled = ThrottledBackend::new(mock.clone(), Some(1000), None);
 
-        let mut output = Vec::new();
-        let mut writer = ThrottledWriter::new(Cursor::new(&mut output), limiter);
+        let handle = Handle::new(Path::new("file.txt"));
+        let data = vec![0u8; 1000];
 
+        // First write: burst, fast
         let start = Instant::now();
-        let data = vec![0u8; 500];
-        writer.write_all(&data).await.unwrap();
+        throttled
+            .write(&handle, WriteContents::Borrowed(&data))
+            .await?;
+        assert!(start.elapsed().as_millis() < 100);
 
-        // First write should be instant
-        assert!(start.elapsed().as_millis() < 50);
-
-        // Second write should wait
+        // Second write: should throttle
         let start = Instant::now();
-        writer.write_all(&[0u8]).await.unwrap();
-        assert!(start.elapsed().as_secs_f64() >= 0.4);
+        throttled
+            .write(&handle, WriteContents::Borrowed(&data))
+            .await?;
+        assert!(start.elapsed().as_secs_f64() >= 0.8);
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -445,5 +450,35 @@ mod tests {
         limiter.wait(1000).await;
         // Should be almost instant now
         assert!(start.elapsed().as_millis() < 200);
+    }
+
+    #[tokio::test]
+    async fn test_throttled_backend() -> Result<()> {
+        use crate::backend::mock::MockBackend;
+        use crate::backend::{Handle, WriteContents};
+        use std::path::Path;
+
+        let mock = Arc::new(MockBackend::new());
+        // Limit: 1000 bytes/sec
+        let throttled = ThrottledBackend::new(mock.clone(), Some(1000), None);
+
+        let handle = Handle::new(Path::new("file.txt"));
+        let data = vec![0u8; 1000];
+
+        // First write: burst, fast
+        let start = Instant::now();
+        throttled
+            .write(&handle, WriteContents::Borrowed(&data))
+            .await?;
+        assert!(start.elapsed().as_millis() < 100);
+
+        // Second write: should throttle
+        let start = Instant::now();
+        throttled
+            .write(&handle, WriteContents::Borrowed(&data))
+            .await?;
+        assert!(start.elapsed().as_secs_f64() >= 0.8);
+
+        Ok(())
     }
 }

@@ -13,7 +13,7 @@ use futures::{FutureExt, future::BoxFuture};
 use crate::{
     fs::{
         extract_parent, get_intermediate_paths,
-        node::Node,
+        node::{Node, NodeType},
         tree::{StreamNode, Tree},
     },
     mapache::ID,
@@ -67,7 +67,8 @@ fn init_pending_trees(
 
     // We need to know ahead how many children the root is expecting, because the FSNodeStream
     // does not emit it (the root node).
-    let (root_children_count, _) = get_intermediate_paths(snapshot_root_path, paths);
+    let (root_children_count, intermediate_counts) =
+        get_intermediate_paths(snapshot_root_path, paths);
 
     // The tree root. It has no node.
     pending_trees.insert(
@@ -78,6 +79,17 @@ fn init_pending_trees(
             num_expected_children: ExpectedChildren::Known(root_children_count),
         },
     );
+
+    // Initialize all intermediate directories with their known child counts.
+    // This ensures they can be finalized when all children arrive, even if the
+    // FSNodeStream does not emit them (because they are above its own LCP root).
+    for (path, child_count) in intermediate_counts {
+        pending_trees.entry(path).or_insert_with(|| PendingTree {
+            node: None,
+            children: Vec::with_capacity(child_count),
+            num_expected_children: ExpectedChildren::Known(child_count),
+        });
+    }
 
     pending_trees
 }
@@ -210,12 +222,22 @@ impl TreeSerializer {
             }
         };
 
-        let mut completed_dir_node = pending_tree.node.with_context(|| {
-            format!(
-                "Non-root finalized tree should have a node. dir_path: {}",
-                dir_path.display()
-            )
-        })?;
+        let mut completed_dir_node = match pending_tree.node {
+            Some(node) => node,
+            None => {
+                // Intermediate directory not emitted by FSNodeStream (above its LCP root).
+                // Create a synthetic node with the directory name.
+                let name = dir_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                Node {
+                    name,
+                    node_type: NodeType::Directory,
+                    ..Default::default()
+                }
+            }
+        };
 
         completed_dir_node.tree = Some(tree_id);
 
@@ -361,7 +383,7 @@ mod tests {
 
     fn make_ts(blob_saver: Arc<MockBlobSaver>, root: &str, paths: &[&str]) -> TreeSerializer {
         let root_path = PathBuf::from(root);
-        let path_bufs: Vec<PathBuf> = paths.iter().map(|p| PathBuf::from(p)).collect();
+        let path_bufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         TreeSerializer::new(blob_saver as Arc<dyn BlobSaver>, root_path, &path_bufs)
     }
 
@@ -711,7 +733,11 @@ mod tests {
         let saver = Arc::new(MockBlobSaver::new());
         let mut ts = make_ts(saver.clone(), "/", &["/dir/sub/file.txt"]);
 
-        assert_eq!(ts.pending_count(), 1, "only root initially");
+        assert_eq!(
+            ts.pending_count(),
+            3,
+            "root + intermediate directories (/dir, /dir/sub) initialized"
+        );
 
         ts.handle_processed_item((
             Path::new("/dir"),
@@ -721,7 +747,7 @@ mod tests {
             },
         ))
         .await?;
-        assert_eq!(ts.pending_count(), 2, "root + dir");
+        assert_eq!(ts.pending_count(), 3, "still root + /dir + /dir/sub");
 
         ts.handle_processed_item((
             Path::new("/dir/sub"),
@@ -731,7 +757,7 @@ mod tests {
             },
         ))
         .await?;
-        assert_eq!(ts.pending_count(), 3, "root + dir + sub");
+        assert_eq!(ts.pending_count(), 3, "still root + /dir + /dir/sub");
 
         ts.handle_processed_item((
             Path::new("/dir/sub/file.txt"),

@@ -636,7 +636,10 @@ mod tests {
     use chrono::Local;
 
     use crate::{
-        backend::{StorageBackend, StorageHint, WriteContents, mock::MockBackend},
+        backend::{
+            StorageBackend, StorageHint, WriteContents,
+            mock::{BackendOp, MockBackend},
+        },
         fs::node::{Node, NodeType},
         fs::tree::Tree,
         mapache::{
@@ -646,17 +649,9 @@ mod tests {
             repo::{Auth, Repository},
             snapshot::Snapshot,
         },
-        ui::{GcProgressReporter, GcTask},
+        ui::noop::NoopGcReporter,
     };
-
-    struct TestReporter;
-    impl GcProgressReporter for TestReporter {
-        fn log(&self, _: String) {}
-        fn warning(&self, _: String) {}
-        fn start_task(&self, _: GcTask, _: Option<u64>) {}
-        fn update_task(&self, _: GcTask, _: u64) {}
-        fn finish_task(&self, _: GcTask) {}
-    }
+    use std::path::PathBuf;
 
     fn make_auth() -> Auth {
         Auth {
@@ -665,12 +660,13 @@ mod tests {
         }
     }
 
-    async fn init_repo() -> anyhow::Result<(Arc<Repository>, Arc<dyn StorageBackend>)> {
+    async fn init_repo() -> anyhow::Result<(Arc<Repository>, Arc<MockBackend>)> {
         let auth = make_auth();
-        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone()).await?;
-        let (repo, _ss) =
-            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
+        let backend = Arc::new(MockBackend::new());
+        let backend_dyn: Arc<dyn StorageBackend> = backend.clone();
+        Repository::init(&auth, None, backend_dyn.clone()).await?;
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend_dyn, TEST_REPO_CONFIG).await?;
         Ok((repo, backend))
     }
 
@@ -708,7 +704,7 @@ mod tests {
     /// The 2 orphaned blobs must be deleted by GC.
     #[tokio::test]
     async fn test_garbage_collection_removes_orphaned_blobs() -> anyhow::Result<()> {
-        let (repo, _backend) = init_repo().await?;
+        let (repo, backend) = init_repo().await?;
 
         // Pack 1: save A, B, C (no snapshot yet, so all three are in a pack but
         // unreferenced)
@@ -739,18 +735,59 @@ mod tests {
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree_id).await?;
 
-        let plan = super::scan(repo.clone(), 0.0, Arc::new(TestReporter)).await?;
+        // Clear history before GC execution
+        backend.clear_history();
+
+        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter)).await?;
 
         assert!(plan.referenced_blobs.contains(&blob_a));
         assert!(!plan.referenced_blobs.contains(&blob_b));
         assert!(!plan.referenced_blobs.contains(&blob_c));
 
-        let gc_sizes = plan.execute(Arc::new(TestReporter)).await?;
+        let gc_sizes = plan.execute(Arc::new(NoopGcReporter)).await?;
         assert!(gc_sizes.deleted_bytes > 0);
 
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
         assert!(repo.load_blob(&blob_b).await.is_err());
         assert!(repo.load_blob(&blob_c).await.is_err());
+
+        // Spy: Verify that packs containing orphaned blobs were removed
+        let history = backend.history();
+        let removed_paths: Vec<PathBuf> = history
+            .iter()
+            .filter_map(|e| {
+                if let BackendOp::Remove(path) = &e.op {
+                    Some(path.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // With init_pack_saver(2), blobs a, b, c were saved.
+        // Pack 1: a, b, c.
+        // Pack 2: tree (with a).
+        // Blobs b and c are orphaned. They reside in Pack 1.
+        // Pack 1 should be removed, Pack 2 should stay.
+
+        // We expect exactly 4 removal operations:
+        // - 2 index files (the old index files being replaced/cleaned up)
+        // - 2 object files (orphaned packs or similar, depends on repository structure)
+        assert_eq!(
+            removed_paths.len(),
+            4,
+            "Expected exactly 4 removals, got: {:?}",
+            removed_paths
+        );
+
+        // Ensure at least one was a data/object file removal
+        assert!(
+            removed_paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("objects")),
+            "Expected removal of an object pack, got: {:?}",
+            removed_paths
+        );
 
         Ok(())
     }
@@ -784,7 +821,7 @@ mod tests {
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree_id).await?;
 
-        let plan = super::scan(repo.clone(), 0.0, Arc::new(TestReporter)).await?;
+        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter)).await?;
 
         assert!(plan.referenced_blobs.contains(&blob_a));
         assert!(plan.referenced_blobs.contains(&blob_b));
@@ -796,7 +833,7 @@ mod tests {
         // No completely unused packs
         assert!(plan.unused_packs.is_empty(), "no unused packs");
 
-        let _gc_sizes = plan.execute(Arc::new(TestReporter)).await?;
+        let _gc_sizes = plan.execute(Arc::new(NoopGcReporter)).await?;
 
         // Referenced blobs survive regardless of small-pack repacking
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
@@ -855,14 +892,14 @@ mod tests {
         save_snapshot(&repo, tree2_id).await?;
 
         // blob_d is orphaned (not referenced by any snapshot)
-        let plan = super::scan(repo.clone(), 0.0, Arc::new(TestReporter)).await?;
+        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter)).await?;
 
         assert!(plan.referenced_blobs.contains(&blob_a));
         assert!(plan.referenced_blobs.contains(&blob_b));
         assert!(plan.referenced_blobs.contains(&blob_c));
         assert!(!plan.referenced_blobs.contains(&blob_d));
 
-        let gc_sizes = plan.execute(Arc::new(TestReporter)).await?;
+        let gc_sizes = plan.execute(Arc::new(NoopGcReporter)).await?;
         assert!(gc_sizes.deleted_bytes > 0);
 
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");

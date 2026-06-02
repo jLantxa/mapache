@@ -7,6 +7,7 @@ use crate::{fs::tree::NodeDiff, repository::snapshot::DiffCounts};
 pub mod cli;
 pub(crate) mod debug;
 pub mod json;
+pub mod noop;
 #[cfg(feature = "tui")]
 pub mod tui;
 

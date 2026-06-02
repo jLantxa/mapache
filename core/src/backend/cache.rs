@@ -256,3 +256,69 @@ impl StorageBackend for CacheBackend {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{
+        ContentIdType, StorageHint,
+        mock::{BackendOp, MockBackend, MockEffect},
+    };
+    use futures::future::join_all;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_cache_coalescing() -> Result<()> {
+        let mock = Arc::new(MockBackend::new());
+        mock.put_file("cacheable_file", b"data".to_vec());
+
+        let temp_dir = tempfile::tempdir()?;
+        let cache = Arc::new(CacheBackend::new(
+            temp_dir.path().to_path_buf(),
+            mock.clone(),
+        ));
+
+        // Inject delay in backend read
+        mock.add_hook(Arc::new(|op| {
+            if let BackendOp::Read { .. } = op {
+                return MockEffect {
+                    delay: Some(Duration::from_millis(100)),
+                    ..Default::default()
+                };
+            }
+            MockEffect::default()
+        }));
+
+        // Fire 5 concurrent reads
+        let mut tasks = Vec::new();
+        for _ in 0..5 {
+            let cache_clone = cache.clone();
+            tasks.push(tokio::spawn(async move {
+                let handle = Handle {
+                    path: Path::new("cacheable_file"),
+                    hint: Some(StorageHint {
+                        file_type: ContentIdType::Snapshot,
+                        is_metadata: true,
+                    }),
+                };
+                cache_clone.read(&handle, 0, 0).await
+            }));
+        }
+
+        join_all(tasks).await;
+
+        // Verify only 1 backend read happened
+        let history = mock.history();
+        let read_ops = history
+            .iter()
+            .filter(|e| matches!(e.op, BackendOp::Read { .. }))
+            .count();
+        assert_eq!(
+            read_ops, 1,
+            "Expected only 1 backend read, found {}",
+            read_ops
+        );
+
+        Ok(())
+    }
+}

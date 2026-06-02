@@ -2,6 +2,7 @@ pub mod cache;
 pub mod dry;
 pub mod limiter;
 pub mod localfs;
+pub mod mock;
 pub mod s3;
 pub mod sftp;
 

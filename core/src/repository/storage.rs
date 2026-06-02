@@ -405,7 +405,6 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
         // No key means no encryption, so data should be unchanged
         assert_eq!(original_data, &*decrypted_data);
-        assert_eq!(original_data, &*decrypted_data);
 
         Ok(())
     }

@@ -1377,6 +1377,7 @@ mod tests {
 
     use chrono::Local;
     use rstest::rstest;
+    use tempfile::tempdir;
 
     use crate::{
         backend::mock::MockBackend, commands::Compression, mapache::defaults::TEST_REPO_CONFIG,
@@ -1410,7 +1411,12 @@ mod tests {
     /// Test init a repo with password and open it using a password stored in a file
     #[tokio::test]
     async fn test_init_and_open_with_password_from_file() -> Result<()> {
-        let auth = make_auth();
+        let temp_dir = tempdir()?;
+        let password_file_path = temp_dir.path().join("repo_password");
+
+        std::fs::write(&password_file_path, "mapachito\npassword")?;
+
+        let auth = utils::get_auth(&Some(password_file_path))?.unwrap();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
         Repository::init(&auth, None, backend.clone()).await?;

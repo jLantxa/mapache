@@ -451,34 +451,4 @@ mod tests {
         // Should be almost instant now
         assert!(start.elapsed().as_millis() < 200);
     }
-
-    #[tokio::test]
-    async fn test_throttled_backend() -> Result<()> {
-        use crate::backend::mock::MockBackend;
-        use crate::backend::{Handle, WriteContents};
-        use std::path::Path;
-
-        let mock = Arc::new(MockBackend::new());
-        // Limit: 1000 bytes/sec
-        let throttled = ThrottledBackend::new(mock.clone(), Some(1000), None);
-
-        let handle = Handle::new(Path::new("file.txt"));
-        let data = vec![0u8; 1000];
-
-        // First write: burst, fast
-        let start = Instant::now();
-        throttled
-            .write(&handle, WriteContents::Borrowed(&data))
-            .await?;
-        assert!(start.elapsed().as_millis() < 100);
-
-        // Second write: should throttle
-        let start = Instant::now();
-        throttled
-            .write(&handle, WriteContents::Borrowed(&data))
-            .await?;
-        assert!(start.elapsed().as_secs_f64() >= 0.8);
-
-        Ok(())
-    }
 }

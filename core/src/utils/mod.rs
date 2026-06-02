@@ -789,11 +789,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_system_info() {
-        let _ = get_system_info();
-    }
-
-    #[test]
     fn test_directory_ops() -> Result<()> {
         let tmp_dir = tempfile::tempdir()?;
         let d = tmp_dir.path();

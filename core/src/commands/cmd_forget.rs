@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Result, bail};
 use chrono::Local;
@@ -15,7 +14,7 @@ use crate::{
     },
     mapache::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE},
     repository::{
-        repo::REPO_DROPPED_EXTENSION,
+        repo::{REPO_DROPPED_EXTENSION, Repository},
         retention::{RetentionRule, apply_retention_rules, filter_snapshots_by_hosts},
         snapshot::{SnapshotEntryList, SnapshotStream},
     },
@@ -205,7 +204,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "forget", "Starting forget command");
 
     let dry_run = args.dry_run;
+    let run_gc = args.run_gc;
+    let json_output = global_args.json;
 
+    // Phase 1: forget under its own lock.
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -221,40 +223,49 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         true,
         global_args.retry_lock_duration,
         |repo, _secure_storage, lock_handle| async move {
-            run_with_repo(repo, lock_handle, args, global_args.json).await
+            let cleanup_handler = CleanupHandler::new().map_err(|e| {
+                fail(
+                    format!("Failed to initialize cleanup handler: {}", e),
+                    ForgetError::ForgetFailed,
+                )
+            })?;
+            cleanup_handler.add_lock(lock_handle);
+
+            forget_phase(repo, args, json_output, &cleanup_handler).await
         },
     )
-    .await
-    .map_err(|e| {
-        if e.is::<crate::commands::error::MapacheError>() {
-            e
-        } else {
-            fail(
-                format!("Failed to open repository: {}", e),
-                ForgetError::RepoOpenFail,
-            )
+    .await?;
+
+    // Phase 2: optional post-forget GC. Delegated to `cmd_clean::run`, which
+    // acquires and releases its own lock.
+    if run_gc {
+        tracing::info!(target: "forget", "Post-forget GC requested");
+        if !json_output {
+            ui::cli::log!();
+            ui::cli::log!("Running garbage collector...");
         }
-    })
+
+        let gc_args = commands::cmd_clean::CmdArgs {
+            tolerance: args.tolerance.unwrap_or(DEFAULT_GC_TOLERANCE * 100.0),
+            dry_run,
+            no_repack: false,
+        };
+        commands::cmd_clean::run(global_args, &gc_args).await?;
+    }
+
+    Ok(())
 }
 
-pub async fn run_with_repo(
-    repo: Arc<crate::repository::repo::Repository>,
-    lock_handle: crate::repository::lock::LockHandle,
+/// Forget phase: load snapshots, apply retention/forget rules, mark or delete
+/// the removed ones, and print the result. Runs under the caller's
+/// `CleanupHandler` so interrupts are detected at the end.
+async fn forget_phase(
+    repo: Arc<Repository>,
     args: &CmdArgs,
     json_output: bool,
+    cleanup_handler: &CleanupHandler,
 ) -> Result<()> {
     let dry_run = args.dry_run;
-    let run_gc = args.run_gc;
-    let tolerance = args.tolerance.unwrap_or(DEFAULT_GC_TOLERANCE * 100.0);
-
-    let start_time = Instant::now();
-    let cleanup_handler = CleanupHandler::new().map_err(|e| {
-        fail(
-            format!("Failed to initialize cleanup handler: {}", e),
-            ForgetError::ForgetFailed,
-        )
-    })?;
-    cleanup_handler.add_lock(lock_handle.clone());
 
     tracing::info!(target: "forget", "Loading snapshots");
     let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
@@ -425,37 +436,6 @@ pub async fn run_with_repo(
         ));
     }
 
-    if run_gc {
-        tracing::info!(target: "forget", "Starting post-forget garbage collection");
-        let gc_args = commands::cmd_clean::CmdArgs {
-            tolerance,
-            dry_run,
-            no_repack: false,
-        };
-
-        if !json_output {
-            ui::cli::log!();
-            ui::cli::log!("Running garbage collector...");
-        }
-
-        repo.reload_master_index().await.map_err(|e| {
-            fail(
-                format!("Failed to reload master index: {}", e),
-                ForgetError::ForgetFailed,
-            )
-        })?; // We need to load the index for the garbage collector
-        let gc_reporter = Arc::new(ui::cli::gc::CliGcProgressReporter::new());
-        commands::cmd_clean::run_with_repo(
-            json_output,
-            &gc_args,
-            repo,
-            gc_reporter,
-            cleanup_handler.interrupted.clone(),
-        )
-        .await?;
-    }
-
-    tracing::info!(target: "forget", "Forget command completed in {:?}", start_time.elapsed());
     Ok(())
 }
 

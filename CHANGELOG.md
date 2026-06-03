@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Interruptible `clean`**: The `clean` (and `forget --run-gc`) command can now
+- **Interruptible `clean`**: The `clean` (and `forget --clean`) command can now
   be interrupted with SIGINT / SIGTERM. The shutdown signal is polled at safe
   checkpoints between GC phases.
 

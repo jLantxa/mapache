@@ -30,6 +30,7 @@ pub enum SyncError {
     RepoOpenFail = 10,
     BackendError = 11,
     SyncFailed = 20,
+    Interrupted = 130,
 }
 
 impl ToExitCode for SyncError {
@@ -191,7 +192,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         if let Some(lock) = dst_lock {
             lock.unlock().await;
         }
-        return Ok(());
+        return Err(fail("Sync interrupted by user.", SyncError::Interrupted));
     }
     sync_result.map_err(|e| {
         fail(

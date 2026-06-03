@@ -5,7 +5,16 @@
 ### Added
 
 - **Interruptible `clean`**: The `clean` (and `forget --run-gc`) command can now
-  be interrupted with SIGINT / SIGTERM.
+  be interrupted with SIGINT / SIGTERM. The shutdown signal is polled at safe
+  checkpoints between GC phases.
+
+### Fixes
+
+- **Exit code on interrupt**: `snapshot`, `restore`, `sync`, `verify`, `forget`,
+  `rechunk`, `amend`, and `rebuild-index` now all exit with code `130` (the
+  conventional `128 + SIGINT`) when the user cancels the operation. Previously
+  several of these silently returned success (exit `0`) on interrupt, leaving
+  scripts with no way to detect the cancellation.
 
 ## v0.4.2
 

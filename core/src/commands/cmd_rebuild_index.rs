@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
 use futures::StreamExt;
@@ -11,12 +11,23 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     mapache::{ContentIdType, ID},
     repository::{index::MasterIndex, packer::Packer},
     ui::{self, default_bar_draw_target},
     utils::{self},
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum RebuildIndexError {
+    Interrupted = 130,
+}
+
+impl ToExitCode for RebuildIndexError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Rebuild the index by scanning all existing packs")]
@@ -118,7 +129,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             for (pack_id, res) in results {
                 if cleanup_handler.is_interrupted() {
-                    bail!("Interrupted");
+                    return Err(fail(
+                        "Rebuild-index interrupted by user.",
+                        RebuildIndexError::Interrupted,
+                    ));
                 }
 
                 match res {

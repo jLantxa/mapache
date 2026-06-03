@@ -14,8 +14,8 @@ use crate::{
     archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, GlobalArgs, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
-        parse_tags, with_repository_lock,
+        EMPTY_TAG_MARK, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        find_use_snapshot, parse_tags, with_repository_lock,
     },
     fs::filter::{
         merge_filtered_paths, parse_relative_filter_paths, read_filtered_paths_from_file,
@@ -28,6 +28,17 @@ use crate::{
     ui::{self, SnapshotProgressReporter, cli::snapshot::CliSnapshotProgressReporter},
     utils,
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum AmendError {
+    Interrupted = 130,
+}
+
+impl ToExitCode for AmendError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 #[clap(group = ArgGroup::new("snapshot_group").multiple(false))]
@@ -105,6 +116,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             let num_snapshots = snapshots.len();
             for (i, (id, snapshot)) in snapshots.iter_mut().rev().enumerate() {
+                if cleanup_handler.is_interrupted() {
+                    return Err(fail("Amend interrupted by user.", AmendError::Interrupted));
+                }
+
                 let amend_str = format!(
                     "Amending snapshot {}",
                     id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().red()

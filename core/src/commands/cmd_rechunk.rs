@@ -8,12 +8,23 @@ use futures::StreamExt;
 use crate::{
     archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
-    commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     mapache::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
     repository::snapshot::SnapshotStream,
     ui::{self, SnapshotProgressReporter, cli::snapshot::CliSnapshotProgressReporter},
     utils::{self},
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum RechunkError {
+    Interrupted = 130,
+}
+
+impl ToExitCode for RechunkError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Rechunk all snapshots")]
@@ -43,6 +54,12 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
             let mut i = 0;
             while let Some(res) = snapshot_stream.next().await {
+                if cleanup_handler.is_interrupted() {
+                    return Err(fail(
+                        "Rechunk interrupted by user.",
+                        RechunkError::Interrupted,
+                    ));
+                }
                 let (snapshot_id, mut snapshot) = res?;
                 ui::cli::log!(
                     "Rechunking snapshot {} ({}/{})",

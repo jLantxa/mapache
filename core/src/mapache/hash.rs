@@ -1,5 +1,6 @@
-use crate::mapache::ID;
 use std::io;
+
+use crate::mapache::ID;
 
 /// A wrapper around the underlying hashing implementation.
 ///

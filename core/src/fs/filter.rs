@@ -8,12 +8,11 @@ use std::{
 use anyhow::{Result, bail};
 use futures::StreamExt;
 
-use crate::utils::collections::FxHashMap;
-
 use crate::{
     fs::{self, tree::SerializedNodeStream},
     mapache::ID,
     repository::repo::Repository,
+    utils::collections::FxHashMap,
 };
 
 #[derive(Default, Debug, Clone)]

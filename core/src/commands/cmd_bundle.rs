@@ -1,19 +1,12 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
 use futures::StreamExt;
-
-#[cfg(all(feature = "fuse", unix))]
-use crate::{
-    commands::cleanup::CleanupHandler,
-    fs::{get_absolute_normalized_path, path_exists},
-    fuse::fs::{MapacheFS, MountOptions},
-    utils::size,
-};
 
 use crate::{
     archiver::{
@@ -35,6 +28,14 @@ use crate::{
     restorer::node_restorer,
     ui::{RestoreProgressReporter, SnapshotProgressReporter, cli},
     utils::format_size_binary,
+};
+
+#[cfg(all(feature = "fuse", unix))]
+use crate::{
+    commands::cleanup::CleanupHandler,
+    fs::{get_absolute_normalized_path, path_exists},
+    fuse::fs::{MapacheFS, MountOptions},
+    utils::size,
 };
 
 struct BundleRestoreReporterAdapter {

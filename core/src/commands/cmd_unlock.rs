@@ -3,14 +3,12 @@ use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::open_repository,
+    commands::{GlobalArgs, open_repository},
     mapache::ContentIdType,
     repository::repo::RepoConfig,
     ui,
     utils::{self, size},
 };
-
-use crate::commands::GlobalArgs;
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Remove existing locks")]

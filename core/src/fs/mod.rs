@@ -6,10 +6,10 @@ use std::{
 
 use anyhow::Result;
 
+use crate::utils::collections::{FxHashMap, FxHashSet};
+
 pub mod filter;
 pub mod node;
-
-use crate::utils::collections::{FxHashMap, FxHashSet};
 pub mod tree;
 
 #[cfg(windows)]

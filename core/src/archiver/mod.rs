@@ -558,14 +558,19 @@ fn scan_recursive(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::backend::mock::{BackendOp, MockBackend, MockEffect};
-    use crate::mapache::defaults::TEST_REPO_CONFIG;
-    use crate::repository::repo::Auth;
-    use crate::ui::noop::NoopSnapshotReporter;
     use std::fs;
+
     use tempfile::tempdir;
     use zeroize::Zeroizing;
+
+    use crate::{
+        backend::mock::{BackendOp, MockBackend, MockEffect},
+        mapache::defaults::TEST_REPO_CONFIG,
+        repository::repo::Auth,
+        ui::noop::NoopSnapshotReporter,
+    };
+
+    use super::*;
 
     #[tokio::test]
     async fn test_archiver_atomic_ordering() -> Result<()> {

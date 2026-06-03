@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -10,13 +9,14 @@ use crate::{
     bundle::reader::BundleReader,
     commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
     fs,
+    fuse::fs::MountOptions,
     mapache::defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB,
     mapache::traits::BlobLoader,
     ui,
     utils::size,
 };
 
-pub use crate::fuse::fs::{MapacheFS, MountOptions};
+pub use crate::fuse::fs::MapacheFS;
 
 #[derive(Args, Debug)]
 #[clap(about = "Mount the repository or a .mapache bundle as a file system")]

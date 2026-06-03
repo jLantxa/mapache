@@ -1,12 +1,13 @@
 use aes_gcm_siv::{AeadInPlace, Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
+use parking_lot::Mutex;
 use zeroize::Zeroizing;
 
-use crate::backend::WriteContents;
-use crate::mapache::{self, defaults::DEFAULT_COMPRESSION};
-
-use parking_lot::Mutex;
+use crate::{
+    backend::WriteContents,
+    mapache::{self, defaults::DEFAULT_COMPRESSION},
+};
 
 const AES_GCM_NONCE_LEN: usize = 12;
 const AES_GCM_TAG_LEN: usize = 16;

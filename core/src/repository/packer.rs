@@ -6,8 +6,6 @@ use std::{
     thread::JoinHandle,
 };
 
-static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
-
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
@@ -51,6 +49,8 @@ use crate::{
 //   └────────────────────────┴────────┴────────┘
 //     ^ (41 bytes)
 //
+
+static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 
 pub const FOOTER_BLOB_LEN: usize = 41;
 

@@ -3,15 +3,15 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
 };
 
-mod bloom_filter;
-mod index_set;
-mod lru;
-mod sharded_id_set;
-
 pub use bloom_filter::BloomFilter;
 pub use index_set::{IdIndexSet, IndexSet, Iter};
 pub use lru::Lru;
 pub use sharded_id_set::ShardedIdSet;
+
+mod bloom_filter;
+mod index_set;
+mod lru;
+mod sharded_id_set;
 
 #[derive(Default)]
 pub struct FxHasher {

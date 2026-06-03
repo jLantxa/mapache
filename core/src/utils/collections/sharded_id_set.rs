@@ -1,7 +1,6 @@
 use parking_lot::RwLock;
 
-use crate::mapache::ID;
-use crate::utils::collections::IdSet;
+use crate::{mapache::ID, utils::collections::IdSet};
 
 /// A set of IDs that is sharded by the first byte of the ID to reduce lock contention.
 #[derive(Debug)]

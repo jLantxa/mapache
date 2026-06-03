@@ -684,21 +684,19 @@ mod tests {
 
     use crate::{
         backend::{
-            StorageBackend, StorageHint, WriteContents,
+            StorageBackend, StorageHint,
             mock::{BackendOp, MockBackend},
         },
-        fs::node::{Node, NodeType},
-        fs::tree::Tree,
-        mapache::{
-            BlobType, ContentIdType, ID, SaveID, defaults::TEST_REPO_CONFIG, traits::BlobSaver,
+        fs::{
+            node::{Node, NodeType},
+            tree::Tree,
         },
-        repository::{
-            repo::{Auth, Repository},
-            snapshot::Snapshot,
-        },
+        mapache::{BlobType, defaults::TEST_REPO_CONFIG, traits::BlobSaver},
+        repository::{repo::Auth, snapshot::Snapshot},
         ui::noop::NoopGcReporter,
     };
-    use std::path::PathBuf;
+
+    use super::*;
 
     fn make_auth() -> Auth {
         Auth {

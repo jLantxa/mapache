@@ -1,11 +1,12 @@
-use anyhow::{Result, anyhow};
-use clap::Args;
-use colored::Colorize;
-use rayon::prelude::*;
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
+
+use anyhow::{Result, anyhow};
+use clap::Args;
+use colored::Colorize;
+use rayon::prelude::*;
 
 use crate::{
     backend::cache::CacheBackend,

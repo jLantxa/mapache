@@ -5,14 +5,12 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{ToExitCode, fail},
+    commands::{GlobalArgs, ToExitCode, fail},
     mapache::{ID, defaults::SHORT_REPO_ID_LEN},
     repository::repo::Repository,
     ui::{self, json::emit_static},
     utils,
 };
-
-use crate::commands::GlobalArgs;
 
 #[derive(Debug, Clone, Copy)]
 pub enum InitError {

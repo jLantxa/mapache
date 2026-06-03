@@ -1,10 +1,4 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
@@ -15,10 +9,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     mapache::defaults::DEFAULT_GC_TOLERANCE,
-    repository::{
-        gc::{self},
-        repo::Repository,
-    },
+    repository::{gc, lock::LockHandle, repo::Repository},
     ui::{self, GcProgressReporter},
     utils::{self},
 };
@@ -28,6 +19,7 @@ pub enum CleanError {
     RepoOpenFail = 10,
     ScanFailed = 20,
     ExecuteFailed = 30,
+    Interrupted = 130,
 }
 
 impl ToExitCode for CleanError {
@@ -74,37 +66,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         true,
         global_args.retry_lock_duration,
         |repo, _, lock_handle| async move {
-            // Create the reporter up front so the cleanup handler's callback
-            // can finalize the same progress bar that the GC phase is using.
-            let reporter: Arc<ui::cli::gc::CliGcProgressReporter> =
-                Arc::new(ui::cli::gc::CliGcProgressReporter::new());
-            let reporter_for_callback = reporter.clone();
-            let cleanup_handler = CleanupHandler::new_with_callback(move || {
-                reporter_for_callback.finalize();
-            })
-            .map_err(|e| {
-                fail(
-                    format!("Failed to initialize cleanup handler: {}", e),
-                    CleanError::ExecuteFailed,
-                )
-            })?;
-            cleanup_handler.add_lock(lock_handle.clone());
-            tracing::info!(target: "clean", "Reloading master index");
-            repo.reload_master_index().await.map_err(|e| {
-                fail(
-                    format!("Failed to reload master index: {}", e),
-                    CleanError::ExecuteFailed,
-                )
-            })?;
-
-            run_with_repo(
-                global_args.json,
-                args,
-                repo,
-                reporter,
-                cleanup_handler.interrupted.clone(),
-            )
-            .await
+            run_with_repo(global_args.json, args, repo, lock_handle).await
         },
     )
     .await
@@ -120,18 +82,43 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-/// Run the command with an initialized repository object. `shutdown_signal`
-/// is polled between GC phases.
+/// Run the garbage collector against an already-locked repository.
+///
+/// Sets up its own `CleanupHandler` and progress reporter, so callers
+/// (including `forget --run-gc`) should not pass a signal or reporter in.
+/// Callers must drop any `CleanupHandler` they own before invoking this
+/// function.
 pub async fn run_with_repo(
     json_output: bool,
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
-    reporter: Arc<ui::cli::gc::CliGcProgressReporter>,
-    shutdown_signal: Arc<AtomicBool>,
+    lock_handle: LockHandle,
 ) -> Result<()> {
+    tracing::info!(target: "clean", "Reloading master index");
+    repo.reload_master_index().await.map_err(|e| {
+        fail(
+            format!("Failed to reload master index: {}", e),
+            CleanError::ExecuteFailed,
+        )
+    })?;
+
+    let reporter = Arc::new(ui::cli::gc::CliGcProgressReporter::new());
+    let reporter_for_callback = reporter.clone();
+    let cleanup_handler = CleanupHandler::new_with_callback(move || {
+        reporter_for_callback.finalize();
+    })
+    .map_err(|e| {
+        fail(
+            format!("Failed to initialize cleanup handler: {}", e),
+            CleanError::ExecuteFailed,
+        )
+    })?;
+    cleanup_handler.add_lock(lock_handle);
+    let shutdown_signal = cleanup_handler.interrupted.clone();
+    let reporter: Arc<dyn GcProgressReporter> = reporter;
+
     tracing::info!(target: "clean", "Starting garbage collection scan");
     let tolerance = if args.no_repack {
-        // No repack means a tolerance of 100 %.
         100.0
     } else {
         args.tolerance.clamp(0.0, 100.0) / 100.0
@@ -142,8 +129,6 @@ pub async fn run_with_repo(
         ui::cli::log!();
     }
 
-    let reporter: Arc<dyn ui::GcProgressReporter> = reporter;
-
     let plan = gc::scan(
         repo.clone(),
         tolerance,
@@ -152,13 +137,13 @@ pub async fn run_with_repo(
     )
     .await
     .map_err(|e| {
-        if shutdown_signal.load(Ordering::Relaxed) {
+        if shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!(target: "clean", "GC scan interrupted by user");
             reporter.finalize();
             if !json_output {
                 ui::cli::log!("Clean interrupted by user.");
             }
-            return fail("Clean interrupted by user.", CleanError::ExecuteFailed);
+            return fail("Clean interrupted by user.", CleanError::Interrupted);
         }
         fail(
             format!("Failed to scan repository: {}", e),
@@ -196,13 +181,13 @@ pub async fn run_with_repo(
     } else {
         tracing::info!(target: "clean", "Executing GC plan");
         let gc_sizes = plan.execute(reporter.clone()).await.map_err(|e| {
-            if shutdown_signal.load(Ordering::Relaxed) {
+            if shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
                 tracing::info!(target: "clean", "GC execution interrupted by user");
                 reporter.finalize();
                 if !json_output {
                     ui::cli::log!("Clean interrupted by user.");
                 }
-                return fail("Clean interrupted by user.", CleanError::ExecuteFailed);
+                return fail("Clean interrupted by user.", CleanError::Interrupted);
             }
             fail(
                 format!("Failed to execute GC plan: {}", e),

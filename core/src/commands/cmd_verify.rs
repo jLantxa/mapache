@@ -34,6 +34,7 @@ pub enum VerifyError {
     CorruptPacks = 20,
     CorruptSnapshots = 21,
     VerifyFailed = 22,
+    Interrupted = 130,
 }
 
 impl ToExitCode for VerifyError {
@@ -223,7 +224,10 @@ pub async fn run_with_repo(
         )
         .await?;
         if cleanup_handler.is_interrupted() {
-            return Ok(());
+            return Err(fail(
+                "Verify interrupted by user.",
+                VerifyError::Interrupted,
+            ));
         }
         failed_early
     } else {
@@ -246,6 +250,11 @@ pub async fn run_with_repo(
                 &cleanup_handler,
             )
             .await?;
+    } else if cleanup_handler.is_interrupted() {
+        return Err(fail(
+            "Verify interrupted by user.",
+            VerifyError::Interrupted,
+        ));
     }
 
     // Back-referencing Corruption

@@ -28,6 +28,7 @@ pub enum ForgetError {
     RepoOpenFail = 10,
     InvalidRule = 20,
     ForgetFailed = 30,
+    Interrupted = 130,
 }
 
 impl ToExitCode for ForgetError {
@@ -412,6 +413,16 @@ pub async fn run_with_repo(
         } else {
             ui::cli::log!("Removed {}", count_str);
         }
+    }
+
+    if cleanup_handler.is_interrupted() {
+        if !json_output {
+            ui::cli::log!("Forget interrupted by user.");
+        }
+        return Err(fail(
+            "Forget interrupted by user.",
+            ForgetError::Interrupted,
+        ));
     }
 
     if run_gc {

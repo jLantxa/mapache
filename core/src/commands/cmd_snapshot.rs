@@ -44,6 +44,7 @@ pub enum SnapshotError {
     SourcePathError = 20,
     ParentNotFound = 21,
     SnapshotFailed = 30,
+    Interrupted = 130,
 }
 
 impl ToExitCode for SnapshotError {
@@ -284,8 +285,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 SnapshotOutcome::SkippedNoChanges if !json_output => {
                     ui::cli::log!("No changes detected since parent. Skipping snapshot.");
                 }
-                SnapshotOutcome::Interrupted if !json_output => {
-                    ui::cli::log!("Snapshot interrupted by user.");
+                SnapshotOutcome::Interrupted => {
+                    if !json_output {
+                        ui::cli::log!("Snapshot interrupted by user.");
+                    }
+                    return Err(fail(
+                        "Snapshot interrupted by user.",
+                        SnapshotError::Interrupted,
+                    ));
                 }
                 _ => {}
             }

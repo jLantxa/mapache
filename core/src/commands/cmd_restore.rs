@@ -39,6 +39,7 @@ pub enum RestoreError {
     SnapshotNotFound = 20,
     TargetError = 21,
     RestoreFailed = 30,
+    Interrupted = 130,
 }
 
 impl ToExitCode for RestoreError {
@@ -353,7 +354,10 @@ pub async fn run_with_repo(
             ui::cli::log!("Restore interrupted by user.");
         }
         progress_reporter.finalize();
-        return Ok(());
+        return Err(fail(
+            "Restore interrupted by user.",
+            RestoreError::Interrupted,
+        ));
     }
     restore_result?;
 
@@ -379,7 +383,10 @@ pub async fn run_with_repo(
             if !json_output {
                 ui::cli::log!("Post-restore cleanup interrupted by user.");
             }
-            return Ok(());
+            return Err(fail(
+                "Post-restore cleanup interrupted by user.",
+                RestoreError::Interrupted,
+            ));
         }
         delete_result?;
     }

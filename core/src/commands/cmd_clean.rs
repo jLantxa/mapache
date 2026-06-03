@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 use anyhow::Result;
 use clap::Args;
@@ -13,7 +19,7 @@ use crate::{
         gc::{self},
         repo::Repository,
     },
-    ui::{self},
+    ui::{self, GcProgressReporter},
     utils::{self},
 };
 
@@ -68,7 +74,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         true,
         global_args.retry_lock_duration,
         |repo, _, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new().map_err(|e| {
+            // Create the reporter up front so the cleanup handler's callback
+            // can finalize the same progress bar that the GC phase is using.
+            let reporter: Arc<ui::cli::gc::CliGcProgressReporter> =
+                Arc::new(ui::cli::gc::CliGcProgressReporter::new());
+            let reporter_for_callback = reporter.clone();
+            let cleanup_handler = CleanupHandler::new_with_callback(move || {
+                reporter_for_callback.finalize();
+            })
+            .map_err(|e| {
                 fail(
                     format!("Failed to initialize cleanup handler: {}", e),
                     CleanError::ExecuteFailed,
@@ -83,7 +97,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 )
             })?;
 
-            run_with_repo(global_args.json, args, repo).await
+            run_with_repo(
+                global_args.json,
+                args,
+                repo,
+                reporter,
+                cleanup_handler.interrupted.clone(),
+            )
+            .await
         },
     )
     .await
@@ -99,11 +120,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-/// Run the command with an initialized repository object.
+/// Run the command with an initialized repository object. `shutdown_signal`
+/// is polled between GC phases.
 pub async fn run_with_repo(
     json_output: bool,
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
+    reporter: Arc<ui::cli::gc::CliGcProgressReporter>,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     tracing::info!(target: "clean", "Starting garbage collection scan");
     let tolerance = if args.no_repack {
@@ -118,16 +142,29 @@ pub async fn run_with_repo(
         ui::cli::log!();
     }
 
-    let reporter = Arc::new(ui::cli::gc::CliGcProgressReporter::new());
+    let reporter: Arc<dyn ui::GcProgressReporter> = reporter;
 
-    let plan = gc::scan(repo.clone(), tolerance, reporter.clone())
-        .await
-        .map_err(|e| {
-            fail(
-                format!("Failed to scan repository: {}", e),
-                CleanError::ScanFailed,
-            )
-        })?;
+    let plan = gc::scan(
+        repo.clone(),
+        tolerance,
+        reporter.clone(),
+        shutdown_signal.clone(),
+    )
+    .await
+    .map_err(|e| {
+        if shutdown_signal.load(Ordering::Relaxed) {
+            tracing::info!(target: "clean", "GC scan interrupted by user");
+            reporter.finalize();
+            if !json_output {
+                ui::cli::log!("Clean interrupted by user.");
+            }
+            return fail("Clean interrupted by user.", CleanError::ExecuteFailed);
+        }
+        fail(
+            format!("Failed to scan repository: {}", e),
+            CleanError::ScanFailed,
+        )
+    })?;
     tracing::info!(target: "clean", "GC scan finished. Plan: {} packs to remove, {} to repack", plan.unused_packs.len() + plan.obsolete_packs.len(), plan.small_packs.len());
 
     let total_packs = plan.total_packs;
@@ -158,7 +195,15 @@ pub async fn run_with_repo(
         (0, 0)
     } else {
         tracing::info!(target: "clean", "Executing GC plan");
-        let gc_sizes = plan.execute(reporter).await.map_err(|e| {
+        let gc_sizes = plan.execute(reporter.clone()).await.map_err(|e| {
+            if shutdown_signal.load(Ordering::Relaxed) {
+                tracing::info!(target: "clean", "GC execution interrupted by user");
+                reporter.finalize();
+                if !json_output {
+                    ui::cli::log!("Clean interrupted by user.");
+                }
+                return fail("Clean interrupted by user.", CleanError::ExecuteFailed);
+            }
             fail(
                 format!("Failed to execute GC plan: {}", e),
                 CleanError::ExecuteFailed,

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Interruptible `clean`**: The `clean` (and `forget --run-gc`) command can now
+  be interrupted with SIGINT / SIGTERM.
+
 ## v0.4.2
 
 ### Security

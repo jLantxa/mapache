@@ -67,6 +67,8 @@ pub trait GcProgressReporter: Send + Sync {
     fn start_task(&self, task: GcTask, total: Option<u64>);
     fn update_task(&self, task: GcTask, pos: u64);
     fn finish_task(&self, task: GcTask);
+    /// Finalize the reporter (flush progress bar etc.).
+    fn finalize(&self) {}
 }
 
 /// Summary of snapshot processing statistics

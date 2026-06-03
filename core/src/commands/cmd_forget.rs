@@ -433,7 +433,15 @@ pub async fn run_with_repo(
                 ForgetError::ForgetFailed,
             )
         })?; // We need to load the index for the garbage collector
-        commands::cmd_clean::run_with_repo(json_output, &gc_args, repo).await?;
+        let gc_reporter = Arc::new(ui::cli::gc::CliGcProgressReporter::new());
+        commands::cmd_clean::run_with_repo(
+            json_output,
+            &gc_args,
+            repo,
+            gc_reporter,
+            cleanup_handler.interrupted.clone(),
+        )
+        .await?;
     }
 
     tracing::info!(target: "forget", "Forget command completed in {:?}", start_time.elapsed());

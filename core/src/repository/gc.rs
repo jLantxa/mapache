@@ -1,6 +1,12 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 
 use crate::{
@@ -35,6 +41,17 @@ pub struct Plan {
     pub unused_packs: IdSet<ID>,   // Packs not referenced by any snapshot or index
     pub index_ids: IdSet<ID>,      // Current index IDs
     pub object_trash: Vec<PathBuf>, // Pre-collected .tmp/.dropped files in objects directory
+    /// Flag that signals GC to abort at the next safe checkpoint. Checked
+    /// between phases only, so an interrupted GC leaves on-disk state intact.
+    pub shutdown_signal: Arc<AtomicBool>,
+}
+
+/// Bails out if the shutdown signal has been raised.
+fn check_shutdown(signal: &AtomicBool) -> Result<()> {
+    if signal.load(Ordering::Relaxed) {
+        bail!("Garbage collection interrupted by user");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -44,14 +61,21 @@ pub struct GcSizes {
 }
 
 /// Scan the repository and make a plan of what needs to be cleaned.
+///
+/// `shutdown_signal` is polled at safe checkpoints; if set, scanning aborts
+/// without mutating any repository state. It is stored on the returned `Plan`
+/// so subsequent execution can honour the same signal.
 pub async fn scan(
     repo: Arc<Repository>,
     tolerance: f32,
     reporter: Arc<dyn ui::GcProgressReporter>,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Plan> {
+    check_shutdown(&shutdown_signal)?;
     tracing::info!(target: "gc", "Starting garbage collection scan (tolerance={:.1}%)", tolerance * 100.0);
     let (referenced_blobs, referenced_packs) =
-        get_referenced_blobs_and_packs(repo.clone(), reporter.clone()).await?;
+        get_referenced_blobs_and_packs(repo.clone(), reporter.clone(), shutdown_signal.clone())
+            .await?;
 
     let (keep_packs, object_trash) = repo.list_packs_and_trash().await?;
     let mut keep_packs = keep_packs;
@@ -72,6 +96,7 @@ pub async fn scan(
         index_ids: repo.index().ids(),
         small_packs: IdSet::default(),
         object_trash,
+        shutdown_signal: shutdown_signal.clone(),
     };
 
     // Count garbage bytes in each pack
@@ -119,6 +144,7 @@ pub async fn scan(
     );
     let mut checked_packs_count = 0;
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
+        check_shutdown(&shutdown_signal)?;
         if (garbage_bytes as f32 / current_pack_size as f32) > tolerance {
             tracing::trace!(target: "gc", "Pack {} is obsolete (garbage bytes: {})", pack_id.to_short_hex(8), garbage_bytes);
             keep_packs.remove(&pack_id);
@@ -136,12 +162,14 @@ pub async fn scan(
 }
 
 impl Plan {
-    /// Execute the plan. Calling this method consumes the plan so it cannot be
-    /// executed more than once.
+    /// Execute the plan, consuming it. Checks the shutdown signal between
+    /// phases only, so on-disk state stays consistent on interruption.
     pub async fn execute(mut self, reporter: Arc<dyn ui::GcProgressReporter>) -> Result<GcSizes> {
         tracing::info!(target: "gc", "Executing garbage collection plan");
         let mut gc_sizes = GcSizes::default();
+        let signal = self.shutdown_signal.clone();
 
+        check_shutdown(&signal)?;
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
         gc_sizes.deleted_bytes += remove_expired_locks(&self.repo, reporter.clone()).await?;
@@ -159,6 +187,12 @@ impl Plan {
 
         gc_sizes.deleted_bytes += self.delete_unused_packs(reporter.clone()).await?;
 
+        // Safety checkpoint: only unreferenced items have been deleted so
+        // far. On-disk state is still consistent. Below this, `repack`
+        // mutates the in-memory index before the new packs are flushed, so
+        // we let it run to completion (or abandon wholesale).
+        check_shutdown(&signal)?;
+
         // No need to repack and rewrite the indices if there are no obsolete packs
         if !self.obsolete_packs.is_empty() {
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
@@ -167,6 +201,8 @@ impl Plan {
 
             self.repack(reporter.clone()).await?;
 
+            // New index is now on disk; subsequent deletions are safe to
+            // interrupt partway.
             let repo_stats = self.repo.flush_and_finalize_pack_saver().await?;
 
             gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
@@ -236,9 +272,9 @@ impl Plan {
 
         tracing::info!(target: "gc", "Repacking {} blobs", locators_to_repack.len());
 
-        // Clear old references.
-        // This prevents the saver from seeing the blobs as "already existing"
-        // and ensures our new pack file becomes the primary source.
+        // Clear old references so the saver doesn't treat these blobs as
+        // already existing. This only mutates the in-memory index; the
+        // on-disk index is not updated until the post-repack flush.
         self.repo.index().cleanup(Some(&self.obsolete_packs));
 
         reporter.start_task(
@@ -258,6 +294,7 @@ impl Plan {
                 let repo = self.repo.clone();
                 let reporter = reporter.clone();
                 let pos = pos.clone();
+                let shutdown_signal = self.shutdown_signal.clone();
 
                 async move {
                     let loader = loader::BlobLoader::new(repo.clone());
@@ -300,6 +337,12 @@ impl Plan {
                             .context("Repack task panicked")?
                             .context("Repack blob failed")?;
                     }
+
+                    // Check shutdown only after a chunk has fully finished
+                    // writing. Abandoning here leaves the on-disk index
+                    // untouched; partial new packs become `unused_packs` on
+                    // the next GC run.
+                    check_shutdown(&shutdown_signal)?;
 
                     Ok::<(), anyhow::Error>(())
                 }
@@ -415,6 +458,7 @@ impl Plan {
 async fn get_referenced_blobs_and_packs(
     repo: Arc<Repository>,
     reporter: Arc<dyn ui::GcProgressReporter>,
+    shutdown_signal: Arc<AtomicBool>,
 ) -> Result<(IdSet<ID>, IdSet<ID>)> {
     let referenced_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
@@ -431,13 +475,16 @@ async fn get_referenced_blobs_and_packs(
             let referenced_blobs = referenced_blobs.clone();
             let referenced_packs = referenced_packs.clone();
             let verified_trees = verified_trees.clone();
+            let shutdown_signal = shutdown_signal.clone();
 
             async move {
+                check_shutdown(&shutdown_signal)?;
                 let (_snapshot_id, snapshot) = res?;
                 let index = repo.index();
                 let mut stack = vec![snapshot.tree];
 
                 while !stack.is_empty() {
+                    check_shutdown(&shutdown_signal)?;
                     let to_fetch: Vec<_> = std::mem::take(&mut stack);
                     let mut fetch_stream = futures::stream::iter(to_fetch)
                         .map(|tree_id| {
@@ -738,7 +785,13 @@ mod tests {
         // Clear history before GC execution
         backend.clear_history();
 
-        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter)).await?;
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            Arc::new(NoopGcReporter),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
 
         assert!(plan.referenced_blobs.contains(&blob_a));
         assert!(!plan.referenced_blobs.contains(&blob_b));
@@ -821,7 +874,13 @@ mod tests {
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree_id).await?;
 
-        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter)).await?;
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            Arc::new(NoopGcReporter),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
 
         assert!(plan.referenced_blobs.contains(&blob_a));
         assert!(plan.referenced_blobs.contains(&blob_b));
@@ -892,7 +951,13 @@ mod tests {
         save_snapshot(&repo, tree2_id).await?;
 
         // blob_d is orphaned (not referenced by any snapshot)
-        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter)).await?;
+        let plan = super::scan(
+            repo.clone(),
+            0.0,
+            Arc::new(NoopGcReporter),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
 
         assert!(plan.referenced_blobs.contains(&blob_a));
         assert!(plan.referenced_blobs.contains(&blob_b));
@@ -906,6 +971,89 @@ mod tests {
         assert_eq!(repo.load_blob(&blob_b).await?, b"bbbb");
         assert_eq!(repo.load_blob(&blob_c).await?, b"cccc");
         assert!(repo.load_blob(&blob_d).await.is_err());
+
+        Ok(())
+    }
+
+    /// When the shutdown signal is set before scanning starts, `scan` must
+    /// abort with an "interrupted" error and must not mutate repository
+    /// state.
+    #[tokio::test]
+    async fn test_scan_aborts_on_shutdown_signal() -> anyhow::Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        let blob = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"data"),
+            SaveID::CalculateID,
+        )?;
+        repo.flush_and_finalize_pack_saver().await?;
+
+        let signal = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let err =
+            match super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter), signal.clone()).await {
+                Ok(_) => panic!("scan should fail when interrupted"),
+                Err(e) => e,
+            };
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("interrupt"),
+            "expected interruption error, got: {msg}"
+        );
+
+        // The blob written before the scan is still there; scan is read-only.
+        assert_eq!(repo.load_blob(&blob).await?, b"data");
+
+        Ok(())
+    }
+
+    /// When the shutdown signal is set after a plan is built, `execute` must
+    /// abort at the next safe checkpoint. The on-disk repository must remain
+    /// in a state where every referenced blob can still be loaded.
+    #[tokio::test]
+    async fn test_execute_aborts_on_shutdown_signal() -> anyhow::Result<()> {
+        let (repo, _backend) = init_repo().await?;
+
+        repo.init_pack_saver(2)?;
+        let blob_a = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"aaaa"),
+            SaveID::CalculateID,
+        )?;
+        let blob_b = repo.encode_and_save_blob(
+            BlobType::Data,
+            WriteContents::Borrowed(b"bbbb"),
+            SaveID::CalculateID,
+        )?;
+        let mut tree = Tree::new(vec![make_node("a.txt", vec![blob_a, blob_b])]);
+        let tree_id = tree
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
+            .await?;
+        repo.flush_and_finalize_pack_saver().await?;
+        save_snapshot(&repo, tree_id).await?;
+
+        // Build a plan with no shutdown signal.
+        let signal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter), signal.clone()).await?;
+
+        // Now set the signal so `execute` aborts at the first checkpoint
+        // (after `delete_unused_packs`, before `repack`).
+        signal.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let err = match plan.execute(Arc::new(NoopGcReporter)).await {
+            Ok(_) => panic!("execute should fail when interrupted"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("interrupt"),
+            "expected interruption error, got: {msg}"
+        );
+
+        // All referenced blobs must still be loadable after interruption.
+        assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
+        assert_eq!(repo.load_blob(&blob_b).await?, b"bbbb");
 
         Ok(())
     }

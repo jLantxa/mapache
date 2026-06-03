@@ -100,4 +100,9 @@ impl GcProgressReporter for CliGcProgressReporter {
         let pb = self.pb.lock();
         pb.finish_and_clear();
     }
+
+    fn finalize(&self) {
+        let pb = self.pb.lock();
+        pb.finish_and_clear();
+    }
 }

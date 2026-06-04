@@ -9,6 +9,7 @@ use futures::StreamExt;
 
 #[cfg(all(feature = "fuse", unix))]
 use crate::{
+    commands::cleanup::CleanupHandler,
     fs::{get_absolute_normalized_path, path_exists},
     fuse::fs::{MapacheFS, MountOptions},
     utils::size,
@@ -19,9 +20,7 @@ use crate::{
         SnapshotOptions, processor, progress::SnapshotProgress, tree_serializer::TreeSerializer,
     },
     bundle::{reader::BundleReader, writer::BundleWriter},
-    commands::{
-        Compression, DEFAULT_COMPRESSION, cleanup::CleanupHandler, parse_compression_level,
-    },
+    commands::{Compression, DEFAULT_COMPRESSION, parse_compression_level},
     fs::{
         calculate_lcp,
         filter::PathFilter,

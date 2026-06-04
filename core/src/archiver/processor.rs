@@ -2,7 +2,7 @@
 //! during the snapshot process.
 
 use std::{
-    io::Read,
+    io::{self, Read},
     path::Path,
     sync::{
         Arc,
@@ -32,6 +32,37 @@ pub(crate) struct ReusableBuffers {
     pub small_buf: Vec<u8>,
 }
 
+/// A Read wrapper around stdin that is `Send` and counts bytes read.
+/// Each `read()` call acquires and releases the stdin lock,
+/// so no lock is held across yield points.
+pub(crate) struct StdinReader {
+    count: u64,
+}
+
+impl StdinReader {
+    pub(crate) fn new() -> Self {
+        StdinReader { count: 0 }
+    }
+
+    pub(crate) fn bytes_read(&self) -> u64 {
+        self.count
+    }
+}
+
+impl Read for StdinReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = io::stdin().lock().read(buf)?;
+        self.count += n as u64;
+        Ok(n)
+    }
+}
+
+impl Default for StdinReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Reusable chunker instance.
 pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::MIN_CHUNK_SIZE as usize,
@@ -40,8 +71,8 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::CHUNKER_NORMALIZATION,
 );
 
-/// Core sync processing logic. No spawn_blocking, no async.
-/// Can be called from dedicated threadpool threads.
+/// Core sync processing logic for regular filesystem items.
+/// Opens the file by path, chunks it, and stores the blobs.
 /// When `bufs` is `Some`, the small file buffer is reused to avoid per-file allocation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_item_sync(
@@ -157,6 +188,59 @@ pub(crate) fn process_item_sync(
     }
 
     Ok(out)
+}
+
+/// Dedicated processing for stdin backup data.
+/// Always writes to the virtual path `/stdin`.
+/// Takes a generic reader so it can be tested with byte slices or other sources.
+/// Always uses the streaming chunker (never the small-file path).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_stdin_sync(
+    next_node: Option<&StreamNode>,
+    mut reader: StdinReader,
+    blob_saver: Arc<dyn BlobSaver>,
+    progress: &SnapshotProgress,
+    progress_reporter: &dyn SnapshotProgressReporter,
+    shutdown_signal: &AtomicBool,
+) -> Result<Option<StreamNode>> {
+    const STDIN_PATH: &str = "/stdin";
+    let stdin_path = Path::new(STDIN_PATH);
+    let size_hint = next_node.as_ref().map(|n| n.node.metadata.size);
+    progress_reporter.processing_node(stdin_path, NodeDiff::New, size_hint);
+
+    let mut next = next_node
+        .with_context(|| format!("Inconsistent state: stdin but no next_node for {STDIN_PATH:?}"))?
+        .clone();
+
+    if next.node.is_file() {
+        let chunk_result = chunk_and_store_file(
+            blob_saver.as_ref(),
+            &mut reader,
+            mapache::defaults::NORMAL_CHUNK_SIZE,
+            progress,
+            progress_reporter,
+            shutdown_signal,
+        );
+
+        match chunk_result {
+            Ok(ids) => {
+                next.node.blobs = Some(ids);
+                next.node.metadata.size = reader.bytes_read();
+            }
+            Err(e) => {
+                progress_reporter.warning(&format!("Error reading stdin: {}", e));
+                progress.processed_node();
+                progress_reporter.processed_node(stdin_path, NodeDiff::New, size_hint);
+                return Err(e);
+            }
+        }
+    }
+
+    report_node_diff(&next.node, NodeDiff::New, progress);
+    progress.processed_node();
+    progress_reporter.processed_node(stdin_path, NodeDiff::New, size_hint);
+
+    Ok(Some(next))
 }
 
 /// Reports the difference in a node to the progress tracker.
@@ -305,5 +389,126 @@ fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(all(unix, not(target_os = "linux")))]
     {
         std::fs::File::open(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zeroize::Zeroizing;
+
+    use crate::{
+        backend::mock::MockBackend,
+        mapache::defaults::TEST_REPO_CONFIG,
+        repository::repo::{Auth, Repository},
+        ui::noop::NoopSnapshotReporter,
+        utils::size,
+    };
+
+    use super::*;
+    async fn setup_repo() -> Arc<Repository> {
+        let auth = Auth {
+            username: "test".to_string(),
+            password: Zeroizing::new("test".to_string()),
+        };
+        let backend = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone())
+            .await
+            .unwrap();
+        let (repo, _) = Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG)
+            .await
+            .unwrap();
+        repo.init_pack_saver(1).unwrap();
+        repo
+    }
+
+    /// Helper to create progress and reporter.
+    fn setup_progress() -> (Arc<SnapshotProgress>, Arc<dyn SnapshotProgressReporter>) {
+        let progress = Arc::new(SnapshotProgress::new());
+        let reporter: Arc<dyn SnapshotProgressReporter> = Arc::new(NoopSnapshotReporter);
+        (progress, reporter)
+    }
+
+    #[tokio::test]
+    async fn test_chunk_and_store_empty_data() {
+        let repo = setup_repo().await;
+        let (progress, reporter) = setup_progress();
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let data: &[u8] = &[];
+        let ids = chunk_and_store_file(
+            repo.as_ref(),
+            data,
+            0,
+            &progress,
+            reporter.as_ref(),
+            &shutdown,
+        )
+        .expect("chunk_and_store_file should succeed for empty data");
+
+        // Empty input produces no blobs (the chunker yields no chunks for empty input).
+        assert!(ids.is_empty(), "empty data should produce no blobs");
+    }
+
+    #[tokio::test]
+    async fn test_chunk_and_store_small_data() {
+        let repo = setup_repo().await;
+        let (progress, reporter) = setup_progress();
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let data = b"hello world this is test data for stdin chunking";
+        let ids = chunk_and_store_file(
+            repo.as_ref(),
+            data.as_slice(),
+            data.len() as u64,
+            &progress,
+            reporter.as_ref(),
+            &shutdown,
+        )
+        .expect("chunk_and_store_file should succeed");
+
+        assert!(
+            !ids.is_empty(),
+            "non-empty data should produce at least one blob"
+        );
+        // All returned IDs should be non-nil.
+        for id in &ids {
+            assert_ne!(*id, ID::default(), "blob ID should not be nil");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_chunk_and_store_large_data() {
+        let repo = setup_repo().await;
+        let (progress, reporter) = setup_progress();
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Use non-uniform data to ensure the CDC chunker finds multiple boundaries.
+        // Need > NORMAL_CHUNK_SIZE (1 MiB) to reliably get multiple chunks.
+        let mut data = Vec::with_capacity(4 * size::MiB as usize);
+        for i in 0..4 * size::MiB as usize {
+            data.push((i ^ (i >> 8) ^ (i >> 16)) as u8);
+        }
+        let ids = chunk_and_store_file(
+            repo.as_ref(),
+            data.as_slice(),
+            data.len() as u64,
+            &progress,
+            reporter.as_ref(),
+            &shutdown,
+        )
+        .expect("chunk_and_store_file should succeed for large data");
+
+        assert!(
+            !ids.is_empty(),
+            "large data should produce at least one blob"
+        );
+        // With 4 MiB and normal chunk size of 1 MiB, we expect multiple chunks.
+        assert!(
+            ids.len() > 1,
+            "4 MiB should produce multiple chunks, got {}",
+            ids.len()
+        );
     }
 }

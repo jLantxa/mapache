@@ -166,6 +166,7 @@ impl SnapshotForm {
             no_scan: false,
             skip_if_unchanged: false,
             with_atime: false,
+            stdin: false,
             num_readers: self
                 .form
                 .get_number(6)

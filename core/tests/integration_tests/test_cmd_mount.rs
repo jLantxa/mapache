@@ -122,6 +122,7 @@ async fn inner_test_mount(auto_mount: bool) -> Result<()> {
         num_packers: Some(2),
         dry_run: false,
         with_atime: None,
+        stdin: false,
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await
@@ -241,6 +242,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         num_packers: Some(2),
         dry_run: false,
         with_atime: None,
+        stdin: false,
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await
@@ -269,6 +271,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         num_packers: Some(2),
         dry_run: false,
         with_atime: None,
+        stdin: false,
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await

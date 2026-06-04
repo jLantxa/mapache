@@ -133,6 +133,9 @@ You will be prompted for a username and password. **Do not lose this password**
 
 ```bash
 mapache snapshot ~/Documents -r /backup/myrepo
+
+# Or pipe data directly via --stdin
+tar czf - ~/Documents | mapache snapshot --stdin -r /backup/myrepo
 ```
 
 ### List Snapshots
@@ -427,6 +430,7 @@ shared content across all of them.
 | `--readers <N>` | Number of parallel file readers (default: 4) |
 | `--packers <N>` | Number of parallel writer/packer threads (default: 4) |
 | `--dry-run` | Simulate the backup without storing any data |
+| `--stdin` | Read backup data from stdin as a single file at `/stdin`. Mutually exclusive with paths, excludes, and parent snapshot |
 | `--with-atime` | Store file access times (off by default; may increase metadata size) |
 
 ### Exclusions
@@ -487,6 +491,41 @@ Using `--dry-run` shows what would be backed up without writing any data:
 ```bash
 mapache snapshot ~/Documents --dry-run -r /backup/myrepo
 ```
+
+### Stdin Backup
+
+Use `--stdin` to back up data from a pipe or redirected file as a single
+virtual file at `/stdin`:
+
+```bash
+# Backup a database dump
+pg_dump mydb | mapache snapshot --stdin -r /backup/myrepo
+
+# Backup a tar archive
+tar czf - /important/data | mapache snapshot --stdin -r /backup/myrepo --tags "archive"
+
+# Redirect a file
+mapache snapshot --stdin -r /backup/myrepo < /path/to/largefile.bin
+```
+
+The data is chunked, deduplicated, compressed, and encrypted identically to
+regular files. The `--stdin` flag is mutually exclusive with paths, excludes,
+and `--parent`.
+
+> **Important**: `--stdin` requires non-interactive authentication (stdin is
+> consumed by backup data, so the password cannot be prompted interactively).
+> Use either `--auth-file` or `MAPACHE_USERNAME`/`MAPACHE_PASSWORD` env vars:
+>
+> ```bash
+> # Option 1: auth file
+> echo "myusername" > ~/.mapache-auth
+> echo "mypassword" >> ~/.mapache-auth
+> mapache snapshot --stdin -r /backup/myrepo --auth-file ~/.mapache-auth
+>
+> # Option 2: environment variables
+> MAPACHE_USERNAME=myusername MAPACHE_PASSWORD=mypassword \
+>   mapache snapshot --stdin -r /backup/myrepo
+> ```
 
 ### Snapshot Output
 
@@ -1162,6 +1201,7 @@ mapache snapshot [PATHS...] -r <URL>
   --readers <N>           Parallel file readers (default: 4)
   --packers <N>           Writer threads (default: 4)
   --dry-run               Simulate without making changes
+  --stdin                 Read data from stdin as file /stdin
   --with-atime            Store file access times
 ```
 

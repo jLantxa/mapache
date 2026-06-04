@@ -16,6 +16,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::SystemTime,
 };
 
 use parking_lot::Mutex;
@@ -34,8 +35,8 @@ use crate::{
     },
     fs::{
         filter::PathFilter,
-        node::Node,
-        tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream},
+        node::{Metadata, Node, NodeType},
+        tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
     },
     mapache::{self, global::THIS_MAPACHE_VERSION, traits::BlobSaver},
     repository::{
@@ -65,6 +66,8 @@ pub struct SnapshotOptions<'a> {
     pub no_scan: bool,
     /// If true, store the access time (atime) for all files and directories.
     pub with_atime: bool,
+    /// If true, read backup data from stdin as a single file at /stdin.
+    pub stdin: bool,
 }
 
 /// Internal state used to coordinate multiple concurrent tasks in the archiver pipeline.
@@ -141,36 +144,23 @@ pub(crate) async fn snapshot(
         shutdown_signal,
     ));
 
-    // Start Background Scanner early so it counts files concurrently
-    // with the stream setup and the backup pipeline.
-    tracing::info!(target: "archiver", "Starting background scanner");
-    spawn_scanner_task(
-        snapshot_options.no_scan,
-        snapshot_options.absolute_source_paths.clone(),
-        snapshot_options.exclude_paths.clone(),
-        status.clone(),
-        progress_reporter.clone(),
-    );
+    let is_stdin = snapshot_options.stdin;
 
-    // Setup Input Streams
-    tracing::info!(target: "archiver", "Setting up input streams");
-    let fs_stream = FSNodeStream::from_paths(
-        snapshot_options.absolute_source_paths.clone(),
-        snapshot_options.exclude_paths.clone(),
-        snapshot_options.with_atime,
-    )
-    .await?;
-
-    let previous_tree_stream = SerializedNodeStream::new(
-        repo.clone(),
-        snapshot_options.parent_snapshot.map(|p| p.snapshot.tree),
-        snapshot_options.snapshot_root_path.clone(),
-        None,
-        None,
-    )
-    .await?;
-
-    let mut diff_stream = NodeDiffStream::new(previous_tree_stream, fs_stream);
+    if !is_stdin {
+        // Start Background Scanner early so it counts files concurrently
+        // with the stream setup and the backup pipeline.
+        tracing::info!(target: "archiver", "Starting background scanner");
+        spawn_scanner_task(
+            snapshot_options.no_scan,
+            snapshot_options.absolute_source_paths.clone(),
+            snapshot_options.exclude_paths.clone(),
+            status.clone(),
+            progress_reporter.clone(),
+        );
+    } else {
+        tracing::info!(target: "archiver", "Reading backup data from stdin (scanner skipped)");
+        progress_reporter.scan_finished();
+    }
 
     // ---------------------------------------------------------------------
     // Pipeline Channels & Chunker Pool
@@ -189,31 +179,82 @@ pub(crate) async fn snapshot(
     // ---------------------------------------------------------------------
     tracing::info!(target: "archiver", "Starting Stage 1: Diff Producer");
     let producer_status = status.clone();
-    let producer_task = tokio::spawn(async move {
-        tracing::trace!(target: "archiver", "Diff Producer task started");
-        while let Some(item) = diff_stream.next().await {
-            if producer_status.is_failed() {
-                tracing::trace!(target: "archiver", "Diff Producer: status failed, aborting");
-                break;
+    let producer_task = if is_stdin {
+        tokio::spawn(async move {
+            tracing::trace!(target: "archiver", "Stdin Producer task started");
+            let node = Node {
+                name: "stdin".to_string(),
+                node_type: NodeType::File,
+                metadata: Metadata {
+                    size: 0, // We don't know the size upfront
+                    modified_time: Some(SystemTime::now()),
+                    mode: Some(0o100644),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let stream_node = StreamNode {
+                node,
+                num_children: 0,
+            };
+            let item = (
+                PathBuf::from("/stdin"),
+                None,
+                Some(Ok(stream_node)),
+                NodeDiff::New,
+            );
+            if diff_tx.send(item).await.is_err() {
+                tracing::warn!(target: "archiver", "Stdin Producer: channel closed");
             }
+            tracing::trace!(target: "archiver", "Stdin Producer task finished");
+        })
+    } else {
+        // Setup Input Streams
+        tracing::info!(target: "archiver", "Setting up input streams");
+        let fs_stream = FSNodeStream::from_paths(
+            snapshot_options.absolute_source_paths.clone(),
+            snapshot_options.exclude_paths.clone(),
+            snapshot_options.with_atime,
+        )
+        .await?;
 
-            match item {
-                Ok(diff) => {
-                    tracing::trace!(target: "archiver", "Diff Producer: sending item {:?}", diff.0);
-                    if diff_tx.send(diff).await.is_err() {
-                        tracing::trace!(target: "archiver", "Diff Producer: channel closed");
+        let previous_tree_stream = SerializedNodeStream::new(
+            repo.clone(),
+            snapshot_options.parent_snapshot.map(|p| p.snapshot.tree),
+            snapshot_options.snapshot_root_path.clone(),
+            None,
+            None,
+        )
+        .await?;
+
+        let mut diff_stream = NodeDiffStream::new(previous_tree_stream, fs_stream);
+
+        tokio::spawn(async move {
+            tracing::trace!(target: "archiver", "Diff Producer task started");
+            while let Some(item) = diff_stream.next().await {
+                if producer_status.is_failed() {
+                    tracing::trace!(target: "archiver", "Diff Producer: status failed, aborting");
+                    break;
+                }
+
+                match item {
+                    Ok(diff) => {
+                        tracing::trace!(target: "archiver", "Diff Producer: sending item {:?}", diff.0);
+                        if diff_tx.send(diff).await.is_err() {
+                            tracing::trace!(target: "archiver", "Diff Producer: channel closed");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(target: "archiver", "Diff Producer error: {e}");
+                        producer_status.signal_fatal(e);
                         break;
                     }
                 }
-                Err(e) => {
-                    tracing::error!(target: "archiver", "Diff Producer error: {e}");
-                    producer_status.signal_fatal(e);
-                    break;
-                }
             }
-        }
-        tracing::trace!(target: "archiver", "Diff Producer task finished");
-    });
+            tracing::trace!(target: "archiver", "Diff Producer task finished");
+        })
+    };
 
     // ---------------------------------------------------------------------
     // Stage 2a: Coordinator Task (lightweight routing)
@@ -231,6 +272,7 @@ pub(crate) async fn snapshot(
     // Pool threads process batches sequentially, amortizing thread handoff overhead.
     let batch_lock: Arc<Mutex<Vec<chunker_pool::ChunkerJob>>> = Arc::new(Mutex::new(Vec::new()));
 
+    let coordinator_is_stdin = is_stdin;
     let coordinator_task = tokio::spawn(async move {
         tracing::trace!(target: "archiver", "Coordinator task started");
         let stream = ReceiverStream::new(diff_rx);
@@ -245,6 +287,7 @@ pub(crate) async fn snapshot(
                 let progress_reporter = status.progress_reporter.clone();
                 let shutdown_signal = status.shutdown_signal.clone();
                 let batch_lock = batch_lock.clone();
+                let is_stdin = coordinator_is_stdin;
 
                 async move {
                     if status.is_failed() {
@@ -272,9 +315,12 @@ pub(crate) async fn snapshot(
                         && next_node.as_ref().is_some_and(|n| n.node.is_file());
 
                     if needs_chunking {
-                        let is_small = next_node
-                            .as_ref()
-                            .is_some_and(|n| n.node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE);
+                        let is_stdin_item = is_stdin
+                            && path == Path::new("/stdin");
+                        let is_small = !is_stdin_item
+                            && next_node
+                                .as_ref()
+                                .is_some_and(|n| n.node.metadata.size <= mapache::defaults::MIN_CHUNK_SIZE);
 
                         let job = chunker_pool::ChunkerJob {
                             path,
@@ -285,6 +331,7 @@ pub(crate) async fn snapshot(
                             progress,
                             progress_reporter,
                             shutdown_signal,
+                            is_stdin: is_stdin_item,
                         };
 
                         if is_small {
@@ -598,6 +645,7 @@ mod tests {
             description: None,
             no_scan: false,
             with_atime: false,
+            stdin: false,
         };
 
         let new_snapshot = snapshot(
@@ -693,6 +741,7 @@ mod tests {
             description: None,
             no_scan: false,
             with_atime: false,
+            stdin: false,
         };
 
         let res = snapshot(
@@ -721,5 +770,176 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Stdin snapshot integration test (cross-platform)
+    // ------------------------------------------------------------------
+    // Uses platform-specific APIs to redirect stdin to a pipe with test
+    // data, then runs the full archiver::snapshot pipeline.
+
+    /// Global mutex to serialize tests that modify process-global stdin.
+    static STDIN_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    /// RAII guard that redirects stdin to a pipe containing `data`,
+    /// and restores the original stdin on drop.
+    struct StdinPipe {
+        #[cfg(unix)]
+        saved_stdin: i32,
+        #[cfg(windows)]
+        saved_stdin: windows_sys::Win32::Foundation::HANDLE,
+        #[cfg(windows)]
+        read_handle: windows_sys::Win32::Foundation::HANDLE,
+    }
+
+    #[cfg(unix)]
+    impl StdinPipe {
+        fn new(data: &[u8]) -> Self {
+            let mut fds = [0i32; 2];
+            let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            assert_eq!(ret, 0, "pipe() failed");
+
+            let read_fd = fds[0];
+            let write_fd = fds[1];
+
+            let written =
+                unsafe { libc::write(write_fd, data.as_ptr() as *const libc::c_void, data.len()) };
+            assert_eq!(written as usize, data.len(), "write() failed");
+            unsafe { libc::close(write_fd) };
+
+            let saved_stdin = unsafe { libc::dup(0) };
+            assert!(saved_stdin >= 0, "dup(0) failed");
+
+            let ret = unsafe { libc::dup2(read_fd, 0) };
+            assert_eq!(ret, 0, "dup2() failed");
+            unsafe { libc::close(read_fd) };
+
+            StdinPipe { saved_stdin }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for StdinPipe {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.saved_stdin, 0);
+                libc::close(self.saved_stdin);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl StdinPipe {
+        fn new(data: &[u8]) -> Self {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::Storage::FileSystem::WriteFile;
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_INPUT_HANDLE, SetStdHandle,
+            };
+            use windows_sys::Win32::System::Pipes::CreatePipe;
+
+            let mut read_handle = std::ptr::null_mut();
+            let mut write_handle = std::ptr::null_mut();
+
+            let ret =
+                unsafe { CreatePipe(&mut read_handle, &mut write_handle, std::ptr::null(), 0) };
+            assert_ne!(ret, 0, "CreatePipe failed");
+
+            let mut bytes_written: u32 = 0;
+            let ret = unsafe {
+                WriteFile(
+                    write_handle,
+                    data.as_ptr() as *const _,
+                    data.len() as u32,
+                    &mut bytes_written,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert_ne!(ret, 0, "WriteFile failed");
+            assert_eq!(bytes_written as usize, data.len());
+            unsafe { CloseHandle(write_handle) };
+
+            let saved_stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+            unsafe { SetStdHandle(STD_INPUT_HANDLE, read_handle) };
+
+            StdinPipe {
+                saved_stdin,
+                read_handle,
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for StdinPipe {
+        fn drop(&mut self) {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Console::{STD_INPUT_HANDLE, SetStdHandle};
+            unsafe {
+                SetStdHandle(STD_INPUT_HANDLE, self.saved_stdin);
+                CloseHandle(self.read_handle);
+            }
+        }
+    }
+
+    /// Test that archiver::snapshot with stdin=true correctly creates a
+    /// snapshot by piping data through a real stdin redirect.
+    #[tokio::test]
+    async fn test_stdin_snapshot_pipeline() {
+        let _guard = STDIN_LOCK.lock().await;
+
+        // --- Setup repo ---
+        let auth = Auth {
+            username: "stdin_test".to_string(),
+            password: Zeroizing::new("stdin_test".to_string()),
+        };
+        let backend = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone())
+            .await
+            .unwrap();
+        let (repo, _) =
+            Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG)
+                .await
+                .unwrap();
+        repo.init_pack_saver(1).unwrap();
+
+        // --- Pipe test data via stdin redirect ---
+        let test_data = b"mapache stdin integration test data";
+        let _stdin_pipe = StdinPipe::new(test_data);
+
+        // --- Run archiver with stdin=true ---
+        let snapshot_result = snapshot(
+            repo.clone(),
+            SnapshotOptions {
+                absolute_source_paths: vec![PathBuf::from("/stdin")],
+                snapshot_root_path: PathBuf::from("/"),
+                exclude_paths: Vec::new(),
+                parent_snapshot: None,
+                tags: BTreeSet::new(),
+                description: Some("stdin test snapshot".to_string()),
+                no_scan: true,
+                with_atime: false,
+                stdin: true,
+            },
+            1,
+            Arc::new(SnapshotProgress::new()),
+            Arc::new(NoopSnapshotReporter),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+
+        // StdinPipe's Drop restores original stdin (even on panic).
+
+        // --- Assertions ---
+        let snapshot = snapshot_result.expect("snapshot should succeed");
+        assert_eq!(snapshot.root, PathBuf::from("/"));
+        assert_ne!(
+            snapshot.tree,
+            crate::mapache::ID::default(),
+            "tree ID should not be nil"
+        );
+
+        // Cleanup
+        repo.flush_and_finalize_pack_saver().await.unwrap();
     }
 }

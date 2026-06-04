@@ -23,6 +23,7 @@ use crate::{
     mapache::{
         self, ContentIdType, ID,
         defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
     repository::snapshot::{SnapshotPair, SnapshotSummary},
     repository::{lock::LockHandle, repo::Repository},
@@ -132,6 +133,13 @@ pub struct CmdArgs {
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     #[merge(strategy = conflate::option::overwrite_none)]
     pub with_atime: Option<bool>,
+
+    /// Read backup data from stdin as a single file at /stdin.
+    /// Mutually exclusive with paths, excludes, and parent snapshot.
+    /// Requires --auth-file or MAPACHE_USERNAME/MAPACHE_PASSWORD env vars.
+    #[clap(long, conflicts_with_all = &["paths", "exclude", "exclude_file", "parent", "as_root"])]
+    #[merge(skip)]
+    pub stdin: bool,
 }
 
 fn deserialize_use_snapshot_opt<'de, D>(
@@ -157,6 +165,7 @@ pub struct SnapshotRunOptions {
     pub with_atime: bool,
     pub num_readers: usize,
     pub num_packers: usize,
+    pub stdin: bool,
 }
 
 impl From<&CmdArgs> for SnapshotRunOptions {
@@ -175,13 +184,27 @@ impl From<&CmdArgs> for SnapshotRunOptions {
             num_packers: args
                 .num_packers
                 .unwrap_or(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS),
+            stdin: args.stdin,
         }
     }
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "snapshot", "Starting snapshot command");
-    if args.paths.is_empty() {
+
+    if args.stdin
+        && global_args.auth_file.is_none()
+        && (get_envvar(USERNAME_ENVVAR).is_none() || get_envvar(PASSWORD_ENVVAR).is_none())
+    {
+        return Err(fail(
+            "--stdin requires --auth-file or both MAPACHE_USERNAME and \
+             MAPACHE_PASSWORD env vars (stdin is consumed by backup data, \
+             so password cannot be prompted interactively)",
+            SnapshotError::SourcePathError,
+        ));
+    }
+
+    if args.paths.is_empty() && !args.stdin {
         return Err(fail(
             "No source paths provided.",
             SnapshotError::SourcePathError,
@@ -207,8 +230,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         false,
         global_args.retry_lock_duration,
         |repo, _, lock_handle| async move {
-            let parent_snapshot_pair =
-                resolve_parent_snapshot(repo.clone(), args.no_parent, args.parent.clone()).await?;
+            let parent_snapshot_pair = if args.stdin {
+                None
+            } else {
+                resolve_parent_snapshot(repo.clone(), args.no_parent, args.parent.clone()).await?
+            };
 
             if !json_output {
                 ui::cli::log!("");
@@ -223,7 +249,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                         pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
                     );
                 } else {
-                    ui::cli::log!("{} This is the first snapshot.", "[!]".bold().cyan());
+                    ui::cli::log!("{} No parent snapshot used.", "[!]".bold().cyan());
                 }
             }
 
@@ -326,9 +352,7 @@ pub async fn run_with_repo(
     parent_snapshot_pair: Option<SnapshotPair>,
 ) -> Result<SnapshotOutcome> {
     let as_root = options.as_root;
-    let no_scan = options.no_scan;
     let skip_if_unchanged = options.skip_if_unchanged;
-    let with_atime = options.with_atime;
     let num_readers = options.num_readers;
     let num_packers = options.num_packers;
     let tags_str = options.tags.unwrap_or_else(|| EMPTY_TAG_MARK.to_string());
@@ -382,29 +406,60 @@ pub async fn run_with_repo(
         }
     }
 
-    // Read exclude paths from file if provided.
-    let excludes_from_file = match &options.exclude_file {
-        Some(path) => Some(read_filtered_paths_from_file(path).map_err(|e| {
-            fail(
-                format!("Error reading exclude file: {}", e),
-                SnapshotError::SourcePathError,
-            )
-        })?),
-        None => None,
+    let (
+        absolute_source_paths,
+        snapshot_root_path,
+        exclude_paths,
+        parent_snapshot,
+        no_scan,
+        with_atime,
+        stdin,
+    ) = if options.stdin {
+        (
+            vec![PathBuf::from("/stdin")],
+            PathBuf::from("/"),
+            Vec::new(),
+            None,
+            true,
+            false,
+            true,
+        )
+    } else {
+        // Read exclude paths from file if provided.
+        let excludes_from_file = match &options.exclude_file {
+            Some(path) => Some(read_filtered_paths_from_file(path).map_err(|e| {
+                fail(
+                    format!("Error reading exclude file: {}", e),
+                    SnapshotError::SourcePathError,
+                )
+            })?),
+            None => None,
+        };
+
+        let all_excludes =
+            merge_filtered_paths(options.exclude.as_ref(), excludes_from_file.as_ref());
+
+        // Normalize the exclude paths and filter the source paths using the excludes
+        let normalized_excludes: Option<Vec<PathBuf>> =
+            normalized_exclude_paths(all_excludes.as_ref())?;
+        let path_filter = PathFilter::new(None, normalized_excludes.clone());
+
+        absolute_source_paths.retain(|p| path_filter.allow(p));
+        let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
+
+        // Extract the snapshot root path
+        let snapshot_root_path = calculate_lcp(&absolute_source_paths, false);
+
+        (
+            absolute_source_paths,
+            snapshot_root_path,
+            normalized_excludes.unwrap_or_default(),
+            parent_snapshot_pair.as_ref(),
+            options.no_scan,
+            options.with_atime,
+            false,
+        )
     };
-
-    let all_excludes = merge_filtered_paths(options.exclude.as_ref(), excludes_from_file.as_ref());
-
-    // Normalize the exclude paths and filter the source paths using the excludes
-    let normalized_excludes: Option<Vec<PathBuf>> =
-        normalized_exclude_paths(all_excludes.as_ref())?;
-    let path_filter = PathFilter::new(None, normalized_excludes.clone());
-
-    absolute_source_paths.retain(|p| path_filter.allow(p));
-    let absolute_source_paths: Vec<PathBuf> = absolute_source_paths.into_iter().collect();
-
-    // Extract the snapshot root path
-    let snapshot_root_path = calculate_lcp(&absolute_source_paths, false);
 
     // Run Archiver
     tracing::info!(target: "snapshot", "Initializing archiver");
@@ -431,12 +486,13 @@ pub async fn run_with_repo(
         SnapshotOptions {
             absolute_source_paths,
             snapshot_root_path,
-            exclude_paths: normalized_excludes.unwrap_or_default(),
-            parent_snapshot: parent_snapshot_pair.as_ref(),
+            exclude_paths,
+            parent_snapshot,
             tags,
             description: options.description.clone(),
             no_scan,
             with_atime,
+            stdin,
         },
         num_readers,
         progress.clone(),

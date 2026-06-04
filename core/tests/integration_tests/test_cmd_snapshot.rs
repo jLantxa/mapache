@@ -3,7 +3,7 @@
 mod tests {
     use std::path::PathBuf;
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use mapache::{commands::UseSnapshot, repository::repo::SNAPSHOTS_DIR, utils};
 
     use crate::integration_tests::{TestContext, assert_times_equal};
@@ -640,6 +640,68 @@ mod tests {
         assert!(
             atime_diff.as_secs() <= 1,
             "without --with-atime, restored atime should equal mtime"
+        );
+
+        Ok(())
+    }
+
+    /// End-to-end test: spawn mapache binary with --stdin, pipe data,
+    /// and verify the snapshot is created.
+    #[tokio::test]
+    async fn test_stdin_snapshot_end_to_end() -> Result<()> {
+        use std::io::Write;
+
+        let ctx = TestContext::new().await?;
+        ctx.init_repo().await?;
+
+        let snapshots_dir = ctx.repo_path.join(SNAPSHOTS_DIR);
+        let index_dir = ctx.repo_path.join("index");
+
+        assert_eq!(mapache::utils::count_files(&snapshots_dir)?, 0);
+        assert_eq!(mapache::utils::count_files(&index_dir)?, 0);
+
+        // Spawn mapache with --stdin
+        let bin = env!("CARGO_BIN_EXE_mapache");
+        let mut cmd = std::process::Command::new(bin);
+        // Global options (--repo, --auth-file, etc.) go AFTER the subcommand
+        // because only --config is truly global in clap.
+        cmd.arg("snapshot")
+            .arg("--repo")
+            .arg(ctx.repo_path.as_os_str())
+            .arg("--auth-file")
+            .arg(ctx.auth_file_path.as_os_str())
+            .arg("--stdin")
+            .arg("--description")
+            .arg("stdin end-to-end test")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let mut child = cmd.spawn().context("Failed to spawn mapache")?;
+
+        // Pipe test data to stdin
+        let test_data = b"Hello from stdin end-to-end test!";
+        {
+            let mut stdin_handle = child.stdin.take().expect("Failed to get stdin handle");
+            stdin_handle.write_all(test_data)?;
+        }
+
+        let output = child.wait_with_output()?;
+
+        // Check exit status and show any error output
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "mapache snapshot --stdin failed:\nstderr: {stderr}\nstdout: {}",
+            String::from_utf8_lossy(&output.stdout),
+        );
+
+        // Verify a snapshot was created
+        assert_eq!(mapache::utils::count_files(&snapshots_dir)?, 1);
+        assert_ne!(
+            mapache::utils::count_files(&index_dir)?,
+            0,
+            "index should have been created"
         );
 
         Ok(())

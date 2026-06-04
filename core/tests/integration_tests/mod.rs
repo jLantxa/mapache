@@ -371,6 +371,7 @@ impl SnapshotBuilder {
                 num_packers: Some(2),
                 dry_run: false,
                 with_atime: None,
+                stdin: false,
             },
         }
     }

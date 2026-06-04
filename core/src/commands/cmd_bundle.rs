@@ -268,6 +268,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         description: Some(format!("Bundle of {:?}", args.input)),
         no_scan: false,
         with_atime: false,
+        stdin: false,
     };
 
     let fs_stream = FSNodeStream::from_paths(

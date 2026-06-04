@@ -25,6 +25,7 @@ pub(crate) struct ChunkerJob {
     pub progress: Arc<SnapshotProgress>,
     pub progress_reporter: Arc<dyn SnapshotProgressReporter>,
     pub shutdown_signal: Arc<AtomicBool>,
+    pub is_stdin: bool,
 }
 
 pub(crate) struct ChunkerResult {
@@ -59,17 +60,31 @@ impl ChunkerPool {
 
                 let process =
                     |job: &ChunkerJob, bufs: &mut ReusableBuffers| -> Result<Option<StreamNode>> {
-                        processor::process_item_sync(
-                            &job.path,
-                            job.prev_node.as_ref(),
-                            job.next_node.as_ref(),
-                            job.diff_type,
-                            job.blob_saver.clone(),
-                            job.progress.as_ref(),
-                            job.progress_reporter.as_ref(),
-                            job.shutdown_signal.as_ref(),
-                            Some(bufs),
-                        )
+                        // IMPORTANT:
+                        // Keep the non-stdin as the favourable case for the branch predictor.
+                        // Also, stdin would only check this once in the whole snapshot.
+                        if !job.is_stdin {
+                            processor::process_item_sync(
+                                &job.path,
+                                job.prev_node.as_ref(),
+                                job.next_node.as_ref(),
+                                job.diff_type,
+                                job.blob_saver.clone(),
+                                job.progress.as_ref(),
+                                job.progress_reporter.as_ref(),
+                                job.shutdown_signal.as_ref(),
+                                Some(bufs),
+                            )
+                        } else {
+                            processor::process_stdin_sync(
+                                job.next_node.as_ref(),
+                                processor::StdinReader::new(),
+                                job.blob_saver.clone(),
+                                job.progress.as_ref(),
+                                job.progress_reporter.as_ref(),
+                                job.shutdown_signal.as_ref(),
+                            )
+                        }
                     };
 
                 while let Ok(msg) = rx.recv() {

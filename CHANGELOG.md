@@ -4,6 +4,9 @@
 
 ### Added
 
+- **`--stdin` for `snapshot`**: New `--stdin` flag to read backup data from
+  stdin as a single virtual file at `/stdin`, with full deduplication and
+  encryption.
 - **Interruptible `clean`**: The `clean` (and `forget --clean`) command can now
   be interrupted with SIGINT / SIGTERM. The shutdown signal is polled at safe
   checkpoints between GC phases.

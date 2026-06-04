@@ -320,6 +320,10 @@ Creates a new empty repository at the given location. Supported URL schemes:
 - SFTP: `sftp://user@host:port/path`
 - S3: `s3://bucket-name/path`
 
+> **SSH key support:** mapache supports Ed25519 and ECDSA keys for SFTP
+> authentication. RSA keys are **not** supported — use `ssh-keygen -t ed25519`
+> to generate a compatible key pair.
+
 You will be prompted for a username and password. A manifest file is created
 with a unique repository ID and the current mapache version. **Do not lose
 your password** — there is no password recovery mechanism.

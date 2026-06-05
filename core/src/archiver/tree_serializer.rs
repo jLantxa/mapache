@@ -16,8 +16,7 @@ use crate::{
         node::{Node, NodeType},
         tree::{StreamNode, Tree},
     },
-    mapache::ID,
-    mapache::traits::BlobSaver,
+    mapache::{ID, traits::BlobSaver},
 };
 
 /// Represents the expected number of children for a directory node.
@@ -319,14 +318,15 @@ mod tests {
     use anyhow::Result;
     use serde_json;
 
+    use super::*;
     use crate::{
         backend::WriteContents,
-        fs::node::{Node, NodeType},
-        fs::tree::{StreamNode, Tree},
+        fs::{
+            node::{Node, NodeType},
+            tree::{StreamNode, Tree},
+        },
         mapache::{BlobType, ID, SaveID, traits::BlobSaver},
     };
-
-    use super::*;
 
     /// In-memory BlobSaver for testing. Stores blobs by ID.
     struct MockBlobSaver {

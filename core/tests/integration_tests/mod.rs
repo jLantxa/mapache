@@ -4,15 +4,14 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use tempfile::tempdir;
-use zeroize::Zeroizing;
-
 use mapache::{
     backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
     commands::{Compression, GlobalArgs},
     mapache::{defaults::DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
     repository::repo::{Auth, Repository},
 };
+use tempfile::tempdir;
+use zeroize::Zeroizing;
 
 use crate::{TEST_QUIET, test_utils};
 
@@ -448,8 +447,10 @@ pub struct RestoreBuilder {
 
 impl RestoreBuilder {
     pub fn new(target: PathBuf) -> Self {
-        use mapache::commands::{UseSnapshot, cmd_restore};
-        use mapache::restorer::Strategy;
+        use mapache::{
+            commands::{UseSnapshot, cmd_restore},
+            restorer::Strategy,
+        };
         Self {
             args: cmd_restore::CmdArgs {
                 sparse: Some(false),

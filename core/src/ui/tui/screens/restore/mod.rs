@@ -23,13 +23,14 @@ use crate::{
         RestoreProgressReporter,
         tui::{
             app::{Screen, Transition},
+            screens::restore::{
+                config::{ConfigAction, RestoreConfig},
+                progress::RestoreEvent,
+            },
             widgets::TaskProgressState,
         },
     },
 };
-
-use config::{ConfigAction, RestoreConfig};
-use progress::RestoreEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum RestorePhase {

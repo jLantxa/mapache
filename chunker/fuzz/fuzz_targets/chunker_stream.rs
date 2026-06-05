@@ -1,7 +1,8 @@
 #![cfg_attr(fuzzing, no_main)]
+use std::io::Cursor;
+
 use chunker::{Chunker, Normalization};
 use libfuzzer_sys::fuzz_target;
-use std::io::Cursor;
 
 #[cfg(not(fuzzing))]
 fn main() {

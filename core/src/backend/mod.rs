@@ -14,15 +14,18 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use dry::DryBackend;
-use limiter::ThrottledBackend;
-use localfs::LocalFS;
 use percent_encoding::percent_decode_str;
-use s3::S3Backend;
 use url::Url;
 use zeroize::Zeroizing;
 
-use crate::{backend::sftp::SftpBackend, mapache::ContentIdType, ui};
+use crate::{
+    backend::{
+        dry::DryBackend, limiter::ThrottledBackend, localfs::LocalFS, s3::S3Backend,
+        sftp::SftpBackend,
+    },
+    mapache::ContentIdType,
+    ui,
+};
 
 /// Configuration for retry logic.
 #[derive(Debug, Clone)]

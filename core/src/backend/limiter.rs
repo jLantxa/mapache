@@ -381,9 +381,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_throttled_backend_read() -> Result<()> {
-        use crate::backend::Handle;
-        use crate::backend::mock::MockBackend;
         use std::path::Path;
+
+        use crate::backend::{Handle, mock::MockBackend};
 
         let mock = Arc::new(MockBackend::new());
         mock.put_file("file.txt", vec![0u8; 1000]);
@@ -407,9 +407,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_throttled_backend_write() -> Result<()> {
-        use crate::backend::mock::MockBackend;
-        use crate::backend::{Handle, WriteContents};
         use std::path::Path;
+
+        use crate::backend::{Handle, WriteContents, mock::MockBackend};
 
         let mock = Arc::new(MockBackend::new());
         // Limit: 1000 bytes/sec

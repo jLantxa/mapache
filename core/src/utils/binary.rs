@@ -63,5 +63,7 @@ pub(crate) fn get_exact<'a>(buf: &mut &'a [u8], len: usize) -> Result<&'a [u8]> 
 
 pub(crate) fn get_array<const N: usize>(buf: &mut &[u8]) -> Result<[u8; N]> {
     let slice = get_exact(buf, N)?;
-    Ok(slice.try_into().unwrap())
+    Ok(slice
+        .try_into()
+        .expect("get_exact returns a slice of exactly N bytes"))
 }

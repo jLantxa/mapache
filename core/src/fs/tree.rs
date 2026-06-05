@@ -791,10 +791,9 @@ pub async fn find_serialized_node(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use tempfile::tempdir;
-
     use anyhow::Result;
     use futures::StreamExt; // for collect(), boxed_local()
+    use tempfile::tempdir;
 
     use super::*;
 

@@ -12,6 +12,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Row, Table, TableState},
 };
+pub use retention::{RetentionAction, RetentionConfig};
 
 use crate::{
     mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
@@ -27,8 +28,6 @@ use crate::{
     },
     utils,
 };
-
-pub use retention::{RetentionAction, RetentionConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ForgetPhase {

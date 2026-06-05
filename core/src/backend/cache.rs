@@ -259,13 +259,15 @@ impl StorageBackend for CacheBackend {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use futures::future::join_all;
+
     use super::*;
     use crate::backend::{
         ContentIdType, StorageHint,
         mock::{BackendOp, MockBackend, MockEffect},
     };
-    use futures::future::join_all;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_cache_coalescing() -> Result<()> {

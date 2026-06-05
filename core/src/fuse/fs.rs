@@ -12,8 +12,10 @@ use parking_lot::RwLock;
 
 use crate::{
     fs::node::NodeType,
-    fuse::cache::{BlobCache, TreeCache},
-    fuse::stash::{NodeKind, Stash, TTL, node_to_fileattr},
+    fuse::{
+        cache::{BlobCache, TreeCache},
+        stash::{NodeKind, Stash, TTL, node_to_fileattr},
+    },
     mapache::{ID, traits::BlobLoader},
     repository::{
         repo::Repository,

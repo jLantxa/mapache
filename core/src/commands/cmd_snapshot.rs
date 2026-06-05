@@ -25,8 +25,11 @@ use crate::{
         defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
-    repository::snapshot::{SnapshotPair, SnapshotSummary},
-    repository::{lock::LockHandle, repo::Repository},
+    repository::{
+        lock::LockHandle,
+        repo::Repository,
+        snapshot::{SnapshotPair, SnapshotSummary},
+    },
     ui::{
         self, SnapshotProcessSummary, SnapshotProgressReporter,
         cli::{

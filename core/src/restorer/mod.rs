@@ -5,6 +5,12 @@
 
 pub(crate) mod node_restorer;
 
+#[cfg(not(unix))]
+use std::io::{Seek, Write};
+#[cfg(unix)]
+use std::os::unix::{fs::FileExt, io::AsRawFd};
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, File, OpenOptions},
@@ -15,14 +21,6 @@ use std::{
     },
 };
 
-#[cfg(not(unix))]
-use std::io::{Seek, Write};
-
-#[cfg(unix)]
-use std::os::unix::{fs::FileExt, io::AsRawFd};
-#[cfg(windows)]
-use std::os::windows::fs::FileExt;
-
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use futures::StreamExt;
@@ -31,7 +29,11 @@ use tokio::task::spawn_blocking;
 
 use crate::{
     backend::Handle,
-    fs::{self as repo_fs, node::Node, tree::SerializedNodeStream, tree::SerializedTreeStream},
+    fs::{
+        self as repo_fs,
+        node::Node,
+        tree::{SerializedNodeStream, SerializedTreeStream},
+    },
     mapache::{
         BlobType, ContentIdType, ID,
         defaults::{self},

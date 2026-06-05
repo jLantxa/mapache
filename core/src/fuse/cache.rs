@@ -1,7 +1,13 @@
-use crate::{fs::tree::Tree, mapache::ID, mapache::traits::BlobLoader, utils::collections::Lru};
+use std::sync::Arc;
+
 use anyhow::Result;
 use parking_lot::Mutex;
-use std::sync::Arc;
+
+use crate::{
+    fs::tree::Tree,
+    mapache::{ID, traits::BlobLoader},
+    utils::collections::Lru,
+};
 
 /// A cache for `Tree` objects that uses a Least Recently Used (LRU) eviction policy.
 pub(super) struct TreeCache<L: BlobLoader + ?Sized> {

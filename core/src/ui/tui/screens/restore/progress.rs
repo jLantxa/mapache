@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 
 use ratatui::{Frame, layout::Rect};
 

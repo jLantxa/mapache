@@ -4,9 +4,8 @@ mod tests {
     use std::fs;
 
     use anyhow::{Context, Result};
-    use rand::RngExt;
-
     use mapache::repository::repo::{OBJECTS_DIR, SNAPSHOTS_DIR};
+    use rand::RngExt;
 
     use crate::integration_tests::{TestContext, set_write_permission};
 

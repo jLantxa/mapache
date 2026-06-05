@@ -4,19 +4,17 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use colored::Colorize;
 
+pub use crate::fuse::fs::MapacheFS;
 use crate::{
     backend::new_backend_with_prompt,
     bundle::reader::BundleReader,
     commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
     fs,
     fuse::fs::MountOptions,
-    mapache::defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB,
-    mapache::traits::BlobLoader,
+    mapache::{defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB, traits::BlobLoader},
     ui,
     utils::size,
 };
-
-pub use crate::fuse::fs::MapacheFS;
 
 #[derive(Args, Debug)]
 #[clap(about = "Mount the repository or a .mapache bundle as a file system")]

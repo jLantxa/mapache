@@ -120,7 +120,7 @@ pub struct WithGlobal<T: clap::Args> {
     pub args: T,
 }
 
-/// CLI-parsable global options (all configurable fields are Option<T>)
+/// CLI-parsable global options (all configurable fields are `Option<T>`)
 #[derive(Parser, Debug, Clone, Merge, Deserialize, Default)]
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 #[serde(default, rename_all = "kebab-case")]

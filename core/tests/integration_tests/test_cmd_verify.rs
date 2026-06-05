@@ -9,7 +9,6 @@ mod tests {
     };
 
     use anyhow::{Context, Ok, Result};
-
     use mapache::{
         backend::{BackendNode, localfs::LocalFS, read_backend_dir},
         repository::repo::{INDEX_DIR, OBJECTS_DIR},

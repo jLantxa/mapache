@@ -3,12 +3,11 @@
 use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
-use tokio::time::{Duration, sleep};
-
 use mapache::{
     mapache::defaults::TEST_REPO_CONFIG,
     repository::repo::{LOCKS_DIR, Repository},
 };
+use tokio::time::{Duration, sleep};
 
 use crate::integration_tests::TestContext;
 

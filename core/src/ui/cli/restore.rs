@@ -6,10 +6,9 @@ use std::{
     },
 };
 
-use parking_lot::Mutex;
-
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use parking_lot::Mutex;
 
 use crate::{
     mapache::global::GlobalOpts,

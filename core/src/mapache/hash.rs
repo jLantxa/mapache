@@ -51,8 +51,9 @@ impl io::Write for Hasher {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
+    use super::*;
 
     #[test]
     fn test_one_shot_hash() {

@@ -19,8 +19,8 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     fs::tree::SerializedNodeStream,
     mapache::{ID, global::GlobalOpts},
-    repository::repo::Repository,
     repository::{
+        repo::Repository,
         snapshot::SnapshotStream,
         verify::{verify_pack, verify_snapshot_refs},
     },
@@ -429,7 +429,7 @@ async fn verify_packs_physically(
         .with_key(
             "custom_elapsed",
             |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                write!(w, "{}", utils::pretty_print_duration(state.elapsed())).unwrap()
+                let _ = write!(w, "{}", utils::pretty_print_duration(state.elapsed()));
             },
         )
         .with_key(

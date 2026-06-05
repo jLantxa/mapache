@@ -334,12 +334,13 @@ pub fn get_intermediate_paths(root: &Path, paths: &[PathBuf]) -> (usize, BTreeMa
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::{
         collections::BTreeMap,
         env,
         path::{Path, PathBuf},
     };
+
+    use super::*;
 
     #[test]
     fn test_get_absolute_normalized_path() -> Result<()> {

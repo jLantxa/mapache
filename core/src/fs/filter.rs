@@ -641,8 +641,9 @@ pub(crate) fn merge_filtered_paths(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::{Path, PathBuf};
+
+    use super::*;
 
     #[test]
     fn test_path_filter_existing_behavior() {

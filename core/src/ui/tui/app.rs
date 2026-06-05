@@ -5,12 +5,11 @@ use async_trait::async_trait;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::{Frame, Terminal, backend::Backend};
 
-use crate::repository::{lock::LockHandle, repo::Repository};
-
-use crate::ui::tui::screens::dashboard::DashboardScreen;
-
-use crate::commands::cmd_forget::CmdArgs as ForgetCmdArgs;
-use crate::commands::cmd_snapshot::CmdArgs as SnapshotCmdArgs;
+use crate::{
+    commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
+    repository::{lock::LockHandle, repo::Repository},
+    ui::tui::screens::dashboard::DashboardScreen,
+};
 
 #[async_trait]
 pub trait Screen: Send {

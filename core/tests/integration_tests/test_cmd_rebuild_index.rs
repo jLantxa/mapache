@@ -4,7 +4,6 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use anyhow::{Context, Result};
-
     use mapache::{backend::localfs::LocalFS, repository::repo::INDEX_DIR};
 
     use crate::integration_tests::{TestContext, delete_all_files_from};

@@ -274,9 +274,8 @@ mod tests {
 
     use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
 
-    use crate::repository::snapshot::SnapshotEntryList;
-
     use super::*;
+    use crate::repository::snapshot::SnapshotEntryList;
 
     /// Creates a mock snapshot ID from a u32 value in the hex string.
     fn create_id(val: u32) -> ID {

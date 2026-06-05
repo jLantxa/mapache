@@ -1379,12 +1379,11 @@ mod tests {
     use rstest::rstest;
     use tempfile::tempdir;
 
+    use super::*;
     use crate::{
         backend::mock::MockBackend, commands::Compression, mapache::defaults::TEST_REPO_CONFIG,
         repository::lock::LOCK_EXPIRE_TIMEOUT, utils,
     };
-
-    use super::*;
 
     fn make_auth() -> Auth {
         Auth {

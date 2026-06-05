@@ -8,8 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    mapache::ID,
-    mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
+    mapache::{ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::snapshot::SnapshotSummary,
     ui::tui::{screens::snapshot::progress::SummaryResult, theme, widgets::Toast},
     utils,

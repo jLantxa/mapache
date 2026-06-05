@@ -29,7 +29,6 @@ use crate::{
     ui::{RestoreProgressReporter, SnapshotProgressReporter, cli},
     utils::format_size_binary,
 };
-
 #[cfg(all(feature = "fuse", unix))]
 use crate::{
     commands::cleanup::CleanupHandler,

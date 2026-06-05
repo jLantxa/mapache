@@ -62,8 +62,9 @@ impl LocalFS {
 
         #[cfg(unix)]
         {
-            use crate::backend::set_readonly_mode;
             use std::os::unix::fs::PermissionsExt;
+
+            use crate::backend::set_readonly_mode;
 
             let mode = set_readonly_mode(perms.mode(), readonly, metadata.is_dir());
             perms.set_mode(mode);
@@ -97,8 +98,9 @@ impl LocalFS {
 
         #[cfg(unix)]
         {
-            use crate::backend::set_readonly_mode;
             use std::os::unix::fs::PermissionsExt;
+
+            use crate::backend::set_readonly_mode;
 
             let mode = set_readonly_mode(perms.mode(), readonly, metadata.is_dir());
             perms.set_mode(mode);
@@ -396,9 +398,8 @@ impl StorageBackend for LocalFS {
 mod tests {
     use tempfile::tempdir;
 
-    use crate::backend::BackendUrl;
-
     use super::*;
+    use crate::backend::BackendUrl;
 
     #[test]
     fn test_local_backend_url() {

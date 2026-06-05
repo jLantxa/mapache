@@ -6,6 +6,9 @@ members = [
     "chunker/fuzz"
 ]
 
+[workspace.lints.rust]
+warnings = "deny"
+
 [workspace.package]
 repository = "https://github.com/jlantxa/mapache"
 

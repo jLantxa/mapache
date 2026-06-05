@@ -570,9 +570,8 @@ impl StorageBackend for MockBackend {
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::Handle;
-
     use super::*;
+    use crate::backend::Handle;
 
     #[tokio::test]
     async fn test_write_and_read_file() {

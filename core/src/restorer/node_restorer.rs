@@ -1,15 +1,11 @@
 //! The node_restorer module provides lower-level functionality for restoring
 //! individual nodes (files, directories, symlinks) and their associated metadata.
 
-use std::{sync::Arc, time::SystemTime};
-
-#[cfg(unix)]
-use std::{fs::Permissions, os::unix::fs::PermissionsExt};
-
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
-
-use std::{fs::OpenOptions, io::Write, path::Path};
+use std::{fs::OpenOptions, io::Write, path::Path, sync::Arc, time::SystemTime};
+#[cfg(unix)]
+use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
 use anyhow::{Context, Result};
 use filetime::{FileTime, set_file_times};
@@ -501,13 +497,13 @@ fn try_restore_symlink_metadata(
 #[cfg(test)]
 #[allow(unused_imports)]
 mod tests {
-    use chrono::{Duration, Local};
     use std::time::SystemTime;
+
+    use chrono::{Duration, Local};
     use tempfile::tempdir;
 
-    use crate::{mapache::global::GlobalOpts, ui};
-
     use super::*;
+    use crate::{mapache::global::GlobalOpts, ui};
 
     #[tokio::test]
     async fn test_restore_mtime() -> Result<()> {

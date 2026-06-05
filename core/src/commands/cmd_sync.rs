@@ -15,15 +15,12 @@ use serde::Serialize;
 
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
-    commands::{ToExitCode, cleanup::CleanupHandler, fail},
-    mapache::defaults::DEFAULT_PACK_SIZE,
-    mapache::global::GlobalOpts,
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail},
+    mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
     repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self},
 };
-
-use crate::commands::GlobalArgs;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SyncError {

@@ -1,9 +1,10 @@
 #![cfg(test)]
 
 mod tests {
-    use crate::integration_tests::TestContext;
     use anyhow::Result;
     use tempfile::tempdir;
+
+    use crate::integration_tests::TestContext;
 
     #[tokio::test]
     async fn test_run_completion_and_check_stdout() -> Result<()> {

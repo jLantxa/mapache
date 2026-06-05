@@ -231,4 +231,9 @@ macro_rules! verbose_2 {
     ($($arg:tt)*) => { $crate::ui::cli::log_with_level!(3, $($arg)*) };
 }
 
-pub use {error, log, log_with_level, verbose_1, verbose_2, warning};
+pub use error;
+pub use log;
+pub use log_with_level;
+pub use verbose_1;
+pub use verbose_2;
+pub use warning;

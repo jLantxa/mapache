@@ -8,7 +8,6 @@ use std::{
 };
 
 use parking_lot::Mutex;
-
 use serde::Serialize;
 
 use crate::{

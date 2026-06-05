@@ -1,5 +1,6 @@
-use rand::RngExt;
 use std::ops::RangeInclusive;
+
+use rand::RngExt;
 
 const TAB: &str = "    ";
 

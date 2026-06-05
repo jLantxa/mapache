@@ -20,6 +20,7 @@ use crate::{
         },
         get_absolute_normalized_path,
     },
+    log, log_always,
     mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
     repository::{repo::Repository, snapshot::SnapshotPair},
     restorer::{self, RestoreOptions, Strategy},
@@ -29,9 +30,6 @@ use crate::{
     },
     utils,
 };
-
-use crate::log;
-use crate::log_always;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RestoreError {

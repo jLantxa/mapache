@@ -15,15 +15,18 @@ use tokio::sync::mpsc;
 use crate::{
     commands::cmd_snapshot,
     repository::{lock::LockHandle, repo::Repository},
-    ui::tui::app::{Screen, Transition},
+    ui::tui::{
+        app::{Screen, Transition},
+        screens::snapshot::{
+            config::{ConfigAction, SnapshotForm, render_config},
+            progress::{
+                ProgressAction, ProgressState, SnapshotEvent, SummaryResult,
+                TuiSnapshotProgressReporter, handle_progress_key, render_progress,
+            },
+            summary::{SummaryAction, handle_summary_key, render_summary},
+        },
+    },
 };
-
-use config::{ConfigAction, SnapshotForm, render_config};
-use progress::{
-    ProgressAction, ProgressState, SnapshotEvent, SummaryResult, TuiSnapshotProgressReporter,
-    handle_progress_key, render_progress,
-};
-use summary::{SummaryAction, handle_summary_key, render_summary};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SnapshotPhase {

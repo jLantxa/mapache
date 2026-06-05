@@ -1,8 +1,9 @@
 #![cfg(test)]
 
 mod tests {
-    use crate::integration_tests::TestContext;
     use anyhow::Result;
+
+    use crate::integration_tests::TestContext;
 
     #[tokio::test]
     async fn test_cmd_rechunk() -> Result<()> {

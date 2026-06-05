@@ -1,7 +1,9 @@
 use std::path::Path;
 
-use crate::fs::tree::NodeDiff;
-use crate::ui::{GcProgressReporter, GcTask, RestoreProgressReporter, SnapshotProgressReporter};
+use crate::{
+    fs::tree::NodeDiff,
+    ui::{GcProgressReporter, GcTask, RestoreProgressReporter, SnapshotProgressReporter},
+};
 
 /// A no-op implementation of `SnapshotProgressReporter`.
 pub struct NoopSnapshotReporter;

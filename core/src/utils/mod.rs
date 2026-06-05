@@ -9,12 +9,12 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Duration, Local};
+use zeroize::Zeroizing;
 
 use crate::{
     mapache::vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     repository::repo::Auth,
 };
-use zeroize::Zeroizing;
 
 // --- Constants ---
 

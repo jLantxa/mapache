@@ -1,7 +1,9 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread::JoinHandle;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    thread::JoinHandle,
+};
 
 use colored::Colorize;
 use crossbeam_channel::Sender;

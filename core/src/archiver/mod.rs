@@ -10,8 +10,7 @@ pub(crate) mod tree_serializer;
 
 use std::{
     collections::BTreeSet,
-    path::Path,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -19,11 +18,10 @@ use std::{
     time::SystemTime,
 };
 
-use parking_lot::Mutex;
-
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 use futures::StreamExt;
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -610,14 +608,13 @@ mod tests {
     use tempfile::tempdir;
     use zeroize::Zeroizing;
 
+    use super::*;
     use crate::{
         backend::mock::{BackendOp, MockBackend, MockEffect},
         mapache::defaults::TEST_REPO_CONFIG,
         repository::repo::Auth,
         ui::noop::NoopSnapshotReporter,
     };
-
-    use super::*;
 
     #[tokio::test]
     async fn test_archiver_atomic_ordering() -> Result<()> {
@@ -832,12 +829,14 @@ mod tests {
     #[cfg(windows)]
     impl StdinPipe {
         fn new(data: &[u8]) -> Self {
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::Storage::FileSystem::WriteFile;
-            use windows_sys::Win32::System::Console::{
-                GetStdHandle, STD_INPUT_HANDLE, SetStdHandle,
+            use windows_sys::Win32::{
+                Foundation::CloseHandle,
+                Storage::FileSystem::WriteFile,
+                System::{
+                    Console::{GetStdHandle, STD_INPUT_HANDLE, SetStdHandle},
+                    Pipes::CreatePipe,
+                },
             };
-            use windows_sys::Win32::System::Pipes::CreatePipe;
 
             let mut read_handle = std::ptr::null_mut();
             let mut write_handle = std::ptr::null_mut();
@@ -873,8 +872,10 @@ mod tests {
     #[cfg(windows)]
     impl Drop for StdinPipe {
         fn drop(&mut self) {
-            use windows_sys::Win32::Foundation::CloseHandle;
-            use windows_sys::Win32::System::Console::{STD_INPUT_HANDLE, SetStdHandle};
+            use windows_sys::Win32::{
+                Foundation::CloseHandle,
+                System::Console::{STD_INPUT_HANDLE, SetStdHandle},
+            };
             unsafe {
                 SetStdHandle(STD_INPUT_HANDLE, self.saved_stdin);
                 CloseHandle(self.read_handle);

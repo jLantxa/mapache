@@ -1,7 +1,13 @@
 /target
 /build
 
-.antigravitycli
-.vscode
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
+# Project-specific
+.antigravitycli
 /_*

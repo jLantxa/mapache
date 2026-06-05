@@ -7,6 +7,9 @@ description = "FastCDC (Fast Content-Defined Chunking) implementation"
 repository.workspace = true
 license = "GPL-3.0-only"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "chunker-lookup"
 path = "src/bin/lookup_gen.rs"

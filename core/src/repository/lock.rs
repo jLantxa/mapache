@@ -142,7 +142,8 @@ impl Lock {
     pub fn is_expired(&self) -> bool {
         let now = Local::now();
         // LOCK_EXPIRE_TIMEOUT is a compile-time constant, so from_std cannot fail.
-        let expire_timeout_chrono = chrono::Duration::from_std(LOCK_EXPIRE_TIMEOUT).unwrap();
+        let expire_timeout_chrono = chrono::Duration::from_std(LOCK_EXPIRE_TIMEOUT)
+            .expect("LOCK_EXPIRE_TIMEOUT is a valid Duration");
 
         now.signed_duration_since(self.timestamp) > expire_timeout_chrono
     }
@@ -173,9 +174,11 @@ impl Lock {
 
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::{CloseHandle, FALSE, STILL_ACTIVE};
-            use windows_sys::Win32::System::Threading::{
-                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            use windows_sys::Win32::{
+                Foundation::{CloseHandle, FALSE, STILL_ACTIVE},
+                System::Threading::{
+                    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                },
             };
 
             unsafe {
@@ -312,8 +315,9 @@ impl Drop for LockHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::{Duration as ChronoDuration, Local};
+
+    use super::*;
 
     #[test]
     fn test_lock_basic_properties() {

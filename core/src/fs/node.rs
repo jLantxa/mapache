@@ -1,18 +1,15 @@
+#[cfg(unix)]
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::{
     collections::BTreeMap,
     fs::Metadata as FsMetadata,
     path::{Path, PathBuf},
     time::SystemTime,
 };
-
-#[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
-
-#[cfg(target_os = "linux")]
-use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
-
-#[cfg(windows)]
-use std::os::windows::fs::MetadataExt;
 
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
@@ -754,8 +751,9 @@ pub(crate) fn node_to_string(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::SystemTime;
+
+    use super::*;
 
     #[test]
     fn test_node_type_predicates() {

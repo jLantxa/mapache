@@ -3,12 +3,11 @@
 mod tests {
     use std::sync::Arc;
 
+    use anyhow::{Context, Result};
     use mapache::{
         backend::localfs::LocalFS, mapache::defaults::TEST_REPO_CONFIG,
         repository::repo::Repository,
     };
-
-    use anyhow::{Context, Result};
 
     use crate::integration_tests::TestContext;
 

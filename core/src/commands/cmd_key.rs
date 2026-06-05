@@ -16,8 +16,7 @@ use crate::{
     },
     ui::{
         self,
-        cli::table::Table,
-        cli::{request_auth, request_new_auth},
+        cli::{request_auth, request_new_auth, table::Table},
     },
     utils::{self},
 };

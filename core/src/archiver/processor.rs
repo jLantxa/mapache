@@ -21,8 +21,7 @@ use crate::{
         node::Node,
         tree::{NodeDiff, StreamNode},
     },
-    mapache::traits::BlobSaver,
-    mapache::{self, BlobType, ID, SaveID},
+    mapache::{self, BlobType, ID, SaveID, traits::BlobSaver},
     ui::SnapshotProgressReporter,
 };
 
@@ -398,6 +397,7 @@ mod tests {
 
     use zeroize::Zeroizing;
 
+    use super::*;
     use crate::{
         backend::mock::MockBackend,
         mapache::defaults::TEST_REPO_CONFIG,
@@ -405,8 +405,6 @@ mod tests {
         ui::noop::NoopSnapshotReporter,
         utils::size,
     };
-
-    use super::*;
     async fn setup_repo() -> Arc<Repository> {
         let auth = Auth {
             username: "test".to_string(),

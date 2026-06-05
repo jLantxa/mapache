@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::StorageHint,
     mapache::{self, BlobType, ContentIdType, ID},
-    repository::packer::PackedBlobDescriptor,
-    repository::repo::{Repository, SizePair},
+    repository::{
+        packer::PackedBlobDescriptor,
+        repo::{Repository, SizePair},
+    },
     utils::collections::{BloomFilter, IdIndexSet, IdMap, IdSet, ShardedIdSet},
 };
 

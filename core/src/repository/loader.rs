@@ -5,9 +5,7 @@ use futures::stream::{self, StreamExt};
 
 use crate::{
     backend::Handle,
-    mapache::{
-        defaults, {BlobType, ContentIdType, ID},
-    },
+    mapache::{BlobType, ContentIdType, ID, defaults},
     repository::{index::BlobLocator, repo::Repository},
 };
 

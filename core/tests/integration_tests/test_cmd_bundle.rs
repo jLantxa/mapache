@@ -1,5 +1,6 @@
-use crate::integration_tests::{TestContext, assert_times_equal};
 use anyhow::Result;
+
+use crate::integration_tests::{TestContext, assert_times_equal};
 
 #[tokio::test]
 async fn test_bundle_and_extract() -> Result<()> {

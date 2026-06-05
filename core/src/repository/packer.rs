@@ -379,7 +379,9 @@ impl PackSaver {
         // We need 'num_packers' for the workers + 2 for the active slots (data/tree) in the main thread.
         for _ in 0..(num_packers + 2) {
             let p = Packer::new(max_packer_size as usize, secure_storage.clone())?;
-            empty_tx.send(p).unwrap();
+            empty_tx
+                .send(p)
+                .expect("channel capacity matches number of packers pre-filled");
         }
 
         let first_err = Arc::new(Mutex::new(None));
@@ -661,9 +663,10 @@ impl PackSaver {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::{mapache::defaults::DEFAULT_COMPRESSION, repository::keys::KeyManager};
-    use std::sync::Arc;
 
     fn add_blob(packer: &mut Packer, data: &[u8], secure_storage: &SecureStorage) -> Result<()> {
         let raw_size = data.len() as u64;

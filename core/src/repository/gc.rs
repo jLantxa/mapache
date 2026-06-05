@@ -682,6 +682,7 @@ mod tests {
 
     use chrono::Local;
 
+    use super::*;
     use crate::{
         backend::{
             StorageBackend, StorageHint,
@@ -695,8 +696,6 @@ mod tests {
         repository::{repo::Auth, snapshot::Snapshot},
         ui::noop::NoopGcReporter,
     };
-
-    use super::*;
 
     fn make_auth() -> Auth {
         Auth {

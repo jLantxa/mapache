@@ -10,6 +10,11 @@
 - **Interruptible `clean`**: The `clean` (and `forget --clean`) command can now
   be interrupted with SIGINT / SIGTERM. The shutdown signal is polled at safe
   checkpoints between GC phases.
+- **JSON output for `find`**: The `find` command now supports `--json` output,
+  printing an NDJSON stream with `{ entries: [{ snapshot_id, path, node }] }`.
+- **Error codes for `find` and `mount`**: Both commands now exit with
+  meaningful error codes: `10` on repo open failure, `20` on command failure,
+  and `130` on interrupt (mount only).
 
 ### Fixes
 

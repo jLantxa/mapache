@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::Args;
 use colored::Colorize;
 
@@ -8,13 +8,26 @@ pub use crate::fuse::fs::MapacheFS;
 use crate::{
     backend::new_backend_with_prompt,
     bundle::reader::BundleReader,
-    commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     fs,
     fuse::fs::MountOptions,
     mapache::{defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB, traits::BlobLoader},
     ui,
     utils::size,
 };
+
+#[derive(Debug, Clone, Copy)]
+pub enum MountError {
+    RepoOpenFail = 10,
+    MountFailed = 20,
+    Interrupted = 130,
+}
+
+impl ToExitCode for MountError {
+    fn to_exit_code(&self) -> i32 {
+        *self as i32
+    }
+}
 
 #[derive(Args, Debug)]
 #[clap(about = "Mount the repository or a .mapache bundle as a file system")]
@@ -57,10 +70,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             std::fs::create_dir_all(&actual_mountpoint).context("Could not create mount point")?;
             created_mountpoint = true;
         } else {
-            bail!("Mountpoint doesn't exist");
+            return Err(fail("Mountpoint doesn't exist", MountError::MountFailed));
         }
     } else if !actual_mountpoint.is_dir() {
-        bail!("Mountpoint must be a directory");
+        return Err(fail(
+            "Mountpoint must be a directory",
+            MountError::MountFailed,
+        ));
     }
 
     let canonical_mountpoint = fs::get_absolute_normalized_path(&actual_mountpoint)?;
@@ -79,14 +95,31 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        new_backend_with_prompt(global_args.backend_options(false))
+            .await
+            .map_err(|e| {
+                fail(
+                    format!("Failed to initialize backend: {}", e),
+                    MountError::MountFailed,
+                )
+            })?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
         |repo, _, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new().map_err(|e| {
+                fail(
+                    format!("Failed to initialize cleanup handler: {}", e),
+                    MountError::MountFailed,
+                )
+            })?;
             cleanup_handler.add_lock(lock_handle.clone());
-            repo.reload_master_index().await?;
+            repo.reload_master_index().await.map_err(|e| {
+                fail(
+                    format!("Failed to reload master index: {}", e),
+                    MountError::MountFailed,
+                )
+            })?;
 
             let allow_other = args.allow_other;
             let metadata_only = args.metadata_only;
@@ -109,7 +142,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     },
                 )
             })
-            .await?;
+            .await
+            .map_err(|e| fail(format!("Mount interrupted: {}", e), MountError::Interrupted))?;
 
             if created_mountpoint {
                 let _ = std::fs::remove_dir_all(&canonical_mountpoint);
@@ -118,6 +152,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
     )
     .await
+    .map_err(|e| {
+        if e.is::<crate::commands::error::MapacheError>() {
+            e
+        } else {
+            fail(
+                format!("Failed to open repository: {}", e),
+                MountError::RepoOpenFail,
+            )
+        }
+    })
 }
 
 async fn mount_bundle(
@@ -132,11 +176,21 @@ async fn mount_bundle(
         None => crate::ui::cli::request_password("Enter bundle password")?,
     };
 
-    let reader = BundleReader::open(&global_args.repo, &password)?;
+    let reader = BundleReader::open(&global_args.repo, &password).map_err(|e| {
+        fail(
+            format!("Failed to open bundle: {}", e),
+            MountError::MountFailed,
+        )
+    })?;
     let root_tree_id = reader.trailer.root_tree;
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 
-    let cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new().map_err(|e| {
+        fail(
+            format!("Failed to initialize cleanup handler: {}", e),
+            MountError::MountFailed,
+        )
+    })?;
     ui::cli::log!(
         "Mounting bundle {} in {}",
         global_args.repo.bold(),
@@ -162,7 +216,8 @@ async fn mount_bundle(
             },
         )
     })
-    .await?;
+    .await
+    .map_err(|e| fail(format!("Mount interrupted: {}", e), MountError::Interrupted))?;
 
     if created_mountpoint {
         let _ = std::fs::remove_dir_all(&mp_clone);

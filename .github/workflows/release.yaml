@@ -1,0 +1,84 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref (tag, branch, or commit SHA)
+        required: true
+        type: string
+      features:
+        description: Features to enable
+        required: false
+        default: default
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          load: true
+          tags: mapache-builder:latest
+          build-args: |
+            BUILD_SOURCE=local
+            GIT_REF=${{ inputs.ref }}
+            FEATURES=${{ inputs.features }}
+            MAPACHE_RELEASE_BUILD=true
+            CACHE_BREAKER=${{ github.run_id }}
+
+      - name: Extract artifacts
+        run: |
+          docker create --name mapache-artifacts mapache-builder:latest
+          mkdir -p artifacts
+          docker cp mapache-artifacts:/artifacts/. artifacts/
+          docker rm mapache-artifacts
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          cd artifacts
+          safe_ref="${{ inputs.ref }}"
+          safe_ref="${safe_ref//\//-}"
+          ls -la
+          for f in mapache_${safe_ref}_linux_*; do
+            if [ -f "$f" ]; then
+              tar -cJf "${f}.tar.xz" "$f"
+              rm "$f"
+            fi
+          done
+          for f in mapache_${safe_ref}_win_*; do
+            if [ -f "$f" ]; then
+              base="${f%.exe}"
+              zip -m "${base}.zip" "$f"
+            fi
+          done
+          for f in mapache_${safe_ref}_mac_*; do
+            if [ -f "$f" ]; then
+              zip -m "${f}.zip" "$f"
+            fi
+          done
+          echo "Packaged artifacts:"
+          ls -la
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: ${{ inputs.ref }}
+          name: ${{ inputs.ref }}
+          files: artifacts/*

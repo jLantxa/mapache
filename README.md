@@ -2,6 +2,7 @@
 
 ![Badge](https://github.com/jlantxa/mapache/workflows/main/badge.svg)
 
+
 Mapache is a **fast, secure, deduplicating, incremental backup tool**
 written in Rust.
 

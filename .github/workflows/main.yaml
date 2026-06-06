@@ -18,6 +18,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - uses: swatinem/rust-cache@v2
       - name: Check format
         run: cargo fmt --check
 
@@ -25,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: swatinem/rust-cache@v2
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   clippy:
@@ -37,7 +39,7 @@ jobs:
           components: clippy
       - uses: swatinem/rust-cache@v2
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     runs-on: ${{ matrix.os }}
@@ -59,3 +61,15 @@ jobs:
           else
             cargo test --verbose
           fi
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-audit
+      - name: Run audit
+        run: cargo audit
+

@@ -206,7 +206,14 @@ pub async fn find_in_snapshot(
     pattern: &str,
 ) -> Result<Vec<(PathBuf, Node)>> {
     let root_tree_id = snapshot.tree;
-    let glob_rule = GlobRule::new(Path::new(pattern));
+    let starts_with_slash = pattern.starts_with('/');
+    let pattern = pattern.trim_start_matches('/');
+    let search_path = if starts_with_slash || pattern.contains('/') {
+        PathBuf::from(pattern)
+    } else {
+        Path::new("**").join(pattern)
+    };
+    let glob_rule = GlobRule::new(&search_path);
     let mut stream =
         SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None).await?;
     let mut results = Vec::new();

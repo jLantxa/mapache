@@ -15,6 +15,10 @@
 - **Error codes for `find` and `mount`**: Both commands now exit with
   meaningful error codes: `10` on repo open failure, `20` on command failure,
   and `130` on interrupt (mount only).
+- **Recursive filename search**: `find` now searches recursively when the
+  pattern does not contain a `/` (e.g. `find file.txt` matches in any
+  subdirectory). Use a leading `/` to restrict the search to the root
+  (`find /file.txt`).
 
 ### Fixes
 

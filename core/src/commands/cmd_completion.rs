@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Args, CommandFactory};
 use clap_complete::Shell;
 
-use crate::commands;
+use crate::{commands, ui};
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Generate autocompletion scripts")]
@@ -29,7 +29,7 @@ pub fn run(args: &CmdArgs) -> Result<()> {
     clap_complete::generate_to(args.shell, &mut cmd, bin_name, &args.path)
         .with_context(|| format!("Failed to generate completion for {:?}", args.shell))?;
 
-    println!(
+    ui::cli::log!(
         "Completion script for {:?} written to {}",
         args.shell,
         args.path.display()

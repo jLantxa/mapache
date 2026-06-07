@@ -260,7 +260,6 @@ pub fn restore_times(
 
 /// Attempts to restore all metadata (times, permissions, ownership, xattrs, flags) for a node.
 /// This is a best-effort operation and will log warnings on failure.
-#[allow(unused_variables)]
 pub(crate) fn try_restore_node_metadata(
     metadata: &Metadata,
     is_symlink: bool,
@@ -495,7 +494,6 @@ fn try_restore_symlink_metadata(
 }
 
 #[cfg(test)]
-#[allow(unused_imports)]
 mod tests {
     use std::time::SystemTime;
 
@@ -503,7 +501,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{mapache::global::GlobalOpts, ui};
+    use crate::ui;
 
     #[tokio::test]
     async fn test_restore_mtime() -> Result<()> {

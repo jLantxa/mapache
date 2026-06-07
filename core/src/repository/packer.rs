@@ -300,6 +300,14 @@ impl Packer {
             .context("Could not read footer length")?;
         let encoded_footer_length = u32::from_le_bytes(footer_length_bytes) as usize;
 
+        if encoded_footer_length + 4 > footer_data.len() {
+            bail!(
+                "Pack footer length {} exceeds data length {}",
+                encoded_footer_length,
+                footer_data.len()
+            );
+        }
+
         let footer_blob_info = secure_storage.decode(
             &footer_data[(footer_data.len() - encoded_footer_length - 4)..footer_data.len() - 4],
         )?;

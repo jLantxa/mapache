@@ -159,14 +159,14 @@ impl client::Handler for MapacheSftpHandler {
         // Host not found in known_hosts. Prompt the user.
         let fingerprint =
             crate::utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default());
-        println!(
+        ui::cli::log!(
             "The authenticity of host '{}' can't be established.",
-            host_port
+            host_port.cyan()
         );
-        println!(
+        ui::cli::log!(
             "{} key fingerprint is {}.",
             server_public_key.algorithm().as_str(),
-            fingerprint
+            fingerprint.yellow()
         );
 
         let prompt = "Are you sure you want to continue connecting (yes/no/[fingerprint])?";
@@ -176,8 +176,8 @@ impl client::Handler for MapacheSftpHandler {
 
         if input == "yes" || input == fingerprint.to_lowercase() {
             // Save to known_hosts
-            println!(
-                "Warning: Permanently added '{}' ({}) to the list of known hosts.",
+            ui::cli::warning!(
+                "Permanently added '{}' ({}) to the list of known hosts.",
                 self.host,
                 server_public_key.algorithm().as_str()
             );

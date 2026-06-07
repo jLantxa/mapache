@@ -121,7 +121,7 @@ impl PipelineStatus {
 
     fn is_failed(&self) -> bool {
         self.fatal_error_flag.load(Ordering::Acquire)
-            || self.shutdown_signal.load(Ordering::Relaxed)
+            || self.shutdown_signal.load(Ordering::Acquire)
     }
 }
 

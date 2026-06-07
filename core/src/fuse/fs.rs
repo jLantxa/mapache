@@ -287,9 +287,20 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
     ) {
         tracing::debug!(target: "fuse", "READDIR ino={}, offset={}", ino.0, offset);
         let entries = self.rt_handle.block_on(async {
-            let _ = self.ensure_loaded(ino).await;
-            self.stash.read().read_dir(ino, offset)
+            if let Err(e) = self.ensure_loaded(ino).await {
+                tracing::error!(target: "fuse", "Failed to load directory {}: {}", ino.0, e);
+                return None;
+            }
+            Some(self.stash.read().read_dir(ino, offset))
         });
+
+        let entries = match entries {
+            Some(entries) => entries,
+            None => {
+                reply.error(Errno::EIO);
+                return;
+            }
+        };
 
         for (i, (child_ino, file_type, name)) in entries.into_iter().enumerate() {
             let next_offset = offset + (i as u64) + 1;

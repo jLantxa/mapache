@@ -297,12 +297,12 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
 
             let to_read = needed.min(self.buffer.capacity() - cur_len);
 
-            // SAFETY: `cur_len + to_read` ≤ `self.buffer.capacity()`, so the
-            // pointer range is within the pre-allocated spare capacity. The bytes
-            // in this region are uninitialized but that is fine for a read buffer.
-            let buf = unsafe {
-                std::slice::from_raw_parts_mut(self.buffer.as_mut_ptr().add(cur_len), to_read)
-            };
+            let spare = self.buffer.spare_capacity_mut();
+            let uninit = &mut spare[..to_read];
+            // SAFETY: `u8` accepts any bit pattern; `read()` immediately
+            // overwrites the uninitialized region before any read occurs.
+            let buf =
+                unsafe { std::slice::from_raw_parts_mut(uninit.as_mut_ptr() as *mut u8, to_read) };
 
             match self.source.read(buf) {
                 Ok(0) => {

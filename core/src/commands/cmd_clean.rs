@@ -137,7 +137,7 @@ pub async fn run_with_repo(
     )
     .await
     .map_err(|e| {
-        if shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
+        if shutdown_signal.load(std::sync::atomic::Ordering::Acquire) {
             tracing::info!(target: "clean", "GC scan interrupted by user");
             reporter.finalize();
             if !json_output {
@@ -181,7 +181,7 @@ pub async fn run_with_repo(
     } else {
         tracing::info!(target: "clean", "Executing GC plan");
         let gc_sizes = plan.execute(reporter.clone()).await.map_err(|e| {
-            if shutdown_signal.load(std::sync::atomic::Ordering::Relaxed) {
+            if shutdown_signal.load(std::sync::atomic::Ordering::Acquire) {
                 tracing::info!(target: "clean", "GC execution interrupted by user");
                 reporter.finalize();
                 if !json_output {

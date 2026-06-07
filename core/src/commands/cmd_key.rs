@@ -74,7 +74,6 @@ pub struct CmdArgs {
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
-    println!();
     match &args.subcommand {
         KeySubcommand::List => run_list(global_args).await,
         KeySubcommand::Add(args) => run_add(global_args, args).await,
@@ -104,7 +103,7 @@ async fn run_list(global_args: &GlobalArgs) -> Result<()> {
         ]);
     }
 
-    println!("{}", table.render());
+    ui::cli::log!("{}", table.render());
 
     Ok(())
 }

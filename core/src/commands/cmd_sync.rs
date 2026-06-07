@@ -271,7 +271,7 @@ async fn sync_backends(
         if json_out {
             let total = to_delete.len();
             for (i, node) in to_delete.iter().enumerate() {
-                if shutdown_signal.load(Ordering::Relaxed) {
+                if shutdown_signal.load(Ordering::Acquire) {
                     bail!("Interrupted");
                 }
 
@@ -310,7 +310,7 @@ async fn sync_backends(
             );
 
             for node in to_delete {
-                if shutdown_signal.load(Ordering::Relaxed) {
+                if shutdown_signal.load(Ordering::Acquire) {
                     bail!("Interrupted");
                 }
 
@@ -340,7 +340,7 @@ async fn sync_backends(
                 let processed = processed.clone();
 
                 async move {
-                    if shutdown_signal.load(Ordering::Relaxed) {
+                    if shutdown_signal.load(Ordering::Acquire) {
                         bail!("Interrupted");
                     }
 
@@ -413,7 +413,7 @@ async fn sync_backends(
                 let bar = &copy_progress_bar;
 
                 async move {
-                    if shutdown_signal.load(Ordering::Relaxed) {
+                    if shutdown_signal.load(Ordering::Acquire) {
                         bail!("Interrupted");
                     }
 

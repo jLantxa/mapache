@@ -45,7 +45,7 @@ pub fn run(args: &CmdArgs) -> Result<()> {
 /// List all cache folders.
 fn list(cache_base: &Path) -> Result<()> {
     if !cache_base.exists() {
-        println!(
+        ui::cli::warning!(
             "Cache base directory does not exist: {}",
             cache_base.display()
         );
@@ -91,10 +91,10 @@ fn list(cache_base: &Path) -> Result<()> {
     }
 
     if num_directories > 0 {
-        println!("{}", table.render());
+        ui::cli::log!("{}", table.render());
     }
 
-    println!(
+    ui::cli::log!(
         "{} ({}) in {:?}",
         utils::format_count(num_directories, "directory", "directories"),
         utils::format_size_binary(total_cache_size, 3),
@@ -108,7 +108,7 @@ fn list(cache_base: &Path) -> Result<()> {
 fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     tracing::info!(target: "cache", "Starting cache cleanup (base={:?})", cache_base);
     if !cache_base.exists() {
-        println!(
+        ui::cli::warning!(
             "Cache base directory does not exist: {}",
             cache_base.display()
         );
@@ -170,7 +170,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     };
 
     if to_delete.is_empty() {
-        println!("No cache folders to delete.");
+        ui::cli::log!("No cache folders to delete.");
         return Ok(());
     }
 
@@ -191,7 +191,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
                 Ok(_) => {
                     num_deleted.fetch_add(1, Ordering::Relaxed);
                     freed.fetch_add(size, Ordering::Relaxed);
-                    println!(
+                    ui::cli::log!(
                         "{} {} ({})",
                         "DELETED".bright_red().bold(),
                         name.cyan(),
@@ -203,7 +203,7 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
         });
     });
 
-    println!(
+    ui::cli::log!(
         "\nCleanup complete: {} ({}) freed.",
         utils::format_count(
             num_deleted.load(Ordering::Relaxed),

@@ -271,7 +271,8 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
         s.spawn(move || {
             let _guard = rt_handle.as_ref().map(|h| h.enter());
 
-            let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, file_size as usize);
+            let initial_capacity = usize::try_from(file_size).unwrap_or(0);
+            let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, initial_capacity);
             for result in stream {
                 let chunk = match result {
                     Ok(c) => c,
@@ -291,7 +292,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
         for msg in chunk_rx {
             let chunk_data = msg?;
 
-            if shutdown_signal.load(Ordering::Relaxed) {
+            if shutdown_signal.load(Ordering::Acquire) {
                 return Err(anyhow!("Shutdown signal received"));
             }
 
@@ -323,7 +324,7 @@ fn store_small_file<R: Read>(
     progress_reporter: &dyn SnapshotProgressReporter,
     buf: &mut Vec<u8>,
 ) -> Result<Vec<ID>> {
-    let size = file_size as usize;
+    let size = usize::try_from(file_size).context("File too large for this platform")?;
     buf.clear();
     buf.reserve(size);
 

@@ -523,7 +523,7 @@ impl Restorer {
                 let hardlinks = hardlinks.clone();
 
                 async move {
-                    if shutdown_signal.load(Ordering::Relaxed) {
+                    if shutdown_signal.load(Ordering::Acquire) {
                         return;
                     }
 
@@ -929,7 +929,19 @@ impl Restorer {
                     #[cfg(unix)]
                     file.read_exact_at(chunk, blob_offset)?;
                     #[cfg(windows)]
-                    file.seek_read(chunk, blob_offset)?;
+                    {
+                        let mut read_total = 0;
+                        while read_total < to_read {
+                            let n = file.seek_read(
+                                &mut chunk[read_total..],
+                                blob_offset + read_total as u64,
+                            )?;
+                            if n == 0 {
+                                anyhow::bail!("Unexpected EOF while reading blob for verification");
+                            }
+                            read_total += n;
+                        }
+                    }
 
                     hasher.update(chunk);
                     let read_bytes = to_read as u64;
@@ -1079,7 +1091,7 @@ impl Restorer {
                 // single segment's size rather than the whole pack.
                 let total_segments = segments.len();
                 for (segment_idx, segment) in segments.into_iter().enumerate() {
-                    if shutdown_signal.load(Ordering::Relaxed) {
+                    if shutdown_signal.load(Ordering::Acquire) {
                         bail!("Interrupted");
                     }
 
@@ -1168,7 +1180,7 @@ impl Restorer {
         .buffer_unordered(d.restore_pack_prefetch);
 
         while let Some(res) = download_stream.next().await {
-            if self.shutdown_signal.load(Ordering::Relaxed) {
+            if self.shutdown_signal.load(Ordering::Acquire) {
                 bail!("Interrupted");
             }
             res?;
@@ -1207,10 +1219,23 @@ impl Restorer {
                         let file = cache_guard.get_handle(file_idx, &file_path)?;
                         let mut written = 0u64;
                         for (data, offset) in writes {
-                            #[cfg(unix)]
-                            file.write_at(&data, offset).map_err(|e| anyhow!(e))?;
-                            #[cfg(windows)]
-                            file.seek_write(&data, offset).map_err(|e| anyhow!(e))?;
+                            let mut data_remaining = data.as_slice();
+                            let mut write_offset = offset;
+                            while !data_remaining.is_empty() {
+                                #[cfg(unix)]
+                                let n = file
+                                    .write_at(data_remaining, write_offset)
+                                    .map_err(|e| anyhow!(e))?;
+                                #[cfg(windows)]
+                                let n = file
+                                    .seek_write(data_remaining, write_offset)
+                                    .map_err(|e| anyhow!(e))?;
+                                if n == 0 {
+                                    anyhow::bail!("Failed to write data: wrote 0 bytes");
+                                }
+                                data_remaining = &data_remaining[n..];
+                                write_offset += n as u64;
+                            }
                             written += data.len() as u64;
                         }
                         Ok(written)
@@ -1283,12 +1308,19 @@ impl Restorer {
                 async move {
                     let (mut path, stream_node_res) = match node_res {
                         Ok(res) => res,
-                        Err(_) => return,
+                        Err(e) => {
+                            progress_reporter
+                                .warning(&format!("Failed to read node from stream: {e}"));
+                            return;
+                        }
                     };
 
                     let stream_node = match stream_node_res {
                         Ok(node) => node,
-                        Err(_) => return,
+                        Err(e) => {
+                            progress_reporter.warning(&format!("Failed to deserialize node: {e}"));
+                            return;
+                        }
                     };
                     let node = stream_node.node;
 
@@ -1334,7 +1366,7 @@ impl Restorer {
         let mut dirs = directories;
         dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
         for (p, meta) in dirs {
-            if self.shutdown_signal.load(Ordering::Relaxed) {
+            if self.shutdown_signal.load(Ordering::Acquire) {
                 bail!("Interrupted");
             }
             node_restorer::try_restore_node_metadata(
@@ -1378,7 +1410,7 @@ pub async fn delete_nodes(
     }
 
     while let Some(item_result) = tree_stream.next().await {
-        if shutdown_signal.load(Ordering::Relaxed) {
+        if shutdown_signal.load(Ordering::Acquire) {
             bail!("Interrupted");
         }
 

@@ -131,12 +131,16 @@ if __name__ == "__main__":
                 print(f"Creating {zip_path}...")
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     zipf.write(dest_path, os.path.basename(dest_path))
+                os.remove(dest_path)
+                print(f"Removed {dest_path}")
             else:
                 # Tar.xz for Linux
                 tar_path = dest_path + ".tar.xz"
                 print(f"Creating {tar_path}...")
                 with tarfile.open(tar_path, "w:xz") as tar:
                     tar.add(dest_path, arcname=os.path.basename(dest_path))
+                os.remove(dest_path)
+                print(f"Removed {dest_path}")
 
         # Final ownership and permission update
         for root, dirs, files in os.walk(BUILD_PATH):

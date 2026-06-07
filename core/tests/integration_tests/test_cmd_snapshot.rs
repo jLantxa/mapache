@@ -673,6 +673,7 @@ mod tests {
             .arg("--stdin")
             .arg("--description")
             .arg("stdin end-to-end test")
+            .arg("--no-cache")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());

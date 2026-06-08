@@ -19,6 +19,8 @@ use crate::{
     mapache::{ID, traits::BlobSaver},
 };
 
+type FinalizeResult = Option<(PathBuf, Node)>;
+
 /// Represents the expected number of children for a directory node.
 #[derive(Debug, PartialEq, Eq)]
 enum ExpectedChildren {
@@ -165,12 +167,11 @@ impl TreeSerializer {
 
     // Helper function to encapsulate the core finalization and serialization logic,
     // handling both root and non-root directories.
-    #[allow(clippy::type_complexity)]
     async fn finalize_and_save(
         &mut self,
         dir_path: PathBuf,
         pending_tree: PendingTree,
-    ) -> Result<Option<(PathBuf, Node)>> {
+    ) -> Result<FinalizeResult> {
         // Invariant check: Ensure we actually have the expected number of children
         if let ExpectedChildren::Known(expected) = pending_tree.num_expected_children {
             let actual = pending_tree.children.len();

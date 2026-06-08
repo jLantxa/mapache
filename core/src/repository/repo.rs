@@ -48,6 +48,9 @@ pub const LOCKS_DIR: &str = "locks";
 pub(crate) const REPO_TMP_EXTENSION: &str = "tmp";
 pub(crate) const REPO_DROPPED_EXTENSION: &str = "dropped";
 
+pub(crate) type OpenResult = (Arc<Repository>, Arc<SecureStorage>);
+pub(crate) type OpenWithLockResult = (Arc<Repository>, Arc<SecureStorage>, LockHandle);
+
 const OBJECTS_DIR_FANOUT: usize = 2;
 
 /// A pair of sizes representing raw and encoded (compressed/encrypted) bytes.
@@ -314,7 +317,6 @@ impl Repository {
     }
 
     /// Try to open a repository and acquire a lock.
-    #[allow(clippy::type_complexity)]
     pub async fn try_open_with_lock(
         auth: &Auth,
         key_file_path: Option<&PathBuf>,
@@ -322,7 +324,7 @@ impl Repository {
         config: RepoConfig,
         exclusive_lock: bool,
         retry_duration: Option<Duration>,
-    ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
+    ) -> Result<OpenWithLockResult> {
         let dry_run = backend.is_dry_run();
         let (repo, secure_storage) =
             Self::try_open_unlocked(auth, key_file_path, backend, config).await?;
@@ -337,13 +339,12 @@ impl Repository {
     }
 
     /// Try to open a repository without acquiring a lock.
-    #[allow(clippy::type_complexity)]
     pub async fn try_open_unlocked(
         auth: &Auth,
         key_file_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
         config: RepoConfig,
-    ) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
+    ) -> Result<OpenResult> {
         tracing::info!(target: "repo", "Opening repository");
         let key_manager = KeyManager::new(backend.clone());
 

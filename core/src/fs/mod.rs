@@ -86,10 +86,11 @@ pub fn get_absolute_normalized_path(path: &Path) -> Result<PathBuf> {
     let mut components = Vec::new();
     for component in absolute_path.components() {
         match component {
-            #[allow(unused_variables)]
             Component::Prefix(prefix) => {
                 #[cfg(windows)]
                 components.push(Component::Prefix(prefix));
+                #[cfg(not(windows))]
+                let _ = prefix;
             }
             Component::RootDir => {
                 components.push(component);

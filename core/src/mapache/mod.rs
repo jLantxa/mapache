@@ -243,16 +243,19 @@ impl<R: tokio::io::AsyncRead + Unpin> Read for BlockingBridge<R> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct RewriteCtx {
+    pub progress: Arc<SnapshotProgress>,
+    pub progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    pub shutdown_signal: Arc<AtomicBool>,
+}
+
 pub(crate) async fn rewrite_snapshot_tree(
     repo: Arc<Repository>,
     snapshot: &mut Snapshot,
     excludes: Option<&Vec<PathBuf>>,
     rechunk: bool,
     mut rechunked_blobs_list_map: Option<&mut HashMap<Vec<ID>, Vec<ID>>>,
-    progress: Arc<SnapshotProgress>,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
-    shutdown_signal: Arc<AtomicBool>,
+    ctx: RewriteCtx,
 ) -> Result<()> {
     // Canonicalize exclude paths relative to snapshot root
     let canonical_excludes: Option<Vec<PathBuf>> = excludes.map(|exclude_paths| {
@@ -289,13 +292,15 @@ pub(crate) async fn rewrite_snapshot_tree(
         let mut stream_node = stream_node_res?;
 
         let size_hint = Some(stream_node.node.metadata.size);
-        progress_reporter.processing_node(&path, NodeDiff::Unchanged, size_hint);
+        ctx.progress_reporter
+            .processing_node(&path, NodeDiff::Unchanged, size_hint);
 
         if stream_node.node.is_file() {
             if !rechunk {
                 // Skip rechunking: just update progress
-                progress.processed_bytes(stream_node.node.metadata.size);
-                progress_reporter.processed_bytes(stream_node.node.metadata.size);
+                ctx.progress.processed_bytes(stream_node.node.metadata.size);
+                ctx.progress_reporter
+                    .processed_bytes(stream_node.node.metadata.size);
             } else {
                 let blobs = stream_node
                     .node
@@ -306,16 +311,17 @@ pub(crate) async fn rewrite_snapshot_tree(
                 // Check if this file (set of blobs) has already been rechunked
                 let rechunked_blobs = if let Some(map) = rechunked_blobs_list_map.as_deref_mut() {
                     if let Some(rechunked) = map.get(blobs) {
-                        progress.processed_bytes(stream_node.node.metadata.size);
-                        progress_reporter.processed_bytes(stream_node.node.metadata.size);
+                        ctx.progress.processed_bytes(stream_node.node.metadata.size);
+                        ctx.progress_reporter
+                            .processed_bytes(stream_node.node.metadata.size);
                         rechunked.clone()
                     } else {
                         let rechunked = run_rechunk_task(
                             repo.clone(),
                             stream_node.node.clone(),
-                            progress.clone(),
-                            progress_reporter.clone(),
-                            shutdown_signal.clone(),
+                            ctx.progress.clone(),
+                            ctx.progress_reporter.clone(),
+                            ctx.shutdown_signal.clone(),
                         )
                         .await?;
                         map.insert(blobs.clone(), rechunked.clone());
@@ -325,9 +331,9 @@ pub(crate) async fn rewrite_snapshot_tree(
                     run_rechunk_task(
                         repo.clone(),
                         stream_node.node.clone(),
-                        progress.clone(),
-                        progress_reporter.clone(),
-                        shutdown_signal.clone(),
+                        ctx.progress.clone(),
+                        ctx.progress_reporter.clone(),
+                        ctx.shutdown_signal.clone(),
                     )
                     .await?
                 };
@@ -343,7 +349,8 @@ pub(crate) async fn rewrite_snapshot_tree(
             .handle_processed_item((&path, stream_node))
             .await?;
 
-        progress_reporter.processed_node(&path, NodeDiff::Unchanged, size_hint);
+        ctx.progress_reporter
+            .processed_node(&path, NodeDiff::Unchanged, size_hint);
         snapshot.summary.processed_items_count += 1;
     }
 

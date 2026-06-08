@@ -9,7 +9,9 @@ use crate::{
     archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
-    mapache::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
+    mapache::{
+        ContentIdType, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree,
+    },
     repository::snapshot::SnapshotStream,
     ui::{self, SnapshotProgressReporter, cli::snapshot::CliSnapshotProgressReporter},
     utils::{self},
@@ -81,15 +83,18 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
                         1,
                     ));
 
+                let rewrite_ctx = RewriteCtx {
+                    progress: progress.clone(),
+                    progress_reporter: progress_reporter.clone(),
+                    shutdown_signal: cleanup_handler.interrupted.clone(),
+                };
                 rewrite_snapshot_tree(
                     repo.clone(),
                     &mut snapshot,
                     None,
                     true,
                     Some(&mut rechunked_blob_list_map),
-                    progress.clone(),
-                    progress_reporter.clone(),
-                    cleanup_handler.interrupted.clone(),
+                    rewrite_ctx,
                 )
                 .await?;
 

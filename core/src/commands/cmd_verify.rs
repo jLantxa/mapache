@@ -105,6 +105,29 @@ impl VerifyStats {
     }
 }
 
+struct VerifyCtx<'a> {
+    repo: Arc<Repository>,
+    secure_storage: Arc<crate::repository::storage::SecureStorage>,
+    stats: &'a VerifyStats,
+    corrupt_blobs: &'a Arc<parking_lot::Mutex<IdSet<ID>>>,
+    cleanup_handler: &'a CleanupHandler,
+    json_out: bool,
+    parallel: usize,
+    fail_early: bool,
+    is_sampled: bool,
+}
+
+struct VerifyReport<'a> {
+    start: Instant,
+    stats: &'a VerifyStats,
+    snapshots_corrupt: usize,
+    num_snapshots_total: usize,
+    physical_failed_early: bool,
+    logical_failed_early: bool,
+    read_packs: bool,
+    json_out: bool,
+}
+
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let json_out = global_args.json;
     tracing::info!(target: "verify", "Starting verify command");
@@ -212,17 +235,18 @@ pub async fn run_with_repo(
     check_index_consistency(&repo, &packs_all, args, json_out).await?;
 
     let physical_failed_early = if args.read_packs {
-        let failed_early = verify_packs_physically(
-            repo.clone(),
-            secure_storage.clone(),
-            &packs_to_verify,
-            &stats,
-            &corrupt_blobs,
-            args,
+        let verify_ctx = VerifyCtx {
+            repo: repo.clone(),
+            secure_storage: secure_storage.clone(),
+            stats: &stats,
+            corrupt_blobs: &corrupt_blobs,
+            cleanup_handler: &cleanup_handler,
             json_out,
-            &cleanup_handler,
-        )
-        .await?;
+            parallel: args.parallel,
+            fail_early: args.fail_early,
+            is_sampled: args.sample.is_some(),
+        };
+        let failed_early = verify_packs_physically(&verify_ctx, &packs_to_verify).await?;
         if cleanup_handler.is_interrupted() {
             return Err(fail(
                 "Verify interrupted by user.",
@@ -328,16 +352,17 @@ pub async fn run_with_repo(
             .await;
     }
 
-    emit_final_report(
+    let final_report = VerifyReport {
         start,
-        &stats,
+        stats: &stats,
         snapshots_corrupt,
         num_snapshots_total,
         physical_failed_early,
         logical_failed_early,
-        args,
+        read_packs: args.read_packs,
         json_out,
-    )?;
+    };
+    emit_final_report(&final_report)?;
 
     Ok(())
 }
@@ -402,22 +427,8 @@ async fn check_index_consistency(
     Ok(missing_packs)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn verify_packs_physically(
-    repo: Arc<Repository>,
-    secure_storage: Arc<crate::repository::storage::SecureStorage>,
-    packs_to_verify: &[ID],
-    stats: &VerifyStats,
-    corrupt_blobs: &Arc<parking_lot::Mutex<IdSet<ID>>>,
-    args: &CmdArgs,
-    json_out: bool,
-    cleanup_handler: &CleanupHandler,
-) -> Result<bool> {
-    let suffix = if args.sample.is_none() {
-        ""
-    } else {
-        " (sampled)"
-    };
+async fn verify_packs_physically(ctx: &VerifyCtx<'_>, packs_to_verify: &[ID]) -> Result<bool> {
+    let suffix = if ctx.is_sampled { " (sampled)" } else { "" };
     ui::cli::log!("{}", format!("Verifying Pack Integrity{suffix}...").bold());
 
     let style = ProgressStyle::default_bar()
@@ -448,8 +459,9 @@ async fn verify_packs_physically(
     bar.set_message("OK");
 
     let stop_flag = AtomicBool::new(false);
-    let interrupted_flag = cleanup_handler.interrupted.clone();
+    let interrupted_flag = ctx.cleanup_handler.interrupted.clone();
     let total_packs = packs_to_verify.len();
+    let json_out = ctx.json_out;
 
     futures::stream::iter(packs_to_verify.iter())
         .take_while(|_| {
@@ -458,13 +470,13 @@ async fn verify_packs_physically(
             )
         })
         .map(|pack_id| {
-            let repo = repo.clone();
+            let repo = ctx.repo.clone();
             let backend = repo.backend();
-            let secure = secure_storage.clone();
+            let secure = ctx.secure_storage.clone();
             let bar = bar.clone();
-            let stats = &stats;
+            let stats = ctx.stats;
             let stop_flag = &stop_flag;
-            let corrupt_blobs = corrupt_blobs.clone();
+            let corrupt_blobs = ctx.corrupt_blobs.clone();
 
             async move {
                 match verify_pack(repo.clone(), backend.clone(), secure.clone(), *pack_id).await {
@@ -532,7 +544,7 @@ async fn verify_packs_physically(
                                 }
                             }
 
-                            if args.fail_early {
+                            if ctx.fail_early {
                                 stop_flag.store(true, Ordering::Relaxed);
                             }
                         }
@@ -559,7 +571,7 @@ async fn verify_packs_physically(
 
                         stats.packs_corrupt.fetch_add(1, Ordering::Relaxed);
 
-                        if args.fail_early {
+                        if ctx.fail_early {
                             stop_flag.store(true, Ordering::Relaxed);
                         }
                     }
@@ -605,11 +617,11 @@ async fn verify_packs_physically(
                 }
             }
         })
-        .buffer_unordered(args.parallel)
+        .buffer_unordered(ctx.parallel)
         .collect::<()>()
         .await;
 
-    if cleanup_handler.is_interrupted() {
+    if ctx.cleanup_handler.is_interrupted() {
         bar.abandon();
         return Ok(true);
     }
@@ -617,7 +629,7 @@ async fn verify_packs_physically(
     bar.finish();
     let failed_early = stop_flag.load(Ordering::Relaxed);
 
-    if stats.packs_corrupt.load(Ordering::Relaxed) > 0 {
+    if ctx.stats.packs_corrupt.load(Ordering::Relaxed) > 0 {
         ui::cli::log!();
         if failed_early {
             ui::cli::warning!("Physical verification halted early due to errors.");
@@ -628,7 +640,7 @@ async fn verify_packs_physically(
         ui::cli::log!(
             "{} {} blobs verified.",
             "Physical verification passed.".bold().green(),
-            stats.blobs_verified.load(Ordering::Relaxed)
+            ctx.stats.blobs_verified.load(Ordering::Relaxed)
         );
     }
     ui::cli::log!();
@@ -771,21 +783,11 @@ async fn verify_snapshots_logically(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_final_report(
-    start: Instant,
-    stats: &VerifyStats,
-    snapshots_corrupt: usize,
-    num_snapshots_total: usize,
-    physical_failed_early: bool,
-    logical_failed_early: bool,
-    args: &CmdArgs,
-    json_out: bool,
-) -> Result<()> {
-    if json_out {
-        let packs_corrupt_count = stats.packs_corrupt.load(Ordering::Relaxed);
-        let dangling_count = stats.blobs_dangling.load(Ordering::Relaxed);
-        let passed = packs_corrupt_count == 0 && snapshots_corrupt == 0;
+fn emit_final_report(report: &VerifyReport<'_>) -> Result<()> {
+    if report.json_out {
+        let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
+        let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
+        let passed = packs_corrupt_count == 0 && report.snapshots_corrupt == 0;
 
         #[derive(Serialize)]
         struct VerifyCompleteMsg {
@@ -803,24 +805,24 @@ fn emit_final_report(
         ui::json::emit_static(
             "verify_complete",
             &VerifyCompleteMsg {
-                duration_seconds: start.elapsed().as_secs_f64(),
-                packs_processed: stats.packs_processed.load(Ordering::Relaxed),
+                duration_seconds: report.start.elapsed().as_secs_f64(),
+                packs_processed: report.stats.packs_processed.load(Ordering::Relaxed),
                 packs_corrupt: packs_corrupt_count,
-                blobs_verified: stats.blobs_verified.load(Ordering::Relaxed),
+                blobs_verified: report.stats.blobs_verified.load(Ordering::Relaxed),
                 blobs_dangling: dangling_count,
-                snapshots_verified: num_snapshots_total,
-                snapshots_corrupt,
+                snapshots_verified: report.num_snapshots_total,
+                snapshots_corrupt: report.snapshots_corrupt,
                 passed,
-                failed_early: physical_failed_early || logical_failed_early,
-                read_packs: args.read_packs,
+                failed_early: report.physical_failed_early || report.logical_failed_early,
+                read_packs: report.read_packs,
             },
         );
     }
 
-    let packs_corrupt_count = stats.packs_corrupt.load(Ordering::Relaxed);
-    let dangling_count = stats.blobs_dangling.load(Ordering::Relaxed);
+    let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
+    let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
 
-    if packs_corrupt_count > 0 || snapshots_corrupt > 0 {
+    if packs_corrupt_count > 0 || report.snapshots_corrupt > 0 {
         ui::cli::log!("{}", "VERIFICATION FAILED".bold().on_red());
 
         if packs_corrupt_count > 0 {
@@ -829,13 +831,13 @@ fn emit_final_report(
                 utils::format_count(packs_corrupt_count, "pack", "packs")
             );
         }
-        if snapshots_corrupt > 0 {
+        if report.snapshots_corrupt > 0 {
             ui::cli::log!(
                 "- {} with broken references.",
-                utils::format_count(snapshots_corrupt, "snapshot", "snapshots")
+                utils::format_count(report.snapshots_corrupt, "snapshot", "snapshots")
             );
         }
-        if physical_failed_early || logical_failed_early {
+        if report.physical_failed_early || report.logical_failed_early {
             ui::cli::log!(
                 "{}",
                 "Note: Verification was partial due to --fail-early.".dimmed()
@@ -859,7 +861,7 @@ fn emit_final_report(
         );
     }
 
-    if !args.read_packs {
+    if !report.read_packs {
         ui::cli::log!(
             "{} {} {}.\n",
             "Note:".bold().dimmed(),
@@ -872,18 +874,18 @@ fn emit_final_report(
     ui::cli::log!(
         "{} Verified {} and {} in {}",
         "[SUCCESS]".bold().green(),
-        utils::format_count(num_snapshots_total, "snapshot", "snapshots"),
+        utils::format_count(report.num_snapshots_total, "snapshot", "snapshots"),
         utils::format_count(
-            stats.packs_processed.load(Ordering::Relaxed),
+            report.stats.packs_processed.load(Ordering::Relaxed),
             "pack",
             "packs"
         ),
-        utils::pretty_print_duration(start.elapsed())
+        utils::pretty_print_duration(report.start.elapsed())
     );
     tracing::info!(
         target: "verify",
         "Verify command completed successfully in {:?}",
-        start.elapsed()
+        report.start.elapsed()
     );
 
     Ok(())

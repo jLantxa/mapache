@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use async_stream::try_stream;
+use futures::future::BoxFuture;
 use futures::{StreamExt, stream::Stream};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, ReadBuf};
@@ -571,10 +572,12 @@ struct SerializedTreeState {
     filter: Arc<PathFilter>,
 }
 
+type SerializedTreeStreamInner = Pin<Box<dyn Stream<Item = Result<(PathBuf, Tree)>> + Send>>;
+type PendingLoad = Option<BoxFuture<'static, Result<(usize, Vec<u8>)>>>;
+
 /// A depth‑first pre‑order stream of serialized trees.
-#[allow(clippy::type_complexity)]
 pub struct SerializedTreeStream {
-    inner: Pin<Box<dyn Stream<Item = Result<(PathBuf, Tree)>> + Send>>,
+    inner: SerializedTreeStreamInner,
 }
 
 impl SerializedTreeStream {
@@ -599,10 +602,7 @@ impl SerializedTreeStream {
         })
     }
 
-    #[allow(clippy::type_complexity)]
-    fn make_inner_stream(
-        mut state: SerializedTreeState,
-    ) -> Pin<Box<dyn Stream<Item = Result<(PathBuf, Tree)>> + Send>> {
+    fn make_inner_stream(mut state: SerializedTreeState) -> SerializedTreeStreamInner {
         try_stream! {
             while let Some((current_path, tree_id)) = state.stack.pop() {
                 // Skip if filter doesn't allow this branch
@@ -657,8 +657,7 @@ pub struct SerializedNodeDataReader {
     /// Cache of the currently loaded blob.
     current_blob_idx: usize,
     current_blob: Vec<u8>,
-    #[allow(clippy::type_complexity)]
-    pending_load: Option<futures::future::BoxFuture<'static, Result<(usize, Vec<u8>)>>>,
+    pending_load: PendingLoad,
 }
 
 impl SerializedNodeDataReader {

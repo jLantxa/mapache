@@ -90,6 +90,8 @@ impl RestoreScreen {
             quit_on_error: false,
             preallocate: true,
             verify: false,
+            include: paths,
+            exclude: None,
         };
 
         let tx = self.tx.clone();
@@ -102,17 +104,9 @@ impl RestoreScreen {
         self.shutdown_signal.store(false, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            let result = restorer::restore(
-                repo,
-                &snapshot,
-                &target,
-                paths,
-                None,
-                options,
-                reporter,
-                shutdown_signal,
-            )
-            .await;
+            let result =
+                restorer::restore(repo, &snapshot, &target, options, reporter, shutdown_signal)
+                    .await;
             let event = match result {
                 Ok(_) => RestoreEvent::Completed(None),
                 Err(e) => RestoreEvent::Completed(Some(e.to_string())),

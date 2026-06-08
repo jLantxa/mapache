@@ -64,16 +64,19 @@ impl ChunkerPool {
                         // Keep the non-stdin as the favourable case for the branch predictor.
                         // Also, stdin would only check this once in the whole snapshot.
                         if !job.is_stdin {
+                            let mut ctx = processor::ItemContext {
+                                blob_saver: job.blob_saver.clone(),
+                                progress: job.progress.as_ref(),
+                                progress_reporter: job.progress_reporter.as_ref(),
+                                shutdown_signal: job.shutdown_signal.as_ref(),
+                                bufs: Some(bufs),
+                            };
                             processor::process_item_sync(
                                 &job.path,
                                 job.prev_node.as_ref(),
                                 job.next_node.as_ref(),
                                 job.diff_type,
-                                job.blob_saver.clone(),
-                                job.progress.as_ref(),
-                                job.progress_reporter.as_ref(),
-                                job.shutdown_signal.as_ref(),
-                                Some(bufs),
+                                &mut ctx,
                             )
                         } else {
                             processor::process_stdin_sync(

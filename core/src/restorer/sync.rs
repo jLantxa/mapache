@@ -15,45 +15,54 @@ use crate::{
     ui::RestoreProgressReporter,
 };
 
+pub struct SyncOpts {
+    pub include: Option<Vec<PathBuf>>,
+    pub exclude: Option<Vec<PathBuf>>,
+    pub dry_run: bool,
+    pub no_preserve_root: bool,
+    pub shutdown_signal: Arc<AtomicBool>,
+    pub reporter: Arc<dyn RestoreProgressReporter>,
+}
+
 /// Delete all local nodes not present in a snapshot tree.
-#[allow(clippy::too_many_arguments)]
 pub async fn delete_nodes(
     repo: Arc<Repository>,
     target_path: PathBuf,
     root_tree_id: &ID,
-    include: Option<Vec<PathBuf>>,
-    exclude: Option<Vec<PathBuf>>,
-    dry_run: bool,
-    no_preserve_root: bool,
-    shutdown_signal: Arc<AtomicBool>,
-    reporter: Arc<dyn RestoreProgressReporter>,
+    opts: SyncOpts,
 ) -> Result<()> {
-    let mut tree_stream =
-        SerializedTreeStream::new(repo, root_tree_id, PathBuf::new(), include.clone(), exclude)
-            .await
-            .with_context(|| {
-                format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
-            })?;
+    let mut tree_stream = SerializedTreeStream::new(
+        repo,
+        root_tree_id,
+        PathBuf::new(),
+        opts.include.clone(),
+        opts.exclude,
+    )
+    .await
+    .with_context(|| {
+        format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
+    })?;
 
-    if !no_preserve_root {
+    if !opts.no_preserve_root {
         let _ = tree_stream.next().await;
     }
 
     while let Some(item_result) = tree_stream.next().await {
-        if shutdown_signal.load(Ordering::Acquire) {
+        if opts.shutdown_signal.load(Ordering::Acquire) {
             bail!("Interrupted");
         }
 
         let (path, snapshot_tree) = match item_result {
             Ok(data) => data,
             Err(e) => {
-                reporter.warning(&format!("Could not read snapshot subtree entry: {e}"));
+                opts.reporter
+                    .warning(&format!("Could not read snapshot subtree entry: {e}"));
                 tracing::warn!(target: "restorer", "Could not read snapshot subtree entry: {e}");
                 continue;
             }
         };
 
-        if !path_is_below_includes(&path, include.as_ref()) {
+        if !path_is_below_includes(&path, opts.include.as_ref()) {
             continue;
         }
 
@@ -66,7 +75,12 @@ pub async fn delete_nodes(
             .collect();
 
         let local_dir = &target_path.join(path);
-        process_local_directory(local_dir, &snapshot_node_names, dry_run, reporter.clone())?
+        process_local_directory(
+            local_dir,
+            &snapshot_node_names,
+            opts.dry_run,
+            opts.reporter.clone(),
+        )?
     }
 
     tracing::info!(target: "restorer", "Sync deletion finished");

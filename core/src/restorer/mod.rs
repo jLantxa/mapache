@@ -10,7 +10,7 @@ mod pack_restorer;
 mod planner;
 mod sync;
 
-pub use sync::delete_nodes;
+pub use sync::{SyncOpts, delete_nodes};
 
 #[cfg(not(unix))]
 use std::io::{Seek, Write};
@@ -68,16 +68,15 @@ pub struct RestoreOptions {
     pub quit_on_error: bool,
     pub preallocate: bool,
     pub verify: bool,
+    pub include: Option<Vec<PathBuf>>,
+    pub exclude: Option<Vec<PathBuf>>,
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Performs the restoration of a snapshot to a target path.
 pub async fn restore(
     repo: Arc<Repository>,
     snapshot: &Snapshot,
     target_path: &Path,
-    include: Option<Vec<PathBuf>>,
-    exclude: Option<Vec<PathBuf>>,
     opts: RestoreOptions,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
     shutdown_signal: Arc<AtomicBool>,
@@ -90,7 +89,7 @@ pub async fn restore(
         shutdown_signal,
     );
 
-    restorer.restore(snapshot.tree, include, exclude).await
+    restorer.restore(snapshot.tree).await
 }
 
 /// The Restorer is responsible for coordinating the restoration process.
@@ -311,7 +310,7 @@ impl Restorer {
         }
     }
 
-    #[allow(clippy::permissions_set_readonly_false)]
+    #[cfg_attr(windows, allow(clippy::permissions_set_readonly_false))]
     fn clear_readonly_attribute(&self, path: &Path) -> Result<()> {
         let metadata = fs::metadata(path).with_context(|| {
             format!(
@@ -347,19 +346,14 @@ impl Restorer {
         Ok(())
     }
 
-    async fn restore(
-        &self,
-        tree_id: ID,
-        include: Option<Vec<PathBuf>>,
-        exclude: Option<Vec<PathBuf>>,
-    ) -> Result<()> {
+    async fn restore(&self, tree_id: ID) -> Result<()> {
         tracing::info!(target: "restorer", "Starting restoration of tree {tree_id}");
         let node_stream = SerializedNodeStream::new(
             self.repo.clone(),
             Some(tree_id),
             PathBuf::new(),
-            include.clone(),
-            exclude.clone(),
+            self.opts.include.clone(),
+            self.opts.exclude.clone(),
         )
         .await?;
 
@@ -444,8 +438,13 @@ impl Restorer {
         }
 
         tracing::info!(target: "restorer", "Restoring metadata");
-        self.restore_metadata(tree_id, include, exclude, plan.directories)
-            .await?;
+        self.restore_metadata(
+            tree_id,
+            self.opts.include.clone(),
+            self.opts.exclude.clone(),
+            plan.directories,
+        )
+        .await?;
 
         tracing::info!(target: "restorer", "Restoration finished");
         Ok(())

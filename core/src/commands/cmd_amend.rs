@@ -20,7 +20,10 @@ use crate::{
     fs::filter::{
         merge_filtered_paths, parse_relative_filter_paths, read_filtered_paths_from_file,
     },
-    mapache::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree},
+    mapache::{
+        ContentIdType, ID, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN,
+        rewrite_snapshot_tree,
+    },
     repository::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotStream},
@@ -193,15 +196,18 @@ async fn amend(
         let progress = Arc::new(SnapshotProgress::new());
         let progress_reporter: Arc<dyn SnapshotProgressReporter> =
             Arc::new(CliSnapshotProgressReporter::new(None, None, 1));
+        let rewrite_ctx = RewriteCtx {
+            progress: progress.clone(),
+            progress_reporter: progress_reporter.clone(),
+            shutdown_signal,
+        };
         rewrite_snapshot_tree(
             repo.clone(),
             snapshot,
             parsed_excludes.as_ref(),
             false,
             None,
-            progress.clone(),
-            progress_reporter.clone(),
-            shutdown_signal,
+            rewrite_ctx,
         )
         .await?;
 

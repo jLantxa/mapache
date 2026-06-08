@@ -365,16 +365,19 @@ pub(crate) async fn snapshot(
                         }
                     } else {
                         tracing::trace!(target: "archiver", "Processing item inline: {:?}", path);
+                        let mut ctx = processor::ItemContext {
+                            blob_saver,
+                            progress: &progress,
+                            progress_reporter: &*progress_reporter,
+                            shutdown_signal: &shutdown_signal,
+                            bufs: None,
+                        };
                         match processor::process_item_sync(
                             path.as_path(),
                             prev_node.as_ref(),
                             next_node.as_ref(),
                             diff,
-                            blob_saver,
-                            &progress,
-                            &*progress_reporter,
-                            &shutdown_signal,
-                            None,
+                            &mut ctx,
                         ) {
                             Ok(Some(node)) => {
                                 tracing::trace!(target: "archiver", "Item processed inline: {:?}", path);

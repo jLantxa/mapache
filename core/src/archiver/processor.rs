@@ -70,34 +70,39 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
     mapache::defaults::CHUNKER_NORMALIZATION,
 );
 
+/// Environment context for processing items during snapshot archiving.
+pub(crate) struct ItemContext<'a> {
+    pub blob_saver: Arc<dyn BlobSaver>,
+    pub progress: &'a SnapshotProgress,
+    pub progress_reporter: &'a dyn SnapshotProgressReporter,
+    pub shutdown_signal: &'a AtomicBool,
+    pub bufs: Option<&'a mut ReusableBuffers>,
+}
+
 /// Core sync processing logic for regular filesystem items.
 /// Opens the file by path, chunks it, and stores the blobs.
 /// When `bufs` is `Some`, the small file buffer is reused to avoid per-file allocation.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_item_sync(
     path: &Path,
     prev_node: Option<&StreamNode>,
     next_node: Option<&StreamNode>,
     diff_type: NodeDiff,
-    blob_saver: Arc<dyn BlobSaver>,
-    progress: &SnapshotProgress,
-    progress_reporter: &dyn SnapshotProgressReporter,
-    shutdown_signal: &AtomicBool,
-    mut bufs: Option<&mut ReusableBuffers>,
+    ctx: &mut ItemContext<'_>,
 ) -> Result<Option<StreamNode>> {
     let size_hint = next_node
         .as_ref()
         .map(|n| n.node.metadata.size)
         .or_else(|| prev_node.as_ref().map(|n| n.node.metadata.size));
 
-    progress_reporter.processing_node(path, diff_type, size_hint);
+    ctx.progress_reporter
+        .processing_node(path, diff_type, size_hint);
 
     let out = match diff_type {
         NodeDiff::Deleted => {
             let prev = prev_node.with_context(|| {
                 format!("Inconsistent state: Deleted diff but no prev_node for {path:?}")
             })?;
-            report_node_diff(&prev.node, diff_type, progress);
+            report_node_diff(&prev.node, diff_type, ctx.progress);
             None
         }
 
@@ -112,10 +117,11 @@ pub(crate) fn process_item_sync(
             })?;
 
             if next.node.is_file() {
-                progress.processed_bytes(next.node.metadata.size);
-                progress_reporter.processed_bytes(next.node.metadata.size);
+                ctx.progress.processed_bytes(next.node.metadata.size);
+                ctx.progress_reporter
+                    .processed_bytes(next.node.metadata.size);
             }
-            report_node_diff(&next.node, diff_type, progress);
+            report_node_diff(&next.node, diff_type, ctx.progress);
 
             next.node.metadata = prev.node.metadata.clone();
             if next.node.is_file() {
@@ -134,8 +140,13 @@ pub(crate) fn process_item_sync(
             if next.node.is_file() {
                 let file_size = next.node.metadata.size;
 
+                let blob_saver = ctx.blob_saver.clone();
+                let progress = ctx.progress;
+                let progress_reporter = ctx.progress_reporter;
+                let shutdown_signal = ctx.shutdown_signal;
+
                 let mut fallback_small = Vec::new();
-                let small_buf = match bufs.as_mut() {
+                let small_buf = match ctx.bufs.as_mut() {
                     Some(b) => &mut b.small_buf,
                     None => &mut fallback_small,
                 };
@@ -169,21 +180,26 @@ pub(crate) fn process_item_sync(
                         next.node.blobs = Some(ids);
                     }
                     Err(e) => {
-                        progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
-                        progress.processed_bytes(file_size);
-                        progress_reporter.processed_bytes(file_size);
+                        ctx.progress_reporter.warning(&format!(
+                            "Skipping {}: {}",
+                            path.display(),
+                            e
+                        ));
+                        ctx.progress.processed_bytes(file_size);
+                        ctx.progress_reporter.processed_bytes(file_size);
                     }
                 }
             }
 
-            report_node_diff(&next.node, diff_type, progress);
+            report_node_diff(&next.node, diff_type, ctx.progress);
             Some(next)
         }
     };
 
     if diff_type != NodeDiff::Deleted {
-        progress.processed_node();
-        progress_reporter.processed_node(path, diff_type, size_hint);
+        ctx.progress.processed_node();
+        ctx.progress_reporter
+            .processed_node(path, diff_type, size_hint);
     }
 
     Ok(out)
@@ -193,7 +209,6 @@ pub(crate) fn process_item_sync(
 /// Always writes to the virtual path `/stdin`.
 /// Takes a generic reader so it can be tested with byte slices or other sources.
 /// Always uses the streaming chunker (never the small-file path).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_stdin_sync(
     next_node: Option<&StreamNode>,
     mut reader: StdinReader,

@@ -331,8 +331,6 @@ pub async fn run_with_repo(
         repo.clone(),
         &pair.snapshot,
         &abs_normalized_target,
-        parsed_includes.clone(),
-        parsed_excludes.clone(),
         RestoreOptions {
             dry_run,
             strategy,
@@ -340,6 +338,8 @@ pub async fn run_with_repo(
             strip_prefix: common_prefix,
             preallocate: !sparse,
             verify,
+            include: parsed_includes.clone(),
+            exclude: parsed_excludes.clone(),
         },
         progress_reporter.clone(),
         cleanup_handler.interrupted.clone(),
@@ -367,12 +367,14 @@ pub async fn run_with_repo(
             repo,
             abs_normalized_target.clone(),
             &pair.snapshot.tree,
-            parsed_includes,
-            parsed_excludes,
-            dry_run,
-            no_preserve_root,
-            cleanup_handler.interrupted.clone(),
-            progress_reporter.clone(),
+            restorer::SyncOpts {
+                include: parsed_includes,
+                exclude: parsed_excludes,
+                dry_run,
+                no_preserve_root,
+                shutdown_signal: cleanup_handler.interrupted.clone(),
+                reporter: progress_reporter.clone(),
+            },
         )
         .await;
 

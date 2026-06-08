@@ -3,14 +3,13 @@ use std::{path::PathBuf, str::FromStr, sync::Arc, time::Instant};
 use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
-use conflate::Merge;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail, find_use_snapshot,
-        with_repository_lock,
+        GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        find_use_snapshot, with_repository_lock,
     },
     fs::{
         calculate_lcp,
@@ -57,7 +56,7 @@ impl std::fmt::Display for Strategy {
     }
 }
 
-#[derive(Args, Debug, Clone, Merge, Deserialize, Default)]
+#[derive(Args, Debug, Clone, Deserialize, Default)]
 #[clap(
     about = "Restore a snapshot in a target path",
     long_about = "Restore a snapshot in a target path. Running this command in \
@@ -68,41 +67,34 @@ impl std::fmt::Display for Strategy {
 pub struct CmdArgs {
     /// The ID of the snapshot to restore, or 'latest' to restore the most recent snapshot saved.
     #[arg(value_parser = clap::value_parser!(UseSnapshot), default_value_t=UseSnapshot::Latest)]
-    #[merge(skip)]
     #[serde(default)]
     pub snapshot: UseSnapshot,
 
     /// A path where the files will be restored.
     #[clap(long)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub target: Option<PathBuf>,
 
     /// A list of paths to restore: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub include: Option<Vec<String>>,
 
     /// A file containing a list of paths to include, one per line.
     #[clap(long, value_parser)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub include_file: Option<PathBuf>,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Strip the longest common prefix from all restored routes.
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub strip_prefix: Option<bool>,
 
     /// Method for conflict resolution in case a file or directory already exists in the target location.
@@ -112,41 +104,75 @@ pub struct CmdArgs {
     /// overwrite: Overwrites the item in the target location with the node from the snapshot.
     /// newer: Keeps the item with the more recent modified time.
     #[clap(long = "strategy")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "deserialize_strategy_opt")]
     pub strategy: Option<Strategy>,
 
     /// Delete files in the target directory that are not present in the snapshot.
     /// Use with caution.
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub delete: Option<bool>,
 
     /// When used with --delete, also delete nodes in the same level as the root.
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", requires = "delete")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub no_preserve_root: Option<bool>,
 
     /// Quit immediately if a restore error occurs
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub quit_on_error: Option<bool>,
 
     /// Create sparse files instead of preallocating them.
     /// This is faster on some filesystems but may cause higher disk fragmentation.
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub sparse: Option<bool>,
 
     /// Force verification of existing files by content (hashing) even if mtime matches.
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub verify: Option<bool>,
 
     /// Dry run
     #[clap(long)]
-    #[merge(skip)]
     pub dry_run: bool,
+}
+
+impl Merge for CmdArgs {
+    fn merge(&mut self, other: Self) {
+        if other.target.is_some() {
+            self.target = other.target;
+        }
+        if other.include.is_some() {
+            self.include = other.include;
+        }
+        if other.include_file.is_some() {
+            self.include_file = other.include_file;
+        }
+        if other.exclude.is_some() {
+            self.exclude = other.exclude;
+        }
+        if other.exclude_file.is_some() {
+            self.exclude_file = other.exclude_file;
+        }
+        if other.strip_prefix.is_some() {
+            self.strip_prefix = other.strip_prefix;
+        }
+        if other.strategy.is_some() {
+            self.strategy = other.strategy;
+        }
+        if other.delete.is_some() {
+            self.delete = other.delete;
+        }
+        if other.no_preserve_root.is_some() {
+            self.no_preserve_root = other.no_preserve_root;
+        }
+        if other.quit_on_error.is_some() {
+            self.quit_on_error = other.quit_on_error;
+        }
+        if other.sparse.is_some() {
+            self.sparse = other.sparse;
+        }
+        if other.verify.is_some() {
+            self.verify = other.verify;
+        }
+    }
 }
 
 fn deserialize_strategy_opt<'de, D>(

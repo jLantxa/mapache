@@ -4,7 +4,6 @@ use anyhow::{Error, Result, anyhow, bail};
 use chrono::Duration;
 use clap::{ArgGroup, Parser, Subcommand};
 use colored::Colorize;
-use conflate::Merge;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -36,7 +35,6 @@ pub mod cmd_cat;
 pub mod cmd_clean;
 pub mod cmd_completion;
 mod cmd_diff;
-
 pub mod cmd_find;
 pub mod cmd_forget;
 pub mod cmd_init;
@@ -111,6 +109,16 @@ pub enum Command {
     Verify(WithGlobal<cmd_verify::CmdArgs>),
 }
 
+/// Merge CLI arguments with configuration file values.
+///
+/// `other` (typically from config) is merged into `self` (typically from CLI),
+/// so CLI flags take precedence: `self` only accepts a value from `other` when
+/// the corresponding field in `self` is still `None`/empty (i.e. not provided on
+/// the command line).
+pub trait Merge {
+    fn merge(&mut self, other: Self);
+}
+
 #[derive(Parser, Debug)]
 pub struct WithGlobal<T: clap::Args> {
     #[clap(flatten)]
@@ -121,46 +129,39 @@ pub struct WithGlobal<T: clap::Args> {
 }
 
 /// CLI-parsable global options (all configurable fields are `Option<T>`)
-#[derive(Parser, Debug, Clone, Merge, Deserialize, Default)]
+#[derive(Parser, Debug, Clone, Deserialize, Default)]
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CliGlobalArgs {
     /// Repository path
     #[clap(short, long)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub repo: Option<String>,
 
     /// Disable cache
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub no_cache: Option<bool>,
 
     /// SSH private key
     #[clap(long)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub ssh_privatekey: Option<PathBuf>,
 
     /// SSH known_hosts file
     #[clap(long)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub ssh_known_hosts: Option<PathBuf>,
 
     /// Path to a file to read repository authentication credentials
     #[clap(long)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub auth_file: Option<PathBuf>,
 
     /// Pack target size in MiB
     #[clap(long = "pack-size", value_parser = pack_size_parser)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub pack_size_mib: Option<f32>,
 
     /// Path to a KeyFile
     #[clap(short = 'k', long = "key-file")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(
         rename = "key-file",
         deserialize_with = "crate::mapache::config::deserialize_config_path_opt"
@@ -169,35 +170,29 @@ pub struct CliGlobalArgs {
 
     /// Disable logging (verbosity = 0)
     #[clap(long, group = "verbosity_group", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub quiet: Option<bool>,
 
     /// Enable json output
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub json: Option<bool>,
 
     /// Set the verbosity level [0-3]
     #[clap(short, long, group = "verbosity_group")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub verbosity: Option<u32>,
 
     /// Compression level [fastest|fast|balanced|better|best|level:val]
     #[clap(long = "compression", value_parser = parse_compression_level)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "deserialize_compression_opt")]
     pub compression_level: Option<Compression>,
 
     /// Retry acquiring a lock if the repository is already locked. Takes a duration
     /// string like 5m, 30s or 5m30s.
     #[clap(long = "retry-lock", value_parser = utils::parse_duration_string)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(rename = "retry-lock", deserialize_with = "deserialize_duration_opt")]
     pub retry_lock_duration: Option<Duration>,
 
     /// Limit upload speed (e.g. 10MB/s, 500KB/s)
     #[clap(long = "limit-upload", value_parser = parse_bandwidth)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(
         rename = "limit-upload",
         deserialize_with = "deserialize_bandwidth_opt"
@@ -206,12 +201,58 @@ pub struct CliGlobalArgs {
 
     /// Limit download speed (e.g. 10MB/s, 500KB/s)
     #[clap(long = "limit-download", value_parser = parse_bandwidth)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(
         rename = "limit-download",
         deserialize_with = "deserialize_bandwidth_opt"
     )]
     pub limit_download: Option<u64>,
+}
+
+impl Merge for CliGlobalArgs {
+    fn merge(&mut self, other: Self) {
+        if other.repo.is_some() {
+            self.repo = other.repo;
+        }
+        if other.no_cache.is_some() {
+            self.no_cache = other.no_cache;
+        }
+        if other.ssh_privatekey.is_some() {
+            self.ssh_privatekey = other.ssh_privatekey;
+        }
+        if other.ssh_known_hosts.is_some() {
+            self.ssh_known_hosts = other.ssh_known_hosts;
+        }
+        if other.auth_file.is_some() {
+            self.auth_file = other.auth_file;
+        }
+        if other.pack_size_mib.is_some() {
+            self.pack_size_mib = other.pack_size_mib;
+        }
+        if other.key.is_some() {
+            self.key = other.key;
+        }
+        if other.quiet.is_some() {
+            self.quiet = other.quiet;
+        }
+        if other.json.is_some() {
+            self.json = other.json;
+        }
+        if other.verbosity.is_some() {
+            self.verbosity = other.verbosity;
+        }
+        if other.compression_level.is_some() {
+            self.compression_level = other.compression_level;
+        }
+        if other.retry_lock_duration.is_some() {
+            self.retry_lock_duration = other.retry_lock_duration;
+        }
+        if other.limit_upload.is_some() {
+            self.limit_upload = other.limit_upload;
+        }
+        if other.limit_download.is_some() {
+            self.limit_download = other.limit_download;
+        }
+    }
 }
 
 fn deserialize_compression_opt<'de, D>(

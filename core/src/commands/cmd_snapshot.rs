@@ -3,14 +3,13 @@ use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc, time::I
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use colored::Colorize;
-use conflate::Merge;
 use serde::Deserialize;
 
 use crate::{
     archiver::{self, SnapshotOptions, progress::SnapshotProgress},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        EMPTY_TAG_MARK, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
         find_use_snapshot, parse_tags, with_repository_lock,
     },
     fs::{
@@ -57,92 +56,119 @@ impl ToExitCode for SnapshotError {
     }
 }
 
-#[derive(Args, Debug, Clone, Merge, Deserialize, Default)]
+#[derive(Args, Debug, Clone, Deserialize, Default)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
 #[clap(about = "Create a new snapshot")]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {
     /// List of paths to backup
     #[clap(value_parser)]
-    #[merge(strategy = conflate::vec::overwrite_empty)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_paths_vec")]
     pub paths: Vec<PathBuf>,
 
     /// Use a single directory path as the snapshot root
     #[clap(long = "as-root", value_parser, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub as_root: Option<bool>,
 
     /// A list of paths to exclude: path[,path,...]. Can be used multiple times.
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
-    #[merge(strategy = crate::mapache::config::merge_option_vec)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_string_vec_opt")]
     pub exclude: Option<Vec<String>>,
 
     /// A file containing a list of paths to exclude, one per line.
     #[clap(long, value_parser)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "crate::mapache::config::deserialize_config_path_opt")]
     pub exclude_file: Option<PathBuf>,
 
     /// Tags
     #[clap(long = "tags", value_parser)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub tags_str: Option<String>,
 
     /// Snapshot description
     #[clap(long, value_parser)]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub description: Option<String>,
 
     /// Force a complete analysis of all files and directories
     #[clap(long, group = "scan_mode")]
-    #[merge(skip)]
     pub no_parent: bool,
 
     /// Don't scan the file system
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub no_scan: Option<bool>,
 
     /// Don't create a snapshot if there are no changes since the parent snapshot
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub skip_if_unchanged: Option<bool>,
 
     /// Use a snapshot as parent (ID or 'latest'). This snapshot will be the base when analyzing differences.
     #[clap(long, group = "scan_mode", value_parser = clap::value_parser!(UseSnapshot))]
-    #[merge(strategy = conflate::option::overwrite_none)]
     #[serde(deserialize_with = "deserialize_use_snapshot_opt")]
     pub parent: Option<UseSnapshot>,
 
     /// Number of files to process in parallel.
     #[clap(long = "readers")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub num_readers: Option<usize>,
 
     /// Number of writer threads.
     #[clap(long = "packers")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub num_packers: Option<usize>,
 
     /// Dry run
     #[clap(long)]
-    #[merge(skip)]
     pub dry_run: bool,
 
     /// Store the access time for all files and directories.
     /// Enabling this may result in significantly more metadata, so it's off by default.
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-    #[merge(strategy = conflate::option::overwrite_none)]
     pub with_atime: Option<bool>,
 
     /// Read backup data from stdin as a single file at /stdin.
     /// Mutually exclusive with paths, excludes, and parent snapshot.
     /// Requires --auth-file or MAPACHE_USERNAME/MAPACHE_PASSWORD env vars.
     #[clap(long, conflicts_with_all = &["paths", "exclude", "exclude_file", "parent", "as_root"])]
-    #[merge(skip)]
     pub stdin: bool,
+}
+
+impl Merge for CmdArgs {
+    fn merge(&mut self, other: Self) {
+        if !other.paths.is_empty() {
+            self.paths = other.paths;
+        }
+        if other.as_root.is_some() {
+            self.as_root = other.as_root;
+        }
+        crate::mapache::config::merge_option_vec(&mut self.exclude, other.exclude);
+        if other.exclude_file.is_some() {
+            self.exclude_file = other.exclude_file;
+        }
+        if other.tags_str.is_some() {
+            self.tags_str = other.tags_str;
+        }
+        if other.description.is_some() {
+            self.description = other.description;
+        }
+        // skip: no_parent
+        if other.no_scan.is_some() {
+            self.no_scan = other.no_scan;
+        }
+        if other.skip_if_unchanged.is_some() {
+            self.skip_if_unchanged = other.skip_if_unchanged;
+        }
+        if other.parent.is_some() {
+            self.parent = other.parent;
+        }
+        if other.num_readers.is_some() {
+            self.num_readers = other.num_readers;
+        }
+        if other.num_packers.is_some() {
+            self.num_packers = other.num_packers;
+        }
+        // skip: dry_run
+        if other.with_atime.is_some() {
+            self.with_atime = other.with_atime;
+        }
+        // skip: stdin
+    }
 }
 
 fn deserialize_use_snapshot_opt<'de, D>(

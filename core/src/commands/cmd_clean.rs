@@ -2,7 +2,6 @@ use std::{sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
-use colored::Colorize;
 use serde::Serialize;
 
 use crate::{
@@ -10,7 +9,7 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     mapache::defaults::DEFAULT_GC_TOLERANCE,
     repository::{gc, lock::LockHandle, repo::Repository},
-    ui::{self, GcProgressReporter},
+    ui::{self, GcProgressReporter, cli::color::Colorize},
     utils::{self},
 };
 

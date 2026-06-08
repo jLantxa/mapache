@@ -5,7 +5,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
-use colored::Colorize;
 use futures::StreamExt;
 
 use crate::{
@@ -26,7 +25,10 @@ use crate::{
         traits::{BlobLoader, BlobSaver},
     },
     restorer::node_restorer,
-    ui::{RestoreProgressReporter, SnapshotProgressReporter, cli},
+    ui::{
+        RestoreProgressReporter, SnapshotProgressReporter,
+        cli::{self, color::Colorize},
+    },
     utils::format_size_binary,
 };
 #[cfg(all(feature = "fuse", unix))]

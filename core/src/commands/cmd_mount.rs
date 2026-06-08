@@ -2,7 +2,6 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use clap::Args;
-use colored::Colorize;
 
 pub use crate::fuse::fs::MapacheFS;
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     fs,
     fuse::fs::MountOptions,
     mapache::{defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB, traits::BlobLoader},
-    ui,
+    ui::{self, cli::color::Colorize},
     utils::size,
 };
 

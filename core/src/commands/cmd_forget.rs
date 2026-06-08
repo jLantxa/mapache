@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use chrono::Local;
 use clap::{ArgGroup, Parser};
-use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -18,7 +17,10 @@ use crate::{
         retention::{RetentionRule, apply_retention_rules, filter_snapshots_by_hosts},
         snapshot::{SnapshotEntryList, SnapshotStream},
     },
-    ui::{self, cli::log_snapshots_compact},
+    ui::{
+        self,
+        cli::{color::Colorize, log_snapshots_compact},
+    },
     utils::{self, collections::IdSet},
 };
 

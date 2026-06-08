@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
-use colored::Colorize;
 use futures::StreamExt;
 
 use crate::{
@@ -28,7 +27,10 @@ use crate::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotStream},
     },
-    ui::{self, SnapshotProgressReporter, cli::snapshot::CliSnapshotProgressReporter},
+    ui::{
+        self, SnapshotProgressReporter, cli::color::Colorize,
+        cli::snapshot::CliSnapshotProgressReporter,
+    },
     utils,
 };
 

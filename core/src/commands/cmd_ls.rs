@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Args;
-use colored::Colorize;
 use serde::Serialize;
 
 use crate::{
@@ -17,7 +16,7 @@ use crate::{
     },
     mapache::ID,
     repository::repo::Repository,
-    ui,
+    ui::{self, cli::color::Colorize},
 };
 
 #[derive(Debug, Clone, Copy)]

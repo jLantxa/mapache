@@ -5,7 +5,6 @@ use std::{
 
 use anyhow::Result;
 use clap::Args;
-use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -14,7 +13,7 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     mapache::{ContentIdType, ID},
     repository::{index::MasterIndex, packer::Packer},
-    ui::{self, default_bar_draw_target},
+    ui::{self, cli::color::Colorize, default_bar_draw_target},
     utils::{self},
 };
 

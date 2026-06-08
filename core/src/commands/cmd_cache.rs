@@ -5,7 +5,6 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use clap::Args;
-use colored::Colorize;
 use rayon::prelude::*;
 
 use crate::{
@@ -13,7 +12,10 @@ use crate::{
     mapache::defaults::SHORT_REPO_ID_LEN,
     ui::{
         self,
-        cli::table::{Alignment, Table},
+        cli::{
+            color::Colorize,
+            table::{Alignment, Table},
+        },
     },
     utils,
 };

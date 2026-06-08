@@ -5,7 +5,6 @@ use std::{
     thread::JoinHandle,
 };
 
-use colored::Colorize;
 use crossbeam_channel::Sender;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
@@ -13,7 +12,9 @@ use parking_lot::Mutex;
 use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     mapache::{defaults, global::GlobalOpts},
-    ui::{SPINNER_TICK_CHARS, SnapshotProgressReporter, default_bar_draw_target},
+    ui::{
+        SPINNER_TICK_CHARS, SnapshotProgressReporter, cli::color::Colorize, default_bar_draw_target,
+    },
     utils,
 };
 

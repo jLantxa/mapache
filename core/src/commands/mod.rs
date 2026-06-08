@@ -3,7 +3,6 @@ use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Error, Result, anyhow, bail};
 use chrono::Duration;
 use clap::{ArgGroup, Parser, Subcommand};
-use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -492,6 +491,7 @@ pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 
 /// CLI entry point
 pub async fn parse_and_run() -> i32 {
+    cli::color::init_console();
     let args = Cli::parse();
 
     // Load config if --config provided

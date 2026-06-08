@@ -11,7 +11,6 @@
 use std::{fs::OpenOptions, path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use colored::Colorize;
 use tracing_subscriber::{
     filter::LevelFilter,
     fmt::{

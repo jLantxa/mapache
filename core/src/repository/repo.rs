@@ -10,7 +10,6 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::Duration;
-use colored::Colorize;
 use futures::{StreamExt, stream};
 use parking_lot::Mutex;
 use rand::{RngExt, rng};

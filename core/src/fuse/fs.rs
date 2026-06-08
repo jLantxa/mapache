@@ -1,7 +1,6 @@
 use std::{ffi::OsStr, path::Path, sync::Arc};
 
 use anyhow::{Result, anyhow, bail};
-use colored::Colorize;
 use fuser::{
     Config, Errno, FileHandle, Filesystem, FopenFlags, Generation, INodeNo, KernelConfig,
     LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,

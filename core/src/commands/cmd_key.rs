@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use colored::Colorize;
 use futures::StreamExt;
 
 use crate::{
@@ -16,7 +15,7 @@ use crate::{
     },
     ui::{
         self,
-        cli::{request_auth, request_new_auth, table::Table},
+        cli::{color::Colorize, request_auth, request_new_auth, table::Table},
     },
     utils::{self},
 };

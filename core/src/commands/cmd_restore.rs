@@ -2,7 +2,6 @@ use std::{path::PathBuf, str::FromStr, sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
-use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -24,7 +23,8 @@ use crate::{
     repository::{repo::Repository, snapshot::SnapshotPair},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
-        self, RestoreProgressReporter, cli::restore::CliRestoreProgressReporter,
+        self, RestoreProgressReporter,
+        cli::{color::Colorize, restore::CliRestoreProgressReporter},
         json::restore::JsonRestoreProgressReporter,
     },
     utils,

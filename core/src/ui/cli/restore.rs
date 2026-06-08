@@ -6,13 +6,14 @@ use std::{
     },
 };
 
-use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
 
 use crate::{
     mapache::global::GlobalOpts,
-    ui::{RestoreProgressReporter, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{
+        RestoreProgressReporter, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target,
+    },
     utils,
 };
 

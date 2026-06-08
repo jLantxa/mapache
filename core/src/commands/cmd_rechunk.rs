@@ -2,7 +2,6 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use anyhow::Result;
 use clap::Args;
-use colored::Colorize;
 use futures::StreamExt;
 
 use crate::{
@@ -13,7 +12,10 @@ use crate::{
         ContentIdType, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree,
     },
     repository::snapshot::SnapshotStream,
-    ui::{self, SnapshotProgressReporter, cli::snapshot::CliSnapshotProgressReporter},
+    ui::{
+        self, SnapshotProgressReporter,
+        cli::{color::Colorize, snapshot::CliSnapshotProgressReporter},
+    },
     utils::{self},
 };
 

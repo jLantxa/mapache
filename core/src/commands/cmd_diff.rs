@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Args;
-use colored::Colorize;
 use futures::StreamExt;
 use serde::Serialize;
 
@@ -14,7 +13,10 @@ use crate::{
     repository::snapshot::DiffCounts,
     ui::{
         self,
-        cli::table::{Alignment, Table},
+        cli::{
+            color::Colorize,
+            table::{Alignment, Table},
+        },
     },
     utils::format_size_binary,
 };

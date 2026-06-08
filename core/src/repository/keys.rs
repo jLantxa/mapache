@@ -8,7 +8,6 @@ use std::{
 use anyhow::{Context as _, Result, anyhow, bail};
 use argon2;
 use chrono::{DateTime, Local};
-use colored::Colorize;
 use futures::{Stream, StreamExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;

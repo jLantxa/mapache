@@ -1,17 +1,20 @@
 use std::io::{self, BufRead, Write};
 
 use anyhow::Result;
-use colored::Colorize;
 use zeroize::Zeroizing;
 
 use crate::{
     mapache,
     repository::{repo::Auth, snapshot::SnapshotEntryList},
-    ui::cli::table::{Alignment, Table},
+    ui::cli::{
+        color::Colorize,
+        table::{Alignment, Table},
+    },
     utils,
 };
 
 pub mod bundle;
+pub mod color;
 pub mod gc;
 pub mod restore;
 pub mod snapshot;
@@ -205,14 +208,20 @@ macro_rules! log_always {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
-        eprintln!("{}: {:#}", "Error".red().bold(), format_args!($($arg)*))
+        {
+            use $crate::ui::cli::color::Colorize;
+            eprintln!("{}: {:#}", "Error".red().bold(), format_args!($($arg)*))
+        }
     };
 }
 
 #[macro_export]
 macro_rules! warning {
     ($($arg:tt)*) => {
-        $crate::ui::cli::log_with_level!(1, "{}: {}", "Warning".yellow().bold(), format_args!($($arg)*))
+        {
+            use $crate::ui::cli::color::Colorize;
+            $crate::ui::cli::log_with_level!(1, "{}: {}", "Warning".yellow().bold(), format_args!($($arg)*))
+        }
     };
 }
 

@@ -2,7 +2,6 @@ use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc, time::I
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
-use colored::Colorize;
 use serde::Deserialize;
 
 use crate::{
@@ -32,6 +31,7 @@ use crate::{
     ui::{
         self, SnapshotProcessSummary, SnapshotProgressReporter,
         cli::{
+            color::Colorize,
             snapshot::CliSnapshotProgressReporter,
             table::{Alignment, Table},
         },

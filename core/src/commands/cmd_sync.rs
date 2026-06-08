@@ -9,7 +9,6 @@ use std::{
 
 use anyhow::{Result, bail};
 use clap::Args;
-use colored::Colorize;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use serde::Serialize;
 
@@ -18,7 +17,7 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail},
     mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
     repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
-    ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
+    ui::{self, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target},
     utils::{self},
 };
 

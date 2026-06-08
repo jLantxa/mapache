@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
-use colored::Colorize;
 use serde::Serialize;
 
 use crate::{
@@ -11,7 +10,10 @@ use crate::{
         repo::REPO_DROPPED_EXTENSION,
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
     },
-    ui::{self, cli::log_snapshots_compact},
+    ui::{
+        self,
+        cli::{color::Colorize, log_snapshots_compact},
+    },
     utils,
 };
 

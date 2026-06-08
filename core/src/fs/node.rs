@@ -12,10 +12,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
-use crate::{mapache::ID, utils};
+use crate::{mapache::ID, ui::cli::color::Colorize, utils};
 
 /// The type of a node (file, directory, symlink, etc.)
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

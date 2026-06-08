@@ -1,4 +1,3 @@
-use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use parking_lot::Mutex;
 

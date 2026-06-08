@@ -9,7 +9,6 @@ use std::{
 
 use anyhow::{Result, bail};
 use clap::Args;
-use colored::Colorize;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use serde::Serialize;
@@ -24,7 +23,7 @@ use crate::{
         snapshot::SnapshotStream,
         verify::{verify_pack, verify_snapshot_refs},
     },
-    ui::{self, default_bar_draw_target},
+    ui::{self, cli::color::Colorize, default_bar_draw_target},
     utils::{self, collections::IdSet},
 };
 

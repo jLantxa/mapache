@@ -447,8 +447,10 @@ pub async fn run_with_repo(
             String::new()
         };
         ui::cli::log!(
-            "{}Finished in {} with {} and {}",
+            "{}Restored {} ({}) in {} with {} and {}",
             prefix,
+            utils::format_count(progress_reporter.total_items(), "item", "items"),
+            utils::format_size_binary(progress_reporter.total_bytes(), 3),
             utils::pretty_print_duration(start.elapsed()),
             utils::format_count(progress_reporter.error_count(), "error", "errors"),
             utils::format_count(progress_reporter.warning_count(), "warning", "warnings"),

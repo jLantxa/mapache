@@ -20,6 +20,12 @@
   subdirectory). Use a leading `/` to restrict the search to the root
   (`find /file.txt`).
 
+### Changed
+
+- **Restorer performance**: Optimized the restorer with a flattened parallel
+  pipeline, concurrent blob decoding, and JIT file initialization. This
+  improves restoration performance while maintaining a low memory footprint.
+
 ### Fixes
 
 - **Exit code on interrupt**: `snapshot`, `restore`, `sync`, `verify`, `forget`,

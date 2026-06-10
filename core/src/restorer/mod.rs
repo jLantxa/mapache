@@ -108,6 +108,7 @@ pub(crate) struct Restorer {
     pub(crate) target_path: PathBuf,
     pub(crate) opts: RestoreOptions,
     pub(crate) buffers: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    pub(crate) initialized: Arc<Vec<std::sync::atomic::AtomicBool>>,
 }
 
 pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
@@ -115,12 +116,15 @@ pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
 pub(crate) struct FileRestorePlan {
     pub(crate) path: PathBuf,
     pub(crate) num_blobs: u32,
+    pub(crate) size: u64,
+    pub(crate) is_hardlink: bool,
 }
 
 pub(crate) struct RestorePlan {
     pub(crate) files: Arc<Vec<FileRestorePlan>>,
     pub(crate) packs: Arc<PackMap>,
     pub(crate) directories: Vec<(PathBuf, crate::fs::node::Metadata)>,
+    pub(crate) skipped_item_paths: Vec<PathBuf>,
     pub(crate) total_items: u64,
     pub(crate) total_bytes: u64,
     pub(crate) skipped_bytes: u64,
@@ -159,7 +163,14 @@ impl FileHandleCache {
         }
     }
 
-    fn get_handle(&mut self, file_idx: usize, path: &Path) -> Result<&File> {
+    fn get_handle(
+        &mut self,
+        file_idx: usize,
+        path: &Path,
+        plan: &FileRestorePlan,
+        initialized: &std::sync::atomic::AtomicBool,
+        restorer: &Restorer,
+    ) -> Result<&File> {
         if self.handles.contains_key(&file_idx) {
             self.touch(file_idx);
             return self
@@ -174,10 +185,52 @@ impl FileHandleCache {
             self.handles.remove(&oldest_key);
         }
 
-        let file = OpenOptions::new()
-            .write(true)
-            .open(path)
-            .with_context(|| format!("Failed to open file for writing: {}", path.display()))?;
+        let file = if !initialized.load(std::sync::atomic::Ordering::Acquire) {
+            if let Ok(m) = fs::symlink_metadata(path) {
+                if m.file_type().is_symlink() {
+                    fs::remove_file(path).with_context(|| {
+                        format!("Failed to remove symlink at {}", path.display())
+                    })?;
+                } else {
+                    restorer.clear_readonly_attribute(path)?;
+                }
+            }
+
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create parent directory for {}", path.display())
+                })?;
+            }
+
+            let mut f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)
+                .with_context(|| format!("Failed to create/truncate file: {}", path.display()))?;
+
+            if plan.size > 0 {
+                if restorer.opts.preallocate {
+                    if let Err(e) = restorer.preallocate_file(&mut f, plan.size) {
+                        tracing::warn!(target: "restorer", "Failed to preallocate file {}: {e}", path.display());
+                    }
+                } else {
+                    // Default to sparse creation via set_len.
+                    // On most modern filesystems (NTFS, APFS, XFS, EXT4), this creates a sparse file.
+                    f.set_len(plan.size).with_context(|| {
+                        format!("Failed to set length for sparse file: {}", path.display())
+                    })?;
+                }
+            }
+
+            initialized.store(true, std::sync::atomic::Ordering::Release);
+            f
+        } else {
+            OpenOptions::new()
+                .write(true)
+                .open(path)
+                .with_context(|| format!("Failed to open file for writing: {}", path.display()))?
+        };
 
         self.handles.insert(file_idx, file);
         self.order.push_back(file_idx);
@@ -233,6 +286,7 @@ impl Restorer {
             progress_reporter,
             shutdown_signal,
             buffers: Arc::new(Mutex::new(VecDeque::with_capacity(num_buffers))),
+            initialized: Arc::new(Vec::new()),
         }
     }
 
@@ -251,6 +305,29 @@ impl Restorer {
     pub(crate) fn return_buffer(&self, mut buf: Vec<u8>) {
         buf.clear();
         self.buffers.lock().push_back(buf);
+    }
+
+    /// Creates a shallow clone of the restorer for worker threads.
+    /// This is needed because Restorer contains Arc fields that we want to share.
+    pub(crate) fn clone_for_workers(&self) -> Self {
+        Self {
+            repo: self.repo.clone(),
+            progress_reporter: self.progress_reporter.clone(),
+            shutdown_signal: self.shutdown_signal.clone(),
+            target_path: self.target_path.clone(),
+            opts: RestoreOptions {
+                strategy: self.opts.strategy.clone(),
+                strip_prefix: self.opts.strip_prefix.clone(),
+                dry_run: self.opts.dry_run,
+                quit_on_error: self.opts.quit_on_error,
+                preallocate: self.opts.preallocate,
+                verify: self.opts.verify,
+                include: self.opts.include.clone(),
+                exclude: self.opts.exclude.clone(),
+            },
+            buffers: self.buffers.clone(),
+            initialized: self.initialized.clone(),
+        }
     }
 
     fn preallocate_file(&self, file: &mut File, length: u64) -> Result<()> {
@@ -378,13 +455,19 @@ impl Restorer {
             self.progress_reporter.processed_bytes(plan.skipped_bytes);
         }
 
+        for path in &plan.skipped_item_paths {
+            self.progress_reporter.processed_item(path);
+        }
+        for (path, _) in &plan.directories {
+            self.progress_reporter.processed_item(path);
+        }
+
         let plan_files = plan.files.clone();
-        let plan_packs = plan.packs.clone();
         let dry_run = self.opts.dry_run;
         let secure_storage = self.repo.secure_storage();
 
         tracing::info!(target: "restorer", "Restoring data packs");
-        self.restore_packs(plan_files, plan_packs, secure_storage, dry_run)
+        self.restore_packs(plan_files, plan.packs, secure_storage, dry_run)
             .await?;
 
         if !self.opts.dry_run && !plan.hardlinks.is_empty() {

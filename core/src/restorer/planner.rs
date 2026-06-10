@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     path::Path,
     sync::{Arc, atomic::Ordering},
 };
@@ -34,6 +34,7 @@ impl Restorer {
     ) -> Result<RestorePlan> {
         let files = Arc::new(Mutex::new(Vec::new()));
         let directories = Arc::new(Mutex::new(Vec::new()));
+        let skipped_item_paths = Arc::new(Mutex::new(Vec::new()));
         let packs = Arc::new(dashmap::DashMap::<ID, Vec<(ID, BlobRestoreRequest)>>::new());
         let node_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let total_items = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -53,6 +54,7 @@ impl Restorer {
                 let index = index.clone();
                 let files = files.clone();
                 let directories = directories.clone();
+                let skipped_item_paths = skipped_item_paths.clone();
                 let packs = packs.clone();
                 let node_count = node_count.clone();
                 let total_items = total_items.clone();
@@ -105,8 +107,10 @@ impl Restorer {
                     }
 
                     total_items.fetch_add(1, Ordering::Relaxed);
+                    let mut size_to_add = 0u64;
                     if node.is_file() {
-                        total_bytes.fetch_add(node.metadata.size, Ordering::Relaxed);
+                        size_to_add = node.metadata.size;
+                        total_bytes.fetch_add(size_to_add, Ordering::Relaxed);
                     }
 
                     let restore_path = match utils::secure_join(&self.target_path, &path) {
@@ -125,8 +129,9 @@ impl Restorer {
                         Ok(true) => {}
                         Ok(false) => {
                             if node.is_file() {
-                                skipped_bytes.fetch_add(node.metadata.size, Ordering::Relaxed);
+                                skipped_bytes.fetch_add(size_to_add, Ordering::Relaxed);
                             }
+                            skipped_item_paths.lock().push(restore_path);
                             return;
                         }
                         Err(e) => {
@@ -150,7 +155,7 @@ impl Restorer {
                             ));
                             return;
                         }
-                        directories.lock().push((restore_path, node.metadata));
+                        directories.lock().push((restore_path.clone(), node.metadata));
                         return;
                     }
 
@@ -178,6 +183,8 @@ impl Restorer {
                             files_lock.push(FileRestorePlan {
                                 path: restore_path.clone(),
                                 num_blobs: 0,
+                                size: node.metadata.size,
+                                is_hardlink: false,
                             });
                             idx
                         };
@@ -191,6 +198,7 @@ impl Restorer {
                                     let mut idx = hardlink_index.lock();
                                     if let Some(&primary_idx) = idx.get(&(dev, inode)) {
                                         hardlinks.lock().push((file_idx, primary_idx));
+                                        files.lock()[file_idx].is_hardlink = true;
                                         true
                                     } else {
                                         idx.insert((dev, inode), file_idx);
@@ -205,7 +213,6 @@ impl Restorer {
                         };
 
                         if is_hardlink_secondary {
-                            total_bytes.fetch_add(node.metadata.size, Ordering::Relaxed);
                             if !self.opts.dry_run
                                 && let Some(parent) = restore_path.parent()
                                 && let Err(e) = fs::create_dir_all(parent) {
@@ -230,64 +237,10 @@ impl Restorer {
                                 ));
                             }
 
-                            if self.opts.dry_run {
-                                return;
-                            }
-
-                            if let Some(parent) = restore_path.parent()
-                                && let Err(e) = fs::create_dir_all(parent)
-                            {
-                                progress_reporter.error(&format!(
-                                    "Failed to create parent directory for {}: {}",
-                                    restore_path.display(), e
-                                ));
-                            }
-
-                            if let Ok(m) = fs::symlink_metadata(&restore_path) {
-                                if m.file_type().is_symlink() {
-                                    if let Err(e) = fs::remove_file(&restore_path) {
-                                        progress_reporter.error(&format!(
-                                            "Failed to remove symlink {}: {}",
-                                            restore_path.display(), e
-                                        ));
-                                    }
-                                } else if let Err(e) = self.clear_readonly_attribute(&restore_path) {
-                                    progress_reporter.error(&format!(
-                                        "Failed to clear readonly attribute on {}: {}",
-                                        restore_path.display(), e
-                                    ));
-                                }
-                            }
-
-                            let mut file = match OpenOptions::new()
-                                .create(true).write(true).truncate(true)
-                                .open(&restore_path)
-                            {
-                                Ok(f) => f,
-                                Err(e) => {
-                                    progress_reporter.error(&format!(
-                                        "Failed to create file {}: {}", restore_path.display(), e
-                                    ));
-                                    return;
-                                }
-                            };
-
-                            if self.opts.preallocate {
-                                if let Err(e) = self.preallocate_file(&mut file, node.metadata.size) {
-                                    tracing::warn!(target: "restorer", "Failed to preallocate file {}: {e}", restore_path.display());
-                                }
-                            } else if let Err(e) = file.set_len(node.metadata.size) {
-                                tracing::warn!(target: "restorer", "Failed to set file length for {}: {e}", restore_path.display());
-                            }
-
                             files.lock()[file_idx].num_blobs = num_blobs;
                         }
                     } else if node.is_symlink() {
-                        files.lock().push(FileRestorePlan {
-                            path: restore_path.clone(),
-                            num_blobs: 0,
-                        });
-
+                        // Symlinks are restored immediately during planning.
                         if !self.opts.dry_run
                             && let Err(e) = super::node_restorer::restore_node_to_path(
                                 self,
@@ -300,6 +253,10 @@ impl Restorer {
                         {
                             progress_reporter.error(&e.to_string());
                         }
+                        // We must record symlinks in the plan to report them as processed items later.
+                        // However, we don't want them in `files` because `restore_packs` would treat them as files.
+                        // Let's reuse skipped_item_paths for now, as they only need to be reported as processed.
+                        skipped_item_paths.lock().push(restore_path);
                     }
                 }
             })
@@ -316,6 +273,11 @@ impl Restorer {
                 "Internal error: multiple Arc references to directories remained after planning",
             )?
             .into_inner();
+        let skipped_item_paths = Arc::into_inner(skipped_item_paths)
+            .context(
+                "Internal error: multiple Arc references to skipped_item_paths remained after planning",
+            )?
+            .into_inner();
         let packs_map = Arc::into_inner(packs)
             .context("Internal error: multiple Arc references to packs remained after planning")?
             .into_iter()
@@ -330,6 +292,7 @@ impl Restorer {
             files: Arc::new(files),
             packs: Arc::new(packs_map),
             directories,
+            skipped_item_paths,
             total_items: total_items.load(Ordering::Relaxed),
             total_bytes: total_bytes.load(Ordering::Relaxed),
             skipped_bytes: skipped_bytes.load(Ordering::Relaxed),
@@ -438,7 +401,7 @@ impl Restorer {
             let file = File::open(&local_path)?;
             let mut offset = 0;
 
-            const VERIFY_BUFFER_SIZE: usize = 64 * size::KiB as usize;
+            const VERIFY_BUFFER_SIZE: usize = size::MiB as usize;
             let mut buffer = vec![0u8; VERIFY_BUFFER_SIZE];
 
             for blob_id in blobs {

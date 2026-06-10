@@ -465,15 +465,16 @@ impl MasterIndex {
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
     pub fn get(&self, id: &ID) -> Option<BlobLocator> {
-        tracing::trace!(target: "index", "Lookup blob {}", id.to_short_hex(8));
         let lock = self.inner.read();
 
         let res = lock.indices.iter().rev().find_map(|idx| idx.get(id));
 
-        if res.is_some() {
-            tracing::trace!(target: "index", "Blob {} found", id.to_short_hex(8));
+        if let Some(locator) = res {
+            tracing::trace!(target: "index",
+                "Lookup blob {}: found in pack {}",
+                id.to_short_hex(8), locator.pack_id.to_short_hex(8));
         } else {
-            tracing::trace!(target: "index", "Blob {} not found", id.to_short_hex(8));
+            tracing::trace!(target: "index", "Lookup blob {}: not found", id.to_short_hex(8));
         }
 
         res

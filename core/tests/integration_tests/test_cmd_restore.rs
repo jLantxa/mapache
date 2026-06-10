@@ -7,8 +7,11 @@ mod tests {
     };
 
     use anyhow::Result;
-    use filetime::{FileTime, set_file_times};
-    use mapache::restorer::Strategy;
+
+    use mapache::{
+        fs::filetime::{FileTime, set_file_times},
+        restorer::Strategy,
+    };
 
     use crate::integration_tests::{TestContext, assert_times_equal};
 

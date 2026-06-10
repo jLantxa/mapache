@@ -4,6 +4,7 @@ mod tests {
     use std::path::PathBuf;
 
     use anyhow::{Context, Result};
+
     use mapache::{commands::UseSnapshot, repository::repo::SNAPSHOTS_DIR, utils};
 
     use crate::integration_tests::{TestContext, assert_times_equal};
@@ -542,9 +543,9 @@ mod tests {
         let original_atime = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
         let original_mtime = UNIX_EPOCH + Duration::from_secs(1_100_000_000);
 
-        let ft_atime = filetime::FileTime::from(original_atime);
-        let ft_mtime = filetime::FileTime::from(original_mtime);
-        filetime::set_file_times(&file_path, ft_atime, ft_mtime)?;
+        let ft_atime = mapache::fs::filetime::FileTime::from(original_atime);
+        let ft_mtime = mapache::fs::filetime::FileTime::from(original_mtime);
+        mapache::fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime)?;
 
         ctx.init_repo().await?;
 
@@ -601,9 +602,9 @@ mod tests {
         let original_atime = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
         let original_mtime = UNIX_EPOCH + Duration::from_secs(1_100_000_000);
 
-        let ft_atime = filetime::FileTime::from(original_atime);
-        let ft_mtime = filetime::FileTime::from(original_mtime);
-        filetime::set_file_times(&file_path, ft_atime, ft_mtime)?;
+        let ft_atime = mapache::fs::filetime::FileTime::from(original_atime);
+        let ft_mtime = mapache::fs::filetime::FileTime::from(original_mtime);
+        mapache::fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime)?;
 
         ctx.init_repo().await?;
 

@@ -8,11 +8,14 @@ use std::{fs::OpenOptions, io::Write, path::Path, sync::Arc, time::SystemTime};
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
 use anyhow::{Context, Result};
-use filetime::{FileTime, set_file_times};
 use futures::StreamExt;
 
 use crate::{
-    fs::node::{Metadata, Node, NodeType},
+    fs::{
+        self,
+        filetime::FileTime,
+        node::{Metadata, Node, NodeType},
+    },
     restorer::Restorer,
     ui::RestoreProgressReporter,
 };
@@ -248,10 +251,11 @@ pub fn restore_times(
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
         if is_symlink {
-            filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime)
+            fs::filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime)
                 .context("Could not set symlink file times")?;
         } else {
-            set_file_times(dst_path, ft_atime, ft_mtime).context("Could not set file times")?;
+            fs::filetime::set_file_times(dst_path, ft_atime, ft_mtime)
+                .context("Could not set file times")?;
         }
     }
 
@@ -500,8 +504,9 @@ mod tests {
     use chrono::{Duration, Local};
     use tempfile::tempdir;
 
-    use super::*;
     use crate::ui;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_restore_mtime() -> Result<()> {
@@ -517,7 +522,7 @@ mod tests {
         // Manually set the file's current mtime to the past
         let ft_mtime = FileTime::from(prev_mtime);
         let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
-        set_file_times(&file_path, ft_atime, ft_mtime)
+        fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime)
             .with_context(|| format!("Could not set modified time for {}", file_path.display()))?;
 
         // Create a dummy node with the original metadata to restore from
@@ -557,7 +562,7 @@ mod tests {
 
         let ft_atime = FileTime::from(original_atime);
         let ft_mtime = FileTime::from(original_mtime);
-        set_file_times(&file_path, ft_atime, ft_mtime)
+        fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime)
             .with_context(|| format!("Could not set file times for {}", file_path.display()))?;
 
         // Capture node metadata WITH atime
@@ -574,7 +579,7 @@ mod tests {
         // Now change the file times to something else (now)
         let now: SystemTime = Local::now().into();
         let ft_now = FileTime::from(now);
-        set_file_times(&file_path, ft_now, ft_now)?;
+        fs::filetime::set_file_times(&file_path, ft_now, ft_now)?;
 
         // Restore metadata from the captured node
         let reporter = ui::noop::NoopRestoreReporter;

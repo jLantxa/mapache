@@ -8,6 +8,7 @@ use anyhow::Result;
 
 use crate::utils::collections::{FxHashMap, FxHashSet};
 
+pub mod filetime;
 pub mod filter;
 pub mod node;
 pub mod tree;

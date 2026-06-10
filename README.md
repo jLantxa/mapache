@@ -98,21 +98,21 @@ Workloads:
 
 ### kernel
 
-| Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
-|---------|-----------|--------|-------|----------|-----------|
-| mapache | backup    | 2.29s  | 1224% | 310 MB   | 304.1 MB  |
-| restic  | backup    | 4.13s  | 1087% | 602 MB   | 308.8 MB  |
-| mapache | restore   | 15.98s | 150%  | 317 MB   | —         |
-| restic  | restore   | 19.18s | 144%  | 249 MB   | —         |
+| Tool    | Action  | Avg Time (s) | Max Time (s) | Avg PSS (MB) | Peak PSS (MB) | Avg CPU (%) | Repo (MB) |
+|---------|---------|--------------|-------------|---------------|---------------|-------------|-----------|
+| mapache | backup  |         2.06 |         2.16 |       303.23 |        311.23 |     1344.65 |    304.15 |
+| mapache | restore |         8.51 |         8.61 |       415.20 |        429.18 |      412.23 |      0.00 |
+| restic  | backup  |         4.13 |         4.65 |       825.88 |        849.96 |     1197.60 |    308.84 |
+| restic  | restore |        15.77 |        15.81 |       256.42 |        272.48 |      149.65 |      0.00 |
 
 ### enron
 
-| Tool    | Operation | Time   | CPU   | Peak RAM | Repo Size |
-|---------|-----------|--------|-------|----------|-----------|
-| mapache | backup    | 5.22s  | 1205% | 447 MB   | 717.9 MB  |
-| restic  | backup    | 13.76s | 963%  | 428 MB   | 725.6 MB  |
-| mapache | restore   | 80.45s | 130%  | 538 MB   | —         |
-| restic  | restore   | 89.01s | 141%  | 427 MB   | —         |
+| Tool    | Action  | Avg Time (s) | Max Time (s) | Avg PSS (MB) | Peak PSS (MB) | Avg CPU (%) | Repo (MB) |
+|---------|---------|--------------|--------------|--------------|---------------|-------------|-----------|
+| mapache | backup  |         4.47 |         4.51 |       425.24 |        442.99 |     1322.17 |    717.26 |
+| mapache | restore |        40.10 |        41.14 |       566.07 |        572.32 |      380.97 |      0.00 |
+| restic  | backup  |        10.86 |        11.26 |       859.05 |        863.23 |     1124.77 |    725.07 |
+| restic  | restore |        71.04 |        71.36 |       449.26 |        465.44 |      156.66 |      0.00 |
 
 ## Getting Started
 

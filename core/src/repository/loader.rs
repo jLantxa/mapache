@@ -178,10 +178,7 @@ impl BlobLoader {
                 let start = (loc.offset as u64 - segment.min_offset) as usize;
                 let end = start + loc.length as usize;
 
-                let decoded = self
-                    .repo
-                    .secure_storage()
-                    .decode_owned(data[start..end].to_vec())?;
+                let decoded = self.repo.secure_storage().decode(&data[start..end])?;
 
                 result.insert(id, decoded);
             }

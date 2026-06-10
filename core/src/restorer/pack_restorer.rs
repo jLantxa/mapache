@@ -95,8 +95,8 @@ impl Restorer {
         });
 
         let packs_map = Arc::try_unwrap(packs).unwrap_or_else(|arc| (*arc).clone());
-        let segments: Vec<_> = packs_map
-            .into_iter()
+
+        let mut download_stream = futures::stream::iter(packs_map)
             .flat_map(|(pack_id, blob_requests)| {
                 let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
                 for (blob_id, req) in blob_requests {
@@ -118,11 +118,8 @@ impl Restorer {
                     })
                     .collect();
 
-                loader::segment_blobs(pack_id, blobs_vec)
+                futures::stream::iter(loader::segment_blobs(pack_id, blobs_vec))
             })
-            .collect();
-
-        let mut download_stream = futures::stream::iter(segments)
             .map(|segment| {
                 let repo = self.repo.clone();
                 let secure_storage = secure_storage.clone();
@@ -155,22 +152,21 @@ impl Restorer {
                         segment.pack_id.to_short_hex(8), segment_data.len());
 
                     let data_arc = Arc::new(segment_data);
-                    let mut blob_idx = 0;
-                    let blobs = segment.blobs;
+                    let mut blobs = segment.blobs;
 
-                    while blob_idx < blobs.len() {
+                    while !blobs.is_empty() {
                         if shutdown_signal.load(Ordering::Acquire) {
                             bail!("Interrupted");
                         }
 
                         let mut batch = Vec::new();
                         let mut batch_raw_size = 0;
-                        while blob_idx < blobs.len()
-                            && (batch.is_empty() || batch_raw_size < d.restore_decoded_budget)
-                        {
-                            batch_raw_size += blobs[blob_idx].1.raw_length as u64;
-                            batch.push(blobs[blob_idx].clone());
-                            blob_idx += 1;
+                        while let Some(entry) = blobs.pop() {
+                            batch_raw_size += entry.1.raw_length as u64;
+                            batch.push(entry);
+                            if batch_raw_size >= d.restore_decoded_budget {
+                                break;
+                            }
                         }
 
                         let secure_storage_inner = secure_storage.clone();
@@ -186,7 +182,7 @@ impl Restorer {
                                     let encoded_blob = &data_arc_inner[start..end];
 
                                     let decoded_data = secure_storage_inner
-                                        .decode_owned(encoded_blob.to_vec())
+                                        .decode(encoded_blob)
                                         .with_context(|| {
                                             format!("Failed to decode blob {blob_id}")
                                         })?;

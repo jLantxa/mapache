@@ -1,4 +1,4 @@
-# mapache
+# mapache — Fast, Encrypted, Deduplicating Backup Tool
 
 ![Badge](https://github.com/jlantxa/mapache/workflows/main/badge.svg)
 

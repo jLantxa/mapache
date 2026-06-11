@@ -511,185 +511,62 @@ pub async fn parse_and_run() -> i32 {
     // Initialize runtime defaults from config
     init_runtime_defaults(config.runtime.as_ref());
 
-    let (global_result, command_result) = match args.command {
-        Command::Amend(cmd) => {
-            let mut g = cmd.global.clone();
+    macro_rules! with_global {
+        ($cmd:ident, $variant:ident) => {{
+            let mut g = $cmd.global.clone();
+            if let Some(cfg) = &config.global {
+                g.merge(cfg.clone());
+            }
+            (cli_to_global_args(&g), Command::$variant($cmd))
+        }};
+    }
+
+    macro_rules! with_global_and_config {
+        ($cmd:ident, $variant:ident, $extra:expr) => {{
+            let mut g = $cmd.global.clone();
             if let Some(cfg) = &config.global {
                 g.merge(cfg.clone());
             }
             let global = cli_to_global_args(&g);
-            (global, Command::Amend(cmd))
-        }
+            let mut cmd = $cmd;
+            if let Some(cfg) = &$extra {
+                cmd.args.merge(cfg.clone());
+            }
+            (global, Command::$variant(cmd))
+        }};
+    }
+
+    let (global_result, command_result) = match args.command {
         Command::Bundle(cmd) => (Ok(GlobalArgs::default_for_bundle()), Command::Bundle(cmd)),
         Command::Cache(cmd) => (Ok(GlobalArgs::default_for_cache()), Command::Cache(cmd)),
-        Command::Cat(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Cat(cmd))
-        }
-        Command::Clean(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Clean(cmd))
-        }
         Command::Completion(cmd) => (
             Ok(GlobalArgs::default_for_completion()),
             Command::Completion(cmd),
         ),
-        Command::Diff(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Diff(cmd))
-        }
-        Command::Dump(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Dump(cmd))
-        }
-        Command::Find(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Find(cmd))
-        }
-        Command::Forget(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            let global = cli_to_global_args(&g);
-            let mut cmd = cmd;
-            if let Some(cfg) = &config.forget {
-                cmd.args.merge(cfg.clone());
-            }
-            (global, Command::Forget(cmd))
-        }
-        Command::Init(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Init(cmd))
-        }
-        Command::Key(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Key(cmd))
-        }
-        Command::Log(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Log(cmd))
-        }
-        Command::Ls(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Ls(cmd))
-        }
+        Command::Forget(cmd) => with_global_and_config!(cmd, Forget, config.forget),
+        Command::Restore(cmd) => with_global_and_config!(cmd, Restore, config.restore),
+        Command::Snapshot(cmd) => with_global_and_config!(cmd, Snapshot, config.snapshot),
         #[cfg(all(feature = "fuse", unix))]
-        Command::Mount(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Mount(cmd))
-        }
-        Command::RebuildIndex(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::RebuildIndex(cmd))
-        }
-        Command::Recall(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Recall(cmd))
-        }
-        Command::Rechunk(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Rechunk(cmd))
-        }
-        Command::Restore(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            let global = cli_to_global_args(&g);
-            let mut cmd = cmd;
-            if let Some(cfg) = &config.restore {
-                cmd.args.merge(cfg.clone());
-            }
-            (global, Command::Restore(cmd))
-        }
-        Command::Snapshot(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            let global = cli_to_global_args(&g);
-            let mut cmd = cmd;
-            if let Some(cfg) = &config.snapshot {
-                cmd.args.merge(cfg.clone());
-            }
-            (global, Command::Snapshot(cmd))
-        }
-        Command::Stats(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Stats(cmd))
-        }
-        Command::Sync(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Sync(cmd))
-        }
-        Command::Unlock(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Unlock(cmd))
-        }
-        Command::Verify(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Verify(cmd))
-        }
+        Command::Mount(cmd) => with_global!(cmd, Mount),
         #[cfg(feature = "tui")]
-        Command::Tui(cmd) => {
-            let mut g = cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::Tui(cmd))
-        }
+        Command::Tui(cmd) => with_global!(cmd, Tui),
+        Command::Amend(cmd) => with_global!(cmd, Amend),
+        Command::Cat(cmd) => with_global!(cmd, Cat),
+        Command::Clean(cmd) => with_global!(cmd, Clean),
+        Command::Diff(cmd) => with_global!(cmd, Diff),
+        Command::Dump(cmd) => with_global!(cmd, Dump),
+        Command::Find(cmd) => with_global!(cmd, Find),
+        Command::Init(cmd) => with_global!(cmd, Init),
+        Command::Key(cmd) => with_global!(cmd, Key),
+        Command::Log(cmd) => with_global!(cmd, Log),
+        Command::Ls(cmd) => with_global!(cmd, Ls),
+        Command::RebuildIndex(cmd) => with_global!(cmd, RebuildIndex),
+        Command::Recall(cmd) => with_global!(cmd, Recall),
+        Command::Rechunk(cmd) => with_global!(cmd, Rechunk),
+        Command::Stats(cmd) => with_global!(cmd, Stats),
+        Command::Sync(cmd) => with_global!(cmd, Sync),
+        Command::Unlock(cmd) => with_global!(cmd, Unlock),
+        Command::Verify(cmd) => with_global!(cmd, Verify),
     };
 
     let global = match global_result {

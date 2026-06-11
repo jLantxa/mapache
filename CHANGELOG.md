@@ -19,6 +19,8 @@
   pattern does not contain a `/` (e.g. `find file.txt` matches in any
   subdirectory). Use a leading `/` to restrict the search to the root
   (`find /file.txt`).
+- **`dump` command**: New `dump` command to print the contents of a single
+  file from a snapshot to stdout. Supports snapshot ID prefixes and `latest`.
 
 ### Changed
 

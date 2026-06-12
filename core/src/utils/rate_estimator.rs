@@ -35,7 +35,10 @@ impl RateEstimator {
     /// Records the current cumulative value at this instant.
     /// Call this whenever progress advances (e.g., bytes processed so far).
     pub fn observe(&mut self, value: f64) {
-        let now = Instant::now();
+        self.observe_at(value, Instant::now());
+    }
+
+    fn observe_at(&mut self, value: f64, now: Instant) {
         self.samples.push_back((now, value));
 
         while let Some(front) = self.samples.front() {
@@ -99,8 +102,6 @@ impl RateEstimator {
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
-
     use super::*;
 
     fn approx_eq(a: f64, b: f64, tolerance: f64) -> bool {
@@ -110,15 +111,16 @@ mod tests {
     #[test]
     fn test_rate_and_eta() {
         let mut re = RateEstimator::new(Duration::from_secs(30));
+        let t0 = Instant::now();
 
         assert_eq!(re.rate(), 0.0);
         assert!(re.eta(0.0, 100.0).is_none());
 
-        re.observe(0.0);
+        re.observe_at(0.0, t0);
         assert_eq!(re.rate(), 0.0);
 
-        thread::sleep(Duration::from_millis(200));
-        re.observe(100.0);
+        let t1 = t0 + Duration::from_millis(200);
+        re.observe_at(100.0, t1);
 
         let rate = re.rate();
         assert!(approx_eq(rate, 500.0, 100.0), "rate={}", rate);
@@ -132,9 +134,10 @@ mod tests {
     #[test]
     fn test_reset() {
         let mut re = RateEstimator::new(Duration::from_secs(30));
-        re.observe(0.0);
-        thread::sleep(Duration::from_millis(10));
-        re.observe(100.0);
+        let t0 = Instant::now();
+
+        re.observe_at(0.0, t0);
+        re.observe_at(100.0, t0 + Duration::from_millis(10));
         assert!(re.rate() > 0.0);
 
         re.reset();
@@ -144,15 +147,14 @@ mod tests {
 
     #[test]
     fn test_window_eviction() {
-        let mut re = RateEstimator::new(Duration::from_millis(10));
+        let mut re = RateEstimator::new(Duration::from_millis(50));
+        let t0 = Instant::now();
 
-        re.observe(0.0);
-        thread::sleep(Duration::from_millis(5));
-        re.observe(10.0);
+        re.observe_at(0.0, t0);
+        re.observe_at(10.0, t0 + Duration::from_millis(10));
         assert!(re.rate() > 0.0);
 
-        thread::sleep(Duration::from_millis(20));
-        re.observe(20.0);
+        re.observe_at(20.0, t0 + Duration::from_millis(100));
         assert_eq!(re.rate(), 0.0);
     }
 }

@@ -311,7 +311,7 @@ impl DashboardScreen {
                     Span::styled(id_str, theme::THEME.snap_id),
                     Span::styled(date, theme::THEME.snap_date),
                     Span::styled(host, theme::THEME.snap_host),
-                    Span::styled(format!("{:>10}", size), theme::THEME.snap_size),
+                    Span::styled(format!("{:>13}", size), theme::THEME.snap_size),
                     Span::raw(tags),
                 ])
             })
@@ -322,7 +322,7 @@ impl DashboardScreen {
             Span::styled("ID", theme::THEME.menu_key),
             Span::styled("Date", theme::THEME.menu_key),
             Span::styled("Host", theme::THEME.menu_key),
-            Span::styled("Size", theme::THEME.menu_key),
+            Span::styled(format!("{:>13}", "Size"), theme::THEME.menu_key),
             Span::styled("Tags", theme::THEME.menu_key),
         ]);
 
@@ -331,7 +331,7 @@ impl DashboardScreen {
             Constraint::Length(12),
             Constraint::Length(28),
             Constraint::Length(12),
-            Constraint::Length(10),
+            Constraint::Length(13),
             Constraint::Min(10),
         ];
 

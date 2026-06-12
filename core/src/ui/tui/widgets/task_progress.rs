@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span, Text},
     widgets::Paragraph,
 };
@@ -120,19 +120,16 @@ impl<'a> TaskProgressWidget<'a> {
 
         if !self.state.errors.is_empty() {
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "Errors:",
-                Style::default().bold().fg(Color::Red),
-            )));
+            lines.push(Line::from(Span::styled("Errors:", theme::THEME.error)));
             for err in self.state.errors.iter().rev().take(5) {
                 lines.push(Line::from(vec![
-                    Span::styled(" ! ", Style::default().fg(Color::Red)),
+                    Span::styled(" ! ", theme::THEME.error),
                     Span::raw(err),
                 ]));
             }
         }
 
-        let widget = Paragraph::new(Text::from(lines)).block(theme::themed_block(&self.title));
+        let widget = Paragraph::new(Text::from(lines)).block(theme::block(&self.title));
         frame.render_widget(widget, chunks[1]);
 
         let footer = theme::key_hint_footer(&[("Esc", "cancel"), ("q", "quit")]);

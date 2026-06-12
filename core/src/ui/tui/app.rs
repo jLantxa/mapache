@@ -3,12 +3,12 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use async_trait::async_trait;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
-use ratatui::{Frame, Terminal, backend::Backend};
+use ratatui::{Frame, Terminal, backend::Backend, style::Style, widgets::Block};
 
 use crate::{
     commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
     repository::{lock::LockHandle, repo::Repository},
-    ui::tui::screens::dashboard::DashboardScreen,
+    ui::tui::{screens::dashboard::DashboardScreen, theme},
 };
 
 #[async_trait]
@@ -109,6 +109,11 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme::THEME.bg)),
+            frame.area(),
+        );
+
         if let Some(active) = self.stack.last_mut() {
             active.render(frame);
         }

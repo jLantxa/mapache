@@ -136,7 +136,7 @@ impl ProgressBar {
 
         let lines = vec![Line::from(line_spans), Line::from(status)];
 
-        Paragraph::new(Text::from(lines)).block(theme::themed_block("Progress"))
+        Paragraph::new(Text::from(lines)).block(theme::block("Progress"))
     }
 }
 

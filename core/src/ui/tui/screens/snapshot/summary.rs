@@ -2,7 +2,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span, Text},
     widgets::{Cell, Paragraph, Row, Table},
 };
@@ -41,7 +41,7 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
         Some(SummaryResult::Cancelled) => {
             Toast::with_text(
                 "Cancelled",
-                theme::THEME.toast_warning,
+                theme::THEME.yellow,
                 Text::from(vec![
                     Line::from("Snapshot was cancelled."),
                     Line::from(""),
@@ -52,12 +52,12 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
             .render(area, frame);
         }
         Some(SummaryResult::Error(msg)) => {
-            Toast::new("Error", theme::THEME.toast_error, msg).render(area, frame);
+            Toast::new("Error", theme::THEME.red, msg).render(area, frame);
         }
         Some(SummaryResult::NoChanges) => {
             Toast::with_text(
                 "No Changes",
-                theme::THEME.toast_info,
+                theme::THEME.blue,
                 Text::from(vec![
                     Line::from("No changes detected since parent."),
                     Line::from(""),
@@ -69,7 +69,7 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
         None => {
             Toast::new(
                 "Info",
-                theme::THEME.toast_info,
+                theme::THEME.blue,
                 "Waiting for snapshot to complete...",
             )
             .render(area, frame);
@@ -103,31 +103,31 @@ fn render_success(
 
     let header = Row::new([
         Cell::from("").style(Style::default()),
-        Cell::from("new").style(Style::default().fg(Color::Green).bold()),
-        Cell::from("changed").style(Style::default().fg(Color::Yellow).bold()),
-        Cell::from("deleted").style(Style::default().fg(Color::Red).bold()),
+        Cell::from("new").style(Style::default().fg(theme::THEME.green).bold()),
+        Cell::from("changed").style(Style::default().fg(theme::THEME.yellow).bold()),
+        Cell::from("deleted").style(Style::default().fg(theme::THEME.red).bold()),
         Cell::from("unchanged").style(Style::default().bold()),
     ]);
 
     let files_row = Row::new([
         Cell::from("Files").style(Style::default().bold()),
         Cell::from(summary.diff_counts.new_files.to_string())
-            .style(Style::default().fg(Color::Green)),
+            .style(Style::default().fg(theme::THEME.green)),
         Cell::from(summary.diff_counts.changed_files.to_string())
-            .style(Style::default().fg(Color::Yellow)),
+            .style(Style::default().fg(theme::THEME.yellow)),
         Cell::from(summary.diff_counts.deleted_files.to_string())
-            .style(Style::default().fg(Color::Red)),
+            .style(Style::default().fg(theme::THEME.red)),
         Cell::from(summary.diff_counts.unchanged_files.to_string()),
     ]);
 
     let dirs_row = Row::new([
         Cell::from("Dirs").style(Style::default().bold()),
         Cell::from(summary.diff_counts.new_dirs.to_string())
-            .style(Style::default().fg(Color::Green)),
+            .style(Style::default().fg(theme::THEME.green)),
         Cell::from(summary.diff_counts.changed_dirs.to_string())
-            .style(Style::default().fg(Color::Yellow)),
+            .style(Style::default().fg(theme::THEME.yellow)),
         Cell::from(summary.diff_counts.deleted_dirs.to_string())
-            .style(Style::default().fg(Color::Red)),
+            .style(Style::default().fg(theme::THEME.red)),
         Cell::from(summary.diff_counts.unchanged_dirs.to_string()),
     ]);
 
@@ -141,7 +141,7 @@ fn render_success(
             Constraint::Length(col_w),
         ],
     )
-    .block(theme::themed_block("Changes since parent snapshot"));
+    .block(theme::block("Changes since parent snapshot"));
     frame.render_widget(table, chunks[0]);
 
     let raw_data_str = utils::format_size_binary(summary.raw_bytes, 3);
@@ -163,25 +163,25 @@ fn render_success(
 
     let data_header = Row::new([
         Cell::from(""),
-        Cell::from("Raw").style(Style::default().fg(Color::Yellow).bold()),
-        Cell::from("Compressed").style(Style::default().fg(Color::Green).bold()),
+        Cell::from("Raw").style(Style::default().fg(theme::THEME.yellow).bold()),
+        Cell::from("Compressed").style(Style::default().fg(theme::THEME.green).bold()),
     ]);
 
     let data_rows = [
         Row::new([
             Cell::from("Data").style(Style::default().bold()),
-            Cell::from(raw_data_str).style(Style::default().fg(Color::Yellow)),
-            Cell::from(enc_data_str).style(Style::default().fg(Color::Green)),
+            Cell::from(raw_data_str).style(Style::default().fg(theme::THEME.yellow)),
+            Cell::from(enc_data_str).style(Style::default().fg(theme::THEME.green)),
         ]),
         Row::new([
             Cell::from("Metadata").style(Style::default().bold()),
-            Cell::from(raw_meta_str).style(Style::default().fg(Color::Yellow)),
-            Cell::from(enc_meta_str).style(Style::default().fg(Color::Green)),
+            Cell::from(raw_meta_str).style(Style::default().fg(theme::THEME.yellow)),
+            Cell::from(enc_meta_str).style(Style::default().fg(theme::THEME.green)),
         ]),
         Row::new([
             Cell::from("Total").style(Style::default().bold()),
-            Cell::from(raw_total_str).style(Style::default().fg(Color::Yellow).bold()),
-            Cell::from(enc_total_str).style(Style::default().fg(Color::Green).bold()),
+            Cell::from(raw_total_str).style(Style::default().fg(theme::THEME.yellow).bold()),
+            Cell::from(enc_total_str).style(Style::default().fg(theme::THEME.green).bold()),
         ]),
     ];
 
@@ -193,7 +193,7 @@ fn render_success(
             Constraint::Length(data_col_w),
         ],
     )
-    .block(theme::themed_block("Totals"));
+    .block(theme::block("Totals"));
     frame.render_widget(data_table, chunks[1]);
 
     let stats_line = Line::from(vec![Span::raw(format!(
@@ -208,7 +208,7 @@ fn render_success(
         Span::styled("Snapshot ID: ", Style::default().bold()),
         Span::styled(
             snapshot_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
-            theme::THEME.style_snapshot_id,
+            theme::THEME.snap_id,
         ),
     ]);
     frame.render_widget(Paragraph::new(id_line), chunks[3]);

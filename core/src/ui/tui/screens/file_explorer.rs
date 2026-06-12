@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{List, ListItem, ListState, Paragraph},
@@ -23,9 +23,8 @@ use crate::{
     utils,
 };
 
-const METADATA_HEIGHT: u16 = 7;
+const METADATA_HEIGHT: u16 = 8;
 const TITLE_HEIGHT: u16 = 1;
-const BREADCRUMB_HEIGHT: u16 = 1;
 
 struct PathStackEntry {
     tree: Tree,
@@ -79,54 +78,84 @@ impl FileExplorerScreen {
     }
 
     fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
-        let breadcrumb = Paragraph::new(format!(" Path: {}", self.current_path.display())).style(
-            Style::default()
-                .fg(theme::THEME.breadcrumb_fg)
-                .add_modifier(Modifier::BOLD),
-        );
+        let parts: Vec<&str> = self
+            .current_path
+            .iter()
+            .filter_map(|c| c.to_str())
+            .collect();
+        let mut spans = vec![Span::styled(" \u{2302} ", theme::THEME.breadcrumb)];
+        for part in parts.iter() {
+            spans.push(Span::styled(" / ", theme::THEME.footer));
+            spans.push(Span::styled(*part, theme::THEME.snap_host));
+        }
+        let breadcrumb = Paragraph::new(Line::from(spans));
         frame.render_widget(breadcrumb, area);
     }
 
     fn render_metadata(&self, frame: &mut Frame, area: Rect, node: &Node) {
         let mut lines = Vec::with_capacity(5);
-        lines.push(Line::from(vec![
-            Span::styled(" Name: ", Style::default().bold()),
-            Span::raw(&node.name),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(" Size: ", Style::default().bold()),
-            Span::raw(utils::format_size_binary(node.metadata.size, 3)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(" Mode: ", Style::default().bold()),
-            Span::raw(format!("{:o}", node.metadata.mode.unwrap_or(0))),
-        ]));
+        let lw = 10;
 
-        if let Some(ctime) = node.metadata.created_time {
-            let ts = utils::pretty_print_timestamp(&ctime.into(), None);
-            lines.push(Line::from(vec![
-                Span::styled(" Created: ", Style::default().bold()),
-                Span::raw(ts.to_string()),
-            ]));
-        }
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:lw$}", "Size", lw = lw), theme::THEME.menu_key),
+            Span::styled(
+                utils::format_size_binary(node.metadata.size, 2),
+                theme::THEME.snap_size,
+            ),
+        ]));
 
         if let Some(mtime) = node.metadata.modified_time {
-            let ts = utils::pretty_print_timestamp(&mtime.into(), None);
             lines.push(Line::from(vec![
-                Span::styled(" Modified: ", Style::default().bold()),
-                Span::raw(ts.to_string()),
+                Span::styled(
+                    format!("{:lw$}", "Modified", lw = lw),
+                    theme::THEME.menu_key,
+                ),
+                Span::styled(
+                    utils::pretty_print_timestamp(&mtime.into(), None),
+                    theme::THEME.snap_date,
+                ),
             ]));
         }
 
-        let widget = Paragraph::new(Text::from(lines)).block(theme::themed_block("Metadata"));
+        if let Some(ctime) = node.metadata.created_time {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:lw$}", "Created", lw = lw), theme::THEME.menu_key),
+                Span::styled(
+                    utils::pretty_print_timestamp(&ctime.into(), None),
+                    theme::THEME.subtext,
+                ),
+            ]));
+        }
+
+        if let Some(mode) = node.metadata.mode {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:lw$}", "Mode", lw = lw), theme::THEME.menu_key),
+                Span::styled(format!("{:o}", mode), theme::THEME.footer),
+            ]));
+        }
+
+        if node.is_symlink() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:lw$}", "Target", lw = lw), theme::THEME.menu_key),
+                Span::styled(
+                    node.symlink_info
+                        .as_ref()
+                        .map(|s| s.target_path.display().to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    theme::THEME.symlink_fg,
+                ),
+            ]));
+        }
+
+        let widget = Paragraph::new(Text::from(lines)).block(theme::block("Info"));
         frame.render_widget(widget, area);
     }
 
     fn render_title(&self, frame: &mut Frame, area: Rect) {
         let footer = theme::key_hint_footer(&[
             ("Esc", "back"),
-            ("Enter/→", "open"),
-            ("Backsp/←", "up"),
+            ("\u{2192}", "open"),
+            ("\u{2190}", "up"),
             ("r", "restore"),
             ("q", "quit"),
         ]);
@@ -138,19 +167,20 @@ impl FileExplorerScreen {
 impl Screen for FileExplorerScreen {
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let inner = area.inner(ratatui::layout::Margin::new(2, 0));
+        let inner = area.inner(Margin::new(2, 0));
 
         let selected_is_file = self
             .list_state
             .selected()
-            .is_some_and(|i| self.current_tree.nodes.get(i).is_some_and(|n| n.is_file()));
+            .and_then(|i| self.current_tree.nodes.get(i))
+            .is_some_and(|n| n.is_file());
 
         let metadata_height = if selected_is_file { METADATA_HEIGHT } else { 0 };
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(BREADCRUMB_HEIGHT),
+                Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(metadata_height),
                 Constraint::Length(TITLE_HEIGHT),
@@ -165,43 +195,47 @@ impl Screen for FileExplorerScreen {
             .nodes
             .iter()
             .map(|node| {
-                let name = if node.is_dir() {
+                let sym = if node.is_symlink() { "\u{21C4} " } else { "" };
+
+                let name_style = if node.is_dir() {
+                    Style::default()
+                        .fg(theme::THEME.dir_fg)
+                        .add_modifier(Modifier::BOLD)
+                } else if node.is_symlink() {
+                    Style::default()
+                        .fg(theme::THEME.symlink_fg)
+                        .add_modifier(Modifier::ITALIC)
+                } else {
+                    Style::default().fg(theme::THEME.file_fg)
+                };
+
+                let display_name = if node.is_dir() {
                     format!("{}/", &node.name)
                 } else {
                     node.name.clone()
                 };
-                let size = if node.is_file() {
-                    format!(" ({})", utils::format_size_binary(node.metadata.size, 1))
-                } else {
-                    String::new()
-                };
 
-                let color = if node.is_dir() {
-                    theme::THEME.dir_fg
-                } else if node.is_symlink() {
-                    theme::THEME.symlink_fg
-                } else {
-                    theme::THEME.file_fg
-                };
+                let mut spans = vec![
+                    Span::styled(sym, name_style),
+                    Span::styled(display_name, name_style),
+                ];
 
-                let mut style = Style::default().fg(color);
-                if node.is_dir() {
-                    style = style.add_modifier(Modifier::BOLD);
-                } else if node.is_symlink() {
-                    style = style.add_modifier(Modifier::ITALIC);
+                if node.is_file() {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        utils::format_size_binary(node.metadata.size, 1),
+                        theme::THEME.file_size,
+                    ));
                 }
 
-                ListItem::new(Line::from(vec![
-                    Span::styled(name, style),
-                    Span::styled(size, Style::default().fg(theme::THEME.file_size_fg)),
-                ]))
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
         let list = List::new(items)
-            .block(theme::themed_block("File Explorer"))
-            .highlight_style(theme::THEME.style_selected_row)
-            .highlight_symbol(">> ");
+            .block(theme::block("Files"))
+            .highlight_style(theme::THEME.selection)
+            .highlight_symbol("  ");
 
         frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
 
@@ -214,7 +248,9 @@ impl Screen for FileExplorerScreen {
             );
         }
 
-        if selected_is_file && let Some(i) = self.list_state.selected() {
+        if let Some(i) = self.list_state.selected()
+            && selected_is_file
+        {
             self.render_metadata(frame, chunks[2], &self.current_tree.nodes[i]);
         }
 

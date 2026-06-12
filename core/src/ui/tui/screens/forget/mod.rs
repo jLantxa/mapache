@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Row, Table, TableState},
 };
@@ -295,7 +295,7 @@ impl ForgetScreen {
             selected,
             self.entries.len()
         ))
-        .style(theme::THEME.style_header);
+        .style(theme::THEME.header);
         frame.render_widget(header, chunks[0]);
 
         let rows: Vec<Row> = self
@@ -311,16 +311,16 @@ impl ForgetScreen {
                 let tags = theme::format_tags(&e.snapshot.tags);
 
                 let style = if is_selected {
-                    Style::default().fg(Color::Red)
+                    Style::default().fg(theme::THEME.red)
                 } else {
                     Style::default()
                 };
 
                 Row::new(vec![
                     Span::styled(selected_str, style),
-                    Span::styled(id, theme::THEME.style_snapshot_id),
-                    Span::styled(date, theme::THEME.style_snapshot_date),
-                    Span::styled(host, theme::THEME.style_snapshot_host),
+                    Span::styled(id, theme::THEME.snap_id),
+                    Span::styled(date, theme::THEME.snap_date),
+                    Span::styled(host, theme::THEME.snap_host),
                     Span::raw(tags),
                 ])
             })
@@ -336,11 +336,9 @@ impl ForgetScreen {
                 Constraint::Min(20),
             ],
         )
-        .header(
-            Row::new(vec!["", "ID", "Date", "Host", "Tags"]).style(theme::THEME.style_table_header),
-        )
-        .block(theme::themed_block("Snapshots"))
-        .row_highlight_style(theme::THEME.style_selected_row);
+        .header(Row::new(vec!["", "ID", "Date", "Host", "Tags"]).style(theme::THEME.header))
+        .block(theme::block("Snapshots"))
+        .row_highlight_style(theme::THEME.selection);
 
         frame.render_stateful_widget(table, chunks[1], &mut self.table_state);
         theme::render_scrollbar(
@@ -369,25 +367,25 @@ impl ForgetScreen {
         let text = vec![
             Line::from(vec![
                 Span::raw("You are about to forget "),
-                Span::styled(selected.to_string(), Style::default().bold().fg(Color::Red)),
+                Span::styled(selected.to_string(), theme::THEME.error),
                 Span::raw(" snapshots."),
             ]),
             Line::from(""),
             Line::from(Span::styled(
                 "THIS ACTION IS NOT EASILY REVERSIBLE.",
-                Style::default().bold().fg(Color::Red),
+                theme::THEME.error,
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("[Enter]", theme::THEME.style_menu_key),
+                Span::styled("[Enter]", theme::THEME.menu_key),
                 Span::raw(" to proceed, "),
-                Span::styled("[Esc]", theme::THEME.style_menu_key),
+                Span::styled("[Esc]", theme::THEME.menu_key),
                 Span::raw(" to cancel"),
             ]),
         ];
 
         let widget = Paragraph::new(text)
-            .block(theme::themed_block("Confirm Forget"))
+            .block(theme::block("Confirm Forget"))
             .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(ratatui::widgets::Clear, inner);
         frame.render_widget(widget, inner);
@@ -399,28 +397,22 @@ impl ForgetScreen {
 
         let text = match self.result {
             Some(ForgetResult::Success { removed_count }) => vec![
-                Line::from(Span::styled(
-                    "SUCCESS",
-                    Style::default().bold().fg(Color::Green),
-                )),
+                Line::from(Span::styled("SUCCESS", theme::THEME.success)),
                 Line::from(""),
                 Line::from(format!("Successfully forgot {} snapshots.", removed_count)),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("[Enter/Esc]", theme::THEME.style_menu_key),
+                    Span::styled("[Enter/Esc]", theme::THEME.menu_key),
                     Span::raw(" back to dashboard"),
                 ]),
             ],
             Some(ForgetResult::NoDeleted) => vec![
-                Line::from(Span::styled(
-                    "NO SNAPSHOTS REMOVED",
-                    Style::default().bold().fg(Color::Yellow),
-                )),
+                Line::from(Span::styled("NO SNAPSHOTS REMOVED", theme::THEME.warning)),
                 Line::from(""),
                 Line::from("No snapshots were selected or removed."),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("[Enter/Esc]", theme::THEME.style_menu_key),
+                    Span::styled("[Enter/Esc]", theme::THEME.menu_key),
                     Span::raw(" back to selection"),
                 ]),
             ],
@@ -428,7 +420,7 @@ impl ForgetScreen {
         };
 
         let widget = Paragraph::new(text)
-            .block(theme::themed_block("Forget Result"))
+            .block(theme::block("Forget Result"))
             .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(ratatui::widgets::Clear, inner);
         frame.render_widget(widget, inner);

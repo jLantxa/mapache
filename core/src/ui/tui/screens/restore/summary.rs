@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::Paragraph,
 };
@@ -31,13 +31,13 @@ pub fn render_summary(
             None => {
                 lines.push(Line::from(Span::styled(
                     "RESTORE SUCCESSFUL",
-                    Style::default().bold().fg(Color::Green),
+                    theme::THEME.success,
                 )));
             }
             Some(e) => {
                 lines.push(Line::from(Span::styled(
                     "RESTORE FAILED",
-                    Style::default().bold().fg(Color::Red),
+                    theme::THEME.error,
                 )));
                 lines.push(Line::from(format!("Error: {}", e)));
             }
@@ -79,7 +79,7 @@ pub fn render_summary(
             if state.errors.is_empty() {
                 Style::default()
             } else {
-                Style::default().fg(Color::Red)
+                theme::THEME.error
             },
         ),
         Span::raw("    "),
@@ -89,16 +89,16 @@ pub fn render_summary(
             if state.warnings.is_empty() {
                 Style::default()
             } else {
-                Style::default().fg(Color::Yellow)
+                theme::THEME.warning
             },
         ),
     ]));
 
-    let summary = Paragraph::new(Text::from(lines)).block(theme::themed_block("Summary"));
+    let summary = Paragraph::new(Text::from(lines)).block(theme::block("Summary"));
     frame.render_widget(summary, chunks[0]);
 
     let footer = Line::from(vec![
-        Span::styled("[Enter/Esc]", theme::THEME.style_menu_key),
+        Span::styled("[Enter/Esc]", theme::THEME.menu_key),
         Span::raw(" back to dashboard"),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[1]);

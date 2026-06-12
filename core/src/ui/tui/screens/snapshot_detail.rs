@@ -6,10 +6,9 @@ use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::Style,
+    layout::{Alignment, Constraint, Direction, Layout, Margin},
     text::{Line, Span, Text},
-    widgets::{Paragraph, ScrollbarState},
+    widgets::ScrollbarState,
 };
 
 use crate::{
@@ -82,77 +81,82 @@ impl SnapshotDetailScreen {
         let s = self.snapshot();
         let entry = self.entry();
         let mut lines = Vec::with_capacity(20);
+        let lw = 16;
 
         lines.push(Line::from(vec![
-            Span::styled("ID:          ", Style::default().bold()),
-            Span::styled(entry.id.to_hex(), theme::THEME.style_snapshot_id),
+            Span::styled(format!("{:lw$}", "ID", lw = lw), theme::THEME.menu_key),
+            Span::styled(entry.id.to_hex(), theme::THEME.snap_id),
         ]));
 
         let ts = utils::pretty_print_timestamp(&s.timestamp, None);
         let elapsed = Local::now() - s.timestamp;
         let ago = utils::pretty_print_duration_chrono(elapsed, 1);
         lines.push(Line::from(vec![
-            Span::styled("Date:        ", Style::default().bold()),
+            Span::styled(format!("{:lw$}", "Date", lw = lw), theme::THEME.menu_key),
             Span::raw(ts.to_string()),
             Span::raw("  ("),
-            Span::styled(format!("{} ago", ago), theme::THEME.snapshot_date),
+            Span::styled(format!("{} ago", ago), theme::THEME.snap_date),
             Span::raw(")"),
         ]));
 
         if let Some(ref parent) = s.parent {
             lines.push(Line::from(vec![
-                Span::styled("Parent:      ", Style::default().bold()),
-                Span::styled(parent.to_short_hex(12), theme::THEME.style_snapshot_id),
+                Span::styled(format!("{:lw$}", "Parent", lw = lw), theme::THEME.menu_key),
+                Span::styled(parent.to_short_hex(12), theme::THEME.snap_id),
             ]));
         }
 
         lines.push(Line::from(vec![
-            Span::styled("Host:        ", Style::default().bold()),
+            Span::styled(format!("{:lw$}", "Host", lw = lw), theme::THEME.menu_key),
             Span::raw(s.hostname.as_deref().unwrap_or("(unknown)").to_string()),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("User:        ", Style::default().bold()),
+            Span::styled(format!("{:lw$}", "User", lw = lw), theme::THEME.menu_key),
             Span::raw(s.username.as_deref().unwrap_or("(unknown)").to_string()),
         ]));
 
         if let Some(ref version) = s.version {
             lines.push(Line::from(vec![
-                Span::styled("Version:     ", Style::default().bold()),
+                Span::styled(format!("{:lw$}", "Version", lw = lw), theme::THEME.menu_key),
                 Span::raw(version.to_string()),
             ]));
         }
 
         lines.push(Line::from(vec![
-            Span::styled("Root:        ", Style::default().bold()),
+            Span::styled(format!("{:lw$}", "Root", lw = lw), theme::THEME.menu_key),
             Span::raw(s.root.to_string_lossy().into_owned()),
         ]));
 
         if let Some(ref desc) = s.description {
             lines.push(Line::from(vec![
-                Span::styled("Description: ", Style::default().bold()),
+                Span::styled(
+                    format!("{:lw$}", "Description", lw = lw),
+                    theme::THEME.menu_key,
+                ),
                 Span::raw(desc.to_string()),
             ]));
         }
 
-        let tags = if s.tags.is_empty() {
-            "(none)".to_string()
-        } else {
-            theme::format_tags(&s.tags)
-        };
         lines.push(Line::from(vec![
-            Span::styled("Tags:        ", Style::default().bold()),
-            Span::raw(tags),
+            Span::styled(format!("{:lw$}", "Tags", lw = lw), theme::THEME.menu_key),
+            Span::raw(if s.tags.is_empty() { "(none)" } else { "" }),
         ]));
+        if !s.tags.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(lw + 2)),
+                Span::raw(theme::format_tags(&s.tags)),
+            ]));
+        }
 
         lines.push(Line::from(vec![
-            Span::styled("Active:      ", Style::default().bold()),
+            Span::styled(format!("{:lw$}", "Active", lw = lw), theme::THEME.menu_key),
             Span::raw(if entry.active { "yes" } else { "no" }),
         ]));
 
-        lines.push(Line::from(vec![Span::styled(
-            "Paths:",
-            Style::default().bold().fg(theme::THEME.snapshot_date),
-        )]));
+        lines.push(Line::from(Span::styled(
+            format!("{:lw$}", "Paths", lw = lw),
+            theme::THEME.header,
+        )));
 
         for p in &s.paths {
             let relative = p
@@ -160,20 +164,25 @@ impl SnapshotDetailScreen {
                 .unwrap_or(p.as_path())
                 .to_string_lossy()
                 .into_owned();
-            lines.push(Line::from(vec![Span::raw(format!("  {}", relative))]));
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(lw + 2)),
+                Span::raw(relative),
+            ]));
         }
 
-        lines.push(Line::from(vec![Span::styled(
-            "Summary:",
-            Style::default().bold().fg(theme::THEME.snapshot_date),
-        )]));
+        lines.push(Line::from(Span::styled(
+            format!("{:lw$}", "Summary", lw = lw),
+            theme::THEME.header,
+        )));
 
         lines.push(Line::from(vec![
-            Span::styled("  Size:      ", Style::default().bold()),
+            Span::styled("  Size".to_string(), theme::THEME.menu_key),
+            Span::raw("  "),
             Span::raw(utils::format_size_binary(s.size(), 3)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  Items:     ", Style::default().bold()),
+            Span::styled("  Items".to_string(), theme::THEME.menu_key),
+            Span::raw(" "),
             Span::raw(s.summary.processed_items_count.to_string()),
         ]));
 
@@ -184,41 +193,19 @@ impl SnapshotDetailScreen {
         let has_prev = self.current_index > 0;
         let has_next = self.current_index < self.snapshots.len().saturating_sub(1);
 
-        let prev_style = if has_prev {
-            theme::THEME.style_menu_key
-        } else {
-            Style::default().fg(theme::THEME.footer_fg)
-        };
-        let next_style = if has_next {
-            theme::THEME.style_menu_key
-        } else {
-            Style::default().fg(theme::THEME.footer_fg)
-        };
+        let mut hints = vec![("Esc", "back"), ("Enter", "explore"), ("r", "restore")];
 
-        let title = Line::from(vec![
-            Span::styled("[Esc]", theme::THEME.style_menu_key),
-            Span::raw(" back"),
-            Span::raw("    "),
-            Span::styled("[Enter]", theme::THEME.style_menu_key),
-            Span::raw(" explore"),
-            Span::raw("    "),
-            Span::styled("[r]", theme::THEME.style_menu_key),
-            Span::raw(" restore"),
-            Span::raw("    "),
-            Span::styled("<", prev_style),
-            Span::raw(" prev"),
-            Span::raw("    "),
-            Span::styled(">", next_style),
-            Span::raw(" next"),
-            Span::raw("    "),
-            Span::styled("[q]", theme::THEME.style_menu_key),
-            Span::raw(" close"),
-            Span::raw("    "),
-            Span::styled("[\u{2191}\u{2193}]", theme::THEME.style_menu_key),
-            Span::raw(" scroll"),
-        ])
-        .alignment(Alignment::Left);
-        frame.render_widget(Paragraph::new(title), area);
+        if has_prev {
+            hints.push(("<", "prev"));
+        }
+        if has_next {
+            hints.push((">", "next"));
+        }
+        hints.push(("\u{2191}\u{2193}", "scroll"));
+        hints.push(("q", "quit"));
+
+        let footer = theme::key_hint_footer(&hints);
+        frame.render_widget(ratatui::widgets::Paragraph::new(footer), area);
     }
 
     fn render_content(&mut self, frame: &mut Frame, content_area: ratatui::layout::Rect) {
@@ -228,9 +215,9 @@ impl SnapshotDetailScreen {
         self.max_scroll = line_count.saturating_sub(content_height);
         self.page_size = content_height;
 
-        let paragraph = Paragraph::new(Text::from(self.cached_lines.clone()))
+        let paragraph = ratatui::widgets::Paragraph::new(Text::from(self.cached_lines.clone()))
             .alignment(Alignment::Left)
-            .block(theme::themed_block("Snapshot"))
+            .block(theme::block("Snapshot"))
             .scroll((self.scroll as u16, 0));
 
         frame.render_widget(paragraph, content_area);
@@ -242,7 +229,7 @@ impl SnapshotDetailScreen {
 
             frame.render_stateful_widget(
                 theme::scrollbar(),
-                content_area.inner(ratatui::layout::Margin::new(1, 1)),
+                content_area.inner(Margin::new(1, 1)),
                 &mut scrollbar_state,
             );
         }
@@ -259,7 +246,7 @@ impl Screen for SnapshotDetailScreen {
 
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let inner = area.inner(ratatui::layout::Margin::new(2, 1));
+        let inner = area.inner(Margin::new(2, 1));
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

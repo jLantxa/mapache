@@ -4,7 +4,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph},
 };
@@ -236,10 +236,10 @@ fn render_recent_nodes(frame: &mut Frame, area: Rect, state: &ProgressState) {
         .iter()
         .map(|(path, diff)| {
             let diff_style = match diff {
-                NodeDiff::New => Style::default().fg(Color::Green),
-                NodeDiff::Changed => Style::default().fg(Color::Yellow),
-                NodeDiff::Deleted => Style::default().fg(Color::Red),
-                NodeDiff::Unchanged => Style::default().fg(Color::DarkGray),
+                NodeDiff::New => Style::default().fg(theme::THEME.green),
+                NodeDiff::Changed => Style::default().fg(theme::THEME.yellow),
+                NodeDiff::Deleted => Style::default().fg(theme::THEME.red),
+                NodeDiff::Unchanged => Style::default().fg(theme::THEME.subtext_dim),
             };
             let diff_label = match diff {
                 NodeDiff::New => "+",
@@ -255,7 +255,7 @@ fn render_recent_nodes(frame: &mut Frame, area: Rect, state: &ProgressState) {
         })
         .collect();
 
-    let list = List::new(items).block(theme::themed_block("Processing"));
+    let list = List::new(items).block(theme::block("Processing"));
     frame.render_widget(list, area);
 }
 
@@ -263,15 +263,10 @@ fn render_errors(frame: &mut Frame, area: Rect, state: &ProgressState) {
     let items: Vec<ListItem> = state
         .errors()
         .iter()
-        .map(|e| {
-            ListItem::new(Line::from(Span::styled(
-                e.clone(),
-                Style::default().fg(Color::Red),
-            )))
-        })
+        .map(|e| ListItem::new(Line::from(Span::styled(e.clone(), theme::THEME.error))))
         .collect();
 
-    let list = List::new(items).block(theme::themed_block("Errors"));
+    let list = List::new(items).block(theme::block("Errors"));
     frame.render_widget(list, area);
 }
 

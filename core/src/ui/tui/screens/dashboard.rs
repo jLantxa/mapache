@@ -6,10 +6,10 @@ use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Style},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
+    style::Style,
     text::{Line, Span},
-    widgets::{Paragraph, Row, ScrollbarState, Table, TableState},
+    widgets::{Block, Paragraph, Row, Table, TableState},
 };
 
 use crate::{
@@ -33,8 +33,8 @@ use crate::{
 };
 
 const FILTER_INPUT_HEIGHT: u16 = 3;
-const HEADER_HEIGHT: u16 = 3;
-const MENU_HEIGHT: u16 = 2;
+const HEADER_HEIGHT: u16 = 2;
+const MENU_HEIGHT: u16 = 3;
 
 const MENU_ITEMS: &[(char, &str)] = &[
     ('1', "Snapshot"),
@@ -43,8 +43,15 @@ const MENU_ITEMS: &[(char, &str)] = &[
     ('q', "Quit"),
 ];
 
-const KEY_HINTS: &str =
-    "[\u{2191}\u{2193}] navigate  [Enter] details  [/] filter  [Esc] clear filter";
+#[allow(dead_code)]
+struct DashboardStats {
+    total: usize,
+    active: usize,
+    total_size: u64,
+    unique_size: u64,
+    oldest: Option<String>,
+    newest: Option<String>,
+}
 
 pub struct DashboardScreen {
     repo: Arc<Repository>,
@@ -59,6 +66,7 @@ pub struct DashboardScreen {
     table_state: TableState,
     filter: Option<TextInput>,
     last_height: u16,
+    stats: DashboardStats,
 }
 
 impl DashboardScreen {
@@ -83,19 +91,63 @@ impl DashboardScreen {
             table_state: TableState::default(),
             filter: None,
             last_height: 0,
+            stats: DashboardStats {
+                total: 0,
+                active: 0,
+                total_size: 0,
+                unique_size: 0,
+                oldest: None,
+                newest: None,
+            },
         }
     }
 
     pub async fn load_snapshots(&mut self) -> Result<()> {
-        let mut entries = SnapshotStream::new(self.repo.clone())
+        let active_entries = SnapshotStream::new(self.repo.clone())
             .await?
             .collect_entries(true)
             .await?;
+
+        let mut dropped_entries = SnapshotStream::dropped(self.repo.clone())
+            .await?
+            .collect_entries(false)
+            .await?;
+
+        let mut entries = active_entries;
+        entries.append(&mut dropped_entries);
+
         entries.sort_unstable_by_key(|e| std::cmp::Reverse(e.snapshot.timestamp));
+        self.stats = Self::compute_stats(&entries);
         self.snapshots = Arc::new(entries);
         self.update_search_cache();
         self.apply_filter();
         Ok(())
+    }
+
+    fn compute_stats(entries: &[SnapshotEntry]) -> DashboardStats {
+        let total = entries.len();
+        let active = entries.iter().filter(|e| e.active).count();
+        let total_size: u64 = entries.iter().map(|e| e.snapshot.size()).sum();
+        let unique_size: u64 = entries
+            .iter()
+            .filter(|e| e.active)
+            .map(|e| e.snapshot.size())
+            .sum();
+        let oldest = entries
+            .last()
+            .map(|e| utils::pretty_print_timestamp(&e.snapshot.timestamp, None));
+        let newest = entries.first().map(|e| {
+            let elapsed = Local::now() - e.snapshot.timestamp;
+            format!("{} ago", utils::pretty_print_duration_chrono(elapsed, 1))
+        });
+        DashboardStats {
+            total,
+            active,
+            total_size,
+            unique_size,
+            oldest,
+            newest,
+        }
     }
 
     fn update_search_cache(&mut self) {
@@ -171,33 +223,64 @@ impl DashboardScreen {
         }
     }
 
-    fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let last_info = self
-            .snapshots
-            .first()
-            .map(|e| {
-                let elapsed = Local::now() - e.snapshot.timestamp;
-                let ago = utils::pretty_print_duration_chrono(elapsed, 1);
-                format!("Last: {} ago", ago)
-            })
-            .unwrap_or_default();
+    fn render_top_bar(&self, frame: &mut Frame, area: Rect) {
+        let bg = Block::default().style(Style::new().bg(theme::THEME.surface));
+        frame.render_widget(&bg, area);
 
-        let header_text = format!(
-            " mapache {}  |  {} snapshots  |  {}\n {} [{}]",
-            THIS_MAPACHE_VERSION,
-            self.snapshots.len(),
-            last_info,
-            self.repo_path,
-            self.repo_id.chars().take(8).collect::<String>(),
-        );
-        let header = Paragraph::new(header_text)
-            .style(theme::THEME.style_header)
-            .alignment(Alignment::Left);
-        frame.render_widget(header, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(area);
+
+        let row1 = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(22), Constraint::Min(10)])
+            .split(chunks[0]);
+
+        let header = Paragraph::new(Line::from(vec![
+            Span::styled("mapache ", theme::THEME.header),
+            Span::styled(THIS_MAPACHE_VERSION, theme::THEME.snap_size),
+        ]))
+        .style(theme::THEME.footer);
+        frame.render_widget(header, row1[0]);
+
+        let info = Paragraph::new(Line::from(vec![
+            Span::styled(&self.repo_path, theme::THEME.snap_host),
+            Span::styled(" [", theme::THEME.footer),
+            Span::styled(
+                self.repo_id.chars().take(8).collect::<String>(),
+                theme::THEME.snap_id,
+            ),
+            Span::styled("]", theme::THEME.footer),
+        ]))
+        .style(theme::THEME.footer);
+        frame.render_widget(info, row1[1]);
+
+        let row2 = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(22), Constraint::Min(10)])
+            .split(chunks[1]);
+
+        let stats_left = Paragraph::new(Line::from(vec![
+            Span::styled(self.stats.total.to_string(), theme::THEME.snap_id),
+            Span::styled(" snapshots", theme::THEME.footer),
+        ]))
+        .style(theme::THEME.footer);
+        frame.render_widget(stats_left, row2[0]);
+
+        let stats_right = Paragraph::new(Line::from(vec![
+            Span::styled("last ", theme::THEME.footer),
+            Span::styled(
+                self.stats.newest.clone().unwrap_or_else(|| "-".into()),
+                theme::THEME.teal,
+            ),
+        ]))
+        .style(theme::THEME.footer);
+        frame.render_widget(stats_right, row2[1]);
     }
 
     fn render_snapshot_list(&self, frame: &mut Frame, area: Rect) {
-        let max_rows = (area.height.saturating_sub(2)) as usize;
+        let max_rows = area.height.saturating_sub(2) as usize;
         let display_len = self.display_len();
 
         let title = if self.filter.is_some() {
@@ -211,56 +294,52 @@ impl DashboardScreen {
             .iter()
             .map(|&orig_idx| {
                 let entry = &self.snapshots[orig_idx];
-                let active = if entry.active { "*" } else { "-" };
+                let active_sym = if entry.active { "\u{25cf}" } else { "\u{25cb}" };
+                let active_style = if entry.active {
+                    theme::THEME.snap_active
+                } else {
+                    theme::THEME.snap_inactive
+                };
                 let id_str = entry.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
                 let date = utils::pretty_print_timestamp(&entry.snapshot.timestamp, None);
                 let host = entry.snapshot.hostname.as_deref().unwrap_or_default();
                 let size = utils::format_size_binary(entry.snapshot.size(), 3);
-
-                let tags_buf = theme::format_tags(&entry.snapshot.tags);
-
-                let active_style = if entry.active {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
+                let tags = theme::format_tags(&entry.snapshot.tags);
 
                 Row::new(vec![
-                    Span::styled(active, active_style),
-                    Span::styled(id_str, theme::THEME.style_snapshot_id),
-                    Span::styled(date, theme::THEME.style_snapshot_date),
-                    Span::styled(host, theme::THEME.style_snapshot_host),
-                    Span::styled(format!("{:>14}", size), theme::THEME.style_snapshot_size),
-                    Span::raw(tags_buf),
+                    Span::styled(active_sym, active_style),
+                    Span::styled(id_str, theme::THEME.snap_id),
+                    Span::styled(date, theme::THEME.snap_date),
+                    Span::styled(host, theme::THEME.snap_host),
+                    Span::styled(format!("{:>10}", size), theme::THEME.snap_size),
+                    Span::raw(tags),
                 ])
             })
             .collect();
 
         let header_row = Row::new(vec![
-            Span::styled(" ", theme::THEME.style_table_header),
-            Span::styled("ID", theme::THEME.style_table_header),
-            Span::styled("Date", theme::THEME.style_table_header),
-            Span::styled("Host", theme::THEME.style_table_header),
-            Span::styled("Size", theme::THEME.style_table_header),
-            Span::styled("Tags", theme::THEME.style_table_header),
-        ])
-        .style(theme::THEME.style_table_header);
+            Span::styled(" ", theme::THEME.menu_key),
+            Span::styled("ID", theme::THEME.menu_key),
+            Span::styled("Date", theme::THEME.menu_key),
+            Span::styled("Host", theme::THEME.menu_key),
+            Span::styled("Size", theme::THEME.menu_key),
+            Span::styled("Tags", theme::THEME.menu_key),
+        ]);
 
-        let table = Table::new(
-            rows,
-            vec![
-                Constraint::Length(1),
-                Constraint::Length(12),
-                Constraint::Length(28),
-                Constraint::Length(12),
-                Constraint::Length(14),
-                Constraint::Min(8),
-            ],
-        )
-        .header(header_row)
-        .block(theme::themed_block(&title))
-        .row_highlight_style(theme::THEME.style_selected_row)
-        .highlight_symbol(">> ");
+        let widths = [
+            Constraint::Length(2),
+            Constraint::Length(12),
+            Constraint::Length(28),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Min(10),
+        ];
+
+        let table = Table::new(rows, widths)
+            .header(header_row)
+            .block(theme::block(&title))
+            .row_highlight_style(theme::THEME.selection)
+            .highlight_symbol("  ");
 
         let mut state = self.table_state;
         let selected = self.table_state.selected().unwrap_or(0);
@@ -271,52 +350,106 @@ impl DashboardScreen {
         frame.render_stateful_widget(table, area, &mut state);
 
         if display_len > max_rows {
-            let mut scrollbar_state = ScrollbarState::new(display_len)
+            let mut s = ratatui::widgets::ScrollbarState::new(display_len)
                 .position(selected)
                 .viewport_content_length(max_rows);
-
-            frame.render_stateful_widget(
-                theme::scrollbar(),
-                area.inner(Margin::new(1, 1)),
-                &mut scrollbar_state,
-            );
+            frame.render_stateful_widget(theme::scrollbar(), area.inner(Margin::new(1, 1)), &mut s);
         }
     }
 
-    fn render_snapshot_info(&self, frame: &mut Frame, area: Rect) {
-        let entry = self.selected_entry();
-        let info_text = if let Some(e) = entry {
-            let mut info = String::with_capacity(256);
-            info.push_str("ID: ");
-            info.push_str(&e.id.to_hex());
-            if let Some(desc) = &e.snapshot.description {
-                info.push_str("\nDescription: ");
-                info.push_str(desc);
-            }
-            info.push_str("\nPaths: ");
-            Self::format_paths_into(&e.snapshot.paths, &mut info, area.width as usize - 10);
-            info
-        } else {
-            "No snapshot selected".to_string()
+    fn render_selected_info(&self, frame: &mut Frame, area: Rect) {
+        let Some(entry) = self.display_entry(self.table_state.selected().unwrap_or(0)) else {
+            return;
         };
 
-        let info = Paragraph::new(info_text)
-            .alignment(Alignment::Left)
-            .block(theme::themed_block("Snapshot Info"));
+        let max_w = area.width.saturating_sub(6) as usize;
+        let mut lines = vec![];
+
+        let label_w = 6;
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:w$}", "ID", w = label_w), theme::THEME.menu_key),
+            Span::styled(entry.id.to_hex(), theme::THEME.snap_id),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:w$}", "Date", w = label_w), theme::THEME.menu_key),
+            Span::styled(
+                utils::pretty_print_timestamp(&entry.snapshot.timestamp, None),
+                theme::THEME.snap_date,
+            ),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:w$}", "Path", w = label_w), theme::THEME.menu_key),
+            Span::styled(
+                entry.snapshot.root.display().to_string(),
+                theme::THEME.footer,
+            ),
+        ]));
+
+        for (i, p) in entry.snapshot.paths.iter().enumerate() {
+            let p_str = p.display().to_string();
+            let indent = " ".repeat(label_w);
+            if p_str.len() > max_w {
+                let truncated: String = p_str.chars().take(max_w.saturating_sub(3)).collect();
+                lines.push(Line::from(vec![
+                    Span::raw(format!("{}{}", indent, truncated)),
+                    Span::raw("\u{2026}"),
+                ]));
+            } else {
+                lines.push(Line::from(vec![Span::raw(format!("{}{}", indent, p_str))]));
+            }
+            if i >= 4 {
+                let remaining = entry.snapshot.paths.len() - i - 1;
+                if remaining > 0 {
+                    lines.push(Line::from(vec![
+                        Span::raw(indent.to_string()),
+                        Span::styled(
+                            format!("\u{2026} and {} more", remaining),
+                            theme::THEME.footer,
+                        ),
+                    ]));
+                }
+                break;
+            }
+        }
+
+        if let Some(desc) = &entry.snapshot.description {
+            let desc_trunc: String = desc.chars().take(max_w).collect();
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:w$}", "Desc", w = label_w), theme::THEME.menu_key),
+                Span::raw(desc_trunc),
+            ]));
+        }
+
+        if !entry.snapshot.tags.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:w$}", "Tags", w = label_w), theme::THEME.menu_key),
+                Span::raw(theme::format_tags(&entry.snapshot.tags)),
+            ]));
+        }
+
+        let info = Paragraph::new(lines)
+            .block(theme::block("Details"))
+            .style(Style::new().bg(theme::THEME.surface));
         frame.render_widget(info, area);
     }
 
-    fn info_line_count(&self) -> usize {
-        let entry = self.selected_entry();
-        if let Some(e) = entry {
-            let mut count = 2;
-            if e.snapshot.description.is_some() {
-                count += 1;
-            }
-            count + 2
-        } else {
-            3
+    fn selected_info_height(&self) -> u16 {
+        let entry = self.display_entry(self.table_state.selected().unwrap_or(0));
+        let Some(entry) = entry else { return 0 };
+        let mut h = 3u16;
+        if !entry.snapshot.paths.is_empty() {
+            h += (entry.snapshot.paths.len().min(5) + 1) as u16;
         }
+        if entry.snapshot.description.is_some() {
+            h += 1;
+        }
+        if !entry.snapshot.tags.is_empty() {
+            h += 1;
+        }
+        h + 2
     }
 
     fn render_filter(&self, frame: &mut Frame, area: Rect) {
@@ -324,7 +457,7 @@ impl DashboardScreen {
             let filter_text = if input.is_empty() {
                 Line::from(Span::styled(
                     "> Filter by host, tag, path, or ID...",
-                    Style::default().fg(Color::DarkGray),
+                    theme::THEME.footer,
                 ))
             } else {
                 let text = input.text();
@@ -343,7 +476,7 @@ impl DashboardScreen {
                 }
                 Line::from(spans)
             };
-            let filter_widget = Paragraph::new(filter_text).block(theme::themed_block("Filter"));
+            let filter_widget = Paragraph::new(filter_text).block(theme::block("Filter"));
             frame.render_widget(filter_widget, area);
         }
     }
@@ -351,25 +484,20 @@ impl DashboardScreen {
     fn render_menu(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .constraints([Constraint::Length(1), Constraint::Length(2)])
             .split(area);
 
-        let menu_text = Self::build_menu_text();
+        let menu_text = self.build_menu_text();
         let menu = Paragraph::new(menu_text)
-            .style(Style::default().fg(theme::THEME.footer_fg))
-            .alignment(Alignment::Left);
+            .style(theme::THEME.footer)
+            .alignment(ratatui::layout::Alignment::Left);
         frame.render_widget(menu, chunks[0]);
 
-        let hints = Paragraph::new(KEY_HINTS)
-            .style(theme::THEME.style_menu_key)
-            .alignment(Alignment::Left);
+        let hint_str = "\u{2191}\u{2193} navigate  Enter details  / filter".to_string();
+        let hints = Paragraph::new(hint_str)
+            .style(theme::THEME.footer)
+            .alignment(ratatui::layout::Alignment::Left);
         frame.render_widget(hints, chunks[1]);
-    }
-
-    fn selected_entry(&self) -> Option<&SnapshotEntry> {
-        self.table_state
-            .selected()
-            .and_then(|idx| self.display_entry(idx))
     }
 
     fn selected_original_index(&self) -> Option<usize> {
@@ -377,58 +505,23 @@ impl DashboardScreen {
         self.filtered_indices.get(display_idx).copied()
     }
 
-    fn format_paths_into(paths: &[std::path::PathBuf], out: &mut String, max_width: usize) {
-        if paths.is_empty() {
-            out.push_str("(none)");
-            return;
-        }
-
-        let suffix = ", ...";
-        let mut len = 0;
-        let mut count = 0;
-
-        for (i, p) in paths.iter().enumerate() {
-            let display = p.display().to_string();
-            let formatted_len = display.len() + 2;
-            let needed = if i == 0 {
-                formatted_len
-            } else {
-                formatted_len + 2
-            };
-
-            let limit = if i + 1 < paths.len() {
-                max_width.saturating_sub(suffix.len())
-            } else {
-                max_width
-            };
-
-            if len + needed > limit {
-                break;
-            }
-            len += needed;
-            count += 1;
-            if i > 0 {
-                out.push_str(", ");
-            }
-            out.push('"');
-            out.push_str(&display);
-            out.push('"');
-        }
-
-        if count < paths.len() {
-            out.push_str(suffix);
-        }
-    }
-
-    fn build_menu_text() -> Vec<Line<'static>> {
+    fn build_menu_text(&self) -> Line<'static> {
         let mut spans = Vec::new();
         for (i, (key, label)) in MENU_ITEMS.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::raw("    "));
+                spans.push(Span::raw("  "));
             }
             spans.extend(theme::key_hint(&key.to_string(), label));
         }
-        vec![Line::from(spans)]
+
+        if let Some(entry) = self.display_entry(self.table_state.selected().unwrap_or(0))
+            && !entry.active
+        {
+            spans.push(Span::raw("  "));
+            spans.extend(theme::key_hint("u", "Recall"));
+        }
+
+        Line::from(spans)
     }
 }
 
@@ -436,31 +529,37 @@ impl DashboardScreen {
 impl Screen for DashboardScreen {
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        self.last_height = area.height.saturating_sub(HEADER_HEIGHT + MENU_HEIGHT);
+        let inner_content = area.inner(Margin::new(2, 1));
+
+        self.last_height = inner_content
+            .height
+            .saturating_sub(HEADER_HEIGHT + MENU_HEIGHT + 1);
+
         let has_filter = self.filter.is_some();
         let filter_height = if has_filter { FILTER_INPUT_HEIGHT } else { 0 };
-        let info_lines = self.info_line_count();
+        let info_height = self.selected_info_height();
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(HEADER_HEIGHT),
-                Constraint::Min(3),
-                Constraint::Length(info_lines as u16),
+                Constraint::Length(1),
+                Constraint::Min(5),
+                Constraint::Length(info_height),
                 Constraint::Length(filter_height),
                 Constraint::Length(MENU_HEIGHT),
             ])
-            .split(frame.area());
+            .split(inner_content);
 
-        self.render_header(frame, chunks[0]);
-        self.render_snapshot_list(frame, chunks[1]);
-        if info_lines > 0 {
-            self.render_snapshot_info(frame, chunks[2]);
+        self.render_top_bar(frame, chunks[0]);
+        self.render_snapshot_list(frame, chunks[2]);
+        if info_height > 0 {
+            self.render_selected_info(frame, chunks[3]);
         }
         if has_filter {
-            self.render_filter(frame, chunks[3]);
+            self.render_filter(frame, chunks[4]);
         }
-        self.render_menu(frame, chunks[4]);
+        self.render_menu(frame, chunks[5]);
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
@@ -480,7 +579,7 @@ impl Screen for DashboardScreen {
                 ))))
             }
             KeyCode::Char('2') => {
-                if let Some(entry) = self.selected_entry() {
+                if let Some(entry) = self.display_entry(self.table_state.selected().unwrap_or(0)) {
                     Some(Transition::Push(Box::new(RestoreScreen::new(
                         self.repo.clone(),
                         entry.clone(),
@@ -492,11 +591,29 @@ impl Screen for DashboardScreen {
             }
             KeyCode::Char('3') => {
                 let config = self.forget_config.clone();
+                let active_snapshots: Vec<_> = self
+                    .snapshots
+                    .iter()
+                    .filter(|e| e.active)
+                    .cloned()
+                    .collect();
                 Some(Transition::Push(Box::new(ForgetScreen::new(
                     self.repo.clone(),
-                    self.snapshots.clone(),
+                    Arc::new(active_snapshots),
                     config,
                 ))))
+            }
+            KeyCode::Char('u') => {
+                if let Some(entry) = self.display_entry(self.table_state.selected().unwrap_or(0))
+                    && !entry.active
+                {
+                    if let Err(e) = self.repo.recall_dropped_snapshot(&entry.id).await {
+                        tracing::error!("Failed to recall snapshot {}: {}", entry.id, e);
+                    } else {
+                        let _ = self.load_snapshots().await;
+                    }
+                }
+                None
             }
             KeyCode::Char('/') => {
                 self.filter = Some(TextInput::new());

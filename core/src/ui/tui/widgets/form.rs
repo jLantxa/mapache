@@ -1,10 +1,10 @@
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
-    layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span, Text},
-    widgets::Paragraph,
+    layout::{Constraint, Rect},
+    style::Style,
+    text::Span,
+    widgets::{Cell, Row, Table},
 };
 
 use crate::ui::tui::{
@@ -93,18 +93,13 @@ impl Form {
                     TextInputAction::Edited => FormAction::Edited,
                     TextInputAction::None => FormAction::None,
                 },
-                FormFieldType::Number(_val) => {
-                    // Simple number editing could be improved, but for now let's use the same logic
-                    // as the screens: they usually use a temporary TextInput for numbers too.
-                    // For now, let's just handle Enter/Esc to stop editing if it was somehow triggered.
-                    match key {
-                        KeyCode::Enter | KeyCode::Esc => {
-                            self.editing = false;
-                            FormAction::None
-                        }
-                        _ => FormAction::None,
+                FormFieldType::Number(_val) => match key {
+                    KeyCode::Enter | KeyCode::Esc => {
+                        self.editing = false;
+                        FormAction::None
                     }
-                }
+                    _ => FormAction::None,
+                },
                 _ => {
                     self.editing = false;
                     FormAction::None
@@ -185,87 +180,98 @@ impl Form {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, title: &str) {
-        let mut lines = Vec::new();
-        let marker = "\u{25b6} ";
-        let unfocused_marker = "  ";
+        let focus_style = Style::default().fg(theme::THEME.green);
+
+        let mut rows: Vec<Row<'_>> = Vec::with_capacity(self.fields.len());
 
         for (i, field) in self.fields.iter().enumerate() {
             let focused = i == self.focus;
-            let m = if focused { marker } else { unfocused_marker };
-            let label_style = if focused {
-                theme::THEME.style_header.bold()
+            let row_style = if focused {
+                theme::THEME.selection
             } else {
-                Style::default().bold()
+                Style::default()
             };
 
-            let mut spans = vec![
-                Span::styled(m, theme::THEME.snapshot_date),
-                Span::styled(
-                    format!("{:<width$}", field.label, width = self.label_width),
-                    label_style,
-                ),
-            ];
+            let label_cell = if focused {
+                Cell::from(Span::styled(
+                    format!(" {} ", field.label),
+                    theme::THEME.header.bold(),
+                ))
+            } else {
+                Cell::from(Span::styled(
+                    format!(" {} ", field.label),
+                    Style::default().bold(),
+                ))
+            };
 
-            match &field.field_type {
+            let value_cell = match &field.field_type {
                 FormFieldType::Text(input) => {
                     let text = if input.text().is_empty() {
-                        Span::styled("(empty)", Style::default().fg(Color::DarkGray))
+                        Span::styled("(empty)", theme::THEME.footer)
+                    } else if focused {
+                        Span::styled(input.text(), focus_style)
                     } else {
                         Span::raw(input.text())
                     };
-                    spans.push(text);
+                    Cell::from(text)
                 }
                 FormFieldType::Toggle(val) => {
                     let checkbox = if *val { "[X]" } else { "[ ]" };
                     let style = if focused {
-                        Style::default().fg(theme::THEME.snapshot_date)
+                        focus_style
                     } else {
                         Style::default()
                     };
-                    spans.push(Span::styled(checkbox, style));
+                    Cell::from(Span::styled(checkbox, style))
                 }
                 FormFieldType::Choice(val, options) => {
                     let style = if focused {
-                        Style::default().fg(theme::THEME.snapshot_date)
+                        focus_style
                     } else {
                         Style::default()
                     };
-                    let text = format!("< {} >", options[*val]);
-                    spans.push(Span::styled(text, style));
+                    Cell::from(Span::styled(format!("< {} >", options[*val]), style))
                 }
                 FormFieldType::Number(val) => {
                     let style = if focused {
-                        Style::default().fg(theme::THEME.snapshot_date)
+                        focus_style
                     } else {
                         Style::default()
                     };
                     let text = if self.editing && focused {
-                        // This is a bit simplified, usually we'd want a real cursor here
                         format!("[ {}_ ]", val)
                     } else {
                         format!("[ {} ]", val)
                     };
-                    spans.push(Span::styled(text, style));
+                    Cell::from(Span::styled(text, style))
                 }
                 FormFieldType::Action(label) => {
-                    let style = if focused {
-                        Style::default().fg(theme::THEME.snapshot_date).bold()
+                    if focused {
+                        Cell::from(Span::styled(format!(" {} ", label), theme::THEME.success))
                     } else {
-                        Style::default().fg(Color::DarkGray).bold()
-                    };
-                    // Clear the previous spans for Action buttons to center them or just style them differently
-                    spans = vec![
-                        Span::styled(m, theme::THEME.snapshot_date),
-                        Span::styled(label, style),
-                    ];
+                        Cell::from(Span::styled(
+                            format!(" {} ", label),
+                            theme::THEME.subtext_dim,
+                        ))
+                    }
                 }
-            }
+            };
 
-            lines.push(Line::from(spans));
+            let row = Row::new(vec![label_cell, value_cell]).style(row_style);
+            rows.push(row);
         }
 
-        let widget = Paragraph::new(Text::from(lines)).block(theme::themed_block(title));
-        frame.render_widget(widget, area);
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(self.label_width as u16 + 2),
+                Constraint::Min(20),
+            ],
+        )
+        .block(theme::block(title))
+        .column_spacing(1);
+
+        frame.render_widget(table, area);
     }
 
     pub fn is_editing(&self) -> bool {

@@ -1,12 +1,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
-use ratatui::{
-    Frame,
-    layout::Rect,
-    text::{Line, Span},
-    widgets::Paragraph,
-};
+use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 
 use crate::{
     commands::cmd_snapshot::SnapshotRunOptions,
@@ -204,29 +199,14 @@ pub fn render_config(frame: &mut Frame, form: &SnapshotForm) {
 
 fn render_footer(frame: &mut Frame, area: Rect, form: &SnapshotForm) {
     let footer = if form.form.is_editing() {
-        Line::from(vec![
-            Span::styled("[Enter]", theme::THEME.style_menu_key),
-            Span::raw(" confirm"),
-            Span::raw("    "),
-            Span::styled("[Esc]", theme::THEME.style_menu_key),
-            Span::raw(" cancel edit"),
-        ])
+        theme::key_hint_footer(&[("Enter", "confirm"), ("Esc", "cancel edit")])
     } else {
-        Line::from(vec![
-            Span::styled("[Tab]", theme::THEME.style_menu_key),
-            Span::raw(" next"),
-            Span::raw("    "),
-            Span::styled("[Enter]", theme::THEME.style_menu_key),
-            Span::raw(" edit/start"),
-            Span::raw("    "),
-            Span::styled("[Space]", theme::THEME.style_menu_key),
-            Span::raw(" toggle"),
-            Span::raw("    "),
-            Span::styled("[Esc]", theme::THEME.style_menu_key),
-            Span::raw(" cancel"),
-            Span::raw("    "),
-            Span::styled("[q]", theme::THEME.style_menu_key),
-            Span::raw(" quit"),
+        theme::key_hint_footer(&[
+            ("Tab", "next"),
+            ("Enter", "edit/start"),
+            ("Space", "toggle"),
+            ("Esc", "cancel"),
+            ("q", "quit"),
         ])
     };
     frame.render_widget(Paragraph::new(footer), area);

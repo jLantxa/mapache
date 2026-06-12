@@ -4,7 +4,6 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    text::{Line, Span},
     widgets::Paragraph,
 };
 
@@ -104,7 +103,7 @@ impl RestoreConfig {
             info_text.push_str(&format!("\nPaths: {:?}", paths));
         }
 
-        let info = Paragraph::new(info_text).block(theme::themed_block("Restore Configuration"));
+        let info = Paragraph::new(info_text).block(theme::block("Restore Configuration"));
         frame.render_widget(info, chunks[0]);
 
         self.form.render(frame, chunks[1], "Options");
@@ -114,26 +113,13 @@ impl RestoreConfig {
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let footer = if self.form.is_editing() {
-            Line::from(vec![
-                Span::styled("[Enter]", theme::THEME.style_menu_key),
-                Span::raw(" confirm"),
-                Span::raw("    "),
-                Span::styled("[Esc]", theme::THEME.style_menu_key),
-                Span::raw(" cancel edit"),
-            ])
+            theme::key_hint_footer(&[("Enter", "confirm"), ("Esc", "cancel edit")])
         } else {
-            Line::from(vec![
-                Span::styled("[Tab/\u{2191}\u{2193}]", theme::THEME.style_menu_key),
-                Span::raw(" navigate"),
-                Span::raw("    "),
-                Span::styled("[Enter/Space]", theme::THEME.style_menu_key),
-                Span::raw(" edit/toggle/start"),
-                Span::raw("    "),
-                Span::styled("[Esc]", theme::THEME.style_menu_key),
-                Span::raw(" cancel"),
-                Span::raw("    "),
-                Span::styled("[q]", theme::THEME.style_menu_key),
-                Span::raw(" quit"),
+            theme::key_hint_footer(&[
+                ("Tab/\u{2191}\u{2193}", "navigate"),
+                ("Enter/Space", "edit/toggle/start"),
+                ("Esc", "cancel"),
+                ("q", "quit"),
             ])
         };
         frame.render_widget(Paragraph::new(footer), area);

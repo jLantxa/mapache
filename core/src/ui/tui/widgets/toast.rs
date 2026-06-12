@@ -3,8 +3,10 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Padding, Paragraph, Widget},
+    widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget},
 };
+
+use crate::ui::tui::theme;
 
 const TOAST_MIN_WIDTH: u16 = 30;
 const TOAST_MAX_WIDTH: u16 = 70;
@@ -74,7 +76,9 @@ impl Toast {
             .alignment(Alignment::Left)
             .block(
                 Block::default()
+                    .style(Style::new().bg(theme::THEME.bg))
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(style)
                     .title(Span::styled(format!(" {} ", self.title), title_style))
                     .title_alignment(Alignment::Center)

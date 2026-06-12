@@ -10,15 +10,19 @@ use std::{
 use anyhow::{Result, bail};
 use clap::Args;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail},
-    mapache::{defaults::DEFAULT_PACK_SIZE, global::GlobalOpts},
+    mapache::{
+        defaults::{DEFAULT_PACK_SIZE, UI_RATE_ESTIMATOR_WINDOW},
+        global::GlobalOpts,
+    },
     repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target},
-    utils::{self},
+    utils::{self, rate_estimator::RateEstimator},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -383,6 +387,8 @@ async fn sync_backends(
             res?;
         }
     } else {
+        let sync_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
+
         let copy_progress_bar = ProgressBar::with_draw_target(
             Some(total_copy as u64),
             default_bar_draw_target(),
@@ -396,10 +402,20 @@ async fn sync_backends(
                 .progress_chars("=> ")
                 .with_key(
                     "custom_eta",
-                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let eta = state.eta();
-                        let custom_eta = utils::pretty_print_duration(eta);
-                        let _ = w.write_str(&custom_eta);
+                    {
+                        let re = sync_rate.clone();
+                        move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                            let pos = state.pos() as f64;
+                            let total = state.len().map(|l| l as f64);
+                            match re.lock().eta(pos, total.unwrap_or(pos)) {
+                                Some(d) => {
+                                    let _ = w.write_str(&utils::pretty_print_duration(d));
+                                }
+                                None => {
+                                    let _ = w.write_str("--");
+                                }
+                            }
+                        }
                     },
                 ),
         );
@@ -410,6 +426,7 @@ async fn sync_backends(
             .map(|node| {
                 let shutdown_signal = shutdown_signal.clone();
                 let bar = &copy_progress_bar;
+                let sync_rate = sync_rate.clone();
 
                 async move {
                     if shutdown_signal.load(Ordering::Acquire) {
@@ -432,6 +449,8 @@ async fn sync_backends(
                     }
 
                     bar.inc(1);
+                    let pos = bar.position() as f64;
+                    sync_rate.lock().observe(pos);
                     Ok::<(), anyhow::Error>(())
                 }
             })

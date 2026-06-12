@@ -1,10 +1,16 @@
+use std::time::Duration;
+
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::Paragraph,
 };
 
-use crate::ui::tui::theme;
+use crate::{
+    mapache::defaults::UI_RATE_ESTIMATOR_WINDOW,
+    ui::tui::theme,
+    utils::{self, rate_estimator::RateEstimator},
+};
 
 const BAR_WIDTH: usize = 35;
 
@@ -16,6 +22,7 @@ pub struct ProgressBar {
     expected_items: u64,
     elapsed: std::time::Duration,
     scanning: bool,
+    rate_estimator: RateEstimator,
 }
 
 impl ProgressBar {
@@ -28,10 +35,12 @@ impl ProgressBar {
             expected_items: 0,
             elapsed: std::time::Duration::ZERO,
             scanning: false,
+            rate_estimator: RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW),
         }
     }
 
     pub fn bytes(mut self, processed: u64, expected: u64) -> Self {
+        self.rate_estimator.observe(processed as f64);
         self.processed_bytes = processed;
         self.expected_bytes = expected;
         if expected > 0 {
@@ -69,7 +78,7 @@ impl ProgressBar {
                 spans,
                 format!(
                     "  scanning...  {}",
-                    crate::utils::format_size_binary(self.processed_bytes, 3),
+                    utils::format_size_binary(self.processed_bytes, 3),
                 ),
             )
         } else {
@@ -88,26 +97,25 @@ impl ProgressBar {
                 format!(
                     "  {:.1}%  {} / {}",
                     pct,
-                    crate::utils::format_size_binary(self.processed_bytes, 3),
-                    crate::utils::format_size_binary(self.expected_bytes, 3),
+                    utils::format_size_binary(self.processed_bytes, 3),
+                    utils::format_size_binary(self.expected_bytes, 3),
                 ),
             )
         };
 
-        let elapsed_str = crate::utils::pretty_print_duration(self.elapsed);
-        let rate = if self.elapsed.as_secs_f64() > 0.0 {
-            self.processed_bytes as f64 / self.elapsed.as_secs_f64()
-        } else {
-            0.0
-        };
-        let rate_str = crate::utils::format_size_binary(rate as u64, 3);
+        let elapsed_str = utils::pretty_print_duration(self.elapsed);
+        let rate = self.rate_estimator.rate();
+        let rate_str = utils::format_size_binary(rate as u64, 3);
 
         let mut status_parts = vec![format!("[{}]", elapsed_str)];
         if !self.scanning && self.expected_bytes > 0 && self.processed_bytes > 0 {
-            let remaining = self.expected_bytes.saturating_sub(self.processed_bytes) as f64;
-            if rate > 0.0 {
-                let eta_secs = (remaining / rate) as u64;
-                status_parts.push(format!("ETA: {}", format_duration_secs(eta_secs)));
+            let eta = self
+                .rate_estimator
+                .eta(self.processed_bytes as f64, self.expected_bytes as f64);
+            if let Some(d) = eta
+                && d != Duration::ZERO
+            {
+                status_parts.push(format!("ETA: {}", format_duration(d)));
             }
         }
         status_parts.push(format!("{}/s", rate_str));
@@ -138,7 +146,8 @@ impl Default for ProgressBar {
     }
 }
 
-fn format_duration_secs(secs: u64) -> String {
+fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
     if secs >= 3600 {
         format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     } else if secs >= 60 {

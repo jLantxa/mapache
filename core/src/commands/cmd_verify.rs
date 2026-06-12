@@ -11,20 +11,21 @@ use anyhow::{Result, bail};
 use clap::Args;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     fs::tree::SerializedNodeStream,
-    mapache::{ID, global::GlobalOpts},
+    mapache::{ID, defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts},
     repository::{
         repo::Repository,
         snapshot::SnapshotStream,
         verify::{verify_pack, verify_snapshot_refs},
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target},
-    utils::{self, collections::IdSet},
+    utils::{self, collections::IdSet, rate_estimator::RateEstimator},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -430,6 +431,8 @@ async fn verify_packs_physically(ctx: &VerifyCtx<'_>, packs_to_verify: &[ID]) ->
     let suffix = if ctx.is_sampled { " (sampled)" } else { "" };
     ui::cli::log!("{}", format!("Verifying Pack Integrity{suffix}...").bold());
 
+    let verify_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
+
     let style = ProgressStyle::default_bar()
         .template(
             "[{custom_elapsed}] [{bar:25.cyan/white}] [ETA: {custom_eta}] {pos}/{len} packs ({msg})",
@@ -444,10 +447,20 @@ async fn verify_packs_physically(ctx: &VerifyCtx<'_>, packs_to_verify: &[ID]) ->
         )
         .with_key(
             "custom_eta",
-            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                let eta = state.eta();
-                let custom_eta = utils::pretty_print_duration(eta);
-                let _ = w.write_str(&custom_eta);
+            {
+                let re = verify_rate.clone();
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let pos = state.pos() as f64;
+                    let total = state.len().map(|l| l as f64);
+                    match re.lock().eta(pos, total.unwrap_or(pos)) {
+                        Some(d) => {
+                            let _ = w.write_str(&utils::pretty_print_duration(d));
+                        }
+                        None => {
+                            let _ = w.write_str("--");
+                        }
+                    }
+                }
             },
         );
 
@@ -473,6 +486,7 @@ async fn verify_packs_physically(ctx: &VerifyCtx<'_>, packs_to_verify: &[ID]) ->
             let backend = repo.backend();
             let secure = ctx.secure_storage.clone();
             let bar = bar.clone();
+            let verify_rate = verify_rate.clone();
             let stats = ctx.stats;
             let stop_flag = &stop_flag;
             let corrupt_blobs = ctx.corrupt_blobs.clone();
@@ -587,6 +601,8 @@ async fn verify_packs_physically(ctx: &VerifyCtx<'_>, packs_to_verify: &[ID]) ->
                     bar.set_message("OK".to_string());
                 }
                 bar.inc(1);
+                let pos = bar.position() as f64;
+                verify_rate.lock().observe(pos);
 
                 if json_out {
                     #[derive(Serialize)]

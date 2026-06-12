@@ -1,6 +1,7 @@
 pub mod base64;
 pub mod binary;
 pub mod collections;
+pub mod rate_estimator;
 
 use std::{
     path::{Path, PathBuf},

@@ -10,11 +10,11 @@ use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
 
 use crate::{
-    mapache::global::GlobalOpts,
+    mapache::{defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts},
     ui::{
         RestoreProgressReporter, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target,
     },
-    utils,
+    utils::{self, rate_estimator::RateEstimator},
 };
 
 pub struct CliRestoreProgressReporter {
@@ -28,6 +28,7 @@ pub struct CliRestoreProgressReporter {
     current_stage: Arc<Mutex<String>>,
     num_expected_items: Arc<AtomicU64>,
     num_expected_bytes: Arc<AtomicU64>,
+    rate_estimator: Arc<Mutex<RateEstimator>>,
 }
 
 impl CliRestoreProgressReporter {
@@ -41,6 +42,8 @@ impl CliRestoreProgressReporter {
         let warning_counter = Arc::new(AtomicU64::new(0));
         let num_expected_items_atom = Arc::new(AtomicU64::new(num_expected_items.unwrap_or(0)));
         let num_expected_bytes_atom = Arc::new(AtomicU64::new(num_expected_bytes.unwrap_or(0)));
+
+        let rate_estimator = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
 
         let progress_bar = if num_expected_items.is_none() || num_expected_bytes.is_none() {
             mp.add(ProgressBar::no_length())
@@ -69,14 +72,29 @@ impl CliRestoreProgressReporter {
                     );
                     let _ = w.write_str(&s);
                 })
-                .with_key("custom_eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let _ = w.write_str(&utils::pretty_print_duration(state.eta()));
+                .with_key("custom_eta", {
+                    let re = rate_estimator.clone();
+                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let pos = state.pos() as f64;
+                        let total = state.len().map(|l| l as f64);
+                        match re.lock().eta(pos, total.unwrap_or(pos)) {
+                            Some(d) => {
+                                let _ = w.write_str(&utils::pretty_print_duration(d));
+                            }
+                            None => {
+                                let _ = w.write_str("--");
+                            }
+                        }
+                    }
                 })
                 .with_key(
                     "data_rate",
-                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let rate = state.per_sec().floor() as u64;
-                        let _ = w.write_str(&utils::format_size_binary(rate, 1));
+                    {
+                        let re = rate_estimator.clone();
+                        move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                            let rate = re.lock().rate().floor() as u64;
+                            let _ = w.write_str(&utils::format_size_binary(rate, 1));
+                        }
                     },
                 ),
         );
@@ -129,6 +147,7 @@ impl CliRestoreProgressReporter {
             current_stage: Arc::new(Mutex::new(String::new())),
             num_expected_items: num_expected_items_atom,
             num_expected_bytes: num_expected_bytes_atom,
+            rate_estimator,
         }
     }
 }
@@ -166,6 +185,8 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
         self.processed_bytes_count
             .fetch_add(bytes, Ordering::Relaxed);
         self.progress_bar.inc(bytes);
+        let pos = self.progress_bar.position() as f64;
+        self.rate_estimator.lock().observe(pos);
     }
 
     fn error(&self, msg: &str) {

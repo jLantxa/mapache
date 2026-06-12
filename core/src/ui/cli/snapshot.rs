@@ -19,7 +19,7 @@ use crate::{
     ui::{
         SPINNER_TICK_CHARS, SnapshotProgressReporter, cli::color::Colorize, default_bar_draw_target,
     },
-    utils,
+    utils::{self, rate_estimator::RateEstimator},
 };
 
 enum UiEvent {
@@ -114,13 +114,13 @@ pub struct CliSnapshotProgressReporter {
     sampling_count: AtomicU64,
     start_time: Instant,
 
+    rate_estimator: Arc<Mutex<RateEstimator>>,
+
     _ui_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Drop for CliSnapshotProgressReporter {
     fn drop(&mut self) {
-        // We call finalize to ensure the thread is joined and
-        // the terminal is restored even if finalize wasn't called manually.
         self.finalize();
     }
 }
@@ -151,7 +151,10 @@ impl CliSnapshotProgressReporter {
             companion_bar.set_length(items);
         }
 
-        // ---------------- Styles ----------------
+        let rate_estimator = Arc::new(Mutex::new(RateEstimator::new(
+            defaults::UI_RATE_ESTIMATOR_WINDOW,
+        )));
+
         let base_style = ProgressStyle::default_bar()
             .progress_chars("=> ")
             .with_key(
@@ -160,13 +163,13 @@ impl CliSnapshotProgressReporter {
                     let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
                 },
             )
-            .with_key(
-                "data_rate",
-                |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let rate = state.per_sec().floor() as u64;
+            .with_key("data_rate", {
+                let re = rate_estimator.clone();
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let rate = re.lock().rate().floor() as u64;
                     let _ = w.write_str(&utils::format_size_binary(rate, 1));
-                },
-            )
+                }
+            })
             .with_key(
                 "processed_bytes_fmt",
                 |state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -179,7 +182,6 @@ impl CliSnapshotProgressReporter {
                         }
                         Some(total) => {
                             if bytes >= total {
-                                // If the scanner fall behind the processed bytes, don't show it.
                                 let _ = w.write_str(&processed_bytes_str);
                             } else {
                                 let _ = write!(
@@ -193,12 +195,21 @@ impl CliSnapshotProgressReporter {
                     }
                 },
             )
-            .with_key(
-                "custom_eta",
-                |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let _ = w.write_str(&utils::pretty_print_duration(state.eta()));
-                },
-            );
+            .with_key("custom_eta", {
+                let re = rate_estimator.clone();
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let pos = state.pos() as f64;
+                    let total = state.len().map(|l| l as f64);
+                    match re.lock().eta(pos, total.unwrap_or(pos)) {
+                        Some(d) => {
+                            let _ = w.write_str(&utils::pretty_print_duration(d));
+                        }
+                        None => {
+                            let _ = w.write_str("--");
+                        }
+                    }
+                }
+            });
 
         let determined_style = base_style.clone()
         .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
@@ -293,6 +304,7 @@ impl CliSnapshotProgressReporter {
             sampling_last_reset_ns: AtomicU64::new(0),
             sampling_count: AtomicU64::new(0),
             start_time,
+            rate_estimator,
             _ui_thread: Mutex::new(ui_thread),
         }
     }
@@ -311,11 +323,9 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
 
     fn scan_finished(&self) {
         let total_bytes = self.expected_bytes.load(Ordering::Relaxed);
-
-        // Reset the position if needed, or just switch styles.
-        // Once this is called, the UI will jump from "Scan" mode to "Progress Bar" mode.
         self.progress_bar.set_style(self.determined_style.clone());
         self.progress_bar.set_length(total_bytes);
+        self.rate_estimator.lock().reset();
     }
 
     fn processing_node(&self, path: &std::path::Path, diff: NodeDiff, size_hint: Option<u64>) {
@@ -407,6 +417,8 @@ impl SnapshotProgressReporter for CliSnapshotProgressReporter {
     #[inline]
     fn processed_bytes(&self, bytes: u64) {
         self.progress_bar.inc(bytes);
+        let pos = self.progress_bar.position() as f64;
+        self.rate_estimator.lock().observe(pos);
     }
 
     fn error(&self, msg: &str) {

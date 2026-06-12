@@ -100,6 +100,8 @@ pub struct RuntimeConfig {
     pub restore_pack_segment_max_size: Option<u64>,
     // GC
     pub min_pack_size_factor: Option<f32>,
+    pub gc_decoded_budget: Option<u64>,
+    pub gc_repack_concurrency: Option<usize>,
     // Index
     pub blobs_per_index_file: Option<usize>,
     pub index_flush_timeout_secs: Option<u64>,

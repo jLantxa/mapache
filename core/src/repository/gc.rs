@@ -16,6 +16,7 @@ use crate::{
         defaults::{self},
     },
     repository::{
+        index::BlobLocator,
         loader,
         repo::{REPO_DROPPED_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
@@ -283,11 +284,31 @@ impl Plan {
         );
         let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        // Process chunks in parallel with pipelining
-        const CHUNK_SIZE: usize = 100;
-        const MAX_CONCURRENT_CHUNKS: usize = 4;
+        // Partition blobs into chunks that each fit within the decoded-byte
+        // budget, so load_with_locators never exceeds it.
+        let d = defaults::runtime();
+        let max_concurrent = d.gc_repack_concurrency;
+        let budget = d.gc_decoded_budget;
+        let sem_capacity = std::cmp::min(budget as usize, u32::MAX as usize).max(1);
+        let byte_semaphore = Arc::new(tokio::sync::Semaphore::new(sem_capacity));
 
-        let chunks: Vec<_> = locators_to_repack.chunks(CHUNK_SIZE).collect();
+        let chunks: Vec<&[(ID, BlobLocator)]> = {
+            let mut chunks = Vec::new();
+            let mut start = 0usize;
+            let mut acc = 0u64;
+            for (i, (_, loc)) in locators_to_repack.iter().enumerate() {
+                if acc > 0 && acc + loc.raw_length as u64 > budget {
+                    chunks.push(&locators_to_repack[start..i]);
+                    start = i;
+                    acc = 0;
+                }
+                acc += loc.raw_length as u64;
+            }
+            if start < locators_to_repack.len() {
+                chunks.push(&locators_to_repack[start..]);
+            }
+            chunks
+        };
 
         stream::iter(chunks)
             .map(|chunk| {
@@ -295,8 +316,19 @@ impl Plan {
                 let reporter = reporter.clone();
                 let pos = pos.clone();
                 let shutdown_signal = self.shutdown_signal.clone();
+                let sem = byte_semaphore.clone();
 
                 async move {
+                    // Stay within the decoded-byte budget by acquiring permits for
+                    // the total raw (decoded) size of every blob in this chunk.
+                    let chunk_bytes: usize =
+                        chunk.iter().map(|(_, loc)| loc.raw_length as usize).sum();
+                    let needed = std::cmp::min(chunk_bytes, sem_capacity);
+                    let _permit = sem
+                        .acquire_many(u32::try_from(needed).unwrap_or(u32::MAX))
+                        .await
+                        .context("Failed to acquire GC memory budget permit")?;
+
                     let loader = loader::BlobLoader::new(repo.clone());
                     let loaded_blobs = loader.load_with_locators(chunk.to_vec()).await?;
 
@@ -347,7 +379,7 @@ impl Plan {
                     Ok::<(), anyhow::Error>(())
                 }
             })
-            .buffer_unordered(MAX_CONCURRENT_CHUNKS)
+            .buffer_unordered(max_concurrent)
             .try_collect::<Vec<_>>()
             .await?;
 

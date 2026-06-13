@@ -10,8 +10,7 @@
 - **Interruptible `clean`**: The `clean` (and `forget --clean`) command can now
   be interrupted with SIGINT / SIGTERM. The shutdown signal is polled at safe
   checkpoints between GC phases.
-- **JSON output for `find`**: The `find` command now supports `--json` output,
-  printing an NDJSON stream with `{ entries: [{ snapshot_id, path, node }] }`.
+- **JSON output for `find`**: The `find` command now supports `--json` output.
 - **Error codes for `find` and `mount`**: Both commands now exit with
   meaningful error codes: `10` on repo open failure, `20` on command failure,
   and `130` on interrupt (mount only).
@@ -24,6 +23,13 @@
   (`find /file.txt`).
 - **`dump` command**: New `dump` command to print the contents of a single
   file from a snapshot to stdout. Supports snapshot ID prefixes and `latest`.
+- **Interactive diff screen (TUI)**: New `DiffScreen` with a navigable tree of
+  changes (`+`/`~`/`-`), inline expand/collapse, `u` to toggle unchanged files,
+  `<`/`>` to browse adjacent snapshot pairs, live spinner while loading, and
+  `/` to filter entries by path.
+- **Interactive find screen (TUI)**: New `FindScreen` with real‑time glob
+  search across all snapshots, progress bar with spinner, results table, inline
+  detail panel, and direct navigation to file explorer and restore.
 
 ### Changed
 

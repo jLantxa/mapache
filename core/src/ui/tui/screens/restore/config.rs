@@ -57,7 +57,7 @@ impl RestoreConfig {
                 ),
             },
             FormField {
-                label: "Start Restore".to_string(),
+                label: "".to_string(),
                 field_type: FormFieldType::Action("Start Restore".to_string()),
             },
         ];

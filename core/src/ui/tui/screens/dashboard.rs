@@ -23,8 +23,8 @@ use crate::{
     ui::tui::{
         app::{Screen, Transition},
         screens::{
-            forget::ForgetScreen, restore::RestoreScreen, snapshot::SnapshotCreateScreen,
-            snapshot_detail::SnapshotDetailScreen,
+            diff::DiffScreen, find::FindScreen, forget::ForgetScreen, restore::RestoreScreen,
+            snapshot::SnapshotCreateScreen, snapshot_detail::SnapshotDetailScreen,
         },
         theme,
         widgets::{StateNavigation, TextInput, TextInputAction},
@@ -40,6 +40,8 @@ const MENU_ITEMS: &[(char, &str)] = &[
     ('1', "Snapshot"),
     ('2', "Restore"),
     ('3', "Forget"),
+    ('4', "Find"),
+    ('5', "Diff"),
     ('q', "Quit"),
 ];
 
@@ -67,6 +69,7 @@ pub struct DashboardScreen {
     filter: Option<TextInput>,
     last_height: u16,
     stats: DashboardStats,
+    diff_source: Option<usize>,
 }
 
 impl DashboardScreen {
@@ -99,6 +102,7 @@ impl DashboardScreen {
                 oldest: None,
                 newest: None,
             },
+            diff_source: None,
         }
     }
 
@@ -121,6 +125,7 @@ impl DashboardScreen {
         self.snapshots = Arc::new(entries);
         self.update_search_cache();
         self.apply_filter();
+        self.diff_source = None;
         Ok(())
     }
 
@@ -294,8 +299,17 @@ impl DashboardScreen {
             .iter()
             .map(|&orig_idx| {
                 let entry = &self.snapshots[orig_idx];
-                let active_sym = if entry.active { "\u{25cf}" } else { "\u{25cb}" };
-                let active_style = if entry.active {
+                let is_source = self.diff_source == Some(orig_idx);
+                let active_sym = if is_source {
+                    "\u{25c8}"
+                } else if entry.active {
+                    "\u{25cf}"
+                } else {
+                    "\u{25cb}"
+                };
+                let active_style = if is_source {
+                    theme::THEME.warning
+                } else if entry.active {
                     theme::THEME.snap_active
                 } else {
                     theme::THEME.snap_inactive
@@ -452,6 +466,33 @@ impl DashboardScreen {
         h + 2
     }
 
+    fn render_diff_status(&self, frame: &mut Frame, area: Rect) {
+        let Some(orig_idx) = self.diff_source else {
+            return;
+        };
+        let Some(source) = self.snapshots.get(orig_idx) else {
+            return;
+        };
+        let id_str = source.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN);
+        let date = utils::pretty_print_timestamp(&source.snapshot.timestamp, None);
+        let host = source.snapshot.hostname.as_deref().unwrap_or_default();
+        let text = Line::from(vec![
+            Span::styled(" Diff: ", theme::THEME.warning),
+            Span::styled(id_str, theme::THEME.snap_id),
+            Span::raw(" "),
+            Span::styled(date, theme::THEME.snap_date),
+            Span::raw(" "),
+            Span::styled(host, theme::THEME.snap_host),
+            Span::raw(" -- select target and press "),
+            Span::styled("5", theme::THEME.menu_key),
+            Span::raw(" to diff"),
+        ]);
+        let block = Block::default().style(Style::new().bg(theme::THEME.surface));
+        frame.render_widget(&block, area);
+        let inner = area.inner(Margin::new(1, 0));
+        frame.render_widget(Paragraph::new(text).style(theme::THEME.footer), inner);
+    }
+
     fn render_filter(&self, frame: &mut Frame, area: Rect) {
         if let Some(input) = &self.filter {
             let filter_text = if input.is_empty() {
@@ -493,7 +534,22 @@ impl DashboardScreen {
             .alignment(ratatui::layout::Alignment::Left);
         frame.render_widget(menu, chunks[0]);
 
-        let hint_str = "\u{2191}\u{2193} navigate  Enter details  / filter".to_string();
+        let hint_str = if self.diff_source.is_some() {
+            Line::from(vec![
+                Span::styled("Esc cancel  ", theme::THEME.footer),
+                Span::styled("\u{2191}\u{2193} select target  ", theme::THEME.footer),
+                Span::styled("5 ", theme::THEME.menu_key),
+                Span::styled("diff", theme::THEME.footer),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("\u{2191}\u{2193} navigate  ", theme::THEME.footer),
+                Span::styled("Enter", theme::THEME.menu_key),
+                Span::styled(" details  ", theme::THEME.footer),
+                Span::styled("/", theme::THEME.menu_key),
+                Span::styled(" filter", theme::THEME.footer),
+            ])
+        };
         let hints = Paragraph::new(hint_str)
             .style(theme::THEME.footer)
             .alignment(ratatui::layout::Alignment::Left);
@@ -531,9 +587,11 @@ impl Screen for DashboardScreen {
         let area = frame.area();
         let inner_content = area.inner(Margin::new(2, 1));
 
+        let diff_status_height: u16 = if self.diff_source.is_some() { 2 } else { 1 };
+
         self.last_height = inner_content
             .height
-            .saturating_sub(HEADER_HEIGHT + MENU_HEIGHT + 1);
+            .saturating_sub(HEADER_HEIGHT + MENU_HEIGHT + diff_status_height);
 
         let has_filter = self.filter.is_some();
         let filter_height = if has_filter { FILTER_INPUT_HEIGHT } else { 0 };
@@ -543,7 +601,7 @@ impl Screen for DashboardScreen {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(HEADER_HEIGHT),
-                Constraint::Length(1),
+                Constraint::Length(diff_status_height),
                 Constraint::Min(5),
                 Constraint::Length(info_height),
                 Constraint::Length(filter_height),
@@ -552,6 +610,9 @@ impl Screen for DashboardScreen {
             .split(inner_content);
 
         self.render_top_bar(frame, chunks[0]);
+        if self.diff_source.is_some() {
+            self.render_diff_status(frame, chunks[1]);
+        }
         self.render_snapshot_list(frame, chunks[2]);
         if info_height > 0 {
             self.render_selected_info(frame, chunks[3]);
@@ -603,6 +664,24 @@ impl Screen for DashboardScreen {
                     config,
                 ))))
             }
+            KeyCode::Char('4') => Some(Transition::Push(Box::new(FindScreen::new(
+                self.repo.clone(),
+            )))),
+            KeyCode::Char('5') => {
+                let display_idx = self.table_state.selected()?;
+                let target_orig = self.filtered_indices[display_idx];
+                if let Some(source_orig) = self.diff_source.take() {
+                    let snapshots = self.snapshots.clone();
+                    return Some(Transition::Push(Box::new(DiffScreen::new(
+                        self.repo.clone(),
+                        snapshots,
+                        source_orig,
+                        target_orig,
+                    ))));
+                }
+                self.diff_source = Some(target_orig);
+                None
+            }
             KeyCode::Char('u') => {
                 if let Some(entry) = self.display_entry(self.table_state.selected().unwrap_or(0))
                     && !entry.active
@@ -646,6 +725,9 @@ impl Screen for DashboardScreen {
                 None
             }
             KeyCode::Enter => {
+                if self.diff_source.is_some() {
+                    return None;
+                }
                 if let Some(orig_idx) = self.selected_original_index() {
                     return Some(Transition::Push(Box::new(SnapshotDetailScreen::new(
                         self.repo.clone(),
@@ -653,6 +735,10 @@ impl Screen for DashboardScreen {
                         orig_idx,
                     ))));
                 }
+                None
+            }
+            KeyCode::Esc => {
+                self.diff_source = None;
                 None
             }
             _ => None,

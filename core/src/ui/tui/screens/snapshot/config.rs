@@ -86,7 +86,7 @@ impl SnapshotForm {
                 ),
             },
             FormField {
-                label: "Start Snapshot".to_string(),
+                label: "".to_string(),
                 field_type: FormFieldType::Action("Start Snapshot".to_string()),
             },
         ];

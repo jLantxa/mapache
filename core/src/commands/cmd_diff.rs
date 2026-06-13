@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::Args;
 use futures::StreamExt;
@@ -8,7 +6,7 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
-    fs::tree::{NodeDiff, NodeDiffStream, SerializedNodeStream},
+    fs::tree::{NodeDiff, create_diff_stream},
     mapache::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::snapshot::DiffCounts,
     ui::{
@@ -54,24 +52,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let src_snap = repo.load_snapshot(&src_id, None).await?;
             let tgt_snap = repo.load_snapshot(&tgt_id, None).await?;
 
-            let mut stream = NodeDiffStream::new(
-                SerializedNodeStream::new(
-                    repo.clone(),
-                    Some(src_snap.tree),
-                    PathBuf::new(),
-                    None,
-                    None,
-                )
-                .await?,
-                SerializedNodeStream::new(
-                    repo.clone(),
-                    Some(tgt_snap.tree),
-                    PathBuf::new(),
-                    None,
-                    None,
-                )
-                .await?,
-            );
+            let mut stream = create_diff_stream(repo.clone(), src_snap.tree, tgt_snap.tree).await?;
 
             ui::cli::log!(
                 "Finding diffs {}..{}\n",

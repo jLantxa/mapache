@@ -71,7 +71,7 @@ impl RetentionConfig {
                 )),
             },
             FormField {
-                label: "Apply Rules".to_string(),
+                label: "".to_string(),
                 field_type: FormFieldType::Action("Apply Rules".to_string()),
             },
         ];

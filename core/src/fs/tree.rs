@@ -565,6 +565,21 @@ pub enum NodeDiff {
     Unchanged,
 }
 
+/// Convenience factory: returns a lazy diff stream from two tree IDs.
+///
+/// The caller can consume it lazily (streaming, O(1) memory)
+/// or collect it into a `Vec` when random access is needed.
+pub async fn create_diff_stream(
+    repo: Arc<Repository>,
+    src_tree: ID,
+    tgt_tree: ID,
+) -> Result<NodeDiffStream<SerializedNodeStream, SerializedNodeStream>> {
+    let src =
+        SerializedNodeStream::new(repo.clone(), Some(src_tree), PathBuf::new(), None, None).await?;
+    let tgt = SerializedNodeStream::new(repo, Some(tgt_tree), PathBuf::new(), None, None).await?;
+    Ok(NodeDiffStream::new(src, tgt))
+}
+
 /// The internal state of the serialized tree stream.
 struct SerializedTreeState {
     repo: Arc<Repository>,

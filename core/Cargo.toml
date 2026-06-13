@@ -58,7 +58,7 @@ toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt"] }
 url = "2.5.8"
-zeroize = { version = "1.8.2", features = ["derive"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
 zstd = "0.13.3"
 
 [target.'cfg(unix)'.dependencies]

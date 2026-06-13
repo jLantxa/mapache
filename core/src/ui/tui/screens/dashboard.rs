@@ -42,6 +42,7 @@ const MENU_ITEMS: &[(char, &str)] = &[
     ('3', "Forget"),
     ('4', "Find"),
     ('5', "Diff"),
+    ('r', "Refresh"),
     ('q', "Quit"),
 ];
 
@@ -70,6 +71,7 @@ pub struct DashboardScreen {
     last_height: u16,
     stats: DashboardStats,
     diff_source: Option<usize>,
+    needs_reload: bool,
 }
 
 impl DashboardScreen {
@@ -103,19 +105,23 @@ impl DashboardScreen {
                 newest: None,
             },
             diff_source: None,
+            needs_reload: true,
         }
     }
 
     pub async fn load_snapshots(&mut self) -> Result<()> {
-        let active_entries = SnapshotStream::new(self.repo.clone())
-            .await?
-            .collect_entries(true)
-            .await?;
+        // Reload master index first to ensure we see any new data from other processes
+        self.repo.reload_master_index().await?;
 
-        let mut dropped_entries = SnapshotStream::dropped(self.repo.clone())
-            .await?
-            .collect_entries(false)
-            .await?;
+        let (active_stream, dropped_stream) = futures::try_join!(
+            SnapshotStream::new(self.repo.clone()),
+            SnapshotStream::dropped(self.repo.clone())
+        )?;
+
+        let (active_entries, mut dropped_entries) = futures::try_join!(
+            active_stream.collect_entries(true),
+            dropped_stream.collect_entries(false)
+        )?;
 
         let mut entries = active_entries;
         entries.append(&mut dropped_entries);
@@ -126,6 +132,7 @@ impl DashboardScreen {
         self.update_search_cache();
         self.apply_filter();
         self.diff_source = None;
+        self.needs_reload = false;
         Ok(())
     }
 
@@ -589,10 +596,6 @@ impl Screen for DashboardScreen {
 
         let diff_status_height: u16 = if self.diff_source.is_some() { 2 } else { 1 };
 
-        self.last_height = inner_content
-            .height
-            .saturating_sub(HEADER_HEIGHT + MENU_HEIGHT + diff_status_height);
-
         let has_filter = self.filter.is_some();
         let filter_height = if has_filter { FILTER_INPUT_HEIGHT } else { 0 };
         let info_height = self.selected_info_height();
@@ -613,6 +616,7 @@ impl Screen for DashboardScreen {
         if self.diff_source.is_some() {
             self.render_diff_status(frame, chunks[1]);
         }
+        self.last_height = chunks[2].height.saturating_sub(2);
         self.render_snapshot_list(frame, chunks[2]);
         if info_height > 0 {
             self.render_selected_info(frame, chunks[3]);
@@ -633,6 +637,7 @@ impl Screen for DashboardScreen {
             KeyCode::Char('q') => Some(Transition::Quit),
             KeyCode::Char('1') => {
                 let config = self.snapshot_config.clone();
+                self.needs_reload = true;
                 Some(Transition::Push(Box::new(SnapshotCreateScreen::new(
                     self.repo.clone(),
                     self.lock_handle.clone(),
@@ -658,15 +663,20 @@ impl Screen for DashboardScreen {
                     .filter(|e| e.active)
                     .cloned()
                     .collect();
+                self.needs_reload = true;
                 Some(Transition::Push(Box::new(ForgetScreen::new(
                     self.repo.clone(),
                     Arc::new(active_snapshots),
                     config,
                 ))))
             }
-            KeyCode::Char('4') => Some(Transition::Push(Box::new(FindScreen::new(
-                self.repo.clone(),
-            )))),
+            KeyCode::Char('4') => {
+                let snapshots = self.snapshots.clone();
+                Some(Transition::Push(Box::new(FindScreen::new(
+                    self.repo.clone(),
+                    snapshots,
+                ))))
+            }
             KeyCode::Char('5') => {
                 let display_idx = self.table_state.selected()?;
                 let target_orig = self.filtered_indices[display_idx];
@@ -680,6 +690,13 @@ impl Screen for DashboardScreen {
                     ))));
                 }
                 self.diff_source = Some(target_orig);
+                None
+            }
+            KeyCode::Char('r') => {
+                self.needs_reload = true;
+                if let Err(e) = self.load_snapshots().await {
+                    tracing::error!("Failed to refresh snapshots: {}", e);
+                }
                 None
             }
             KeyCode::Char('u') => {
@@ -746,6 +763,9 @@ impl Screen for DashboardScreen {
     }
 
     async fn on_become_active(&mut self) -> Result<()> {
-        self.load_snapshots().await
+        if self.needs_reload {
+            self.load_snapshots().await?;
+        }
+        Ok(())
     }
 }

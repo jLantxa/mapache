@@ -16,7 +16,7 @@ use crate::{
     mapache::{defaults::SHORT_SNAPSHOT_ID_LEN, find_in_snapshot},
     repository::{
         repo::Repository,
-        snapshot::{SnapshotEntry, SnapshotStream},
+        snapshot::{SnapshotEntry, SnapshotEntryList},
     },
     ui::tui::{
         app::{Screen, Transition},
@@ -47,7 +47,6 @@ enum SearchUpdate {
         id: String,
     },
     Done(Vec<FindResult>),
-    Error(String),
 }
 
 const SPINNER_CHARS: &[char] = &['\u{25D0}', '\u{25D3}', '\u{25D1}', '\u{25D2}'];
@@ -65,12 +64,14 @@ pub struct FindScreen {
     status_message: String,
     last_height: usize,
     spinner_tick: u8,
+    snapshots: Arc<SnapshotEntryList>,
 }
 
 impl FindScreen {
-    pub fn new(repo: Arc<Repository>) -> Self {
+    pub fn new(repo: Arc<Repository>, snapshots: Arc<SnapshotEntryList>) -> Self {
         Self {
             repo,
+            snapshots,
             focus: Focus::Input,
             search_input: TextInput::new(),
             results: Vec::new(),
@@ -103,34 +104,8 @@ impl FindScreen {
         self.focus = Focus::Input;
 
         let repo = self.repo.clone();
+        let entries = self.snapshots.clone();
         tokio::spawn(async move {
-            let entries = match SnapshotStream::new(repo.clone()).await {
-                Ok(s) => match s.collect_entries(true).await {
-                    Ok(e) => e,
-                    Err(e) => {
-                        let _ = tx.send(SearchUpdate::Error(format!(
-                            "Error loading snapshots: {}",
-                            e
-                        )));
-                        return;
-                    }
-                },
-                Err(e) => {
-                    let _ = tx.send(SearchUpdate::Error(format!(
-                        "Error loading snapshots: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-
-            if entries.is_empty() {
-                let _ = tx.send(SearchUpdate::Error(
-                    "No snapshots found in repository".to_string(),
-                ));
-                return;
-            }
-
             let total = entries.len();
             let mut all_results = Vec::new();
 
@@ -207,12 +182,6 @@ impl FindScreen {
                     } else {
                         format!("{} match(es) in {} snapshot(s)", count, snap_count)
                     };
-                    self.is_searching = false;
-                    self.search_progress = None;
-                    return;
-                }
-                SearchUpdate::Error(msg) => {
-                    self.status_message = msg;
                     self.is_searching = false;
                     self.search_progress = None;
                     return;

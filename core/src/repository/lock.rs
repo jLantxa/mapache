@@ -168,7 +168,11 @@ impl Lock {
         #[cfg(unix)]
         {
             // On Unix, sending signal 0 to a process is a safe way to check its existence.
-            unsafe { libc::kill(self.pid as libc::pid_t, 0) == 0 }
+            // If it returns -1 but errno is EPERM, the process still exists (we just don't have permission to signal it).
+            unsafe {
+                let ret = libc::kill(self.pid as libc::pid_t, 0);
+                ret == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+            }
         }
 
         #[cfg(windows)]

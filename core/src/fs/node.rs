@@ -190,18 +190,7 @@ mod linux_statx {
         mask: u32,
         statxbuf: *mut statx,
     ) -> i32 {
-        #[cfg(target_arch = "x86_64")]
-        const SYS_STATX: libc::c_long = 332;
-        #[cfg(target_arch = "aarch64")]
-        const SYS_STATX: libc::c_long = 291;
-        #[cfg(target_arch = "riscv64")]
-        const SYS_STATX: libc::c_long = 291;
-        #[cfg(target_arch = "arm")]
-        const SYS_STATX: libc::c_long = 397;
-        #[cfg(target_arch = "x86")]
-        const SYS_STATX: libc::c_long = 383;
-
-        unsafe { libc::syscall(SYS_STATX, dirfd, pathname, flags, mask, statxbuf) as i32 }
+        unsafe { libc::syscall(libc::SYS_statx, dirfd, pathname, flags, mask, statxbuf) as i32 }
     }
 }
 

@@ -3,7 +3,7 @@ use std::{
     hash::{BuildHasherDefault, Hash},
 };
 
-use crate::utils::collections::FxHasher;
+use crate::utils::collections::IdentityHasher;
 
 /// IndexSet is a set that can be enumerated by index.
 #[derive(Debug, Clone)]
@@ -16,7 +16,7 @@ where
     map: HashMap<T, usize, S>,
 }
 
-pub type IdIndexSet<T> = IndexSet<T, BuildHasherDefault<FxHasher>>;
+pub type IdIndexSet<T> = IndexSet<T, BuildHasherDefault<IdentityHasher>>;
 
 impl<T> Default for IndexSet<T, std::collections::hash_map::RandomState>
 where

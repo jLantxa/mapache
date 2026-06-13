@@ -118,7 +118,12 @@ where
 
 /// Converts a byte slice to its hexadecimal string representation.
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
+        s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+    }
+    s
 }
 
 /// Pretty prints a `SystemTime` into a human-readable string,
@@ -242,7 +247,7 @@ pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts
 pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
     let mut total_duration = Duration::seconds(0);
     let mut current_num_str = String::new();
-    let chars = s.chars().peekable();
+    let chars = s.chars();
 
     for c in chars {
         if c.is_ascii_digit() {
@@ -420,8 +425,7 @@ pub fn dir_size(path: &Path) -> Result<u64> {
             Err(_) => continue,
         };
 
-        let path = entry.path();
-        let metadata = match std::fs::metadata(&path) {
+        let metadata = match entry.metadata() {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -429,7 +433,7 @@ pub fn dir_size(path: &Path) -> Result<u64> {
         if metadata.is_file() {
             total_size += metadata.len();
         } else if metadata.is_dir() {
-            total_size += dir_size(&path)?;
+            total_size += dir_size(&entry.path())?;
         }
     }
 
@@ -442,7 +446,7 @@ pub fn count_files(dir_path: &Path) -> Result<usize> {
     let mut count = 0;
     for entry in entries {
         if let Ok(entry) = entry
-            && entry.path().is_file()
+            && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
         {
             count += 1;
         }

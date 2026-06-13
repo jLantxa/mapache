@@ -324,51 +324,63 @@ impl Plan {
                     let chunk_bytes: usize =
                         chunk.iter().map(|(_, loc)| loc.raw_length as usize).sum();
                     let needed = std::cmp::min(chunk_bytes, sem_capacity);
-                    let _permit = sem
+                    let permit = sem
                         .acquire_many(u32::try_from(needed).unwrap_or(u32::MAX))
                         .await
                         .context("Failed to acquire GC memory budget permit")?;
 
+                    // Build a fast lookup for blob types to avoid O(n²) linear search
+                    let mut blob_types: IdMap<ID, mapache::BlobType> = IdMap::default();
+                    for (cid, loc) in chunk.iter() {
+                        blob_types.insert(*cid, loc.blob_type);
+                    }
+
                     let loader = loader::BlobLoader::new(repo.clone());
                     let loaded_blobs = loader.load_with_locators(chunk.to_vec()).await?;
 
-                    // Process blobs in parallel within each chunk
-                    let tasks: Vec<_> = loaded_blobs
-                        .into_iter()
-                        .map(|(id, data)| {
-                            let blob_type = chunk
-                                .iter()
-                                .find(|(cid, _)| *cid == id)
-                                .map(|(_, loc)| loc.blob_type)
-                                .unwrap_or(mapache::BlobType::Data);
+                    // Release the memory budget permit before waiting for encode+save to
+                    // finish, so the next chunk can start loading decoded data in parallel.
+                    drop(permit);
 
+                    // Process blobs with bounded concurrency via a stream pipeline instead
+                    // of collecting all futures upfront, so only N data Vecs are in memory
+                    // at any time. The concurrency limit also prevents exhausting the
+                    // blocking thread pool (default 512), which would deadlock when
+                    // LocalBackend::write calls spawn_blocking internally for file I/O.
+                    let max_concurrent = defaults::DEFAULT_SNAPSHOT_READERS;
+
+                    stream::iter(loaded_blobs)
+                        .map(|(id, data)| {
+                            let blob_type = blob_types
+                                .get(&id)
+                                .copied()
+                                .unwrap_or(mapache::BlobType::Data);
                             let repo_clone = repo.clone();
                             let reporter_clone = reporter.clone();
                             let pos_clone = pos.clone();
 
-                            tokio::task::spawn_blocking(move || {
-                                let result = repo_clone.encode_and_save_blob(
-                                    blob_type,
-                                    WriteContents::Owned(data),
-                                    SaveID::WithID(id),
-                                );
-                                let current = pos_clone
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                                    + 1;
-                                reporter_clone.update_task(ui::GcTask::RepackingBlobs, current);
-                                result
-                            })
+                            async move {
+                                tokio::task::spawn_blocking(move || {
+                                    let r = repo_clone.encode_and_save_blob(
+                                        blob_type,
+                                        WriteContents::Owned(data),
+                                        SaveID::WithID(id),
+                                    );
+                                    let current = pos_clone
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                        + 1;
+                                    reporter_clone.update_task(ui::GcTask::RepackingBlobs, current);
+                                    r
+                                })
+                                .await
+                                .context("Repack task panicked")?
+                                .context("Repack blob failed")?;
+                                Ok::<(), anyhow::Error>(())
+                            }
                         })
-                        .collect();
-
-                    // Await all tasks in parallel
-                    let results = futures::future::join_all(tasks).await;
-
-                    for result in results {
-                        result
-                            .context("Repack task panicked")?
-                            .context("Repack blob failed")?;
-                    }
+                        .buffer_unordered(max_concurrent)
+                        .try_collect::<Vec<_>>()
+                        .await?;
 
                     // Check shutdown only after a chunk has fully finished
                     // writing. Abandoning here leaves the on-disk index

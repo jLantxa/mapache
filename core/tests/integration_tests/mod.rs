@@ -103,6 +103,7 @@ impl TestContext {
             compression_level: Compression::Fastest,
             limit_upload: None,
             limit_download: None,
+            no_lock: false,
         };
         set_global_opts_with_args(&global);
 

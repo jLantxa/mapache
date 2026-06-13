@@ -23,6 +23,8 @@
   (`find /file.txt`).
 - **`dump` command**: New `dump` command to print the contents of a single
   file from a snapshot to stdout. Supports snapshot ID prefixes and `latest`.
+- **`--no-lock`**: Added an option to open a repository without acquiring a
+  lock.
 - **Interactive diff screen (TUI)**: New `DiffScreen` with a navigable tree of
   changes (`+`/`~`/`-`), inline expand/collapse, `u` to toggle unchanged files,
   `<`/`>` to browse adjacent snapshot pairs, live spinner while loading, and

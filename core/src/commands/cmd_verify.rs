@@ -157,6 +157,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
         false,
         global_args.retry_lock_duration,
+        global_args.no_lock,
         |repo, secure_storage, lock_handle| async move {
             run_with_repo(repo, secure_storage, lock_handle, args, json_out).await
         },

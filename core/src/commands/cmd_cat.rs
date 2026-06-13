@@ -40,6 +40,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
+        global_args.no_lock,
         |repo, _, lock_handle| async move {
             let cleanup_handler = CleanupHandler::new()?;
             cleanup_handler.add_lock(lock_handle.clone());

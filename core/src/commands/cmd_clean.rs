@@ -64,6 +64,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.to_repo_config(),
         true,
         global_args.retry_lock_duration,
+        global_args.no_lock,
         |repo, _, lock_handle| async move {
             run_with_repo(global_args.json, args, repo, lock_handle).await
         },

@@ -207,6 +207,10 @@ pub struct CliGlobalArgs {
         deserialize_with = "deserialize_bandwidth_opt"
     )]
     pub limit_download: Option<u64>,
+
+    /// Disable repository locking (read-only operations)
+    #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    pub no_lock: Option<bool>,
 }
 
 impl Merge for CliGlobalArgs {
@@ -252,6 +256,9 @@ impl Merge for CliGlobalArgs {
         }
         if other.limit_download.is_some() {
             self.limit_download = other.limit_download;
+        }
+        if other.no_lock.is_some() {
+            self.no_lock = other.no_lock;
         }
     }
 }
@@ -304,6 +311,7 @@ pub struct GlobalArgs {
     pub retry_lock_duration: Option<Duration>,
     pub limit_upload: Option<u64>,
     pub limit_download: Option<u64>,
+    pub no_lock: bool,
 }
 
 impl GlobalArgs {
@@ -354,6 +362,7 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> Result<GlobalArgs> {
         retry_lock_duration: cli.retry_lock_duration,
         limit_upload: cli.limit_upload,
         limit_download: cli.limit_download,
+        no_lock: cli.no_lock.unwrap_or(false),
     })
 }
 
@@ -668,6 +677,7 @@ impl GlobalArgs {
             retry_lock_duration: None,
             limit_upload: None,
             limit_download: None,
+            no_lock: false,
         }
     }
 
@@ -687,6 +697,7 @@ impl GlobalArgs {
             retry_lock_duration: None,
             limit_upload: None,
             limit_download: None,
+            no_lock: false,
         }
     }
 
@@ -706,6 +717,7 @@ impl GlobalArgs {
             retry_lock_duration: None,
             limit_upload: None,
             limit_download: None,
+            no_lock: false,
         }
     }
 }
@@ -757,6 +769,10 @@ pub async fn open_repository(
 
 /// Helper to open a repository with a lock and interactive authentication if needed,
 /// ensuring the lock is released when the provided closure finishes.
+///
+/// When `no_lock` is true, the repository is opened without acquiring a lock and a
+/// no-op lock handle is returned.
+#[allow(clippy::too_many_arguments)]
 pub async fn with_repository_lock<F, Fut, T>(
     auth_file: Option<&PathBuf>,
     key_file_path: Option<&PathBuf>,
@@ -764,21 +780,35 @@ pub async fn with_repository_lock<F, Fut, T>(
     config: RepoConfig,
     exclusive_lock: bool,
     retry_duration: Option<Duration>,
+    no_lock: bool,
     f: F,
 ) -> Result<T>
 where
     F: FnOnce(Arc<Repository>, Arc<SecureStorage>, LockHandle) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    let (repo, storage, lock) = open_repository_with_lock(
-        auth_file,
-        key_file_path,
-        backend,
-        config,
-        exclusive_lock,
-        retry_duration,
-    )
-    .await?;
+    let (repo, storage, lock) = if no_lock {
+        let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
+        let lock = LockHandle::new(
+            repo.clone(),
+            Arc::new(parking_lot::Mutex::new(crate::repository::lock::Lock::new(
+                false,
+            ))),
+            true,
+        );
+        (repo, storage, lock)
+    } else {
+        open_repository_with_lock(
+            auth_file,
+            key_file_path,
+            backend,
+            config,
+            exclusive_lock,
+            retry_duration,
+            no_lock,
+        )
+        .await?
+    };
 
     let res = f(repo, storage, lock.clone()).await;
     lock.unlock().await;
@@ -786,6 +816,9 @@ where
 }
 
 /// Helper to open a repository with a lock and interactive authentication if needed.
+///
+/// When `no_lock` is true, the repository is opened without acquiring a lock and a
+/// no-op lock handle is returned.
 pub async fn open_repository_with_lock(
     auth_file: Option<&PathBuf>,
     key_file_path: Option<&PathBuf>,
@@ -793,7 +826,20 @@ pub async fn open_repository_with_lock(
     config: RepoConfig,
     exclusive_lock: bool,
     retry_duration: Option<Duration>,
+    no_lock: bool,
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
+    if no_lock {
+        let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
+        let lock = LockHandle::new(
+            repo.clone(),
+            Arc::new(parking_lot::Mutex::new(crate::repository::lock::Lock::new(
+                false,
+            ))),
+            true,
+        );
+        return Ok((repo, storage, lock));
+    }
+
     let mut auth = utils::get_auth(&auth_file.cloned())?;
 
     // If auth is provided (from file or env), try it once.

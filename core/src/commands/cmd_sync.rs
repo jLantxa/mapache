@@ -20,6 +20,7 @@ use crate::{
         defaults::{DEFAULT_PACK_SIZE, UI_RATE_ESTIMATOR_WINDOW},
         global::GlobalOpts,
     },
+    repository::lock::{Lock, LockHandle},
     repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
     ui::{self, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target},
     utils::{self, rate_estimator::RateEstimator},
@@ -125,36 +126,76 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         compression: global_args.compression_level,
     };
 
-    let (_src_repo, _src_ss, src_lock) = Repository::try_open_with_lock(
-        &auth,
-        global_args.key.as_ref(),
-        src_backend.clone(),
-        repo_config,
-        false, // Source lock
-        global_args.retry_lock_duration,
-    )
-    .await
-    .map_err(|e| {
-        fail(
-            format!("Failed to open source repository: {}", e),
-            SyncError::RepoOpenFail,
+    let (_src_repo, _src_ss, src_lock) = if global_args.no_lock {
+        let (repo, ss) = Repository::try_open_unlocked(
+            &auth,
+            global_args.key.as_ref(),
+            src_backend.clone(),
+            repo_config,
         )
-    })?;
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to open source repository: {}", e),
+                SyncError::RepoOpenFail,
+            )
+        })?;
+        let lock = LockHandle::new(
+            repo.clone(),
+            Arc::new(parking_lot::Mutex::new(Lock::new(false))),
+            true,
+        );
+        (repo, ss, lock)
+    } else {
+        Repository::try_open_with_lock(
+            &auth,
+            global_args.key.as_ref(),
+            src_backend.clone(),
+            repo_config,
+            false, // Source lock
+            global_args.retry_lock_duration,
+        )
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to open source repository: {}", e),
+                SyncError::RepoOpenFail,
+            )
+        })?
+    };
 
     // Try to open the destination repo with the source auth to acquire a lock.
-    let dst_lock = if let Ok((_, _, lock)) = Repository::try_open_with_lock(
-        &auth,
-        global_args.key.as_ref(),
-        dst_backend.clone(),
-        repo_config,
-        args.delete, // Exclusive lock if we are going to delete
-        global_args.retry_lock_duration,
-    )
-    .await
-    {
-        Some(lock)
+    let dst_lock = if global_args.no_lock {
+        match Repository::try_open_unlocked(
+            &auth,
+            global_args.key.as_ref(),
+            dst_backend.clone(),
+            repo_config,
+        )
+        .await
+        {
+            Ok((repo, _ss)) => Some(LockHandle::new(
+                repo.clone(),
+                Arc::new(parking_lot::Mutex::new(Lock::new(false))),
+                true,
+            )),
+            Err(_) => None,
+        }
     } else {
-        None
+        if let Ok((_, _, lock)) = Repository::try_open_with_lock(
+            &auth,
+            global_args.key.as_ref(),
+            dst_backend.clone(),
+            repo_config,
+            args.delete, // Exclusive lock if we are going to delete
+            global_args.retry_lock_duration,
+        )
+        .await
+        {
+            Some(lock)
+        } else {
+            None
+        }
     };
 
     dst_backend.create().await.map_err(|e| {

@@ -102,11 +102,11 @@ mod unix {
 
         let times = [
             libc::timespec {
-                tv_sec: atime.seconds,
+                tv_sec: atime.seconds as _,
                 tv_nsec: atime.nanos as libc::c_long,
             },
             libc::timespec {
-                tv_sec: mtime.seconds,
+                tv_sec: mtime.seconds as _,
                 tv_nsec: mtime.nanos as libc::c_long,
             },
         ];

@@ -504,6 +504,7 @@ impl Restorer {
                         bail!(err_msg);
                     }
                     self.progress_reporter.error(&err_msg);
+                    continue;
                 }
                 if let Err(e) = fs::hard_link(primary_path, secondary_path) {
                     let err_msg = format!(

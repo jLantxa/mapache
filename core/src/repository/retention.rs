@@ -710,4 +710,28 @@ mod tests {
         // No minimum, so just KeepLast(2)
         assert_eq!(kept_ids.len(), 2);
     }
+
+    #[test]
+    fn test_keep_min_no_rules_match() {
+        let snapshots = create_mock_snapshots();
+
+        // No rules match any snapshot, keep_min=1
+        let rules = vec![];
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            Some(1),
+            test_now(),
+        );
+
+        assert_eq!(
+            kept_ids.len(),
+            1,
+            "keep_min=1 with no matching rules should keep 1 snapshot"
+        );
+        assert!(
+            kept_ids.contains(&create_id(22)),
+            "Should keep the newest snapshot"
+        );
+    }
 }

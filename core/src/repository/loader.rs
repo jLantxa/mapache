@@ -175,8 +175,23 @@ impl BlobLoader {
         let mut result = HashMap::with_capacity(loaded.len());
         for (segment, data) in loaded {
             for (id, loc, _) in segment.blobs {
-                let start = (loc.offset as u64 - segment.min_offset) as usize;
+                let blob_offset = loc.offset as u64;
+                if blob_offset < segment.min_offset {
+                    return Err(anyhow::anyhow!(
+                        "Blob offset {} is before segment start {}",
+                        blob_offset,
+                        segment.min_offset
+                    ));
+                }
+                let start = (blob_offset - segment.min_offset) as usize;
                 let end = start + loc.length as usize;
+                if end > data.len() {
+                    return Err(anyhow::anyhow!(
+                        "Blob end {} exceeds segment data length {}",
+                        end,
+                        data.len()
+                    ));
+                }
 
                 let decoded = self.repo.secure_storage().decode(&data[start..end])?;
 

@@ -79,6 +79,11 @@ impl Restorer {
                     };
 
                     if !repo_fs::path_exists(&restore_path).await {
+                        tracing::warn!(
+                            target: "restorer",
+                            "Cannot restore metadata for {}: path does not exist",
+                            restore_path.display(),
+                        );
                         return;
                     }
 

@@ -177,8 +177,15 @@ impl Restorer {
                             batch
                                 .into_par_iter()
                                 .map(|(blob_id, locator, targets)| {
-                                    let start = (locator.offset as u64 - min_offset) as usize;
+                                    let blob_offset = locator.offset as u64;
+                                    if blob_offset < min_offset {
+                                        anyhow::bail!("Blob offset {} is before segment start {}", blob_offset, min_offset);
+                                    }
+                                    let start = (blob_offset - min_offset) as usize;
                                     let end = start + locator.length as usize;
+                                    if end > data_arc_inner.len() {
+                                        anyhow::bail!("Blob end {} exceeds segment data length {}", end, data_arc_inner.len());
+                                    }
                                     let encoded_blob = &data_arc_inner[start..end];
 
                                     let decoded_data = secure_storage_inner

@@ -187,7 +187,7 @@ impl CliSnapshotProgressReporter {
                                 let _ = write!(
                                     w,
                                     "{} / {}",
-                                    &processed_bytes_str,
+                                    processed_bytes_str,
                                     utils::format_size_binary(total, 3)
                                 );
                             }

@@ -413,22 +413,18 @@ pub async fn run_with_repo(
     } else {
         if options.paths.len() != 1 {
             bail!("Only one path can be the snapshot root");
-        } else {
-            let root = options
-                .paths
-                .last()
-                .expect("paths must have exactly one element in as_root mode");
-            if !root.is_dir() {
-                bail!("The snapshot root must be a directory");
-            }
-
-            let mut dir = tokio::fs::read_dir(root).await?;
-            let mut paths = Vec::new();
-            while let Some(entry) = dir.next_entry().await? {
-                paths.push(entry.path());
-            }
-            paths
         }
+        let root = &options.paths[0];
+        if !root.is_dir() {
+            bail!("The snapshot root must be a directory");
+        }
+
+        let mut dir = tokio::fs::read_dir(root).await?;
+        let mut paths = Vec::new();
+        while let Some(entry) = dir.next_entry().await? {
+            paths.push(entry.path());
+        }
+        paths
     };
 
     let mut tags: BTreeSet<String> = parse_tags(Some(&tags_str));
@@ -590,13 +586,13 @@ pub async fn run_with_repo(
     new_snapshot.summary.data_blobs = repo_stats.blobs;
     new_snapshot.summary.meta_blobs = repo_stats.meta_blobs;
 
-    let should_save_snapshot = !skip_if_unchanged
-        || parent_snapshot_pair.is_none()
-        || (parent_snapshot_pair
-            .expect("parent_snapshot_pair is Some if skip_if_unchanged and parent exists")
-            .snapshot
-            .tree
-            != new_snapshot.tree);
+    let should_save_snapshot = if !skip_if_unchanged {
+        true
+    } else if let Some(ref parent) = parent_snapshot_pair {
+        parent.snapshot.tree != new_snapshot.tree
+    } else {
+        true
+    };
 
     let completion = if should_save_snapshot {
         tracing::info!(target: "snapshot", "Saving new snapshot");

@@ -66,11 +66,15 @@ impl Drop for CleanupHandler {
 #[cfg(unix)]
 async fn wait_for_signal() {
     use tokio::signal::unix::{SignalKind, signal};
-    let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
-    let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-    tokio::select! {
-        _ = sigint.recv() => {},
-        _ = sigterm.recv() => {},
+    let sigint = signal(SignalKind::interrupt());
+    let sigterm = signal(SignalKind::terminate());
+    if let (Ok(mut sigint), Ok(mut sigterm)) = (sigint, sigterm) {
+        tokio::select! {
+            _ = sigint.recv() => {},
+            _ = sigterm.recv() => {},
+        }
+    } else {
+        tracing::warn!("Failed to register signal handlers; cleanup will not be interruptible");
     }
 }
 

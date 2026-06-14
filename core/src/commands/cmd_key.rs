@@ -160,7 +160,7 @@ async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArg
     let (old_id, old_keyfile) = key_manager
         .load_keyfile_with_username(&auth.username)
         .await?
-        .with_context(|| format!("No keyfile found for username {}", &auth.username))?;
+        .with_context(|| format!("No keyfile found for username {}", auth.username))?;
     let master_key = KeyManager::decode_master_key(&auth.password, &old_keyfile)?;
 
     let new_auth = Auth {

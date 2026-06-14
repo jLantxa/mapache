@@ -210,7 +210,7 @@ impl Screen for FileExplorerScreen {
                 };
 
                 let display_name = if node.is_dir() {
-                    format!("{}/", &node.name)
+                    format!("{}/", node.name)
                 } else {
                     node.name.clone()
                 };

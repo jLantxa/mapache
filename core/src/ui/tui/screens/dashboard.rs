@@ -46,13 +46,8 @@ const MENU_ITEMS: &[(char, &str)] = &[
     ('q', "Quit"),
 ];
 
-#[allow(dead_code)]
 struct DashboardStats {
     total: usize,
-    active: usize,
-    total_size: u64,
-    unique_size: u64,
-    oldest: Option<String>,
     newest: Option<String>,
 }
 
@@ -98,10 +93,6 @@ impl DashboardScreen {
             last_height: 0,
             stats: DashboardStats {
                 total: 0,
-                active: 0,
-                total_size: 0,
-                unique_size: 0,
-                oldest: None,
                 newest: None,
             },
             diff_source: None,
@@ -137,27 +128,12 @@ impl DashboardScreen {
     }
 
     fn compute_stats(entries: &[SnapshotEntry]) -> DashboardStats {
-        let total = entries.len();
-        let active = entries.iter().filter(|e| e.active).count();
-        let total_size: u64 = entries.iter().map(|e| e.snapshot.size()).sum();
-        let unique_size: u64 = entries
-            .iter()
-            .filter(|e| e.active)
-            .map(|e| e.snapshot.size())
-            .sum();
-        let oldest = entries
-            .last()
-            .map(|e| utils::pretty_print_timestamp(&e.snapshot.timestamp, None));
         let newest = entries.first().map(|e| {
             let elapsed = Local::now() - e.snapshot.timestamp;
             format!("{} ago", utils::pretty_print_duration_chrono(elapsed, 1))
         });
         DashboardStats {
-            total,
-            active,
-            total_size,
-            unique_size,
-            oldest,
+            total: entries.len(),
             newest,
         }
     }

@@ -1,4 +1,4 @@
-# Mapache User Manual v0.4.0
+# Mapache User Manual
 
 > **mapache** — a fast, secure, deduplicating, incremental backup tool.
 
@@ -1130,6 +1130,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `-r, --repo <URL>` | Repository path or URL. Also read from `MAPACHE_REPOSITORY` |
 | `--config <PATH>` | Path to TOML configuration file |
 | `--no-cache` | Disable local caching |
+| `--no-lock` | Open repository without acquiring a lock (read-only; skips lock file creation) |
 | `--ssh-privatekey <PATH>` | SSH private key file (SFTP backend) |
 | `--auth-file <PATH>` | File containing `username:password` |
 | `--pack-size <MIB>` | Pack target size in MiB (1–4095, default: 16) |

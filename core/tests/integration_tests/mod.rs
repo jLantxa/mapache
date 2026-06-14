@@ -1,6 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::UNIX_EPOCH,
 };
 
 use anyhow::{Context, Result};
@@ -13,7 +14,10 @@ use mapache::{
 use tempfile::tempdir;
 use zeroize::Zeroizing;
 
-use crate::{TEST_QUIET, test_utils};
+use crate::{
+    TEST_QUIET,
+    synthetic::{ItemDef, SyntheticData},
+};
 
 mod test_cmd_amend;
 mod test_cmd_bundle;
@@ -44,14 +48,50 @@ mod test_zeroize;
 #[cfg(all(feature = "fuse", unix))]
 mod test_cmd_mount;
 
-const BACKUP_DATA_PATH: &str = "backup_data.tar.xz";
+pub const INTEGRATION_TEST_DATA: &[(&str, ItemDef)] = &[
+    ("file.txt", ItemDef::File(b"This is a test file.\n")),
+    ("0", ItemDef::Dir),
+    ("0/file0.txt", ItemDef::File(b"Content 0\n")),
+    ("0/00", ItemDef::Dir),
+    ("0/00/file00.txt", ItemDef::File(b"Content 00\n")),
+    ("0/01", ItemDef::Dir),
+    ("0/01/file01a.txt", ItemDef::File(b"Content 01a\n")),
+    ("0/01/file01b.txt", ItemDef::File(b"Content 01b\n")),
+    (
+        "0/l01",
+        ItemDef::Symlink {
+            target: "01",
+            is_dir: true,
+        },
+    ),
+    ("1", ItemDef::Dir),
+    ("1/10", ItemDef::Dir),
+    ("1/10/file10.txt", ItemDef::File(b"Content 10\n")),
+    (
+        "1/10/lfile10.txt",
+        ItemDef::Symlink {
+            target: "file10.txt",
+            is_dir: false,
+        },
+    ),
+    ("2", ItemDef::Dir),
+    ("🚀", ItemDef::Dir),
+    (
+        "🚀/mañana.txt",
+        ItemDef::File("UTF-8 content: ñáóú\n".as_bytes()),
+    ),
+    ("日本語", ItemDef::Dir),
+    (
+        "日本語/こんにちは.txt",
+        ItemDef::File("こんにちは、世界！\n".as_bytes()),
+    ),
+];
 
 pub fn assert_times_equal(t1: std::time::SystemTime, t2: std::time::SystemTime) {
     if t1 == t2 {
         return;
     }
 
-    use std::time::UNIX_EPOCH;
     let d1 = t1.duration_since(UNIX_EPOCH).unwrap_or_default();
     let d2 = t2.duration_since(UNIX_EPOCH).unwrap_or_default();
     let diff = d1.abs_diff(d2);
@@ -117,12 +157,11 @@ impl TestContext {
         })
     }
 
-    pub fn setup_backup_data(&mut self) -> Result<()> {
-        let backup_data_path = test_utils::get_test_data_path(BACKUP_DATA_PATH);
+    pub fn setup_backup_data(&mut self, synthetic: &SyntheticData) -> Result<PathBuf> {
         let backup_data_tmp_path = self._tmp_dir.path().join("backup");
-        test_utils::extract_tar_xz_archive(&backup_data_path, &backup_data_tmp_path)?;
-        self.backup_data_path = Some(backup_data_tmp_path);
-        Ok(())
+        synthetic.setup(&backup_data_tmp_path)?;
+        self.backup_data_path = Some(backup_data_tmp_path.clone());
+        Ok(backup_data_tmp_path)
     }
 
     pub async fn init_repo(&self) -> Result<()> {
@@ -353,6 +392,7 @@ pub struct SnapshotBuilder {
     pub args: mapache::commands::cmd_snapshot::CmdArgs,
 }
 
+#[allow(dead_code)]
 impl SnapshotBuilder {
     pub fn new(paths: Vec<PathBuf>) -> Self {
         use mapache::commands::{UseSnapshot, cmd_snapshot};

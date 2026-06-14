@@ -3,7 +3,10 @@
 mod tests {
     use anyhow::Result;
 
-    use crate::integration_tests::TestContext;
+    use crate::{
+        integration_tests::{INTEGRATION_TEST_DATA, TestContext},
+        synthetic::{Dataset, SyntheticData},
+    };
 
     #[tokio::test]
     async fn test_dump_file() -> Result<()> {
@@ -28,8 +31,9 @@ mod tests {
     #[tokio::test]
     async fn test_dump_path_not_found() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         ctx.init_repo().await?;
         ctx.snapshot(vec![backup_data_tmp_path.join("file.txt")])
@@ -44,8 +48,9 @@ mod tests {
     #[tokio::test]
     async fn test_dump_directory_errors() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         ctx.init_repo().await?;
         ctx.snapshot(vec![backup_data_tmp_path.join("0")]).await?;

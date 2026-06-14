@@ -9,13 +9,17 @@ mod tests {
         repository::repo::Repository,
     };
 
-    use crate::integration_tests::{TestContext, assert_times_equal};
+    use crate::{
+        integration_tests::{INTEGRATION_TEST_DATA, TestContext, assert_times_equal},
+        synthetic::{Dataset, SyntheticData},
+    };
 
     #[tokio::test]
     async fn test_gc_sanity_check() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -85,8 +89,9 @@ mod tests {
     #[tokio::test]
     async fn test_clean_dry_run() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;

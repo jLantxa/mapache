@@ -3,13 +3,17 @@
 mod tests {
     use anyhow::Result;
 
-    use crate::integration_tests::TestContext;
+    use crate::{
+        integration_tests::{INTEGRATION_TEST_DATA, TestContext},
+        synthetic::{Dataset, SyntheticData},
+    };
 
     #[tokio::test]
     async fn test_run_stats() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;

@@ -9,18 +9,25 @@ mod tests {
     };
 
     use anyhow::{Context, Ok, Result};
+
     use mapache::{
         backend::{BackendNode, localfs::LocalFS, read_backend_dir},
         repository::repo::{INDEX_DIR, OBJECTS_DIR},
     };
 
-    use crate::integration_tests::{TestContext, delete_all_files_from, set_write_permission};
+    use crate::{
+        integration_tests::{
+            INTEGRATION_TEST_DATA, TestContext, delete_all_files_from, set_write_permission,
+        },
+        synthetic::{Dataset, SyntheticData},
+    };
 
     #[tokio::test]
     async fn test_verify_links() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -69,8 +76,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_snapshots() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -119,8 +127,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_packs() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -208,8 +217,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_sample() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         ctx.init_repo().await?;
 

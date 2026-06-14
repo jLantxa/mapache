@@ -1,12 +1,16 @@
 use anyhow::Result;
 
-use crate::integration_tests::{TestContext, assert_times_equal};
+use crate::{
+    integration_tests::{INTEGRATION_TEST_DATA, TestContext},
+    synthetic::{Dataset, SyntheticData},
+};
 
 #[tokio::test]
 async fn test_bundle_and_extract() -> Result<()> {
     let mut ctx = TestContext::new().await?;
-    ctx.setup_backup_data()?;
-    let backup_data_path = ctx.backup_data_path.clone().unwrap();
+    let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+    let synthetic = SyntheticData::new(dataset);
+    let backup_data_path = ctx.setup_backup_data(&synthetic)?;
 
     let bundle_path = ctx._tmp_dir.path().join("test_bundle.mapache");
     let extract_path = ctx._tmp_dir.path().join("extracted");
@@ -30,53 +34,7 @@ async fn test_bundle_and_extract() -> Result<()> {
         .await?;
 
     let backup_dir_name = backup_data_path.file_name().unwrap();
-    verify_extracted_content(&backup_data_path, &extract_path.join(backup_dir_name))?;
+    synthetic.verify_all_exact(&extract_path.join(backup_dir_name))?;
 
-    Ok(())
-}
-
-fn verify_extracted_content(source: &std::path::Path, target: &std::path::Path) -> Result<()> {
-    for entry in std::fs::read_dir(source)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-
-        assert!(
-            target_path.exists(),
-            "Target path {:?} missing",
-            target_path
-        );
-
-        let source_meta = std::fs::symlink_metadata(&source_path)?;
-        let target_meta = std::fs::symlink_metadata(&target_path)?;
-
-        assert_eq!(source_meta.file_type(), target_meta.file_type());
-
-        assert_times_equal(source_meta.modified()?, target_meta.modified()?);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                source_meta.permissions().mode() & 0o777,
-                target_meta.permissions().mode() & 0o777,
-                "Permission mismatch for {:?}",
-                source_path
-            );
-        }
-
-        if source_meta.is_file() {
-            assert_eq!(source_meta.len(), target_meta.len());
-            let source_content = std::fs::read(&source_path)?;
-            let target_content = std::fs::read(&target_path)?;
-            assert_eq!(
-                source_content, target_content,
-                "Content mismatch for {:?}",
-                source_path
-            );
-        } else if source_meta.is_dir() {
-            verify_extracted_content(&source_path, &target_path)?;
-        }
-    }
     Ok(())
 }

@@ -13,13 +13,17 @@ mod tests {
         restorer::Strategy,
     };
 
-    use crate::integration_tests::{TestContext, assert_times_equal};
+    use crate::{
+        integration_tests::{INTEGRATION_TEST_DATA, TestContext, assert_times_equal},
+        synthetic::{Dataset, Entry, SyntheticData},
+    };
 
     #[tokio::test]
     async fn test_restore_with_filter() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -95,8 +99,9 @@ mod tests {
     #[tokio::test]
     async fn test_restore_dry_run() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -127,8 +132,9 @@ mod tests {
     #[tokio::test]
     async fn test_restore_strip_prefix() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -181,8 +187,9 @@ mod tests {
     #[tokio::test]
     async fn test_restore_delete_default() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -269,8 +276,9 @@ mod tests {
     #[tokio::test]
     async fn test_restore_delete_default_with_include() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -354,8 +362,9 @@ mod tests {
     #[tokio::test]
     async fn test_restore_delete_no_preserve_root() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo
         ctx.init_repo().await?;
@@ -444,8 +453,9 @@ mod tests {
     #[tokio::test]
     async fn test_restore_with_conflict_resolution() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.clone().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo and create Snapshot 1
         ctx.init_repo().await?;
@@ -865,6 +875,41 @@ mod tests {
         assert_eq!(restored_meta_c.nlink(), 3, "file_c should have nlink=3");
         assert_eq!(restored_meta_d.nlink(), 3, "file_d should have nlink=3");
         assert_eq!(restored_meta_b.nlink(), 1, "file_b should have nlink=1");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_restore_synthetic_full_integrity() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA).add(
+            "large_random_file.bin",
+            Entry::Random(16 * 1024 * 1024, 12345),
+        );
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Init repo
+        ctx.init_repo().await?;
+
+        // Run snapshot
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await?;
+
+        // Run restore
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await?;
+
+        // The restore folder will contain the backup_data_tmp_path folder
+        let backup_dir_name = backup_data_tmp_path.file_name().unwrap();
+        let restored_root = restore_path.join(backup_dir_name);
+
+        // Verify full integrity using synthetic data helper
+        synthetic.verify_all_exact(&restored_root)?;
 
         Ok(())
     }

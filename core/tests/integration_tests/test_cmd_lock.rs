@@ -4,6 +4,7 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::Result;
+
     use mapache::{
         mapache::defaults::TEST_REPO_CONFIG,
         repository::repo::{LOCKS_DIR, Repository},

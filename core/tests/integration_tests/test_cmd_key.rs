@@ -2,6 +2,7 @@
 
 mod tests {
     use anyhow::Result;
+
     use mapache::repository::repo::KEYS_DIR;
 
     use crate::integration_tests::TestContext;

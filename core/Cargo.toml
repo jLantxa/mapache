@@ -80,9 +80,7 @@ windows-sys = { version = "0.61.2", features = [
 [dev-dependencies]
 rstest = "0.26.1"
 scopeguard = "1.2.0"
-tar = "0.4.46"
 tempfile = "3.27.0"
-xz2 = "0.1.7"
 
 [features]
 default = ["fuse", "tui"]

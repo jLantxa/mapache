@@ -5,6 +5,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use anyhow::{Context, Result};
+
     use mapache::{repository::repo::SNAPSHOTS_DIR, utils};
 
     use crate::integration_tests::TestContext;

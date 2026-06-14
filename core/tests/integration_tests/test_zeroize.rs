@@ -3,8 +3,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use mapache::repository::{keys::KeyManager, repo::Auth, storage::SecureStorage};
 use zeroize::{Zeroize, Zeroizing};
+
+use mapache::repository::{keys::KeyManager, repo::Auth, storage::SecureStorage};
 
 #[test]
 fn test_zeroize_array() {

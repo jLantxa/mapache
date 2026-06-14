@@ -100,15 +100,6 @@ pub(crate) async fn restore_node_to_path(
                 // Return the buffer to the pool
                 restorer.return_buffer(buf);
             }
-            // Restore metadata after content is written
-            if !dry_run {
-                try_restore_node_metadata(
-                    &node.metadata,
-                    false,
-                    dst_path,
-                    progress_reporter.as_ref(),
-                );
-            }
         }
 
         NodeType::Directory => {

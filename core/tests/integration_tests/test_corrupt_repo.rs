@@ -4,16 +4,21 @@ mod tests {
     use std::fs;
 
     use anyhow::{Context, Result};
-    use mapache::repository::repo::{OBJECTS_DIR, SNAPSHOTS_DIR};
     use rand::RngExt;
 
-    use crate::integration_tests::{TestContext, set_write_permission};
+    use mapache::repository::repo::{OBJECTS_DIR, SNAPSHOTS_DIR};
+
+    use crate::{
+        integration_tests::{INTEGRATION_TEST_DATA, TestContext, set_write_permission},
+        synthetic::{Dataset, SyntheticData},
+    };
 
     #[tokio::test]
     async fn test_verify_missing_object() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         ctx.init_repo().await?;
 
@@ -68,8 +73,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_unreadable_snapshot() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         ctx.init_repo().await?;
 
@@ -116,8 +122,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_bit_flip_in_snapshot() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         ctx.init_repo().await?;
 
@@ -164,8 +171,9 @@ mod tests {
     #[tokio::test]
     async fn test_verify_corrupt_pack() -> Result<()> {
         let mut ctx = TestContext::new().await?;
-        ctx.setup_backup_data()?;
-        let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         ctx.init_repo().await?;
 

@@ -5,9 +5,13 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+
 use mapache::commands::{self, UseSnapshot, cmd_mount, cmd_snapshot};
 
-use crate::integration_tests::TestContext;
+use crate::{
+    integration_tests::{INTEGRATION_TEST_DATA, TestContext},
+    synthetic::{Dataset, SyntheticData},
+};
 
 struct MountThreadGuard {
     mountpoint: PathBuf,
@@ -95,8 +99,9 @@ async fn inner_test_mount(auto_mount: bool) -> Result<()> {
     use mapache::fs;
 
     let mut ctx = TestContext::new().await?;
-    ctx.setup_backup_data()?;
-    let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+    let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+    let synthetic = SyntheticData::new(dataset);
+    let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
     // Init repo
     ctx.init_repo().await?;
@@ -205,7 +210,7 @@ async fn inner_test_mount(auto_mount: bool) -> Result<()> {
         PathBuf::from("file.txt"),
     ];
 
-    verify_paths(&paths, backup_data_tmp_path, &snapshot_path).await
+    verify_paths(&paths, &backup_data_tmp_path, &snapshot_path).await
 }
 
 #[tokio::test]
@@ -215,8 +220,9 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
     use mapache::fs;
 
     let mut ctx = TestContext::new().await?;
-    ctx.setup_backup_data()?;
-    let backup_data_tmp_path = ctx.backup_data_path.as_ref().unwrap();
+    let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+    let synthetic = SyntheticData::new(dataset);
+    let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
     // Init repo
     ctx.init_repo().await?;
@@ -358,7 +364,9 @@ async fn test_mount_unmount() -> Result<()> {
     use mapache::fs;
 
     let mut ctx = TestContext::new().await?;
-    ctx.setup_backup_data()?;
+    let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+    let synthetic = SyntheticData::new(dataset);
+    ctx.setup_backup_data(&synthetic)?;
 
     // Init repo
     ctx.init_repo().await?;

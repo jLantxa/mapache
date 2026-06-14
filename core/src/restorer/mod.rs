@@ -19,6 +19,7 @@ use std::os::unix::io::AsRawFd;
 use std::{
     collections::{HashMap, VecDeque},
     fs::{self, File, OpenOptions},
+    io,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
@@ -202,11 +203,7 @@ impl FileHandleCache {
                 })?;
             }
 
-            let mut f = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)
+            let mut f = Self::open_file_for_restore(path, true)
                 .with_context(|| format!("Failed to create/truncate file: {}", path.display()))?;
 
             if plan.size > 0 {
@@ -226,9 +223,7 @@ impl FileHandleCache {
             initialized.store(true, std::sync::atomic::Ordering::Release);
             f
         } else {
-            OpenOptions::new()
-                .write(true)
-                .open(path)
+            Self::open_file_for_restore(path, false)
                 .with_context(|| format!("Failed to open file for writing: {}", path.display()))?
         };
 
@@ -237,6 +232,16 @@ impl FileHandleCache {
         self.handles
             .get(&file_idx)
             .ok_or_else(|| anyhow!("Failed to retrieve file handle after insertion"))
+    }
+
+    /// Open a file for restore.
+    fn open_file_for_restore(path: &Path, create: bool) -> io::Result<std::fs::File> {
+        let mut opts = OpenOptions::new();
+        opts.write(true);
+        if create {
+            opts.create(true).truncate(true);
+        }
+        opts.open(path)
     }
 }
 

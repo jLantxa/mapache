@@ -19,10 +19,11 @@ use crate::{
     fs::{self as repo_fs, node::Node, tree::SerializedNodeStream},
     mapache::{ID, defaults, hash},
     repository::index::MasterIndex,
+    restorer::{
+        BlobRestoreRequest, FileRestorePlan, RestorePlan, Restorer, Strategy, node_restorer,
+    },
     utils::{self, size},
 };
-
-use super::{BlobRestoreRequest, FileRestorePlan, RestorePlan, Restorer};
 
 impl Restorer {
     /// Builds a restoration plan by walking the snapshot tree and determining
@@ -242,7 +243,7 @@ impl Restorer {
                     } else if node.is_symlink() {
                         // Symlinks are restored immediately during planning.
                         if !self.opts.dry_run
-                            && let Err(e) = super::node_restorer::restore_node_to_path(
+                            && let Err(e) = node_restorer::restore_node_to_path(
                                 self,
                                 progress_reporter.clone(),
                                 &node,
@@ -343,9 +344,9 @@ impl Restorer {
         }
 
         match self.opts.strategy {
-            super::Strategy::Overwrite => Ok(true),
-            super::Strategy::Skip => Ok(false),
-            super::Strategy::Newer => {
+            Strategy::Overwrite => Ok(true),
+            Strategy::Skip => Ok(false),
+            Strategy::Newer => {
                 let local_metadata = fs::symlink_metadata(restore_path).with_context(|| {
                     format!(
                         "Failed to get metadata for local file {}",
@@ -375,7 +376,7 @@ impl Restorer {
 
                 Ok(true)
             }
-            super::Strategy::Fail => {
+            Strategy::Fail => {
                 if node.is_dir() {
                     return Ok(true);
                 }

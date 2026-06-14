@@ -251,6 +251,7 @@ Example configuration:
 repo = "s3://my-bucket/backups"
 no-cache = false
 ssh-privatekey = "~/.ssh/id_ed25519"
+ssh-known-hosts = "~/.ssh/known_hosts"
 auth-file = "~/.mapache-auth"
 pack-size = 16
 key-file = "~/.mapache-key"
@@ -348,7 +349,7 @@ on clean shutdown. If a process crashes, stale locks may remain. By default,
 
 ```bash
 mapache cache list
-mapache cache --delete <id-prefix>
+mapache cache --delete <PREFIX> [<PREFIX>...]
 mapache cache --clear
 ```
 
@@ -439,8 +440,9 @@ shared content across all of them.
 
 ### Exclusions
 
-Exclusions are path-based (file system paths, not glob patterns). They can be
-specified inline or in a file:
+Exclusions support glob patterns (`**`, `*`, `?`) as well as literal paths.
+Non-glob paths are normalized to absolute paths; glob patterns are kept as-is
+for matching. They can be specified inline or in a file:
 
 ```bash
 # Inline exclusions
@@ -720,6 +722,18 @@ Shows:
 
 `--full` parses every pack footer, giving physical blob statistics and
 dangling blob detection (expensive on large repositories).
+
+---
+
+### `dump` — Print File Contents
+
+```bash
+mapache dump SNAPSHOT_ID --path /path/to/file -r <URL>
+mapache dump latest --path /path/to/file -r <URL>
+```
+
+Prints the contents of a single file from a snapshot to stdout. The
+`SNAPSHOT_ID` argument accepts ID prefixes or `latest`.
 
 ---
 
@@ -1132,7 +1146,8 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `--no-cache` | Disable local caching |
 | `--no-lock` | Open repository without acquiring a lock (read-only; skips lock file creation) |
 | `--ssh-privatekey <PATH>` | SSH private key file (SFTP backend) |
-| `--auth-file <PATH>` | File containing `username:password` |
+| `--ssh-known-hosts <PATH>` | SSH known hosts file (SFTP backend) |
+| `--auth-file <PATH>` | File with username on the first line and password on the second line |
 | `--pack-size <MIB>` | Pack target size in MiB (1–4095, default: 16) |
 | `-k, --key-file <PATH>` | Path to an external key file |
 | `--quiet` | Suppress all logging output (verbosity = 0) |
@@ -1289,6 +1304,14 @@ Show differences between snapshots.
 mapache diff <SOURCE_ID> <TARGET_ID> -r <URL>
 ```
 
+### `mapache dump`
+Print the contents of a file from a snapshot to stdout.
+
+```
+mapache dump [SNAPSHOT] -r <URL>
+  --path <PATH>           Path to the file inside the snapshot (required)
+```
+
 ### `mapache stats`
 Show repository statistics.
 
@@ -1416,6 +1439,7 @@ Synchronize a repository to another backend.
 mapache sync --target <URL> -r <URL>
   --delete                Delete files in destination not in source
   --dst-ssh-privatekey <PATH>  SSH key for destination
+  --dst-ssh-known-hosts <PATH>  SSH known hosts file for destination
   --dry-run               Simulate without making changes
 ```
 
@@ -1432,7 +1456,7 @@ Manage local cache directories.
 
 ```
 mapache cache
-  --delete <ID,...>       Delete specific cache(s) by prefix
+  --delete <PREFIX>...    Delete cache folders by ID prefix (repeatable)
   --clear                 Delete all cache folders
 ```
 

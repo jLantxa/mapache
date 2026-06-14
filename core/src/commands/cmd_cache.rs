@@ -23,8 +23,8 @@ use crate::{
 #[derive(Args, Debug)]
 #[clap(about = "List and cleanup cache directories")]
 pub struct CmdArgs {
-    /// List of cache folders to delete, comma-separated
-    #[clap(long = "delete", num_args = 1.., require_equals = true, value_delimiter = ',')]
+    /// List of cache folder prefixes to delete
+    #[clap(long = "delete", num_args = 1..)]
     pub delete_ids: Option<Vec<String>>,
 
     /// Delete all cache folders

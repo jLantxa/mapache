@@ -14,8 +14,7 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::{
-    fs::tree::{NodeDiff, StreamNode, create_diff_stream},
-    mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
+    fs::tree::{NodeDiff, create_diff_stream},
     repository::{
         repo::Repository,
         snapshot::{DiffCounts, SnapshotEntry, SnapshotEntryList},
@@ -28,10 +27,17 @@ use crate::{
     utils,
 };
 
+enum ChangedKind {
+    Content,
+    Metadata,
+    Type,
+}
+
 struct DiffEntry {
     path: PathBuf,
     depth: usize,
     diff: NodeDiff,
+    changed_kind: Option<ChangedKind>,
     is_dir: bool,
     has_changes: bool,
     expanded: bool,
@@ -111,8 +117,7 @@ impl DiffScreen {
         let mut diff_stream = create_diff_stream(repo.clone(), src_snap.tree, tgt_snap.tree)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create diff stream: {}", e))?;
-        let mut raw_entries: Vec<(PathBuf, Option<StreamNode>, Option<StreamNode>, NodeDiff)> =
-            Vec::new();
+        let mut entries: Vec<DiffEntry> = Vec::new();
         let mut counts = DiffCounts::default();
 
         while let Some(res) = diff_stream.next().await {
@@ -125,8 +130,32 @@ impl DiffScreen {
                         .or(target_node.as_ref())
                         .map(|sn| sn.node.is_dir())
                         .unwrap_or(false);
+                    let changed_kind = if diff_type == NodeDiff::Changed {
+                        match (source_node.as_ref(), target_node.as_ref()) {
+                            (Some(s), Some(t)) => {
+                                if s.node.node_type != t.node.node_type {
+                                    Some(ChangedKind::Type)
+                                } else if s.node.blobs != t.node.blobs {
+                                    Some(ChangedKind::Content)
+                                } else {
+                                    Some(ChangedKind::Metadata)
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                     counts.increment(is_dir, &diff_type);
-                    raw_entries.push((path, source_node, target_node, diff_type));
+                    entries.push(DiffEntry {
+                        path,
+                        depth: 0,
+                        diff: diff_type,
+                        changed_kind,
+                        is_dir,
+                        has_changes: diff_type != NodeDiff::Unchanged,
+                        expanded: false,
+                    });
                 }
                 Err(e) => {
                     tracing::warn!("Diff stream error: {}", e);
@@ -134,31 +163,15 @@ impl DiffScreen {
             }
         }
 
-        let depth_base = raw_entries
+        let depth_base = entries
             .iter()
-            .map(|(p, _, _, _)| p.components().count())
+            .map(|e| e.path.components().count())
             .min()
             .unwrap_or(0);
 
-        let mut entries: Vec<DiffEntry> = raw_entries
-            .into_iter()
-            .map(|(path, src_node, tgt_node, diff)| {
-                let depth = path.components().count().saturating_sub(depth_base);
-                let is_dir = src_node
-                    .as_ref()
-                    .or(tgt_node.as_ref())
-                    .map(|sn| sn.node.is_dir())
-                    .unwrap_or(false);
-                DiffEntry {
-                    path,
-                    depth,
-                    diff,
-                    is_dir,
-                    has_changes: diff != NodeDiff::Unchanged,
-                    expanded: false,
-                }
-            })
-            .collect();
+        for entry in &mut entries {
+            entry.depth = entry.path.components().count().saturating_sub(depth_base);
+        }
 
         Self::compute_has_changes(&mut entries);
         Self::expand_changed_dirs(&mut entries);
@@ -187,6 +200,50 @@ impl DiffScreen {
         for entry in entries.iter_mut() {
             if entry.is_dir && entry.has_changes {
                 entry.expanded = true;
+            }
+        }
+    }
+
+    fn expand_filter_dirs(&mut self) {
+        let filter_text = self
+            .filter
+            .as_ref()
+            .map(|f| f.text())
+            .or(self.filter_query.as_deref())
+            .unwrap_or("");
+        if filter_text.is_empty() {
+            return;
+        }
+        let q = filter_text.to_lowercase();
+
+        let mut show_entry = vec![false; self.entries.len()];
+        for (i, entry) in self.entries.iter().enumerate() {
+            if (self.show_all || entry.has_changes)
+                && entry.path.to_string_lossy().to_lowercase().contains(&q)
+            {
+                show_entry[i] = true;
+            }
+        }
+        for i in (0..self.entries.len()).rev() {
+            if show_entry[i] {
+                let depth = self.entries[i].depth;
+                for j in (0..i).rev() {
+                    if self.entries[j].depth < depth {
+                        show_entry[j] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for i in 0..self.entries.len() {
+            if self.entries[i].is_dir && !self.entries[i].expanded {
+                let depth = self.entries[i].depth;
+                let has_match = (i + 1..self.entries.len())
+                    .take_while(|&j| self.entries[j].depth > depth)
+                    .any(|j| show_entry[j]);
+                if has_match {
+                    self.entries[i].expanded = true;
+                }
             }
         }
     }
@@ -225,18 +282,6 @@ impl DiffScreen {
                             show_entry[j] = true;
                             break;
                         }
-                    }
-                }
-            }
-
-            for i in 0..self.entries.len() {
-                if self.entries[i].is_dir && !self.entries[i].expanded {
-                    let depth = self.entries[i].depth;
-                    let has_match = (i + 1..self.entries.len())
-                        .take_while(|&j| self.entries[j].depth > depth)
-                        .any(|j| show_entry[j]);
-                    if has_match {
-                        self.entries[i].expanded = true;
                     }
                 }
             }
@@ -360,6 +405,8 @@ impl DiffScreen {
         let tgt = self.target();
 
         let lw = 4;
+        let src_size = utils::format_size_binary(src.snapshot.size(), 3);
+        let tgt_size = utils::format_size_binary(tgt.snapshot.size(), 3);
         let lines = vec![
             Line::from(vec![
                 Span::styled(format!("{:lw$}", "From", lw = lw), theme::THEME.menu_key),
@@ -375,6 +422,8 @@ impl DiffScreen {
                     utils::pretty_print_timestamp(&src.snapshot.timestamp, None),
                     theme::THEME.snap_date,
                 ),
+                Span::raw("  "),
+                Span::styled(src_size, theme::THEME.file_size),
             ]),
             Line::from(vec![
                 Span::styled(format!("{:lw$}", "To", lw = lw), theme::THEME.menu_key),
@@ -390,6 +439,8 @@ impl DiffScreen {
                     utils::pretty_print_timestamp(&tgt.snapshot.timestamp, None),
                     theme::THEME.snap_date,
                 ),
+                Span::raw("  "),
+                Span::styled(tgt_size, theme::THEME.file_size),
             ]),
         ];
 
@@ -494,7 +545,15 @@ impl DiffScreen {
                 let (diff_sym, diff_style) = match entry.diff {
                     NodeDiff::New => ("+", theme::THEME.success),
                     NodeDiff::Deleted => ("-", theme::THEME.error),
-                    NodeDiff::Changed => ("~", theme::THEME.warning),
+                    NodeDiff::Changed => match entry.changed_kind {
+                        Some(ChangedKind::Type | ChangedKind::Metadata) => (
+                            "~",
+                            Style::default()
+                                .fg(theme::THEME.peach)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        _ => ("~", theme::THEME.warning),
+                    },
                     NodeDiff::Unchanged => (" ", Style::default().fg(theme::THEME.subtext_dim)),
                 };
 
@@ -506,7 +565,12 @@ impl DiffScreen {
                     match entry.diff {
                         NodeDiff::New => Style::default().fg(theme::THEME.green),
                         NodeDiff::Deleted => Style::default().fg(theme::THEME.red),
-                        NodeDiff::Changed => Style::default().fg(theme::THEME.yellow),
+                        NodeDiff::Changed => match entry.changed_kind {
+                            Some(ChangedKind::Type | ChangedKind::Metadata) => {
+                                Style::default().fg(theme::THEME.peach)
+                            }
+                            _ => Style::default().fg(theme::THEME.yellow),
+                        },
                         NodeDiff::Unchanged => Style::default().fg(theme::THEME.subtext_dim),
                     }
                 };
@@ -590,14 +654,6 @@ impl DiffScreen {
         frame.render_widget(Paragraph::new(hints), area);
     }
 
-    fn current_range(&self) -> String {
-        format!(
-            "{} \u{2192} {}",
-            self.source().id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
-            self.target().id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
-        )
-    }
-
     fn handle_filter_key(&mut self, key: KeyCode) {
         let Some(input) = &mut self.filter else {
             return;
@@ -612,9 +668,11 @@ impl DiffScreen {
             TextInputAction::Confirm => {
                 self.filter_query = Some(input.text().to_string());
                 self.filter = None;
+                self.expand_filter_dirs();
                 self.build_visible();
             }
             TextInputAction::Edited => {
+                self.expand_filter_dirs();
                 self.build_visible();
             }
             TextInputAction::None => {}
@@ -689,12 +747,8 @@ impl Screen for DiffScreen {
         self.last_height = chunks[3].height.saturating_sub(2) as usize;
 
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" Diff ", theme::THEME.menu_key),
-                Span::styled(" ", Style::default().fg(theme::THEME.subtext)),
-                Span::styled(self.current_range(), theme::THEME.snap_date),
-            ]))
-            .style(Style::new().bg(theme::THEME.surface)),
+            Paragraph::new(Line::from(Span::styled("Diff", theme::THEME.menu_key)))
+                .style(Style::new().bg(theme::THEME.surface)),
             chunks[0],
         );
 

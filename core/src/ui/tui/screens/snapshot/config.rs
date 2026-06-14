@@ -4,7 +4,7 @@ use crossterm::event::KeyCode;
 use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 
 use crate::{
-    commands::cmd_snapshot::SnapshotRunOptions,
+    commands::{self, cmd_snapshot::SnapshotRunOptions},
     mapache::defaults::{DEFAULT_SNAPSHOT_PACKERS, DEFAULT_SNAPSHOT_READERS},
     ui::tui::{
         theme,
@@ -17,7 +17,7 @@ pub struct SnapshotForm {
 }
 
 impl SnapshotForm {
-    pub fn new(config_defaults: Option<&crate::commands::cmd_snapshot::CmdArgs>) -> Self {
+    pub fn new(config_defaults: Option<&commands::cmd_snapshot::CmdArgs>) -> Self {
         let fields = vec![
             FormField {
                 label: "Paths:".to_string(),

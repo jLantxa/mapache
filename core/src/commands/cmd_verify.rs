@@ -16,12 +16,14 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
+    commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     fs::tree::SerializedNodeStream,
     mapache::{ID, defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts},
     repository::{
+        lock::LockHandle,
         repo::Repository,
         snapshot::SnapshotStream,
+        storage::SecureStorage,
         verify::{verify_pack, verify_snapshot_refs},
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target},
@@ -107,7 +109,7 @@ impl VerifyStats {
 
 struct VerifyCtx<'a> {
     repo: Arc<Repository>,
-    secure_storage: Arc<crate::repository::storage::SecureStorage>,
+    secure_storage: Arc<SecureStorage>,
     stats: &'a VerifyStats,
     corrupt_blobs: &'a Arc<parking_lot::Mutex<IdSet<ID>>>,
     cleanup_handler: &'a CleanupHandler,
@@ -164,7 +166,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await
     .map_err(|e| {
-        if e.is::<crate::commands::error::MapacheError>() {
+        if e.is::<commands::error::MapacheError>() {
             e
         } else {
             fail(
@@ -177,8 +179,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
 pub async fn run_with_repo(
     repo: Arc<Repository>,
-    secure_storage: Arc<crate::repository::storage::SecureStorage>,
-    lock_handle: crate::repository::lock::LockHandle,
+    secure_storage: Arc<SecureStorage>,
+    lock_handle: LockHandle,
     args: &CmdArgs,
     json_out: bool,
 ) -> Result<()> {

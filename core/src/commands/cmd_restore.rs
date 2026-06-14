@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        self, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
         find_use_snapshot, with_repository_lock,
     },
     fs::{
@@ -20,7 +20,7 @@ use crate::{
     },
     log, log_always,
     mapache::defaults::SHORT_SNAPSHOT_ID_LEN,
-    repository::{repo::Repository, snapshot::SnapshotPair},
+    repository::{lock::LockHandle, repo::Repository, snapshot::SnapshotPair},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
         self, RestoreProgressReporter,
@@ -274,7 +274,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await
     .map_err(|e| {
-        if e.is::<crate::commands::error::MapacheError>() {
+        if e.is::<commands::error::MapacheError>() {
             e
         } else {
             fail(
@@ -287,7 +287,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
 pub async fn run_with_repo(
     repo: Arc<Repository>,
-    lock_handle: crate::repository::lock::LockHandle,
+    lock_handle: LockHandle,
     args: &CmdArgs,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
     pair: SnapshotPair,

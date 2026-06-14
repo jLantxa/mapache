@@ -19,7 +19,7 @@ use crate::{
         },
     },
     mapache::{
-        self, ContentIdType, ID,
+        self, ContentIdType, ID, config,
         defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
@@ -134,39 +134,53 @@ impl Merge for CmdArgs {
         if !other.paths.is_empty() {
             self.paths = other.paths;
         }
+
         if other.as_root.is_some() {
             self.as_root = other.as_root;
         }
-        crate::mapache::config::merge_option_vec(&mut self.exclude, other.exclude);
+
+        config::merge_option_vec(&mut self.exclude, other.exclude);
+
         if other.exclude_file.is_some() {
             self.exclude_file = other.exclude_file;
         }
+
         if other.tags_str.is_some() {
             self.tags_str = other.tags_str;
         }
+
         if other.description.is_some() {
             self.description = other.description;
         }
+
         // skip: no_parent
+
         if other.no_scan.is_some() {
             self.no_scan = other.no_scan;
         }
+
         if other.skip_if_unchanged.is_some() {
             self.skip_if_unchanged = other.skip_if_unchanged;
         }
+
         if other.parent.is_some() {
             self.parent = other.parent;
         }
+
         if other.num_readers.is_some() {
             self.num_readers = other.num_readers;
         }
+
         if other.num_packers.is_some() {
             self.num_packers = other.num_packers;
         }
+
         // skip: dry_run
+
         if other.with_atime.is_some() {
             self.with_atime = other.with_atime;
         }
+
         // skip: stdin
     }
 }

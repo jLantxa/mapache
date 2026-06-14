@@ -5,7 +5,7 @@ use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, with_repository_lock},
+    commands::{self, GlobalArgs, with_repository_lock},
     ui::tui,
 };
 
@@ -16,8 +16,8 @@ pub struct CmdArgs;
 pub async fn run(
     global_args: &GlobalArgs,
     _args: &CmdArgs,
-    snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,
-    forget_config: Option<crate::commands::cmd_forget::CmdArgs>,
+    snapshot_config: Option<commands::cmd_snapshot::CmdArgs>,
+    forget_config: Option<commands::cmd_forget::CmdArgs>,
 ) -> Result<()> {
     let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
     let repo_path = global_args.repo.clone();

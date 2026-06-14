@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
+    commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     mapache::defaults::DEFAULT_GC_TOLERANCE,
     repository::{gc, lock::LockHandle, repo::Repository},
     ui::{self, GcProgressReporter, cli::color::Colorize},
@@ -71,7 +71,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await
     .map_err(|e| {
-        if e.is::<crate::commands::error::MapacheError>() {
+        if e.is::<commands::error::MapacheError>() {
             e
         } else {
             fail(

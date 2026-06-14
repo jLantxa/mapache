@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 
+use crate::{commands, fs};
+
 /// Deserializes an optional list of strings, expanding `~` in each entry.
 pub(crate) fn deserialize_config_string_vec_opt<'de, D>(
     deserializer: D,
@@ -84,7 +86,8 @@ pub(crate) fn config_path(s: &str) -> Result<PathBuf> {
     } else {
         PathBuf::from(s)
     };
-    crate::fs::get_absolute_normalized_path(&path)
+
+    fs::get_absolute_normalized_path(&path)
 }
 
 /// Runtime-configurable defaults (the `[runtime]` section in the TOML config).
@@ -117,11 +120,11 @@ pub struct RuntimeConfig {
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct MapacheConfig {
-    pub global: Option<crate::commands::CliGlobalArgs>,
+    pub global: Option<commands::CliGlobalArgs>,
     pub runtime: Option<RuntimeConfig>,
-    pub snapshot: Option<crate::commands::cmd_snapshot::CmdArgs>,
-    pub restore: Option<crate::commands::cmd_restore::CmdArgs>,
-    pub forget: Option<crate::commands::cmd_forget::CmdArgs>,
+    pub snapshot: Option<commands::cmd_snapshot::CmdArgs>,
+    pub restore: Option<commands::cmd_restore::CmdArgs>,
+    pub forget: Option<commands::cmd_forget::CmdArgs>,
 }
 
 pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {

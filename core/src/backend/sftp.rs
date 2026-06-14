@@ -26,13 +26,13 @@ use zeroize::Zeroizing;
 
 use crate::{
     backend::{
-        BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents,
+        BackendNode, BackendOptions, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents,
         limiter::{RateLimiter, ThrottledReader, ThrottledWriter},
         retry, set_readonly_mode,
     },
     repository::repo::REPO_TMP_EXTENSION,
     ui::{self, cli::color::Colorize},
-    utils::size,
+    utils::{self, size},
 };
 
 /// Maximum number of concurrent SFTP connections to maintain.
@@ -134,7 +134,7 @@ impl client::Handler for MapacheSftpHandler {
                 let key_type = parts[1];
                 let key_base64 = parts[2];
 
-                if let Ok(key_bytes) = crate::utils::base64::decode(key_base64)
+                if let Ok(key_bytes) = utils::base64::decode(key_base64)
                     && server_public_key.algorithm().as_str() == key_type
                     && server_public_key.to_bytes().as_deref() == Ok(&key_bytes[..])
                 {
@@ -150,14 +150,13 @@ impl client::Handler for MapacheSftpHandler {
                  The host key fingerprint received was {}.\n\
                  Please verify the server's key or update your known_hosts file at {:?}.",
                 self.host,
-                crate::utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default()),
+                utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default()),
                 known_hosts_path
             );
         }
 
         // Host not found in known_hosts. Prompt the user.
-        let fingerprint =
-            crate::utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default());
+        let fingerprint = utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default());
         ui::cli::log!(
             "The authenticity of host '{}' can't be established.",
             host_port.cyan()
@@ -191,9 +190,8 @@ impl client::Handler for MapacheSftpHandler {
                 .open(&known_hosts_path)?;
 
             use std::io::Write;
-            let key_base64 = crate::utils::base64::encode(
-                &server_public_key.to_bytes().map_err(|e| anyhow!(e))?,
-            );
+            let key_base64 =
+                utils::base64::encode(&server_public_key.to_bytes().map_err(|e| anyhow!(e))?);
             writeln!(
                 file,
                 "{} {} {}",
@@ -430,7 +428,7 @@ impl SftpBackend {
         host: String,
         port: u16,
         auth_method: AuthMethod,
-        opts: &crate::backend::BackendOptions,
+        opts: &BackendOptions,
     ) -> Result<Self> {
         let manager = Arc::new(
             SftpConnectionManager::new(
@@ -827,8 +825,9 @@ impl StorageBackend for SftpBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::backend::BackendUrl;
+
+    use super::*;
 
     #[test]
     fn test_sftp_backend_url() -> Result<()> {

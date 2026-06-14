@@ -3,8 +3,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::repository::lock::LockHandle;
 use anyhow::Result;
+
+use crate::repository::lock::LockHandle;
 
 pub struct CleanupHandler {
     pub interrupted: Arc<AtomicBool>,

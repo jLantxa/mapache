@@ -17,7 +17,8 @@ use crate::{
         global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
     },
     repository::{
-        lock::LockHandle,
+        keys::KeyManagerError,
+        lock::{Lock, LockHandle},
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
         storage::SecureStorage,
@@ -707,7 +708,7 @@ pub async fn open_repository(
             Err(e) => {
                 let is_retryable = e
                     .chain()
-                    .find_map(|err| err.downcast_ref::<crate::repository::keys::KeyManagerError>())
+                    .find_map(|err| err.downcast_ref::<KeyManagerError>())
                     .map(|key_err| !key_err.is_fatal())
                     .unwrap_or(false);
 
@@ -748,9 +749,7 @@ where
         let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
         let lock = LockHandle::new(
             repo.clone(),
-            Arc::new(parking_lot::Mutex::new(crate::repository::lock::Lock::new(
-                false,
-            ))),
+            Arc::new(parking_lot::Mutex::new(Lock::new(false))),
             true,
         );
         (repo, storage, lock)
@@ -789,9 +788,7 @@ pub async fn open_repository_with_lock(
         let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
         let lock = LockHandle::new(
             repo.clone(),
-            Arc::new(parking_lot::Mutex::new(crate::repository::lock::Lock::new(
-                false,
-            ))),
+            Arc::new(parking_lot::Mutex::new(Lock::new(false))),
             true,
         );
         return Ok((repo, storage, lock));
@@ -833,14 +830,14 @@ pub async fn open_repository_with_lock(
             Err(e) => {
                 let is_retryable = e
                     .chain()
-                    .find_map(|err| err.downcast_ref::<crate::repository::keys::KeyManagerError>())
+                    .find_map(|err| err.downcast_ref::<KeyManagerError>())
                     .map(|key_err| !key_err.is_fatal())
                     .unwrap_or(false);
 
                 if is_retryable {
                     password_try_count += 1;
                     if password_try_count < MAX_PASSWORD_RETRIES {
-                        crate::log!("Incorrect username or password. Try again.");
+                        ui::cli::log!("Incorrect username or password. Try again.");
                         continue;
                     }
                 }

@@ -7,8 +7,8 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail, find_use_snapshot,
-        with_repository_lock,
+        self, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        find_use_snapshot, with_repository_lock,
     },
     fs::{
         node::{Metadata, Node, NodeType, node_to_string},
@@ -133,7 +133,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await
     .map_err(|e| {
-        if e.is::<crate::commands::error::MapacheError>() {
+        if e.is::<commands::error::MapacheError>() {
             e
         } else {
             fail(

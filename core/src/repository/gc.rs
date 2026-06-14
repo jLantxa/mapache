@@ -11,6 +11,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 
 use crate::{
     backend::WriteContents,
+    fs::tree::Tree,
     mapache::{
         self, ContentIdType, ID, SaveID,
         defaults::{self},
@@ -563,9 +564,7 @@ async fn get_referenced_blobs_and_packs(
 
                             let repo = repo.clone();
                             async move {
-                                let tree =
-                                    crate::fs::tree::Tree::load_from_repo(repo.as_ref(), &tree_id)
-                                        .await?;
+                                let tree = Tree::load_from_repo(repo.as_ref(), &tree_id).await?;
                                 Ok::<_, anyhow::Error>(Some(tree))
                             }
                             .right_future()

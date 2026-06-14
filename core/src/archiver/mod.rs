@@ -613,8 +613,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        backend::mock::{BackendOp, MockBackend, MockEffect},
-        mapache::defaults::TEST_REPO_CONFIG,
+        backend::{
+            StorageHint,
+            mock::{BackendOp, MockBackend, MockEffect},
+        },
+        mapache::{ContentIdType, ID, defaults::TEST_REPO_CONFIG},
         repository::repo::Auth,
         ui::noop::NoopSnapshotReporter,
     };
@@ -665,9 +668,9 @@ mod tests {
         repo.save_file(
             &mapache::SaveID::CalculateID,
             serde_json::to_string(&new_snapshot)?.as_bytes(),
-            crate::backend::StorageHint {
+            StorageHint {
                 is_metadata: true,
-                file_type: crate::mapache::ContentIdType::Snapshot,
+                file_type: ContentIdType::Snapshot,
             },
             None,
         )
@@ -937,11 +940,7 @@ mod tests {
         // --- Assertions ---
         let snapshot = snapshot_result.expect("snapshot should succeed");
         assert_eq!(snapshot.root, PathBuf::from("/"));
-        assert_ne!(
-            snapshot.tree,
-            crate::mapache::ID::default(),
-            "tree ID should not be nil"
-        );
+        assert_ne!(snapshot.tree, ID::default(), "tree ID should not be nil");
 
         // Cleanup
         repo.flush_and_finalize_pack_saver().await.unwrap();

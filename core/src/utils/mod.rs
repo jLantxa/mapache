@@ -13,6 +13,7 @@ use chrono::{DateTime, Duration, Local};
 use zeroize::Zeroizing;
 
 use crate::{
+    fs,
     mapache::vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     repository::repo::Auth,
 };
@@ -463,8 +464,8 @@ pub(crate) fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
     }
 
     let joined = base.join(relative);
-    let normalized = crate::fs::get_absolute_normalized_path(&joined)?;
-    let normalized_base = crate::fs::get_absolute_normalized_path(base)?;
+    let normalized = fs::get_absolute_normalized_path(&joined)?;
+    let normalized_base = fs::get_absolute_normalized_path(base)?;
 
     if !normalized.starts_with(&normalized_base) {
         bail!(

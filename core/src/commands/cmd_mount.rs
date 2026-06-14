@@ -4,10 +4,11 @@ use anyhow::{Context, Result};
 use clap::Args;
 
 pub use crate::fuse::fs::MapacheFS;
+
 use crate::{
     backend::new_backend_with_prompt,
     bundle::reader::BundleReader,
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
+    commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     fs,
     fuse::fs::MountOptions,
     mapache::{defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB, traits::BlobLoader},
@@ -153,7 +154,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     )
     .await
     .map_err(|e| {
-        if e.is::<crate::commands::error::MapacheError>() {
+        if e.is::<commands::error::MapacheError>() {
             e
         } else {
             fail(
@@ -173,7 +174,7 @@ async fn mount_bundle(
     tracing::info!(target: "mount", "Mounting bundle at {:?}", mountpoint);
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => crate::ui::cli::request_password("Enter bundle password")?,
+        None => ui::cli::request_password("Enter bundle password")?,
     };
 
     let reader = BundleReader::open(&global_args.repo, &password).map_err(|e| {

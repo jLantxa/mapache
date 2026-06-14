@@ -13,7 +13,7 @@ use ratatui::Frame;
 use tokio::sync::mpsc;
 
 use crate::{
-    commands::cmd_snapshot,
+    commands::{self, cmd_snapshot},
     repository::{lock::LockHandle, repo::Repository},
     ui::tui::{
         app::{Screen, Transition},
@@ -50,7 +50,7 @@ impl SnapshotCreateScreen {
     pub fn new(
         repo: Arc<Repository>,
         lock_handle: LockHandle,
-        config_defaults: Option<crate::commands::cmd_snapshot::CmdArgs>,
+        config_defaults: Option<commands::cmd_snapshot::CmdArgs>,
     ) -> Self {
         Self {
             repo,

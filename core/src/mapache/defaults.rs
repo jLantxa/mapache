@@ -2,7 +2,7 @@ use std::{sync::OnceLock, time::Duration};
 
 use chunker::Normalization;
 
-use crate::{commands::Compression, repository::repo::RepoConfig, utils::size};
+use crate::{commands::Compression, mapache::config, repository::repo::RepoConfig, utils::size};
 
 pub(crate) const APP_NAME: &str = "mapache";
 
@@ -135,7 +135,7 @@ pub struct RuntimeDefaults {
 }
 
 impl RuntimeDefaults {
-    pub fn new(config: Option<&crate::mapache::config::RuntimeConfig>) -> Self {
+    pub fn new(config: Option<&config::RuntimeConfig>) -> Self {
         let c = config;
         Self {
             restore_blob_concurrency: c
@@ -191,7 +191,7 @@ impl RuntimeDefaults {
 static RUNTIME_DEFAULTS: OnceLock<RuntimeDefaults> = OnceLock::new();
 
 /// Initialize the runtime defaults. Must be called once before any use.
-pub fn init_runtime_defaults(config: Option<&crate::mapache::config::RuntimeConfig>) {
+pub fn init_runtime_defaults(config: Option<&config::RuntimeConfig>) {
     let _ = RUNTIME_DEFAULTS.set(RuntimeDefaults::new(config));
 }
 

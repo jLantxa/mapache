@@ -7,9 +7,13 @@ use tokio::sync::mpsc;
 
 use crate::{
     backend::{Handle, StorageBackend},
+    fs::tree::Tree,
     mapache::{self, ContentIdType, ID},
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
-    utils::{collections::IdSet, size},
+    utils::{
+        collections::{IdSet, ShardedIdSet},
+        size,
+    },
 };
 
 pub struct PackStats {
@@ -324,7 +328,7 @@ pub async fn verify_snapshot_refs(
     repo: Arc<Repository>,
     snapshot_id: &ID,
     existing_packs: &IdSet<ID>,
-    verified_trees: Arc<crate::utils::collections::ShardedIdSet>,
+    verified_trees: Arc<ShardedIdSet>,
 ) -> Result<usize> {
     tracing::info!(target: "verify", "Verifying references for snapshot {}", snapshot_id.to_short_hex(8));
     let snapshot = repo.load_snapshot(snapshot_id, None).await?;
@@ -344,7 +348,7 @@ pub async fn verify_snapshot_refs(
             continue;
         }
 
-        let tree = crate::fs::tree::Tree::load_from_repo(repo.as_ref(), &current_tree_id).await?;
+        let tree = Tree::load_from_repo(repo.as_ref(), &current_tree_id).await?;
         for node in tree.nodes {
             let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
 

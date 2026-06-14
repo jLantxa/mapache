@@ -149,7 +149,6 @@ impl Stream for KeyFileStream {
     type Item = Result<(ID, KeyFile)>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Start a new future if none is currently active
         if self.loading_future.is_none()
             && let Some(path) = self.entries.pop()
         {
@@ -174,13 +173,11 @@ impl Stream for KeyFileStream {
             }));
         }
 
-        // Poll the existing future
         if let Some(mut fut) = self.loading_future.take() {
             match fut.as_mut().poll(cx) {
                 Poll::Ready(Ok(res)) => Poll::Ready(Some(Ok(res))),
                 Poll::Ready(Err(e)) => {
-                    // Log error for parse failures like the original, but allow stream to continue
-                    if e.to_string().contains("serde_json") {
+                    if e.downcast_ref::<serde_json::Error>().is_some() {
                         ui::cli::warning!("Failed to parse keyfile: {}", e);
                         self.loading_future = None;
                         return self.poll_next(cx);

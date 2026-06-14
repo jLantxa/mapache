@@ -238,7 +238,7 @@ impl Repository {
         // Create new key
         tracing::info!(target: "repo", "Generating master key and keyfile");
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(auth, &master_key.clone())
+        let keyfile = KeyManager::generate_key_file(auth, &master_key)
             .inspect_err(|e| tracing::error!(target: "repo", "Key generation failed: {e}"))
             .context("Could not generate key")?;
         tracing::info!(

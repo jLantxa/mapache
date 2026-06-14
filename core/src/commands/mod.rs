@@ -546,12 +546,9 @@ pub async fn parse_and_run() -> i32 {
     }
 
     let (global_result, command_result) = match args.command {
-        Command::Bundle(cmd) => (Ok(GlobalArgs::default_for_bundle()), Command::Bundle(cmd)),
-        Command::Cache(cmd) => (Ok(GlobalArgs::default_for_cache()), Command::Cache(cmd)),
-        Command::Completion(cmd) => (
-            Ok(GlobalArgs::default_for_completion()),
-            Command::Completion(cmd),
-        ),
+        Command::Bundle(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Bundle(cmd)),
+        Command::Cache(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Cache(cmd)),
+        Command::Completion(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Completion(cmd)),
         Command::Forget(cmd) => with_global_and_config!(cmd, Forget, config.forget),
         Command::Restore(cmd) => with_global_and_config!(cmd, Restore, config.restore),
         Command::Snapshot(cmd) => with_global_and_config!(cmd, Snapshot, config.snapshot),
@@ -661,47 +658,7 @@ pub async fn parse_and_run() -> i32 {
 }
 
 impl GlobalArgs {
-    fn default_for_bundle() -> Self {
-        Self {
-            repo: String::new(),
-            no_cache: false,
-            ssh_privatekey: None,
-            ssh_known_hosts: None,
-            auth_file: None,
-            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
-            key: None,
-            quiet: false,
-            json: false,
-            verbosity: None,
-            compression_level: DEFAULT_COMPRESSION,
-            retry_lock_duration: None,
-            limit_upload: None,
-            limit_download: None,
-            no_lock: false,
-        }
-    }
-
-    fn default_for_cache() -> Self {
-        Self {
-            repo: String::new(),
-            no_cache: false,
-            ssh_privatekey: None,
-            ssh_known_hosts: None,
-            auth_file: None,
-            pack_size_mib: DEFAULT_PACK_SIZE_MIB,
-            key: None,
-            quiet: false,
-            json: false,
-            verbosity: None,
-            compression_level: DEFAULT_COMPRESSION,
-            retry_lock_duration: None,
-            limit_upload: None,
-            limit_download: None,
-            no_lock: false,
-        }
-    }
-
-    fn default_for_completion() -> Self {
+    fn default_no_repo() -> Self {
         Self {
             repo: String::new(),
             no_cache: false,

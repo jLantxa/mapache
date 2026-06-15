@@ -78,7 +78,7 @@ validation before relying on it for primary backups.
 
 This is a non-exhaustive set of benchmarks run on my development hardware. They
 serve as a baseline for comparing performance between versions, using restic
-v0.18.1 as a base.
+v0.19.0 as a base.
 
 **Test environment:** Fedora 44, AMD Ryzen 9 3900X (24 threads), SanDisk Extreme
 PRO NVMe.

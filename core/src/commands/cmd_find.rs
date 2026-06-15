@@ -77,7 +77,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     FindError::FindFailed,
                 )
             })?;
-            cleanup_handler.add_lock(lock_handle.clone());
+            cleanup_handler.add_lock(lock_handle);
 
             repo.reload_master_index().await.map_err(|e| {
                 fail(

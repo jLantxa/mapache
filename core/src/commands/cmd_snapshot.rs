@@ -390,7 +390,7 @@ pub enum SnapshotOutcome {
 
 pub async fn run_with_repo(
     repo: Arc<Repository>,
-    lock_handle: LockHandle,
+    lock_handle: Option<LockHandle>,
     options: SnapshotRunOptions,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     parent_snapshot_pair: Option<SnapshotPair>,
@@ -510,7 +510,7 @@ pub async fn run_with_repo(
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         reporter_clone.finalize();
     })?;
-    cleanup_handler.add_lock(lock_handle.clone());
+    cleanup_handler.add_lock(lock_handle);
 
     repo.init_pack_saver(num_packers).map_err(|e| {
         fail(

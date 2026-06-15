@@ -55,7 +55,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.no_lock,
         |repo, _secure_storage, lock_handle| async move {
             let cleanup_handler = CleanupHandler::new()?;
-            cleanup_handler.add_lock(lock_handle.clone());
+            cleanup_handler.add_lock(lock_handle);
 
             let show_active = args.all || !args.dropped;
             let show_dropped = args.all || args.dropped;

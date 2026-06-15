@@ -42,7 +42,7 @@ fn create_native_symlink(
         } else {
             std::os::windows::fs::symlink_file(target, link)
         };
-        return match result {
+        match result {
             Ok(()) => Ok(true),
             Err(e) if e.raw_os_error() == Some(1314) => {
                 if unsupported_flag.replace(false) {
@@ -56,7 +56,7 @@ fn create_native_symlink(
                 Ok(false)
             }
             Err(e) => Err(e.into()),
-        };
+        }
     }
 
     #[cfg(not(any(unix, windows)))]

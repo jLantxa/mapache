@@ -34,7 +34,7 @@ pub struct App {
 impl App {
     pub fn new(
         repo: Arc<Repository>,
-        lock_handle: LockHandle,
+        lock_handle: Option<LockHandle>,
         repo_path: String,
         snapshot_config: Option<SnapshotCmdArgs>,
         forget_config: Option<ForgetCmdArgs>,

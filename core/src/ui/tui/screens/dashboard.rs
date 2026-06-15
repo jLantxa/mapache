@@ -53,11 +53,11 @@ struct DashboardStats {
 
 pub struct DashboardScreen {
     repo: Arc<Repository>,
-    lock_handle: LockHandle,
-    repo_path: String,
-    repo_id: String,
-    snapshot_config: Option<SnapshotCmdArgs>,
-    forget_config: Option<ForgetCmdArgs>,
+        lock_handle: Option<LockHandle>,
+        repo_path: String,
+        repo_id: String,
+        snapshot_config: Option<SnapshotCmdArgs>,
+        forget_config: Option<ForgetCmdArgs>,
     snapshots: Arc<SnapshotEntryList>,
     filtered_indices: Vec<usize>,
     search_cache: Vec<String>,
@@ -72,7 +72,7 @@ pub struct DashboardScreen {
 impl DashboardScreen {
     pub fn new(
         repo: Arc<Repository>,
-        lock_handle: LockHandle,
+    lock_handle: Option<LockHandle>,
         repo_path: String,
         repo_id: String,
         snapshot_config: Option<SnapshotCmdArgs>,

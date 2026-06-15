@@ -18,7 +18,7 @@ use crate::{
     },
     repository::{
         keys::KeyManagerError,
-        lock::{Lock, LockHandle},
+        lock::LockHandle,
         repo::{RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
         storage::SecureStorage,
@@ -742,39 +742,37 @@ pub async fn with_repository_lock<F, Fut, T>(
     f: F,
 ) -> Result<T>
 where
-    F: FnOnce(Arc<Repository>, Arc<SecureStorage>, LockHandle) -> Fut,
+    F: FnOnce(Arc<Repository>, Arc<SecureStorage>, Option<LockHandle>) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
     let (repo, storage, lock) = if no_lock {
         let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
-        let lock = LockHandle::new(
-            repo.clone(),
-            Arc::new(parking_lot::Mutex::new(Lock::new(false))),
-            true,
-        );
-        (repo, storage, lock)
+        (repo, storage, None)
     } else {
-        open_repository_with_lock(
+        let (repo, storage, lock) = open_repository_with_lock(
             auth_file,
             key_file_path,
             backend,
             config,
             exclusive_lock,
             retry_duration,
-            no_lock,
         )
-        .await?
+        .await?;
+        (repo, storage, Some(lock))
     };
 
-    let res = f(repo, storage, lock.clone()).await;
-    lock.unlock().await;
+    let res = if let Some(ref lock) = lock {
+        f(repo, storage, Some(lock.clone())).await
+    } else {
+        f(repo, storage, None).await
+    };
+    if let Some(ref lock) = lock {
+        lock.unlock().await;
+    }
     res
 }
 
 /// Helper to open a repository with a lock and interactive authentication if needed.
-///
-/// When `no_lock` is true, the repository is opened without acquiring a lock and a
-/// no-op lock handle is returned.
 pub async fn open_repository_with_lock(
     auth_file: Option<&PathBuf>,
     key_file_path: Option<&PathBuf>,
@@ -782,18 +780,7 @@ pub async fn open_repository_with_lock(
     config: RepoConfig,
     exclusive_lock: bool,
     retry_duration: Option<Duration>,
-    no_lock: bool,
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
-    if no_lock {
-        let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
-        let lock = LockHandle::new(
-            repo.clone(),
-            Arc::new(parking_lot::Mutex::new(Lock::new(false))),
-            true,
-        );
-        return Ok((repo, storage, lock));
-    }
-
     let mut auth = utils::get_auth(&auth_file.cloned())?;
 
     // If auth is provided (from file or env), try it once.

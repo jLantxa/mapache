@@ -217,21 +217,21 @@ pub struct LockHandle {
     alive_flag: Arc<AtomicBool>,
     unlock_mutex: Arc<tokio::sync::Mutex<()>>,
     runtime_handle: tokio::runtime::Handle,
-    dry_run: bool,
+    alive: bool,
 }
 
 impl LockHandle {
-    pub fn new(repo: Arc<Repository>, lock: Arc<Mutex<Lock>>, dry_run: bool) -> Self {
+    pub fn new(repo: Arc<Repository>, lock: Arc<Mutex<Lock>>, alive: bool) -> Self {
         let handle = Self {
             repo: repo.clone(),
             lock,
             alive_flag: Arc::new(AtomicBool::new(true)),
             unlock_mutex: Arc::new(tokio::sync::Mutex::new(())),
             runtime_handle: tokio::runtime::Handle::current(),
-            dry_run,
+            alive,
         };
 
-        if !dry_run {
+        if alive {
             handle.start_refresh_handler();
         }
 
@@ -262,7 +262,7 @@ impl LockHandle {
 
     pub async fn unlock(&self) {
         let _guard = self.unlock_mutex.lock().await;
-        if self.alive_flag.swap(false, Ordering::SeqCst) && !self.dry_run {
+        if self.alive_flag.swap(false, Ordering::SeqCst) && self.alive {
             tracing::info!(target: "repo", "Releasing lock {}", self.lock.lock().id().to_short_hex(8));
             self.perform_delete().await;
         }
@@ -282,7 +282,7 @@ impl LockHandle {
     }
 
     pub fn trigger_unlock(&self) {
-        if self.alive_flag.load(Ordering::SeqCst) && !self.dry_run {
+        if self.alive_flag.load(Ordering::SeqCst) && self.alive {
             // Prefer the current thread's runtime (covers the common case where
             // LockHandle::drop runs during shutdown on a still-active runtime).
             // Fall back to the captured handle from when the lock was acquired.

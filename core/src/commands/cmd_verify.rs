@@ -180,7 +180,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 pub async fn run_with_repo(
     repo: Arc<Repository>,
     secure_storage: Arc<SecureStorage>,
-    lock_handle: LockHandle,
+    lock_handle: Option<LockHandle>,
     args: &CmdArgs,
     json_out: bool,
 ) -> Result<()> {
@@ -190,7 +190,7 @@ pub async fn run_with_repo(
             "Process interrupted. Cleaning up...".bold().yellow()
         );
     })?;
-    cleanup_handler.add_lock(lock_handle.clone());
+    cleanup_handler.add_lock(lock_handle);
 
     let start = Instant::now();
 

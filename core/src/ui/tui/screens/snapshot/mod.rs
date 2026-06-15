@@ -37,7 +37,7 @@ enum SnapshotPhase {
 
 pub struct SnapshotCreateScreen {
     repo: Arc<Repository>,
-    lock_handle: LockHandle,
+    lock_handle: Option<LockHandle>,
     phase: SnapshotPhase,
     form: SnapshotForm,
     progress: ProgressState,
@@ -49,7 +49,7 @@ pub struct SnapshotCreateScreen {
 impl SnapshotCreateScreen {
     pub fn new(
         repo: Arc<Repository>,
-        lock_handle: LockHandle,
+        lock_handle: Option<LockHandle>,
         config_defaults: Option<commands::cmd_snapshot::CmdArgs>,
     ) -> Self {
         Self {

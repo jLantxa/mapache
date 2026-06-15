@@ -34,7 +34,7 @@ impl Drop for TerminalGuard {
 
 pub async fn run(
     repo: Arc<Repository>,
-    lock_handle: LockHandle,
+    lock_handle: Option<LockHandle>,
     repo_path: String,
     snapshot_config: Option<crate::commands::cmd_snapshot::CmdArgs>,
     forget_config: Option<crate::commands::cmd_forget::CmdArgs>,

@@ -54,7 +54,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     "Process interrupted. Cleaning up...".bold().yellow()
                 );
             })?;
-            cleanup_handler.add_lock(lock_handle.clone());
+            cleanup_handler.add_lock(lock_handle);
 
             let start = Instant::now();
 

@@ -287,7 +287,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
 pub async fn run_with_repo(
     repo: Arc<Repository>,
-    lock_handle: LockHandle,
+    lock_handle: Option<LockHandle>,
     args: &CmdArgs,
     progress_reporter: Arc<dyn RestoreProgressReporter>,
     pair: SnapshotPair,
@@ -352,7 +352,7 @@ pub async fn run_with_repo(
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         reporter_clone.finalize();
     })?;
-    cleanup_handler.add_lock(lock_handle.clone());
+    cleanup_handler.add_lock(lock_handle);
 
     let restore_result = restorer::restore(
         repo.clone(),

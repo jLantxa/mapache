@@ -332,7 +332,7 @@ impl Repository {
             .try_acquire_lock_with_retry(exclusive_lock, retry_duration)
             .await?;
         tracing::info!(target: "repo", "Lock acquired");
-        let lock_handle = LockHandle::new(repo.clone(), lock, dry_run);
+        let lock_handle = LockHandle::new(repo.clone(), lock, !dry_run);
 
         Ok((repo, secure_storage, lock_handle))
     }

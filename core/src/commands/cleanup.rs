@@ -50,9 +50,11 @@ impl CleanupHandler {
         self.interrupted.load(Ordering::SeqCst)
     }
 
-    pub fn add_lock(&self, lock: LockHandle) {
-        if let Ok(mut locks) = self.locks.lock() {
-            locks.push(lock);
+    pub fn add_lock(&self, lock: Option<LockHandle>) {
+        if let Some(lock) = lock {
+            if let Ok(mut locks) = self.locks.lock() {
+                locks.push(lock);
+            }
         }
     }
 }

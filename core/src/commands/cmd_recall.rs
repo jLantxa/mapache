@@ -27,7 +27,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.no_lock,
         |repo, _, lock_handle| async move {
             let cleanup_handler = CleanupHandler::new()?;
-            cleanup_handler.add_lock(lock_handle.clone());
+            cleanup_handler.add_lock(lock_handle);
 
             tracing::info!(target: "recall", "Searching for dropped snapshot");
             let (id, _dropped_path) = repo

@@ -92,7 +92,7 @@ pub async fn run_with_repo(
     json_output: bool,
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
-    lock_handle: LockHandle,
+    lock_handle: Option<LockHandle>,
 ) -> Result<()> {
     tracing::info!(target: "clean", "Reloading master index");
     repo.reload_master_index().await.map_err(|e| {

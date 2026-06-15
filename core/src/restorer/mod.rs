@@ -109,7 +109,6 @@ pub(crate) struct Restorer {
     pub(crate) target_path: PathBuf,
     pub(crate) opts: RestoreOptions,
     pub(crate) buffers: Arc<Mutex<VecDeque<Vec<u8>>>>,
-    pub(crate) initialized: Arc<Vec<std::sync::atomic::AtomicBool>>,
 }
 
 pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
@@ -291,7 +290,6 @@ impl Restorer {
             progress_reporter,
             shutdown_signal,
             buffers: Arc::new(Mutex::new(VecDeque::with_capacity(num_buffers))),
-            initialized: Arc::new(Vec::new()),
         }
     }
 
@@ -331,7 +329,6 @@ impl Restorer {
                 exclude: self.opts.exclude.clone(),
             },
             buffers: self.buffers.clone(),
-            initialized: self.initialized.clone(),
         }
     }
 

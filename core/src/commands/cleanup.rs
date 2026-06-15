@@ -51,10 +51,10 @@ impl CleanupHandler {
     }
 
     pub fn add_lock(&self, lock: Option<LockHandle>) {
-        if let Some(lock) = lock {
-            if let Ok(mut locks) = self.locks.lock() {
-                locks.push(lock);
-            }
+        if let Some(lock) = lock
+            && let Ok(mut locks) = self.locks.lock()
+        {
+            locks.push(lock);
         }
     }
 }

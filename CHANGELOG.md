@@ -32,12 +32,17 @@
 - **Interactive find screen (TUI)**: New `FindScreen` with real‑time glob
   search across all snapshots, progress bar with spinner, results table, inline
   detail panel, and direct navigation to file explorer and restore.
+- **Redesigned TUI theme**: The TUI now uses a refined colour palette and
+  layout for improved readability.
 
 ### Changed
 
 - **Restorer performance**: Optimized the restorer with a flattened parallel
   pipeline, concurrent blob decoding, and JIT file initialization. This
   improves restoration performance while maintaining a low memory footprint.
+- **GC memory usage**: Repack memory usage is now bounded by a configurable
+  budget, preventing excessive memory consumption during garbage collection
+  with large packs.
 
 ### Fixes
 
@@ -70,17 +75,6 @@
 
 ## v0.4.1
 
-### Security
-
-- **Strict SSH Verification**: Implemented strict host key verification for the
-  SFTP backend. The system now verifies server keys against `known_hosts` and
-  prompts for confirmation on unknown hosts, preventing MITM attacks.
-  Added support for default `known_hosts` locations on Unix and Windows.
-- **Memory Safety**: Eliminated technical Undefined Behavior (UB) in
-  `SecureStorage` compression by refactoring uninitialized buffer management.
-  Maintained performance by avoiding zero-initialization while ensuring
-  Rust's safety guarantees.
-
 ### Fixes
 
 - **Restorer Performance**: Fixed a regression introduced in v0.4.0 where
@@ -91,9 +85,6 @@
 - **Progress Bar**: Fixed progress bar never reaching 100% when restoring with
   `--strategy newer` or `--strategy skip`. Skipped bytes are now correctly
   reported as processed.
-- **SFTP Backend**: Improved error reporting in the SFTP backend to show the full
-  cause chain, making it easier to diagnose authentication and connection
-  failures. Fixed a bug where some authentication errors were partially swallowed.
 
 ### Changes
 

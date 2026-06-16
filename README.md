@@ -16,7 +16,6 @@ You can find more [in-depth documentation](doc/mapache.md).
 - [Key Features](#key-features)
 - [Benchmarks](#benchmarks)
 - [Getting Started](#getting-started)
-- [Roadmap](#roadmap)
 
 ---
 
@@ -62,6 +61,8 @@ validation before relying on it for primary backups.
   never stored or transmitted in the clear.
 - **Compression:** Zstd compression with adjustable levels to balance backup
   speed and storage usage.
+- **Terminal UI:** Rich interactive TUI with dashboard, snapshot/restore
+  screens, file explorer, diff viewer, and live search across snapshots.
 - **Backends:** Native support for Local FS, SFTP, and S3.
 - **Portable:** A single, statically linked binary with zero external
   dependencies.
@@ -175,56 +176,3 @@ specific released version.
   ```bash
   mapache restore --target /tmp/restore-folder -r /path/to/repo
   ```
-
-## Roadmap
-
-### v0.1.0
-
-mapache 0.1.0 was the first public stable release. It was meant to be a first
-stable prototype with all core features. This version validated the
-architecture.
-
-### v0.2.0
-
-v0.2.0 marks the finalization of the Archiver. The complete engine was
-refactored to make the backend code async. An initial S3 backend implementation
-was added and the SFTP backend was reimplemented with a rust-native async crate.
-The async refactor had the additional challenge of tuning parallelism to trim
-down memory usage while maintaining performance.
-
-### v0.3.0
-
-Redesigned the restorer into a high-performance, pack-centric engine with
-background prefetching and concurrent restoration to significantly improve
-I/O efficiency.
-
-- [x] `restore` redesign
-- [x] Multi-platform static builds (Linux x64/ARM, Windows, macOS)
-- [x] Return codes for commands
-- [x] Security hardening (secure join, zeroize, FUSE permissions)
-
-### v0.4.0
-
-Focused on new tooling, configuration, and performance optimizations.
-
-- [x] **Bundle command** — Self-contained `.mapache` bundle files with
-  deduplication, encryption, and FUSE mount capability.
-- [x] **TOML config file** — Centralized repository settings with `--config` flag.
-- [x] **Enhanced retention** — `--host`, `--keep-hourly`, `--keep-min` for the
-  `forget` command.
-- [x] **S3 multipart uploads** — For files >= 128 MiB.
-- [x] **Access time preservation** — `--with-atime` flag for snapshot command.
-- [x] **JSON output** for `clean`, `stats`, and other commands.
-- [x] **Experimental TUI** — Interactive terminal interface for snapshot
-  creation, restore, and retention management (may be removed or replaced).
-
-### Future
-
-In the future, I want to polish all rough edges, like adding `json` output and
-error codes to all commands. The current TUI is experimental and may be
-replaced by a separate frontend that consumes the JSON output.
-
-Other planned features (non-exhaustive):
-
-- [ ] incremental restore
-- [ ] master key rotation

@@ -675,9 +675,16 @@ mapache ls -R -r <URL>                     # Recursive listing
 mapache find PATTERN -r <URL>              # Search in all snapshots
 mapache find PATTERN --snapshot latest -r <URL>  # Search in latest only
 mapache find PATTERN --snapshot ID -r <URL>      # Search in specific snapshot
+mapache find PATTERN --json -r <URL>       # JSON output
 ```
 
 Searches file and directory names by pattern across one or all snapshots.
+When the pattern does not contain a `/`, the search is recursive and matches
+in any subdirectory. Use a leading `/` (e.g. `find /file.txt`) to restrict
+the search to the root directory of each snapshot.
+
+Supports `--json` for machine-readable output and exits with meaningful exit
+codes: `10` on repo open failure, `20` on command failure.
 
 ---
 
@@ -838,6 +845,10 @@ The garbage collector:
 4. Removes orphaned index entries.
 
 `--no-repack` skips repacking (equivalent to tolerance = 100%).
+
+The garbage collector can be safely interrupted with SIGINT/SIGTERM (Ctrl+C).
+The shutdown signal is checked at safe checkpoints between GC phases, so no
+data corruption occurs. This also applies to `forget --clean`.
 
 ---
 
@@ -1089,12 +1100,16 @@ mapache tui -r <URL>
 ```
 
 Launches an experimental interactive terminal user interface with screens for:
-- Dashboard — overview of the repository
-- File explorer — browse snapshot contents
+- Dashboard — overview of the repository with version info and key stats
+- File explorer — browse snapshot contents with inline detail panel
 - Snapshot detail — inspect individual snapshots
 - Snapshot creation wizard
 - Restore wizard
 - Forget/retention management
+- Diff screen — navigable tree of changes between snapshots (`<`/`>` to browse
+  adjacent pairs, `/` to filter, `u` to toggle unchanged files)
+- Find screen — real-time glob search across all snapshots with progress bar,
+  results table, and direct navigation to explorer/restore
 
 **Note:** The TUI is experimental and may be removed or replaced in future
 versions. It requires the `tui` feature (enabled by default) and a supported
@@ -1295,7 +1310,10 @@ Find files and directories in the repository.
 ```
 mapache find <TARGET> -r <URL>
   --snapshot <ID|latest>  Search in specific snapshot (all if omitted)
+  --json                  Output results in JSON format
 ```
+
+Exits with code `10` on repository open failure, `20` on search failure.
 
 ### `mapache diff`
 Show differences between snapshots.
@@ -1385,6 +1403,9 @@ mapache mount <MOUNTPOINT> -r <URL>
   --metadata-only         Don't load file contents
   --cache-size-mib <MIB>  Data cache size (default: 64)
 ```
+
+Exits with code `10` on repository open failure, `20` on mount failure,
+and `130` on interrupt.
 
 ### `mapache cat`
 Print repository objects.
@@ -1486,7 +1507,9 @@ mapache tui -r <URL>
 
 **A:** If a previous command crashed, run `mapache unlock -r <URL>` to remove
 stale locks. For persistent issues, use `--force`. To avoid this in scripts,
-use `--retry-lock` to automatically wait for locks to be released.
+use `--retry-lock` to automatically wait for locks to be released. For
+read-only operations (e.g. `log`, `ls`, `find`), use `--no-lock` to skip
+lock acquisition entirely.
 
 ### Performance
 

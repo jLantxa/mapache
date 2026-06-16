@@ -6,11 +6,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::{
-    mapache::defaults::UI_RATE_ESTIMATOR_WINDOW,
-    ui::tui::theme,
-    utils::{self, rate_estimator::RateEstimator},
-};
+use crate::{ui::tui::theme, utils};
 
 const BAR_WIDTH: usize = 35;
 
@@ -22,7 +18,9 @@ pub struct ProgressBar {
     expected_items: u64,
     elapsed: std::time::Duration,
     scanning: bool,
-    rate_estimator: RateEstimator,
+    cancelling: bool,
+    rate: f64,
+    eta: Option<Duration>,
 }
 
 impl ProgressBar {
@@ -35,17 +33,28 @@ impl ProgressBar {
             expected_items: 0,
             elapsed: std::time::Duration::ZERO,
             scanning: false,
-            rate_estimator: RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW),
+            cancelling: false,
+            rate: 0.0,
+            eta: None,
         }
     }
 
     pub fn bytes(mut self, processed: u64, expected: u64) -> Self {
-        self.rate_estimator.observe(processed as f64);
         self.processed_bytes = processed;
         self.expected_bytes = expected;
         if expected > 0 {
             self.percentage = (processed as f64 / expected as f64 * 100.0).min(100.0);
         }
+        self
+    }
+
+    pub fn rate(mut self, rate: f64) -> Self {
+        self.rate = rate;
+        self
+    }
+
+    pub fn eta(mut self, eta: Option<Duration>) -> Self {
+        self.eta = eta;
         self
     }
 
@@ -62,6 +71,11 @@ impl ProgressBar {
 
     pub fn scanning(mut self, scanning: bool) -> Self {
         self.scanning = scanning;
+        self
+    }
+
+    pub fn cancelling(mut self, cancelling: bool) -> Self {
+        self.cancelling = cancelling;
         self
     }
 
@@ -103,40 +117,77 @@ impl ProgressBar {
             )
         };
 
-        let elapsed_str = utils::pretty_print_duration(self.elapsed);
-        let rate = self.rate_estimator.rate();
-        let rate_str = utils::format_size_binary(rate as u64, 3);
+        let mut line_spans = bar_spans;
+        let info_style = if self.scanning {
+            Style::default()
+        } else {
+            Style::default()
+                .fg(theme::THEME.progress_filled)
+                .add_modifier(Modifier::BOLD)
+        };
+        line_spans.push(Span::styled(info_text, info_style));
 
-        let mut status_parts = vec![format!("[{}]", elapsed_str)];
-        if !self.scanning && self.expected_bytes > 0 && self.processed_bytes > 0 {
-            let eta = self
-                .rate_estimator
-                .eta(self.processed_bytes as f64, self.expected_bytes as f64);
-            if let Some(d) = eta
-                && d != Duration::ZERO
-            {
-                status_parts.push(format!("ETA: {}", format_duration(d)));
-            }
+        let status_line = if self.cancelling {
+            Line::from(Span::styled("  Cancelling...", theme::THEME.warning))
+        } else {
+            self.build_status_line()
+        };
+
+        Paragraph::new(Text::from(vec![Line::from(line_spans), status_line]))
+            .block(theme::block("Progress"))
+    }
+
+    fn build_status_line(&self) -> Line<'static> {
+        let elapsed = Style::default()
+            .fg(theme::THEME.teal)
+            .add_modifier(Modifier::BOLD);
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let speed_style = Style::default()
+            .fg(theme::THEME.green)
+            .add_modifier(Modifier::BOLD);
+        let eta_style = Style::default()
+            .fg(theme::THEME.peach)
+            .add_modifier(Modifier::BOLD);
+        let spacer = "   ";
+
+        let mut spans: Vec<Span> = Vec::new();
+
+        spans.push(Span::styled(
+            format!("[{}]", utils::pretty_print_duration(self.elapsed)),
+            elapsed,
+        ));
+
+        if !self.scanning
+            && self.expected_bytes > 0
+            && self.processed_bytes > 0
+            && self.rate > 0.0
+            && let Some(d) = self.eta
+            && d != Duration::ZERO
+        {
+            spans.push(Span::raw(spacer));
+            spans.push(Span::styled("ETA: ", eta_style));
+            spans.push(Span::styled(format_duration(d), eta_style));
         }
-        status_parts.push(format!("{}/s", rate_str));
+
+        let rate_str = utils::format_size_binary(self.rate as u64, 3);
+        spans.push(Span::raw(spacer));
+        spans.push(Span::styled(rate_str, speed_style));
+        spans.push(Span::styled("/s", speed_style));
 
         if self.expected_items > 0 {
-            status_parts.push(format!(
-                "Items: {}/{}",
+            spans.push(Span::raw(spacer));
+            spans.push(Span::styled("Items: ", bold));
+            spans.push(Span::raw(format!(
+                "{}/{}",
                 self.processed_items, self.expected_items
-            ));
+            )));
         } else if self.processed_items > 0 {
-            status_parts.push(format!("Items: {}", self.processed_items));
+            spans.push(Span::raw(spacer));
+            spans.push(Span::styled("Items: ", bold));
+            spans.push(Span::raw(format!("{}", self.processed_items)));
         }
 
-        let status = status_parts.join("   ");
-
-        let mut line_spans = bar_spans;
-        line_spans.push(Span::raw(info_text));
-
-        let lines = vec![Line::from(line_spans), Line::from(status)];
-
-        Paragraph::new(Text::from(lines)).block(theme::block("Progress"))
+        Line::from(spans)
     }
 }
 

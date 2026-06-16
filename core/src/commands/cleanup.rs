@@ -23,14 +23,23 @@ impl CleanupHandler {
         F: Fn() + Send + 'static,
     {
         let interrupted = Arc::new(AtomicBool::new(false));
-        let locks = Arc::new(Mutex::new(Vec::<LockHandle>::new()));
+        Self::new_with_interrupt_and_callback(interrupted, callback)
+    }
 
-        let interrupted_clone = interrupted.clone();
+    pub fn new_with_interrupt_and_callback<F>(
+        interrupted: Arc<AtomicBool>,
+        callback: F,
+    ) -> Result<Self>
+    where
+        F: Fn() + Send + 'static,
+    {
+        let locks = Arc::new(Mutex::new(Vec::<LockHandle>::new()));
         let locks_clone = locks.clone();
+        let sig = interrupted.clone();
 
         let join_handle = tokio::spawn(async move {
             wait_for_signal().await;
-            interrupted_clone.store(true, Ordering::SeqCst);
+            sig.store(true, Ordering::SeqCst);
             callback();
             if let Ok(locks) = locks_clone.lock() {
                 for lock in locks.iter() {

@@ -219,11 +219,27 @@ pub fn render_progress(frame: &mut Frame, state: &ProgressState) {
 }
 
 fn render_progress_bar(frame: &mut Frame, area: Rect, state: &ProgressState) {
+    let rate = state.core.rate_estimator.rate();
+    let eta = if !state.core.scanning
+        && state.core.expected_bytes > 0
+        && state.core.processed_bytes > 0
+    {
+        state.core.rate_estimator.eta(
+            state.core.processed_bytes as f64,
+            state.core.expected_bytes as f64,
+        )
+    } else {
+        None
+    };
+
     let progress_bar = ProgressBar::new()
         .bytes(state.core.processed_bytes, state.core.expected_bytes)
         .items(state.core.processed_items, state.core.expected_items)
         .elapsed(state.core.elapsed())
-        .scanning(state.core.scanning);
+        .scanning(state.core.scanning)
+        .cancelling(state.core.cancelling)
+        .rate(rate)
+        .eta(eta);
 
     frame.render_widget(progress_bar.render(), area);
 }

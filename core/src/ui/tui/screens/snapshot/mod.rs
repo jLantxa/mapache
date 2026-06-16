@@ -100,6 +100,7 @@ impl SnapshotCreateScreen {
                 options,
                 reporter,
                 parent_snapshot_pair,
+                Some(shutdown_signal.clone()),
             )
             .await;
             let summary_result = match result {
@@ -176,6 +177,7 @@ impl Screen for SnapshotCreateScreen {
                 ProgressAction::Quit => Some(Transition::Quit),
                 ProgressAction::Cancel => {
                     self.shutdown_signal.store(true, Ordering::SeqCst);
+                    self.progress.core.cancelling = true;
                     None
                 }
                 ProgressAction::None => None,

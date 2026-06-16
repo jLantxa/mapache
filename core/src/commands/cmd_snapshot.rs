@@ -1,4 +1,10 @@
-use std::{collections::BTreeSet, path::PathBuf, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, atomic::AtomicBool},
+    time::Instant,
+};
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
@@ -309,6 +315,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 SnapshotRunOptions::from(args),
                 progress_reporter,
                 parent_snapshot_pair,
+                None,
             )
             .await?;
 
@@ -388,12 +395,13 @@ pub enum SnapshotOutcome {
     Interrupted,
 }
 
-pub async fn run_with_repo(
+pub(crate) async fn run_with_repo(
     repo: Arc<Repository>,
     lock_handle: Option<LockHandle>,
     options: SnapshotRunOptions,
     progress_reporter: Arc<dyn SnapshotProgressReporter>,
     parent_snapshot_pair: Option<SnapshotPair>,
+    shutdown_signal: Option<Arc<AtomicBool>>,
 ) -> Result<SnapshotOutcome> {
     let as_root = options.as_root;
     let skip_if_unchanged = options.skip_if_unchanged;
@@ -505,11 +513,21 @@ pub async fn run_with_repo(
     tracing::info!(target: "snapshot", "Initializing archiver");
     let progress = Arc::new(SnapshotProgress::new());
 
-    // Init cleanup handler
+    // Init cleanup handler (listens for SIGINT/SIGTERM, releases locks on signal).
+    // When a shutdown_signal is provided (e.g. from the TUI) it is shared directly
+    // with the archiver pipeline, so both OS signals and the TUI's Esc key abort
+    // the work. Without one, a fresh signal is created internally.
     let reporter_clone = progress_reporter.clone();
-    let cleanup_handler = CleanupHandler::new_with_callback(move || {
-        reporter_clone.finalize();
-    })?;
+    let cleanup_handler = match shutdown_signal {
+        Some(signal) => {
+            CleanupHandler::new_with_interrupt_and_callback(signal.clone(), move || {
+                reporter_clone.finalize();
+            })?
+        }
+        None => CleanupHandler::new_with_callback(move || {
+            reporter_clone.finalize();
+        })?,
+    };
     cleanup_handler.add_lock(lock_handle);
 
     repo.init_pack_saver(num_packers).map_err(|e| {

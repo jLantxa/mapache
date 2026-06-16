@@ -8,7 +8,11 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::tui::{theme, widgets::ProgressBar};
+use crate::{
+    mapache::defaults::UI_RATE_ESTIMATOR_WINDOW,
+    ui::tui::{theme, widgets::ProgressBar},
+    utils::rate_estimator::RateEstimator,
+};
 
 pub struct TaskProgressState {
     pub expected_bytes: u64,
@@ -22,6 +26,8 @@ pub struct TaskProgressState {
     pub start_time: Instant,
     pub finish_time: Option<Instant>,
     pub scanning: bool,
+    pub cancelling: bool,
+    pub rate_estimator: RateEstimator,
 }
 
 impl TaskProgressState {
@@ -38,6 +44,8 @@ impl TaskProgressState {
             start_time: Instant::now(),
             finish_time: None,
             scanning: false,
+            cancelling: false,
+            rate_estimator: RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW),
         }
     }
 
@@ -47,6 +55,7 @@ impl TaskProgressState {
 
     pub fn add_processed_bytes(&mut self, bytes: u64) {
         self.processed_bytes += bytes;
+        self.rate_estimator.observe(self.processed_bytes as f64);
     }
 
     pub fn add_processed_items(&mut self, items: u64) {
@@ -102,11 +111,27 @@ impl<'a> TaskProgressWidget<'a> {
             ])
             .split(area);
 
+        let rate = self.state.rate_estimator.rate();
+        let eta = if !self.state.scanning
+            && self.state.expected_bytes > 0
+            && self.state.processed_bytes > 0
+        {
+            self.state.rate_estimator.eta(
+                self.state.processed_bytes as f64,
+                self.state.expected_bytes as f64,
+            )
+        } else {
+            None
+        };
+
         let progress_bar = ProgressBar::new()
             .bytes(self.state.processed_bytes, self.state.expected_bytes)
             .items(self.state.processed_items, self.state.expected_items)
             .elapsed(self.state.elapsed())
-            .scanning(self.state.scanning);
+            .scanning(self.state.scanning)
+            .cancelling(self.state.cancelling)
+            .rate(rate)
+            .eta(eta);
 
         frame.render_widget(progress_bar.render(), chunks[0]);
 

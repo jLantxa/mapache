@@ -57,6 +57,14 @@ impl RestoreConfig {
                 ),
             },
             FormField {
+                label: "Include:".to_string(),
+                field_type: FormFieldType::Text(TextInput::new()),
+            },
+            FormField {
+                label: "Exclude:".to_string(),
+                field_type: FormFieldType::Text(TextInput::new()),
+            },
+            FormField {
                 label: "".to_string(),
                 field_type: FormFieldType::Action("Start Restore".to_string()),
             },
@@ -145,5 +153,27 @@ impl RestoreConfig {
             3 => Strategy::Newer,
             _ => Strategy::Overwrite,
         }
+    }
+
+    fn parse_paths(text: &str) -> Option<Vec<PathBuf>> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(
+            trimmed
+                .split([',', '\n'])
+                .map(|s| PathBuf::from(s.trim()))
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect(),
+        )
+    }
+
+    pub fn get_include(&self) -> Option<Vec<PathBuf>> {
+        Self::parse_paths(self.form.get_text(4).unwrap_or("")).or_else(|| self.paths.clone())
+    }
+
+    pub fn get_exclude(&self) -> Option<Vec<PathBuf>> {
+        Self::parse_paths(self.form.get_text(5).unwrap_or(""))
     }
 }

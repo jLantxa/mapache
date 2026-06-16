@@ -78,7 +78,6 @@ impl RestoreScreen {
         let repo = self.repo.clone();
         let snapshot = self.config.snapshot.snapshot.clone();
         let target = self.config.get_target();
-        let paths = self.config.paths.clone();
         let options = RestoreOptions {
             dry_run: self.config.get_dry_run(),
             strategy: self.config.get_strategy(),
@@ -90,8 +89,8 @@ impl RestoreScreen {
             quit_on_error: false,
             preallocate: true,
             verify: false,
-            include: paths,
-            exclude: None,
+            include: self.config.get_include(),
+            exclude: self.config.get_exclude(),
         };
 
         let tx = self.tx.clone();
@@ -224,6 +223,7 @@ impl Screen for RestoreScreen {
             RestorePhase::Progress => match key.code {
                 KeyCode::Esc => {
                     self.shutdown_signal.store(true, Ordering::SeqCst);
+                    self.progress.cancelling = true;
                     None
                 }
                 KeyCode::Char('q') => Some(Transition::Quit),

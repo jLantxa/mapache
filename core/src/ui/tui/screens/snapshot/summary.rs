@@ -46,7 +46,7 @@ pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
                     Line::from("Snapshot was cancelled."),
                     Line::from(""),
                     Line::from("Some data may have been written to the repository."),
-                    Line::from("You may want to run 'forget' and 'prune' to clean up."),
+                    Line::from("You may want to run 'clean' to clean up."),
                 ]),
             )
             .render(area, frame);

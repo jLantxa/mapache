@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin},
     style::Style,
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Paragraph, Row, Table, TableState},
 };
 pub use retention::{RetentionAction, RetentionConfig};
@@ -24,7 +24,7 @@ use crate::{
     ui::tui::{
         app::{Screen, Transition},
         theme,
-        widgets::{FormFieldType, StateNavigation},
+        widgets::{Dialog, FormFieldType, StateNavigation},
     },
     utils,
 };
@@ -360,14 +360,10 @@ impl ForgetScreen {
     }
 
     fn render_confirm(&self, frame: &mut Frame) {
-        let area = frame.area();
-        let selected = self.selected_count();
-        let inner = area.inner(Margin::new(area.width / 4, area.height / 3));
-
         let text = vec![
             Line::from(vec![
                 Span::raw("You are about to forget "),
-                Span::styled(selected.to_string(), theme::THEME.error),
+                Span::styled(self.selected_count().to_string(), theme::THEME.error),
                 Span::raw(" snapshots."),
             ]),
             Line::from(""),
@@ -384,46 +380,42 @@ impl ForgetScreen {
             ]),
         ];
 
-        let widget = Paragraph::new(text)
-            .block(theme::block("Confirm Forget"))
-            .alignment(ratatui::layout::Alignment::Center);
-        frame.render_widget(ratatui::widgets::Clear, inner);
-        frame.render_widget(widget, inner);
+        Dialog::with_text("Confirm Forget", theme::THEME.border, Text::from(text))
+            .render(frame.area(), frame);
     }
 
     fn render_result(&self, frame: &mut Frame) {
-        let area = frame.area();
-        let inner = area.inner(Margin::new(area.width / 4, area.height / 3));
-
-        let text = match self.result {
-            Some(ForgetResult::Success { removed_count }) => vec![
-                Line::from(Span::styled("SUCCESS", theme::THEME.success)),
-                Line::from(""),
-                Line::from(format!("Successfully forgot {} snapshots.", removed_count)),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("[Enter/Esc]", theme::THEME.menu_key),
-                    Span::raw(" back to dashboard"),
-                ]),
-            ],
-            Some(ForgetResult::NoDeleted) => vec![
-                Line::from(Span::styled("NO SNAPSHOTS REMOVED", theme::THEME.warning)),
-                Line::from(""),
-                Line::from("No snapshots were selected or removed."),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("[Enter/Esc]", theme::THEME.menu_key),
-                    Span::raw(" back to selection"),
-                ]),
-            ],
-            None => vec![Line::from("Unknown state")],
+        let (title, text) = match self.result {
+            Some(ForgetResult::Success { removed_count }) => (
+                "Forget Result",
+                vec![
+                    Line::from(Span::styled("SUCCESS", theme::THEME.success)),
+                    Line::from(""),
+                    Line::from(format!("Successfully forgot {} snapshots.", removed_count)),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("[Enter/Esc]", theme::THEME.menu_key),
+                        Span::raw(" back to dashboard"),
+                    ]),
+                ],
+            ),
+            Some(ForgetResult::NoDeleted) => (
+                "Forget Result",
+                vec![
+                    Line::from(Span::styled("NO SNAPSHOTS REMOVED", theme::THEME.warning)),
+                    Line::from(""),
+                    Line::from("No snapshots were selected or removed."),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("[Enter/Esc]", theme::THEME.menu_key),
+                        Span::raw(" back to selection"),
+                    ]),
+                ],
+            ),
+            None => ("Forget Result", vec![Line::from("Unknown state")]),
         };
 
-        let widget = Paragraph::new(text)
-            .block(theme::block("Forget Result"))
-            .alignment(ratatui::layout::Alignment::Center);
-        frame.render_widget(ratatui::widgets::Clear, inner);
-        frame.render_widget(widget, inner);
+        Dialog::with_text(title, theme::THEME.border, Text::from(text)).render(frame.area(), frame);
     }
 }
 

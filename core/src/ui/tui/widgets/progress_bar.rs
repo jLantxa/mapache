@@ -86,20 +86,14 @@ impl ProgressBar {
         let empty_style = Style::default().fg(theme::THEME.progress_empty);
 
         let (bar_spans, info_text) = if self.scanning {
-            let mut spans = Vec::new();
-            spans.push(Span::styled("\u{2500}".repeat(BAR_WIDTH), empty_style));
-            (
-                spans,
-                format!(
-                    "  scanning...  {}",
-                    utils::format_size_binary(self.processed_bytes, 3),
-                ),
-            )
+            let spans = vec![Span::styled("\u{2500}".repeat(BAR_WIDTH), empty_style)];
+            (spans, utils::format_size_binary(self.processed_bytes, 3))
         } else {
             let pct = self.percentage;
             let filled = (pct / 100.0 * BAR_WIDTH as f64) as usize;
             let empty = BAR_WIDTH - filled;
             let mut spans = Vec::new();
+
             if filled > 0 {
                 spans.push(Span::styled("\u{2501}".repeat(filled), filled_style));
             }

@@ -1,11 +1,13 @@
 use ratatui::widgets::{ListState, TableState};
 
+mod dialog;
 mod form;
 mod progress_bar;
 mod task_progress;
 mod text_input;
 mod toast;
 
+pub use dialog::Dialog;
 pub use form::{Form, FormAction, FormField, FormFieldType};
 pub use progress_bar::ProgressBar;
 pub use task_progress::{TaskProgressState, TaskProgressWidget};

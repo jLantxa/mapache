@@ -118,16 +118,18 @@ Workloads:
 
 ### Installation
 
-To compile `mapache` from source, ensure you have the [Rust toolchain] installed,
-then build and install the binary:
+**Quick install** (Linux, macOS, Windows):
+
+```bash
+curl -fsSL https://github.com/jLantxa/mapache/raw/main/tools/install.sh | sh
+```
+
+Or compile from source with the [Rust toolchain]:
 
 [Rust toolchain]: https://rustup.rs/
 
 ```bash
-# Build the optimized release binary
 cargo build --release
-
-# Install it to your cargo bin path
 cargo install --path core
 ```
 

@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     archiver::{self, SnapshotOptions, progress::SnapshotProgress},
@@ -62,7 +62,7 @@ impl ToExitCode for SnapshotError {
     }
 }
 
-#[derive(Args, Debug, Clone, Deserialize, Default)]
+#[derive(Args, Debug, Clone, Serialize, Deserialize, Default)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
 #[clap(about = "Create a new snapshot")]
 #[serde(default, rename_all = "kebab-case")]
@@ -133,6 +133,28 @@ pub struct CmdArgs {
     /// Requires --auth-file or MAPACHE_USERNAME/MAPACHE_PASSWORD env vars.
     #[clap(long, conflicts_with_all = &["paths", "exclude", "exclude_file", "parent", "as_root"])]
     pub stdin: bool,
+}
+
+impl CmdArgs {
+    pub(crate) fn template() -> Self {
+        Self {
+            paths: vec![PathBuf::from("/home/user/Documents")],
+            as_root: Some(false),
+            exclude: Some(vec!["**/node_modules".to_string(), "**/.git".to_string()]),
+            exclude_file: None,
+            tags_str: Some("work,important".to_string()),
+            description: Some("Daily backup".to_string()),
+            no_parent: false,
+            no_scan: Some(false),
+            skip_if_unchanged: Some(false),
+            parent: Some(crate::commands::UseSnapshot::Latest),
+            num_readers: Some(crate::mapache::defaults::DEFAULT_SNAPSHOT_READERS),
+            num_packers: Some(crate::mapache::defaults::DEFAULT_SNAPSHOT_PACKERS),
+            dry_run: false,
+            with_atime: Some(false),
+            stdin: false,
+        }
+    }
 }
 
 impl Merge for CmdArgs {

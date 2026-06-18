@@ -27,6 +27,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     fs::tree::SerializedNodeStream,
@@ -37,7 +38,8 @@ use crate::{
 };
 
 /// Strategy for handling existing files during restoration.
-#[derive(Debug, Clone, PartialEq, ValueEnum)]
+#[derive(Debug, Clone, PartialEq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Strategy {
     Fail,
     Overwrite,

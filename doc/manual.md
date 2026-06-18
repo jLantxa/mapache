@@ -250,7 +250,7 @@ Argon2id to produce wrapping keys that encrypt the master key.
 ### TOML Config File
 
 Mapache can read settings from a TOML configuration file specified via
-`--config <PATH>`. The file supports `[global]`, `[snapshot]`, `[restore]`,
+`--with-config <PATH>`. The file supports `[global]`, `[snapshot]`, `[restore]`,
 `[forget]`, and `[runtime]` sections.
 
 Example configuration:
@@ -1164,7 +1164,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | Flag | Description |
 |---|---|
 | `-r, --repo <URL>` | Repository path or URL. Also read from `MAPACHE_REPOSITORY` |
-| `--config <PATH>` | Path to TOML configuration file |
+| `--with-config <PATH>` | Path to TOML configuration file |
 | `--no-cache` | Disable local caching |
 | `--no-lock` | Open repository without acquiring a lock (read-only; skips lock file creation) |
 | `--ssh-privatekey <PATH>` | SSH private key file (SFTP backend) |

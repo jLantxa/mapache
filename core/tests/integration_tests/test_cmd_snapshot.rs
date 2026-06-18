@@ -675,7 +675,7 @@ mod tests {
         let bin = env!("CARGO_BIN_EXE_mapache");
         let mut cmd = std::process::Command::new(bin);
         // Global options (--repo, --auth-file, etc.) go AFTER the subcommand
-        // because only --config is truly global in clap.
+        // because only --with-config is truly global in clap.
         cmd.arg("snapshot")
             .arg("--repo")
             .arg(ctx.repo_path.as_os_str())

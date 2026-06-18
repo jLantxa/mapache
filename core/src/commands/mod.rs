@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
 use anyhow::{Error, Result, anyhow, bail};
 use chrono::Duration;
 use clap::{ArgGroup, Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{
     backend::{BackendOptions, StorageBackend},
@@ -11,8 +11,8 @@ use crate::{
         ContentIdType, ID,
         config::{MapacheConfig, load_config},
         defaults::{
-            DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, MAX_CONFIGURABLE_PACK_SIZE_MIB,
-            MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
+            DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
+            MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
         },
         global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
     },
@@ -34,6 +34,7 @@ pub mod cmd_cache;
 pub mod cmd_cat;
 pub mod cmd_clean;
 pub mod cmd_completion;
+pub mod cmd_config;
 mod cmd_diff;
 pub mod cmd_dump;
 pub mod cmd_find;
@@ -72,7 +73,7 @@ pub(crate) use error::{ToExitCode, fail};
 )]
 pub struct Cli {
     /// Path to a TOML configuration file
-    #[clap(long, global = true)]
+    #[clap(long = "with-config", global = true)]
     pub config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -88,6 +89,7 @@ pub enum Command {
     Cat(WithGlobal<cmd_cat::CmdArgs>),
     Clean(WithGlobal<cmd_clean::CmdArgs>),
     Completion(cmd_completion::CmdArgs),
+    Config(cmd_config::CmdArgs),
     Diff(WithGlobal<cmd_diff::CmdArgs>),
     Dump(WithGlobal<cmd_dump::CmdArgs>),
     Find(WithGlobal<cmd_find::CmdArgs>),
@@ -131,7 +133,7 @@ pub struct WithGlobal<T: clap::Args> {
 }
 
 /// CLI-parsable global options (all configurable fields are `Option<T>`)
-#[derive(Parser, Debug, Clone, Deserialize, Default)]
+#[derive(Parser, Debug, Clone, Serialize, Deserialize, Default)]
 #[clap(group = ArgGroup::new("verbosity_group").multiple(true))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CliGlobalArgs {
@@ -190,14 +192,19 @@ pub struct CliGlobalArgs {
     /// Retry acquiring a lock if the repository is already locked. Takes a duration
     /// string like 5m, 30s or 5m30s.
     #[clap(long = "retry-lock", value_parser = utils::parse_duration_string)]
-    #[serde(rename = "retry-lock", deserialize_with = "deserialize_duration_opt")]
+    #[serde(
+        rename = "retry-lock",
+        deserialize_with = "deserialize_duration_opt",
+        serialize_with = "serialize_duration_opt"
+    )]
     pub retry_lock_duration: Option<Duration>,
 
     /// Limit upload speed (e.g. 10MB/s, 500KB/s)
     #[clap(long = "limit-upload", value_parser = parse_bandwidth)]
     #[serde(
         rename = "limit-upload",
-        deserialize_with = "deserialize_bandwidth_opt"
+        deserialize_with = "deserialize_bandwidth_opt",
+        serialize_with = "serialize_bandwidth_opt"
     )]
     pub limit_upload: Option<u64>,
 
@@ -205,13 +212,36 @@ pub struct CliGlobalArgs {
     #[clap(long = "limit-download", value_parser = parse_bandwidth)]
     #[serde(
         rename = "limit-download",
-        deserialize_with = "deserialize_bandwidth_opt"
+        deserialize_with = "deserialize_bandwidth_opt",
+        serialize_with = "serialize_bandwidth_opt"
     )]
     pub limit_download: Option<u64>,
 
     /// Disable repository locking (read-only operations)
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub no_lock: Option<bool>,
+}
+
+impl CliGlobalArgs {
+    pub(crate) fn template() -> Self {
+        Self {
+            repo: Some("/path/to/repo".to_string()),
+            no_cache: Some(false),
+            ssh_privatekey: Some(PathBuf::from("~/.ssh/id_ed25519")),
+            ssh_known_hosts: Some(PathBuf::from("~/.ssh/known_hosts")),
+            auth_file: Some(PathBuf::from("~/.mapache/auth")),
+            pack_size_mib: Some(DEFAULT_PACK_SIZE_MIB),
+            key: Some(PathBuf::from("~/.mapache/repo.key")),
+            quiet: Some(false),
+            json: Some(false),
+            verbosity: Some(DEFAULT_VERBOSITY),
+            compression_level: Some(DEFAULT_COMPRESSION),
+            retry_lock_duration: Some(Duration::minutes(5)),
+            limit_upload: Some(10 * 1024 * 1024),
+            limit_download: Some(50 * 1024 * 1024),
+            no_lock: Some(false),
+        }
+    }
 }
 
 impl Merge for CliGlobalArgs {
@@ -293,6 +323,46 @@ where
     let opt = Option::<String>::deserialize(deserializer)?;
     opt.map(|s| utils::parse_bandwidth(&s).map_err(serde::de::Error::custom))
         .transpose()
+}
+
+fn serialize_duration_opt<S>(
+    val: &Option<Duration>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match val {
+        Some(d) => {
+            let std_dur = std::time::Duration::from_millis(d.num_milliseconds().unsigned_abs());
+            serializer.serialize_some(&utils::pretty_print_duration(std_dur).replace(' ', ""))
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+fn serialize_bandwidth_opt<S>(
+    val: &Option<u64>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match val {
+        Some(b) => {
+            let s = if *b >= utils::size::GiB {
+                format!("{} GiB/s", b / utils::size::GiB)
+            } else if *b >= utils::size::MiB {
+                format!("{} MiB/s", b / utils::size::MiB)
+            } else if *b >= utils::size::KiB {
+                format!("{} KiB/s", b / utils::size::KiB)
+            } else {
+                format!("{b} B/s")
+            };
+            serializer.serialize_some(&s)
+        }
+        None => serializer.serialize_none(),
+    }
 }
 
 /// Resolved global options (concrete values after merging CLI + config + env + defaults)
@@ -381,7 +451,8 @@ fn pack_size_parser(s: &str) -> Result<f32> {
     Ok(val)
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Compression {
     Manual(i32),
     Fastest,
@@ -448,7 +519,8 @@ fn parse_compression_level(s: &str) -> Result<Compression> {
     Compression::from_str(s)
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum UseSnapshot {
     #[default]
     Latest,
@@ -506,7 +578,7 @@ pub async fn parse_and_run() -> i32 {
     cli::color::init_console();
     let args = Cli::parse();
 
-    // Load config if --config provided
+    // Load config if --with-config provided
     let config = match &args.config {
         Some(path) => match load_config(path) {
             Ok(c) => c,
@@ -550,6 +622,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Bundle(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Bundle(cmd)),
         Command::Cache(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Cache(cmd)),
         Command::Completion(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Completion(cmd)),
+        Command::Config(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Config(cmd)),
         Command::Forget(cmd) => with_global_and_config!(cmd, Forget, config.forget),
         Command::Restore(cmd) => with_global_and_config!(cmd, Restore, config.restore),
         Command::Snapshot(cmd) => with_global_and_config!(cmd, Snapshot, config.snapshot),
@@ -598,6 +671,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args).await,
         Command::Cache(cmd) => cmd_cache::run(&cmd),
         Command::Completion(cmd) => cmd_completion::run(&cmd),
+        Command::Config(cmd) => cmd_config::run(&cmd).await,
         Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args).await,
         Command::Diff(cmd) => cmd_diff::run(&global, &cmd.args).await,
         Command::Dump(cmd) => cmd_dump::run(&global, &cmd.args).await,

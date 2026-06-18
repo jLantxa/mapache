@@ -190,7 +190,10 @@ mod linux_statx {
         mask: u32,
         statxbuf: *mut statx,
     ) -> i32 {
-        unsafe { libc::syscall(libc::SYS_statx, dirfd, pathname, flags, mask, statxbuf) as i32 }
+        unsafe {
+            // SAFETY: FFI call to syscall(statx) with valid pointers and descriptors.
+            libc::syscall(libc::SYS_statx, dirfd, pathname, flags, mask, statxbuf) as i32
+        }
     }
 }
 
@@ -440,6 +443,7 @@ impl Node {
             }
 
             let res = unsafe {
+                // SAFETY: FFI call to statx.
                 linux_statx::statx(libc::AT_FDCWD, c_path.as_ptr(), flags, req_mask, &mut sx)
             };
 
@@ -516,6 +520,7 @@ impl Node {
                 let mut flags: libc::c_int = 0;
                 const FS_IOC_GETFLAGS: libc::Ioctl = 0x80086601u32 as libc::Ioctl;
                 unsafe {
+                    // SAFETY: FFI call to ioctl to get file flags. file and flags pointer are valid.
                     if libc::ioctl(file.as_raw_fd(), FS_IOC_GETFLAGS, &mut flags) == 0 {
                         self.metadata.linux_flags = Some(flags as u32);
                     }

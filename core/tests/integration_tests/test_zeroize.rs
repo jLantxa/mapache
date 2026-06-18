@@ -25,6 +25,8 @@ fn test_zeroize_vec_manual() {
 
     // Check if memory was zeroed before truncation
     unsafe {
+        // SAFETY: We are accessing the original buffer of the Vec using its pointer and length
+        // to verify zeroization. The memory is still allocated because the Vec was not dropped.
         let slice = std::slice::from_raw_parts(ptr, len);
         for &byte in slice {
             assert_eq!(byte, 0);

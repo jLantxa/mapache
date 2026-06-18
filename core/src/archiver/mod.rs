@@ -800,23 +800,42 @@ mod tests {
     impl StdinPipe {
         fn new(data: &[u8]) -> Self {
             let mut fds = [0i32; 2];
-            let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+
+            let ret = unsafe {
+                // SAFETY: FFI call to pipe() with valid pointer to fds.
+                libc::pipe(fds.as_mut_ptr())
+            };
             assert_eq!(ret, 0, "pipe() failed");
 
             let read_fd = fds[0];
             let write_fd = fds[1];
 
-            let written =
-                unsafe { libc::write(write_fd, data.as_ptr() as *const libc::c_void, data.len()) };
+            let written = unsafe {
+                // SAFETY: FFI call to write() with valid pipe end and data buffer.
+                libc::write(write_fd, data.as_ptr() as *const libc::c_void, data.len())
+            };
             assert_eq!(written as usize, data.len(), "write() failed");
-            unsafe { libc::close(write_fd) };
+            unsafe {
+                // SAFETY: FFI call to close() with valid pipe end.
+                libc::close(write_fd)
+            };
 
-            let saved_stdin = unsafe { libc::dup(0) };
+            let saved_stdin = unsafe {
+                // SAFETY: FFI call to dup() to save current stdin.
+                libc::dup(0)
+            };
             assert!(saved_stdin >= 0, "dup(0) failed");
 
-            let ret = unsafe { libc::dup2(read_fd, 0) };
+            let ret = unsafe {
+                // SAFETY: FFI call to dup2() to redirect stdin from pipe.
+                libc::dup2(read_fd, 0)
+            };
             assert_eq!(ret, 0, "dup2() failed");
-            unsafe { libc::close(read_fd) };
+
+            unsafe {
+                // SAFETY: FFI call to close() with valid pipe end.
+                libc::close(read_fd)
+            };
 
             StdinPipe { saved_stdin }
         }
@@ -826,6 +845,7 @@ mod tests {
     impl Drop for StdinPipe {
         fn drop(&mut self) {
             unsafe {
+                // SAFETY: FFI calls to restore original stdin and close the backup descriptor.
                 libc::dup2(self.saved_stdin, 0);
                 libc::close(self.saved_stdin);
             }
@@ -847,12 +867,16 @@ mod tests {
             let mut read_handle = std::ptr::null_mut();
             let mut write_handle = std::ptr::null_mut();
 
-            let ret =
-                unsafe { CreatePipe(&mut read_handle, &mut write_handle, std::ptr::null(), 0) };
+            let ret = unsafe {
+                // SAFETY: FFI call to CreatePipe with valid handle pointers.
+                CreatePipe(&mut read_handle, &mut write_handle, std::ptr::null(), 0)
+            };
             assert_ne!(ret, 0, "CreatePipe failed");
 
             let mut bytes_written: u32 = 0;
+
             let ret = unsafe {
+                // SAFETY: FFI call to WriteFile with valid pipe handle and data buffer.
                 WriteFile(
                     write_handle,
                     data.as_ptr() as *const _,
@@ -863,10 +887,20 @@ mod tests {
             };
             assert_ne!(ret, 0, "WriteFile failed");
             assert_eq!(bytes_written as usize, data.len());
-            unsafe { CloseHandle(write_handle) };
 
-            let saved_stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-            unsafe { SetStdHandle(STD_INPUT_HANDLE, read_handle) };
+            unsafe {
+                // SAFETY: FFI call to CloseHandle for the write end of the pipe.
+                CloseHandle(write_handle)
+            };
+
+            let saved_stdin = unsafe {
+                // SAFETY: FFI call to GetStdHandle to save current stdin handle.
+                GetStdHandle(STD_INPUT_HANDLE)
+            };
+            unsafe {
+                // SAFETY: FFI call to SetStdHandle to redirect stdin from pipe.
+                SetStdHandle(STD_INPUT_HANDLE, read_handle)
+            };
 
             StdinPipe {
                 saved_stdin,
@@ -883,6 +917,7 @@ mod tests {
                 System::Console::{STD_INPUT_HANDLE, SetStdHandle},
             };
             unsafe {
+                // SAFETY: FFI calls to restore original stdin and close the pipe handle.
                 SetStdHandle(STD_INPUT_HANDLE, self.saved_stdin);
                 CloseHandle(self.read_handle);
             }

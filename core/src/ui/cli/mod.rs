@@ -87,6 +87,7 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     stdout.flush()?;
 
     let mut termios = unsafe {
+        // SAFETY: FFI call to tcgetattr with STDIN_FILENO and pointer to t.
         let mut t = std::mem::zeroed();
         if tcgetattr(STDIN_FILENO, &mut t) != 0 {
             return Err(anyhow::anyhow!("Failed to get terminal attributes"));
@@ -98,6 +99,7 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     termios.c_lflag &= !ECHO;
 
     unsafe {
+        // SAFETY: FFI call to tcsetattr to disable echoing.
         if tcsetattr(STDIN_FILENO, TCSANOW, &termios) != 0 {
             return Err(anyhow::anyhow!("Failed to set terminal attributes"));
         }
@@ -107,6 +109,7 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     let res = io::stdin().lock().read_line(&mut password);
 
     unsafe {
+        // SAFETY: FFI call to tcsetattr to restore original terminal state.
         tcsetattr(STDIN_FILENO, TCSANOW, &original);
     }
     println!();

@@ -340,7 +340,10 @@ impl Restorer {
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             let fd = file.as_raw_fd();
-            let result = unsafe { libc::posix_fallocate(fd, 0, length as libc::off_t) };
+            let result = unsafe {
+                // SAFETY: FFI call to posix_fallocate with a valid file descriptor.
+                libc::posix_fallocate(fd, 0, length as libc::off_t)
+            };
             if result != 0 {
                 return Err(anyhow!(std::io::Error::from_raw_os_error(result)));
             }
@@ -362,11 +365,17 @@ impl Restorer {
                 fst_bytesalloc: 0,
             };
 
-            let mut res = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &store) };
+            let mut res = unsafe {
+                // SAFETY: FFI call to fcntl with a valid file descriptor and fstore_t pointer.
+                libc::fcntl(fd, libc::F_PREALLOCATE, &store)
+            };
 
             if res == -1 {
                 store.fst_posmode = F_STARTPOSMODE;
-                res = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &store) };
+                res = unsafe {
+                    // SAFETY: FFI call to fcntl as fallback with same valid descriptor and pointer.
+                    libc::fcntl(fd, libc::F_PREALLOCATE, &store)
+                };
             }
 
             if res == -1 {

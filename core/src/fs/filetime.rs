@@ -111,7 +111,10 @@ mod unix {
             },
         ];
 
-        let ret = unsafe { libc::utimensat(libc::AT_FDCWD, cpath.as_ptr(), times.as_ptr(), flags) };
+        let ret = unsafe {
+            // SAFETY: FFI call to utimensat with valid null-terminated path and timespec array.
+            libc::utimensat(libc::AT_FDCWD, cpath.as_ptr(), times.as_ptr(), flags)
+        };
 
         if ret != 0 {
             Err(io::Error::last_os_error())

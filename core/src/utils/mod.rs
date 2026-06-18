@@ -374,7 +374,10 @@ fn get_hostname() -> Option<String> {
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
-        let ret = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+        let ret = unsafe {
+            // SAFETY: FFI call to gethostname with valid buffer and length.
+            libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len())
+        };
         if ret != 0 {
             return None;
         }
@@ -772,14 +775,18 @@ mod tests {
         assert!(get_auth(&Some(auth_file.clone())).is_err());
 
         // Test None input (no env vars)
+
         unsafe {
+            // SAFETY: Modifying environment variables in tests.
             std::env::remove_var(USERNAME_ENVVAR);
             std::env::remove_var(PASSWORD_ENVVAR);
         }
         assert!(get_auth(&None)?.is_none());
 
         // Test environment variables
+
         unsafe {
+            // SAFETY: Modifying environment variables in tests.
             std::env::set_var(USERNAME_ENVVAR, "env_user");
             std::env::set_var(PASSWORD_ENVVAR, "env_pass");
         }
@@ -789,6 +796,7 @@ mod tests {
 
         // Cleanup
         unsafe {
+            // SAFETY: Modifying environment variables in tests.
             std::env::remove_var(USERNAME_ENVVAR);
             std::env::remove_var(PASSWORD_ENVVAR);
         }

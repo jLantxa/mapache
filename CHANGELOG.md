@@ -34,6 +34,8 @@
   detail panel, and direct navigation to file explorer and restore.
 - **Redesigned TUI theme**: The TUI now uses a refined colour palette and
   layout for improved readability.
+- **config command**: Added a new `config` command to generate template config
+  files.
 
 ### Changed
 

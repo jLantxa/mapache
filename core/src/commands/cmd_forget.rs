@@ -39,7 +39,7 @@ impl ToExitCode for ForgetError {
 }
 
 // Define argument groups for mutual exclusivity and multiple selection
-#[derive(Parser, Debug, Clone, Deserialize, Default)]
+#[derive(Parser, Debug, Clone, Serialize, Deserialize, Default)]
 #[clap(group = ArgGroup::new("policy").multiple(false))] // Either forget OR retention_rules, but not both
 #[clap(group = ArgGroup::new("retention_rules").multiple(true))] // Allow multiple --keep-* rules
 #[clap(
@@ -122,6 +122,29 @@ pub struct CmdArgs {
     /// pack file before repacking.
     #[clap(short, long)]
     pub tolerance: Option<f32>,
+}
+
+impl CmdArgs {
+    pub(crate) fn template() -> Self {
+        Self {
+            forget: Vec::new(),
+            force: false,
+            tags_str: None,
+            hosts: Vec::new(),
+            keep_last: Some(10),
+            keep_within: None,
+            keep_yearly: Some(1),
+            keep_monthly: Some(6),
+            keep_weekly: Some(4),
+            keep_daily: Some(7),
+            keep_hourly: None,
+            keep_tags: Some("important,archive".to_string()),
+            keep_min: None,
+            dry_run: false,
+            run_gc: false,
+            tolerance: Some(0.0),
+        }
+    }
 }
 
 impl Merge for CmdArgs {

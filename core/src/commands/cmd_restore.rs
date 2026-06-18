@@ -56,7 +56,7 @@ impl std::fmt::Display for Strategy {
     }
 }
 
-#[derive(Args, Debug, Clone, Deserialize, Default)]
+#[derive(Args, Debug, Clone, Serialize, Deserialize, Default)]
 #[clap(
     about = "Restore a snapshot in a target path",
     long_about = "Restore a snapshot in a target path. Running this command in \
@@ -112,7 +112,6 @@ pub struct CmdArgs {
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub delete: Option<bool>,
 
-    /// When used with --delete, also delete nodes in the same level as the root.
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", requires = "delete")]
     pub no_preserve_root: Option<bool>,
 
@@ -132,6 +131,27 @@ pub struct CmdArgs {
     /// Dry run
     #[clap(long)]
     pub dry_run: bool,
+}
+
+impl CmdArgs {
+    pub(crate) fn template() -> Self {
+        Self {
+            snapshot: UseSnapshot::Latest,
+            target: Some(PathBuf::from("/tmp/restore")),
+            include: None,
+            include_file: None,
+            exclude: Some(vec!["**/node_modules".to_string()]),
+            exclude_file: None,
+            strip_prefix: Some(true),
+            strategy: Some(Strategy::Fail),
+            delete: Some(false),
+            dry_run: false,
+            no_preserve_root: Some(false),
+            quit_on_error: Some(false),
+            sparse: Some(false),
+            verify: Some(true),
+        }
+    }
 }
 
 impl Merge for CmdArgs {

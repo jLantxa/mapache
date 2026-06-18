@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{commands, fs};
 
@@ -91,7 +91,7 @@ pub(crate) fn config_path(s: &str) -> Result<PathBuf> {
 }
 
 /// Runtime-configurable defaults (the `[runtime]` section in the TOML config).
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct RuntimeConfig {
     // Restore
@@ -116,15 +116,55 @@ pub struct RuntimeConfig {
     pub ui_snapshot_progress_item_min_size: Option<u64>,
 }
 
+impl RuntimeConfig {
+    pub(crate) fn template() -> Self {
+        use crate::mapache::defaults::*;
+        Self {
+            restore_blob_concurrency: Some(DEFAULT_RESTORE_BLOB_CONCURRENCY),
+            restore_decoded_budget: Some(DEFAULT_RESTORE_DECODED_BUDGET),
+            restore_max_open_files: Some(DEFAULT_RESTORE_MAX_OPEN_FILES),
+            restore_pack_prefetch: Some(DEFAULT_RESTORE_PACK_PREFETCH),
+            restore_pack_read_merge_threshold: Some(DEFAULT_RESTORE_PACK_READ_MERGE_THRESHOLD),
+            restore_pack_segment_max_size: Some(DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE),
+            min_pack_size_factor: Some(DEFAULT_MIN_PACK_SIZE_FACTOR),
+            gc_decoded_budget: Some(DEFAULT_GC_DECODED_BUDGET),
+            gc_repack_concurrency: Some(DEFAULT_GC_REPACK_CONCURRENCY),
+            blobs_per_index_file: Some(BLOBS_PER_INDEX_FILE),
+            index_flush_timeout_secs: Some(INDEX_FLUSH_TIMEOUT.as_secs()),
+            s3_multipart_threshold: Some(S3_MULTIPART_THRESHOLD),
+            s3_multipart_part_size: Some(S3_MULTIPART_PART_SIZE),
+            max_path_display_len: Some(MAX_PATH_DISPLAY_LEN),
+            ui_snapshot_progress_item_min_size: UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE,
+        }
+    }
+}
+
 /// Top-level config structure. Sections map to command names.
-#[derive(Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct MapacheConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub global: Option<commands::CliGlobalArgs>,
-    pub runtime: Option<RuntimeConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<commands::cmd_snapshot::CmdArgs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub restore: Option<commands::cmd_restore::CmdArgs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forget: Option<commands::cmd_forget::CmdArgs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeConfig>,
+}
+
+impl MapacheConfig {
+    pub(crate) fn template() -> Self {
+        Self {
+            global: Some(commands::CliGlobalArgs::template()),
+            runtime: Some(RuntimeConfig::template()),
+            snapshot: Some(commands::cmd_snapshot::CmdArgs::template()),
+            restore: Some(commands::cmd_restore::CmdArgs::template()),
+            forget: Some(commands::cmd_forget::CmdArgs::template()),
+        }
+    }
 }
 
 pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {

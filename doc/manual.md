@@ -63,11 +63,20 @@ mission-critical data.
 
 ## 2. Installation
 
-### Pre-built Binaries (Recommended)
+### Quick Install (Linux, macOS, Windows)
 
-Download the latest release binary for your platform from the
+```bash
+curl -fsSL https://github.com/jLantxa/mapache/raw/main/tools/install.sh | sh
+```
+
+Downloads the latest release binary for your platform and installs it to
+`/usr/local/bin/mapache`. Set `VERSION` or `INSTALL_DIR` to customize.
+
+### Pre-built Binaries
+
+Download binaries from the
 [Releases page](https://github.com/jlantxa/mapache/releases).
-Binaries are statically linked and require no dependencies.
+All binaries are statically linked and require no dependencies.
 
 ### Build from Source
 
@@ -91,7 +100,7 @@ make release-static
 
 - `fuse` (default on Linux) — FUSE mount support. Requires `libfuse` headers at
   build time.
-- `tui` (experimental) — Interactive terminal user interface.
+- `tui` (default) — Interactive terminal user interface.
 
 To build without FUSE:
 
@@ -683,8 +692,8 @@ When the pattern does not contain a `/`, the search is recursive and matches
 in any subdirectory. Use a leading `/` (e.g. `find /file.txt`) to restrict
 the search to the root directory of each snapshot.
 
-Supports `--json` for machine-readable output and exits with meaningful exit
-codes: `10` on repo open failure, `20` on command failure.
+Supports `--json` for machine-readable output. Exits with a non-zero code on
+error.
 
 ---
 
@@ -1093,27 +1102,25 @@ extension) by `forget`. The snapshot is reactivated and will appear in
 
 ---
 
-## 16. Experimental TUI
+## 16. Terminal User Interface
 
 ```bash
 mapache tui -r <URL>
 ```
 
-Launches an experimental interactive terminal user interface with screens for:
-- Dashboard — overview of the repository with version info and key stats
-- File explorer — browse snapshot contents with inline detail panel
-- Snapshot detail — inspect individual snapshots
-- Snapshot creation wizard
-- Restore wizard
-- Forget/retention management
-- Diff screen — navigable tree of changes between snapshots (`<`/`>` to browse
-  adjacent pairs, `/` to filter, `u` to toggle unchanged files)
-- Find screen — real-time glob search across all snapshots with progress bar,
+Launches an interactive terminal user interface with screens for:
+- **Dashboard** — overview of the repository with version info and key stats
+- **File explorer** — browse snapshot contents with inline detail panel
+- **Snapshot detail** — inspect individual snapshots
+- **Snapshot creation wizard**
+- **Restore wizard**
+- **Forget/retention management**
+- **Diff screen** — navigable tree of changes between snapshots (`<`/`>` to
+  browse adjacent pairs, `/` to filter, `u` to toggle unchanged files)
+- **Find screen** — real-time glob search across all snapshots with progress,
   results table, and direct navigation to explorer/restore
 
-**Note:** The TUI is experimental and may be removed or replaced in future
-versions. It requires the `tui` feature (enabled by default) and a supported
-terminal.
+Requires the `tui` feature (enabled by default) and a supported terminal.
 
 ---
 
@@ -1313,7 +1320,7 @@ mapache find <TARGET> -r <URL>
   --json                  Output results in JSON format
 ```
 
-Exits with code `10` on repository open failure, `20` on search failure.
+Exits with a non-zero code on error.
 
 ### `mapache diff`
 Show differences between snapshots.
@@ -1404,8 +1411,7 @@ mapache mount <MOUNTPOINT> -r <URL>
   --cache-size-mib <MIB>  Data cache size (default: 64)
 ```
 
-Exits with code `10` on repository open failure, `20` on mount failure,
-and `130` on interrupt.
+Exits with a non-zero code on error.
 
 ### `mapache cat`
 Print repository objects.
@@ -1491,7 +1497,7 @@ mapache completion --shell <SHELL> --path <DIR>
 ```
 
 ### `mapache tui`
-Launch experimental terminal user interface (requires `tui` feature).
+Launch terminal user interface (requires `tui` feature).
 
 ```
 mapache tui -r <URL>
@@ -1499,7 +1505,7 @@ mapache tui -r <URL>
 
 ---
 
-## 21. Troubleshooting & FAQ
+## 22. Troubleshooting & FAQ
 
 ### Lock Issues
 

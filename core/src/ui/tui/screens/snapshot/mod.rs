@@ -85,6 +85,8 @@ impl SnapshotCreateScreen {
         self.shutdown_signal.store(false, Ordering::SeqCst);
 
         tokio::spawn(async move {
+            repo.reset_stats();
+
             let parent_snapshot_pair =
                 match cmd_snapshot::resolve_parent_snapshot(repo.clone(), no_parent, None).await {
                     Ok(pair) => pair,

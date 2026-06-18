@@ -658,6 +658,10 @@ pub(crate) async fn run_with_repo(
         new_snapshot.summary.meta_raw_bytes += new_snapshot_size.raw + repo_stats.index.raw;
         new_snapshot.summary.meta_encoded_bytes +=
             new_snapshot_size.encoded + repo_stats.index.encoded;
+        new_snapshot.summary.total_raw_bytes =
+            new_snapshot.summary.raw_bytes + new_snapshot.summary.meta_raw_bytes;
+        new_snapshot.summary.total_encoded_bytes =
+            new_snapshot.summary.encoded_bytes + new_snapshot.summary.meta_encoded_bytes;
 
         SnapshotOutcome::Saved(Box::new(SnapshotCompletion {
             snapshot_id: new_snapshot_id,

@@ -193,7 +193,7 @@ fn render_success(
             Constraint::Length(data_col_w),
         ],
     )
-    .block(theme::block("Totals"));
+    .block(theme::block("This snapshot added"));
     frame.render_widget(data_table, chunks[1]);
 
     let stats_line = Line::from(vec![Span::raw(format!(

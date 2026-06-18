@@ -135,6 +135,17 @@ pub struct RepoStatsSnapshot {
 }
 
 impl RepoStats {
+    pub fn reset(&self) {
+        self.raw_bytes.store(0, Ordering::Relaxed);
+        self.encoded_bytes.store(0, Ordering::Relaxed);
+        self.data_blobs.store(0, Ordering::Relaxed);
+        self.meta_raw_bytes.store(0, Ordering::Relaxed);
+        self.meta_encoded_bytes.store(0, Ordering::Relaxed);
+        self.meta_blobs.store(0, Ordering::Relaxed);
+        self.index_raw_bytes.store(0, Ordering::Relaxed);
+        self.index_meta_bytes.store(0, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> RepoStatsSnapshot {
         let rb = self.raw_bytes.load(Ordering::Relaxed);
         let eb = self.encoded_bytes.load(Ordering::Relaxed);
@@ -836,6 +847,10 @@ impl Repository {
     /// Finds a file in the repository using an ID prefix
     pub async fn find(&self, file_type: ContentIdType, prefix: &str) -> Result<(ID, PathBuf)> {
         self.find_with_extension(file_type, prefix, None).await
+    }
+
+    pub fn reset_stats(&self) {
+        self.stats.reset();
     }
 
     pub fn init_pack_saver(self: &Arc<Self>, num_packers: usize) -> Result<()> {

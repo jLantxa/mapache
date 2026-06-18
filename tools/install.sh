@@ -81,8 +81,16 @@ fi
 # ---- install ----
 chmod +x "$BINARY"
 echo "Installing to $INSTALL_DIR/$BIN_NAME ..."
-mkdir -p "$INSTALL_DIR"
-mv "$BINARY" "$INSTALL_DIR/$BIN_NAME"
+mkdir -p "$INSTALL_DIR" 2>/dev/null ||
+  sudo mkdir -p "$INSTALL_DIR" ||
+  { echo "Error: could not create directory $INSTALL_DIR"; exit 1; }
+
+if cp "$BINARY" "$INSTALL_DIR/$BIN_NAME" 2>/dev/null; then
+  :
+else
+  echo "Using sudo to install to $INSTALL_DIR ..."
+  sudo cp "$BINARY" "$INSTALL_DIR/$BIN_NAME"
+fi
 
 echo "mapache $VERSION installed successfully!"
 echo "Run 'mapache --help' to get started."

@@ -253,6 +253,15 @@ Mapache can read settings from a TOML configuration file specified via
 `--with-config <PATH>`. The file supports `[global]`, `[snapshot]`, `[restore]`,
 `[forget]`, and `[runtime]` sections.
 
+Generate the canonical template with:
+
+```bash
+mapache config template                             # Print to stdout
+mapache config template --output ./mapache.toml     # Write to file
+```
+
+All values are commented out; uncomment and adjust as needed.
+
 Example configuration:
 
 ```toml
@@ -1494,6 +1503,14 @@ Generate shell completion scripts.
 mapache completion --shell <SHELL> --path <DIR>
   --shell <SHELL>         Shell type (bash, zsh, fish, powershell, elvish, nushell)
   --path <DIR>            Output directory
+```
+
+### `mapache config`
+Manage repository configuration.
+
+```
+mapache config template [--output <PATH>]
+  --output <PATH>         Write template to file instead of stdout
 ```
 
 ### `mapache tui`

@@ -90,6 +90,9 @@ pub fn init_console() {
             },
         };
 
+        // SAFETY: GetStdHandle/GetConsoleMode/SetConsoleMode are Windows
+        // FFI calls with pseudo-handles (no ownership). Null and
+        // INVALID_HANDLE_VALUE are checked before use.
         unsafe {
             let handle = GetStdHandle(STD_OUTPUT_HANDLE);
             if handle != INVALID_HANDLE_VALUE && !handle.is_null() {

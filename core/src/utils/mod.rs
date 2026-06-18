@@ -121,8 +121,8 @@ where
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for &b in bytes {
-        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-        s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+        s.push(char::from_digit((b >> 4).into(), 16).expect("nibble fits in radix 16"));
+        s.push(char::from_digit((b & 0xf).into(), 16).expect("nibble fits in radix 16"));
     }
     s
 }
@@ -388,6 +388,8 @@ fn get_hostname() -> Option<String> {
         };
         let mut buf = [0u16; 256];
         let mut len = buf.len() as u32;
+        // SAFETY: Windows FFI. buf is a valid 256-u16 stack array, len
+        // is initialised to capacity. The call writes at most len u16s.
         let ret =
             unsafe { GetComputerNameExW(ComputerNameDnsHostname, buf.as_mut_ptr(), &mut len) };
         if ret == 0 {

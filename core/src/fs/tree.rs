@@ -408,7 +408,7 @@ where
     }
 
     fn with_ctx(err: anyhow::Error, msg: &'static str) -> anyhow::Error {
-        Err::<(), _>(err).context(msg).unwrap_err()
+        err.context(msg)
     }
 }
 

@@ -81,9 +81,9 @@ impl BloomFilter {
 
     #[inline]
     fn get_hashes(&self, id: &ID) -> (u64, u64) {
-        let h1 = u64::from_le_bytes(id.0[0..8].try_into().unwrap());
-        let h2 = u64::from_le_bytes(id.0[8..16].try_into().unwrap());
-        (h1, h2)
+        let h1_bytes: [u8; 8] = id.0[..8].try_into().expect("ID has 32 bytes");
+        let h2_bytes: [u8; 8] = id.0[8..16].try_into().expect("ID has 32 bytes");
+        (u64::from_le_bytes(h1_bytes), u64::from_le_bytes(h2_bytes))
     }
 
     pub fn clear(&mut self) {

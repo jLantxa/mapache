@@ -1,3 +1,13 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::unreachable,
+        clippy::panic,
+        clippy::panic_in_result_fn,
+    )
+)]
+
 //! This is an implementation of the [FastCDC](https://ieeexplore.ieee.org/document/9055082)
 //! algorithm by Wen Xia et al. published in 2020.
 //! It implements the Content-Defined Chunking algorithm with all the five

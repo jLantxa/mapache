@@ -392,10 +392,16 @@ impl DiffScreen {
         let Some(entry) = self.selected_entry() else {
             return;
         };
+
         if !entry.is_dir {
             return;
         }
-        let entry_idx = self.visible[self.list_state.selected().unwrap()];
+
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+
+        let entry_idx = self.visible[selected];
         self.entries[entry_idx].expanded = !self.entries[entry_idx].expanded;
         self.build_visible();
     }
@@ -797,7 +803,8 @@ impl Screen for DiffScreen {
             KeyCode::Left | KeyCode::Backspace => {
                 let entry = self.selected_entry()?;
                 if entry.is_dir && entry.expanded {
-                    let entry_idx = self.visible[self.list_state.selected().unwrap()];
+                    let selected = self.list_state.selected()?;
+                    let entry_idx = self.visible[selected];
                     self.entries[entry_idx].expanded = false;
                     self.build_visible();
                 }

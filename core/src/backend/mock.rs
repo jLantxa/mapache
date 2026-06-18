@@ -335,8 +335,8 @@ impl StorageBackend for MockBackend {
                     format!("MockBackend: path not found: {}", handle.path.display())
                 })?;
 
-                let file_size = match node {
-                    MockNode::File { data, .. } => data.len(),
+                let (file_size, data) = match node {
+                    MockNode::File { data, .. } => (data.len(), data),
                     _ => {
                         return Err(anyhow!(
                             "MockBackend: cannot read — not a file: {}",
@@ -361,17 +361,14 @@ impl StorageBackend for MockBackend {
                     start.saturating_add(length).min(file_size)
                 };
 
-                match node {
-                    MockNode::File { data, .. } => Ok(OpResult::Bytes(data[start..end].to_vec())),
-                    _ => unreachable!(),
-                }
+                Ok(OpResult::Bytes(data[start..end].to_vec()))
             })
             .await?;
 
-        match res {
-            OpResult::Bytes(b) => Ok(b),
-            _ => unreachable!(),
-        }
+        let OpResult::Bytes(b) = res else {
+            return Err(anyhow!("MockBackend: unexpected result from read op"));
+        };
+        Ok(b)
     }
 
     async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
@@ -425,11 +422,15 @@ impl StorageBackend for MockBackend {
             }
 
             for k in &keys {
-                let node = nodes.remove(k).unwrap();
+                let node = nodes.remove(k).with_context(|| {
+                    format!("MockBackend: key {:?} disappeared during rename", k)
+                })?;
                 let new_key = if *k == from {
                     to.to_path_buf()
                 } else {
-                    let rel = k.strip_prefix(from).unwrap();
+                    let rel = k.strip_prefix(from).map_err(|_| {
+                        anyhow!("MockBackend: key {:?} should have prefix {:?}", k, from)
+                    })?;
                     to.join(rel)
                 };
                 nodes.insert(new_key, node);
@@ -531,10 +532,10 @@ impl StorageBackend for MockBackend {
             })
             .await?;
 
-        match res {
-            OpResult::Nodes(n) => Ok(n),
-            _ => unreachable!(),
-        }
+        let OpResult::Nodes(n) = res else {
+            return Err(anyhow!("MockBackend: unexpected result from list_dir op"));
+        };
+        Ok(n)
     }
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
@@ -561,10 +562,10 @@ impl StorageBackend for MockBackend {
                 }))
             })
             .await?;
-        match res {
-            OpResult::Attr(a) => Ok(a),
-            _ => unreachable!(),
-        }
+        let OpResult::Attr(a) = res else {
+            return Err(anyhow!("MockBackend: unexpected result from lstat op"));
+        };
+        Ok(a)
     }
 }
 

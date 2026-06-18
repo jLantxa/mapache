@@ -125,13 +125,18 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     write!(stdout, "{prompt}: ")?;
     stdout.flush()?;
 
+    // SAFETY: GetStdHandle returns a pseudo-handle (no ownership).
+    // GetConsoleMode/SetConsoleMode operate on valid handles. Mode is
+    // saved before modification and restored unconditionally.
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
     let mut mode = 0;
+    // SAFETY: handle obtained above is valid for GetConsoleMode.
     unsafe {
         GetConsoleMode(handle, &mut mode);
     }
 
     let original_mode = mode;
+    // SAFETY: same validated handle, setting no-echo for password input.
     unsafe {
         SetConsoleMode(handle, mode & !ENABLE_ECHO_INPUT);
     }
@@ -139,6 +144,7 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     let mut password = String::new();
     let res = io::stdin().lock().read_line(&mut password);
 
+    // SAFETY: restores original mode regardless of read_line outcome.
     unsafe {
         SetConsoleMode(handle, original_mode);
     }

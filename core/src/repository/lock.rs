@@ -184,6 +184,8 @@ impl Lock {
                 },
             };
 
+            // SAFETY: OpenProcess/GetExitCodeProcess/CloseHandle are Windows
+            // FFI calls with valid parameters. Null handle is checked.
             unsafe {
                 let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, self.pid);
                 if handle.is_null() {

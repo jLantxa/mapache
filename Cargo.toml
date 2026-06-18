@@ -9,6 +9,16 @@ members = [
 [workspace.lints.rust]
 warnings = "deny"
 
+[workspace.lints.clippy]
+unwrap_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+undocumented_unsafe_blocks = "deny"
+
 [workspace.package]
 repository = "https://github.com/jlantxa/mapache"
 

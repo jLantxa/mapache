@@ -22,7 +22,7 @@ use crate::{
         tree::{NodeDiff, StreamNode},
     },
     mapache::{self, BlobType, ID, SaveID, traits::BlobSaver},
-    ui::SnapshotProgressReporter,
+    ui::events::{BackupEvent, Event, EventSender, emit_event},
 };
 
 /// Reusable buffers that persist across processing calls in a pool thread.
@@ -74,7 +74,7 @@ pub(crate) const DEFAULT_CHUNKER: Chunker = Chunker::new(
 pub(crate) struct ItemContext<'a> {
     pub blob_saver: Arc<dyn BlobSaver>,
     pub progress: &'a SnapshotProgress,
-    pub progress_reporter: &'a dyn SnapshotProgressReporter,
+    pub event_sender: &'a EventSender,
     pub shutdown_signal: &'a AtomicBool,
     pub bufs: Option<&'a mut ReusableBuffers>,
 }
@@ -94,8 +94,14 @@ pub(crate) fn process_item_sync(
         .map(|n| n.node.metadata.size)
         .or_else(|| prev_node.as_ref().map(|n| n.node.metadata.size));
 
-    ctx.progress_reporter
-        .processing_node(path, diff_type, size_hint);
+    emit_event(
+        ctx.event_sender,
+        Event::Backup(BackupEvent::NodeProcessing {
+            path: path.to_path_buf(),
+            diff: diff_type,
+            size_hint,
+        }),
+    );
 
     let out = match diff_type {
         NodeDiff::Deleted => {
@@ -118,8 +124,10 @@ pub(crate) fn process_item_sync(
 
             if next.node.is_file() {
                 ctx.progress.processed_bytes(next.node.metadata.size);
-                ctx.progress_reporter
-                    .processed_bytes(next.node.metadata.size);
+                emit_event(
+                    ctx.event_sender,
+                    Event::Backup(BackupEvent::BytesProcessed(next.node.metadata.size)),
+                );
             }
             report_node_diff(&next.node, diff_type, ctx.progress);
 
@@ -142,7 +150,7 @@ pub(crate) fn process_item_sync(
 
                 let blob_saver = ctx.blob_saver.clone();
                 let progress = ctx.progress;
-                let progress_reporter = ctx.progress_reporter;
+                let event_sender = ctx.event_sender.clone();
                 let shutdown_signal = ctx.shutdown_signal;
 
                 let mut fallback_small = Vec::new();
@@ -160,7 +168,7 @@ pub(crate) fn process_item_sync(
                             file,
                             file_size,
                             progress,
-                            progress_reporter,
+                            &event_sender,
                             small_buf,
                         )
                     } else {
@@ -169,7 +177,7 @@ pub(crate) fn process_item_sync(
                             file,
                             file_size,
                             progress,
-                            progress_reporter,
+                            &event_sender,
                             shutdown_signal,
                         )
                     }
@@ -180,13 +188,19 @@ pub(crate) fn process_item_sync(
                         next.node.blobs = Some(ids);
                     }
                     Err(e) => {
-                        ctx.progress_reporter.warning(&format!(
-                            "Skipping {}: {}",
-                            path.display(),
-                            e
-                        ));
+                        emit_event(
+                            ctx.event_sender,
+                            Event::Backup(BackupEvent::Warning(format!(
+                                "Skipping {}: {}",
+                                path.display(),
+                                e
+                            ))),
+                        );
                         ctx.progress.processed_bytes(file_size);
-                        ctx.progress_reporter.processed_bytes(file_size);
+                        emit_event(
+                            ctx.event_sender,
+                            Event::Backup(BackupEvent::BytesProcessed(file_size)),
+                        );
                     }
                 }
             }
@@ -198,8 +212,14 @@ pub(crate) fn process_item_sync(
 
     if diff_type != NodeDiff::Deleted {
         ctx.progress.processed_node();
-        ctx.progress_reporter
-            .processed_node(path, diff_type, size_hint);
+        emit_event(
+            ctx.event_sender,
+            Event::Backup(BackupEvent::NodeProcessed {
+                path: path.to_path_buf(),
+                diff: diff_type,
+                size_hint,
+            }),
+        );
     }
 
     Ok(out)
@@ -214,13 +234,20 @@ pub(crate) fn process_stdin_sync(
     mut reader: StdinReader,
     blob_saver: Arc<dyn BlobSaver>,
     progress: &SnapshotProgress,
-    progress_reporter: &dyn SnapshotProgressReporter,
+    event_sender: &EventSender,
     shutdown_signal: &AtomicBool,
 ) -> Result<Option<StreamNode>> {
     const STDIN_PATH: &str = "/stdin";
     let stdin_path = Path::new(STDIN_PATH);
     let size_hint = next_node.as_ref().map(|n| n.node.metadata.size);
-    progress_reporter.processing_node(stdin_path, NodeDiff::New, size_hint);
+    emit_event(
+        event_sender,
+        Event::Backup(BackupEvent::NodeProcessing {
+            path: stdin_path.to_path_buf(),
+            diff: NodeDiff::New,
+            size_hint,
+        }),
+    );
 
     let mut next = next_node
         .with_context(|| format!("Inconsistent state: stdin but no next_node for {STDIN_PATH:?}"))?
@@ -232,7 +259,7 @@ pub(crate) fn process_stdin_sync(
             &mut reader,
             mapache::defaults::NORMAL_CHUNK_SIZE,
             progress,
-            progress_reporter,
+            event_sender,
             shutdown_signal,
         );
 
@@ -242,9 +269,19 @@ pub(crate) fn process_stdin_sync(
                 next.node.metadata.size = reader.bytes_read();
             }
             Err(e) => {
-                progress_reporter.warning(&format!("Error reading stdin: {}", e));
+                emit_event(
+                    event_sender,
+                    Event::Backup(BackupEvent::Warning(format!("Error reading stdin: {}", e))),
+                );
                 progress.processed_node();
-                progress_reporter.processed_node(stdin_path, NodeDiff::New, size_hint);
+                emit_event(
+                    event_sender,
+                    Event::Backup(BackupEvent::NodeProcessed {
+                        path: stdin_path.to_path_buf(),
+                        diff: NodeDiff::New,
+                        size_hint,
+                    }),
+                );
                 return Err(e);
             }
         }
@@ -252,7 +289,14 @@ pub(crate) fn process_stdin_sync(
 
     report_node_diff(&next.node, NodeDiff::New, progress);
     progress.processed_node();
-    progress_reporter.processed_node(stdin_path, NodeDiff::New, size_hint);
+    emit_event(
+        event_sender,
+        Event::Backup(BackupEvent::NodeProcessed {
+            path: stdin_path.to_path_buf(),
+            diff: NodeDiff::New,
+            size_hint,
+        }),
+    );
 
     Ok(Some(next))
 }
@@ -276,7 +320,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
     reader: R,
     file_size: u64,
     progress: &SnapshotProgress,
-    progress_reporter: &dyn SnapshotProgressReporter,
+    event_sender: &EventSender,
     shutdown_signal: &AtomicBool,
 ) -> Result<Vec<ID>> {
     let (chunk_tx, chunk_rx) = crossbeam_channel::bounded::<Result<Vec<u8>>>(2);
@@ -322,7 +366,10 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
             ids.push(id);
 
             progress.processed_bytes(chunk_len);
-            progress_reporter.processed_bytes(chunk_len);
+            emit_event(
+                event_sender,
+                Event::Backup(BackupEvent::BytesProcessed(chunk_len)),
+            );
         }
 
         Ok(ids)
@@ -336,7 +383,7 @@ fn store_small_file<R: Read>(
     mut reader: R,
     file_size: u64,
     progress: &SnapshotProgress,
-    progress_reporter: &dyn SnapshotProgressReporter,
+    event_sender: &EventSender,
     buf: &mut Vec<u8>,
 ) -> Result<Vec<ID>> {
     let size = usize::try_from(file_size).context("File too large for this platform")?;
@@ -362,7 +409,10 @@ fn store_small_file<R: Read>(
     )?;
 
     progress.processed_bytes(file_size);
-    progress_reporter.processed_bytes(file_size);
+    emit_event(
+        event_sender,
+        Event::Backup(BackupEvent::BytesProcessed(file_size)),
+    );
 
     Ok(vec![id])
 }
@@ -424,7 +474,7 @@ mod tests {
         backend::mock::MockBackend,
         mapache::defaults::TEST_REPO_CONFIG,
         repository::repo::{Auth, Repository},
-        ui::noop::NoopSnapshotReporter,
+        ui::events::noop_sender,
         utils::size,
     };
     async fn setup_repo() -> Arc<Repository> {
@@ -443,29 +493,22 @@ mod tests {
         repo
     }
 
-    /// Helper to create progress and reporter.
-    fn setup_progress() -> (Arc<SnapshotProgress>, Arc<dyn SnapshotProgressReporter>) {
+    /// Helper to create progress and noop sender.
+    fn setup_progress() -> (Arc<SnapshotProgress>, EventSender) {
         let progress = Arc::new(SnapshotProgress::new());
-        let reporter: Arc<dyn SnapshotProgressReporter> = Arc::new(NoopSnapshotReporter);
-        (progress, reporter)
+        let sender = noop_sender();
+        (progress, sender)
     }
 
     #[tokio::test]
     async fn test_chunk_and_store_empty_data() {
         let repo = setup_repo().await;
-        let (progress, reporter) = setup_progress();
+        let (progress, sender) = setup_progress();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let data: &[u8] = &[];
-        let ids = chunk_and_store_file(
-            repo.as_ref(),
-            data,
-            0,
-            &progress,
-            reporter.as_ref(),
-            &shutdown,
-        )
-        .expect("chunk_and_store_file should succeed for empty data");
+        let ids = chunk_and_store_file(repo.as_ref(), data, 0, &progress, &sender, &shutdown)
+            .expect("chunk_and_store_file should succeed for empty data");
 
         // Empty input produces no blobs (the chunker yields no chunks for empty input).
         assert!(ids.is_empty(), "empty data should produce no blobs");
@@ -474,7 +517,7 @@ mod tests {
     #[tokio::test]
     async fn test_chunk_and_store_small_data() {
         let repo = setup_repo().await;
-        let (progress, reporter) = setup_progress();
+        let (progress, sender) = setup_progress();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let data = b"hello world this is test data for stdin chunking";
@@ -483,7 +526,7 @@ mod tests {
             data.as_slice(),
             data.len() as u64,
             &progress,
-            reporter.as_ref(),
+            &sender,
             &shutdown,
         )
         .expect("chunk_and_store_file should succeed");
@@ -501,7 +544,7 @@ mod tests {
     #[tokio::test]
     async fn test_chunk_and_store_large_data() {
         let repo = setup_repo().await;
-        let (progress, reporter) = setup_progress();
+        let (progress, sender) = setup_progress();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         // Use non-uniform data to ensure the CDC chunker finds multiple boundaries.
@@ -515,7 +558,7 @@ mod tests {
             data.as_slice(),
             data.len() as u64,
             &progress,
-            reporter.as_ref(),
+            &sender,
             &shutdown,
         )
         .expect("chunk_and_store_file should succeed for large data");

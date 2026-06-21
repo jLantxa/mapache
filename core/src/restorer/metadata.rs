@@ -6,6 +6,7 @@ use futures::StreamExt;
 use crate::{
     fs::{self as repo_fs, tree::SerializedNodeStream},
     mapache::ID,
+    ui::events::{Event, RestoreEvent, emit_event},
     utils,
 };
 
@@ -23,9 +24,6 @@ impl Restorer {
             return Ok(());
         }
 
-        self.progress_reporter
-            .set_message("Finishing metadata...".to_string());
-
         let node_stream = SerializedNodeStream::new(
             self.repo.clone(),
             Some(tree_id),
@@ -38,7 +36,7 @@ impl Restorer {
         let d = crate::mapache::defaults::runtime();
         node_stream
             .for_each_concurrent(d.restore_blob_concurrency, |node_res| {
-                let progress_reporter = self.progress_reporter.clone();
+                let event_sender = self.event_sender.clone();
                 let target_path = self.target_path.clone();
                 let opts_strip_prefix = self.opts.strip_prefix.clone();
 
@@ -46,8 +44,12 @@ impl Restorer {
                     let (mut path, stream_node_res) = match node_res {
                         Ok(res) => res,
                         Err(e) => {
-                            progress_reporter
-                                .warning(&format!("Failed to read node from stream: {e}"));
+                            emit_event(
+                                &event_sender,
+                                Event::Restore(RestoreEvent::Warning(format!(
+                                    "Failed to read node from stream: {e}"
+                                ))),
+                            );
                             return;
                         }
                     };
@@ -55,7 +57,12 @@ impl Restorer {
                     let stream_node = match stream_node_res {
                         Ok(node) => node,
                         Err(e) => {
-                            progress_reporter.warning(&format!("Failed to deserialize node: {e}"));
+                            emit_event(
+                                &event_sender,
+                                Event::Restore(RestoreEvent::Warning(format!(
+                                    "Failed to deserialize node: {e}"
+                                ))),
+                            );
                             return;
                         }
                     };
@@ -92,11 +99,8 @@ impl Restorer {
                             &node.metadata,
                             node.is_symlink(),
                             &restore_path,
-                            progress_reporter.as_ref(),
+                            &event_sender,
                         );
-                    }
-                    if node.is_dir() {
-                        progress_reporter.processed_item(&path);
                     }
                 }
             })
@@ -108,12 +112,7 @@ impl Restorer {
             if self.shutdown_signal.load(Ordering::Acquire) {
                 bail!("Interrupted");
             }
-            super::node_restorer::try_restore_node_metadata(
-                &meta,
-                false,
-                &p,
-                self.progress_reporter.as_ref(),
-            );
+            super::node_restorer::try_restore_node_metadata(&meta, false, &p, &self.event_sender);
         }
 
         Ok(())

@@ -33,7 +33,7 @@ use crate::{
     fs::tree::SerializedNodeStream,
     mapache::{ID, defaults},
     repository::{repo::Repository, snapshot::Snapshot},
-    ui::RestoreProgressReporter,
+    ui::events::{Event, EventSender, RestoreEvent, emit_event},
     utils,
 };
 
@@ -81,14 +81,14 @@ pub async fn restore(
     snapshot: &Snapshot,
     target_path: &Path,
     opts: RestoreOptions,
-    progress_reporter: Arc<dyn RestoreProgressReporter>,
+    event_sender: EventSender,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<()> {
     let restorer = Restorer::new(
         repo,
         target_path.to_path_buf(),
         opts,
-        progress_reporter,
+        event_sender,
         shutdown_signal,
     );
 
@@ -106,7 +106,7 @@ pub async fn restore(
 /// 5. Restores metadata in a separate bottom-up pass.
 pub(crate) struct Restorer {
     pub(crate) repo: Arc<Repository>,
-    pub(crate) progress_reporter: Arc<dyn RestoreProgressReporter>,
+    pub(crate) event_sender: EventSender,
     pub(crate) shutdown_signal: Arc<AtomicBool>,
     pub(crate) target_path: PathBuf,
     pub(crate) opts: RestoreOptions,
@@ -280,7 +280,7 @@ impl Restorer {
         repo: Arc<Repository>,
         target_path: PathBuf,
         opts: RestoreOptions,
-        progress_reporter: Arc<dyn RestoreProgressReporter>,
+        event_sender: EventSender,
         shutdown_signal: Arc<AtomicBool>,
     ) -> Self {
         let d = defaults::runtime();
@@ -289,7 +289,7 @@ impl Restorer {
             repo,
             target_path,
             opts,
-            progress_reporter,
+            event_sender,
             shutdown_signal,
             buffers: Arc::new(Mutex::new(VecDeque::with_capacity(num_buffers))),
         }
@@ -317,7 +317,7 @@ impl Restorer {
     pub(crate) fn clone_for_workers(&self) -> Self {
         Self {
             repo: self.repo.clone(),
-            progress_reporter: self.progress_reporter.clone(),
+            event_sender: self.event_sender.clone(),
             shutdown_signal: self.shutdown_signal.clone(),
             target_path: self.target_path.clone(),
             opts: RestoreOptions {
@@ -461,18 +461,32 @@ impl Restorer {
             utils::format_size_binary(plan.total_bytes, 1)
         );
 
-        self.progress_reporter
-            .resize_workload(plan.total_items, plan.total_bytes);
+        emit_event(
+            &self.event_sender,
+            Event::Restore(RestoreEvent::PlanBuilt {
+                total_items: plan.total_items,
+                total_bytes: plan.total_bytes,
+            }),
+        );
 
         if plan.skipped_bytes > 0 {
-            self.progress_reporter.processed_bytes(plan.skipped_bytes);
+            emit_event(
+                &self.event_sender,
+                Event::Restore(RestoreEvent::BytesProcessed(plan.skipped_bytes)),
+            );
         }
 
         for path in &plan.skipped_item_paths {
-            self.progress_reporter.processed_item(path);
+            emit_event(
+                &self.event_sender,
+                Event::Restore(RestoreEvent::ItemProcessed(path.clone())),
+            );
         }
         for (path, _) in &plan.directories {
-            self.progress_reporter.processed_item(path);
+            emit_event(
+                &self.event_sender,
+                Event::Restore(RestoreEvent::ItemProcessed(path.clone())),
+            );
         }
 
         let plan_files = plan.files.clone();
@@ -503,7 +517,10 @@ impl Restorer {
                     if self.opts.quit_on_error {
                         bail!(err_msg);
                     }
-                    self.progress_reporter.error(&err_msg);
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Error(err_msg)),
+                    );
                 }
                 if let Err(e) = fs::remove_file(secondary_path)
                     && e.kind() != std::io::ErrorKind::NotFound
@@ -516,7 +533,10 @@ impl Restorer {
                     if self.opts.quit_on_error {
                         bail!(err_msg);
                     }
-                    self.progress_reporter.error(&err_msg);
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Error(err_msg)),
+                    );
                     continue;
                 }
                 if let Err(e) = fs::hard_link(primary_path, secondary_path) {
@@ -529,7 +549,10 @@ impl Restorer {
                     if self.opts.quit_on_error {
                         bail!(err_msg);
                     }
-                    self.progress_reporter.error(&err_msg);
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Error(err_msg)),
+                    );
                 }
             }
         }

@@ -11,7 +11,7 @@ use crate::{
     archiver::{processor, processor::ReusableBuffers, progress::SnapshotProgress},
     fs::tree::{NodeDiff, StreamNode},
     mapache::traits::BlobSaver,
-    ui::SnapshotProgressReporter,
+    ui::events::EventSender,
 };
 
 pub(crate) const BATCH_SIZE: usize = 16;
@@ -23,7 +23,7 @@ pub(crate) struct ChunkerJob {
     pub diff_type: NodeDiff,
     pub blob_saver: Arc<dyn BlobSaver>,
     pub progress: Arc<SnapshotProgress>,
-    pub progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    pub event_sender: EventSender,
     pub shutdown_signal: Arc<AtomicBool>,
     pub is_stdin: bool,
 }
@@ -67,7 +67,7 @@ impl ChunkerPool {
                             let mut ctx = processor::ItemContext {
                                 blob_saver: job.blob_saver.clone(),
                                 progress: job.progress.as_ref(),
-                                progress_reporter: job.progress_reporter.as_ref(),
+                                event_sender: &job.event_sender,
                                 shutdown_signal: job.shutdown_signal.as_ref(),
                                 bufs: Some(bufs),
                             };
@@ -84,7 +84,7 @@ impl ChunkerPool {
                                 processor::StdinReader::new(),
                                 job.blob_saver.clone(),
                                 job.progress.as_ref(),
-                                job.progress_reporter.as_ref(),
+                                &job.event_sender,
                                 job.shutdown_signal.as_ref(),
                             )
                         }

@@ -1,5 +1,4 @@
 use std::{
-    path::Path,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -12,7 +11,8 @@ use serde::Serialize;
 
 use crate::{
     mapache::global::GlobalOpts,
-    ui::{RestoreProgressReporter, json::JsonReporter},
+    ui::events::{Event, EventSender, RestoreEvent},
+    ui::json::JsonReporter,
 };
 
 #[derive(Serialize)]
@@ -39,7 +39,7 @@ struct WarningMsg<'a> {
     message: &'a str,
 }
 
-pub struct JsonRestoreProgressReporter {
+struct JsonRestoreState {
     json_reporter: JsonReporter,
     visited_nodes: AtomicU64,
     processed_items_count: AtomicU64,
@@ -53,23 +53,7 @@ pub struct JsonRestoreProgressReporter {
     num_expected_bytes: AtomicU64,
 }
 
-impl JsonRestoreProgressReporter {
-    pub(crate) fn new(num_expected_items: Option<u64>, num_expected_bytes: Option<u64>) -> Self {
-        Self {
-            json_reporter: JsonReporter::new(true),
-            visited_nodes: AtomicU64::new(0),
-            processed_items_count: AtomicU64::new(0),
-            processed_bytes_count: AtomicU64::new(0),
-            error_counter: AtomicU64::new(0),
-            warning_counter: AtomicU64::new(0),
-            current_stage: Arc::new(Mutex::new(String::new())),
-            last_update: Arc::new(Mutex::new(Instant::now())),
-            start_time: Instant::now(),
-            num_expected_items: AtomicU64::new(num_expected_items.unwrap_or(0)),
-            num_expected_bytes: AtomicU64::new(num_expected_bytes.unwrap_or(0)),
-        }
-    }
-
+impl JsonRestoreState {
     fn should_emit_update(&self) -> bool {
         let mut last_update = self.last_update.lock();
         if last_update.elapsed() >= GlobalOpts::progress_refresh_interval() {
@@ -107,120 +91,112 @@ impl JsonRestoreProgressReporter {
     }
 }
 
-impl RestoreProgressReporter for JsonRestoreProgressReporter {
-    fn set_message(&self, msg: String) {
-        {
-            let mut stage = self.current_stage.lock();
-            *stage = msg;
+pub(crate) fn make_event_sender(
+    num_expected_items: Option<u64>,
+    num_expected_bytes: Option<u64>,
+) -> (
+    EventSender,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+) {
+    let error_counter = Arc::new(AtomicU64::new(0));
+    let warning_counter = Arc::new(AtomicU64::new(0));
+    let processed_items_count = Arc::new(AtomicU64::new(0));
+    let processed_bytes_count = Arc::new(AtomicU64::new(0));
+
+    let state = Arc::new(JsonRestoreState {
+        json_reporter: JsonReporter::new(true),
+        visited_nodes: AtomicU64::new(0),
+        processed_items_count: AtomicU64::new(0),
+        processed_bytes_count: AtomicU64::new(0),
+        error_counter: AtomicU64::new(0),
+        warning_counter: AtomicU64::new(0),
+        current_stage: Arc::new(Mutex::new(String::new())),
+        last_update: Arc::new(Mutex::new(Instant::now())),
+        start_time: Instant::now(),
+        num_expected_items: AtomicU64::new(num_expected_items.unwrap_or(0)),
+        num_expected_bytes: AtomicU64::new(num_expected_bytes.unwrap_or(0)),
+    });
+
+    let sender: EventSender = Arc::new(move |event: Event| {
+        let Event::Restore(ev) = event else { return };
+        match ev {
+            RestoreEvent::Planning => {
+                {
+                    let mut stage = state.current_stage.lock();
+                    *stage = "Planning...".to_string();
+                }
+                if state.should_emit_update() {
+                    state.emit_status_update();
+                }
+            }
+            RestoreEvent::NodeVisited(count) => {
+                state.visited_nodes.store(count, Ordering::Relaxed);
+                if state.should_emit_update() {
+                    state.emit_status_update();
+                }
+            }
+            RestoreEvent::PlanBuilt {
+                total_items: t,
+                total_bytes: b,
+            } => {
+                state.visited_nodes.store(0, Ordering::Relaxed);
+                state.num_expected_items.store(t, Ordering::Relaxed);
+                state.num_expected_bytes.store(b, Ordering::Relaxed);
+                state.emit_status_update();
+            }
+            RestoreEvent::ItemProcessed(_) => {
+                state.processed_items_count.fetch_add(1, Ordering::Relaxed);
+                if state.should_emit_update() {
+                    state.emit_status_update();
+                }
+            }
+            RestoreEvent::BytesProcessed(bytes) => {
+                state
+                    .processed_bytes_count
+                    .fetch_add(bytes, Ordering::Relaxed);
+                if state.should_emit_update() {
+                    state.emit_status_update();
+                }
+            }
+            RestoreEvent::Warning(ref msg) => {
+                state.warning_counter.fetch_add(1, Ordering::Relaxed);
+                state
+                    .json_reporter
+                    .emit("warning", &WarningMsg { message: msg });
+            }
+            RestoreEvent::Error(ref msg) => {
+                state.error_counter.fetch_add(1, Ordering::Relaxed);
+                state
+                    .json_reporter
+                    .emit("error", &ErrorMsg { message: msg });
+            }
+            RestoreEvent::Log(ref msg) => {
+                #[derive(Serialize)]
+                struct LogMsg {
+                    message: String,
+                }
+                state.json_reporter.emit(
+                    "log",
+                    &LogMsg {
+                        message: msg.clone(),
+                    },
+                );
+            }
+            RestoreEvent::Finished => {
+                state.emit_status_update();
+                state.json_reporter.flush();
+            }
         }
+    });
 
-        if self.should_emit_update() {
-            self.emit_status_update();
-        }
-    }
-
-    fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
-        self.visited_nodes.store(0, Ordering::Relaxed);
-        self.num_expected_items
-            .store(num_expected_items, Ordering::Relaxed);
-        self.num_expected_bytes
-            .store(num_expected_bytes, Ordering::Relaxed);
-        self.emit_status_update();
-    }
-
-    fn processed_item(&self, _path: &Path) {
-        self.processed_items_count.fetch_add(1, Ordering::Relaxed);
-        if self.should_emit_update() {
-            self.emit_status_update();
-        }
-    }
-
-    fn processed_bytes(&self, bytes: u64) {
-        self.processed_bytes_count
-            .fetch_add(bytes, Ordering::Relaxed);
-        if self.should_emit_update() {
-            self.emit_status_update();
-        }
-    }
-
-    fn error(&self, msg: &str) {
-        self.error_counter.fetch_add(1, Ordering::Relaxed);
-        self.json_reporter.emit("error", &ErrorMsg { message: msg });
-    }
-
-    fn warning(&self, msg: &str) {
-        self.warning_counter.fetch_add(1, Ordering::Relaxed);
-        self.json_reporter
-            .emit("warning", &WarningMsg { message: msg });
-    }
-
-    fn set_visited_nodes(&self, count: u64) {
-        self.visited_nodes.store(count, Ordering::Relaxed);
-        if self.should_emit_update() {
-            self.emit_status_update();
-        }
-    }
-
-    fn error_count(&self) -> u64 {
-        self.error_counter.load(Ordering::Relaxed)
-    }
-
-    fn warning_count(&self) -> u64 {
-        self.warning_counter.load(Ordering::Relaxed)
-    }
-
-    fn log(&self, msg: String) {
-        #[derive(Serialize)]
-        struct LogMsg {
-            message: String,
-        }
-        self.json_reporter.emit("log", &LogMsg { message: msg });
-    }
-
-    fn verbose_1(&self, msg: String) {
-        #[derive(Serialize)]
-        struct VerboseMsg {
-            message: String,
-            level: u32,
-        }
-        if GlobalOpts::verbosity() >= 2 {
-            self.json_reporter.emit(
-                "verbose",
-                &VerboseMsg {
-                    message: msg,
-                    level: 1,
-                },
-            );
-        }
-    }
-
-    fn verbose_2(&self, msg: String) {
-        #[derive(Serialize)]
-        struct VerboseMsg {
-            message: String,
-            level: u32,
-        }
-        if GlobalOpts::verbosity() >= 3 {
-            self.json_reporter.emit(
-                "verbose",
-                &VerboseMsg {
-                    message: msg,
-                    level: 2,
-                },
-            );
-        }
-    }
-
-    fn finalize(&self) {
-        self.emit_status_update();
-        self.json_reporter.flush();
-    }
-
-    fn total_items(&self) -> u64 {
-        self.num_expected_items.load(Ordering::Relaxed)
-    }
-
-    fn total_bytes(&self) -> u64 {
-        self.num_expected_bytes.load(Ordering::Relaxed)
-    }
+    (
+        sender,
+        error_counter,
+        warning_counter,
+        processed_items_count,
+        processed_bytes_count,
+    )
 }

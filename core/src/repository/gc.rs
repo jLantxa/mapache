@@ -22,12 +22,45 @@ use crate::{
         repo::{REPO_DROPPED_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
-    ui,
+    ui::events::{Event, EventSender, GcEvent, GcTaskKind},
     utils::{
         self,
         collections::{IdMap, IdSet},
     },
 };
+
+#[derive(Clone)]
+struct GcReporter(EventSender);
+
+impl GcReporter {
+    fn start_task(&self, kind: GcTaskKind, total: Option<u64>) {
+        (self.0)(Event::Gc(GcEvent::TaskProgress {
+            kind,
+            pos: 0,
+            total,
+        }));
+    }
+
+    fn update_task(&self, kind: GcTaskKind, pos: u64) {
+        (self.0)(Event::Gc(GcEvent::TaskProgress {
+            kind,
+            pos,
+            total: None,
+        }));
+    }
+
+    fn finish_task(&self, kind: GcTaskKind) {
+        (self.0)(Event::Gc(GcEvent::TaskFinished { kind }));
+    }
+
+    fn log(&self, msg: String) {
+        (self.0)(Event::Gc(GcEvent::Log(msg)));
+    }
+
+    fn warning(&self, msg: String) {
+        (self.0)(Event::Gc(GcEvent::Warning(msg)));
+    }
+}
 
 /// The cleanup plan. This struct contains lists of items that are valid, unused or need some work.
 /// A plan can be executed to complete the garbage collection process. Once executed, the plan
@@ -70,13 +103,14 @@ pub struct GcSizes {
 pub async fn scan(
     repo: Arc<Repository>,
     tolerance: f32,
-    reporter: Arc<dyn ui::GcProgressReporter>,
+    event_sender: EventSender,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Plan> {
+    let reporter = GcReporter(event_sender);
     check_shutdown(&shutdown_signal)?;
     tracing::info!(target: "gc", "Starting garbage collection scan (tolerance={:.1}%)", tolerance * 100.0);
     let (referenced_blobs, referenced_packs) =
-        get_referenced_blobs_and_packs(repo.clone(), reporter.clone(), shutdown_signal.clone())
+        get_referenced_blobs_and_packs(repo.clone(), reporter.0.clone(), shutdown_signal.clone())
             .await?;
 
     let (keep_packs, object_trash) = repo.list_packs_and_trash().await?;
@@ -106,7 +140,7 @@ pub async fn scan(
     let mut pack_garbage: IdMap<ID, u64> = IdMap::default();
 
     // Find obsolete packs and blobs in index
-    reporter.start_task(ui::GcTask::FindingObsoleteBlobs, None);
+    reporter.start_task(GcTaskKind::FindingObsoleteBlobs, None);
     let mut obsolete_blobs_count = 0;
 
     repo.index().for_each_id(|id, locator| {
@@ -118,10 +152,10 @@ pub async fn scan(
                 .and_modify(|size| *size += locator.length as u64)
                 .or_insert(locator.length as u64);
             obsolete_blobs_count += 1;
-            reporter.update_task(ui::GcTask::FindingObsoleteBlobs, obsolete_blobs_count);
+            reporter.update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
         }
     });
-    reporter.finish_task(ui::GcTask::FindingObsoleteBlobs);
+    reporter.finish_task(GcTaskKind::FindingObsoleteBlobs);
 
     // Find small packs to repack
     let current_pack_size = repo.pack_size();
@@ -141,7 +175,7 @@ pub async fn scan(
 
     // Check garbage levels
     reporter.start_task(
-        ui::GcTask::CheckingGarbageLevels,
+        GcTaskKind::CheckingGarbageLevels,
         Some(pack_garbage.len() as u64),
     );
     let mut checked_packs_count = 0;
@@ -155,9 +189,9 @@ pub async fn scan(
             plan.tolerated_packs.insert(pack_id);
         }
         checked_packs_count += 1;
-        reporter.update_task(ui::GcTask::CheckingGarbageLevels, checked_packs_count);
+        reporter.update_task(GcTaskKind::CheckingGarbageLevels, checked_packs_count);
     }
-    reporter.finish_task(ui::GcTask::CheckingGarbageLevels);
+    reporter.finish_task(GcTaskKind::CheckingGarbageLevels);
     tracing::info!(target: "gc", "Scan completed: {} obsolete, {} small, {} tolerated, {} unused packs", plan.obsolete_packs.len(), plan.small_packs.len(), plan.tolerated_packs.len(), plan.unused_packs.len());
 
     Ok(plan)
@@ -166,7 +200,8 @@ pub async fn scan(
 impl Plan {
     /// Execute the plan, consuming it. Checks the shutdown signal between
     /// phases only, so on-disk state stays consistent on interruption.
-    pub async fn execute(mut self, reporter: Arc<dyn ui::GcProgressReporter>) -> Result<GcSizes> {
+    pub async fn execute(mut self, event_sender: EventSender) -> Result<GcSizes> {
+        let reporter = GcReporter(event_sender);
         tracing::info!(target: "gc", "Executing garbage collection plan");
         let mut gc_sizes = GcSizes::default();
         let signal = self.shutdown_signal.clone();
@@ -174,11 +209,11 @@ impl Plan {
         check_shutdown(&signal)?;
         // Delete all expired locks first. This operation is independent of all others,
         // as the expired locks are not useful anymore.
-        gc_sizes.deleted_bytes += remove_expired_locks(&self.repo, reporter.clone()).await?;
+        gc_sizes.deleted_bytes += remove_expired_locks(&self.repo, reporter.0.clone()).await?;
         delete_trash_files(
             &self.repo,
             Some(self.object_trash.drain(..).collect()),
-            reporter.clone(),
+            reporter.0.clone(),
         )
         .await?;
 
@@ -187,7 +222,7 @@ impl Plan {
             self.obsolete_packs.extend(self.small_packs.drain());
         }
 
-        gc_sizes.deleted_bytes += self.delete_unused_packs(reporter.clone()).await?;
+        gc_sizes.deleted_bytes += self.delete_unused_packs(reporter.0.clone()).await?;
 
         // Safety checkpoint: only unreferenced items have been deleted so
         // far. On-disk state is still consistent. Below this, `repack`
@@ -195,21 +230,31 @@ impl Plan {
         // we let it run to completion (or abandon wholesale).
         check_shutdown(&signal)?;
 
-        // No need to repack and rewrite the indices if there are no obsolete packs
+        // Clean unused packs from the index — they were deleted from disk
+        // above but the index still references them.
         if !self.obsolete_packs.is_empty() {
+            if !self.unused_packs.is_empty() {
+                self.repo.index().cleanup(Some(&self.unused_packs));
+            }
+
             tracing::info!(target: "gc", "Repacking {} obsolete packs", self.obsolete_packs.len());
             self.repo
                 .init_pack_saver(mapache::defaults::DEFAULT_SNAPSHOT_PACKERS)?;
 
-            self.repack(reporter.clone()).await?;
+            self.repack(reporter.0.clone()).await?;
 
             // New index is now on disk; subsequent deletions are safe to
             // interrupt partway.
             let repo_stats = self.repo.flush_and_finalize_pack_saver().await?;
 
             gc_sizes.added_bytes += (repo_stats.data + repo_stats.meta + repo_stats.index).encoded;
-            gc_sizes.deleted_bytes += self.delete_old_indices(reporter.clone()).await?;
-            gc_sizes.deleted_bytes += self.delete_obsolete_packs(reporter.clone()).await?;
+            gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
+            gc_sizes.deleted_bytes += self.delete_obsolete_packs(reporter.0.clone()).await?;
+        } else if !self.unused_packs.is_empty() {
+            tracing::info!(target: "gc", "Cleaning index for {} unused packs", self.unused_packs.len());
+            self.repo.index().cleanup(Some(&self.unused_packs));
+            self.repo.index().persist(&self.repo).await?;
+            gc_sizes.deleted_bytes += self.delete_old_indices(reporter.0.clone()).await?;
         }
 
         tracing::info!(target: "gc", "Garbage collection execution finished");
@@ -217,13 +262,14 @@ impl Plan {
     }
 
     /// Delete packs that contain no referenced blobs.
-    async fn delete_unused_packs(&self, reporter: Arc<dyn ui::GcProgressReporter>) -> Result<u64> {
+    async fn delete_unused_packs(&self, event_sender: EventSender) -> Result<u64> {
         if self.unused_packs.is_empty() {
             return Ok(0);
         }
 
-        reporter.start_task(
-            ui::GcTask::DeletingUnusedPacks,
+        let r = GcReporter(event_sender);
+        r.start_task(
+            GcTaskKind::DeletingUnusedPacks,
             Some(self.unused_packs.len() as u64),
         );
         let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -231,12 +277,12 @@ impl Plan {
         let deleted_size = stream::iter(&self.unused_packs)
             .map(|id| {
                 let repo = &self.repo;
-                let reporter = reporter.clone();
+                let r = r.clone();
                 let pos = pos.clone();
                 Ok(async move {
                     let size = repo.delete_file(ContentIdType::Pack, id, None).await?;
                     let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    reporter.update_task(ui::GcTask::DeletingUnusedPacks, current);
+                    r.update_task(GcTaskKind::DeletingUnusedPacks, current);
                     Ok::<u64, anyhow::Error>(size)
                 })
             })
@@ -244,8 +290,8 @@ impl Plan {
             .try_fold(0, |acc, size| async move { Ok(acc + size) })
             .await?;
 
-        reporter.finish_task(ui::GcTask::DeletingUnusedPacks);
-        reporter.log(format!(
+        r.finish_task(GcTaskKind::DeletingUnusedPacks);
+        r.log(format!(
             "Deleted {} unused packs",
             pos.load(std::sync::atomic::Ordering::Relaxed)
         ));
@@ -255,7 +301,7 @@ impl Plan {
 
     /// Repack referenced blobs from obsolete packs to new packs.
     /// This process inherently removes duplicates by using the MasterIndex merge logic.
-    async fn repack(&mut self, reporter: Arc<dyn ui::GcProgressReporter>) -> Result<()> {
+    async fn repack(&mut self, event_sender: EventSender) -> Result<()> {
         // Gather locators while the index is still intact.
         // We use a Vec to preserve the exact metadata we need for the loader.
         let mut locators_to_repack = Vec::new();
@@ -279,8 +325,9 @@ impl Plan {
         // on-disk index is not updated until the post-repack flush.
         self.repo.index().cleanup(Some(&self.obsolete_packs));
 
-        reporter.start_task(
-            ui::GcTask::RepackingBlobs,
+        let r = GcReporter(event_sender);
+        r.start_task(
+            GcTaskKind::RepackingBlobs,
             Some(locators_to_repack.len() as u64),
         );
         let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -314,7 +361,7 @@ impl Plan {
         stream::iter(chunks)
             .map(|chunk| {
                 let repo = self.repo.clone();
-                let reporter = reporter.clone();
+                let r = r.clone();
                 let pos = pos.clone();
                 let shutdown_signal = self.shutdown_signal.clone();
                 let sem = byte_semaphore.clone();
@@ -357,12 +404,12 @@ impl Plan {
                                 .copied()
                                 .unwrap_or(mapache::BlobType::Data);
                             let repo_clone = repo.clone();
-                            let reporter_clone = reporter.clone();
+                            let r = r.clone();
                             let pos_clone = pos.clone();
 
                             async move {
                                 tokio::task::spawn_blocking(move || {
-                                    let r = repo_clone.encode_and_save_blob(
+                                    let result = repo_clone.encode_and_save_blob(
                                         blob_type,
                                         WriteContents::Owned(data),
                                         SaveID::WithID(id),
@@ -370,8 +417,8 @@ impl Plan {
                                     let current = pos_clone
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                                         + 1;
-                                    reporter_clone.update_task(ui::GcTask::RepackingBlobs, current);
-                                    r
+                                    r.update_task(GcTaskKind::RepackingBlobs, current);
+                                    result
                                 })
                                 .await
                                 .context("Repack task panicked")?
@@ -396,17 +443,14 @@ impl Plan {
             .try_collect::<Vec<_>>()
             .await?;
 
-        reporter.finish_task(ui::GcTask::RepackingBlobs);
+        r.finish_task(GcTaskKind::RepackingBlobs);
         Ok(())
     }
 
     /// Delete old index files
     /// This operation must be performed after the master index has been cleaned up
     /// and all referenced packs have been repacked.
-    async fn delete_old_indices(
-        &mut self,
-        reporter: Arc<dyn ui::GcProgressReporter>,
-    ) -> Result<u64> {
+    async fn delete_old_indices(&mut self, event_sender: EventSender) -> Result<u64> {
         // Make sure that the new index files don't overlap the files to delete.
         let new_index_ids = self.repo.index().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
@@ -415,8 +459,9 @@ impl Plan {
             return Ok(0);
         }
 
-        reporter.start_task(
-            ui::GcTask::DeletingOldIndices,
+        let r = GcReporter(event_sender);
+        r.start_task(
+            GcTaskKind::DeletingOldIndices,
             Some(self.index_ids.len() as u64),
         );
         let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -424,7 +469,7 @@ impl Plan {
         let deleted_size = stream::iter(&self.index_ids)
             .map(|id| {
                 let repo = &self.repo;
-                let reporter = reporter.clone();
+                let r = r.clone();
                 let pos = pos.clone();
                 async move {
                     let size = repo
@@ -432,7 +477,7 @@ impl Plan {
                         .await
                         .unwrap_or(0);
                     let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    reporter.update_task(ui::GcTask::DeletingOldIndices, current);
+                    r.update_task(GcTaskKind::DeletingOldIndices, current);
                     size
                 }
             })
@@ -440,9 +485,9 @@ impl Plan {
             .fold(0u64, |acc, size| async move { acc + size })
             .await;
 
-        reporter.finish_task(ui::GcTask::DeletingOldIndices);
+        r.finish_task(GcTaskKind::DeletingOldIndices);
 
-        reporter.log(format!(
+        r.log(format!(
             "Deleted {} obsolete index files",
             pos.load(std::sync::atomic::Ordering::Relaxed)
         ));
@@ -451,16 +496,14 @@ impl Plan {
     }
 
     /// Delete all pack files marked as obsolete.
-    async fn delete_obsolete_packs(
-        &self,
-        reporter: Arc<dyn ui::GcProgressReporter>,
-    ) -> Result<u64> {
+    async fn delete_obsolete_packs(&self, event_sender: EventSender) -> Result<u64> {
         if self.obsolete_packs.is_empty() {
             return Ok(0);
         }
 
-        reporter.start_task(
-            ui::GcTask::DeletingObsoletePacks,
+        let r = GcReporter(event_sender);
+        r.start_task(
+            GcTaskKind::DeletingObsoletePacks,
             Some(self.obsolete_packs.len() as u64),
         );
         let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -470,7 +513,7 @@ impl Plan {
         let deleted_size = stream::iter(&self.obsolete_packs)
             .map(|id| {
                 let repo = &self.repo;
-                let reporter = reporter.clone();
+                let r = r.clone();
                 let pos = pos.clone();
                 async move {
                     // Perform the async delete
@@ -480,7 +523,7 @@ impl Plan {
                         .unwrap_or(0);
 
                     let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    reporter.update_task(ui::GcTask::DeletingObsoletePacks, current);
+                    r.update_task(GcTaskKind::DeletingObsoletePacks, current);
                     size
                 }
             })
@@ -488,9 +531,9 @@ impl Plan {
             .fold(0u64, |acc, size| async move { acc + size })
             .await;
 
-        reporter.finish_task(ui::GcTask::DeletingObsoletePacks);
+        r.finish_task(GcTaskKind::DeletingObsoletePacks);
 
-        reporter.log(format!(
+        r.log(format!(
             "Deleted {} obsolete packs",
             pos.load(std::sync::atomic::Ordering::Relaxed)
         ));
@@ -502,16 +545,17 @@ impl Plan {
 /// Returns all blobs and packs referenced by all existing snapshots in the repository.
 async fn get_referenced_blobs_and_packs(
     repo: Arc<Repository>,
-    reporter: Arc<dyn ui::GcProgressReporter>,
+    event_sender: EventSender,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<(IdSet<ID>, IdSet<ID>)> {
+    let reporter = GcReporter(event_sender);
     let referenced_blobs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let referenced_packs = Arc::new(parking_lot::Mutex::new(IdSet::default()));
     let verified_trees = Arc::new(parking_lot::Mutex::new(IdSet::default()));
 
     let snapshot_stream = SnapshotStream::new(repo.clone()).await?;
 
-    reporter.start_task(ui::GcTask::SearchingReferencedBlobs, None);
+    reporter.start_task(GcTaskKind::SearchingReferencedBlobs, None);
 
     snapshot_stream
         .map(|res| {
@@ -544,7 +588,7 @@ async fn get_referenced_blobs_and_packs(
                                 let mut blobs = referenced_blobs.lock();
                                 if blobs.insert(tree_id) {
                                     reporter.update_task(
-                                        ui::GcTask::SearchingReferencedBlobs,
+                                        GcTaskKind::SearchingReferencedBlobs,
                                         blobs.len() as u64,
                                     );
                                 }
@@ -593,7 +637,7 @@ async fn get_referenced_blobs_and_packs(
                             for blob_id in blobs {
                                 if ref_blobs.insert(blob_id) {
                                     reporter.update_task(
-                                        ui::GcTask::SearchingReferencedBlobs,
+                                        GcTaskKind::SearchingReferencedBlobs,
                                         ref_blobs.len() as u64,
                                     );
                                 }
@@ -617,7 +661,7 @@ async fn get_referenced_blobs_and_packs(
         .try_collect::<Vec<_>>()
         .await?;
 
-    reporter.finish_task(ui::GcTask::SearchingReferencedBlobs);
+    reporter.finish_task(GcTaskKind::SearchingReferencedBlobs);
 
     let final_blobs = Arc::try_unwrap(referenced_blobs)
         .map_err(|_| anyhow!("Internal error: could not unwrap referenced_blobs Arc"))?
@@ -636,10 +680,7 @@ async fn get_referenced_blobs_and_packs(
 }
 
 /// Remove all expired locks from the repository
-async fn remove_expired_locks(
-    repo: &Arc<Repository>,
-    reporter: Arc<dyn ui::GcProgressReporter>,
-) -> Result<u64> {
+async fn remove_expired_locks(repo: &Arc<Repository>, event_sender: EventSender) -> Result<u64> {
     let locks = repo.get_locks().await?;
     let mut size_freed = 0;
     let mut num_deleted_locks = 0;
@@ -653,10 +694,10 @@ async fn remove_expired_locks(
         }
     }
 
-    reporter.log(format!(
+    (event_sender)(Event::Gc(GcEvent::Log(format!(
         "Deleted {}",
         utils::format_count(num_deleted_locks, "stale lock", "stale locks")
-    ));
+    ))));
 
     Ok(size_freed)
 }
@@ -669,7 +710,7 @@ async fn remove_expired_locks(
 async fn delete_trash_files(
     repo: &Arc<Repository>,
     object_trash: Option<Vec<PathBuf>>,
-    reporter: Arc<dyn ui::GcProgressReporter>,
+    event_sender: EventSender,
 ) -> Result<()> {
     let target_dirs = vec![
         repo.snapshot_path().to_path_buf(),
@@ -712,7 +753,10 @@ async fn delete_trash_files(
     // Delete found trash files
     for path in trash_files {
         if backend.remove(&path).await.is_err() {
-            reporter.warning(format!("Could not remove trash file {}", path.display()));
+            (event_sender)(Event::Gc(GcEvent::Warning(format!(
+                "Could not remove trash file {}",
+                path.display()
+            ))));
         }
     }
 
@@ -737,7 +781,7 @@ mod tests {
         },
         mapache::{BlobType, defaults::TEST_REPO_CONFIG, traits::BlobSaver},
         repository::{repo::Auth, snapshot::Snapshot},
-        ui::noop::NoopGcReporter,
+        ui::events::noop_sender,
     };
 
     fn make_auth() -> Auth {
@@ -828,7 +872,7 @@ mod tests {
         let plan = super::scan(
             repo.clone(),
             0.0,
-            Arc::new(NoopGcReporter),
+            noop_sender(),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .await?;
@@ -837,7 +881,7 @@ mod tests {
         assert!(!plan.referenced_blobs.contains(&blob_b));
         assert!(!plan.referenced_blobs.contains(&blob_c));
 
-        let gc_sizes = plan.execute(Arc::new(NoopGcReporter)).await?;
+        let gc_sizes = plan.execute(noop_sender()).await?;
         assert!(gc_sizes.deleted_bytes > 0);
 
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
@@ -917,7 +961,7 @@ mod tests {
         let plan = super::scan(
             repo.clone(),
             0.0,
-            Arc::new(NoopGcReporter),
+            noop_sender(),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .await?;
@@ -932,7 +976,7 @@ mod tests {
         // No completely unused packs
         assert!(plan.unused_packs.is_empty(), "no unused packs");
 
-        let _gc_sizes = plan.execute(Arc::new(NoopGcReporter)).await?;
+        let _gc_sizes = plan.execute(noop_sender()).await?;
 
         // Referenced blobs survive regardless of small-pack repacking
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
@@ -994,7 +1038,7 @@ mod tests {
         let plan = super::scan(
             repo.clone(),
             0.0,
-            Arc::new(NoopGcReporter),
+            noop_sender(),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .await?;
@@ -1004,7 +1048,7 @@ mod tests {
         assert!(plan.referenced_blobs.contains(&blob_c));
         assert!(!plan.referenced_blobs.contains(&blob_d));
 
-        let gc_sizes = plan.execute(Arc::new(NoopGcReporter)).await?;
+        let gc_sizes = plan.execute(noop_sender()).await?;
         assert!(gc_sizes.deleted_bytes > 0);
 
         assert_eq!(repo.load_blob(&blob_a).await?, b"aaaa");
@@ -1031,11 +1075,10 @@ mod tests {
         repo.flush_and_finalize_pack_saver().await?;
 
         let signal = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let err =
-            match super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter), signal.clone()).await {
-                Ok(_) => panic!("scan should fail when interrupted"),
-                Err(e) => e,
-            };
+        let err = match super::scan(repo.clone(), 0.0, noop_sender(), signal.clone()).await {
+            Ok(_) => panic!("scan should fail when interrupted"),
+            Err(e) => e,
+        };
         let msg = err.to_string();
         assert!(
             msg.to_lowercase().contains("interrupt"),
@@ -1075,13 +1118,13 @@ mod tests {
 
         // Build a plan with no shutdown signal.
         let signal = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let plan = super::scan(repo.clone(), 0.0, Arc::new(NoopGcReporter), signal.clone()).await?;
+        let plan = super::scan(repo.clone(), 0.0, noop_sender(), signal.clone()).await?;
 
         // Now set the signal so `execute` aborts at the first checkpoint
         // (after `delete_unused_packs`, before `repack`).
         signal.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let err = match plan.execute(Arc::new(NoopGcReporter)).await {
+        let err = match plan.execute(noop_sender()).await {
             Ok(_) => panic!("execute should fail when interrupted"),
             Err(e) => e,
         };

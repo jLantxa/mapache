@@ -10,20 +10,23 @@ use std::sync::{
 use async_trait::async_trait;
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     commands::{self, cmd_snapshot},
     repository::{lock::LockHandle, repo::Repository},
-    ui::tui::{
-        app::{Screen, Transition},
-        screens::snapshot::{
-            config::{ConfigAction, SnapshotForm, render_config},
-            progress::{
-                ProgressAction, ProgressState, SnapshotEvent, SummaryResult,
-                TuiSnapshotProgressReporter, handle_progress_key, render_progress,
+    ui::{
+        events::{BackupEvent, Event, EventSender},
+        tui::{
+            app::{Screen, Transition},
+            screens::snapshot::{
+                config::{ConfigAction, SnapshotForm, render_config},
+                progress::{
+                    ProgressAction, ProgressState, SummaryResult, handle_progress_key,
+                    render_progress,
+                },
+                summary::{SummaryAction, handle_summary_key, render_summary},
             },
-            summary::{SummaryAction, handle_summary_key, render_summary},
         },
     },
 };
@@ -42,7 +45,8 @@ pub struct SnapshotCreateScreen {
     form: SnapshotForm,
     progress: ProgressState,
     shutdown_signal: Arc<AtomicBool>,
-    rx: Option<mpsc::UnboundedReceiver<SnapshotEvent>>,
+    rx: Option<mpsc::UnboundedReceiver<BackupEvent>>,
+    result_rx: Option<oneshot::Receiver<Result<SummaryResult, String>>>,
     summary: Option<SummaryResult>,
 }
 
@@ -60,6 +64,7 @@ impl SnapshotCreateScreen {
             progress: ProgressState::new(),
             shutdown_signal: Arc::new(AtomicBool::new(false)),
             rx: None,
+            result_rx: None,
             summary: None,
         }
     }
@@ -76,9 +81,18 @@ impl SnapshotCreateScreen {
         let no_parent = self.form.form.get_toggle(5).unwrap_or(false);
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let reporter = Arc::new(TuiSnapshotProgressReporter { tx: tx.clone() });
+        let (result_tx, result_rx) = oneshot::channel();
+        let event_sender: EventSender = {
+            let tx = tx.clone();
+            Arc::new(move |event: Event| {
+                if let Event::Backup(e) = event {
+                    let _ = tx.send(e);
+                }
+            })
+        };
 
         self.rx = Some(rx);
+        self.result_rx = Some(result_rx);
         self.phase = SnapshotPhase::Progress;
         self.progress = ProgressState::new();
         self.progress.core.scanning = true;
@@ -91,7 +105,7 @@ impl SnapshotCreateScreen {
                 match cmd_snapshot::resolve_parent_snapshot(repo.clone(), no_parent, None).await {
                     Ok(pair) => pair,
                     Err(e) => {
-                        let _ = tx.send(SnapshotEvent::Completed(Box::new(Err(e.to_string()))));
+                        let _ = result_tx.send(Err(e.to_string()));
                         return;
                     }
                 };
@@ -100,7 +114,7 @@ impl SnapshotCreateScreen {
                 repo,
                 lock_handle,
                 options,
-                reporter,
+                event_sender,
                 parent_snapshot_pair,
                 Some(shutdown_signal.clone()),
             )
@@ -121,7 +135,7 @@ impl SnapshotCreateScreen {
                     }
                 }
             };
-            let _ = tx.send(SnapshotEvent::Completed(Box::new(Ok(summary_result))));
+            let _ = result_tx.send(Ok(summary_result));
         });
     }
 
@@ -130,21 +144,27 @@ impl SnapshotCreateScreen {
             return;
         }
 
+        // Process regular events from mpsc first
         if let Some(rx) = &mut self.rx {
             while let Ok(event) = rx.try_recv() {
-                if let SnapshotEvent::Completed(result) = &event {
-                    match result.as_ref() {
-                        Ok(summary_result) => {
-                            self.summary = Some(summary_result.clone());
-                        }
-                        Err(e) => {
-                            self.summary = Some(SummaryResult::Error(e.to_string()));
-                        }
-                    }
-                    self.phase = SnapshotPhase::Summary;
-                }
                 self.progress.handle_event(event);
             }
+        }
+
+        // Check for completion via oneshot
+        if let Some(rx) = &mut self.result_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(summary_result) => {
+                    self.summary = Some(summary_result);
+                }
+                Err(e) => {
+                    self.summary = Some(SummaryResult::Error(e));
+                }
+            }
+            self.phase = SnapshotPhase::Summary;
+            self.result_rx = None;
         }
     }
 }

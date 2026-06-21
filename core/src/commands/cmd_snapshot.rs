@@ -11,7 +11,7 @@ use clap::{ArgGroup, Args};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    archiver::{self, SnapshotOptions, progress::SnapshotProgress},
+    archiver::{self, SnapshotOptions, progress::SnapshotProcessSummary},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
@@ -35,13 +35,14 @@ use crate::{
         snapshot::{SnapshotPair, SnapshotSummary},
     },
     ui::{
-        self, SnapshotProcessSummary, SnapshotProgressReporter,
+        self,
         cli::{
             color::Colorize,
-            snapshot::CliSnapshotProgressReporter,
+            snapshot,
             table::{Alignment, Table},
         },
-        json::snapshot::JsonSnapshotProgressReporter,
+        events::{BackupEvent, Event, EventSender},
+        json::snapshot as json_snapshot,
     },
     utils,
 };
@@ -325,17 +326,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
             }
 
-            let progress_reporter: Arc<dyn SnapshotProgressReporter> = if json_output {
-                Arc::new(JsonSnapshotProgressReporter::new(None, None))
+            let event_sender = if json_output {
+                json_snapshot::make_event_sender(None, None)
             } else {
-                Arc::new(CliSnapshotProgressReporter::new(None, None, num_readers))
+                snapshot::make_event_sender(None, None, num_readers)
             };
 
             let result = run_with_repo(
                 repo,
                 lock_handle,
                 SnapshotRunOptions::from(args),
-                progress_reporter,
+                event_sender,
                 parent_snapshot_pair,
                 None,
             )
@@ -421,7 +422,7 @@ pub(crate) async fn run_with_repo(
     repo: Arc<Repository>,
     lock_handle: Option<LockHandle>,
     options: SnapshotRunOptions,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    event_sender: EventSender,
     parent_snapshot_pair: Option<SnapshotPair>,
     shutdown_signal: Option<Arc<AtomicBool>>,
 ) -> Result<SnapshotOutcome> {
@@ -531,23 +532,31 @@ pub(crate) async fn run_with_repo(
         )
     };
 
-    // Run Archiver
-    tracing::info!(target: "snapshot", "Initializing archiver");
-    let progress = Arc::new(SnapshotProgress::new());
-
     // Init cleanup handler (listens for SIGINT/SIGTERM, releases locks on signal).
     // When a shutdown_signal is provided (e.g. from the TUI) it is shared directly
     // with the archiver pipeline, so both OS signals and the TUI's Esc key abort
     // the work. Without one, a fresh signal is created internally.
-    let reporter_clone = progress_reporter.clone();
+    let event_sender_for_cleanup = event_sender.clone();
     let cleanup_handler = match shutdown_signal {
         Some(signal) => {
             CleanupHandler::new_with_interrupt_and_callback(signal.clone(), move || {
-                reporter_clone.finalize();
+                event_sender_for_cleanup(Event::Backup(BackupEvent::Finished(
+                    SnapshotProcessSummary {
+                        processed_items_count: 0,
+                        processed_bytes: 0,
+                        diff_counts: Default::default(),
+                    },
+                )));
             })?
         }
         None => CleanupHandler::new_with_callback(move || {
-            reporter_clone.finalize();
+            event_sender_for_cleanup(Event::Backup(BackupEvent::Finished(
+                SnapshotProcessSummary {
+                    processed_items_count: 0,
+                    processed_bytes: 0,
+                    diff_counts: Default::default(),
+                },
+            )));
         })?,
     };
     cleanup_handler.add_lock(lock_handle);
@@ -575,8 +584,7 @@ pub(crate) async fn run_with_repo(
             stdin,
         },
         num_readers,
-        progress.clone(),
-        progress_reporter.clone(),
+        event_sender,
         cleanup_handler.interrupted.clone(),
     )
     .await;
@@ -599,7 +607,6 @@ pub(crate) async fn run_with_repo(
                 return Ok(SnapshotOutcome::Interrupted);
             }
 
-            progress_reporter.finalize();
             tracing::error!(target: "snapshot", "Snapshot archival failed: {e}");
             return Err(fail(
                 format!("Snapshot failed: {}", e),
@@ -608,13 +615,13 @@ pub(crate) async fn run_with_repo(
         }
     };
 
-    let snapshot_report_summary = progress.summary();
-    let process_summary = snapshot_report_summary.clone();
+    let process_summary = SnapshotProcessSummary {
+        processed_items_count: new_snapshot.summary.processed_items_count,
+        processed_bytes: new_snapshot.summary.processed_bytes,
+        diff_counts: new_snapshot.summary.diff_counts.clone(),
+    };
 
-    // Fill snapshot summary
-    new_snapshot.summary.processed_items_count = snapshot_report_summary.processed_items_count;
-    new_snapshot.summary.processed_bytes = snapshot_report_summary.processed_bytes;
-    new_snapshot.summary.diff_counts = snapshot_report_summary.diff_counts;
+    // Fill snapshot summary from repo stats
     new_snapshot.summary.raw_bytes = repo_stats.data.raw;
     new_snapshot.summary.encoded_bytes = repo_stats.data.encoded;
     new_snapshot.summary.meta_raw_bytes = repo_stats.meta.raw;
@@ -647,7 +654,6 @@ pub(crate) async fn run_with_repo(
                 None,
             )
             .await?;
-        progress_reporter.finalize();
         tracing::info!(target: "snapshot", "Snapshot saved: {new_snapshot_id}");
 
         let meta_without_index_raw = new_snapshot.summary.meta_raw_bytes + new_snapshot_size.raw;
@@ -672,7 +678,6 @@ pub(crate) async fn run_with_repo(
             duration: start.elapsed(),
         }))
     } else {
-        progress_reporter.finalize();
         tracing::info!(target: "snapshot", "No changes detected. Snapshot skipped.");
         SnapshotOutcome::SkippedNoChanges
     };

@@ -27,10 +27,7 @@ use crate::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotStream},
     },
-    ui::{
-        self, SnapshotProgressReporter, cli::color::Colorize,
-        cli::snapshot::CliSnapshotProgressReporter,
-    },
+    ui::{self, cli::color::Colorize, cli::snapshot},
     utils,
 };
 
@@ -197,11 +194,10 @@ async fn amend(
     if parsed_excludes.is_some() {
         repo.init_pack_saver(1)?;
         let progress = Arc::new(SnapshotProgress::new());
-        let progress_reporter: Arc<dyn SnapshotProgressReporter> =
-            Arc::new(CliSnapshotProgressReporter::new(None, None, 1));
+        let event_sender = snapshot::make_event_sender(None, None, 1);
         let rewrite_ctx = RewriteCtx {
             progress: progress.clone(),
-            progress_reporter: progress_reporter.clone(),
+            event_sender,
             shutdown_signal,
         };
         rewrite_snapshot_tree(
@@ -215,7 +211,6 @@ async fn amend(
         .await?;
 
         repo.flush_and_finalize_pack_saver().await?;
-        progress_reporter.finalize();
     }
 
     // Save the amended snapshot and delete the old snapshot file

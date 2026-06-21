@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
@@ -8,86 +6,21 @@ use ratatui::{
     text::{Line, Span},
     widgets::{List, ListItem, Paragraph},
 };
-use tokio::sync::mpsc;
 
 use crate::{
     fs::{abbreviate_path, tree::NodeDiff},
     mapache::ID,
     repository::snapshot::SnapshotSummary,
-    ui::{
-        SnapshotProgressReporter,
-        tui::{
-            theme,
-            widgets::{ProgressBar, TaskProgressState},
-        },
+    ui::events::BackupEvent,
+    ui::tui::{
+        theme,
+        widgets::{ProgressBar, TaskProgressState},
     },
 };
 
 const MAX_ERRORS: usize = 3;
 const MAX_WARNINGS: usize = 3;
 const MAX_RECENT_NODES: usize = 5;
-
-pub enum SnapshotEvent {
-    ProcessedItem,
-    ProcessedBytes(u64),
-    AddExpectedItems(u64),
-    AddExpectedBytes(u64),
-    ScanFinished,
-    Error(String),
-    Warning(String),
-    ProcessingNode(PathBuf, NodeDiff, Option<u64>),
-    Completed(Box<Result<SummaryResult, String>>),
-}
-
-pub struct TuiSnapshotProgressReporter {
-    pub tx: mpsc::UnboundedSender<SnapshotEvent>,
-}
-
-impl SnapshotProgressReporter for TuiSnapshotProgressReporter {
-    fn processing_node(&self, path: &std::path::Path, diff: NodeDiff, _size_hint: Option<u64>) {
-        let _ = self.tx.send(SnapshotEvent::ProcessingNode(
-            path.to_path_buf(),
-            diff,
-            None,
-        ));
-    }
-
-    fn processed_node(&self, _path: &std::path::Path, _diff: NodeDiff, _size_hint: Option<u64>) {
-        let _ = self.tx.send(SnapshotEvent::ProcessedItem);
-    }
-
-    fn processed_bytes(&self, bytes: u64) {
-        let _ = self.tx.send(SnapshotEvent::ProcessedBytes(bytes));
-    }
-
-    fn add_expected_items(&self, val: u64) {
-        let _ = self.tx.send(SnapshotEvent::AddExpectedItems(val));
-    }
-
-    fn add_expected_bytes(&self, val: u64) {
-        let _ = self.tx.send(SnapshotEvent::AddExpectedBytes(val));
-    }
-
-    fn scan_finished(&self) {
-        let _ = self.tx.send(SnapshotEvent::ScanFinished);
-    }
-
-    fn error(&self, msg: &str) {
-        let _ = self.tx.send(SnapshotEvent::Error(msg.to_string()));
-    }
-
-    fn warning(&self, msg: &str) {
-        let _ = self.tx.send(SnapshotEvent::Warning(msg.to_string()));
-    }
-
-    fn log(&self, _msg: String) {}
-
-    fn verbose_1(&self, _msg: String) {}
-
-    fn verbose_2(&self, _msg: String) {}
-
-    fn finalize(&self) {}
-}
 
 #[derive(Debug, Clone)]
 pub enum SummaryResult {
@@ -105,7 +38,6 @@ pub struct ProgressState {
     pub core: TaskProgressState,
     recent_nodes: Vec<(String, NodeDiff)>,
     pub spinner_index: usize,
-    pub task_result: Option<Result<SummaryResult, String>>,
 }
 
 impl ProgressState {
@@ -114,40 +46,22 @@ impl ProgressState {
             core: TaskProgressState::new(),
             recent_nodes: Vec::new(),
             spinner_index: 0,
-            task_result: None,
         }
     }
 
-    pub fn handle_event(&mut self, event: SnapshotEvent) {
+    pub fn handle_event(&mut self, event: BackupEvent) {
         match event {
-            SnapshotEvent::ProcessedItem => {
-                self.core.add_processed_items(1);
+            BackupEvent::ScanStarted => {
+                self.core.scanning = true;
             }
-            SnapshotEvent::ProcessedBytes(bytes) => {
-                self.core.add_processed_bytes(bytes);
+            BackupEvent::ScanProgress { items, bytes } => {
+                self.core.expected_items += items;
+                self.core.expected_bytes += bytes;
             }
-            SnapshotEvent::AddExpectedItems(val) => {
-                self.core.expected_items += val;
-            }
-            SnapshotEvent::AddExpectedBytes(val) => {
-                self.core.expected_bytes += val;
-            }
-            SnapshotEvent::ScanFinished => {
+            BackupEvent::ScanFinished { .. } => {
                 self.core.scanning = false;
             }
-            SnapshotEvent::Error(msg) => {
-                self.core.add_error(msg);
-                if self.core.errors.len() > MAX_ERRORS {
-                    self.core.errors.remove(0);
-                }
-            }
-            SnapshotEvent::Warning(msg) => {
-                self.core.add_warning(msg);
-                if self.core.warnings.len() > MAX_WARNINGS {
-                    self.core.warnings.remove(0);
-                }
-            }
-            SnapshotEvent::ProcessingNode(path, diff, _size) => {
+            BackupEvent::NodeProcessing { path, diff, .. } => {
                 let path_str = path.to_string_lossy().to_string();
                 self.core.set_message(path_str.clone());
                 self.recent_nodes.push((path_str, diff));
@@ -155,8 +69,26 @@ impl ProgressState {
                     self.recent_nodes.remove(0);
                 }
             }
-            SnapshotEvent::Completed(result) => {
-                self.task_result = Some(*result);
+            BackupEvent::NodeProcessed { .. } => {
+                self.core.add_processed_items(1);
+            }
+            BackupEvent::BytesProcessed(bytes) => {
+                self.core.add_processed_bytes(bytes);
+            }
+            BackupEvent::Error(msg) => {
+                self.core.add_error(msg);
+                if self.core.errors.len() > MAX_ERRORS {
+                    self.core.errors.remove(0);
+                }
+            }
+            BackupEvent::Warning(msg) => {
+                self.core.add_warning(msg);
+                if self.core.warnings.len() > MAX_WARNINGS {
+                    self.core.warnings.remove(0);
+                }
+            }
+            BackupEvent::Log(_) => {}
+            BackupEvent::Finished(_) => {
                 self.core.finish();
             }
         }

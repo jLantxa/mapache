@@ -263,7 +263,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let run_gc = args.run_gc;
     let json_output = global_args.json;
 
-    // Phase 1: forget under its own lock.
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -280,37 +279,40 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _secure_storage, lock_handle| async move {
+            let repo = repo.clone();
+
+            // Phase 1: forget
             let cleanup_handler = CleanupHandler::new().map_err(|e| {
                 fail(
                     format!("Failed to initialize cleanup handler: {}", e),
                     ForgetError::ForgetFailed,
                 )
             })?;
-            cleanup_handler.add_lock(lock_handle);
+            cleanup_handler.add_lock(lock_handle.clone());
+            forget_phase(repo.clone(), args, json_output, &cleanup_handler).await?;
+            drop(cleanup_handler);
 
-            forget_phase(repo, args, json_output, &cleanup_handler).await
+            // Phase 2: optional post-forget GC, reusing the same repo/lock.
+            if run_gc {
+                tracing::info!(target: "forget", "Post-forget GC requested");
+                if !json_output {
+                    ui::cli::log!();
+                    ui::cli::log!("Running garbage collector...");
+                }
+
+                let gc_args = commands::cmd_clean::CmdArgs {
+                    tolerance: args.tolerance.unwrap_or(DEFAULT_GC_TOLERANCE * 100.0),
+                    dry_run,
+                    no_repack: false,
+                };
+                commands::cmd_clean::run_with_repo(json_output, &gc_args, repo, lock_handle)
+                    .await?;
+            }
+
+            Ok(())
         },
     )
-    .await?;
-
-    // Phase 2: optional post-forget GC. Delegated to `cmd_clean::run`, which
-    // acquires and releases its own lock.
-    if run_gc {
-        tracing::info!(target: "forget", "Post-forget GC requested");
-        if !json_output {
-            ui::cli::log!();
-            ui::cli::log!("Running garbage collector...");
-        }
-
-        let gc_args = commands::cmd_clean::CmdArgs {
-            tolerance: args.tolerance.unwrap_or(DEFAULT_GC_TOLERANCE * 100.0),
-            dry_run,
-            no_repack: false,
-        };
-        commands::cmd_clean::run(global_args, &gc_args).await?;
-    }
-
-    Ok(())
+    .await
 }
 
 /// Forget phase: load snapshots, apply retention/forget rules, mark or delete

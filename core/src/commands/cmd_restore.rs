@@ -1,4 +1,12 @@
-use std::{path::PathBuf, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    path::PathBuf,
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 use anyhow::Result;
 use clap::Args;
@@ -23,9 +31,10 @@ use crate::{
     repository::{lock::LockHandle, repo::Repository, snapshot::SnapshotPair},
     restorer::{self, RestoreOptions, Strategy},
     ui::{
-        self, RestoreProgressReporter,
-        cli::{color::Colorize, restore::CliRestoreProgressReporter},
-        json::restore::JsonRestoreProgressReporter,
+        self,
+        cli::{color::Colorize, restore},
+        events::{Event, EventSender, RestoreEvent, emit_event},
+        json::restore as json_restore,
     },
     utils,
 };
@@ -43,6 +52,14 @@ impl ToExitCode for RestoreError {
     fn to_exit_code(&self) -> i32 {
         *self as i32
     }
+}
+
+pub(crate) struct RestoreCounters {
+    pub(crate) event_sender: EventSender,
+    pub(crate) error_count: Arc<AtomicU64>,
+    pub(crate) warning_count: Arc<AtomicU64>,
+    pub(crate) total_items: Arc<AtomicU64>,
+    pub(crate) total_bytes: Arc<AtomicU64>,
 }
 
 impl std::fmt::Display for Strategy {
@@ -233,7 +250,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 .await
                 .map_err(|_| fail("Snapshot not found", RestoreError::SnapshotNotFound))?
                 .ok_or_else(|| fail("Snapshot not found", RestoreError::SnapshotNotFound))?;
-            let pair = SnapshotPair { id, snapshot: snap };
+            let snapshot_pair = SnapshotPair { id, snapshot: snap };
 
             let target = args.target.as_ref().ok_or_else(|| {
                 fail(
@@ -254,7 +271,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 ui::json::emit_static(
                     "restore_start",
                     &RestoreStartMsg {
-                        snapshot: pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
+                        snapshot: snapshot_pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
                         target: target.display().to_string(),
                         dry_run: args.dry_run,
                         strategy: args.strategy.clone().unwrap_or(Strategy::Fail).to_string(),
@@ -266,24 +283,36 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 }
                 log_always!(
                     "Restoring snapshot {}",
-                    pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold().yellow()
+                    snapshot_pair
+                        .id
+                        .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                        .bold()
+                        .yellow()
                 );
             }
 
-            let progress_reporter: Arc<dyn RestoreProgressReporter> = if json_output {
-                Arc::new(JsonRestoreProgressReporter::new(None, None))
-            } else {
-                Arc::new(CliRestoreProgressReporter::new(None, None))
+            let (event_sender, error_count, warning_count, total_items, total_bytes) =
+                if json_output {
+                    json_restore::make_event_sender(None, None)
+                } else {
+                    restore::make_event_sender(None, None)
+                };
+
+            let counters = RestoreCounters {
+                event_sender,
+                error_count,
+                warning_count,
+                total_items,
+                total_bytes,
             };
 
             let start = Instant::now();
-
             run_with_repo(
                 repo,
                 lock_handle,
                 args,
-                progress_reporter.clone(),
-                pair,
+                counters,
+                snapshot_pair,
                 start,
                 json_output,
             )
@@ -305,13 +334,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
 }
 
-pub async fn run_with_repo(
+pub(crate) async fn run_with_repo(
     repo: Arc<Repository>,
     lock_handle: Option<LockHandle>,
     args: &CmdArgs,
-    progress_reporter: Arc<dyn RestoreProgressReporter>,
-    pair: SnapshotPair,
-    start: std::time::Instant,
+    counters: RestoreCounters,
+    snapshot_pair: SnapshotPair,
+    start: Instant,
     json_output: bool,
 ) -> Result<()> {
     let target = args.target.as_ref().ok_or_else(|| {
@@ -345,7 +374,7 @@ pub async fn run_with_repo(
     let parsed_excludes = parse_relative_filter_paths(all_excludes.as_ref());
     let parsed_includes = expand_include_paths(
         repo.clone(),
-        &pair.id,
+        &snapshot_pair.id,
         all_includes.as_deref(),
         parsed_excludes.clone(),
     )
@@ -366,17 +395,20 @@ pub async fn run_with_repo(
         )
     })?;
 
-    tracing::info!(target: "restore", "Restoring snapshot {} (root={:?}) to {:?}", pair.id, pair.snapshot.root, abs_normalized_target);
+    tracing::info!(target: "restore", "Restoring snapshot {} (root={:?}) to {:?}", snapshot_pair.id, snapshot_pair.snapshot.root, abs_normalized_target);
 
-    let reporter_clone = progress_reporter.clone();
+    let event_sender_for_cleanup = counters.event_sender.clone();
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
-        reporter_clone.finalize();
+        emit_event(
+            &event_sender_for_cleanup,
+            Event::Restore(RestoreEvent::Finished),
+        );
     })?;
     cleanup_handler.add_lock(lock_handle);
 
     let restore_result = restorer::restore(
         repo.clone(),
-        &pair.snapshot,
+        &snapshot_pair.snapshot,
         &abs_normalized_target,
         RestoreOptions {
             dry_run,
@@ -388,7 +420,7 @@ pub async fn run_with_repo(
             include: parsed_includes.clone(),
             exclude: parsed_excludes.clone(),
         },
-        progress_reporter.clone(),
+        counters.event_sender.clone(),
         cleanup_handler.interrupted.clone(),
     )
     .await;
@@ -398,7 +430,10 @@ pub async fn run_with_repo(
         if !json_output {
             ui::cli::log!("Restore interrupted by user.");
         }
-        progress_reporter.finalize();
+        emit_event(
+            &counters.event_sender,
+            Event::Restore(RestoreEvent::Finished),
+        );
         return Err(fail(
             "Restore interrupted by user.",
             RestoreError::Interrupted,
@@ -406,21 +441,24 @@ pub async fn run_with_repo(
     }
     restore_result?;
 
-    progress_reporter.finalize();
+    emit_event(
+        &counters.event_sender,
+        Event::Restore(RestoreEvent::Finished),
+    );
 
     if delete {
         tracing::info!(target: "restore", "Starting post-restore cleanup (delete)");
         let delete_result = restorer::delete_nodes(
             repo,
             abs_normalized_target.clone(),
-            &pair.snapshot.tree,
+            &snapshot_pair.snapshot.tree,
             restorer::SyncOpts {
                 include: parsed_includes,
                 exclude: parsed_excludes,
                 dry_run,
                 no_preserve_root,
                 shutdown_signal: cleanup_handler.interrupted.clone(),
-                reporter: progress_reporter.clone(),
+                event_sender: counters.event_sender.clone(),
             },
         )
         .await;
@@ -439,6 +477,10 @@ pub async fn run_with_repo(
     }
 
     tracing::info!(target: "restore", "Restore command completed");
+    let errs = counters.error_count.load(Ordering::Relaxed);
+    let warns = counters.warning_count.load(Ordering::Relaxed);
+    let items = counters.total_items.load(Ordering::Relaxed);
+    let bytes = counters.total_bytes.load(Ordering::Relaxed);
     if json_output {
         #[derive(Serialize)]
         struct RestoreCompleteMsg {
@@ -454,10 +496,10 @@ pub async fn run_with_repo(
             "restore_complete",
             &RestoreCompleteMsg {
                 duration_seconds: start.elapsed().as_secs_f64(),
-                errors: progress_reporter.error_count(),
-                warnings: progress_reporter.warning_count(),
-                total_items: progress_reporter.total_items(),
-                total_bytes: progress_reporter.total_bytes(),
+                errors: errs,
+                warnings: warns,
+                total_items: items,
+                total_bytes: bytes,
                 dry_run,
             },
         );
@@ -470,11 +512,11 @@ pub async fn run_with_repo(
         ui::cli::log!(
             "{}Restored {} ({}) in {} with {} and {}",
             prefix,
-            utils::format_count(progress_reporter.total_items(), "item", "items"),
-            utils::format_size_binary(progress_reporter.total_bytes(), 3),
+            utils::format_count(items, "item", "items"),
+            utils::format_size_binary(bytes, 3),
             utils::pretty_print_duration(start.elapsed()),
-            utils::format_count(progress_reporter.error_count(), "error", "errors"),
-            utils::format_count(progress_reporter.warning_count(), "warning", "warnings"),
+            utils::format_count(errs, "error", "errors"),
+            utils::format_count(warns, "warning", "warnings"),
         );
     }
     Ok(())

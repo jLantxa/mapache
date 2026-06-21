@@ -9,7 +9,12 @@ use crate::{
     commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     mapache::defaults::DEFAULT_GC_TOLERANCE,
     repository::{gc, lock::LockHandle, repo::Repository},
-    ui::{self, GcProgressReporter, cli::color::Colorize},
+    ui::{
+        self,
+        cli::color::Colorize,
+        cli::gc as cli_gc,
+        events::{Event, GcEvent},
+    },
     utils::{self},
 };
 
@@ -102,10 +107,14 @@ pub async fn run_with_repo(
         )
     })?;
 
-    let reporter = Arc::new(ui::cli::gc::CliGcProgressReporter::new());
-    let reporter_for_callback = reporter.clone();
+    let event_sender = cli_gc::make_event_sender();
+    let sender_for_cleanup = event_sender.clone();
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
-        reporter_for_callback.finalize();
+        // On interrupt, emit Finished to trigger cleanup in the handler
+        sender_for_cleanup(crate::ui::events::Event::Gc(GcEvent::Finished {
+            added_bytes: 0,
+            deleted_bytes: 0,
+        }));
     })
     .map_err(|e| {
         fail(
@@ -115,7 +124,6 @@ pub async fn run_with_repo(
     })?;
     cleanup_handler.add_lock(lock_handle);
     let shutdown_signal = cleanup_handler.interrupted.clone();
-    let reporter: Arc<dyn GcProgressReporter> = reporter;
 
     tracing::info!(target: "clean", "Starting garbage collection scan");
     let tolerance = if args.no_repack {
@@ -132,14 +140,13 @@ pub async fn run_with_repo(
     let plan = gc::scan(
         repo.clone(),
         tolerance,
-        reporter.clone(),
+        event_sender.clone(),
         shutdown_signal.clone(),
     )
     .await
     .map_err(|e| {
         if shutdown_signal.load(std::sync::atomic::Ordering::Acquire) {
             tracing::info!(target: "clean", "GC scan interrupted by user");
-            reporter.finalize();
             if !json_output {
                 ui::cli::log!("Clean interrupted by user.");
             }
@@ -180,10 +187,9 @@ pub async fn run_with_repo(
         (0, 0)
     } else {
         tracing::info!(target: "clean", "Executing GC plan");
-        let gc_sizes = plan.execute(reporter.clone()).await.map_err(|e| {
+        let gc_sizes = plan.execute(event_sender.clone()).await.map_err(|e| {
             if shutdown_signal.load(std::sync::atomic::Ordering::Acquire) {
                 tracing::info!(target: "clean", "GC execution interrupted by user");
-                reporter.finalize();
                 if !json_output {
                     ui::cli::log!("Clean interrupted by user.");
                 }
@@ -197,6 +203,11 @@ pub async fn run_with_repo(
         tracing::info!(target: "clean", "GC execution finished. Added: {}, Deleted: {}", utils::format_size_binary(gc_sizes.added_bytes, 1), utils::format_size_binary(gc_sizes.deleted_bytes, 1));
         (gc_sizes.added_bytes, gc_sizes.deleted_bytes)
     };
+
+    event_sender(Event::Gc(GcEvent::Finished {
+        added_bytes,
+        deleted_bytes,
+    }));
 
     let duration = start.elapsed();
 

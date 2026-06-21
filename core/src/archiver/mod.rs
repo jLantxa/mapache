@@ -41,7 +41,7 @@ use crate::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
     },
-    ui::SnapshotProgressReporter,
+    ui::events::{BackupEvent, Event, EventSender, emit_event},
     utils,
 };
 
@@ -81,14 +81,14 @@ struct PipelineStatus {
     first_error: Mutex<Option<anyhow::Error>>,
     shutdown_signal: Arc<AtomicBool>,
 
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    event_sender: EventSender,
     progress: Arc<SnapshotProgress>,
 }
 
 impl PipelineStatus {
     fn new(
         progress: Arc<SnapshotProgress>,
-        progress_reporter: Arc<dyn SnapshotProgressReporter>,
+        event_sender: EventSender,
         shutdown_signal: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -96,7 +96,7 @@ impl PipelineStatus {
             fatal_error_flag: AtomicBool::new(false),
             first_error: Mutex::new(None),
             shutdown_signal,
-            progress_reporter,
+            event_sender,
             progress,
         }
     }
@@ -109,7 +109,10 @@ impl PipelineStatus {
         let already_errored = self.fatal_error_flag.swap(true, Ordering::Release);
         if !already_errored {
             // Only the first task to "flip" the switch gets to log the error.
-            self.progress_reporter.error(&format!("{err:#}"));
+            emit_event(
+                &self.event_sender,
+                Event::Backup(BackupEvent::Error(format!("{err:#}"))),
+            );
             tracing::error!(target: "archiver", "Fatal error in pipeline: {err:#}");
             *self.first_error.lock() = Some(err);
         }
@@ -131,14 +134,14 @@ pub(crate) async fn snapshot(
     repo: Arc<Repository>,
     snapshot_options: SnapshotOptions<'_>,
     num_readers: usize,
-    progress: Arc<SnapshotProgress>,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    event_sender: EventSender,
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<Snapshot> {
+    let progress = Arc::new(SnapshotProgress::new());
     tracing::info!(target: "archiver", "Starting snapshot archival (root={:?})", snapshot_options.snapshot_root_path);
     let status = Arc::new(PipelineStatus::new(
-        progress,
-        progress_reporter.clone(),
+        progress.clone(),
+        event_sender.clone(),
         shutdown_signal,
     ));
 
@@ -153,11 +156,17 @@ pub(crate) async fn snapshot(
             snapshot_options.absolute_source_paths.clone(),
             snapshot_options.exclude_paths.clone(),
             status.clone(),
-            progress_reporter.clone(),
+            event_sender.clone(),
         );
     } else {
         tracing::info!(target: "archiver", "Reading backup data from stdin (scanner skipped)");
-        progress_reporter.scan_finished();
+        emit_event(
+            &event_sender,
+            Event::Backup(BackupEvent::ScanFinished {
+                total_items: 0,
+                total_bytes: 0,
+            }),
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -282,7 +291,7 @@ pub(crate) async fn snapshot(
                 let pool_sender = chunker_pool.sender.clone();
                 let tx = coordinator_tx.clone();
                 let progress = status.progress.clone();
-                let progress_reporter = status.progress_reporter.clone();
+                let event_sender = status.event_sender.clone();
                 let shutdown_signal = status.shutdown_signal.clone();
                 let batch_lock = batch_lock.clone();
                 let is_stdin = coordinator_is_stdin;
@@ -295,7 +304,7 @@ pub(crate) async fn snapshot(
                     // Resolve result wrappers
                     let next_node = match next_res {
                         Some(Err(e)) => {
-                            progress_reporter.warning(&format!("Skipping {}: {}", path.display(), e));
+                            emit_event(&event_sender, Event::Backup(BackupEvent::Warning(format!("Skipping {}: {}", path.display(), e))));
                             tracing::warn!(target: "archiver", "Skipping {}: {}", path.display(), e);
                             progress.processed_node();
                             return;
@@ -327,7 +336,7 @@ pub(crate) async fn snapshot(
                             diff_type: diff,
                             blob_saver,
                             progress,
-                            progress_reporter,
+                            event_sender,
                             shutdown_signal,
                             is_stdin: is_stdin_item,
                         };
@@ -368,7 +377,7 @@ pub(crate) async fn snapshot(
                         let mut ctx = processor::ItemContext {
                             blob_saver,
                             progress: &progress,
-                            progress_reporter: &*progress_reporter,
+                            event_sender: &event_sender,
                             shutdown_signal: &shutdown_signal,
                             bufs: None,
                         };
@@ -499,6 +508,11 @@ pub(crate) async fn snapshot(
         .context("Root tree ID not set")?;
 
     status.signal_finished();
+    let summary = progress.summary();
+    emit_event(
+        &event_sender,
+        Event::Backup(BackupEvent::Finished(summary.clone())),
+    );
     tracing::info!(target: "archiver", "Snapshot tree finalized: {root_tree_id}");
     let (hostname, username) = utils::get_system_info();
 
@@ -513,7 +527,7 @@ pub(crate) async fn snapshot(
         version: Some(THIS_MAPACHE_VERSION.to_string()),
         tags: snapshot_options.tags,
         description: snapshot_options.description,
-        summary: SnapshotSummary::default(),
+        summary: summary.into(),
     })
 }
 
@@ -525,7 +539,7 @@ fn spawn_scanner_task(
     absolute_source_paths: Vec<PathBuf>,
     exclude_paths: Vec<PathBuf>,
     status: Arc<PipelineStatus>,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    event_sender: EventSender,
 ) {
     tokio::spawn(async move {
         if no_scan {
@@ -535,8 +549,11 @@ fn spawn_scanner_task(
         let filter = Arc::new(PathFilter::new(None, Some(exclude_paths)));
 
         let status_for_blocking = status.clone();
-        let reporter_for_blocking = progress_reporter.clone();
+        let sender_for_blocking = event_sender.clone();
         let filter_for_blocking = filter.clone();
+
+        let mut scan_items = 0u64;
+        let mut scan_bytes = 0u64;
 
         let res = tokio::task::spawn_blocking(move || {
             for path in &absolute_source_paths {
@@ -544,7 +561,9 @@ fn spawn_scanner_task(
                     path,
                     filter_for_blocking.clone(),
                     status_for_blocking.clone(),
-                    reporter_for_blocking.clone(),
+                    sender_for_blocking.clone(),
+                    &mut scan_items,
+                    &mut scan_bytes,
                 );
             }
         })
@@ -555,7 +574,13 @@ fn spawn_scanner_task(
         }
 
         tracing::info!(target: "archiver", "Background scanner finished");
-        progress_reporter.scan_finished();
+        emit_event(
+            &event_sender,
+            Event::Backup(BackupEvent::ScanFinished {
+                total_items: scan_items,
+                total_bytes: scan_bytes,
+            }),
+        );
     });
 }
 
@@ -563,7 +588,9 @@ fn scan_recursive(
     path: &Path,
     filter: Arc<PathFilter>,
     status: Arc<PipelineStatus>,
-    progress_reporter: Arc<dyn SnapshotProgressReporter>,
+    event_sender: EventSender,
+    scan_items: &mut u64,
+    scan_bytes: &mut u64,
 ) {
     // Exit early if user requested shutdown or another part of the pipeline failed
     if status.is_failed() || status.is_finished() {
@@ -576,10 +603,21 @@ fn scan_recursive(
 
     match Node::from_path_sync(path, false) {
         Ok(node) => {
-            progress_reporter.add_expected_items(1);
-            if node.is_file() {
-                progress_reporter.add_expected_bytes(node.metadata.size);
-            }
+            *scan_items += 1;
+            let size = if node.is_file() {
+                node.metadata.size
+            } else {
+                0
+            };
+            *scan_bytes += size;
+
+            emit_event(
+                &event_sender,
+                Event::Backup(BackupEvent::ScanProgress {
+                    items: 1,
+                    bytes: size,
+                }),
+            );
 
             if node.is_dir() {
                 if let Ok(entries) = std::fs::read_dir(path) {
@@ -588,18 +626,38 @@ fn scan_recursive(
                             &entry.path(),
                             filter.clone(),
                             status.clone(),
-                            progress_reporter.clone(),
+                            event_sender.clone(),
+                            scan_items,
+                            scan_bytes,
                         );
                     }
                 } else {
                     // read_dir already failed, collect error string outside the move closure
                     let msg = format!("Error reading directory {}", path.display());
-                    progress_reporter.warning(&msg);
+                    emit_event(&event_sender, Event::Backup(BackupEvent::Warning(msg)));
                 }
             }
         }
         Err(e) => {
-            progress_reporter.warning(&format!("Error scanning {}: {}", path.display(), e));
+            emit_event(
+                &event_sender,
+                Event::Backup(BackupEvent::Warning(format!(
+                    "Error scanning {}: {}",
+                    path.display(),
+                    e
+                ))),
+            );
+        }
+    }
+}
+
+impl From<progress::SnapshotProcessSummary> for SnapshotSummary {
+    fn from(s: progress::SnapshotProcessSummary) -> Self {
+        SnapshotSummary {
+            processed_items_count: s.processed_items_count,
+            processed_bytes: s.processed_bytes,
+            diff_counts: s.diff_counts,
+            ..Default::default()
         }
     }
 }
@@ -619,7 +677,7 @@ mod tests {
         },
         mapache::{ContentIdType, ID, defaults::TEST_REPO_CONFIG},
         repository::repo::Auth,
-        ui::noop::NoopSnapshotReporter,
+        ui::events::noop_sender,
     };
 
     #[tokio::test]
@@ -655,8 +713,7 @@ mod tests {
             repo.clone(),
             options,
             1,
-            Arc::new(SnapshotProgress::new()),
-            Arc::new(NoopSnapshotReporter),
+            noop_sender(),
             Arc::new(AtomicBool::new(false)),
         )
         .await?;
@@ -751,8 +808,7 @@ mod tests {
             repo.clone(),
             options,
             1,
-            Arc::new(SnapshotProgress::new()),
-            Arc::new(NoopSnapshotReporter),
+            noop_sender(),
             Arc::new(AtomicBool::new(false)),
         )
         .await;
@@ -964,8 +1020,7 @@ mod tests {
                 stdin: true,
             },
             1,
-            Arc::new(SnapshotProgress::new()),
-            Arc::new(NoopSnapshotReporter),
+            noop_sender(),
             Arc::new(AtomicBool::new(false)),
         )
         .await;

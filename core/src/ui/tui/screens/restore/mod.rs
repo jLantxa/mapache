@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
@@ -14,19 +14,16 @@ use std::{
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     repository::{repo::Repository, snapshot::SnapshotEntry},
     restorer::{self, RestoreOptions},
     ui::{
-        RestoreProgressReporter,
+        events::{Event, EventSender, RestoreEvent},
         tui::{
             app::{Screen, Transition},
-            screens::restore::{
-                config::{ConfigAction, RestoreConfig},
-                progress::RestoreEvent,
-            },
+            screens::restore::config::{ConfigAction, RestoreConfig},
             widgets::TaskProgressState,
         },
     },
@@ -47,8 +44,9 @@ pub struct RestoreScreen {
 
     rx: mpsc::UnboundedReceiver<RestoreEvent>,
     tx: mpsc::UnboundedSender<RestoreEvent>,
-    shutdown_signal: Arc<AtomicBool>,
+    result_rx: Option<oneshot::Receiver<Option<String>>>,
     result: Option<Option<String>>,
+    shutdown_signal: Arc<AtomicBool>,
 }
 
 impl RestoreScreen {
@@ -66,8 +64,9 @@ impl RestoreScreen {
 
             rx,
             tx,
-            shutdown_signal: Arc::new(AtomicBool::new(false)),
+            result_rx: None,
             result: None,
+            shutdown_signal: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -94,11 +93,16 @@ impl RestoreScreen {
         };
 
         let tx = self.tx.clone();
-        let reporter = Arc::new(TuiRestoreProgressReporter {
-            tx: tx.clone(),
-            error_count: AtomicU64::new(0),
-            warning_count: AtomicU64::new(0),
-        });
+        let reporter: EventSender = {
+            let tx = tx.clone();
+            Arc::new(move |event: Event| {
+                if let Event::Restore(e) = event {
+                    let _ = tx.send(e);
+                }
+            })
+        };
+        let (result_tx, result_rx) = oneshot::channel();
+        self.result_rx = Some(result_rx);
         let shutdown_signal = self.shutdown_signal.clone();
         self.shutdown_signal.store(false, Ordering::SeqCst);
 
@@ -106,89 +110,28 @@ impl RestoreScreen {
             let result =
                 restorer::restore(repo, &snapshot, &target, options, reporter, shutdown_signal)
                     .await;
-            let event = match result {
-                Ok(_) => RestoreEvent::Completed(None),
-                Err(e) => RestoreEvent::Completed(Some(e.to_string())),
-            };
-            let _ = tx.send(event);
+            let _ = tx.send(RestoreEvent::Finished);
+            let _ = result_tx.send(match result {
+                Ok(_) => None,
+                Err(e) => Some(e.to_string()),
+            });
         });
     }
-}
-
-struct TuiRestoreProgressReporter {
-    tx: mpsc::UnboundedSender<RestoreEvent>,
-    error_count: AtomicU64,
-    warning_count: AtomicU64,
-}
-
-impl RestoreProgressReporter for TuiRestoreProgressReporter {
-    fn set_message(&self, msg: String) {
-        let _ = self.tx.send(RestoreEvent::SetMessage(msg));
-    }
-
-    fn set_visited_nodes(&self, _count: u64) {
-        // Update items count so the TUI shows progress during planning
-        let _ = self.tx.send(RestoreEvent::ProcessedItem(PathBuf::new()));
-    }
-
-    fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
-        let _ = self.tx.send(RestoreEvent::ResizeWorkload(
-            num_expected_items,
-            num_expected_bytes,
-        ));
-    }
-
-    fn processed_item(&self, path: &std::path::Path) {
-        let _ = self
-            .tx
-            .send(RestoreEvent::ProcessedItem(path.to_path_buf()));
-    }
-
-    fn processed_bytes(&self, bytes: u64) {
-        let _ = self.tx.send(RestoreEvent::ProcessedBytes(bytes));
-    }
-
-    fn error(&self, msg: &str) {
-        self.error_count.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(RestoreEvent::Error(msg.to_string()));
-    }
-
-    fn warning(&self, msg: &str) {
-        self.warning_count.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(RestoreEvent::Warning(msg.to_string()));
-    }
-
-    fn error_count(&self) -> u64 {
-        self.error_count.load(Ordering::Relaxed)
-    }
-
-    fn warning_count(&self) -> u64 {
-        self.warning_count.load(Ordering::Relaxed)
-    }
-
-    fn log(&self, msg: String) {
-        let _ = self.tx.send(RestoreEvent::Log(msg));
-    }
-
-    fn verbose_1(&self, msg: String) {
-        let _ = self.tx.send(RestoreEvent::Verbose1(msg));
-    }
-
-    fn verbose_2(&self, msg: String) {
-        let _ = self.tx.send(RestoreEvent::Verbose2(msg));
-    }
-
-    fn finalize(&self) {}
 }
 
 #[async_trait]
 impl Screen for RestoreScreen {
     fn render(&mut self, frame: &mut Frame) {
+        // Check for completion
+        if let Some(rx) = &mut self.result_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            self.phase = RestorePhase::Summary;
+            self.result = Some(result);
+            self.result_rx = None;
+        }
+
         while let Ok(event) = self.rx.try_recv() {
-            if let RestoreEvent::Completed(ref res) = event {
-                self.phase = RestorePhase::Summary;
-                self.result = Some(res.clone());
-            }
             progress::handle_event(&mut self.progress, event);
         }
 

@@ -13,7 +13,7 @@ use tokio::task::spawn_blocking;
 use crate::{
     mapache::{BlobType, ContentIdType, ID, defaults},
     repository::{index::BlobLocator, loader, storage::SecureStorage},
-    ui::RestoreProgressReporter,
+    ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
 
 use super::{BlobRestoreRequest, FileRestorePlan, PackMap, Restorer, ShardedFileHandleCache};
@@ -29,7 +29,7 @@ struct RestoreContext {
     remaining: Arc<Vec<std::sync::atomic::AtomicU32>>,
     initialized: Arc<Vec<std::sync::atomic::AtomicBool>>,
     restorer: Arc<Restorer>,
-    progress_reporter: Arc<dyn RestoreProgressReporter>,
+    event_sender: EventSender,
     quit_on_error: bool,
 }
 
@@ -44,12 +44,17 @@ impl Restorer {
         if dry_run {
             for blob_requests in packs.values() {
                 for (_, request) in blob_requests.iter() {
-                    self.progress_reporter
-                        .processed_bytes(request.raw_length as u64);
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::BytesProcessed(request.raw_length as u64)),
+                    );
                 }
             }
             for file in files.iter() {
-                self.progress_reporter.processed_item(&file.path);
+                emit_event(
+                    &self.event_sender,
+                    Event::Restore(RestoreEvent::ItemProcessed(file.path.clone())),
+                );
             }
             return Ok(());
         }
@@ -76,12 +81,12 @@ impl Restorer {
                     let mut cache_guard = handle_cache.get_shard(idx).lock();
                     cache_guard.get_handle(idx, &file.path, file, &initialized[idx], self)?;
                 }
-                self.progress_reporter.processed_item(&file.path);
+                emit_event(
+                    &self.event_sender,
+                    Event::Restore(RestoreEvent::ItemProcessed(file.path.clone())),
+                );
             }
         }
-
-        self.progress_reporter
-            .set_message("Restoring...".to_string());
 
         let restorer_arc = Arc::new(self.clone_for_workers());
         let ctx = Arc::new(RestoreContext {
@@ -90,7 +95,7 @@ impl Restorer {
             remaining,
             initialized,
             restorer: restorer_arc,
-            progress_reporter: self.progress_reporter.clone(),
+            event_sender: self.event_sender.clone(),
             quit_on_error: self.opts.quit_on_error,
         });
 
@@ -302,11 +307,17 @@ impl Restorer {
 
                     match write_result {
                         Ok(_bytes) => {
-                            ctx.progress_reporter.processed_bytes(total_bytes);
+                            emit_event(
+                                &ctx.event_sender,
+                                Event::Restore(RestoreEvent::BytesProcessed(total_bytes)),
+                            );
                             if ctx.remaining[file_idx].fetch_sub(num_blobs, Ordering::Relaxed)
                                 == num_blobs
                             {
-                                ctx.progress_reporter.processed_item(&file_path);
+                                emit_event(
+                                    &ctx.event_sender,
+                                    Event::Restore(RestoreEvent::ItemProcessed(file_path)),
+                                );
                             }
                         }
                         Err(e) => {
@@ -314,7 +325,10 @@ impl Restorer {
                             if ctx.quit_on_error {
                                 bail!(err_msg);
                             }
-                            ctx.progress_reporter.error(&err_msg);
+                            emit_event(
+                                &ctx.event_sender,
+                                Event::Restore(RestoreEvent::Error(err_msg)),
+                            );
                         }
                     }
 

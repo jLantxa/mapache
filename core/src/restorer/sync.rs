@@ -11,8 +11,10 @@ use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 
 use crate::{
-    fs::tree::SerializedTreeStream, mapache::ID, repository::repo::Repository,
-    ui::RestoreProgressReporter,
+    fs::tree::SerializedTreeStream,
+    mapache::ID,
+    repository::repo::Repository,
+    ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
 
 pub struct SyncOpts {
@@ -21,7 +23,7 @@ pub struct SyncOpts {
     pub dry_run: bool,
     pub no_preserve_root: bool,
     pub shutdown_signal: Arc<AtomicBool>,
-    pub reporter: Arc<dyn RestoreProgressReporter>,
+    pub event_sender: EventSender,
 }
 
 /// Delete all local nodes not present in a snapshot tree.
@@ -55,8 +57,12 @@ pub async fn delete_nodes(
         let (path, snapshot_tree) = match item_result {
             Ok(data) => data,
             Err(e) => {
-                opts.reporter
-                    .warning(&format!("Could not read snapshot subtree entry: {e}"));
+                emit_event(
+                    &opts.event_sender,
+                    Event::Restore(RestoreEvent::Warning(format!(
+                        "Could not read snapshot subtree entry: {e}"
+                    ))),
+                );
                 tracing::warn!(target: "restorer", "Could not read snapshot subtree entry: {e}");
                 continue;
             }
@@ -79,7 +85,7 @@ pub async fn delete_nodes(
             local_dir,
             &snapshot_node_names,
             opts.dry_run,
-            opts.reporter.clone(),
+            opts.event_sender.clone(),
         )?
     }
 
@@ -92,16 +98,19 @@ fn process_local_directory(
     local_dir_path: &Path,
     snapshot_node_names: &HashSet<&str>,
     dry_run: bool,
-    reporter: Arc<dyn RestoreProgressReporter>,
+    event_sender: EventSender,
 ) -> Result<()> {
     let local_readdir = match local_dir_path.read_dir() {
         Ok(readdir) => readdir,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                reporter.verbose_1(format!(
-                    "Local directory '{}' not found, skipping.",
-                    local_dir_path.display()
-                ));
+                emit_event(
+                    &event_sender,
+                    Event::Restore(RestoreEvent::Log(format!(
+                        "Local directory '{}' not found, skipping.",
+                        local_dir_path.display()
+                    ))),
+                );
                 return Ok(());
             } else {
                 return Err(e).with_context(|| {
@@ -118,10 +127,13 @@ fn process_local_directory(
         let dir_entry = match node_res {
             Ok(entry) => entry,
             Err(e) => {
-                reporter.warning(&format!(
-                    "Failed to read local node in '{}': {e}",
-                    local_dir_path.display()
-                ));
+                emit_event(
+                    &event_sender,
+                    Event::Restore(RestoreEvent::Warning(format!(
+                        "Failed to read local node in '{}': {e}",
+                        local_dir_path.display()
+                    ))),
+                );
                 continue;
             }
         };
@@ -131,7 +143,7 @@ fn process_local_directory(
         let local_path = dir_entry.path();
 
         if !snapshot_node_names.contains(local_name_str.as_ref()) {
-            perform_deletion(&local_path, dry_run, reporter.clone())?;
+            perform_deletion(&local_path, dry_run, event_sender.clone())?;
         }
     }
 
@@ -139,19 +151,21 @@ fn process_local_directory(
 }
 
 /// Helper function to perform the actual file/directory deletion or log dry run.
-fn perform_deletion(
-    path_to_delete: &Path,
-    dry_run: bool,
-    reporter: Arc<dyn RestoreProgressReporter>,
-) -> Result<()> {
+fn perform_deletion(path_to_delete: &Path, dry_run: bool, event_sender: EventSender) -> Result<()> {
     if dry_run {
-        reporter.log(format!(
-            "[DRY RUN] Would delete '{}'",
-            path_to_delete.display()
-        ));
+        emit_event(
+            &event_sender,
+            Event::Restore(RestoreEvent::Log(format!(
+                "[DRY RUN] Would delete '{}'",
+                path_to_delete.display()
+            ))),
+        );
         tracing::debug!(target: "restorer", "Dry run: would delete {:?}", path_to_delete);
     } else if path_to_delete.is_dir() {
-        reporter.verbose_1(format!("Deleted {path_to_delete:?}"));
+        emit_event(
+            &event_sender,
+            Event::Restore(RestoreEvent::Log(format!("Deleted {path_to_delete:?}"))),
+        );
         tracing::debug!(target: "restorer", "Deleting directory {:?}", path_to_delete);
         std::fs::remove_dir_all(path_to_delete).with_context(|| {
             format!(
@@ -160,7 +174,10 @@ fn perform_deletion(
             )
         })?;
     } else {
-        reporter.verbose_1(format!("Deleted {path_to_delete:?}"));
+        emit_event(
+            &event_sender,
+            Event::Restore(RestoreEvent::Log(format!("Deleted {path_to_delete:?}"))),
+        );
         tracing::debug!(target: "restorer", "Deleting file {:?}", path_to_delete);
         std::fs::remove_file(path_to_delete)
             .with_context(|| format!("Failed to delete local file {path_to_delete:?}"))?;

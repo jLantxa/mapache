@@ -12,16 +12,19 @@ use parking_lot::Mutex;
 use crate::{
     mapache::{defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts},
     ui::{
-        RestoreProgressReporter, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target,
+        SPINNER_TICK_CHARS,
+        cli::color::Colorize,
+        default_bar_draw_target,
+        events::{Event, EventSender, RestoreEvent},
     },
     utils::{self, rate_estimator::RateEstimator},
 };
 
-pub struct CliRestoreProgressReporter {
+struct CliRestoreState {
     processed_items_count: Arc<AtomicU64>,
     processed_bytes_count: Arc<AtomicU64>,
-    pub(crate) error_counter: Arc<AtomicU64>,
-    pub(crate) warning_counter: Arc<AtomicU64>,
+    error_counter: Arc<AtomicU64>,
+    warning_counter: Arc<AtomicU64>,
     mp: MultiProgress,
     progress_bar: ProgressBar,
     companion_bar: ProgressBar,
@@ -31,128 +34,13 @@ pub struct CliRestoreProgressReporter {
     rate_estimator: Arc<Mutex<RateEstimator>>,
 }
 
-impl CliRestoreProgressReporter {
-    pub(crate) fn new(num_expected_items: Option<u64>, num_expected_bytes: Option<u64>) -> Self {
-        let refresh_interval = GlobalOpts::progress_refresh_interval();
-        let mp = MultiProgress::with_draw_target(default_bar_draw_target());
-
-        let processed_items_count = Arc::new(AtomicU64::new(0));
-        let processed_bytes_count = Arc::new(AtomicU64::new(0));
-        let error_counter = Arc::new(AtomicU64::new(0));
-        let warning_counter = Arc::new(AtomicU64::new(0));
-        let num_expected_items_atom = Arc::new(AtomicU64::new(num_expected_items.unwrap_or(0)));
-        let num_expected_bytes_atom = Arc::new(AtomicU64::new(num_expected_bytes.unwrap_or(0)));
-
-        let rate_estimator = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
-
-        let progress_bar = if num_expected_items.is_none() || num_expected_bytes.is_none() {
-            mp.add(ProgressBar::no_length())
-        } else {
-            mp.add(ProgressBar::new(num_expected_bytes.unwrap_or(0)))
-        };
-
-        let companion_bar = mp.add(ProgressBar::no_length());
-
-        progress_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.cyan} {msg}\n[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
-                .expect("Invalid progress bar template for restore progress")
-                .progress_chars("=> ")
-                .tick_chars(SPINNER_TICK_CHARS)
-                .with_key("custom_elapsed", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let _ = w.write_str(&utils::pretty_print_duration(_state.elapsed()));
-                })
-                .with_key("processed_bytes_fmt", move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let current = state.pos();
-                    let total = state.len().unwrap_or(0);
-                    let s = format!(
-                        "{} / {}",
-                        utils::format_size_binary(current, 3),
-                        utils::format_size_binary(total, 3)
-                    );
-                    let _ = w.write_str(&s);
-                })
-                .with_key("custom_eta", {
-                    let re = rate_estimator.clone();
-                    move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let pos = state.pos() as f64;
-                        let total = state.len().map(|l| l as f64);
-                        match re.lock().eta(pos, total.unwrap_or(pos)) {
-                            Some(d) => {
-                                let _ = w.write_str(&utils::pretty_print_duration(d));
-                            }
-                            None => {
-                                let _ = w.write_str("--");
-                            }
-                        }
-                    }
-                })
-                .with_key(
-                    "data_rate",
-                    {
-                        let re = rate_estimator.clone();
-                        move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                            let rate = re.lock().rate().floor() as u64;
-                            let _ = w.write_str(&utils::format_size_binary(rate, 1));
-                        }
-                    },
-                ),
-        );
-        progress_bar.enable_steady_tick(refresh_interval);
-
-        let items_clone = processed_items_count.clone();
-        let num_items_clone = num_expected_items_atom.clone();
-        let err_clone = error_counter.clone();
-        let warn_clone = warning_counter.clone();
-        companion_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("[{processed_items_fmt}] [{errors} errors, {warnings} warnings]")
-                .expect("Invalid progress bar template for restore companion bar")
-                .with_key(
-                    "processed_items_fmt",
-                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let items = items_clone.load(Ordering::Relaxed);
-                        let total = num_items_clone.load(Ordering::Relaxed);
-
-                        if items <= total {
-                            let _ = write!(w, "{items} / {total} items");
-                        } else {
-                            let _ = write!(w, "{items} items");
-                        }
-                    },
-                )
-                .with_key(
-                    "errors",
-                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let _ = write!(w, "{}", err_clone.load(Ordering::Relaxed));
-                    },
-                )
-                .with_key(
-                    "warnings",
-                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                        let _ = write!(w, "{}", warn_clone.load(Ordering::Relaxed));
-                    },
-                ),
-        );
-        companion_bar.enable_steady_tick(refresh_interval);
-
-        Self {
-            processed_items_count,
-            processed_bytes_count,
-            error_counter,
-            warning_counter,
-            mp,
-            progress_bar,
-            companion_bar,
-            current_stage: Arc::new(Mutex::new(String::new())),
-            num_expected_items: num_expected_items_atom,
-            num_expected_bytes: num_expected_bytes_atom,
-            rate_estimator,
-        }
+impl CliRestoreState {
+    fn finalize(&self) {
+        self.companion_bar.finish_and_clear();
+        self.progress_bar.finish_and_clear();
+        let _ = self.mp.clear();
     }
-}
 
-impl RestoreProgressReporter for CliRestoreProgressReporter {
     fn set_message(&self, msg: String) {
         self.progress_bar.set_message(msg.clone());
         let mut stage = self.current_stage.lock();
@@ -201,47 +89,186 @@ impl RestoreProgressReporter for CliRestoreProgressReporter {
             .println(format!("{} {msg}", "Warning:".bold().yellow()));
     }
 
-    fn error_count(&self) -> u64 {
-        self.error_counter.load(Ordering::Relaxed)
-    }
-
-    fn warning_count(&self) -> u64 {
-        self.warning_counter.load(Ordering::Relaxed)
-    }
-
     fn log(&self, msg: String) {
         let _ = self.mp.println(msg);
     }
-
-    fn verbose_1(&self, msg: String) {
-        if GlobalOpts::verbosity() >= 2 {
-            let _ = self.mp.println(msg);
-        }
-    }
-
-    fn verbose_2(&self, msg: String) {
-        if GlobalOpts::verbosity() >= 3 {
-            let _ = self.mp.println(msg);
-        }
-    }
-
-    fn finalize(&self) {
-        self.companion_bar.finish_and_clear();
-        self.progress_bar.finish_and_clear();
-        let _ = self.mp.clear();
-    }
-
-    fn total_items(&self) -> u64 {
-        self.num_expected_items.load(Ordering::Relaxed)
-    }
-
-    fn total_bytes(&self) -> u64 {
-        self.num_expected_bytes.load(Ordering::Relaxed)
-    }
 }
 
-impl Drop for CliRestoreProgressReporter {
+impl Drop for CliRestoreState {
     fn drop(&mut self) {
         self.finalize();
     }
+}
+
+pub(crate) fn make_event_sender(
+    num_expected_items: Option<u64>,
+    num_expected_bytes: Option<u64>,
+) -> (
+    EventSender,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+) {
+    let refresh_interval = GlobalOpts::progress_refresh_interval();
+    let mp = MultiProgress::with_draw_target(default_bar_draw_target());
+
+    let processed_items_count = Arc::new(AtomicU64::new(0));
+    let processed_bytes_count = Arc::new(AtomicU64::new(0));
+    let error_counter = Arc::new(AtomicU64::new(0));
+    let warning_counter = Arc::new(AtomicU64::new(0));
+    let num_expected_items_atom = Arc::new(AtomicU64::new(num_expected_items.unwrap_or(0)));
+    let num_expected_bytes_atom = Arc::new(AtomicU64::new(num_expected_bytes.unwrap_or(0)));
+
+    let rate_estimator = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
+
+    let progress_bar = if num_expected_items.is_none() || num_expected_bytes.is_none() {
+        mp.add(ProgressBar::no_length())
+    } else {
+        mp.add(ProgressBar::new(num_expected_bytes.unwrap_or(0)))
+    };
+
+    let companion_bar = mp.add(ProgressBar::no_length());
+
+    progress_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.cyan} {msg}\n[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
+            .expect("Invalid progress bar template for restore progress")
+            .progress_chars("=> ")
+            .tick_chars(SPINNER_TICK_CHARS)
+            .with_key("custom_elapsed", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let _ = w.write_str(&utils::pretty_print_duration(_state.elapsed()));
+            })
+            .with_key("processed_bytes_fmt", move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let current = state.pos();
+                let total = state.len().unwrap_or(0);
+                let s = format!(
+                    "{} / {}",
+                    utils::format_size_binary(current, 3),
+                    utils::format_size_binary(total, 3)
+                );
+                let _ = w.write_str(&s);
+            })
+            .with_key("custom_eta", {
+                let re = rate_estimator.clone();
+                move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let pos = state.pos() as f64;
+                    let total = state.len().map(|l| l as f64);
+                    match re.lock().eta(pos, total.unwrap_or(pos)) {
+                        Some(d) => {
+                            let _ = w.write_str(&utils::pretty_print_duration(d));
+                        }
+                        None => {
+                            let _ = w.write_str("--");
+                        }
+                    }
+                }
+            })
+            .with_key(
+                "data_rate",
+                {
+                    let re = rate_estimator.clone();
+                    move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                        let rate = re.lock().rate().floor() as u64;
+                        let _ = w.write_str(&utils::format_size_binary(rate, 1));
+                    }
+                },
+            ),
+    );
+    progress_bar.enable_steady_tick(refresh_interval);
+
+    let items_clone = processed_items_count.clone();
+    let num_items_clone = num_expected_items_atom.clone();
+    let err_clone = error_counter.clone();
+    let warn_clone = warning_counter.clone();
+    companion_bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[{processed_items_fmt}] [{errors} errors, {warnings} warnings]")
+            .expect("Invalid progress bar template for restore companion bar")
+            .with_key(
+                "processed_items_fmt",
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let items = items_clone.load(Ordering::Relaxed);
+                    let total = num_items_clone.load(Ordering::Relaxed);
+
+                    if items <= total {
+                        let _ = write!(w, "{items} / {total} items");
+                    } else {
+                        let _ = write!(w, "{items} items");
+                    }
+                },
+            )
+            .with_key(
+                "errors",
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let _ = write!(w, "{}", err_clone.load(Ordering::Relaxed));
+                },
+            )
+            .with_key(
+                "warnings",
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let _ = write!(w, "{}", warn_clone.load(Ordering::Relaxed));
+                },
+            ),
+    );
+    companion_bar.enable_steady_tick(refresh_interval);
+
+    let state = Arc::new(CliRestoreState {
+        processed_items_count: processed_items_count.clone(),
+        processed_bytes_count: processed_bytes_count.clone(),
+        error_counter: error_counter.clone(),
+        warning_counter: warning_counter.clone(),
+        mp,
+        progress_bar,
+        companion_bar,
+        current_stage: Arc::new(Mutex::new(String::new())),
+        num_expected_items: num_expected_items_atom,
+        num_expected_bytes: num_expected_bytes_atom,
+        rate_estimator,
+    });
+
+    let sender: EventSender = Arc::new(move |event: Event| {
+        let Event::Restore(ev) = event else { return };
+        match ev {
+            RestoreEvent::Planning => {
+                state.set_message("Planning...".to_string());
+            }
+            RestoreEvent::NodeVisited(count) => {
+                state.set_visited_nodes(count);
+            }
+            RestoreEvent::PlanBuilt {
+                total_items: t,
+                total_bytes: b,
+            } => {
+                state.resize_workload(t, b);
+                state.set_message("Restoring...".to_string());
+            }
+            RestoreEvent::ItemProcessed(ref path) => {
+                state.processed_item(path);
+            }
+            RestoreEvent::BytesProcessed(bytes) => {
+                state.processed_bytes(bytes);
+            }
+            RestoreEvent::Warning(ref msg) => {
+                state.warning(msg);
+            }
+            RestoreEvent::Error(ref msg) => {
+                state.error(msg);
+            }
+            RestoreEvent::Log(ref msg) => {
+                state.log(msg.clone());
+            }
+            RestoreEvent::Finished => {
+                state.finalize();
+            }
+        }
+    });
+
+    (
+        sender,
+        error_counter,
+        warning_counter,
+        processed_items_count,
+        processed_bytes_count,
+    )
 }

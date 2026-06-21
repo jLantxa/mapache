@@ -26,8 +26,8 @@ use crate::{
     },
     restorer::node_restorer,
     ui::{
-        RestoreProgressReporter, SnapshotProgressReporter,
         cli::{self, color::Colorize},
+        events::{BackupEvent, Event, EventSender, RestoreEvent},
     },
     utils::format_size_binary,
 };
@@ -38,50 +38,6 @@ use crate::{
     fuse::fs::{MapacheFS, MountOptions},
     utils::size,
 };
-
-struct BundleRestoreReporterAdapter {
-    inner: Arc<dyn SnapshotProgressReporter>,
-}
-
-impl RestoreProgressReporter for BundleRestoreReporterAdapter {
-    fn set_message(&self, _msg: String) {}
-
-    fn resize_workload(&self, _num_expected_items: u64, _num_expected_bytes: u64) {}
-
-    fn processed_item(&self, _path: &Path) {}
-
-    fn processed_bytes(&self, _bytes: u64) {}
-
-    fn error(&self, msg: &str) {
-        self.inner.error(msg);
-    }
-
-    fn warning(&self, msg: &str) {
-        self.inner.warning(msg);
-    }
-
-    fn error_count(&self) -> u64 {
-        0
-    }
-
-    fn warning_count(&self) -> u64 {
-        0
-    }
-
-    fn log(&self, msg: String) {
-        self.inner.log(msg);
-    }
-
-    fn verbose_1(&self, msg: String) {
-        self.inner.verbose_1(msg);
-    }
-
-    fn verbose_2(&self, msg: String) {
-        self.inner.verbose_2(msg);
-    }
-
-    fn finalize(&self) {}
-}
 
 #[derive(Args, Debug, Clone)]
 #[clap(
@@ -238,15 +194,10 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         output.display().to_string().bold()
     );
 
-    let progress_reporter: Arc<dyn SnapshotProgressReporter> =
-        Arc::new(cli::bundle::BundleCliProgressReporter::new(
-            cli::bundle::BundleMode::Create,
-            0,
-            0,
-            args.readers,
-        ));
+    let event_sender =
+        cli::bundle::make_event_sender(cli::bundle::BundleMode::Create, 0, 0, args.readers);
 
-    let scanner_reporter = progress_reporter.clone();
+    let scanner_sender = event_sender.clone();
     let scanner_paths = absolute_source_paths.clone();
     let scanner_exclude = args.exclude.clone();
     let scanner_shutdown = shutdown_signal.clone();
@@ -254,7 +205,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         spawn_background_scanner(
             scanner_paths,
             scanner_exclude,
-            scanner_reporter,
+            scanner_sender,
             scanner_shutdown,
         )
         .await;
@@ -284,15 +235,15 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
     let saver: Arc<dyn BlobSaver> = bundle_writer.clone();
     let process_shutdown = shutdown_signal.clone();
     let process_progress = progress.clone();
-    let process_reporter = progress_reporter.clone();
     let process_readers = args.readers;
 
+    let process_sender = event_sender.clone();
     let process_task = tokio::spawn(async move {
         fs_stream
             .for_each_concurrent(process_readers, |item| {
                 let saver = saver.clone();
                 let progress = process_progress.clone();
-                let reporter = process_reporter.clone();
+                let sender = process_sender.clone();
                 let signal = process_shutdown.clone();
                 let tx = processed_tx.clone();
 
@@ -304,7 +255,10 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                     let (path, stream_node_res) = match item {
                         Ok(v) => v,
                         Err(e) => {
-                            reporter.error(&format!("Scan error: {}", e));
+                            sender(Event::Backup(BackupEvent::Error(format!(
+                                "Scan error: {}",
+                                e
+                            ))));
                             return;
                         }
                     };
@@ -312,17 +266,20 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                     let stream_node = match stream_node_res {
                         Ok(v) => v,
                         Err(e) => {
-                            reporter.error(&format!("Node error: {}", e));
+                            sender(Event::Backup(BackupEvent::Error(format!(
+                                "Node error: {}",
+                                e
+                            ))));
                             return;
                         }
                     };
 
                     if !stream_node.node.is_dir() {
-                        reporter.processing_node(
-                            &path,
-                            NodeDiff::New,
-                            Some(stream_node.node.metadata.size),
-                        );
+                        sender(Event::Backup(BackupEvent::NodeProcessing {
+                            path: path.clone(),
+                            diff: NodeDiff::New,
+                            size_hint: Some(stream_node.node.metadata.size),
+                        }));
                     }
 
                     let mut node = stream_node.node;
@@ -331,8 +288,8 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                         let path_str = path.display().to_string();
                         let saver_clone = saver.clone();
                         let progress_clone = progress.clone();
-                        let reporter_clone = reporter.clone();
                         let signal_clone = signal.clone();
+                        let event_sender = crate::ui::events::noop_sender();
 
                         let blobs_res = match tokio::task::spawn_blocking(move || {
                             let file = std::fs::File::open(&path_str)?;
@@ -341,7 +298,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                                 file,
                                 file_size,
                                 progress_clone.as_ref(),
-                                reporter_clone.as_ref(),
+                                &event_sender,
                                 signal_clone.as_ref(),
                             )
                         })
@@ -349,11 +306,11 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                         {
                             Ok(res) => res,
                             Err(e) => {
-                                reporter.error(&format!(
+                                sender(Event::Backup(BackupEvent::Error(format!(
                                     "Chunking task panicked for {}: {}",
                                     path.display(),
                                     e
-                                ));
+                                ))));
                                 return;
                             }
                         };
@@ -361,18 +318,22 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                         match blobs_res {
                             Ok(blobs) => node.blobs = Some(blobs),
                             Err(e) => {
-                                reporter.error(&format!(
+                                sender(Event::Backup(BackupEvent::Error(format!(
                                     "Error chunking {}: {}",
                                     path.display(),
                                     e
-                                ));
+                                ))));
                                 return;
                             }
                         }
                     }
 
                     progress.processed_node();
-                    reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                    sender(Event::Backup(BackupEvent::NodeProcessed {
+                        path: path.clone(),
+                        diff: NodeDiff::New,
+                        size_hint: Some(node.metadata.size),
+                    }));
 
                     let _ = tx
                         .send((
@@ -409,8 +370,6 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         .root_tree()
         .context("Root tree ID not set")?;
 
-    progress_reporter.finalize();
-
     writer_finalize(bundle_writer.as_ref(), root_tree_id, output, &progress).await
 }
 
@@ -445,23 +404,21 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
         std::fs::create_dir_all(destination)?;
     }
 
-    let progress_reporter = Arc::new(cli::bundle::BundleCliProgressReporter::new(
+    let event_sender = cli::bundle::make_event_sender(
         cli::bundle::BundleMode::Extract,
         total_items as u64,
         total_bytes,
         args.readers,
-    ));
+    );
 
     extract_nodes_parallel(
         loader.clone(),
         &root_tree_id,
         destination,
         args.readers,
-        progress_reporter.clone(),
+        event_sender.clone(),
     )
     .await?;
-
-    progress_reporter.finalize();
 
     cli::log!();
     cli::log!("{}", "Extraction Summary:".bold().cyan());
@@ -685,7 +642,7 @@ async fn extract_nodes_parallel<L>(
     root_id: &ID,
     destination: &Path,
     workers: usize,
-    reporter: Arc<dyn SnapshotProgressReporter>,
+    event_sender: EventSender,
 ) -> Result<()>
 where
     L: BlobLoader + ?Sized + 'static,
@@ -695,7 +652,7 @@ where
 
     let loader_clone = loader.clone();
     let dest_clone = destination.to_path_buf();
-    let reporter_clone = reporter.clone();
+    let sender_clone = event_sender.clone();
     let root_id_val = *root_id;
 
     let walk_task = tokio::spawn(async move {
@@ -704,14 +661,20 @@ where
             let data = match loader_clone.load_blob(&current_id).await {
                 Ok(d) => d,
                 Err(e) => {
-                    reporter_clone.error(&format!("Failed to load tree {}: {}", current_id, e));
+                    sender_clone(Event::Backup(BackupEvent::Error(format!(
+                        "Failed to load tree {}: {}",
+                        current_id, e
+                    ))));
                     continue;
                 }
             };
             let tree: Tree = match serde_json::from_slice(&data) {
                 Ok(t) => t,
                 Err(e) => {
-                    reporter_clone.error(&format!("Failed to parse tree {}: {}", current_id, e));
+                    sender_clone(Event::Backup(BackupEvent::Error(format!(
+                        "Failed to parse tree {}: {}",
+                        current_id, e
+                    ))));
                     continue;
                 }
             };
@@ -728,26 +691,31 @@ where
                     }
                 }
                 if let Err(e) = tx.send((node_path, node)).await {
-                    reporter_clone.error(&format!("Internal channel error: {}", e));
+                    sender_clone(Event::Backup(BackupEvent::Error(format!(
+                        "Internal channel error: {}",
+                        e
+                    ))));
                     break;
                 }
             }
         }
     });
 
-    let meta_reporter: Arc<dyn RestoreProgressReporter> = Arc::new(BundleRestoreReporterAdapter {
-        inner: reporter.clone(),
-    });
+    let meta_sender = make_meta_sender();
 
     let process_future = async {
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         stream
             .for_each_concurrent(workers, |(path, node)| {
                 let loader = loader.clone();
-                let reporter = reporter.clone();
-                let meta_reporter = meta_reporter.clone();
+                let sender = event_sender.clone();
+                let meta_sender = meta_sender.clone();
                 async move {
-                    reporter.processing_node(&path, NodeDiff::New, Some(node.metadata.size));
+                    sender(Event::Backup(BackupEvent::NodeProcessing {
+                        path: path.clone(),
+                        diff: NodeDiff::New,
+                        size_hint: Some(node.metadata.size),
+                    }));
 
                     if !node.is_file() {
                         if node.is_symlink()
@@ -761,7 +729,7 @@ where
                                         &node.metadata,
                                         true,
                                         &path,
-                                        meta_reporter.as_ref(),
+                                        &meta_sender,
                                     );
                                 }
                             }
@@ -769,14 +737,22 @@ where
                             #[cfg(not(unix))]
                             let _ = symlink_info;
                         }
-                        reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                        sender(Event::Backup(BackupEvent::NodeProcessed {
+                            path: path.clone(),
+                            diff: NodeDiff::New,
+                            size_hint: Some(node.metadata.size),
+                        }));
                         return;
                     }
 
                     let blobs = match &node.blobs {
                         Some(b) => b,
                         None => {
-                            reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                            sender(Event::Backup(BackupEvent::NodeProcessed {
+                                path: path.clone(),
+                                diff: NodeDiff::New,
+                                size_hint: Some(node.metadata.size),
+                            }));
                             return;
                         }
                     };
@@ -784,12 +760,16 @@ where
                     let mut file = match std::fs::File::create(&path) {
                         Ok(f) => f,
                         Err(e) => {
-                            reporter.error(&format!(
+                            sender(Event::Backup(BackupEvent::Error(format!(
                                 "Failed to create file {}: {}",
                                 path.display(),
                                 e
-                            ));
-                            reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                            ))));
+                            sender(Event::Backup(BackupEvent::NodeProcessed {
+                                path: path.clone(),
+                                diff: NodeDiff::New,
+                                size_hint: Some(node.metadata.size),
+                            }));
                             return;
                         }
                     };
@@ -799,12 +779,12 @@ where
                         let data = match loader.load_blob(blob_id).await {
                             Ok(d) => d,
                             Err(e) => {
-                                reporter.error(&format!(
+                                sender(Event::Backup(BackupEvent::Error(format!(
                                     "Failed to load blob {} for {}: {}",
                                     blob_id,
                                     path.display(),
                                     e
-                                ));
+                                ))));
                                 success = false;
                                 break;
                             }
@@ -812,15 +792,17 @@ where
 
                         use std::io::Write;
                         if let Err(e) = file.write_all(&data) {
-                            reporter.error(&format!(
+                            sender(Event::Backup(BackupEvent::Error(format!(
                                 "Failed to write to {}: {}",
                                 path.display(),
                                 e
-                            ));
+                            ))));
                             success = false;
                             break;
                         }
-                        reporter.processed_bytes(data.len() as u64);
+                        sender(Event::Backup(
+                            BackupEvent::BytesProcessed(data.len() as u64),
+                        ));
                     }
 
                     drop(file);
@@ -829,11 +811,15 @@ where
                             &node.metadata,
                             false,
                             &path,
-                            meta_reporter.as_ref(),
+                            &meta_sender,
                         );
                     }
 
-                    reporter.processed_node(&path, NodeDiff::New, Some(node.metadata.size));
+                    sender(Event::Backup(BackupEvent::NodeProcessed {
+                        path: path.clone(),
+                        diff: NodeDiff::New,
+                        size_hint: Some(node.metadata.size),
+                    }));
                 }
             })
             .await;
@@ -849,64 +835,92 @@ where
 
     directories.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
     for (p, meta) in directories {
-        node_restorer::try_restore_node_metadata(&meta, false, &p, meta_reporter.as_ref());
+        node_restorer::try_restore_node_metadata(&meta, false, &p, &meta_sender);
     }
 
     Ok(())
 }
 
+fn make_meta_sender() -> EventSender {
+    Arc::new(|event: Event| {
+        if let Event::Restore(RestoreEvent::Warning(ref msg)) = event {
+            eprintln!("Warning: {}", msg);
+        } else if let Event::Restore(RestoreEvent::Error(ref msg)) = event {
+            eprintln!("Error: {}", msg);
+        }
+    })
+}
+
 async fn spawn_background_scanner(
     paths: Vec<PathBuf>,
     exclude: Vec<PathBuf>,
-    reporter: Arc<dyn SnapshotProgressReporter>,
+    event_sender: EventSender,
     shutdown: Arc<AtomicBool>,
 ) {
     let filter = Arc::new(PathFilter::new(None, Some(exclude)));
-    let reporter_for_scan = reporter.clone();
+    let sender_for_closure = event_sender.clone();
 
     let res = tokio::task::spawn_blocking(move || {
         use rayon::prelude::*;
         paths.into_par_iter().for_each(|path| {
-            scan_recursive(&path, &filter, &reporter_for_scan, &shutdown);
+            let scanner = BundleScanner {
+                event_sender: sender_for_closure.clone(),
+                filter: filter.clone(),
+                shutdown: shutdown.clone(),
+            };
+            scanner.scan_recursive(&path);
         });
     })
     .await;
 
     if let Err(e) = res {
-        reporter.error(&format!("Background scanner panicked: {}", e));
+        event_sender(Event::Backup(BackupEvent::Error(format!(
+            "Background scanner panicked: {}",
+            e
+        ))));
     }
 
-    reporter.scan_finished();
+    event_sender(Event::Backup(BackupEvent::ScanFinished {
+        total_items: 0,
+        total_bytes: 0,
+    }));
 }
 
-fn scan_recursive(
-    path: &std::path::Path,
-    filter: &Arc<PathFilter>,
-    reporter: &Arc<dyn SnapshotProgressReporter>,
-    shutdown: &Arc<AtomicBool>,
-) {
-    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
-    if !filter.allow(path) {
-        return;
-    }
+struct BundleScanner {
+    event_sender: EventSender,
+    filter: Arc<PathFilter>,
+    shutdown: Arc<AtomicBool>,
+}
 
-    if let Ok(node) = Node::from_path_sync(path, false) {
-        reporter.add_expected_items(1);
-        if node.is_file() {
-            reporter.add_expected_bytes(node.metadata.size);
+impl BundleScanner {
+    fn scan_recursive(&self, path: &std::path::Path) {
+        if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        if !self.filter.allow(path) {
+            return;
         }
 
-        if node.is_dir()
-            && let Ok(entries) = std::fs::read_dir(path)
-        {
-            use rayon::prelude::*;
-            entries.par_bridge().for_each(|entry_res| {
-                if let Ok(entry) = entry_res {
-                    scan_recursive(&entry.path(), filter, reporter, shutdown);
-                }
-            });
+        if let Ok(node) = Node::from_path_sync(path, false) {
+            (self.event_sender)(Event::Backup(BackupEvent::ScanProgress {
+                items: 1,
+                bytes: if node.is_file() {
+                    node.metadata.size
+                } else {
+                    0
+                },
+            }));
+
+            if node.is_dir()
+                && let Ok(entries) = std::fs::read_dir(path)
+            {
+                use rayon::prelude::*;
+                entries.par_bridge().for_each(|entry_res| {
+                    if let Ok(entry) = entry_res {
+                        self.scan_recursive(&entry.path());
+                    }
+                });
+            }
         }
     }
 }

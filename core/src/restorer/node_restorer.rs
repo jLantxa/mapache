@@ -3,7 +3,7 @@
 
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
-use std::{fs::OpenOptions, io::Write, path::Path, sync::Arc, time::SystemTime};
+use std::{fs::OpenOptions, io::Write, path::Path, time::SystemTime};
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
@@ -17,7 +17,7 @@ use crate::{
         node::{Metadata, Node, NodeType},
     },
     restorer::Restorer,
-    ui::RestoreProgressReporter,
+    ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
 
 /// Restores a node to the specified destination path.
@@ -25,7 +25,7 @@ use crate::{
 /// done in a reparate pass.
 pub(crate) async fn restore_node_to_path(
     restorer: &Restorer,
-    progress_reporter: Arc<dyn RestoreProgressReporter>,
+    event_sender: &EventSender,
     node: &Node,
     dst_path: &Path,
     dry_run: bool,
@@ -95,7 +95,10 @@ pub(crate) async fn restore_node_to_path(
                     })?;
                 }
 
-                progress_reporter.processed_bytes(chunk_size);
+                emit_event(
+                    event_sender,
+                    Event::Restore(RestoreEvent::BytesProcessed(chunk_size)),
+                );
 
                 // Return the buffer to the pool
                 restorer.return_buffer(buf);
@@ -119,10 +122,13 @@ pub(crate) async fn restore_node_to_path(
 
             // Show a warning if the symlink metadata is missing and return.
             let Some(symlink_info) = symlink_info else {
-                progress_reporter.warning(&format!(
-                    "Symlink {} does not have a target path",
-                    dst_path.display()
-                ));
+                emit_event(
+                    event_sender,
+                    Event::Restore(RestoreEvent::Warning(format!(
+                        "Symlink {} does not have a target path",
+                        dst_path.display()
+                    ))),
+                );
                 return Ok(());
             };
 
@@ -159,10 +165,13 @@ pub(crate) async fn restore_node_to_path(
                         }
                         // No type info. Show warning.
                         None => {
-                            progress_reporter.warning(&format!(
-                                "Symlink {} has no type info",
-                                dst_path.display()
-                            ));
+                            emit_event(
+                                event_sender,
+                                Event::Restore(RestoreEvent::Warning(format!(
+                                    "Symlink {} has no type info",
+                                    dst_path.display()
+                                ))),
+                            );
                         }
                     }
                 }
@@ -170,60 +179,84 @@ pub(crate) async fn restore_node_to_path(
 
             // Restore symlink metadata after creation
             if !dry_run {
-                try_restore_symlink_metadata(&node.metadata, dst_path, progress_reporter.as_ref());
+                try_restore_symlink_metadata(&node.metadata, dst_path, event_sender);
             }
         }
 
         NodeType::BlockDevice => {
             #[cfg(unix)]
-            progress_reporter.warning(&format!(
-                "Restoration of block device {} not supported yet.",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Restoration of block device {} not supported yet.",
+                    dst_path.display()
+                ))),
+            );
             #[cfg(not(unix))]
-            progress_reporter.warning(&format!(
-                "Block device restoration not supported on this operating system: {}",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Block device restoration not supported on this operating system: {}",
+                    dst_path.display()
+                ))),
+            );
         }
 
         NodeType::CharDevice => {
             #[cfg(unix)]
-            progress_reporter.warning(&format!(
-                "Restoration of character device {} not supported yet.",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Restoration of character device {} not supported yet.",
+                    dst_path.display()
+                ))),
+            );
             #[cfg(not(unix))]
-            progress_reporter.warning(&format!(
-                "Character device restoration not supported on this operating system: {}",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Character device restoration not supported on this operating system: {}",
+                    dst_path.display()
+                ))),
+            );
         }
 
         NodeType::Fifo => {
             #[cfg(unix)]
-            progress_reporter.warning(&format!(
-                "Restoration of FIFO (named pipe) {} not supported yet.",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Restoration of FIFO (named pipe) {} not supported yet.",
+                    dst_path.display()
+                ))),
+            );
             #[cfg(not(unix))]
-            progress_reporter.warning(&format!(
-                "FIFO restoration not supported on this operating system: {}",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "FIFO restoration not supported on this operating system: {}",
+                    dst_path.display()
+                ))),
+            );
         }
 
         NodeType::Socket => {
             #[cfg(unix)]
-            progress_reporter.warning(&format!(
-                "Restoration of socket {} not supported yet.",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Restoration of socket {} not supported yet.",
+                    dst_path.display()
+                ))),
+            );
             #[cfg(not(unix))]
-            progress_reporter.warning(&format!(
-                "Socket restoration not supported on this operating system: {}",
-                dst_path.display()
-            ));
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Socket restoration not supported on this operating system: {}",
+                    dst_path.display()
+                ))),
+            );
         }
     }
 
@@ -259,10 +292,10 @@ pub(crate) fn try_restore_node_metadata(
     metadata: &Metadata,
     is_symlink: bool,
     dst_path: &Path,
-    progress_reporter: &dyn RestoreProgressReporter,
+    event_sender: &EventSender,
 ) {
     if is_symlink {
-        try_restore_symlink_metadata(metadata, dst_path, progress_reporter);
+        try_restore_symlink_metadata(metadata, dst_path, event_sender);
         return;
     }
 
@@ -273,11 +306,14 @@ pub(crate) fn try_restore_node_metadata(
         metadata.modified_time.as_ref(),
         false,
     ) {
-        progress_reporter.warning(&format!(
-            "Could not set file times for {}: {}.",
-            dst_path.display(),
-            e
-        ));
+        emit_event(
+            event_sender,
+            Event::Restore(RestoreEvent::Warning(format!(
+                "Could not set file times for {}: {}.",
+                dst_path.display(),
+                e
+            ))),
+        );
     }
 
     // Unix-specific metadata (mode, uid, gid)
@@ -287,7 +323,12 @@ pub(crate) fn try_restore_node_metadata(
         if !is_symlink && let Some(mode) = metadata.mode {
             let permissions = Permissions::from_mode(mode);
             if std::fs::set_permissions(dst_path, permissions).is_err() {
-                progress_reporter.warning(&format!("Could not set permissions (mode: {mode:o})."));
+                emit_event(
+                    event_sender,
+                    Event::Restore(RestoreEvent::Warning(format!(
+                        "Could not set permissions (mode: {mode:o})."
+                    ))),
+                );
             }
         }
 
@@ -303,34 +344,33 @@ pub(crate) fn try_restore_node_metadata(
         }
 
         // Restore extended attributes
-        try_restore_xattrs(metadata, dst_path, progress_reporter);
+        try_restore_xattrs(metadata, dst_path, event_sender);
     }
 
     // Restore Linux flags
     #[cfg(target_os = "linux")]
-    try_restore_linux_flags(metadata, is_symlink, dst_path, progress_reporter);
+    try_restore_linux_flags(metadata, is_symlink, dst_path, event_sender);
 
     // Restore Windows attributes
     #[cfg(windows)]
-    try_restore_windows_attributes(metadata, dst_path, progress_reporter);
+    try_restore_windows_attributes(metadata, dst_path, event_sender);
 }
 
 /// Restores extended attributes (xattrs) for a node.
 #[cfg(unix)]
-fn try_restore_xattrs(
-    metadata: &Metadata,
-    dst_path: &Path,
-    progress_reporter: &dyn RestoreProgressReporter,
-) {
+fn try_restore_xattrs(metadata: &Metadata, dst_path: &Path, event_sender: &EventSender) {
     if let Some(xattrs) = &metadata.extended_attributes {
         for (name, value) in xattrs {
             if let Err(e) = xattr::set(dst_path, name, value) {
-                progress_reporter.warning(&format!(
-                    "Could not set extended attribute {} for {}: {}",
-                    name,
-                    dst_path.display(),
-                    e
-                ));
+                emit_event(
+                    event_sender,
+                    Event::Restore(RestoreEvent::Warning(format!(
+                        "Could not set extended attribute {} for {}: {}",
+                        name,
+                        dst_path.display(),
+                        e
+                    ))),
+                );
             }
         }
     }
@@ -342,7 +382,7 @@ fn try_restore_linux_flags(
     metadata: &Metadata,
     is_symlink: bool,
     dst_path: &Path,
-    progress_reporter: &dyn RestoreProgressReporter,
+    event_sender: &EventSender,
 ) {
     if let Some(flags) = metadata.linux_flags {
         if is_symlink {
@@ -362,11 +402,14 @@ fn try_restore_linux_flags(
                 // sized flags integer. FS_IOC_SETFLAGS is a standard Linux ioctl for
                 // setting file attributes.
                 if libc::ioctl(file.as_raw_fd(), FS_IOC_SETFLAGS, &flags_int) != 0 {
-                    progress_reporter.warning(&format!(
-                        "Could not set Linux flags for {}: {}",
-                        dst_path.display(),
-                        std::io::Error::last_os_error()
-                    ));
+                    emit_event(
+                        event_sender,
+                        Event::Restore(RestoreEvent::Warning(format!(
+                            "Could not set Linux flags for {}: {}",
+                            dst_path.display(),
+                            std::io::Error::last_os_error()
+                        ))),
+                    );
                 }
             }
         }
@@ -378,7 +421,7 @@ fn try_restore_linux_flags(
 fn try_restore_windows_attributes(
     metadata: &Metadata,
     dst_path: &Path,
-    progress_reporter: &dyn RestoreProgressReporter,
+    event_sender: &EventSender,
 ) {
     if let Some(attrs) = metadata.windows_attributes {
         use std::os::windows::ffi::OsStrExt;
@@ -396,11 +439,14 @@ fn try_restore_windows_attributes(
                 attrs,
             ) == 0
             {
-                progress_reporter.warning(&format!(
-                    "Could not set Windows attributes for {}: {}",
-                    dst_path.display(),
-                    std::io::Error::last_os_error()
-                ));
+                emit_event(
+                    event_sender,
+                    Event::Restore(RestoreEvent::Warning(format!(
+                        "Could not set Windows attributes for {}: {}",
+                        dst_path.display(),
+                        std::io::Error::last_os_error()
+                    ))),
+                );
             }
         }
     }
@@ -408,11 +454,7 @@ fn try_restore_windows_attributes(
 
 /// Restores metadata for a symlink without following it.
 #[cfg(unix)]
-fn try_restore_symlink_metadata(
-    metadata: &Metadata,
-    dst_path: &Path,
-    progress_reporter: &dyn RestoreProgressReporter,
-) {
+fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_sender: &EventSender) {
     use std::os::unix::ffi::OsStrExt;
 
     // Set file times using set_symlink_file_times
@@ -422,11 +464,14 @@ fn try_restore_symlink_metadata(
         metadata.modified_time.as_ref(),
         true,
     ) {
-        progress_reporter.warning(&format!(
-            "Could not set file times for symlink {}: {}",
-            dst_path.display(),
-            e
-        ));
+        emit_event(
+            event_sender,
+            Event::Restore(RestoreEvent::Warning(format!(
+                "Could not set file times for symlink {}: {}",
+                dst_path.display(),
+                e
+            ))),
+        );
     }
 
     // Set owner (uid) and group (gid) using lchown to avoid following the link.
@@ -442,34 +487,36 @@ fn try_restore_symlink_metadata(
                     let err = std::io::Error::last_os_error();
                     // Only warn if it's not a permission error (which is expected for non-root)
                     if err.kind() != std::io::ErrorKind::PermissionDenied {
-                        progress_reporter.warning(&format!(
-                            "Could not set owner/group for symlink {}: {}",
-                            dst_path.display(),
-                            err
-                        ));
+                        emit_event(
+                            event_sender,
+                            Event::Restore(RestoreEvent::Warning(format!(
+                                "Could not set owner/group for symlink {}: {}",
+                                dst_path.display(),
+                                err
+                            ))),
+                        );
                     }
                 }
             },
             Err(_) => {
-                progress_reporter.warning(&format!(
-                    "Could not set owner/group for symlink {}: path contains null byte",
-                    dst_path.display()
-                ));
+                emit_event(
+                    event_sender,
+                    Event::Restore(RestoreEvent::Warning(format!(
+                        "Could not set owner/group for symlink {}: path contains null byte",
+                        dst_path.display()
+                    ))),
+                );
             }
         }
     }
 
     // Restore extended attributes (xattr crate's set handles symlinks correctly if not following)
-    try_restore_xattrs(metadata, dst_path, progress_reporter);
+    try_restore_xattrs(metadata, dst_path, event_sender);
 }
 
 /// Restores metadata for a symlink on Windows.
 #[cfg(windows)]
-fn try_restore_symlink_metadata(
-    metadata: &Metadata,
-    dst_path: &Path,
-    progress_reporter: &dyn RestoreProgressReporter,
-) {
+fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_sender: &EventSender) {
     // Set file times for symlink on Windows
     if let Err(e) = restore_times(
         dst_path,
@@ -477,15 +524,18 @@ fn try_restore_symlink_metadata(
         metadata.modified_time.as_ref(),
         true,
     ) {
-        progress_reporter.warning(&format!(
-            "Could not set file times for symlink {}: {}",
-            dst_path.display(),
-            e
-        ));
+        emit_event(
+            event_sender,
+            Event::Restore(RestoreEvent::Warning(format!(
+                "Could not set file times for symlink {}: {}",
+                dst_path.display(),
+                e
+            ))),
+        );
     }
 
     // Restore Windows attributes for the symlink itself
-    try_restore_windows_attributes(metadata, dst_path, progress_reporter);
+    try_restore_windows_attributes(metadata, dst_path, event_sender);
 }
 
 #[cfg(test)]
@@ -495,7 +545,7 @@ mod tests {
     use chrono::{Duration, Local};
     use tempfile::tempdir;
 
-    use crate::ui;
+    use crate::ui::events::noop_sender;
 
     use super::*;
 
@@ -524,8 +574,8 @@ mod tests {
         node.metadata = original_metadata;
 
         // Now restore the metadata from the node
-        let reporter = ui::noop::NoopRestoreReporter;
-        try_restore_node_metadata(&node.metadata, false, &file_path, &reporter);
+        let sender = noop_sender();
+        try_restore_node_metadata(&node.metadata, false, &file_path, &sender);
 
         // Check if the mtime was restored back to the node's original mtime
         assert_eq!(
@@ -573,8 +623,8 @@ mod tests {
         fs::filetime::set_file_times(&file_path, ft_now, ft_now)?;
 
         // Restore metadata from the captured node
-        let reporter = ui::noop::NoopRestoreReporter;
-        try_restore_node_metadata(&node.metadata, false, &file_path, &reporter);
+        let sender = noop_sender();
+        try_restore_node_metadata(&node.metadata, false, &file_path, &sender);
 
         // Verify both atime and mtime were restored
         let restored_meta = file_path.symlink_metadata()?;

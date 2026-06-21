@@ -4,8 +4,16 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    fs::tree::NodeDiff, repository::snapshot::DiffCountsAtomic, ui::SnapshotProcessSummary,
+    fs::tree::NodeDiff,
+    repository::snapshot::{DiffCounts, DiffCountsAtomic},
 };
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SnapshotProcessSummary {
+    pub processed_items_count: u64,
+    pub processed_bytes: u64,
+    pub diff_counts: DiffCounts,
+}
 /// Centralized snapshot progress counters owned by the archiver.
 #[derive(Debug, Default)]
 pub(crate) struct SnapshotProgress {

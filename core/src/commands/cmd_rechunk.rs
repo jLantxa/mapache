@@ -13,8 +13,8 @@ use crate::{
     },
     repository::snapshot::SnapshotStream,
     ui::{
-        self, SnapshotProgressReporter,
-        cli::{color::Colorize, snapshot::CliSnapshotProgressReporter},
+        self,
+        cli::{color::Colorize, snapshot},
     },
     utils::{self},
 };
@@ -79,16 +79,15 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
                 let progress = Arc::new(SnapshotProgress::new());
 
-                let progress_reporter: Arc<dyn SnapshotProgressReporter> =
-                    Arc::new(CliSnapshotProgressReporter::new(
-                        Some(snapshot.summary.processed_items_count),
-                        Some(snapshot.summary.processed_bytes),
-                        1,
-                    ));
+                let event_sender = snapshot::make_event_sender(
+                    Some(snapshot.summary.processed_items_count),
+                    Some(snapshot.summary.processed_bytes),
+                    1,
+                );
 
                 let rewrite_ctx = RewriteCtx {
                     progress: progress.clone(),
-                    progress_reporter: progress_reporter.clone(),
+                    event_sender,
                     shutdown_signal: cleanup_handler.interrupted.clone(),
                 };
                 rewrite_snapshot_tree(
@@ -115,8 +114,6 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
 
                 repo.delete_file(ContentIdType::Snapshot, &snapshot_id, None)
                     .await?;
-
-                progress_reporter.finalize();
             }
 
             repo.flush_and_finalize_pack_saver().await?;

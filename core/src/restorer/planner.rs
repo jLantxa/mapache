@@ -22,6 +22,7 @@ use crate::{
     restorer::{
         BlobRestoreRequest, FileRestorePlan, RestorePlan, Restorer, Strategy, node_restorer,
     },
+    ui::events::{Event, RestoreEvent, emit_event},
     utils::{self, size},
 };
 
@@ -44,8 +45,7 @@ impl Restorer {
         let hardlink_index = Arc::new(parking_lot::Mutex::new(HashMap::<(u64, u64), usize>::new()));
         let hardlinks = Arc::new(parking_lot::Mutex::new(Vec::<(usize, usize)>::new()));
 
-        self.progress_reporter
-            .set_message("Planning...".to_string());
+        emit_event(&self.event_sender, Event::Restore(RestoreEvent::Planning));
 
         let d = defaults::runtime();
         let num_workers = d.restore_blob_concurrency;
@@ -61,7 +61,7 @@ impl Restorer {
                 let total_items = total_items.clone();
                 let total_bytes = total_bytes.clone();
                 let skipped_bytes = skipped_bytes.clone();
-                let progress_reporter = self.progress_reporter.clone();
+                let event_sender = self.event_sender.clone();
                 let shutdown_signal = self.shutdown_signal.clone();
                 let hardlink_index = hardlink_index.clone();
                 let hardlinks = hardlinks.clone();
@@ -72,12 +72,12 @@ impl Restorer {
                     }
 
                     let visited = node_count.fetch_add(1, Ordering::Relaxed) + 1;
-                    progress_reporter.set_visited_nodes(visited);
+                    emit_event(&event_sender, Event::Restore(RestoreEvent::NodeVisited(visited)));
 
                     let (mut path, stream_node_res) = match node_res {
                         Ok(res) => res,
                         Err(e) => {
-                            progress_reporter.error(&format!("Error during planning: {e}"));
+                            emit_event(&event_sender, Event::Restore(RestoreEvent::Error(format!("Error during planning: {e}"))));
                             return;
                         }
                     };
@@ -85,11 +85,11 @@ impl Restorer {
                     let stream_node = match stream_node_res {
                         Ok(node) => node,
                         Err(e) => {
-                            progress_reporter.error(&format!(
+                            emit_event(&event_sender, Event::Restore(RestoreEvent::Error(format!(
                                 "Error reading node {}: {}",
                                 path.display(),
                                 e
-                            ));
+                            ))));
                             return;
                         }
                     };
@@ -117,8 +117,7 @@ impl Restorer {
                     let restore_path = match utils::secure_join(&self.target_path, &path) {
                         Ok(p) => p,
                         Err(e) => {
-                            progress_reporter
-                                .error(&format!("Secure join failed for {path:?}: {e}"));
+                            emit_event(&event_sender, Event::Restore(RestoreEvent::Error(format!("Secure join failed for {path:?}: {e}"))));
                             return;
                         }
                     };
@@ -136,11 +135,11 @@ impl Restorer {
                             return;
                         }
                         Err(e) => {
-                            progress_reporter.error(&format!(
+                            emit_event(&event_sender, Event::Restore(RestoreEvent::Error(format!(
                                 "Error checking {}: {}",
                                 path.display(),
                                 e
-                            ));
+                            ))));
                             return;
                         }
                     }
@@ -149,11 +148,11 @@ impl Restorer {
                         if !self.opts.dry_run
                             && let Err(e) = fs::create_dir_all(&restore_path)
                         {
-                            progress_reporter.error(&format!(
+                            emit_event(&event_sender, Event::Restore(RestoreEvent::Error(format!(
                                 "Failed to create directory {}: {}",
                                 restore_path.display(),
                                 e
-                            ));
+                            ))));
                             return;
                         }
                         directories.lock().push((restore_path.clone(), node.metadata));
@@ -169,7 +168,7 @@ impl Restorer {
                                     Some(loc) => loc,
                                     None => {
                                         let err_msg = format!("Blob {blob_id} not found in index");
-                                        progress_reporter.error(&err_msg);
+                                        emit_event(&event_sender, Event::Restore(RestoreEvent::Error(err_msg)));
                                         return;
                                     }
                                 };
@@ -217,11 +216,11 @@ impl Restorer {
                             if !self.opts.dry_run
                                 && let Some(parent) = restore_path.parent()
                                 && let Err(e) = fs::create_dir_all(parent) {
-                                    progress_reporter.error(&format!(
+                                    emit_event(&event_sender, Event::Restore(RestoreEvent::Error(format!(
                                         "Failed to create parent directory for secondary hardlink {}: {}",
                                         restore_path.display(),
                                         e
-                                    ));
+                                    ))));
                             }
                         } else {
                             let num_blobs = file_blobs.len().min(u32::MAX as usize) as u32;
@@ -245,14 +244,14 @@ impl Restorer {
                         if !self.opts.dry_run
                             && let Err(e) = node_restorer::restore_node_to_path(
                                 self,
-                                progress_reporter.clone(),
+                                &event_sender,
                                 &node,
                                 &restore_path,
                                 false,
                             )
                             .await
                         {
-                            progress_reporter.error(&e.to_string());
+                            emit_event(&event_sender, Event::Restore(RestoreEvent::Error(e.to_string())));
                         }
                         // We must record symlinks in the plan to report them as processed items later.
                         // However, we don't want them in `files` because `restore_packs` would treat them as files.
@@ -264,7 +263,10 @@ impl Restorer {
             .await;
 
         let final_visited = node_count.load(Ordering::Relaxed);
-        self.progress_reporter.set_visited_nodes(final_visited);
+        emit_event(
+            &self.event_sender,
+            Event::Restore(RestoreEvent::NodeVisited(final_visited)),
+        );
 
         let files = Arc::into_inner(files)
             .context("Internal error: multiple Arc references to files remained after planning")?

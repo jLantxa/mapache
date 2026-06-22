@@ -292,9 +292,14 @@ pub(crate) async fn rewrite_snapshot_tree(
         let mut stream_node = stream_node_res?;
 
         let size_hint = Some(stream_node.node.metadata.size);
+        let diff = if rechunk {
+            NodeDiff::Changed
+        } else {
+            NodeDiff::Unchanged
+        };
         (ctx.event_sender)(Event::Backup(BackupEvent::NodeProcessing {
             path: path.clone(),
-            diff: NodeDiff::Unchanged,
+            diff,
             size_hint,
         }));
 
@@ -353,7 +358,7 @@ pub(crate) async fn rewrite_snapshot_tree(
 
         (ctx.event_sender)(Event::Backup(BackupEvent::NodeProcessed {
             path: path.clone(),
-            diff: NodeDiff::Unchanged,
+            diff,
             size_hint,
         }));
         snapshot.summary.processed_items_count += 1;

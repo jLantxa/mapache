@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::sync::LazyLock;
 
 use ratatui::{
@@ -11,6 +9,7 @@ use ratatui::{
 };
 
 /// Electric Pastel colour palette used throughout the TUI.
+#[expect(dead_code)]
 pub(crate) struct Theme {
     // ── Core palette ────────────────────────────────────────────
     pub bg: Color,
@@ -156,6 +155,7 @@ pub fn block(title: &str) -> Block<'static> {
 }
 
 /// A block without borders (just a padded surface).
+#[expect(dead_code)]
 pub fn surface_block(title: &str) -> Block<'static> {
     Block::default()
         .style(Style::new().bg(THEME.surface))
@@ -164,6 +164,7 @@ pub fn surface_block(title: &str) -> Block<'static> {
 }
 
 /// A gauge with modern styling.
+#[expect(dead_code)]
 pub fn gauge<'a>(pct: f64, label: &'a str) -> Gauge<'a> {
     Gauge::default()
         .gauge_style(THEME.gauge_filled)
@@ -206,6 +207,7 @@ pub fn key_hint_footer(hints: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
+#[expect(dead_code)]
 pub fn separator() -> Paragraph<'static> {
     Paragraph::new(Span::styled(
         "\u{2500}".repeat(80),

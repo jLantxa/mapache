@@ -847,7 +847,7 @@ mod tests {
         } else {
             // If std::fs couldn't get it, our statx might have (on musl) or not.
             // But on glibc (likely where tests run), they should behave similarly.
-            println!("Creation time not supported by std::fs on this filesystem");
+            eprintln!("Creation time not supported by std::fs on this filesystem");
         }
     }
 

@@ -709,8 +709,8 @@ mod tests {
         // Finalize (Simulating worker action)
         let result = packer
             .finalize_and_extract()
-            .expect("Finalize failed")
-            .expect("Should return result");
+            .context("Finalize failed")?
+            .context("Should return result")?;
 
         // CHANGE THIS:
         // result.descriptors includes the padding blobs added for obfuscation

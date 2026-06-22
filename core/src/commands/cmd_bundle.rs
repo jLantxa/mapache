@@ -28,6 +28,7 @@ use crate::{
     },
     restorer::node_restorer,
     ui::{
+        self,
         cli::{self, color::Colorize},
         events::{BackupEvent, Event, EventSender, RestoreEvent},
     },
@@ -857,9 +858,9 @@ where
 fn make_meta_sender() -> EventSender {
     Arc::new(|event: Event| {
         if let Event::Restore(RestoreEvent::Warning(ref msg)) = event {
-            eprintln!("Warning: {}", msg);
+            ui::cli::warning!("Warning: {}", msg);
         } else if let Event::Restore(RestoreEvent::Error(ref msg)) = event {
-            eprintln!("Error: {}", msg);
+            ui::cli::error!("Error: {}", msg);
         }
     })
 }

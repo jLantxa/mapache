@@ -11,3 +11,12 @@
 # Project-specific
 .antigravitycli
 /_*
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# Python
+__pycache__/

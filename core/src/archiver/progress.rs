@@ -47,3 +47,85 @@ impl SnapshotProgress {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::fs::tree::NodeDiff;
+
+    #[test]
+    fn test_empty_progress() {
+        let progress = SnapshotProgress::new();
+        let summary = progress.summary();
+        assert_eq!(summary.processed_items_count, 0);
+        assert_eq!(summary.processed_bytes, 0);
+        assert_eq!(summary.diff_counts.new_files, 0);
+        assert_eq!(summary.diff_counts.deleted_files, 0);
+        assert_eq!(summary.diff_counts.changed_files, 0);
+        assert_eq!(summary.diff_counts.unchanged_files, 0);
+        assert_eq!(summary.diff_counts.new_dirs, 0);
+        assert_eq!(summary.diff_counts.deleted_dirs, 0);
+        assert_eq!(summary.diff_counts.changed_dirs, 0);
+        assert_eq!(summary.diff_counts.unchanged_dirs, 0);
+    }
+
+    #[test]
+    fn test_single_node_progress() {
+        let progress = SnapshotProgress::new();
+        progress.processed_node();
+        progress.processed_bytes(42);
+        progress.increment_diff(false, &NodeDiff::New);
+        let summary = progress.summary();
+        assert_eq!(summary.processed_items_count, 1);
+        assert_eq!(summary.processed_bytes, 42);
+        assert_eq!(summary.diff_counts.new_files, 1);
+    }
+
+    #[test]
+    fn test_concurrent_progress() {
+        let progress = Arc::new(SnapshotProgress::new());
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let p = progress.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..100 {
+                    p.processed_node();
+                    p.processed_bytes(10);
+                    p.increment_diff(false, &NodeDiff::New);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let summary = progress.summary();
+        assert_eq!(summary.processed_items_count, 1000);
+        assert_eq!(summary.processed_bytes, 10000);
+        assert_eq!(summary.diff_counts.new_files, 1000);
+    }
+
+    #[test]
+    fn test_all_diff_types() {
+        let progress = SnapshotProgress::new();
+        progress.increment_diff(false, &NodeDiff::New);
+        progress.increment_diff(false, &NodeDiff::Deleted);
+        progress.increment_diff(false, &NodeDiff::Changed);
+        progress.increment_diff(false, &NodeDiff::Unchanged);
+        progress.increment_diff(true, &NodeDiff::New);
+        progress.increment_diff(true, &NodeDiff::Deleted);
+        progress.increment_diff(true, &NodeDiff::Changed);
+        progress.increment_diff(true, &NodeDiff::Unchanged);
+
+        let s = progress.summary();
+        assert_eq!(s.diff_counts.new_files, 1);
+        assert_eq!(s.diff_counts.deleted_files, 1);
+        assert_eq!(s.diff_counts.changed_files, 1);
+        assert_eq!(s.diff_counts.unchanged_files, 1);
+        assert_eq!(s.diff_counts.new_dirs, 1);
+        assert_eq!(s.diff_counts.deleted_dirs, 1);
+        assert_eq!(s.diff_counts.changed_dirs, 1);
+        assert_eq!(s.diff_counts.unchanged_dirs, 1);
+    }
+}

@@ -454,3 +454,183 @@ impl Restorer {
         .await?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use anyhow::Result;
+    use parking_lot::Mutex;
+    use tempfile::tempdir;
+    use zeroize::Zeroizing;
+
+    use crate::backend::StorageBackend;
+    use crate::backend::mock::MockBackend;
+    use crate::fs::node::{Metadata, Node, NodeType};
+    use crate::mapache::defaults::TEST_REPO_CONFIG;
+    use crate::repository::index::MasterIndex;
+    use crate::repository::repo::{Auth, Repository};
+    use crate::restorer::{RestoreOptions, Restorer, Strategy};
+    use crate::ui::events::noop_sender;
+
+    fn auth() -> Auth {
+        Auth {
+            username: "test".to_string(),
+            password: Zeroizing::new("test".to_string()),
+        }
+    }
+
+    async fn create_restorer(strategy: Strategy, verify: bool) -> (Restorer, tempfile::TempDir) {
+        let auth = auth();
+        let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
+        Repository::init(&auth, None, backend.clone())
+            .await
+            .unwrap();
+        let (repo, _) = Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG)
+            .await
+            .unwrap();
+        let tmp = tempdir().unwrap();
+        let restorer = Restorer {
+            repo,
+            event_sender: noop_sender(),
+            shutdown_signal: Arc::new(AtomicBool::new(false)),
+            target_path: tmp.path().to_path_buf(),
+            opts: RestoreOptions {
+                strategy,
+                strip_prefix: None,
+                dry_run: false,
+                quit_on_error: false,
+                preallocate: false,
+                verify,
+                include: None,
+                exclude: None,
+            },
+            buffers: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        (restorer, tmp)
+    }
+
+    fn file_node(size: u64) -> Node {
+        Node {
+            name: String::new(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn dir_node() -> Node {
+        Node {
+            name: String::new(),
+            node_type: NodeType::Directory,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_missing_path_always_restored() -> Result<()> {
+        for strategy in [
+            Strategy::Overwrite,
+            Strategy::Skip,
+            Strategy::Newer,
+            Strategy::Fail,
+        ] {
+            let (restorer, _tmp) = create_restorer(strategy.clone(), false).await;
+            let path = PathBuf::from("/does/not/exist");
+            let index = Arc::new(MasterIndex::new());
+            assert!(
+                restorer
+                    .should_restore_node(&file_node(100), &path, index)
+                    .await?,
+                "strategy {strategy:?} should restore missing paths"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_restores_existing() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Overwrite, false).await;
+        let path = tmp.path().join("existing.txt");
+        std::fs::write(&path, "data")?;
+        let index = Arc::new(MasterIndex::new());
+        assert!(
+            restorer
+                .should_restore_node(&file_node(999), &path, index)
+                .await?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_skip_skips_existing() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Skip, false).await;
+        let path = tmp.path().join("existing.txt");
+        std::fs::write(&path, "data")?;
+        let index = Arc::new(MasterIndex::new());
+        assert!(
+            !restorer
+                .should_restore_node(&file_node(999), &path, index)
+                .await?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fail_errors_on_existing() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Fail, false).await;
+        let path = tmp.path().join("existing.txt");
+        std::fs::write(&path, "data")?;
+        let index = Arc::new(MasterIndex::new());
+        assert!(
+            restorer
+                .should_restore_node(&file_node(999), &path, index)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fail_allows_existing_dir() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Fail, false).await;
+        let path = tmp.path().join("existing_dir");
+        std::fs::create_dir(&path)?;
+        let index = Arc::new(MasterIndex::new());
+        assert!(
+            restorer
+                .should_restore_node(&dir_node(), &path, index)
+                .await?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_same_size_mtime_skips() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Overwrite, false).await;
+        let path = tmp.path().join("existing.txt");
+        std::fs::write(&path, "0123456789")?;
+        let mtime = std::fs::symlink_metadata(&path)?.modified()?;
+
+        let node = Node {
+            name: "existing.txt".into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 10,
+                modified_time: Some(mtime),
+                ..Default::default()
+            },
+            blobs: Some(vec![]),
+            ..Default::default()
+        };
+        let index = Arc::new(MasterIndex::new());
+        assert!(!restorer.should_restore_node(&node, &path, index).await?);
+        Ok(())
+    }
+}

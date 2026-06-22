@@ -9,7 +9,9 @@ use futures::StreamExt;
 
 use crate::{
     archiver::{
-        SnapshotOptions, processor, progress::SnapshotProgress, tree_serializer::TreeSerializer,
+        SnapshotOptions, processor,
+        progress::{SnapshotProcessSummary, SnapshotProgress},
+        tree_serializer::TreeSerializer,
     },
     bundle::{reader::BundleReader, writer::BundleWriter},
     commands::{Compression, DEFAULT_COMPRESSION, parse_compression_level},
@@ -289,7 +291,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                         let saver_clone = saver.clone();
                         let progress_clone = progress.clone();
                         let signal_clone = signal.clone();
-                        let event_sender = crate::ui::events::noop_sender();
+                        let chunk_sender = sender.clone();
 
                         let blobs_res = match tokio::task::spawn_blocking(move || {
                             let file = std::fs::File::open(&path_str)?;
@@ -298,7 +300,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
                                 file,
                                 file_size,
                                 progress_clone.as_ref(),
-                                &event_sender,
+                                &chunk_sender,
                                 signal_clone.as_ref(),
                             )
                         })
@@ -370,6 +372,9 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
         .root_tree()
         .context("Root tree ID not set")?;
 
+    let summary = progress.summary();
+    event_sender(Event::Backup(BackupEvent::Finished(summary)));
+
     writer_finalize(bundle_writer.as_ref(), root_tree_id, output, &progress).await
 }
 
@@ -419,6 +424,14 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
         event_sender.clone(),
     )
     .await?;
+
+    event_sender(Event::Backup(BackupEvent::Finished(
+        SnapshotProcessSummary {
+            processed_items_count: total_items as u64,
+            processed_bytes: total_bytes,
+            diff_counts: crate::repository::snapshot::DiffCounts::default(),
+        },
+    )));
 
     cli::log!();
     cli::log!("{}", "Extraction Summary:".bold().cyan());

@@ -97,6 +97,7 @@ struct CliSnapshotState {
     file_spinners: Vec<ProgressBar>,
 
     error_counter: Arc<AtomicU64>,
+    warning_counter: Arc<AtomicU64>,
     determined_style: ProgressStyle,
 
     verbosity: u32,
@@ -142,6 +143,7 @@ pub fn make_event_sender(
     let mp = MultiProgress::with_draw_target(default_bar_draw_target());
 
     let error_counter = Arc::new(AtomicU64::new(0));
+    let warning_counter = Arc::new(AtomicU64::new(0));
 
     let progress_bar = match expected_size_val {
         Some(size) => mp.add(ProgressBar::new(size)),
@@ -228,9 +230,10 @@ pub fn make_event_sender(
     progress_bar.set_style(undetermined_style.clone());
 
     let error_counter_for_style = Arc::clone(&error_counter);
+    let warning_counter_for_style = Arc::clone(&warning_counter);
     companion_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{items_info}] [{errors} errors]")
+            .template("[{items_info}] [{errors} errors, {warnings} warnings]")
             .expect("Invalid progress bar template for snapshot companion bar")
             .with_key(
                 "items_info",
@@ -254,6 +257,13 @@ pub fn make_event_sender(
                 "errors",
                 move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                     let count = error_counter_for_style.load(Ordering::Relaxed);
+                    let _ = write!(w, "{}", count);
+                },
+            )
+            .with_key(
+                "warnings",
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let count = warning_counter_for_style.load(Ordering::Relaxed);
                     let _ = write!(w, "{}", count);
                 },
             ),
@@ -293,6 +303,7 @@ pub fn make_event_sender(
         companion_bar,
         file_spinners,
         error_counter,
+        warning_counter,
         determined_style,
         verbosity,
         ui_tx,
@@ -412,7 +423,7 @@ pub fn make_event_sender(
                 let _ = state.mp.println(format!("{} {msg}", "Error:".bold().red()));
             }
             BackupEvent::Warning(ref msg) => {
-                state.error_counter.fetch_add(1, Ordering::Relaxed);
+                state.warning_counter.fetch_add(1, Ordering::Relaxed);
                 let _ = state
                     .mp
                     .println(format!("{} {msg}", "Warning:".bold().yellow()));

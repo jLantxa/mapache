@@ -53,7 +53,7 @@ impl SnapshotForm {
                 label: "Exclude:".to_string(),
                 field_type: FormFieldType::Text(TextInput::with_text(
                     config_defaults
-                        .and_then(|cfg| cfg.exclude.as_ref().map(|e| e.join(",")))
+                        .and_then(|cfg| cfg.exclude.as_ref().map(|e| e.join(", ")))
                         .unwrap_or_default(),
                 )),
             },

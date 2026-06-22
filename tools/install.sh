@@ -35,7 +35,7 @@ case "$OS" in
     esac
     ;;
   MINGW*|MSYS*)
-    INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+    INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
     BIN_NAME="mapache.exe"
     TARGET="win_x64"
     PACKAGE="zip"
@@ -93,4 +93,15 @@ else
 fi
 
 echo "mapache $VERSION installed successfully!"
+
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *)
+    echo "Warning: $INSTALL_DIR is not in your PATH."
+    echo "Add it by running:"
+    echo "  echo 'export PATH=\"\$PATH:$INSTALL_DIR\"' >> \"\$HOME/.bashrc\""
+    echo "  source \"\$HOME/.bashrc\""
+    ;;
+esac
+
 echo "Run 'mapache --help' to get started."

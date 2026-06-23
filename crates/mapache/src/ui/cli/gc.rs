@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use parking_lot::Mutex;
 
 use crate::{
@@ -24,7 +24,10 @@ impl Drop for CliGcState {
 
 pub fn make_event_sender() -> EventSender {
     let state = Arc::new(CliGcState {
-        pb: Mutex::new(ProgressBar::hidden()),
+        pb: Mutex::new(ProgressBar::with_draw_target(
+            Some(0),
+            ProgressDrawTarget::hidden(),
+        )),
     });
 
     Arc::new(move |event: Event| {
@@ -43,7 +46,7 @@ pub fn make_event_sender() -> EventSender {
             GcEvent::TaskFinished { .. } => {
                 let mut pb_lock = state.pb.lock();
                 pb_lock.finish_and_clear();
-                *pb_lock = ProgressBar::hidden();
+                *pb_lock = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::hidden());
             }
             GcEvent::Warning(ref msg) => {
                 crate::ui::cli::warning!("{}", msg);

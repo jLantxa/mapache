@@ -1,4 +1,4 @@
-use std::{io::Cursor, path::PathBuf};
+use std::io::Cursor;
 
 use anyhow::{Result, anyhow};
 use rand::Rng;
@@ -11,7 +11,7 @@ const kiB: usize = 1024;
 #[allow(non_upper_case_globals)]
 const MiB: usize = 1024 * kiB;
 
-const TESTDATA: &str = "testdata";
+const MAPACHE_PNG: &[u8] = include_bytes!("../testdata/mapache.png");
 
 fn generate_random_data(length: usize) -> Vec<u8> {
     let mut rng = rand::rng();
@@ -213,7 +213,7 @@ fn test_normalization_spread_effect(#[case] normal_size: usize) -> Result<()> {
 
 #[test]
 fn test_deterministic_chunks_4k_l2() -> Result<()> {
-    let data: Vec<u8> = std::fs::read(PathBuf::from(TESTDATA).join("mapache.png"))?;
+    let data: Vec<u8> = MAPACHE_PNG.to_vec();
     let size = data.len();
     let chunker = Chunker::new(kiB, 4 * kiB, 8 * kiB, Normalization::L2);
 
@@ -246,7 +246,7 @@ fn test_deterministic_chunks_4k_l2() -> Result<()> {
 
 #[test]
 fn test_deterministic_chunks_32k_l2() -> Result<()> {
-    let data: Vec<u8> = std::fs::read(PathBuf::from(TESTDATA).join("mapache.png"))?;
+    let data: Vec<u8> = MAPACHE_PNG.to_vec();
     let size = data.len();
     let chunker = Chunker::new(8 * kiB, 32 * kiB, 64 * kiB, Normalization::L2);
 
@@ -274,7 +274,7 @@ fn test_deterministic_chunks_32k_l2() -> Result<()> {
 
 #[test]
 fn test_deterministic_chunks_32k_l0() -> Result<()> {
-    let data: Vec<u8> = std::fs::read(PathBuf::from(TESTDATA).join("mapache.png"))?;
+    let data: Vec<u8> = MAPACHE_PNG.to_vec();
     let size = data.len();
     let chunker = Chunker::new(8 * kiB, 32 * kiB, 64 * kiB, Normalization::None);
 

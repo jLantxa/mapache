@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
-    "core",
-    "chunker",
-    "chunker/fuzz"
+    "crates/mapache",
+    "crates/chunker",
+    "crates/chunker/fuzz"
 ]
 
 [workspace.lints.rust]

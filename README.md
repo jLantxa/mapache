@@ -2,7 +2,6 @@
 
 ![Badge](https://github.com/jlantxa/mapache/workflows/main/badge.svg)
 
-
 Mapache is a **fast, secure, deduplicating, incremental backup tool**
 written in Rust.
 
@@ -84,7 +83,7 @@ v0.19.0 as a base.
 **Test environment:** Fedora 44, AMD Ryzen 9 3900X (24 threads), SanDisk Extreme
 PRO NVMe.
 
-Each result is the average of 3 runs following a warmup run, all on local
+Each result is the average of 5 runs following a warmup run, all on local
 storage. Both tools are run with default settings and 8 readers
 (read-concurrency) for backup.
 
@@ -96,11 +95,10 @@ Workloads:
 - **kernel** — Linux kernel source tree (~1.6 GB, 99'131 objects)
 - **enron** — Enron email corpus (~1.4 GB, 520'901 objects)
 
-
 ### kernel
 
 | Tool    | Action  | Avg Time (s) | Max Time (s) | Avg PSS (MB) | Peak PSS (MB) | Avg CPU (%) | Repo (MB) |
-|---------|---------|--------------|-------------|---------------|---------------|-------------|-----------|
+|---------|---------|--------------|--------------|--------------|---------------|-------------|-----------|
 | mapache | backup  |         2.06 |         2.13 |       307.48 |        315.11 |     1358.59 |    304.14 |
 | mapache | restore |         9.03 |         9.36 |       410.87 |        426.94 |      387.96 |     --    |
 | restic  | backup  |         3.98 |         4.19 |       834.90 |        868.00 |     1236.80 |    308.91 |

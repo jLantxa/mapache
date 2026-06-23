@@ -25,6 +25,7 @@ impl ToExitCode for InitError {
 }
 
 #[derive(Args, Debug, Clone)]
+#[clap(about = "Initialize a new repository")]
 pub struct CmdArgs {}
 
 const INIT_MSG: &str = "init";

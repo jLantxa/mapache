@@ -5,6 +5,7 @@ TARGET="$1"
 RUSTFLAGS="${2:-}"
 FEAT_ARGS="${3:-}"
 TOOL="${4:-build}"
+shift 4
 
 if [ -n "$RUSTFLAGS" ]; then
   VAR="CARGO_TARGET_$(echo "$TARGET" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
@@ -17,4 +18,4 @@ case "$TOOL" in
   xwin)     CMD="cargo xwin build" ;;
 esac
 
-exec $CMD --release --target "$TARGET" -p mapache $FEAT_ARGS
+exec $CMD --release --target "$TARGET" -p mapache $FEAT_ARGS "$@"

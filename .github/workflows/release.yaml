@@ -1,6 +1,9 @@
 name: release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       ref:
@@ -22,9 +25,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Determine ref
+        id: ref
+        run: |
+          ref="${{ inputs.ref || github.ref_name }}"
+          if [ -z "$ref" ]; then
+            echo "No ref provided. Push a tag or provide one manually."
+            exit 1
+          fi
+          echo "value=$ref" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ steps.ref.outputs.value }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -37,7 +50,7 @@ jobs:
           tags: mapache-builder:latest
           build-args: |
             BUILD_SOURCE=local
-            GIT_REF=${{ inputs.ref }}
+            GIT_REF=${{ steps.ref.outputs.value }}
             FEATURES=${{ inputs.features }}
             MAPACHE_RELEASE_BUILD=true
             CACHE_BREAKER=${{ github.run_id }}
@@ -53,7 +66,7 @@ jobs:
         shell: bash
         run: |
           cd artifacts
-          safe_ref="${{ inputs.ref }}"
+          safe_ref="${{ steps.ref.outputs.value }}"
           safe_ref="${safe_ref//\//-}"
           ls -la
           for f in mapache_${safe_ref}_linux_*; do
@@ -80,6 +93,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          tag_name: ${{ inputs.ref }}
-          name: ${{ inputs.ref }}
+          tag_name: ${{ steps.ref.outputs.value }}
+          name: ${{ steps.ref.outputs.value }}
           files: artifacts/*

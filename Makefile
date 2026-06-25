@@ -11,6 +11,9 @@ else
     endif
 endif
 
+FEATURES ?= default
+BUILD_SH := sh tools/docker/build-target.sh
+
 all: check test fmt clippy debug release
 
 check:
@@ -22,33 +25,47 @@ debug:
 release:
 	cargo build --release
 
-# The "smart" static target that works on any OS
 release-static:
 ifeq ($(DETECTED_OS),Windows)
 	$(MAKE) release-windows
 else ifeq ($(DETECTED_OS),Darwin)
-	$(MAKE) release-mac
+	$(MAKE) release-darwin
 else
 	$(MAKE) release-linux-static
 endif
 
 release-linux-static:
-	CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static" \
-		cargo build --release --target x86_64-unknown-linux-musl -p mapache
+	$(BUILD_SH) x86_64-unknown-linux-musl \
+		"-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
+		"--features $(FEATURES)" build
 
 release-arm64:
-	cargo build --release --target aarch64-unknown-linux-musl -p mapache
+	$(BUILD_SH) aarch64-unknown-linux-musl \
+		"-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
+		"--features $(FEATURES)" zigbuild
+
+release-android-arm64:
+ifndef ANDROID_NDK_HOME
+	$(error ANDROID_NDK_HOME is not set. Install Android NDK and point ANDROID_NDK_HOME to it)
+endif
+	$(BUILD_SH) aarch64-linux-android "" \
+		"--no-default-features --features tui" build
 
 release-armv7:
-	cargo build --release --target armv7-unknown-linux-musleabihf -p mapache
+	$(BUILD_SH) armv7-unknown-linux-musleabihf \
+		"-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
+		"--features $(FEATURES)" zigbuild
 
 release-windows:
 	RUSTFLAGS="-C target-feature=+crt-static" \
-		cargo xwin build --release --target x86_64-pc-windows-msvc -p mapache
+		$(BUILD_SH) x86_64-pc-windows-msvc "" \
+		"--features $(FEATURES)" xwin
 
-release-mac:
-	cargo build --release --target x86_64-apple-darwin -p mapache --no-default-features
-	cargo build --release --target aarch64-apple-darwin -p mapache --no-default-features
+# NOTE: macOS binaries are NOT fully self-contained — Apple's system libraries
+# cannot be statically linked. These will depend on system dylibs.
+release-darwin:
+	$(BUILD_SH) x86_64-apple-darwin "" "--no-default-features" zigbuild
+	$(BUILD_SH) aarch64-apple-darwin "" "--no-default-features" zigbuild
 
 test:
 	cargo test -r

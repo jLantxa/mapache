@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Fixed help text for init command.
+
+### Added
+
+- Added Linux Android ARM64 target.
+
 ## v0.5.0
 
 ### Added

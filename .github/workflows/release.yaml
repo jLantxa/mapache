@@ -69,22 +69,27 @@ jobs:
           safe_ref="${{ steps.ref.outputs.value }}"
           safe_ref="${safe_ref//\//-}"
           ls -la
-          for f in mapache_${safe_ref}_linux_*; do
-            if [ -f "$f" ]; then
-              tar -cJf "${f}.tar.xz" "$f"
-              rm "$f"
-            fi
-          done
-          for f in mapache_${safe_ref}_win_*; do
-            if [ -f "$f" ]; then
-              base="${f%.exe}"
-              zip -m "${base}.zip" "$f"
-            fi
-          done
-          for f in mapache_${safe_ref}_mac_*; do
-            if [ -f "$f" ]; then
-              zip -m "${f}.zip" "$f"
-            fi
+          # mapache-{platform}-{arch}[.exe]
+          for f in mapache-*; do
+            [ -f "$f" ] || continue
+            rest="${f#mapache-}"
+            ext=""
+            case "$rest" in
+              *.exe) ext=".exe"; rest="${rest%.exe}" ;;
+            esac
+            platform="${rest%-*}"
+            arch="${rest##*-}"
+            case "$platform" in
+              windows|darwin)
+                mv "$f" "mapache${ext}"
+                zip -m "mapache_${safe_ref}_${platform}_${arch}.zip" "mapache${ext}"
+                ;;
+              *)
+                mv "$f" "mapache${ext}"
+                tar -cJf "mapache_${safe_ref}_${platform}_${arch}.tar.xz" "mapache${ext}"
+                rm "mapache${ext}"
+                ;;
+            esac
           done
           echo "Packaged artifacts:"
           ls -la

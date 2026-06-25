@@ -14,10 +14,19 @@ CONTAINER_NAME = "mapache-artifacts"
 DOCKERFILE_PATH = "tools/docker/Dockerfile"
 BUILD_PATH = "build"
 
+# (container_name, platform, arch, exe)
+ARTIFACTS = [
+    ("mapache-linux-amd64",    "linux",   "amd64", False),
+    ("mapache-linux-arm64",    "linux",   "arm64", False),
+    ("mapache-android-arm64",  "android", "arm64", False),
+    ("mapache-linux-armv7",    "linux",   "armv7", False),
+    ("mapache-windows-amd64",  "windows", "amd64", True),
+    ("mapache-darwin-amd64",     "darwin",  "amd64", False),
+    ("mapache-darwin-arm64",     "darwin",  "arm64", False),
+]
+
 def run_command(command, check=True):
-    """Runs a shell command and streams output."""
     try:
-        # We don't use capture_output=True so the user can see the progress in real-time
         result = subprocess.run(command, shell=True, check=check, text=True)
         return result
     except subprocess.CalledProcessError as e:
@@ -25,9 +34,11 @@ def run_command(command, check=True):
         sys.exit(e.returncode)
 
 def cleanup():
-    """Removes the temporary container."""
     print("Cleaning up container...")
     subprocess.run(f"docker rm -f {CONTAINER_NAME}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def archive_fmt(platform):
+    return "zip" if platform in ("windows", "darwin") else "tar.xz"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build Mapache artifacts using Docker.")
@@ -38,23 +49,19 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Check if run as root
     if os.getuid() != 0:
         print("This script must be run with sudo.")
         sys.exit(1)
 
-    # Get calling user and group
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user:
         calling_user = sudo_user
-        # Try to get group name from user
         try:
             import grp
             import pwd
             user_info = pwd.getpwnam(calling_user)
             calling_group = grp.getgrgid(user_info.pw_gid).gr_name
         except ImportError:
-            # Fallback if grp/pwd not available (unlikely on Linux)
             calling_group = calling_user
     else:
         calling_user = os.environ.get("USER") or "root"
@@ -73,7 +80,6 @@ if __name__ == "__main__":
     print(f"Files will belong to user: {calling_user} ({calling_group})")
 
     try:
-        # Build the image
         cache_breaker = int(time.time())
         release_arg = f"--build-arg MAPACHE_RELEASE_BUILD=true " if not args.debug else ""
         build_cmd = (
@@ -89,66 +95,42 @@ if __name__ == "__main__":
         print("Building Docker image...")
         run_command(build_cmd)
 
-        # Create temporary container
         print("Creating temporary container...")
         run_command(f"docker create --name {CONTAINER_NAME} {IMAGE_NAME}")
 
-        # Ensure build directory exists
         if not os.path.exists(BUILD_PATH):
             os.makedirs(BUILD_PATH)
 
-        # Change ownership of build directory
         shutil.chown(BUILD_PATH, user=calling_user, group=calling_group)
-
-        artifacts_map = {
-            f"mapache_{ref}_linux_x64": f"mapache_{safe_ref}_linux_x64",
-            f"mapache_{ref}_linux_arm64": f"mapache_{safe_ref}_linux_arm64",
-            f"mapache_{ref}_linux_armv7": f"mapache_{safe_ref}_linux_armv7",
-            f"mapache_{ref}_win_x64.exe": f"mapache_{safe_ref}_win_x64.exe",
-            f"mapache_{ref}_mac_x64": f"mapache_{safe_ref}_mac_x64",
-            f"mapache_{ref}_mac_arm64": f"mapache_{safe_ref}_mac_arm64",
-        }
 
         print("Copying and packaging artifacts...")
         container_artifacts_dir = "/artifacts"
 
-        for src, dest in artifacts_map.items():
-            dest_path = os.path.join(BUILD_PATH, dest)
-            # Copy from container
-            run_command(f"docker cp {CONTAINER_NAME}:{container_artifacts_dir}/{src} {dest_path}")
+        for cname, platform, arch, is_exe in ARTIFACTS:
+            ext = ".exe" if is_exe else ""
+            fmt = archive_fmt(platform)
+            archive_name = f"mapache_{safe_ref}_{platform}_{arch}.{fmt}"
+            archive_path = os.path.join(BUILD_PATH, archive_name)
+            binary_path = os.path.join(BUILD_PATH, cname)
 
-            # Set permissions
-            if dest.endswith(".exe"):
-                os.chmod(dest_path, 0o644)
+            run_command(f"docker cp {CONTAINER_NAME}:{container_artifacts_dir}/{cname}{ext} {binary_path}")
+
+            if fmt == "zip":
+                with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.write(binary_path, f"mapache{ext}")
             else:
-                os.chmod(dest_path, 0o755)
+                with tarfile.open(archive_path, "w:xz") as tar:
+                    tar.add(binary_path, arcname=f"mapache{ext}")
 
-            # Packaging
-            if dest.endswith(".exe") or "mac" in dest:
-                # Zip for Windows and Mac
-                zip_name = dest.replace(".exe", "") + ".zip"
-                zip_path = os.path.join(BUILD_PATH, zip_name)
-                print(f"Creating {zip_path}...")
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    zipf.write(dest_path, os.path.basename(dest_path))
-                os.remove(dest_path)
-                print(f"Removed {dest_path}")
-            else:
-                # Tar.xz for Linux
-                tar_path = dest_path + ".tar.xz"
-                print(f"Creating {tar_path}...")
-                with tarfile.open(tar_path, "w:xz") as tar:
-                    tar.add(dest_path, arcname=os.path.basename(dest_path))
-                os.remove(dest_path)
-                print(f"Removed {dest_path}")
+            os.remove(binary_path)
+            print(f"Created {archive_name}")
 
-        # Final ownership and permission update
         for root, dirs, files in os.walk(BUILD_PATH):
             for d in dirs:
                 shutil.chown(os.path.join(root, d), user=calling_user, group=calling_group)
             for f in files:
                 shutil.chown(os.path.join(root, f), user=calling_user, group=calling_group)
-                os.chmod(os.path.join(root, f), os.stat(os.path.join(root, f)).st_mode | 0o444) # Ensure readable
+                os.chmod(os.path.join(root, f), os.stat(os.path.join(root, f)).st_mode | 0o444)
 
         print(f"Build complete! Artifacts are in the '{BUILD_PATH}' directory.")
 

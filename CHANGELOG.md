@@ -3,8 +3,13 @@
 ## Unreleased
 
 ### Fixed
+
 - Fixed help text for init command.
 - Build all linux targets with +crt-static so they can run on Android.
+
+### Added
+
+- Added Linux Android ARM64 target.
 
 ## v0.5.0
 

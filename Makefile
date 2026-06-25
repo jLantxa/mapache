@@ -37,10 +37,12 @@ release-linux-static:
 		cargo build --release --target x86_64-unknown-linux-musl -p mapache
 
 release-arm64:
-	cargo build --release --target aarch64-unknown-linux-musl -p mapache
+	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static" \
+		cargo build --release --target aarch64-unknown-linux-musl -p mapache
 
 release-armv7:
-	cargo build --release --target armv7-unknown-linux-musleabihf -p mapache
+	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS="-C target-feature=+crt-static" \
+		cargo build --release --target armv7-unknown-linux-musleabihf -p mapache
 
 release-windows:
 	RUSTFLAGS="-C target-feature=+crt-static" \

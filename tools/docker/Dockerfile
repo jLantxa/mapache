@@ -68,15 +68,19 @@ RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
 
 # Build Linux ARM64 (Static Musl)
 RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=pie" \
     MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo zigbuild --features $FEATURES --release --target aarch64-unknown-linux-musl -p mapache; \
     else \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=pie" \
     cargo zigbuild --features $FEATURES --release --target aarch64-unknown-linux-musl -p mapache; \
     fi
 
 # Build Linux ARMv7 (Static Musl)
 RUN if [ -n "$MAPACHE_RELEASE_BUILD" ]; then \
+    CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=pie" \
     MAPACHE_RELEASE_BUILD="$MAPACHE_RELEASE_BUILD" cargo zigbuild --features $FEATURES --release --target armv7-unknown-linux-musleabihf -p mapache; \
     else \
+    CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=pie" \
     cargo zigbuild --features $FEATURES --release --target armv7-unknown-linux-musleabihf -p mapache; \
     fi
 

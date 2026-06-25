@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Fixed help text for init command.
+- Build all linux targets with +crt-static so they can run on Android.
+
 ## v0.5.0
 
 ### Added

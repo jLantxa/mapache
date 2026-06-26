@@ -1,4 +1,4 @@
-name: release
+name: build
 
 on:
   workflow_dispatch:
@@ -7,6 +7,11 @@ on:
         description: Git ref (tag, branch, or commit SHA)
         required: true
         type: string
+      create_release:
+        description: Create a GitHub Release
+        required: false
+        default: true
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -188,11 +193,10 @@ jobs:
           rustup component add llvm-tools
           cargo install cargo-xwin
       - name: Build
-        env:
-          RUSTFLAGS: -C target-feature=+crt-static
         run: |
-          sh tools/docker/build-target.sh x86_64-pc-windows-msvc "" \
-            "--no-default-features --features tui" xwin
+          sh tools/docker/build-target.sh x86_64-pc-windows-msvc \
+            "-C target-feature=+crt-static" \
+            "--features default" xwin
       - uses: actions/upload-artifact@v4
         with:
           name: mapache-windows-amd64
@@ -334,7 +338,13 @@ jobs:
           echo "Packaged artifacts:"
           ls -la
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mapache-packaged
+          path: dist/*
+
       - name: Create draft release
+        if: ${{ inputs.create_release }}
         uses: softprops/action-gh-release@v2
         with:
           draft: true

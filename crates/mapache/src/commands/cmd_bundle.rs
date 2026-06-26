@@ -34,11 +34,11 @@ use crate::{
     },
     utils::format_size_binary,
 };
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "mount", unix))]
 use crate::{
     commands::cleanup::CleanupHandler,
     fs::{get_absolute_normalized_path, path_exists},
-    fuse::fs::{MapacheFS, MountOptions},
+    mount::fuse::fs::{MapacheFS, MountOptions},
     utils::size,
 };
 
@@ -57,7 +57,7 @@ pub struct CmdArgs {
     pub extract: bool,
 
     /// Mount mode: mount a bundle as a filesystem (FUSE)
-    #[cfg(all(feature = "fuse", unix))]
+    #[cfg(all(feature = "mount", unix))]
     #[arg(short, long, group = "mode")]
     pub mount: bool,
 
@@ -82,22 +82,22 @@ pub struct CmdArgs {
     pub readers: usize,
 
     /// Create mountpoint if it does not exist (mount mode only, passes to mount -c)
-    #[cfg(all(feature = "fuse", unix))]
+    #[cfg(all(feature = "mount", unix))]
     #[arg(short, long, default_value_t = false)]
     pub create: bool,
 
     /// Allow other users to access the mount (mount mode only)
-    #[cfg(all(feature = "fuse", unix))]
+    #[cfg(all(feature = "mount", unix))]
     #[arg(long, default_value_t = false)]
     pub allow_other: bool,
 
     /// Display files but do not load contents (mount mode only)
-    #[cfg(all(feature = "fuse", unix))]
+    #[cfg(all(feature = "mount", unix))]
     #[arg(long, default_value_t = false)]
     pub metadata_only: bool,
 
     /// Max size of internal data cache in MiB (mount mode only)
-    #[cfg(all(feature = "fuse", unix))]
+    #[cfg(all(feature = "mount", unix))]
     #[arg(long = "cache-size-mib", default_value_t = 256.0)]
     pub data_cache_size_mib: f32,
 
@@ -105,7 +105,7 @@ pub struct CmdArgs {
     pub internal_password: Option<String>,
 }
 
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "mount", unix))]
 impl Default for CmdArgs {
     fn default() -> Self {
         Self {
@@ -126,7 +126,7 @@ impl Default for CmdArgs {
     }
 }
 
-#[cfg(not(all(feature = "fuse", unix)))]
+#[cfg(not(all(feature = "mount", unix)))]
 impl Default for CmdArgs {
     fn default() -> Self {
         Self {
@@ -457,7 +457,7 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "mount", unix))]
 async fn run_mount(args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "bundle", "Starting bundle mount command (bundle={:?})", args.input[0]);
     if args.input.len() != 2 {
@@ -527,12 +527,12 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(all(feature = "fuse", unix)))]
+#[cfg(not(all(feature = "mount", unix)))]
 async fn run_mount(_args: &CmdArgs) -> Result<()> {
     bail!("Mount mode requires FUSE support on Unix systems. Compile with the 'fuse' feature.");
 }
 
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "mount", unix))]
 pub(crate) async fn run_mount_loop<F>(
     mountpoint: &std::path::Path,
     cleanup_handler: CleanupHandler,

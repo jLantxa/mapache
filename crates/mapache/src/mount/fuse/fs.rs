@@ -12,7 +12,7 @@ use parking_lot::RwLock;
 use crate::{
     common::{ID, traits::BlobLoader},
     fs::node::NodeType,
-    fuse::{
+    mount::fuse::{
         cache::{BlobCache, TreeCache},
         stash::{NodeKind, Stash, TTL, node_to_fileattr},
     },

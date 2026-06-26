@@ -20,5 +20,5 @@ pub mod restorer;
 pub mod ui;
 pub mod utils;
 
-#[cfg(all(feature = "fuse", unix))]
-pub(crate) mod fuse;
+#[cfg(all(feature = "mount", unix))]
+pub(crate) mod mount;

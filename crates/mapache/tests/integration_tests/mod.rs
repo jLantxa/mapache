@@ -45,7 +45,7 @@ mod test_lock_cleanup;
 mod test_permission_denied;
 mod test_zeroize;
 
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "mount", unix))]
 mod test_cmd_mount;
 
 pub const INTEGRATION_TEST_DATA: &[(&str, ItemDef)] = &[

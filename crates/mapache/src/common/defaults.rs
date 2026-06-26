@@ -81,7 +81,7 @@ pub(crate) const UI_SNAPSHOT_PROGRESS_ITEM_MIN_SIZE: Option<u64> = Some(128 * si
 pub(crate) const UI_RATE_ESTIMATOR_WINDOW: Duration = Duration::from_secs(10);
 
 // --- FUSE ---
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "mount", unix))]
 pub(crate) const DEFAULT_FUSE_STASH_CACHE_SIZE_MIB: f32 = 64.0;
 
 // --- S3 ---

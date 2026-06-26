@@ -17,32 +17,43 @@ OS=$(uname -s)
 case "$OS" in
   Linux)
     INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-    BIN_NAME="mapache"
     case "$ARCH" in
-      x86_64)  TARGET="linux_x64"  ; PACKAGE="tar.xz" ;;
-      aarch64) TARGET="linux_arm64" ; PACKAGE="tar.xz" ;;
-      armv7l)  TARGET="linux_armv7" ; PACKAGE="tar.xz" ;;
+      x86_64)  PLATFORM="linux"  ; ARCH_SHORT="amd64" ;;
+      aarch64)
+        if [ -n "${TERMUX_VERSION:-}" ]; then
+          PLATFORM="android"
+        else
+          PLATFORM="linux"
+        fi
+        ARCH_SHORT="arm64"
+        ;;
+      armv7l)  PLATFORM="linux"  ; ARCH_SHORT="armv7" ;;
       *)       echo "Unsupported arch: $ARCH"; exit 1 ;;
     esac
     ;;
   Darwin)
     INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-    BIN_NAME="mapache"
     case "$ARCH" in
-      x86_64) TARGET="mac_x64"  ; PACKAGE="zip" ;;
-      arm64)  TARGET="mac_arm64" ; PACKAGE="zip" ;;
+      x86_64) PLATFORM="darwin"  ; ARCH_SHORT="amd64" ;;
+      arm64)  PLATFORM="darwin"  ; ARCH_SHORT="arm64" ;;
       *)      echo "Unsupported arch: $ARCH"; exit 1 ;;
     esac
     ;;
   MINGW*|MSYS*)
     INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-    BIN_NAME="mapache.exe"
-    TARGET="win_x64"
-    PACKAGE="zip"
+    PLATFORM="windows"
+    ARCH_SHORT="amd64"
     ;;
   *)
     echo "Unsupported OS: $OS"; exit 1
     ;;
+esac
+
+# ---- determine packaging ----
+case "$PLATFORM" in
+  windows) PACKAGE="zip" ; BIN_NAME="mapache.exe" ;;
+  darwin)  PACKAGE="zip" ; BIN_NAME="mapache" ;;
+  *)       PACKAGE="tar.xz" ; BIN_NAME="mapache" ;;
 esac
 
 # ---- check dependencies ----
@@ -52,12 +63,12 @@ if [ "$PACKAGE" = "zip" ]; then
 fi
 
 # ---- download ----
-FILENAME="mapache_${VERSION}_${TARGET}.${PACKAGE}"
+FILENAME="mapache_${VERSION}_${PLATFORM}_${ARCH_SHORT}.${PACKAGE}"
 URL="https://github.com/$REPO/releases/download/$VERSION/$FILENAME"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-echo "Downloading mapache $VERSION ($TARGET)..."
+echo "Downloading mapache $VERSION ($PLATFORM-$ARCH_SHORT)..."
 curl -sSfL "$URL" -o "$TMPDIR/$FILENAME"
 
 # ---- extract ----
@@ -67,18 +78,14 @@ case "$PACKAGE" in
   zip)    unzip -o -q "$TMPDIR/$FILENAME" -d "$TMPDIR" ;;
 esac
 
-BINARY=$(find "$TMPDIR" -name "mapache*" -type f \( -name "mapache" -o -name "mapache.exe" \) 2>/dev/null | head -1)
-if [ -z "$BINARY" ]; then
-  # fallback: grab first matching file
-  BINARY=$(find "$TMPDIR" -name "mapache*" -type f ! -name "*.zip" ! -name "*.tar.*" 2>/dev/null | head -1)
-fi
-if [ -z "$BINARY" ]; then
-  echo "Error: mapache binary not found in archive"
+# ---- install ----
+BINARY="$TMPDIR/$BIN_NAME"
+if [ ! -f "$BINARY" ]; then
+  echo "Error: $BIN_NAME not found in archive"
   ls -la "$TMPDIR"
   exit 1
 fi
 
-# ---- install ----
 chmod +x "$BINARY"
 echo "Installing to $INSTALL_DIR/$BIN_NAME ..."
 mkdir -p "$INSTALL_DIR" 2>/dev/null ||

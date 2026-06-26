@@ -9,6 +9,8 @@
 ### Added
 
 - Added Linux Android ARM64 target.
+- **`copy` command**: Copy snapshots from one repository to another with
+  support for `--host`, `--tags`, and `--snapshot` filters.
 
 ## v0.5.0
 

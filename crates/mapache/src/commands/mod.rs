@@ -35,6 +35,7 @@ pub mod cmd_cat;
 pub mod cmd_clean;
 pub mod cmd_completion;
 pub mod cmd_config;
+pub mod cmd_copy;
 mod cmd_diff;
 pub mod cmd_dump;
 pub mod cmd_find;
@@ -88,6 +89,7 @@ pub enum Command {
     Cache(cmd_cache::CmdArgs),
     Cat(WithGlobal<cmd_cat::CmdArgs>),
     Clean(WithGlobal<cmd_clean::CmdArgs>),
+    Copy(WithGlobal<cmd_copy::CmdArgs>),
     Completion(cmd_completion::CmdArgs),
     Config(cmd_config::CmdArgs),
     Diff(WithGlobal<cmd_diff::CmdArgs>),
@@ -632,6 +634,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Amend(cmd) => with_global!(cmd, Amend),
         Command::Cat(cmd) => with_global!(cmd, Cat),
         Command::Clean(cmd) => with_global!(cmd, Clean),
+        Command::Copy(cmd) => with_global!(cmd, Copy),
         Command::Diff(cmd) => with_global!(cmd, Diff),
         Command::Dump(cmd) => with_global!(cmd, Dump),
         Command::Find(cmd) => with_global!(cmd, Find),
@@ -672,6 +675,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Completion(cmd) => cmd_completion::run(&cmd),
         Command::Config(cmd) => cmd_config::run(&cmd).await,
         Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args).await,
+        Command::Copy(cmd) => cmd_copy::run(&global, &cmd.args).await,
         Command::Diff(cmd) => cmd_diff::run(&global, &cmd.args).await,
         Command::Dump(cmd) => cmd_dump::run(&global, &cmd.args).await,
         Command::Find(cmd) => cmd_find::run(&global, &cmd.args).await,

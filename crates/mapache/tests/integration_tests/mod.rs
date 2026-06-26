@@ -24,6 +24,7 @@ mod test_cmd_bundle;
 mod test_cmd_cat;
 mod test_cmd_clean;
 mod test_cmd_completion;
+mod test_cmd_copy;
 mod test_cmd_diff;
 mod test_cmd_dump;
 mod test_cmd_find;

@@ -386,6 +386,12 @@ fn store_small_file<R: Read>(
     event_sender: &EventSender,
     buf: &mut Vec<u8>,
 ) -> Result<Vec<ID>> {
+    if file_size == 0 {
+        progress.processed_bytes(0);
+        emit_event(event_sender, Event::Backup(BackupEvent::BytesProcessed(0)));
+        return Ok(vec![]); // Empty files produce an empty vector of blobs
+    }
+
     let size = usize::try_from(file_size).context("File too large for this platform")?;
     buf.clear();
     buf.reserve(size);
@@ -512,6 +518,29 @@ mod tests {
 
         // Empty input produces no blobs (the chunker yields no chunks for empty input).
         assert!(ids.is_empty(), "empty data should produce no blobs");
+    }
+
+    #[tokio::test]
+    async fn test_store_small_file_empty() {
+        let repo = setup_repo().await;
+        let (progress, sender) = setup_progress();
+        let mut buf = Vec::new();
+
+        let ids = store_small_file(
+            repo.as_ref(),
+            std::io::empty(),
+            0,
+            &progress,
+            &sender,
+            &mut buf,
+        )
+        .expect("store_small_file should succeed for empty file");
+
+        assert!(
+            ids.is_empty(),
+            "empty file should produce no blobs, got {} blob(s)",
+            ids.len()
+        );
     }
 
     #[tokio::test]

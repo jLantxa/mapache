@@ -50,6 +50,7 @@ mod test_cmd_mount;
 
 pub const INTEGRATION_TEST_DATA: &[(&str, ItemDef)] = &[
     ("file.txt", ItemDef::File(b"This is a test file.\n")),
+    ("empty.txt", ItemDef::File(b"")),
     ("0", ItemDef::Dir),
     ("0/file0.txt", ItemDef::File(b"Content 0\n")),
     ("0/00", ItemDef::Dir),

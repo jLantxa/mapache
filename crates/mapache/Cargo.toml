@@ -83,6 +83,6 @@ scopeguard = "1.2.0"
 tempfile = "3.27.0"
 
 [features]
-default = ["fuse", "tui"]
-fuse = ["fuser"]                       #FUSE for mount command
+default = ["mount", "tui"]
+mount = ["fuser"]                      #FUSE for mount command on unix
 tui = ["dep:ratatui", "dep:crossterm"]

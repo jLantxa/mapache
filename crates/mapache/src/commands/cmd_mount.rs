@@ -1,9 +1,9 @@
+pub use crate::mount::fuse::fs::MapacheFS;
+
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use clap::Args;
-
-pub use crate::fuse::fs::MapacheFS;
 
 use crate::{
     backend::new_backend_with_prompt,
@@ -11,7 +11,7 @@ use crate::{
     commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
     common::{defaults::DEFAULT_FUSE_STASH_CACHE_SIZE_MIB, traits::BlobLoader},
     fs,
-    fuse::fs::MountOptions,
+    mount::fuse::fs::MountOptions,
     ui::{self, cli::color::Colorize},
     utils::size,
 };

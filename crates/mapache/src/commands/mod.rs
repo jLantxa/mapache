@@ -43,7 +43,7 @@ pub mod cmd_init;
 pub mod cmd_key;
 pub mod cmd_log;
 pub mod cmd_ls;
-#[cfg(all(feature = "fuse", unix))]
+#[cfg(all(feature = "mount", unix))]
 pub mod cmd_mount;
 pub mod cmd_rebuild_index;
 pub mod cmd_recall;
@@ -98,7 +98,7 @@ pub enum Command {
     Key(WithGlobal<cmd_key::CmdArgs>),
     Log(WithGlobal<cmd_log::CmdArgs>),
     Ls(WithGlobal<cmd_ls::CmdArgs>),
-    #[cfg(all(feature = "fuse", unix))]
+    #[cfg(all(feature = "mount", unix))]
     Mount(WithGlobal<cmd_mount::CmdArgs>),
     RebuildIndex(WithGlobal<cmd_rebuild_index::CmdArgs>),
     Recall(WithGlobal<cmd_recall::CmdArgs>),
@@ -625,7 +625,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Forget(cmd) => with_global_and_config!(cmd, Forget, config.forget),
         Command::Restore(cmd) => with_global_and_config!(cmd, Restore, config.restore),
         Command::Snapshot(cmd) => with_global_and_config!(cmd, Snapshot, config.snapshot),
-        #[cfg(all(feature = "fuse", unix))]
+        #[cfg(all(feature = "mount", unix))]
         Command::Mount(cmd) => with_global!(cmd, Mount),
         #[cfg(feature = "tui")]
         Command::Tui(cmd) => with_global!(cmd, Tui),
@@ -680,7 +680,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Key(cmd) => cmd_key::run(&global, &cmd.args).await,
         Command::Log(cmd) => cmd_log::run(&global, &cmd.args).await,
         Command::Ls(cmd) => cmd_ls::run(&global, &cmd.args).await,
-        #[cfg(all(feature = "fuse", unix))]
+        #[cfg(all(feature = "mount", unix))]
         Command::Mount(cmd) => cmd_mount::run(&global, &cmd.args).await,
         Command::RebuildIndex(cmd) => cmd_rebuild_index::run(&global, &cmd.args).await,
         Command::Recall(cmd) => cmd_recall::run(&global, &cmd.args).await,

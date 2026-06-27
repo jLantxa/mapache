@@ -30,7 +30,7 @@ use crate::{
         snapshot::SnapshotStream,
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target},
-    utils::{self, rate_estimator::RateEstimator},
+    utils::{self, collections::IdSet, rate_estimator::RateEstimator},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -51,17 +51,17 @@ impl ToExitCode for CopyError {
 #[derive(Args, Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {
-    /// Destination repository path
-    #[clap(long = "target", value_parser)]
-    pub target: String,
+    /// Source repository path
+    #[clap(long = "from", value_parser)]
+    pub from: String,
 
-    /// SSH private key for destination
-    #[clap(long = "dst-ssh-privatekey", value_parser)]
-    pub dst_ssh_privatekey: Option<PathBuf>,
+    /// SSH private key for source repository
+    #[clap(long = "from-ssh-privatekey", value_parser)]
+    pub from_ssh_privatekey: Option<PathBuf>,
 
-    /// SSH known_hosts file for destination
-    #[clap(long = "dst-ssh-known-hosts", value_parser)]
-    pub dst_ssh_known_hosts: Option<PathBuf>,
+    /// SSH known_hosts file for source repository
+    #[clap(long = "from-ssh-known-hosts", value_parser)]
+    pub from_ssh_known_hosts: Option<PathBuf>,
 
     /// Copy only snapshots with the given ID prefix. Can be repeated or comma-separated.
     #[clap(long, value_parser, value_delimiter = ',', num_args = 1..)]
@@ -83,43 +83,33 @@ pub struct CmdArgs {
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let json_out = global_args.json;
 
-    if json_out {
-        #[derive(Serialize)]
-        struct CopyStartMsg {
-            source: String,
-            target: String,
-            dry_run: bool,
-        }
-        ui::json::emit_static(
-            "copy_start",
-            &CopyStartMsg {
-                source: global_args.repo.clone(),
-                target: args.target.clone(),
-                dry_run: args.dry_run,
-            },
-        );
-    }
-
     // Open source repository
 
     if !json_out {
-        ui::cli::log!("{} {}", "Source:".cyan().bold(), global_args.repo);
+        ui::cli::log!("{} {}", "Source:".bold(), args.from);
     }
-
-    let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false))
-        .await
-        .map_err(|e| {
-            fail(
-                format!("Failed to initialize source backend: {e}"),
-                CopyError::BackendError,
-            )
-        })?;
 
     let repo_config = RepoConfig {
         pack_size: DEFAULT_PACK_SIZE,
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
     };
+
+    let src_backend = backend::new_backend_with_prompt(BackendOptions {
+        repo_path: args.from.clone(),
+        ssh_privatekey: args.from_ssh_privatekey.clone(),
+        ssh_known_hosts: args.from_ssh_known_hosts.clone(),
+        dry_backend: args.dry_run,
+        limit_upload: global_args.limit_upload,
+        limit_download: global_args.limit_download,
+    })
+    .await
+    .map_err(|e| {
+        fail(
+            format!("Failed to initialize source backend: {e}"),
+            CopyError::BackendError,
+        )
+    })?;
 
     let (src_repo, _src_ss) = open_repository(
         global_args.auth_file.as_ref(),
@@ -138,24 +128,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     // Open destination repository
 
     if !json_out {
-        ui::cli::log!("{} {}", "Destination:".cyan().bold(), args.target);
+        ui::cli::log!("{} {}", "Destination:".bold(), global_args.repo);
     }
 
-    let dst_backend = backend::new_backend_with_prompt(BackendOptions {
-        repo_path: args.target.clone(),
-        ssh_privatekey: args.dst_ssh_privatekey.clone(),
-        ssh_known_hosts: args.dst_ssh_known_hosts.clone(),
-        dry_backend: args.dry_run,
-        limit_upload: global_args.limit_upload,
-        limit_download: global_args.limit_download,
-    })
-    .await
-    .map_err(|e| {
-        fail(
-            format!("Failed to initialize destination backend: {e}"),
-            CopyError::BackendError,
-        )
-    })?;
+    let dst_backend = backend::new_backend_with_prompt(global_args.backend_options(args.dry_run))
+        .await
+        .map_err(|e| {
+            fail(
+                format!("Failed to initialize destination backend: {e}"),
+                CopyError::BackendError,
+            )
+        })?;
 
     let (dst_repo, _dst_ss) = open_repository(
         global_args.auth_file.as_ref(),
@@ -197,7 +180,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     if !json_out {
         ui::cli::log!(
             "{} {}",
-            "Selected:".cyan().bold(),
+            "Selected:".bold(),
             utils::format_count(snapshots.len(), "snapshot", "snapshots")
         );
     }
@@ -255,14 +238,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             ui::cli::log!(
                 "{} {}",
                 "Total bytes to transfer:".bold(),
-                utils::format_size_binary(total_bytes, 2)
+                utils::format_size_binary(total_bytes, 3)
             );
         }
         return Ok(());
     }
 
     if !json_out {
-        ui::cli::log!("{}", "Snapshots to copy:".cyan().bold());
+        ui::cli::log!("{}", "Snapshots to copy:".bold());
         for (id, snap) in &snapshots {
             ui::cli::log!(
                 "  {}  {}",
@@ -366,7 +349,8 @@ async fn collect_blobs(
 ) -> Result<(Vec<(ID, BlobType)>, u64)> {
     let mut blob_list: Vec<(ID, BlobType)> = Vec::new();
     let mut tree_stack: Vec<ID> = Vec::new();
-    let mut visited_trees = std::collections::HashSet::new();
+    let mut visited_trees: IdSet<ID> = IdSet::default();
+    let mut visited_blobs: IdSet<ID> = IdSet::default();
     let mut total_bytes: u64 = 0;
 
     for (_snap_id, snap) in snapshots {
@@ -390,6 +374,9 @@ async fn collect_blobs(
                     }
                     if let Some(blob_ids) = node.blobs {
                         for blob_id in blob_ids {
+                            if !visited_blobs.insert(blob_id) {
+                                continue;
+                            }
                             blob_list.push((blob_id, BlobType::Data));
                             if let Some(loc) = src_repo.index().get(&blob_id) {
                                 total_bytes += loc.raw_length as u64;
@@ -458,10 +445,10 @@ async fn copy_snapshots(
 
     if !json_out {
         ui::cli::log!(
-            "{} {} ({})",
-            "To transfer:".cyan().bold(),
+            "{} {} ({} raw)",
+            "To transfer:".bold(),
             utils::format_count(to_copy.len(), "blob", "blobs"),
-            utils::format_size_binary(transfer_bytes, 2)
+            utils::format_size_binary(transfer_bytes, 3)
         );
     }
 
@@ -476,17 +463,22 @@ async fn copy_snapshots(
             ProgressBar::with_draw_target(Some(transfer_bytes), default_bar_draw_target())
                 .with_style(
                     ProgressStyle::default_bar()
-                        .template("[{percent}%] [{bar:20.cyan/white}] {bytes_fmt} / {total_fmt} [{binary_bytes_per_sec}] [ETA: {custom_eta}]")
+                        .template("[{percent}%] [{bar:20.cyan/white}] [{custom_elapsed}] {bytes_fmt} / {total_fmt} [{copy_rate}/s] [ETA: {custom_eta}]")
                         .expect("invalid progress bar template for copy")
                         .progress_chars("=> ")
                         .with_key("bytes_fmt", {
                             move |state: &ProgressState, w: &mut dyn fmt::Write| {
-                                let _ = write!(w, "{}", utils::format_size_binary(state.pos(), 2));
+                                let _ = write!(w, "{}", utils::format_size_binary(state.pos(), 3));
                             }
                         })
                         .with_key("total_fmt", {
                             move |state: &ProgressState, w: &mut dyn fmt::Write| {
-                                let _ = write!(w, "{}", utils::format_size_binary(state.len().unwrap_or(0), 2));
+                                let _ = write!(w, "{}", utils::format_size_binary(state.len().unwrap_or(0), 3));
+                            }
+                        })
+                        .with_key("custom_elapsed", {
+                            move |state: &ProgressState, w: &mut dyn fmt::Write| {
+                                let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
                             }
                         })
                         .with_key("custom_eta", {
@@ -502,6 +494,13 @@ async fn copy_snapshots(
                                         let _ = w.write_str("--");
                                     }
                                 }
+                            }
+                        })
+                        .with_key("copy_rate", {
+                            let re = copy_rate.clone();
+                            move |_state: &ProgressState, w: &mut dyn fmt::Write| {
+                                let rate = re.lock().rate().floor() as u64;
+                                let _ = w.write_str(&utils::format_size_binary(rate, 1));
                             }
                         }),
                 ),
@@ -574,7 +573,7 @@ async fn copy_snapshots(
 
     // Flush pack saver (persist all pending packs + index)
     if !json_out {
-        ui::cli::log!("{}", "Persisting destination index...".cyan().bold());
+        ui::cli::log!("{}", "Persisting destination index...".bold());
     }
     dst_repo.flush_and_finalize_pack_saver().await?;
 
@@ -593,7 +592,7 @@ async fn write_snapshots_to_dest(
 ) -> Result<()> {
     let total = snapshots.len();
     if !json_out && total > 0 {
-        ui::cli::log!("{}", "Writing snapshots...".cyan().bold());
+        ui::cli::log!("{}", "Writing snapshots...".bold());
     }
 
     for (i, (snap_id, _snap)) in snapshots.iter().enumerate() {

@@ -378,6 +378,41 @@ caches.
 
 ---
 
+### `copy` — Transfer Snapshots Between Repositories
+
+```bash
+mapache copy --from <URL> -r <URL>
+mapache copy --from <URL> --dry-run -r <URL>
+mapache copy --from <URL> --snapshot ID --host HOST -r <URL>
+```
+
+Copies snapshots (and their data) from one repository to another. Useful for
+migration, creating replicas, or consolidating backups.
+
+| Flag | Description |
+|---|---|
+| `--from <URL>` | Source repository URL (required) |
+| `--from-ssh-privatekey <PATH>` | SSH private key for the source repository |
+| `--from-ssh-known-hosts <PATH>` | SSH known hosts file for the source repository |
+| `--snapshot <PREFIX>` | Copy only snapshots with the given ID prefix (repeatable, or comma-separated) |
+| `--host <HOST>` | Copy only snapshots from the given host (repeatable, or comma-separated) |
+| `--tags <TAGS>` | Copy only snapshots with the given tag (repeatable, or comma-separated) |
+| `--dry-run` | Show what would be copied without transferring data |
+
+The copy operation:
+
+1. Connects to both source (`--from`) and destination (`-r`) repositories
+2. Lists all snapshots in the source, applying any filters (`--snapshot`, `--host`, `--tags`)
+3. Skips snapshots already present in the destination (by ID)
+4. Walks every referenced tree to discover all required data blobs
+5. Filters out blobs already present in the destination (blob-level dedup)
+6. Transfers only missing blobs, re-packing them at the destination
+7. Writes snapshot metadata to the destination
+
+Supports `--json` for machine-readable progress events.
+
+---
+
 ### `sync` — Replicate a Repository
 
 ```bash
@@ -1466,6 +1501,20 @@ Rechunk all snapshots with current parameters.
 
 ```
 mapache rechunk -r <URL>
+```
+
+### `mapache copy`
+Transfer snapshots between repositories.
+
+```
+mapache copy --from <URL> -r <URL>
+  --from <URL>                Source repository (required)
+  --from-ssh-privatekey <PATH>  SSH key for source repository
+  --from-ssh-known-hosts <PATH>  SSH known hosts file for source
+  --snapshot <PREFIX>         Copy only snapshots with this ID prefix (repeatable)
+  --host <HOST>               Copy only snapshots from this host (repeatable)
+  --tags <TAGS>               Copy only snapshots with this tag (repeatable)
+  --dry-run                   Show what would be copied without transferring
 ```
 
 ### `mapache sync`

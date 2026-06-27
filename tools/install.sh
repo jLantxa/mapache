@@ -16,28 +16,37 @@ OS=$(uname -s)
 
 case "$OS" in
   Linux)
-    INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-    BIN_NAME="mapache"
-    case "$ARCH" in
-      x86_64)  TARGET="linux_x64"  ; PACKAGE="tar.xz" ;;
-      aarch64) TARGET="linux_arm64" ; PACKAGE="tar.xz" ;;
-      armv7l)  TARGET="linux_armv7" ; PACKAGE="tar.xz" ;;
-      *)       echo "Unsupported arch: $ARCH"; exit 1 ;;
-    esac
+    if [ -f /system/build.prop ] || [ "$(uname -o 2>/dev/null)" = "Android" ] || [ -n "${TERMUX_VERSION:-}" ]; then
+      INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+      BIN_NAME="mapache"
+      case "$ARCH" in
+        aarch64) TARGET="android_arm64" ; PACKAGE="tar.xz" ;;
+        *)       echo "Unsupported arch: $ARCH"; exit 1 ;;
+      esac
+    else
+      INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+      BIN_NAME="mapache"
+      case "$ARCH" in
+        x86_64)  TARGET="linux_amd64"  ; PACKAGE="tar.xz" ;;
+        aarch64) TARGET="linux_arm64" ; PACKAGE="tar.xz" ;;
+        armv7l)  TARGET="linux_armv7" ; PACKAGE="tar.xz" ;;
+        *)       echo "Unsupported arch: $ARCH"; exit 1 ;;
+      esac
+    fi
     ;;
   Darwin)
     INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
     BIN_NAME="mapache"
     case "$ARCH" in
-      x86_64) TARGET="mac_x64"  ; PACKAGE="zip" ;;
-      arm64)  TARGET="mac_arm64" ; PACKAGE="zip" ;;
+      x86_64) TARGET="darwin_amd64"  ; PACKAGE="zip" ;;
+      arm64)  TARGET="darwin_arm64" ; PACKAGE="zip" ;;
       *)      echo "Unsupported arch: $ARCH"; exit 1 ;;
     esac
     ;;
   MINGW*|MSYS*)
     INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
     BIN_NAME="mapache.exe"
-    TARGET="win_x64"
+    TARGET="windows_amd64"
     PACKAGE="zip"
     ;;
   *)

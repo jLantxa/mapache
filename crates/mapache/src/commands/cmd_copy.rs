@@ -47,6 +47,7 @@ impl ToExitCode for CopyError {
     }
 }
 
+/// Transfer snapshots from one repository to another
 #[derive(Args, Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {

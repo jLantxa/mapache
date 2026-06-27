@@ -1,6 +1,6 @@
 [package]
 name = "mapache"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.91"
 description = "Fast, secure, deduplicating, incremental backup tool"
@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 aes-gcm-siv = "0.11.1"
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 argon2 = "0.5.3"
 async-stream = "0.3.6"
 async-trait = "0.1.89"

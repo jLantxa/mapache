@@ -15,7 +15,7 @@ name = "chunker-lookup"
 path = "src/bin/lookup_gen.rs"
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 blake3 = "1.8.5"
 rand = "0.10.1"
 

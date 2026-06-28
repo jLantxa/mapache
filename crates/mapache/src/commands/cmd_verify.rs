@@ -17,7 +17,7 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
-    common::{ID, defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts},
+    common::{ID, defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts, hooks},
     fs::tree::SerializedNodeStream,
     repository::{
         lock::LockHandle,
@@ -141,7 +141,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         );
     }
 
-    with_repository_lock(
+    let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(false))
@@ -161,11 +161,22 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, secure_storage, lock_handle| async move {
+            // Run pre-hook: abort command if it fails
+            hooks::run_pre(hooks::verify(), "verify", &global_args.repo).await?;
+
             run_with_repo(repo, secure_storage, lock_handle, args, json_out).await
         },
     )
-    .await
-    .map_err(|e| {
+    .await;
+
+    let result_str = match &repo_result {
+        Ok(_) => "success".to_string(),
+        Err(e) => format!("{e}"),
+    };
+    // Run post-hook: warning on failure, always continues
+    hooks::run_post(hooks::verify(), "verify", &global_args.repo, &result_str).await;
+
+    repo_result.map_err(|e| {
         if e.is::<commands::error::MapacheError>() {
             e
         } else {

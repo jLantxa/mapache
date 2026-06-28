@@ -139,6 +139,61 @@ impl RuntimeConfig {
     }
 }
 
+/// Definition of a single hook (pre or post).
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct HookDef {
+    /// Shell command to execute.
+    pub command: String,
+    /// Timeout in seconds. If the hook runs longer than this, it is killed.
+    /// `None` means no timeout.
+    pub timeout: Option<u64>,
+}
+
+/// Pre/post hooks for a specific command.
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandHooks {
+    /// Hook executed before the command starts.
+    /// If the command fails (non-zero exit), the command is aborted.
+    pub pre: Option<HookDef>,
+    /// Hook executed after the command finishes, regardless of success/failure.
+    /// Receives MAPACHE_RESULT = "success" or error message.
+    pub post: Option<HookDef>,
+}
+
+/// Hooks configuration (the `[hooks]` section in TOML).
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct HooksConfig {
+    pub snapshot: Option<CommandHooks>,
+    pub restore: Option<CommandHooks>,
+    pub forget: Option<CommandHooks>,
+    pub clean: Option<CommandHooks>,
+    pub verify: Option<CommandHooks>,
+}
+
+impl HooksConfig {
+    pub(crate) fn template() -> Self {
+        Self {
+            snapshot: Some(CommandHooks {
+                pre: Some(HookDef {
+                    command: "echo 'starting snapshot'".into(),
+                    timeout: None,
+                }),
+                post: Some(HookDef {
+                    command: "echo 'snapshot finished: $MAPACHE_RESULT'".into(),
+                    timeout: None,
+                }),
+            }),
+            restore: None,
+            forget: None,
+            clean: None,
+            verify: None,
+        }
+    }
+}
+
 /// Top-level config structure. Sections map to command names.
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
@@ -153,6 +208,8 @@ pub struct MapacheConfig {
     pub forget: Option<commands::cmd_forget::CmdArgs>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<HooksConfig>,
 }
 
 impl MapacheConfig {
@@ -163,6 +220,7 @@ impl MapacheConfig {
             snapshot: Some(commands::cmd_snapshot::CmdArgs::template()),
             restore: Some(commands::cmd_restore::CmdArgs::template()),
             forget: Some(commands::cmd_forget::CmdArgs::template()),
+            hooks: Some(HooksConfig::template()),
         }
     }
 }

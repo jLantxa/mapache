@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
-    common::defaults::DEFAULT_GC_TOLERANCE,
+    common::{defaults::DEFAULT_GC_TOLERANCE, hooks},
     repository::{gc, lock::LockHandle, repo::Repository},
     ui::{
         self,
@@ -55,7 +55,7 @@ pub struct CmdArgs {
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "clean", "Starting clean command");
-    with_repository_lock(
+    let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(args.dry_run))
@@ -71,11 +71,26 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _, lock_handle| async move {
+            if !args.dry_run {
+                // Run pre-hook: abort command if it fails
+                hooks::run_pre(hooks::clean(), "clean", &global_args.repo).await?;
+            }
+
             run_with_repo(global_args.json, args, repo, lock_handle).await
         },
     )
-    .await
-    .map_err(|e| {
+    .await;
+
+    let result_str = match &repo_result {
+        Ok(_) => "success".to_string(),
+        Err(e) => format!("{e}"),
+    };
+    if !args.dry_run {
+        // Run post-hook: warning on failure, always continues
+        hooks::run_post(hooks::clean(), "clean", &global_args.repo, &result_str).await;
+    }
+
+    repo_result.map_err(|e| {
         if e.is::<commands::error::MapacheError>() {
             e
         } else {

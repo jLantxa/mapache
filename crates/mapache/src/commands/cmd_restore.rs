@@ -18,7 +18,7 @@ use crate::{
         self, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
         find_use_snapshot, with_repository_lock,
     },
-    common::defaults::SHORT_SNAPSHOT_ID_LEN,
+    common::{defaults::SHORT_SNAPSHOT_ID_LEN, hooks},
     fs::{
         calculate_lcp,
         filter::{
@@ -227,8 +227,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     tracing::info!(target: "restore", "Starting restore command");
 
     let json_output = global_args.json;
+    let dry_run = args.dry_run;
 
-    with_repository_lock(
+    let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(false))
@@ -307,6 +308,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             };
 
             let start = Instant::now();
+
+            if !dry_run {
+                // Run pre-hook: abort command if it fails
+                hooks::run_pre(hooks::restore(), "restore", &global_args.repo).await?;
+            }
+
             run_with_repo(
                 repo,
                 lock_handle,
@@ -321,8 +328,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         },
     )
-    .await
-    .map_err(|e| {
+    .await;
+
+    let result_str = match &repo_result {
+        Ok(_) => "success".to_string(),
+        Err(e) => format!("{e}"),
+    };
+    if !dry_run {
+        // Run post-hook: warning on failure, always continues
+        hooks::run_post(hooks::restore(), "restore", &global_args.repo, &result_str).await;
+    }
+
+    repo_result.map_err(|e| {
         if e.is::<commands::error::MapacheError>() {
             e
         } else {

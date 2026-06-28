@@ -11,22 +11,23 @@
 3. [Quick Start](#3-quick-start)
 4. [Concepts](#4-concepts)
 5. [Configuration](#5-configuration)
-6. [Repository Management](#6-repository-management)
-7. [Taking Snapshots](#7-taking-snapshots)
-8. [Restoring Data](#8-restoring-data)
-9. [Exploring Snapshots](#9-exploring-snapshots)
-10. [Retention Policies](#10-retention-policies)
-11. [Maintenance](#11-maintenance)
-12. [Security & Key Management](#12-security--key-management)
-13. [Bundle Files](#13-bundle-files)
-14. [FUSE Mount](#14-fuse-mount)
-15. [Snapshot Lifecycle](#15-snapshot-lifecycle)
-16. [Experimental TUI](#16-experimental-tui)
-17. [Shell Completions](#17-shell-completions)
-18. [Environment Variables](#18-environment-variables)
-19. [Global Options Reference](#19-global-options-reference)
-20. [Full Command Reference](#20-full-command-reference)
-21. [Troubleshooting & FAQ](#21-troubleshooting--faq)
+6. [Hooks](#6-hooks)
+7. [Repository Management](#7-repository-management)
+8. [Taking Snapshots](#8-taking-snapshots)
+9. [Restoring Data](#9-restoring-data)
+10. [Exploring Snapshots](#10-exploring-snapshots)
+11. [Retention Policies](#11-retention-policies)
+12. [Maintenance](#12-maintenance)
+13. [Security & Key Management](#13-security--key-management)
+14. [Bundle Files](#14-bundle-files)
+15. [FUSE Mount](#15-fuse-mount)
+16. [Snapshot Lifecycle](#16-snapshot-lifecycle)
+17. [Experimental TUI](#17-experimental-tui)
+18. [Shell Completions](#18-shell-completions)
+19. [Environment Variables](#19-environment-variables)
+20. [Global Options Reference](#20-global-options-reference)
+21. [Full Command Reference](#21-full-command-reference)
+22. [Troubleshooting & FAQ](#22-troubleshooting--faq)
 
 ---
 
@@ -325,7 +326,84 @@ failing.
 
 ---
 
-## 6. Repository Management
+## 6. Hooks
+
+Mapache supports running custom shell scripts before and after certain commands.
+This is useful for notifications, logging, mounting/unmounting filesystems,
+or any pre/post processing.
+
+### Configuration
+
+Hooks are defined in the TOML config file under `[hooks.<command>]` sections:
+
+```toml
+[hooks.snapshot.pre]
+command = "echo 'Starting snapshot'"
+timeout = 300
+
+[hooks.snapshot.post]
+command = "/usr/local/bin/notify.sh"
+```
+
+Each hook can specify:
+
+| Field | Type | Description |
+|---|---|---|
+| `command` | string | Shell command to execute (required) |
+| `timeout` | integer | Max runtime in seconds (optional; no timeout if omitted) |
+
+### Pre and Post Hooks
+
+- **Pre hooks** run before the command starts. If the hook exits with a non-zero
+  status, the command is **aborted** immediately.
+- **Post hooks** run after the command finishes, regardless of success or
+  failure. Non-zero exit status only logs a warning — the command is not
+  affected.
+
+### Supported Commands
+
+Hooks can be configured for: `snapshot`, `restore`, `forget`, `clean`, and
+`verify`.
+
+### Environment Variables
+
+The following variables are passed to every hook script:
+
+| Variable | Description |
+|---|---|
+| `MAPACHE_COMMAND` | The mapache command being run (e.g. `snapshot`, `restore`) |
+| `MAPACHE_REPOSITORY` | The repository URL |
+| `MAPACHE_RESULT` | (Post hooks only) `"success"` or the error message if the command failed |
+
+### Dry Run
+
+When a command is run with `--dry-run`, hooks are **not executed**.
+
+### Example
+
+```toml
+[hooks.snapshot.pre]
+command = "df -h /backup > /tmp/disk-space-before.txt"
+
+[hooks.snapshot.post]
+command = """
+  if [ "$MAPACHE_RESULT" = "success" ]; then
+    curl -s -X POST https://hooks.example.com/backup-ok \
+      -d "repo=$MAPACHE_REPOSITORY&cmd=$MAPACHE_COMMAND"
+  fi
+"""
+
+[hooks.clean.pre]
+command = "/usr/local/bin/maintenance-start.sh"
+timeout = 60
+
+[hooks.clean.post]
+command = "/usr/local/bin/maintenance-end.sh"
+```
+
+---
+
+## 7. Repository Management
 
 ### `init` — Initialize a Repository
 
@@ -461,7 +539,7 @@ The command will:
 
 ---
 
-## 7. Taking Snapshots
+## 8. Taking Snapshots
 
 ### Basic Usage
 
@@ -595,7 +673,7 @@ After a successful snapshot, mapache displays:
 
 ---
 
-## 8. Restoring Data
+## 9. Restoring Data
 
 ### Basic Usage
 
@@ -691,7 +769,7 @@ Displays progress, a summary of errors and warnings, and total duration.
 
 ---
 
-## 9. Exploring Snapshots
+## 10. Exploring Snapshots
 
 ### `log` — List Snapshots
 
@@ -815,7 +893,7 @@ manual inspection.
 
 ---
 
-## 10. Retention Policies
+## 11. Retention Policies
 
 ### `forget` — Remove Snapshots
 
@@ -875,7 +953,7 @@ Shows which snapshots would be kept and removed without making changes.
 
 ---
 
-## 11. Maintenance
+## 12. Maintenance
 
 ### `clean` — Garbage Collection
 
@@ -947,7 +1025,7 @@ Requires an exclusive lock. May take significant time on large repositories.
 
 ---
 
-## 12. Security & Key Management
+## 13. Security & Key Management
 
 Mapache uses a dual-layer encryption model:
 
@@ -1016,7 +1094,7 @@ later with `--key-file` to authenticate without username/password.
 
 ---
 
-## 13. Bundle Files
+## 14. Bundle Files
 
 The `bundle` command creates, extracts, or mounts self-contained `.mapache`
 bundle files. Bundles are encrypted, deduplicated archives that can be
@@ -1068,7 +1146,7 @@ from the repository password.
 
 ---
 
-## 14. FUSE Mount
+## 15. FUSE Mount
 
 ### Mount a Repository (Unix only, `fuse` feature)
 
@@ -1105,7 +1183,7 @@ Press `Ctrl+C` to unmount.
 
 ---
 
-## 15. Snapshot Lifecycle
+## 16. Snapshot Lifecycle
 
 ### `amend` — Modify a Snapshot
 
@@ -1146,7 +1224,7 @@ extension) by `forget`. The snapshot is reactivated and will appear in
 
 ---
 
-## 16. Terminal User Interface
+## 17. Terminal User Interface
 
 ```bash
 mapache tui -r <URL>
@@ -1168,7 +1246,7 @@ Requires the `tui` feature (enabled by default) and a supported terminal.
 
 ---
 
-## 17. Shell Completions
+## 18. Shell Completions
 
 ```bash
 mapache completion --shell bash --path /etc/bash_completion.d/
@@ -1182,7 +1260,7 @@ include: `bash`, `zsh`, `fish`, `powershell`, `elvish`, and `nushell`.
 
 ---
 
-## 18. Environment Variables
+## 19. Environment Variables
 
 | Variable | Description |
 |---|---|
@@ -1200,7 +1278,7 @@ authentication prompts are skipped.
 
 ---
 
-## 19. Global Options Reference
+## 20. Global Options Reference
 
 These options are available on most commands (exceptions: `bundle`, `cache`,
 `completion` do not use repository connection).
@@ -1261,7 +1339,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 
 ---
 
-## 20. Full Command Reference
+## 21. Full Command Reference
 
 ### `mapache init`
 Initialize a new backup repository.

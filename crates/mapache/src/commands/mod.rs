@@ -15,6 +15,7 @@ use crate::{
             MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
         },
         global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
+        hooks,
     },
     repository::{
         keys::KeyManagerError,
@@ -593,6 +594,9 @@ pub async fn parse_and_run() -> i32 {
 
     // Initialize runtime defaults from config
     init_runtime_defaults(config.runtime.as_ref());
+
+    // Initialize hooks from config
+    hooks::init(config.hooks.unwrap_or_default());
 
     macro_rules! with_global {
         ($cmd:ident, $variant:ident) => {{

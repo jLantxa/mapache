@@ -11,7 +11,7 @@ use crate::{
         self, GlobalArgs, Merge, ToExitCode, cleanup::CleanupHandler, fail, parse_tags,
         with_repository_lock,
     },
-    common::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE},
+    common::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, hooks},
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
         retention::{RetentionRule, apply_retention_rules, filter_snapshots_by_hosts},
@@ -263,7 +263,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let run_gc = args.run_gc;
     let json_output = global_args.json;
 
-    with_repository_lock(
+    let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(dry_run))
@@ -289,6 +289,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 )
             })?;
             cleanup_handler.add_lock(lock_handle.clone());
+
+            if !dry_run {
+                // Run pre-hook: abort command if it fails
+                hooks::run_pre(hooks::forget(), "forget", &global_args.repo).await?;
+            }
+
             forget_phase(repo.clone(), args, json_output, &cleanup_handler).await?;
             drop(cleanup_handler);
 
@@ -312,7 +318,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         },
     )
-    .await
+    .await;
+
+    let result_str = match &repo_result {
+        Ok(_) => "success".to_string(),
+        Err(e) => format!("{e}"),
+    };
+    if !dry_run {
+        // Run post-hook: warning on failure, always continues
+        hooks::run_post(hooks::forget(), "forget", &global_args.repo, &result_str).await;
+    }
+
+    repo_result
 }
 
 /// Forget phase: load snapshots, apply retention/forget rules, mark or delete

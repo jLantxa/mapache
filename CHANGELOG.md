@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`hooks`**: Added pre/post hook support for `snapshot`, `restore`,  `forget`,
+  `clean`, and `verify` commands. Hooks are configured in the TOML config file
+  and receive `MAPACHE_COMMAND`, `MAPACHE_REPOSITORY`, and `MAPACHE_RESULT`
+  environment variables. Optional timeout per hook. Skipped on `--dry-run`.
+
 ## v0.5.1
 
 ### Fixed

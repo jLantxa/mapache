@@ -20,6 +20,7 @@ use crate::{
     common::{
         self, ContentIdType, ID, config,
         defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        hooks,
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
     fs::{
@@ -284,10 +285,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     let dry_run = args.dry_run;
+
     let num_readers = args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS);
     let json_output = global_args.json;
 
-    with_repository_lock(
+    let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(dry_run))
@@ -331,6 +333,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             } else {
                 snapshot::make_event_sender(None, None, num_readers)
             };
+
+            if !dry_run {
+                // Run pre-hook: abort command if it fails
+                hooks::run_pre(hooks::snapshot(), "snapshot", &global_args.repo).await?;
+            }
 
             let result = run_with_repo(
                 repo,
@@ -400,7 +407,24 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             Ok(())
         },
     )
-    .await
+    .await;
+
+    let result_str = match &repo_result {
+        Ok(_) => "success".to_string(),
+        Err(e) => format!("{e}"),
+    };
+    if !dry_run {
+        // Run post-hook: warning on failure, always continues
+        hooks::run_post(
+            hooks::snapshot(),
+            "snapshot",
+            &global_args.repo,
+            &result_str,
+        )
+        .await;
+    }
+
+    repo_result
 }
 
 pub struct SnapshotCompletion {

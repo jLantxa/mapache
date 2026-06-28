@@ -2,6 +2,7 @@ pub(crate) mod config;
 pub mod defaults;
 pub mod global;
 pub mod hash;
+pub(crate) mod hooks;
 pub mod traits;
 pub mod vars;
 

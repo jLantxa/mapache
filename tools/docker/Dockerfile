@@ -77,12 +77,12 @@ ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
 
 # Build Linux x64 (Static Musl)
 RUN sh /build-target.sh x86_64-unknown-linux-musl \
-    "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
+    "-C target-feature=+crt-static -C relocation-model=pie " \
     "${FEATURES:+--features $FEATURES}" build
 
 # Build Linux ARM64 (Static Musl)
 RUN sh /build-target.sh aarch64-unknown-linux-musl \
-    "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
+    "-C target-feature=+crt-static -C relocation-model=pie " \
     "${FEATURES:+--features $FEATURES}" zigbuild
 
 # Build ARM64 (Android Bionic)
@@ -91,7 +91,7 @@ RUN sh /build-target.sh aarch64-linux-android "" \
 
 # Build Linux ARMv7 (Static Musl)
 RUN sh /build-target.sh armv7-unknown-linux-musleabihf \
-    "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
+    "-C target-feature=+crt-static -C relocation-model=pie " \
     "${FEATURES:+--features $FEATURES}" zigbuild
 
 # Build Windows x64 (Static CRT)

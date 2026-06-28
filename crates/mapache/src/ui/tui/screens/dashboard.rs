@@ -104,6 +104,12 @@ impl DashboardScreen {
         // Reload master index first to ensure we see any new data from other processes
         self.repo.reload_master_index().await?;
 
+        // Remember which snapshot was selected so we can restore it after reload
+        let selected_id = self
+            .table_state
+            .selected()
+            .and_then(|display_idx| self.display_entry(display_idx).map(|e| e.id));
+
         let (active_stream, dropped_stream) = futures::try_join!(
             SnapshotStream::new(self.repo.clone()),
             SnapshotStream::dropped(self.repo.clone())
@@ -122,6 +128,13 @@ impl DashboardScreen {
         self.snapshots = Arc::new(entries);
         self.update_search_cache();
         self.apply_filter();
+        // Restore the previous selection if the snapshot still exists
+        if let Some(id) = selected_id
+            && let Some(idx) = self.snapshots.iter().position(|e| e.id == id)
+            && let Some(display_idx) = self.filtered_indices.iter().position(|&i| i == idx)
+        {
+            self.table_state.select(Some(display_idx));
+        }
         self.diff_source = None;
         self.needs_reload = false;
         Ok(())

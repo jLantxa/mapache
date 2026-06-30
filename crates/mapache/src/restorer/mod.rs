@@ -120,6 +120,7 @@ pub(crate) struct Restorer {
 
 pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
 type HardlinkByPath = (PathBuf, PathBuf);
+type PrimaryHardlinks = Arc<Mutex<HashMap<(u64, u64), (PathBuf, [u8; 32])>>>;
 
 pub(crate) struct FileRestorePlan {
     pub(crate) path: PathBuf,
@@ -469,8 +470,7 @@ impl Restorer {
         let mut chunk_files: Vec<FileRestorePlan> = Vec::new();
         let mut chunk_packs: PackMap = HashMap::new();
         // Persistent hardlink index: (dev, inode) → primary file path
-        let primary_hardlinks: Arc<Mutex<HashMap<(u64, u64), PathBuf>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let primary_hardlinks: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
         // Cross-chunk hardlinks stored as (secondary_path, primary_path)
         let pending_hardlinks: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -643,21 +643,35 @@ impl Restorer {
                     is_hardlink: false,
                 });
 
-                // Hardlink detection
+                // Hardlink detection with content verification
                 let is_hardlink_secondary = {
                     if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode) {
                         let nlink = node.metadata.nlink;
                         if nlink.unwrap_or(0) > 1 {
+                            let node_blobs = node.blobs.as_deref().unwrap_or(&[]);
+                            let fingerprint = compute_blob_fingerprint(node_blobs);
                             let mut idx = primary_hardlinks.lock();
-                            if let Some(primary_path) = idx.get(&(dev, inode)) {
-                                pending_hardlinks
-                                    .lock()
-                                    .push((restore_path.clone(), primary_path.clone()));
-                                drop(idx);
-                                chunk_files[file_idx].is_hardlink = true;
-                                true
+                            if let Some((primary_path, primary_fp)) = idx.get(&(dev, inode)) {
+                                if *primary_fp == fingerprint {
+                                    pending_hardlinks
+                                        .lock()
+                                        .push((restore_path.clone(), primary_path.clone()));
+                                    drop(idx);
+                                    chunk_files[file_idx].is_hardlink = true;
+                                    true
+                                } else {
+                                    drop(idx);
+                                    emit_event(
+                                        &self.event_sender,
+                                        Event::Restore(RestoreEvent::Warning(format!(
+                                            "Hardlink content mismatch for {}: blob fingerprint differs from primary, restoring as separate file",
+                                            restore_path.display()
+                                        ))),
+                                    );
+                                    false
+                                }
                             } else {
-                                idx.insert((dev, inode), restore_path.clone());
+                                idx.insert((dev, inode), (restore_path.clone(), fingerprint));
                                 drop(idx);
                                 false
                             }
@@ -688,10 +702,12 @@ impl Restorer {
                     if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode)
                         && node.metadata.nlink.unwrap_or(0) > 1
                     {
+                        let node_blobs = node.blobs.as_deref().unwrap_or(&[]);
+                        let fingerprint = compute_blob_fingerprint(node_blobs);
                         primary_hardlinks
                             .lock()
                             .entry((dev, inode))
-                            .or_insert_with(|| restore_path.clone());
+                            .or_insert_with(|| (restore_path.clone(), fingerprint));
                     }
                 } else if !dry_run
                     && let Some(parent) = restore_path.parent()
@@ -782,7 +798,31 @@ impl Restorer {
                     if self.opts.quit_on_error {
                         bail!(msg);
                     }
-                    emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Warning(format!(
+                            "Hardlink failed, falling back to copy {} -> {}",
+                            primary.display(),
+                            secondary.display(),
+                        ))),
+                    );
+                    if let Err(copy_err) = fs::copy(primary, secondary) {
+                        let msg = format!(
+                            "Failed to copy {} -> {}: {}",
+                            primary.display(),
+                            secondary.display(),
+                            copy_err
+                        );
+                        if self.opts.quit_on_error {
+                            bail!(msg);
+                        }
+                        emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                    } else {
+                        emit_event(
+                            &self.event_sender,
+                            Event::Restore(RestoreEvent::ItemProcessed(secondary.clone())),
+                        );
+                    }
                 } else {
                     emit_event(
                         &self.event_sender,
@@ -805,7 +845,6 @@ impl Restorer {
         Ok(())
     }
 
-    /// Quick first pass: count items and sum data bytes for progress reporting.
     async fn count_restore_work(&self, tree_id: ID) -> (u64, u64) {
         let mut node_stream = match SerializedNodeStream::new(
             self.repo.clone(),
@@ -852,4 +891,13 @@ impl Restorer {
 
         (items, bytes)
     }
+}
+
+/// Computes a content fingerprint for hardlink verification using blake3 over blob IDs.
+fn compute_blob_fingerprint(blobs: &[ID]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    for blob_id in blobs {
+        hasher.update(&blob_id.0);
+    }
+    hasher.finalize().into()
 }

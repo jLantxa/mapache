@@ -288,6 +288,12 @@ pub fn restore_times(
 
 /// Attempts to restore all metadata (times, permissions, ownership, xattrs, flags) for a node.
 /// This is a best-effort operation and will log warnings on failure.
+///
+/// The order is important:
+/// 1. chown — must come first because chown clears setuid/setgid and security.capability
+/// 2. xattrs — applied while the inode is still owner-writable (before a potentially read-only final mode)
+/// 3. chmod — after xattrs, final mode
+/// 4. mtime — last, because chown/chmod/setxattr bump ctime, not mtime
 pub(crate) fn try_restore_node_metadata(
     metadata: &Metadata,
     is_symlink: bool,
@@ -299,7 +305,42 @@ pub(crate) fn try_restore_node_metadata(
         return;
     }
 
-    // Set file times
+    // Unix-specific metadata (ownership, permissions, xattrs)
+    #[cfg(unix)]
+    {
+        // 1. Set owner (uid) and group (gid) — must come first
+        // Restoring uid and gid is very likely to fail unless the user is root.
+        if metadata.owner_uid.is_some() || metadata.owner_gid.is_some() {
+            let _ = std::os::unix::fs::chown(dst_path, metadata.owner_uid, metadata.owner_gid);
+        }
+
+        // 2. Restore extended attributes — before chmod because xattr access may be restricted by mode
+        try_restore_xattrs(metadata, dst_path, event_sender);
+    }
+
+    // Restore Linux flags (before chmod, as flags can interact with permission bits)
+    #[cfg(target_os = "linux")]
+    try_restore_linux_flags(metadata, false, dst_path, event_sender);
+
+    // Restore Windows attributes
+    #[cfg(windows)]
+    try_restore_windows_attributes(metadata, dst_path, event_sender);
+
+    // 3. Set file permissions (mode)
+    #[cfg(unix)]
+    if let Some(mode) = metadata.mode {
+        let permissions = Permissions::from_mode(mode);
+        if std::fs::set_permissions(dst_path, permissions).is_err() {
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "Could not set permissions (mode: {mode:o})."
+                ))),
+            );
+        }
+    }
+
+    // 4. Set file times — last, because chown/chmod/setxattr bump ctime, not mtime
     if let Err(e) = restore_times(
         dst_path,
         metadata.accessed_time.as_ref(),
@@ -315,45 +356,6 @@ pub(crate) fn try_restore_node_metadata(
             ))),
         );
     }
-
-    // Unix-specific metadata (mode, uid, gid)
-    #[cfg(unix)]
-    {
-        // Set file permissions (mode)
-        if !is_symlink && let Some(mode) = metadata.mode {
-            let permissions = Permissions::from_mode(mode);
-            if std::fs::set_permissions(dst_path, permissions).is_err() {
-                emit_event(
-                    event_sender,
-                    Event::Restore(RestoreEvent::Warning(format!(
-                        "Could not set permissions (mode: {mode:o})."
-                    ))),
-                );
-            }
-        }
-
-        if !is_symlink {
-            // Set owner (uid) and group (gid)
-            let uid = metadata.owner_uid;
-            let gid = metadata.owner_gid;
-
-            // Restoring uid and gid is very likely to fail unless the user is root.
-            if uid.is_some() || gid.is_some() {
-                let _ = std::os::unix::fs::chown(dst_path, uid, gid);
-            }
-        }
-
-        // Restore extended attributes
-        try_restore_xattrs(metadata, dst_path, event_sender);
-    }
-
-    // Restore Linux flags
-    #[cfg(target_os = "linux")]
-    try_restore_linux_flags(metadata, is_symlink, dst_path, event_sender);
-
-    // Restore Windows attributes
-    #[cfg(windows)]
-    try_restore_windows_attributes(metadata, dst_path, event_sender);
 }
 
 /// Restores extended attributes (xattrs) for a node.
@@ -453,28 +455,14 @@ fn try_restore_windows_attributes(
 }
 
 /// Restores metadata for a symlink without following it.
+///
+/// Order: lchown → xattrs → mtime (lchown must come first because it clears
+/// security.capability; xattrs before mtime because mtime should be last).
 #[cfg(unix)]
 fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_sender: &EventSender) {
     use std::os::unix::ffi::OsStrExt;
 
-    // Set file times using set_symlink_file_times
-    if let Err(e) = restore_times(
-        dst_path,
-        metadata.accessed_time.as_ref(),
-        metadata.modified_time.as_ref(),
-        true,
-    ) {
-        emit_event(
-            event_sender,
-            Event::Restore(RestoreEvent::Warning(format!(
-                "Could not set file times for symlink {}: {}",
-                dst_path.display(),
-                e
-            ))),
-        );
-    }
-
-    // Set owner (uid) and group (gid) using lchown to avoid following the link.
+    // 1. Set owner (uid) and group (gid) using lchown to avoid following the link.
     let uid = metadata.owner_uid.unwrap_or(u32::MAX); // -1 in libc
     let gid = metadata.owner_gid.unwrap_or(u32::MAX); // -1 in libc
 
@@ -510,14 +498,10 @@ fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_send
         }
     }
 
-    // Restore extended attributes (xattr crate's set handles symlinks correctly if not following)
+    // 2. Restore extended attributes (xattr crate's set handles symlinks correctly if not following)
     try_restore_xattrs(metadata, dst_path, event_sender);
-}
 
-/// Restores metadata for a symlink on Windows.
-#[cfg(windows)]
-fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_sender: &EventSender) {
-    // Set file times for symlink on Windows
+    // 3. Set file times using set_symlink_file_times — last
     if let Err(e) = restore_times(
         dst_path,
         metadata.accessed_time.as_ref(),
@@ -533,9 +517,30 @@ fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_send
             ))),
         );
     }
+}
 
-    // Restore Windows attributes for the symlink itself
+/// Restores metadata for a symlink on Windows.
+#[cfg(windows)]
+fn try_restore_symlink_metadata(metadata: &Metadata, dst_path: &Path, event_sender: &EventSender) {
+    // Restore Windows attributes for the symlink itself — before mtime
     try_restore_windows_attributes(metadata, dst_path, event_sender);
+
+    // Set file times for symlink — last
+    if let Err(e) = restore_times(
+        dst_path,
+        metadata.accessed_time.as_ref(),
+        metadata.modified_time.as_ref(),
+        true,
+    ) {
+        emit_event(
+            event_sender,
+            Event::Restore(RestoreEvent::Warning(format!(
+                "Could not set file times for symlink {}: {}",
+                dst_path.display(),
+                e
+            ))),
+        );
+    }
 }
 
 #[cfg(test)]

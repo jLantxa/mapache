@@ -1,11 +1,15 @@
-use std::{path::PathBuf, sync::atomic::Ordering};
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::Ordering},
+};
 
 use anyhow::{Result, bail};
 use futures::StreamExt;
+use parking_lot::Mutex;
 
 use crate::{
     common::ID,
-    fs::{self as repo_fs, tree::SerializedNodeStream},
+    fs::{self as repo_fs, node::Metadata, tree::SerializedNodeStream},
     ui::events::{Event, RestoreEvent, emit_event},
     utils,
 };
@@ -18,7 +22,6 @@ impl Restorer {
         tree_id: ID,
         include: Option<Vec<PathBuf>>,
         exclude: Option<Vec<PathBuf>>,
-        directories: Vec<(PathBuf, crate::fs::node::Metadata)>,
     ) -> Result<()> {
         if self.opts.dry_run {
             return Ok(());
@@ -33,12 +36,15 @@ impl Restorer {
         )
         .await?;
 
+        let dirs: Arc<Mutex<Vec<(PathBuf, Metadata)>>> = Arc::new(Mutex::new(Vec::new()));
+
         let d = crate::common::defaults::runtime();
         node_stream
             .for_each_concurrent(d.restore_blob_concurrency, |node_res| {
                 let event_sender = self.event_sender.clone();
                 let target_path = self.target_path.clone();
                 let opts_strip_prefix = self.opts.strip_prefix.clone();
+                let dirs = dirs.clone();
 
                 async move {
                     let (mut path, stream_node_res) = match node_res {
@@ -94,7 +100,9 @@ impl Restorer {
                         return;
                     }
 
-                    if !node.is_dir() {
+                    if node.is_dir() {
+                        dirs.lock().push((restore_path, node.metadata));
+                    } else {
                         super::node_restorer::try_restore_node_metadata(
                             &node.metadata,
                             node.is_symlink(),
@@ -106,7 +114,9 @@ impl Restorer {
             })
             .await;
 
-        let mut dirs = directories;
+        let mut dirs = Arc::into_inner(dirs)
+            .expect("dirs reference count should be 1 after for_each_concurrent")
+            .into_inner();
         dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
         for (p, meta) in dirs {
             if self.shutdown_signal.load(Ordering::Acquire) {

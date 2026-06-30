@@ -90,6 +90,7 @@ impl RestoreScreen {
             verify: false,
             include: self.config.get_include(),
             exclude: self.config.get_exclude(),
+            batch_size: None,
         };
 
         let tx = self.tx.clone();

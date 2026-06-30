@@ -211,6 +211,7 @@ and subject to garbage collection.
 ### Snapshots
 
 A snapshot is a point-in-time record of your files. It contains:
+
 - The root tree ID (linking to all file/directory metadata)
 - Timestamp, hostname, username
 - Paths, tags, description
@@ -222,6 +223,7 @@ newer ones (shared blobs are reference-counted by the index).
 ### Chunking
 
 Mapache uses FastCDC (Content-Defined Chunking) with:
+
 - Minimum chunk: 512 KiB
 - Average chunk: 1 MiB
 - Maximum chunk: 8 MiB
@@ -290,6 +292,7 @@ skip-if-unchanged = true
 [restore]
 strategy = "newer"
 sparse = true
+batch-size = 100000        # Limit memory by restricting files per batch (optional)
 
 [forget]
 keep-daily = 7
@@ -314,6 +317,7 @@ CLI flags override config file values. Config file values supplement CLI lists
 ### Authentication
 
 Authentication can be provided via:
+
 1. Interactive prompt (default) — prompts for username and password
 2. `--auth-file <PATH>` — file with username on the first line and password on
    the second line
@@ -667,6 +671,7 @@ and `--parent`.
 ### Snapshot Output
 
 After a successful snapshot, mapache displays:
+
 - Changes since parent (new/changed/deleted/unchanged files and dirs)
 - Data and metadata sizes (raw vs compressed)
 - The new snapshot ID
@@ -700,6 +705,7 @@ be a snapshot ID prefix or `latest` (default).
 | `--quit-on-error` | Exit immediately on the first restore error |
 | `--sparse` | Create sparse files instead of preallocating |
 | `--verify` | Force content verification (hash check) even if mtime matches |
+| `--batch-size <N>` | Max files per batch. Limits peak memory. Default: no limit (all files at once) |
 | `--dry-run` | Simulate restoration |
 
 ### Conflict Strategies
@@ -848,6 +854,7 @@ mapache stats --full -r <URL>   # Parse pack footers (expensive)
 ```
 
 Shows:
+
 - **Packs**: count, total size, optional footer analysis (blob count, encoded
   vs raw sizes, dangling blobs)
 - **Index**: count, size, indexed blobs, raw/encoded sizes
@@ -965,6 +972,7 @@ mapache clean --dry-run -r <URL>      # Simulate
 ```
 
 The garbage collector:
+
 1. Scans all snapshots to determine which blobs are still referenced.
 2. Identifies:
    - **Unused packs** — packs where no blobs are referenced (removed).
@@ -995,11 +1003,13 @@ mapache verify --with-cache                # Use local cache
 ```
 
 #### Logical Verification (default)
+
 - Checks that every snapshot references known tree blobs.
 - Checks that every indexed blob points to an existing pack file.
 - Verifies snapshot tree traversal integrity.
 
 #### Physical Verification (`--read-packs`)
+
 - Reads, decrypts, and hashes every blob in every pack (or a sample).
 - Detects bit-rot (pack file hash mismatch) and individual blob corruption.
 - Reports corrupt blobs and the files/snapshots they affect.
@@ -1231,6 +1241,7 @@ mapache tui -r <URL>
 ```
 
 Launches an interactive terminal user interface with screens for:
+
 - **Dashboard** — overview of the repository with version info and key stats
 - **File explorer** — browse snapshot contents with inline detail panel
 - **Snapshot detail** — inspect individual snapshots
@@ -1342,6 +1353,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 ## 21. Full Command Reference
 
 ### `mapache init`
+
 Initialize a new backup repository.
 
 ```
@@ -1349,6 +1361,7 @@ mapache init -r <URL>
 ```
 
 ### `mapache snapshot`
+
 Create a new backup snapshot.
 
 ```
@@ -1370,6 +1383,7 @@ mapache snapshot [PATHS...] -r <URL>
 ```
 
 ### `mapache restore`
+
 Restore a snapshot to a target path.
 
 ```
@@ -1386,10 +1400,12 @@ mapache restore [SNAPSHOT] --target <PATH> -r <URL>
   --quit-on-error         Exit immediately on restore error
   --sparse                Create sparse files
   --verify                Force content verification
+  --batch-size <N>        Max files per batch (limits memory; default: no limit)
   --dry-run               Simulate restoration
 ```
 
 ### `mapache forget`
+
 Remove snapshots and apply retention policies.
 
 ```
@@ -1412,6 +1428,7 @@ mapache forget [SNAPSHOT_IDS...] -r <URL>
 ```
 
 ### `mapache log`
+
 Show snapshots in the repository.
 
 ```
@@ -1423,6 +1440,7 @@ mapache log [SNAPSHOT_ID] -r <URL>
 ```
 
 ### `mapache ls`
+
 List nodes/files in a snapshot.
 
 ```
@@ -1434,6 +1452,7 @@ mapache ls [SNAPSHOT] -r <URL>
 ```
 
 ### `mapache find`
+
 Find files and directories in the repository.
 
 ```
@@ -1445,6 +1464,7 @@ mapache find <TARGET> -r <URL>
 Exits with a non-zero code on error.
 
 ### `mapache diff`
+
 Show differences between snapshots.
 
 ```
@@ -1452,6 +1472,7 @@ mapache diff <SOURCE_ID> <TARGET_ID> -r <URL>
 ```
 
 ### `mapache dump`
+
 Print the contents of a file from a snapshot to stdout.
 
 ```
@@ -1460,6 +1481,7 @@ mapache dump [SNAPSHOT] -r <URL>
 ```
 
 ### `mapache stats`
+
 Show repository statistics.
 
 ```
@@ -1468,6 +1490,7 @@ mapache stats -r <URL>
 ```
 
 ### `mapache clean`
+
 Run garbage collection.
 
 ```
@@ -1478,6 +1501,7 @@ mapache clean -r <URL>
 ```
 
 ### `mapache verify`
+
 Verify repository integrity.
 
 ```
@@ -1490,6 +1514,7 @@ mapache verify -r <URL>
 ```
 
 ### `mapache key`
+
 Manage repository key files.
 
 ```
@@ -1501,6 +1526,7 @@ mapache key export <KEY_ID> -r <URL> [-o <PATH>]
 ```
 
 ### `mapache bundle`
+
 Create, extract, or mount `.mapache` bundle files.
 
 ```
@@ -1522,6 +1548,7 @@ mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
 ```
 
 ### `mapache mount`
+
 Mount repository or bundle as FUSE filesystem (Unix only).
 
 ```
@@ -1536,6 +1563,7 @@ mapache mount <MOUNTPOINT> -r <URL>
 Exits with a non-zero code on error.
 
 ### `mapache cat`
+
 Print repository objects.
 
 ```
@@ -1545,6 +1573,7 @@ mapache cat <type>:<ID> -r <URL>
 ```
 
 ### `mapache amend`
+
 Modify an existing snapshot.
 
 ```
@@ -1560,6 +1589,7 @@ mapache amend [SNAPSHOT] -r <URL>
 ```
 
 ### `mapache recall`
+
 Recover a dropped (forgotten) snapshot.
 
 ```
@@ -1567,6 +1597,7 @@ mapache recall <SNAPSHOT_ID> -r <URL>
 ```
 
 ### `mapache rebuild-index`
+
 Rebuild the index by scanning all packs.
 
 ```
@@ -1575,6 +1606,7 @@ mapache rebuild-index -r <URL>
 ```
 
 ### `mapache rechunk`
+
 Rechunk all snapshots with current parameters.
 
 ```
@@ -1582,6 +1614,7 @@ mapache rechunk -r <URL>
 ```
 
 ### `mapache copy`
+
 Transfer snapshots between repositories.
 
 ```
@@ -1596,6 +1629,7 @@ mapache copy --from <URL> -r <URL>
 ```
 
 ### `mapache sync`
+
 Synchronize a repository to another backend.
 
 ```
@@ -1607,6 +1641,7 @@ mapache sync --target <URL> -r <URL>
 ```
 
 ### `mapache unlock`
+
 Remove stale locks.
 
 ```
@@ -1615,6 +1650,7 @@ mapache unlock -r <URL>
 ```
 
 ### `mapache cache`
+
 Manage local cache directories.
 
 ```
@@ -1624,6 +1660,7 @@ mapache cache
 ```
 
 ### `mapache completion`
+
 Generate shell completion scripts.
 
 ```
@@ -1633,6 +1670,7 @@ mapache completion --shell <SHELL> --path <DIR>
 ```
 
 ### `mapache config`
+
 Manage repository configuration.
 
 ```
@@ -1641,6 +1679,7 @@ mapache config template [--output <PATH>]
 ```
 
 ### `mapache tui`
+
 Launch terminal user interface (requires `tui` feature).
 
 ```

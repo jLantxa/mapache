@@ -123,15 +123,6 @@ pub(crate) fn make_event_sender(
     let sender: EventSender = Arc::new(move |event: Event| {
         let Event::Restore(ev) = event else { return };
         match ev {
-            RestoreEvent::Planning => {
-                {
-                    let mut stage = state.current_stage.lock();
-                    *stage = "Planning...".to_string();
-                }
-                if state.should_emit_update() {
-                    state.emit_status_update();
-                }
-            }
             RestoreEvent::NodeVisited(count) => {
                 state.visited_nodes.store(count, Ordering::Relaxed);
                 if state.should_emit_update() {

@@ -512,6 +512,7 @@ impl RestoreBuilder {
                 quit_on_error: Some(true),
                 delete: Some(false),
                 no_preserve_root: Some(false),
+                batch_size: None,
             },
         }
     }

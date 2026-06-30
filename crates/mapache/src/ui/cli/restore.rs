@@ -47,8 +47,10 @@ impl CliRestoreState {
         *stage = msg;
     }
 
-    fn set_visited_nodes(&self, count: u64) {
-        self.processed_items_count.store(count, Ordering::Relaxed);
+    fn set_visited_nodes(&self, _count: u64) {
+        // Intentionally no-op: NodeVisited events were overwriting the
+        // processed-items counter when interleaved with ItemProcessed events
+        // from batched restore_packs flushes.
     }
 
     fn resize_workload(&self, num_expected_items: u64, num_expected_bytes: u64) {
@@ -230,11 +232,8 @@ pub(crate) fn make_event_sender(
     let sender: EventSender = Arc::new(move |event: Event| {
         let Event::Restore(ev) = event else { return };
         match ev {
-            RestoreEvent::Planning => {
-                state.set_message("Planning...".to_string());
-            }
-            RestoreEvent::NodeVisited(count) => {
-                state.set_visited_nodes(count);
+            RestoreEvent::NodeVisited(_count) => {
+                state.set_visited_nodes(_count);
             }
             RestoreEvent::PlanBuilt {
                 total_items: t,

@@ -68,8 +68,6 @@ pub enum BackupEvent {
 
 #[derive(Debug, Clone)]
 pub enum RestoreEvent {
-    /// Planning phase started.
-    Planning,
     /// A node was visited during planning.
     NodeVisited(u64),
     /// Plan is complete; totals are known.

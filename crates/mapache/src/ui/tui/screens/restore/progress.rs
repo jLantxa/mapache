@@ -7,9 +7,6 @@ use crate::ui::tui::widgets::{TaskProgressState, TaskProgressWidget};
 
 pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
     match event {
-        RestoreEvent::Planning => {
-            state.set_message("Planning...".to_string());
-        }
         RestoreEvent::NodeVisited(_) => {}
         RestoreEvent::PlanBuilt {
             total_items,

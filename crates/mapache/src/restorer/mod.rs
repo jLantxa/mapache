@@ -17,15 +17,19 @@ use std::io::{Seek, Write};
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
+use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +77,8 @@ pub struct RestoreOptions {
     pub verify: bool,
     pub include: Option<Vec<PathBuf>>,
     pub exclude: Option<Vec<PathBuf>>,
+    /// Maximum number of files per plan chunk (None = no limit, all at once).
+    pub batch_size: Option<usize>,
 }
 
 /// Performs the restoration of a snapshot to a target path.
@@ -92,45 +98,34 @@ pub async fn restore(
         shutdown_signal,
     );
 
-    restorer.restore(snapshot.tree).await
+    restorer.restore(snapshot).await
 }
 
 /// The Restorer is responsible for coordinating the restoration process.
 ///
-/// It implements a high-performance, pack-centric approach. Instead of restoring
-/// file by file (which causes random I/O and many small backend requests), it:
-/// 1. Scans the snapshot tree to build a restoration plan.
-/// 2. Groups all required blobs by the pack file they reside in.
-/// 3. Downloads packs (or relevant ranges) sequentially.
-/// 4. Distributes downloaded blobs to their target files in parallel.
-/// 5. Restores metadata in a separate bottom-up pass.
+/// It implements a streaming, pack-centric approach:
+/// 1. Walks the snapshot tree and accumulates file/blob references.
+/// 2. Every `batch_size` files, flushes the accumulated plan:
+///    downloads pack segments, decodes blobs, writes files.
+/// 3. After all files are restored, creates hardlinks.
+/// 4. Restores metadata in a separate bottom-up pass.
 pub(crate) struct Restorer {
     pub(crate) repo: Arc<Repository>,
     pub(crate) event_sender: EventSender,
     pub(crate) shutdown_signal: Arc<AtomicBool>,
     pub(crate) target_path: PathBuf,
     pub(crate) opts: RestoreOptions,
-    pub(crate) buffers: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    pub(crate) buffers: Arc<Mutex<std::collections::VecDeque<Vec<u8>>>>,
 }
 
 pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
+type HardlinkByPath = (PathBuf, PathBuf);
 
 pub(crate) struct FileRestorePlan {
     pub(crate) path: PathBuf,
     pub(crate) num_blobs: u32,
     pub(crate) size: u64,
     pub(crate) is_hardlink: bool,
-}
-
-pub(crate) struct RestorePlan {
-    pub(crate) files: Arc<Vec<FileRestorePlan>>,
-    pub(crate) packs: Arc<PackMap>,
-    pub(crate) directories: Vec<(PathBuf, crate::fs::node::Metadata)>,
-    pub(crate) skipped_item_paths: Vec<PathBuf>,
-    pub(crate) total_items: u64,
-    pub(crate) total_bytes: u64,
-    pub(crate) skipped_bytes: u64,
-    pub(crate) hardlinks: Vec<(usize, usize)>,
 }
 
 #[derive(Clone)]
@@ -145,7 +140,7 @@ pub(crate) struct BlobRestoreRequest {
 /// A cache for open file handles during restoration.
 pub(crate) struct FileHandleCache {
     handles: HashMap<usize, File>,
-    order: VecDeque<usize>,
+    order: std::collections::VecDeque<usize>,
     max_handles: usize,
 }
 
@@ -153,7 +148,7 @@ impl FileHandleCache {
     fn new(max_handles: usize) -> Self {
         Self {
             handles: HashMap::new(),
-            order: VecDeque::new(),
+            order: std::collections::VecDeque::new(),
             max_handles,
         }
     }
@@ -213,8 +208,6 @@ impl FileHandleCache {
                         tracing::warn!(target: "restorer", "Failed to preallocate file {}: {e}", path.display());
                     }
                 } else {
-                    // Default to sparse creation via set_len.
-                    // On most modern filesystems (NTFS, APFS, XFS, EXT4), this creates a sparse file.
                     f.set_len(plan.size).with_context(|| {
                         format!("Failed to set length for sparse file: {}", path.display())
                     })?;
@@ -235,7 +228,6 @@ impl FileHandleCache {
             .ok_or_else(|| anyhow!("Failed to retrieve file handle after insertion"))
     }
 
-    /// Open a file for restore.
     fn open_file_for_restore(path: &Path, create: bool) -> io::Result<std::fs::File> {
         let mut opts = OpenOptions::new();
         opts.write(true);
@@ -291,7 +283,9 @@ impl Restorer {
             opts,
             event_sender,
             shutdown_signal,
-            buffers: Arc::new(Mutex::new(VecDeque::with_capacity(num_buffers))),
+            buffers: Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(
+                num_buffers,
+            ))),
         }
     }
 
@@ -313,7 +307,6 @@ impl Restorer {
     }
 
     /// Creates a shallow clone of the restorer for worker threads.
-    /// This is needed because Restorer contains Arc fields that we want to share.
     pub(crate) fn clone_for_workers(&self) -> Self {
         Self {
             repo: self.repo.clone(),
@@ -329,6 +322,7 @@ impl Restorer {
                 verify: self.opts.verify,
                 include: self.opts.include.clone(),
                 exclude: self.opts.exclude.clone(),
+                batch_size: self.opts.batch_size,
             },
             buffers: self.buffers.clone(),
         }
@@ -342,10 +336,8 @@ impl Restorer {
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             let fd = file.as_raw_fd();
-            let result = unsafe {
-                // SAFETY: FFI call to posix_fallocate with a valid file descriptor.
-                libc::posix_fallocate(fd, 0, length as libc::off_t)
-            };
+            // SAFETY: FFI call to posix_fallocate with a valid file descriptor.
+            let result = unsafe { libc::posix_fallocate(fd, 0, length as libc::off_t) };
             if result != 0 {
                 return Err(anyhow!(std::io::Error::from_raw_os_error(result)));
             }
@@ -367,17 +359,13 @@ impl Restorer {
                 fst_bytesalloc: 0,
             };
 
-            let mut res = unsafe {
-                // SAFETY: FFI call to fcntl with a valid file descriptor and fstore_t pointer.
-                libc::fcntl(fd, libc::F_PREALLOCATE, &store)
-            };
+            // SAFETY: FFI call to fcntl with a valid file descriptor and fstore_t pointer.
+            let mut res = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &store) };
 
             if res == -1 {
                 store.fst_posmode = F_STARTPOSMODE;
-                res = unsafe {
-                    // SAFETY: FFI call to fcntl as fallback with same valid descriptor and pointer.
-                    libc::fcntl(fd, libc::F_PREALLOCATE, &store)
-                };
+                // SAFETY: FFI call to fcntl as fallback with same valid descriptor and pointer.
+                res = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &store) };
             }
 
             if res == -1 {
@@ -436,9 +424,39 @@ impl Restorer {
         Ok(())
     }
 
-    async fn restore(&self, tree_id: ID) -> Result<()> {
-        tracing::info!(target: "restorer", "Starting restoration of tree {tree_id}");
-        let node_stream = SerializedNodeStream::new(
+    async fn restore(&self, snapshot: &Snapshot) -> Result<()> {
+        let tree_id = snapshot.tree;
+        tracing::info!(target: "restorer", "Starting restore of tree {tree_id}");
+
+        if !self.opts.dry_run {
+            fs::create_dir_all(&self.target_path)?;
+        }
+
+        let index = self.repo.index();
+        let secure_storage = self.repo.secure_storage();
+        let batch_size = self.opts.batch_size.unwrap_or(usize::MAX);
+        let dry_run = self.opts.dry_run;
+
+        // Use stored snapshot totals for progress (populated at archive time).
+        // Fall back to a counting pass for snapshots that predate this metadata.
+        let (total_items, total_bytes) = {
+            let s = &snapshot.summary;
+            if s.processed_items_count > 0 {
+                (s.processed_items_count, s.processed_bytes)
+            } else {
+                self.count_restore_work(tree_id).await
+            }
+        };
+        emit_event(
+            &self.event_sender,
+            Event::Restore(RestoreEvent::PlanBuilt {
+                total_items,
+                total_bytes,
+            }),
+        );
+
+        // Second pass: streaming restore
+        let mut node_stream = SerializedNodeStream::new(
             self.repo.clone(),
             Some(tree_id),
             PathBuf::new(),
@@ -447,126 +465,391 @@ impl Restorer {
         )
         .await?;
 
-        if !self.opts.dry_run {
-            fs::create_dir_all(&self.target_path)?;
-        }
+        // Streaming accumulator state
+        let mut chunk_files: Vec<FileRestorePlan> = Vec::new();
+        let mut chunk_packs: PackMap = HashMap::new();
+        // Persistent hardlink index: (dev, inode) → primary file path
+        let primary_hardlinks: Arc<Mutex<HashMap<(u64, u64), PathBuf>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        // Cross-chunk hardlinks stored as (secondary_path, primary_path)
+        let pending_hardlinks: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let index = self.repo.index();
-        tracing::info!(target: "restorer", "Building restoration plan");
-        let plan = self.build_plan(node_stream, index).await?;
-        tracing::info!(
-            target: "restorer",
-            "Plan built: {} items, {}",
-            plan.total_items,
-            utils::format_size_binary(plan.total_bytes, 1)
-        );
+        let mut node_visited = 0u64;
 
-        emit_event(
-            &self.event_sender,
-            Event::Restore(RestoreEvent::PlanBuilt {
-                total_items: plan.total_items,
-                total_bytes: plan.total_bytes,
-            }),
-        );
+        while let Some(node_res) = node_stream.next().await {
+            if self.shutdown_signal.load(Ordering::Acquire) {
+                bail!("Interrupted");
+            }
 
-        if plan.skipped_bytes > 0 {
-            emit_event(
-                &self.event_sender,
-                Event::Restore(RestoreEvent::BytesProcessed(plan.skipped_bytes)),
-            );
-        }
+            node_visited += 1;
+            if node_visited.is_multiple_of(1024) {
+                emit_event(
+                    &self.event_sender,
+                    Event::Restore(RestoreEvent::NodeVisited(node_visited)),
+                );
+            }
 
-        for path in &plan.skipped_item_paths {
-            emit_event(
-                &self.event_sender,
-                Event::Restore(RestoreEvent::ItemProcessed(path.clone())),
-            );
-        }
-        for (path, _) in &plan.directories {
-            emit_event(
-                &self.event_sender,
-                Event::Restore(RestoreEvent::ItemProcessed(path.clone())),
-            );
-        }
-
-        let plan_files = plan.files.clone();
-        let dry_run = self.opts.dry_run;
-        let secure_storage = self.repo.secure_storage();
-
-        tracing::info!(target: "restorer", "Restoring data packs");
-        self.restore_packs(plan_files, plan.packs, secure_storage, dry_run)
-            .await?;
-
-        if !self.opts.dry_run && !plan.hardlinks.is_empty() {
-            tracing::info!(
-                target: "restorer",
-                "Creating {} hardlinks",
-                plan.hardlinks.len()
-            );
-            for (sec_idx, prim_idx) in &plan.hardlinks {
-                let primary_path = &plan.files[*prim_idx].path;
-                let secondary_path = &plan.files[*sec_idx].path;
-                if let Some(parent) = secondary_path.parent()
-                    && let Err(e) = fs::create_dir_all(parent)
-                {
-                    let err_msg = format!(
-                        "Failed to create parent directory for hardlink {}: {}",
-                        secondary_path.display(),
-                        e
-                    );
-                    if self.opts.quit_on_error {
-                        bail!(err_msg);
-                    }
+            let (mut path, stream_node_res) = match node_res {
+                Ok(res) => res,
+                Err(e) => {
                     emit_event(
                         &self.event_sender,
-                        Event::Restore(RestoreEvent::Error(err_msg)),
-                    );
-                }
-                if let Err(e) = fs::remove_file(secondary_path)
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    let err_msg = format!(
-                        "Failed to remove existing file for hardlink {}: {}",
-                        secondary_path.display(),
-                        e
-                    );
-                    if self.opts.quit_on_error {
-                        bail!(err_msg);
-                    }
-                    emit_event(
-                        &self.event_sender,
-                        Event::Restore(RestoreEvent::Error(err_msg)),
+                        Event::Restore(RestoreEvent::Error(format!("Error reading node: {e}"))),
                     );
                     continue;
                 }
-                if let Err(e) = fs::hard_link(primary_path, secondary_path) {
-                    let err_msg = format!(
-                        "Failed to create hardlink {} -> {}: {}",
-                        secondary_path.display(),
-                        primary_path.display(),
+            };
+
+            let stream_node = match stream_node_res {
+                Ok(node) => node,
+                Err(e) => {
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Warning(format!(
+                            "Error deserializing node {}: {}",
+                            path.display(),
+                            e
+                        ))),
+                    );
+                    continue;
+                }
+            };
+            let node = stream_node.node;
+
+            if let Some(prefix) = &self.opts.strip_prefix {
+                path = match path.strip_prefix(prefix) {
+                    Ok(p) => {
+                        if p.as_os_str().is_empty() {
+                            continue;
+                        }
+                        p.to_path_buf()
+                    }
+                    Err(_) => continue,
+                };
+            }
+
+            let restore_path = match utils::secure_join(&self.target_path, &path) {
+                Ok(p) => p,
+                Err(e) => {
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Error(format!(
+                            "Secure join failed for {path:?}: {e}"
+                        ))),
+                    );
+                    continue;
+                }
+            };
+
+            // Directory: create, save metadata for later
+            if node.is_dir() {
+                if !dry_run && let Err(e) = fs::create_dir_all(&restore_path) {
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Error(format!(
+                            "Failed to create directory {}: {}",
+                            restore_path.display(),
+                            e
+                        ))),
+                    );
+                    continue;
+                }
+                emit_event(
+                    &self.event_sender,
+                    Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                );
+                continue;
+            }
+
+            // Symlink: restore immediately
+            if node.is_symlink() {
+                if !dry_run {
+                    let _ = node_restorer::restore_node_to_path(
+                        self,
+                        &self.event_sender,
+                        &node,
+                        &restore_path,
+                        false,
+                    )
+                    .await;
+                }
+                emit_event(
+                    &self.event_sender,
+                    Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                );
+                continue;
+            }
+
+            // File: check strategy, then add to accumulator
+            if node.is_file() {
+                let should_restore = self
+                    .should_restore_node(&node, &restore_path, index.clone())
+                    .await;
+
+                let skip_file = match should_restore {
+                    Ok(true) => false,
+                    Ok(false) => true,
+                    Err(e) => {
+                        emit_event(
+                            &self.event_sender,
+                            Event::Restore(RestoreEvent::Error(format!(
+                                "Error checking {}: {}",
+                                restore_path.display(),
+                                e
+                            ))),
+                        );
+                        if self.opts.quit_on_error {
+                            bail!("{e}");
+                        }
+                        true
+                    }
+                };
+
+                if skip_file {
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                    );
+                    continue;
+                }
+
+                // Look up blobs
+                let mut file_blobs = Vec::new();
+                if let Some(blobs) = &node.blobs {
+                    let mut offset_in_file = 0;
+                    for blob_id in blobs {
+                        let locator = match index.get_data(blob_id) {
+                            Some(loc) => loc,
+                            None => {
+                                emit_event(
+                                    &self.event_sender,
+                                    Event::Restore(RestoreEvent::Error(format!(
+                                        "Blob {blob_id} not found in index"
+                                    ))),
+                                );
+                                continue;
+                            }
+                        };
+                        file_blobs.push((*blob_id, locator, offset_in_file));
+                        offset_in_file += locator.raw_length as u64;
+                    }
+                }
+
+                let file_idx = chunk_files.len();
+                chunk_files.push(FileRestorePlan {
+                    path: restore_path.clone(),
+                    num_blobs: 0,
+                    size: node.metadata.size,
+                    is_hardlink: false,
+                });
+
+                // Hardlink detection
+                let is_hardlink_secondary = {
+                    if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode) {
+                        let nlink = node.metadata.nlink;
+                        if nlink.unwrap_or(0) > 1 {
+                            let mut idx = primary_hardlinks.lock();
+                            if let Some(primary_path) = idx.get(&(dev, inode)) {
+                                pending_hardlinks
+                                    .lock()
+                                    .push((restore_path.clone(), primary_path.clone()));
+                                drop(idx);
+                                chunk_files[file_idx].is_hardlink = true;
+                                true
+                            } else {
+                                idx.insert((dev, inode), restore_path.clone());
+                                drop(idx);
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if !is_hardlink_secondary {
+                    let num_blobs = file_blobs.len().min(u32::MAX as usize) as u32;
+                    for (blob_id, locator, offset_in_file) in &file_blobs {
+                        chunk_packs.entry(locator.pack_id).or_default().push((
+                            *blob_id,
+                            BlobRestoreRequest {
+                                file_idx,
+                                offset_in_file: *offset_in_file,
+                                blob_offset: locator.offset,
+                                blob_length: locator.length,
+                                raw_length: locator.raw_length,
+                            },
+                        ));
+                    }
+                    chunk_files[file_idx].num_blobs = num_blobs;
+
+                    if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode)
+                        && node.metadata.nlink.unwrap_or(0) > 1
+                    {
+                        primary_hardlinks
+                            .lock()
+                            .entry((dev, inode))
+                            .or_insert_with(|| restore_path.clone());
+                    }
+                } else if !dry_run
+                    && let Some(parent) = restore_path.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Error(format!(
+                            "Failed to create parent for hardlink {}: {}",
+                            restore_path.display(),
+                            e
+                        ))),
+                    );
+                }
+
+                // Flush if the chunk is full
+                if chunk_files.len() >= batch_size {
+                    let chunk_files = Arc::new(std::mem::take(&mut chunk_files));
+                    let chunk_packs = Arc::new(std::mem::take(&mut chunk_packs));
+                    pack_restorer::restore_packs(
+                        self,
+                        chunk_files,
+                        chunk_packs,
+                        secure_storage.clone(),
+                        dry_run,
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        // Flush remaining chunk
+        if !chunk_files.is_empty() {
+            let chunk_files = Arc::new(std::mem::take(&mut chunk_files));
+            let chunk_packs = Arc::new(std::mem::take(&mut chunk_packs));
+            pack_restorer::restore_packs(
+                self,
+                chunk_files,
+                chunk_packs,
+                secure_storage.clone(),
+                dry_run,
+            )
+            .await?;
+        }
+
+        // Create pending hardlinks (cross-chunk)
+        if !dry_run {
+            let hardlinks = std::mem::take(&mut *pending_hardlinks.lock());
+            for (secondary, primary) in &hardlinks {
+                if self.shutdown_signal.load(Ordering::Acquire) {
+                    bail!("Interrupted");
+                }
+                if let Some(parent) = secondary.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    let msg = format!(
+                        "Failed to create parent for hardlink {}: {}",
+                        secondary.display(),
                         e
                     );
                     if self.opts.quit_on_error {
-                        bail!(err_msg);
+                        bail!(msg);
                     }
+                    emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                    continue;
+                }
+                if let Err(e) = fs::remove_file(secondary)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    let msg = format!(
+                        "Failed to remove target for hardlink {}: {}",
+                        secondary.display(),
+                        e
+                    );
+                    if self.opts.quit_on_error {
+                        bail!(msg);
+                    }
+                    emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                    continue;
+                }
+                if let Err(e) = fs::hard_link(primary, secondary) {
+                    let msg = format!(
+                        "Failed to create hardlink {} -> {}: {}",
+                        secondary.display(),
+                        primary.display(),
+                        e
+                    );
+                    if self.opts.quit_on_error {
+                        bail!(msg);
+                    }
+                    emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                } else {
                     emit_event(
                         &self.event_sender,
-                        Event::Restore(RestoreEvent::Error(err_msg)),
+                        Event::Restore(RestoreEvent::ItemProcessed(secondary.clone())),
                     );
                 }
             }
         }
 
+        // Restore metadata
         tracing::info!(target: "restorer", "Restoring metadata");
         self.restore_metadata(
             tree_id,
             self.opts.include.clone(),
             self.opts.exclude.clone(),
-            plan.directories,
         )
         .await?;
 
         tracing::info!(target: "restorer", "Restoration finished");
         Ok(())
+    }
+
+    /// Quick first pass: count items and sum data bytes for progress reporting.
+    async fn count_restore_work(&self, tree_id: ID) -> (u64, u64) {
+        let mut node_stream = match SerializedNodeStream::new(
+            self.repo.clone(),
+            Some(tree_id),
+            PathBuf::new(),
+            self.opts.include.clone(),
+            self.opts.exclude.clone(),
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                emit_event(
+                    &self.event_sender,
+                    Event::Restore(RestoreEvent::Error(format!(
+                        "Failed to create node stream for counting: {e}"
+                    ))),
+                );
+                return (0, 0);
+            }
+        };
+        let mut items = 0u64;
+        let mut bytes = 0u64;
+        while let Some(node_res) = node_stream.next().await {
+            if self.shutdown_signal.load(Ordering::Acquire) {
+                return (items, bytes);
+            }
+
+            let (_path, stream_node_res) = match node_res {
+                Ok(res) => res,
+                Err(_) => continue,
+            };
+            let stream_node = match stream_node_res {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let node = stream_node.node;
+
+            items += 1;
+            if node.is_file() {
+                bytes += node.metadata.size;
+            }
+        }
+
+        (items, bytes)
     }
 }

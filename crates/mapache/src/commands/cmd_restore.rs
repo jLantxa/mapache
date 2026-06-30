@@ -145,6 +145,11 @@ pub struct CmdArgs {
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub verify: Option<bool>,
 
+    /// Maximum number of files per batch. Limits peak memory when restoring many
+    /// small files. Default: no limit (all files processed in a single batch).
+    #[clap(long)]
+    pub batch_size: Option<usize>,
+
     /// Dry run
     #[clap(long)]
     pub dry_run: bool,
@@ -162,6 +167,7 @@ impl CmdArgs {
             strip_prefix: Some(true),
             strategy: Some(Strategy::Fail),
             delete: Some(false),
+            batch_size: None,
             dry_run: false,
             no_preserve_root: Some(false),
             quit_on_error: Some(false),
@@ -208,6 +214,9 @@ impl Merge for CmdArgs {
         }
         if other.verify.is_some() {
             self.verify = other.verify;
+        }
+        if other.batch_size.is_some() {
+            self.batch_size = other.batch_size;
         }
     }
 }
@@ -374,6 +383,7 @@ pub(crate) async fn run_with_repo(
     let quit_on_error = args.quit_on_error.unwrap_or(false);
     let sparse = args.sparse.unwrap_or(false);
     let verify = args.verify.unwrap_or(false);
+    let batch_size = args.batch_size;
     let strip_prefix = args.strip_prefix.unwrap_or(false);
 
     // Read include and exclude paths from files if provided.
@@ -436,6 +446,7 @@ pub(crate) async fn run_with_repo(
             verify,
             include: parsed_includes.clone(),
             exclude: parsed_excludes.clone(),
+            batch_size,
         },
         counters.event_sender.clone(),
         cleanup_handler.interrupted.clone(),

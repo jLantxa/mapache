@@ -9,6 +9,12 @@
   and receive `MAPACHE_COMMAND`, `MAPACHE_REPOSITORY`, and `MAPACHE_RESULT`
   environment variables. Optional timeout per hook. Skipped on `--dry-run`.
 
+### Changed
+
+- **Restorer**: Ordered metadata restoration as chown, xattrs, chmod, mtime;
+  batched file restoration with a streaming pass; fsync metadata after restore;
+  verify hardlink content and fall back to copy on failure.
+
 ## v0.5.1
 
 ### Fixed

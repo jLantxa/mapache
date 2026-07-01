@@ -28,7 +28,6 @@ struct CliRestoreState {
     mp: MultiProgress,
     progress_bar: ProgressBar,
     companion_bar: ProgressBar,
-    current_stage: Arc<Mutex<String>>,
     num_expected_items: Arc<AtomicU64>,
     num_expected_bytes: Arc<AtomicU64>,
     rate_estimator: Arc<Mutex<RateEstimator>>,
@@ -39,12 +38,6 @@ impl CliRestoreState {
         self.companion_bar.finish_and_clear();
         self.progress_bar.finish_and_clear();
         let _ = self.mp.clear();
-    }
-
-    fn set_message(&self, msg: String) {
-        self.progress_bar.set_message(msg.clone());
-        let mut stage = self.current_stage.lock();
-        *stage = msg;
     }
 
     fn set_visited_nodes(&self, _count: u64) {
@@ -59,7 +52,6 @@ impl CliRestoreState {
         self.num_expected_bytes
             .store(num_expected_bytes, Ordering::Relaxed);
         self.progress_bar.set_length(num_expected_bytes);
-        self.progress_bar.set_message(String::new());
         self.processed_items_count.store(0, Ordering::Relaxed);
     }
 
@@ -134,7 +126,7 @@ pub(crate) fn make_event_sender(
 
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.cyan} {msg}\n[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
+            .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
             .expect("Invalid progress bar template for restore progress")
             .progress_chars("=> ")
             .tick_chars(SPINNER_TICK_CHARS)
@@ -223,7 +215,6 @@ pub(crate) fn make_event_sender(
         mp,
         progress_bar,
         companion_bar,
-        current_stage: Arc::new(Mutex::new(String::new())),
         num_expected_items: num_expected_items_atom,
         num_expected_bytes: num_expected_bytes_atom,
         rate_estimator,
@@ -240,7 +231,6 @@ pub(crate) fn make_event_sender(
                 total_bytes: b,
             } => {
                 state.resize_workload(t, b);
-                state.set_message("Restoring...".to_string());
             }
             RestoreEvent::ItemProcessed(ref path) => {
                 state.processed_item(path);

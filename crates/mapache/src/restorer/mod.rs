@@ -438,16 +438,7 @@ impl Restorer {
         let batch_size = self.opts.batch_size.unwrap_or(usize::MAX);
         let dry_run = self.opts.dry_run;
 
-        // Use stored snapshot totals for progress (populated at archive time).
-        // Fall back to a counting pass for snapshots that predate this metadata.
-        let (total_items, total_bytes) = {
-            let s = &snapshot.summary;
-            if s.processed_items_count > 0 {
-                (s.processed_items_count, s.processed_bytes)
-            } else {
-                self.count_restore_work(tree_id).await
-            }
-        };
+        let (total_items, total_bytes) = self.count_restore_work(tree_id).await;
         emit_event(
             &self.event_sender,
             Event::Restore(RestoreEvent::PlanBuilt {
@@ -552,7 +543,6 @@ impl Restorer {
                             e
                         ))),
                     );
-                    continue;
                 }
                 emit_event(
                     &self.event_sender,
@@ -563,20 +553,30 @@ impl Restorer {
 
             // Symlink: restore immediately
             if node.is_symlink() {
-                if !dry_run {
-                    let _ = node_restorer::restore_node_to_path(
+                if !dry_run
+                    && let Err(_e) = node_restorer::restore_node_to_path(
                         self,
                         &self.event_sender,
                         &node,
                         &restore_path,
                         false,
                     )
-                    .await;
+                    .await
+                {
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Warning(format!(
+                            "Failed to restore symlink {}",
+                            restore_path.display(),
+                        ))),
+                    );
                 }
-                emit_event(
-                    &self.event_sender,
-                    Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
-                );
+                if dry_run {
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                    );
+                }
                 continue;
             }
 
@@ -606,10 +606,12 @@ impl Restorer {
                 };
 
                 if skip_file {
-                    emit_event(
-                        &self.event_sender,
-                        Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
-                    );
+                    if dry_run {
+                        emit_event(
+                            &self.event_sender,
+                            Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                        );
+                    }
                     continue;
                 }
 
@@ -817,17 +819,7 @@ impl Restorer {
                             bail!(msg);
                         }
                         emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
-                    } else {
-                        emit_event(
-                            &self.event_sender,
-                            Event::Restore(RestoreEvent::ItemProcessed(secondary.clone())),
-                        );
                     }
-                } else {
-                    emit_event(
-                        &self.event_sender,
-                        Event::Restore(RestoreEvent::ItemProcessed(secondary.clone())),
-                    );
                 }
             }
         }

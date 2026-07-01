@@ -76,15 +76,9 @@ pub(crate) async fn restore_packs(
     let handle_cache = Arc::new(ShardedFileHandleCache::new(defaults.restore_max_open_files));
 
     for (idx, file) in files.iter().enumerate() {
-        if file.num_blobs == 0 && !file.is_hardlink {
-            if !file.path.exists() || file.size == 0 {
-                let mut cache_guard = handle_cache.get_shard(idx).lock();
-                cache_guard.get_handle(idx, &file.path, file, &initialized[idx], restorer)?;
-            }
-            emit_event(
-                &restorer.event_sender,
-                Event::Restore(RestoreEvent::ItemProcessed(file.path.clone())),
-            );
+        if file.num_blobs == 0 && !file.is_hardlink && !file.path.exists() || file.size == 0 {
+            let mut cache_guard = handle_cache.get_shard(idx).lock();
+            cache_guard.get_handle(idx, &file.path, file, &initialized[idx], restorer)?;
         }
     }
 
@@ -313,14 +307,7 @@ async fn flush_file_batches(
                             &ctx.event_sender,
                             Event::Restore(RestoreEvent::BytesProcessed(total_bytes)),
                         );
-                        if ctx.remaining[file_idx].fetch_sub(num_blobs, Ordering::Relaxed)
-                            == num_blobs
-                        {
-                            emit_event(
-                                &ctx.event_sender,
-                                Event::Restore(RestoreEvent::ItemProcessed(file_path)),
-                            );
-                        }
+                        ctx.remaining[file_idx].fetch_sub(num_blobs, Ordering::Relaxed);
                     }
                     Err(e) => {
                         let err_msg = format!("Failed to write to file index {file_idx}: {e}");

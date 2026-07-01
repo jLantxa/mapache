@@ -15,7 +15,6 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
             state.processed_items = 0;
             state.start_time = Instant::now();
             state.set_expected(total_items, total_bytes);
-            state.set_message("Restoring...".to_string());
         }
         RestoreEvent::ItemProcessed(_) => {
             state.add_processed_items(1);

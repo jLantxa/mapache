@@ -91,23 +91,20 @@ impl Restorer {
                         Err(_) => return,
                     };
 
-                    if !repo_fs::path_exists(&restore_path).await {
-                        tracing::warn!(
-                            target: "restorer",
-                            "Cannot restore metadata for {}: path does not exist",
-                            restore_path.display(),
-                        );
-                        return;
-                    }
-
                     if node.is_dir() {
                         dirs.lock().push((restore_path, node.metadata));
                     } else {
-                        super::node_restorer::try_restore_node_metadata(
-                            &node.metadata,
-                            node.is_symlink(),
-                            &restore_path,
+                        if repo_fs::path_exists(&restore_path).await {
+                            super::node_restorer::try_restore_node_metadata(
+                                &node.metadata,
+                                node.is_symlink(),
+                                &restore_path,
+                                &event_sender,
+                            );
+                        }
+                        emit_event(
                             &event_sender,
+                            Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
                         );
                     }
                 }
@@ -122,7 +119,14 @@ impl Restorer {
             if self.shutdown_signal.load(Ordering::Acquire) {
                 bail!("Interrupted");
             }
-            super::node_restorer::try_restore_node_metadata(&meta, false, &p, &self.event_sender);
+            if repo_fs::path_exists(&p).await {
+                super::node_restorer::try_restore_node_metadata(
+                    &meta,
+                    false,
+                    &p,
+                    &self.event_sender,
+                );
+            }
         }
 
         Ok(())

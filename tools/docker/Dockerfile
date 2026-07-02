@@ -1,8 +1,19 @@
-# mapache builder for Linux (x64, ARM64, ARMv7), Windows, and Mac
-# We define ARGs at the top so they can be used in FROM
-ARG BUILD_SOURCE="remote"
+# mapache cross-compilation environment
+# Use this image to compile mapache for any supported target.
+#
+# Usage:
+#   docker build -t mapache-builder tools/docker
+#
+#   # Build a single target (source mounted from host)
+#   docker run --rm -v $(pwd):/mapache mapache-builder \
+#     sh /build-target.sh x86_64-unknown-linux-musl \
+#       "-C target-feature=+crt-static -C relocation-model=pie" \
+#       build
+#
+#   # Interactive development shell
+#   docker run --rm -it -v $(pwd):/mapache mapache-builder
 
-FROM fedora:44 AS build-env
+FROM fedora:44
 LABEL "Author"="Leuqar"
 
 RUN dnf update -y && \
@@ -23,6 +34,13 @@ RUN rustup target add x86_64-unknown-linux-musl \
 
 RUN cargo install cargo-xwin cargo-zigbuild
 
+# Pre-download Windows CRT/SDK (so builds don't fetch at runtime)
+RUN mkdir /tmp/xwin-cache && cd /tmp/xwin-cache && \
+    cargo init --name dummy && \
+    RUSTFLAGS="-C target-feature=+crt-static" \
+    cargo xwin build --release --target x86_64-pc-windows-msvc 2>/dev/null || true && \
+    rm -rf /tmp/xwin-cache
+
 # Download macOS SDK (repackaged from official Xcode — SHA256 verified)
 RUN mkdir -p /opt/macosx-sdks && \
     curl -L https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz -o /tmp/MacOSX26.1.sdk.tar.xz && \
@@ -32,6 +50,29 @@ RUN mkdir -p /opt/macosx-sdks && \
 
 ENV SDKROOT=/opt/macosx-sdks/MacOSX26.1.sdk
 ENV MACOSX_DEPLOYMENT_TARGET=10.12
+
+# Download macFUSE library headers (for FUSE/mount support on macOS).
+# The actual dylib is resolved at runtime via macFUSE on the host —
+# we use -Wl,-undefined,dynamic_lookup so the linker doesn't need it.
+RUN curl -L https://github.com/macfuse/library/archive/refs/heads/master.tar.gz \
+      -o /tmp/library.tar.gz && \
+    tar -xzf /tmp/library.tar.gz -C /opt && \
+    mv /opt/library-master /opt/macfuse-library && \
+    mkdir -p /opt/macosx-sdks/MacOSX26.1.sdk/usr/include/fuse && \
+    cp /opt/macfuse-library/include/fuse*.h /opt/macfuse-library/include/cuse*.h /opt/macfuse-library/include/ulockmgr*.h \
+      /opt/macosx-sdks/MacOSX26.1.sdk/usr/include/fuse/ && \
+    mkdir -p /opt/macosx-sdks/MacOSX26.1.sdk/usr/lib/pkgconfig && \
+    sed 's|@prefix@|/opt/macosx-sdks/MacOSX26.1.sdk|; \
+         s|@exec_prefix@|${prefix}|; \
+         s|@libdir@|${exec_prefix}/usr/lib|; \
+         s|@includedir@|${prefix}/usr/include|; \
+         s|@VERSION@|2.6.0|; \
+         s|-lfuse|-Wl,-undefined,dynamic_lookup|; \
+         s|-pthread||; \
+         s|@libfuse_libs@||' \
+      /opt/macfuse-library/fuse.pc.in \
+      > /opt/macosx-sdks/MacOSX26.1.sdk/usr/lib/pkgconfig/fuse.pc && \
+    rm -rf /tmp/library.tar.gz /opt/macfuse-library
 
 # Download Android NDK (for Bionic C headers/linker; used directly via CC/LINKER env vars)
 RUN curl -L https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -o /tmp/ndk.zip && \
@@ -48,83 +89,11 @@ RUN curl -L https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -
     rm /tmp/zig.tar.xz
 ENV PATH="/opt/zig-x86_64-linux-0.16.0:${PATH}"
 
-# --- Stage: Remote Source ---
-FROM build-env AS source-remote
-ARG GIT_REF="main"
-ARG CACHE_BREAKER
-RUN echo "Fetching remote source from $GIT_REF (cache breaker: $CACHE_BREAKER)..." && \
-    git clone https://github.com/jLantxa/mapache.git /mapache && \
-    cd /mapache && git checkout $GIT_REF
-
-# --- Stage: Local Source ---
-FROM build-env AS source-local
-COPY . /mapache
-
-# --- Stage: Final Builder (Selective) ---
-FROM source-${BUILD_SOURCE} AS builder
-WORKDIR /mapache
-ARG FEATURES="default"
-ARG MAPACHE_RELEASE_BUILD
-
-COPY tools/docker/build-target.sh /build-target.sh
-
-# # Run tests
-# RUN cargo test --features "$FEATURES" --release -- --skip integration_tests::test_cmd_mount
-
 # Apply high optimizations
 ENV CARGO_PROFILE_RELEASE_LTO="true"
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
 
-# Build Linux x64 (Static Musl)
-RUN sh /build-target.sh x86_64-unknown-linux-musl \
-    "-C target-feature=+crt-static -C relocation-model=pie " \
-    "${FEATURES:+--features $FEATURES}" build
+COPY build-target.sh /build-target.sh
 
-# Build Linux ARM64 (Static Musl)
-RUN sh /build-target.sh aarch64-unknown-linux-musl \
-    "-C target-feature=+crt-static -C relocation-model=pie " \
-    "${FEATURES:+--features $FEATURES}" zigbuild
-
-# Build ARM64 (Android Bionic)
-RUN sh /build-target.sh aarch64-linux-android "" \
-    "--no-default-features --features tui" build
-
-# Build Linux ARMv7 (Static Musl)
-RUN sh /build-target.sh armv7-unknown-linux-musleabihf \
-    "-C target-feature=+crt-static -C relocation-model=pie " \
-    "${FEATURES:+--features $FEATURES}" zigbuild
-
-# Build Windows x64 (Static CRT)
-RUN RUSTFLAGS="-C target-feature=+crt-static" \
-    sh /build-target.sh x86_64-pc-windows-msvc "" \
-    "${FEATURES:+--features $FEATURES}" xwin
-
-# Build Mac x86_64 and ARM64
-# Note: macOS system libraries cannot be statically linked (Apple restriction),
-# so these binaries WILL depend on system dylibs. They are NOT fully self-contained.
-RUN sh /build-target.sh x86_64-apple-darwin "" \
-    "--no-default-features" zigbuild
-RUN sh /build-target.sh aarch64-apple-darwin "" \
-    "--no-default-features" zigbuild
-
-# --- Final Image ---
-FROM alpine:latest
-LABEL "Author"="Leuqar"
-
-ARG GIT_REF="unknown"
-
-# Add non-root user
-RUN addgroup -S mapache && adduser -S mapache -G mapache
-USER mapache
-
-WORKDIR /artifacts
-
-COPY --from=builder /mapache/target/x86_64-unknown-linux-musl/release/mapache /artifacts/mapache-linux-amd64
-COPY --from=builder /mapache/target/aarch64-unknown-linux-musl/release/mapache /artifacts/mapache-linux-arm64
-COPY --from=builder /mapache/target/aarch64-linux-android/release/mapache /artifacts/mapache-android-arm64
-COPY --from=builder /mapache/target/armv7-unknown-linux-musleabihf/release/mapache /artifacts/mapache-linux-armv7
-COPY --from=builder /mapache/target/x86_64-pc-windows-msvc/release/mapache.exe /artifacts/mapache-windows-amd64.exe
-COPY --from=builder /mapache/target/x86_64-apple-darwin/release/mapache /artifacts/mapache-darwin-amd64
-COPY --from=builder /mapache/target/aarch64-apple-darwin/release/mapache /artifacts/mapache-darwin-arm64
-
-CMD ["/bin/true"]
+WORKDIR /mapache
+CMD ["/bin/bash"]

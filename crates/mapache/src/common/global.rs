@@ -15,12 +15,20 @@ use crate::{
     },
 };
 
-pub(crate) const THIS_MAPACHE_VERSION: &str = match option_env!("MAPACHE_RELEASE_BUILD") {
-    Some(_) => {
-        concat!("v", env!("CARGO_PKG_VERSION"))
-    }
-    None => concat!("v", env!("CARGO_PKG_VERSION"), "+dev"),
+pub(crate) const THIS_MAPACHE_VERSION: &str = if option_env!("MAPACHE_RELEASE_TYPE").is_some() {
+    concat!("v", env!("CARGO_PKG_VERSION"))
+} else {
+    concat!("v", env!("CARGO_PKG_VERSION"), "+dev")
 };
+
+pub(crate) static MAPACHE_VERSION_INFO: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{} compiled with {} ({})",
+        THIS_MAPACHE_VERSION,
+        env!("MAPACHE_RUSTC_VERSION"),
+        env!("MAPACHE_BUILD_TARGET"),
+    )
+});
 
 pub(crate) struct BaseDirs {
     cache_dir: PathBuf,

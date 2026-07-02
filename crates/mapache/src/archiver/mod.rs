@@ -31,7 +31,7 @@ use crate::{
         progress::SnapshotProgress,
         tree_serializer::TreeSerializer,
     },
-    common::{self, global::THIS_MAPACHE_VERSION, traits::BlobSaver},
+    common::{self, global::MAPACHE_VERSION_INFO, traits::BlobSaver},
     fs::{
         filter::PathFilter,
         node::{Metadata, Node, NodeType},
@@ -524,7 +524,7 @@ pub(crate) async fn snapshot(
         paths: snapshot_options.absolute_source_paths,
         hostname,
         username,
-        version: Some(THIS_MAPACHE_VERSION.to_string()),
+        version: Some(MAPACHE_VERSION_INFO.clone()),
         tags: snapshot_options.tags,
         description: snapshot_options.description,
         summary: summary.into(),

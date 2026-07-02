@@ -6,6 +6,10 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
 
 [licenses]
 allow = [

@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Error, Result, anyhow, bail};
 use chrono::Duration;
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
             DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
             MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
         },
-        global::{THIS_MAPACHE_VERSION, set_global_opts_with_args},
+        global::{MAPACHE_VERSION_INFO, THIS_MAPACHE_VERSION, set_global_opts_with_args},
         hooks,
     },
     repository::{
@@ -578,7 +578,12 @@ pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 /// CLI entry point
 pub async fn parse_and_run() -> i32 {
     cli::color::init_console();
-    let args = Cli::parse();
+    let args = Cli::from_arg_matches(
+        &Cli::command()
+            .version(MAPACHE_VERSION_INFO.as_str())
+            .get_matches_from(std::env::args_os()),
+    )
+    .unwrap_or_else(|e| e.exit());
 
     // Load config if --with-config provided
     let config = match &args.config {

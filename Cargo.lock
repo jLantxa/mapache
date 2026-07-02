@@ -208,9 +208,9 @@ checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
 
 [[package]]
 name = "arrayvec"
-version = "0.7.7"
+version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f02882884d3e1bc524fb12c79f107f6ad0e1cfd498c536ffb494301740995dfe"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "async-stream"
@@ -525,7 +525,7 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "blake3",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rstest",
 ]
 
@@ -1880,7 +1880,7 @@ checksum = "ae8e22120c32fb4d19ec55fba35015f57095cd95a2e3b732e44457f5915b2ee8"
 dependencies = [
  "num-integer",
  "num-traits",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rand_core 0.10.1",
 ]
 
@@ -2081,7 +2081,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "percent-encoding",
- "rand 0.10.1",
+ "rand 0.10.2",
  "ratatui",
  "rayon",
  "rstest",
@@ -2264,9 +2264,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.6"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+checksum = "c863e9ab5e7bf9c99ba75e1050f1e4d624ae87ed3532d6238ffbdc7b585dbbe6"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -2457,7 +2457,7 @@ dependencies = [
  "delegate",
  "futures",
  "log",
- "rand 0.10.1",
+ "rand 0.10.2",
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
@@ -2841,9 +2841,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -3185,7 +3185,7 @@ dependencies = [
  "pkcs5",
  "pkcs8",
  "polyval 0.7.1",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rand_core 0.10.1",
  "ring",
  "russh-cryptovec",

@@ -1,138 +1,313 @@
 #!/usr/bin/env python3
+r"""Build all Mapache cross-compilation targets via Docker.
+
+Each target is compiled in its own container to avoid cargo's registry lock
+contention. Target directories are kept under build/ for easy cleanup.
+
+Usage:
+  ./tools/docker/build.py                     # default features
+  ./tools/docker/build.py tui                 # custom features
+  ./tools/docker/build.py --no-image-rebuild  # skip docker build
+"""
+
+from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
+import shutil
 import subprocess
 import sys
-import time
-import shutil
 import tarfile
 import zipfile
+from pathlib import Path
 
-IMAGE_NAME = "mapache-builder"
-CONTAINER_NAME = "mapache-artifacts"
-DOCKERFILE_PATH = "tools/docker/Dockerfile"
-BUILD_PATH = "build"
+if sys.platform != "win32":
+    import pwd  # noqa: PLC0415  # Unix-only
 
-# (container_name, platform, arch, exe)
-ARTIFACTS = [
-    ("mapache-linux-amd64",    "linux",   "amd64", False),
-    ("mapache-linux-arm64",    "linux",   "arm64", False),
-    ("mapache-android-arm64",  "android", "arm64", False),
-    ("mapache-linux-armv7",    "linux",   "armv7", False),
-    ("mapache-windows-amd64",  "windows", "amd64", True),
-    ("mapache-darwin-amd64",     "darwin",  "amd64", False),
-    ("mapache-darwin-arm64",     "darwin",  "arm64", False),
+
+@dataclasses.dataclass
+class Target:
+    triple: str
+    target_dir: str   # short name for CARGO_TARGET_DIR
+    artifact: str
+    platform: str     # "linux" | "windows" | "darwin" | "android"
+    is_exe: bool
+    rustflags: str = ""
+    features: str | None = None
+    no_default_features: bool = False
+    tool: str = "build"  # "build" | "zigbuild" | "xwin"
+
+
+TARGETS: list[Target] = [
+    Target("x86_64-unknown-linux-musl",      "x86_64-musl",      "mapache-linux-amd64",   "linux",   False,
+           rustflags="-C target-feature=+crt-static -C relocation-model=pie"),
+    Target("aarch64-unknown-linux-musl",     "aarch64-musl",     "mapache-linux-arm64",   "linux",   False,
+           rustflags="-C target-feature=+crt-static -C relocation-model=pie", tool="zigbuild"),
+    Target("aarch64-linux-android",           "android-arm64",    "mapache-android-arm64", "android", False,
+           no_default_features=True, features="tui"),
+    Target("armv7-unknown-linux-musleabihf",  "armv7-musl",       "mapache-linux-armv7",  "linux",   False,
+           rustflags="-C target-feature=+crt-static -C relocation-model=pie", tool="zigbuild"),
+    Target("x86_64-pc-windows-msvc",          "windows-x64",      "mapache-windows-amd64","windows", True,
+           rustflags="-C target-feature=+crt-static", tool="xwin"),
+    Target("x86_64-apple-darwin",             "darwin-x64",       "mapache-darwin-amd64", "darwin",  False,
+           rustflags="-C link-args=-Wl,-undefined,dynamic_lookup", tool="zigbuild"),
+    Target("aarch64-apple-darwin",            "darwin-aarch64",   "mapache-darwin-arm64", "darwin",  False,
+           rustflags="-C link-args=-Wl,-undefined,dynamic_lookup", tool="zigbuild"),
 ]
 
-def run_command(command, check=True):
-    try:
-        result = subprocess.run(command, shell=True, check=check, text=True)
-        return result
-    except subprocess.CalledProcessError as e:
-        print(f"\n[ERROR] Command failed with exit code {e.returncode}: {command}")
-        sys.exit(e.returncode)
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
+IMAGE_NAME = "mapache-builder"
+BUILD_PATH = PROJECT_ROOT / "build"
 
-def cleanup():
-    print("Cleaning up container...")
-    subprocess.run(f"docker rm -f {CONTAINER_NAME}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+docker = shutil.which("docker")
+if docker is None:
+    print("error: docker not found in PATH", file=sys.stderr)
+    sys.exit(1)
 
-def archive_fmt(platform):
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def archive_fmt(platform: str) -> str:
     return "zip" if platform in ("windows", "darwin") else "tar.xz"
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build Mapache artifacts using Docker.")
-    parser.add_argument("-l", "--local", action="store_true", help="Use local source from current directory.")
-    parser.add_argument("-d", "--debug", action="store_true", help="Build in debug mode instead of release.")
-    parser.add_argument("ref", nargs="?", default="main", help="Git ref to build (default: main).")
-    parser.add_argument("features", nargs="?", default="default", help="Features to enable (default: default).")
 
-    args = parser.parse_args()
-
-    if os.getuid() != 0:
-        print("This script must be run with sudo.")
+def check_docker_reachable() -> None:
+    try:
+        subprocess.run(
+            [docker, "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        hint = (
+            "Try again with sudo, or add your user to the docker group:\n"
+            "  sudo usermod -aG docker $USER"
+            if sys.platform != "win32" else
+            "Make sure Docker Desktop is running and you are using Linux containers."
+        )
+        print(
+            f"error: docker is not running or the current user lacks permissions.\n  {hint}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    sudo_user = os.environ.get("SUDO_USER")
-    if sudo_user:
-        calling_user = sudo_user
-        try:
-            import grp
-            import pwd
-            user_info = pwd.getpwnam(calling_user)
-            calling_group = grp.getgrgid(user_info.pw_gid).gr_name
-        except ImportError:
-            calling_group = calling_user
+
+def image_exists(name: str) -> bool:
+    return (
+        subprocess.run(
+            [docker, "image", "inspect", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
+
+
+def docker_build() -> None:
+    print("> docker build …")
+    subprocess.run(
+        [docker, "build", "-t", IMAGE_NAME, str(SCRIPT_DIR)],
+        check=True,
+    )
+
+
+def build_target(t: Target, features: str, release_type: bool = False) -> None:
+    """Compile a single target in its own container."""
+    target_path = BUILD_PATH / f"target-{t.target_dir}"
+
+    # Build the cargo subcommand (zigbuild / xwin / build)
+    if t.tool == "zigbuild":
+        cmd = ["cargo", "zigbuild"]
+    elif t.tool == "xwin":
+        cmd = ["cargo", "xwin", "build"]
     else:
-        calling_user = os.environ.get("USER") or "root"
-        calling_group = calling_user
+        cmd = ["cargo", "build"]
 
-    build_source = "local" if args.local else "remote"
-    ref = args.ref
-    safe_ref = ref.replace("/", "-")
-    features = args.features
+    cmd += ["--release", "--target", t.triple, "-p", "mapache"]
 
-    if build_source == "local":
-        print("Using LOCAL source from current directory...")
+    if t.no_default_features:
+        cmd.append("--no-default-features")
+        if t.features:
+            cmd += ["--features", t.features]
+    elif t.features:
+        cmd += ["--features", t.features]
+    elif features:
+        cmd += ["--features", features]
+
+    # Use Docker-internal path (source is mounted at /mapache)
+    cargo_target_dir = f"/mapache/build/target-{t.target_dir}"
+    env = {
+        "CARGO_TARGET_DIR": cargo_target_dir,
+        "CARGO_PROFILE_RELEASE_LTO": "true",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+    }
+    if t.platform == "darwin":
+        env["PKG_CONFIG_PATH"] = "/opt/macosx-sdks/MacOSX26.1.sdk/usr/lib/pkgconfig"
+    if t.rustflags:
+        env["RUSTFLAGS"] = t.rustflags
+    if release_type:
+        env["MAPACHE_RELEASE_TYPE"] = "release"
+
+    label = f"{t.artifact} ({t.triple})"
+    print(f"\n===== {label} =====")
+
+    vol_flags = ":z" if sys.platform != "win32" else ""
+
+    # Run as root (no --user), but fix artifact ownership inside the container
+    # before exit so the host sees user-owned files — no sudo needed.
+    # Cargo registry is cached in a named Docker volume to speed up rebuilds
+    # without leaking files onto the host filesystem.
+    chown_cmd = "chown -R --reference=/mapache /mapache/build/"
+    docker_args = [
+        docker, "run", "--rm",
+        "-v", f"{PROJECT_ROOT}:/mapache{vol_flags}",
+        "-v", "mapache-cargo-registry:/root/.cargo/registry",
+        "-w", "/mapache",
+    ]
+    for k, v in env.items():
+        docker_args += ["-e", f"{k}={v}"]
+    docker_args += [IMAGE_NAME, "sh", "-c",
+                    f"{' '.join(cmd)} && {chown_cmd}"]
+
+    subprocess.run(docker_args, check=True)
+
+
+def package_artifacts() -> None:
+    BUILD_PATH.mkdir(parents=True, exist_ok=True)
+
+    print("\nPackaging artifacts …")
+    for t in TARGETS:
+        ext = ".exe" if t.is_exe else ""
+        binary = BUILD_PATH / f"target-{t.target_dir}" / t.triple / "release" / f"mapache{ext}"
+
+        if not binary.is_file():
+            print(f"  skip  {binary}")
+            continue
+
+        fmt = archive_fmt(t.platform)
+        archive_name = f"{t.artifact}.{fmt}"
+        archive_path = BUILD_PATH / archive_name
+        staging = BUILD_PATH / t.artifact
+
+        shutil.copy2(str(binary), str(staging))
+
+        if fmt == "zip":
+            with zipfile.ZipFile(str(archive_path), "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(str(staging), f"mapache{ext}")
+        else:
+            with tarfile.open(str(archive_path), "w:xz") as tf:
+                tf.add(str(staging), arcname=f"mapache{ext}")
+
+        staging.unlink()
+        print(f"  done  {archive_name}")
+
+    for f in BUILD_PATH.rglob("*"):
+        if f.is_file():
+            try:
+                f.chmod(f.stat().st_mode | 0o444)
+            except PermissionError:
+                pass
+
+    print(f"Done – artifacts in {BUILD_PATH}/")
+
+
+def transfer_ownership() -> None:
+    """Chown build/ back to the real user (Unix only)."""
+    if sys.platform == "win32" or not BUILD_PATH.exists():
+        return
+
+    sudo_uid = os.environ.get("SUDO_UID")
+    if sudo_uid:
+        info = pwd.getpwuid(int(sudo_uid))
     else:
-        print(f"Using REMOTE source from Git ref: {ref} (sanitized: {safe_ref})")
+        user = os.environ.get("USER")
+        if not user:
+            return
+        info = pwd.getpwnam(user)
 
-    print(f"Files will belong to user: {calling_user} ({calling_group})")
+    sample = next(BUILD_PATH.rglob("*"), None)
+    if sample is None or sample.stat().st_uid == info.pw_uid:
+        return
 
-    try:
-        cache_breaker = int(time.time())
-        release_arg = f"--build-arg MAPACHE_RELEASE_BUILD=true " if not args.debug else ""
-        build_cmd = (
-            f"docker build "
-            f"--build-arg BUILD_SOURCE={build_source} "
-            f"--build-arg GIT_REF={ref} "
-            f"--build-arg FEATURES={features} "
-            f"{release_arg}"
-            f"--build-arg CACHE_BREAKER={cache_breaker} "
-            f"--tag {IMAGE_NAME} "
-            f"--file {DOCKERFILE_PATH} ."
-        )
-        print("Building Docker image...")
-        run_command(build_cmd)
+    print("Fixing artifact ownership (sudo required) …")
+    subprocess.run(
+        ["sudo", "chown", "-R", f"{info.pw_uid}:{info.pw_gid}", str(BUILD_PATH)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
-        print("Creating temporary container...")
-        run_command(f"docker create --name {CONTAINER_NAME} {IMAGE_NAME}")
 
-        if not os.path.exists(BUILD_PATH):
-            os.makedirs(BUILD_PATH)
+# ---------------------------------------------------------------------------
+# cli
+# ---------------------------------------------------------------------------
 
-        shutil.chown(BUILD_PATH, user=calling_user, group=calling_group)
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Build all Mapache cross-compilation targets via Docker.\n"
+                    "Each target runs in its own container — no shared state.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument(
+        "features",
+        nargs="?",
+        default="default",
+        help='Cargo feature set (default: "default")',
+    )
+    p.add_argument(
+        "--no-image-rebuild",
+        action="store_true",
+        help="Skip docker build when the image already exists",
+    )
+    p.add_argument(
+        "--target",
+        action="append",
+        dest="targets",
+        help="Only build targets whose platform or triple matches (may be given multiple times)",
+    )
+    p.add_argument(
+        "--release-type",
+        action="store_true",
+        help="Set MAPACHE_RELEASE_TYPE=release for release version strings",
+    )
+    return p
 
-        print("Copying and packaging artifacts...")
-        container_artifacts_dir = "/artifacts"
 
-        for cname, platform, arch, is_exe in ARTIFACTS:
-            ext = ".exe" if is_exe else ""
-            fmt = archive_fmt(platform)
-            archive_name = f"mapache_{safe_ref}_{platform}_{arch}.{fmt}"
-            archive_path = os.path.join(BUILD_PATH, archive_name)
-            binary_path = os.path.join(BUILD_PATH, cname)
+def main() -> None:
+    args = build_parser().parse_args()
+    check_docker_reachable()
 
-            run_command(f"docker cp {CONTAINER_NAME}:{container_artifacts_dir}/{cname}{ext} {binary_path}")
+    if args.no_image_rebuild and image_exists(IMAGE_NAME):
+        print(f"Image {IMAGE_NAME!r} exists, skipping build.")
+    else:
+        docker_build()
 
-            if fmt == "zip":
-                with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    zipf.write(binary_path, f"mapache{ext}")
-            else:
-                with tarfile.open(archive_path, "w:xz") as tar:
-                    tar.add(binary_path, arcname=f"mapache{ext}")
+    selected = TARGETS
+    if args.targets:
+        selected = [
+            t for t in TARGETS
+            if t.platform in args.targets or t.triple in args.targets
+        ]
+        if not selected:
+            print(f"No targets match {args.targets!r}", file=sys.stderr)
+            sys.exit(1)
 
-            os.remove(binary_path)
-            print(f"Created {archive_name}")
+    for t in selected:
+        build_target(t, args.features, release_type=args.release_type)
 
-        for root, dirs, files in os.walk(BUILD_PATH):
-            for d in dirs:
-                shutil.chown(os.path.join(root, d), user=calling_user, group=calling_group)
-            for f in files:
-                shutil.chown(os.path.join(root, f), user=calling_user, group=calling_group)
-                os.chmod(os.path.join(root, f), os.stat(os.path.join(root, f)).st_mode | 0o444)
+    package_artifacts()
 
-        print(f"Build complete! Artifacts are in the '{BUILD_PATH}' directory.")
+    # Remove intermediate target directories — only keep the archives
+    for d in BUILD_PATH.iterdir():
+        if d.is_dir() and d.name.startswith("target-"):
+            shutil.rmtree(d, ignore_errors=True)
 
-    finally:
-        cleanup()
+    transfer_ownership()
+
+
+if __name__ == "__main__":
+    main()

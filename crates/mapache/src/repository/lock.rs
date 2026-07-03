@@ -278,10 +278,13 @@ impl LockHandle {
             *lock_guard.id()
         };
 
-        let _ = self
+        if let Err(e) = self
             .repo
             .delete_file(ContentIdType::Lock, &lock_id, None)
-            .await;
+            .await
+        {
+            tracing::warn!(target: "repo", "Failed to delete lock {}: {e}", lock_id.to_short_hex(8));
+        }
     }
 
     pub fn trigger_unlock(&self) {
@@ -306,7 +309,9 @@ impl LockHandle {
                     };
 
                     tracing::info!(target: "repo", "Releasing lock {} (triggered)", lock_id.to_short_hex(8));
-                    let _ = repo.delete_file(ContentIdType::Lock, &lock_id, None).await;
+                    if let Err(e) = repo.delete_file(ContentIdType::Lock, &lock_id, None).await {
+                        tracing::warn!(target: "repo", "Failed to delete lock {}: {e}", lock_id.to_short_hex(8));
+                    }
                 }
             });
         }

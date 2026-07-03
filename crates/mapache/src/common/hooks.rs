@@ -1,11 +1,12 @@
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result};
-use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::{process::Command, time::timeout};
 
-use crate::common::config::{CommandHooks, HooksConfig};
+use crate::common::{
+    config::{CommandHooks, HooksConfig},
+    vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR},
+};
 
 static HOOKS: OnceLock<HooksConfig> = OnceLock::new();
 
@@ -107,6 +108,10 @@ async fn run_hook(
     if let Some(r) = result {
         child.env("MAPACHE_RESULT", r);
     }
+
+    // Strip sensitive env vars so hooks can't read them.
+    child.env_remove(USERNAME_ENVVAR);
+    child.env_remove(PASSWORD_ENVVAR);
 
     let mut child = child
         .spawn()

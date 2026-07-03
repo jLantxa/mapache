@@ -69,6 +69,13 @@ pub(crate) fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Au
             })?
             .to_string();
 
+        // Remove from process env so child processes (hooks, etc.) can't see it.
+        // SAFETY: called during single-threaded startup; no other thread reads these vars.
+        unsafe {
+            std::env::remove_var(USERNAME_ENVVAR);
+            std::env::remove_var(PASSWORD_ENVVAR);
+        }
+
         Ok(Some(Auth {
             username,
             password: Zeroizing::new(password),
@@ -76,6 +83,17 @@ pub(crate) fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Au
     } else {
         let username = get_envvar(USERNAME_ENVVAR);
         let password = get_envvar(PASSWORD_ENVVAR);
+
+        // Remove from process env so child processes can't see it.
+        // SAFETY: called during single-threaded startup; no other thread reads these vars.
+        unsafe {
+            if username.is_some() {
+                std::env::remove_var(USERNAME_ENVVAR);
+            }
+            if password.is_some() {
+                std::env::remove_var(PASSWORD_ENVVAR);
+            }
+        }
 
         match (username, password) {
             (Some(u), Some(p)) => Ok(Some(Auth {

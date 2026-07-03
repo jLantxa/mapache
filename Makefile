@@ -49,7 +49,7 @@ ifndef ANDROID_NDK_HOME
 	$(error ANDROID_NDK_HOME is not set. Install Android NDK and point ANDROID_NDK_HOME to it)
 endif
 	$(BUILD_SH) aarch64-linux-android "" \
-		"--no-default-features --features tui" build
+		"--no-default-features" build
 
 release-armv7:
 	$(BUILD_SH) armv7-unknown-linux-musleabihf \

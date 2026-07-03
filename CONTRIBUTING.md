@@ -90,7 +90,7 @@ sudo python3 build_with_docker.py --local
 
 - `fuse` (default on Linux) — FUSE mount support. Requires `libfuse-dev` to
   build.
-- `tui` (default) — Terminal user interface.
+
 
 ```bash
 cargo build --no-default-features   # without fuse

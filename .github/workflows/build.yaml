@@ -168,7 +168,7 @@ jobs:
       - name: Build
         run: |
           sh tools/docker/build-target.sh aarch64-linux-android "" \
-            "--no-default-features --features tui" build
+            "--no-default-features" build
       - uses: actions/upload-artifact@v4
         with:
           name: mapache-android-arm64

@@ -54,7 +54,6 @@ pub mod cmd_restore;
 pub mod cmd_snapshot;
 pub mod cmd_stats;
 pub mod cmd_sync;
-#[cfg(feature = "tui")]
 pub mod cmd_tui;
 pub mod cmd_unlock;
 pub mod cmd_verify;
@@ -110,7 +109,6 @@ pub enum Command {
     Snapshot(WithGlobal<cmd_snapshot::CmdArgs>),
     Stats(WithGlobal<cmd_stats::CmdArgs>),
     Sync(WithGlobal<cmd_sync::CmdArgs>),
-    #[cfg(feature = "tui")]
     Tui(WithGlobal<cmd_tui::CmdArgs>),
     Unlock(WithGlobal<cmd_unlock::CmdArgs>),
     Verify(WithGlobal<cmd_verify::CmdArgs>),
@@ -638,7 +636,6 @@ pub async fn parse_and_run() -> i32 {
         Command::Snapshot(cmd) => with_global_and_config!(cmd, Snapshot, config.snapshot),
         #[cfg(all(feature = "mount", unix))]
         Command::Mount(cmd) => with_global!(cmd, Mount),
-        #[cfg(feature = "tui")]
         Command::Tui(cmd) => with_global!(cmd, Tui),
         Command::Amend(cmd) => with_global!(cmd, Amend),
         Command::Cat(cmd) => with_global!(cmd, Cat),
@@ -702,7 +699,6 @@ pub async fn parse_and_run() -> i32 {
         Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args).await,
         Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args).await,
         Command::Sync(cmd) => cmd_sync::run(&global, &cmd.args).await,
-        #[cfg(feature = "tui")]
         Command::Tui(cmd) => {
             let snapshot_cfg = config.snapshot.clone();
             let forget_cfg = config.forget.clone();

@@ -22,7 +22,7 @@ chunker = { path = "../chunker" }
 clap = { version = "4.6.1", features = ["derive", "wrap_help", "env"] }
 clap_complete = "4.6.7"
 crossbeam-channel = "0.5.15"
-crossterm = { version = "0.29", optional = true }
+crossterm = "0.29"
 dashmap = "6.2.1"
 futures = "0.3.32"
 indicatif = "0.18.6"
@@ -30,7 +30,7 @@ libc = { version = "0.2.186" }
 parking_lot = "0.12.5"
 percent-encoding = "2.3"
 rand = "0.10.2"
-ratatui = { version = "0.30.2", optional = true }
+ratatui = "0.30.2"
 rayon = "1.12.0"
 russh = { version = "0.61.2", default-features = false, features = [
   "flate2",
@@ -84,6 +84,5 @@ scopeguard = "1.2.0"
 tempfile = "3.27.0"
 
 [features]
-default = ["mount", "tui"]
+default = ["mount"]
 mount = ["fuser"]                      #FUSE for mount command on unix
-tui = ["dep:ratatui", "dep:crossterm"]

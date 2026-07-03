@@ -2,7 +2,6 @@ pub mod cli;
 pub(crate) mod debug;
 pub mod events;
 pub mod json;
-#[cfg(feature = "tui")]
 pub mod tui;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";

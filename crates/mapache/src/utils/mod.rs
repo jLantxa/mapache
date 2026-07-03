@@ -199,7 +199,6 @@ pub(crate) fn pretty_print_duration(duration: std::time::Duration) -> String {
 
 /// Pretty prints a `chrono::Duration` in a human-readable format.
 /// Shows up to `max_parts` most significant units.
-#[cfg(feature = "tui")]
 pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts: usize) -> String {
     let total_seconds = duration.num_seconds().unsigned_abs();
     let millis = (duration.num_milliseconds() as u64) % 1000;

@@ -22,7 +22,7 @@
 14. [Bundle Files](#14-bundle-files)
 15. [FUSE Mount](#15-fuse-mount)
 16. [Snapshot Lifecycle](#16-snapshot-lifecycle)
-17. [Experimental TUI](#17-experimental-tui)
+17. [Terminal User Interface](#17-terminal-user-interface)
 18. [Shell Completions](#18-shell-completions)
 19. [Environment Variables](#19-environment-variables)
 20. [Global Options Reference](#20-global-options-reference)
@@ -101,7 +101,7 @@ make release-static
 
 - `fuse` (default on Linux) — FUSE mount support. Requires `libfuse` headers at
   build time.
-- `tui` (default) — Interactive terminal user interface.
+
 
 To build without FUSE:
 
@@ -1253,7 +1253,7 @@ Launches an interactive terminal user interface with screens for:
 - **Find screen** — real-time glob search across all snapshots with progress,
   results table, and direct navigation to explorer/restore
 
-Requires the `tui` feature (enabled by default) and a supported terminal.
+Requires a supported terminal.
 
 ---
 
@@ -1680,7 +1680,7 @@ mapache config template [--output <PATH>]
 
 ### `mapache tui`
 
-Launch terminal user interface (requires `tui` feature).
+Launch terminal user interface.
 
 ```
 mapache tui -r <URL>

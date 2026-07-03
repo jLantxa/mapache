@@ -88,12 +88,12 @@ sudo python3 build_with_docker.py --local
 
 ### Feature Flags
 
-- `fuse` (default on Linux) — FUSE mount support. Requires `libfuse-dev` to
+- `mount` (default on Linux) — FUSE mount support. Requires `libfuse-dev` to
   build.
 
 
 ```bash
-cargo build --no-default-features   # without fuse
+cargo build --no-default-features   # without mount
 cargo build --all-features          # with everything
 ```
 

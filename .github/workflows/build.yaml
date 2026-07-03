@@ -46,7 +46,7 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -79,7 +79,7 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -112,7 +112,7 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -147,7 +147,7 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -180,7 +180,7 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -216,7 +216,7 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "10.12"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -246,7 +246,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "10.12"
       PKG_CONFIG_ALLOW_CROSS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -291,7 +291,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.ref }}
 

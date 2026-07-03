@@ -783,7 +783,13 @@ pub async fn open_repository(
     backend: Arc<dyn StorageBackend>,
     config: RepoConfig,
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
-    let mut auth = utils::get_auth(&auth_file.cloned())?;
+    let mut auth = match utils::get_auth(&auth_file.cloned()) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("{e:#} — falling back to interactive prompt");
+            None
+        }
+    };
 
     // If auth is provided (from file or env), try it once.
     if let Some(a) = auth.take() {
@@ -877,7 +883,13 @@ pub async fn open_repository_with_lock(
     exclusive_lock: bool,
     retry_duration: Option<Duration>,
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
-    let mut auth = utils::get_auth(&auth_file.cloned())?;
+    let mut auth = match utils::get_auth(&auth_file.cloned()) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("{e:#} — falling back to interactive prompt");
+            None
+        }
+    };
 
     // If auth is provided (from file or env), try it once.
     if let Some(a) = auth.take() {

@@ -573,6 +573,27 @@ pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
         .collect()
 }
 
+/// Resolve global args with config merging.
+fn resolve_global(cli: &CliGlobalArgs, config: &MapacheConfig) -> Result<GlobalArgs> {
+    let mut g = cli.clone();
+    if let Some(cfg) = &config.global {
+        g.merge(cfg.clone());
+    }
+    cli_to_global_args(&g)
+}
+
+/// Resolve global args and merge optional command-specific config.
+fn resolve_global_with_extra<T: Merge + Clone + clap::Args>(
+    mut cmd: WithGlobal<T>,
+    config: &MapacheConfig,
+    extra: &Option<T>,
+) -> (Result<GlobalArgs>, WithGlobal<T>) {
+    if let Some(cfg) = extra {
+        cmd.args.merge(cfg.clone());
+    }
+    (resolve_global(&cmd.global, config), cmd)
+}
+
 /// CLI entry point
 pub async fn parse_and_run() -> i32 {
     cli::color::init_console();
@@ -599,62 +620,52 @@ pub async fn parse_and_run() -> i32 {
     init_runtime_defaults(config.runtime.as_ref());
 
     // Initialize hooks from config
-    hooks::init(config.hooks.unwrap_or_default());
-
-    macro_rules! with_global {
-        ($cmd:ident, $variant:ident) => {{
-            let mut g = $cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            (cli_to_global_args(&g), Command::$variant($cmd))
-        }};
-    }
-
-    macro_rules! with_global_and_config {
-        ($cmd:ident, $variant:ident, $extra:expr) => {{
-            let mut g = $cmd.global.clone();
-            if let Some(cfg) = &config.global {
-                g.merge(cfg.clone());
-            }
-            let global = cli_to_global_args(&g);
-            let mut cmd = $cmd;
-            if let Some(cfg) = &$extra {
-                cmd.args.merge(cfg.clone());
-            }
-            (global, Command::$variant(cmd))
-        }};
-    }
+    hooks::init(config.hooks.clone().unwrap_or_default());
 
     let (global_result, command_result) = match args.command {
-        Command::Bundle(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Bundle(cmd)),
-        Command::Cache(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Cache(cmd)),
-        Command::Completion(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Completion(cmd)),
-        Command::Config(cmd) => (Ok(GlobalArgs::default_no_repo()), Command::Config(cmd)),
-        Command::Forget(cmd) => with_global_and_config!(cmd, Forget, config.forget),
-        Command::Restore(cmd) => with_global_and_config!(cmd, Restore, config.restore),
-        Command::Snapshot(cmd) => with_global_and_config!(cmd, Snapshot, config.snapshot),
+        // Commands without repository URL
+        n @ (Command::Bundle(_)
+        | Command::Cache(_)
+        | Command::Completion(_)
+        | Command::Config(_)) => (Ok(GlobalArgs::default_no_repo()), n),
+        // Commands with command-specific config merged into args
+        Command::Forget(cmd) => {
+            let (g, cmd) = resolve_global_with_extra(cmd, &config, &config.forget);
+            (g, Command::Forget(cmd))
+        }
+        Command::Restore(cmd) => {
+            let (g, cmd) = resolve_global_with_extra(cmd, &config, &config.restore);
+            (g, Command::Restore(cmd))
+        }
+        Command::Snapshot(cmd) => {
+            let (g, cmd) = resolve_global_with_extra(cmd, &config, &config.snapshot);
+            (g, Command::Snapshot(cmd))
+        }
+        // Standard commands — merge global args only
+        Command::Amend(cmd) => (resolve_global(&cmd.global, &config), Command::Amend(cmd)),
+        Command::Cat(cmd) => (resolve_global(&cmd.global, &config), Command::Cat(cmd)),
+        Command::Clean(cmd) => (resolve_global(&cmd.global, &config), Command::Clean(cmd)),
+        Command::Copy(cmd) => (resolve_global(&cmd.global, &config), Command::Copy(cmd)),
+        Command::Diff(cmd) => (resolve_global(&cmd.global, &config), Command::Diff(cmd)),
+        Command::Dump(cmd) => (resolve_global(&cmd.global, &config), Command::Dump(cmd)),
+        Command::Find(cmd) => (resolve_global(&cmd.global, &config), Command::Find(cmd)),
+        Command::Init(cmd) => (resolve_global(&cmd.global, &config), Command::Init(cmd)),
+        Command::Key(cmd) => (resolve_global(&cmd.global, &config), Command::Key(cmd)),
+        Command::Log(cmd) => (resolve_global(&cmd.global, &config), Command::Log(cmd)),
+        Command::Ls(cmd) => (resolve_global(&cmd.global, &config), Command::Ls(cmd)),
         #[cfg(all(feature = "mount", unix))]
-        Command::Mount(cmd) => with_global!(cmd, Mount),
-        Command::Tui(cmd) => with_global!(cmd, Tui),
-        Command::Amend(cmd) => with_global!(cmd, Amend),
-        Command::Cat(cmd) => with_global!(cmd, Cat),
-        Command::Clean(cmd) => with_global!(cmd, Clean),
-        Command::Copy(cmd) => with_global!(cmd, Copy),
-        Command::Diff(cmd) => with_global!(cmd, Diff),
-        Command::Dump(cmd) => with_global!(cmd, Dump),
-        Command::Find(cmd) => with_global!(cmd, Find),
-        Command::Init(cmd) => with_global!(cmd, Init),
-        Command::Key(cmd) => with_global!(cmd, Key),
-        Command::Log(cmd) => with_global!(cmd, Log),
-        Command::Ls(cmd) => with_global!(cmd, Ls),
-        Command::RebuildIndex(cmd) => with_global!(cmd, RebuildIndex),
-        Command::Recall(cmd) => with_global!(cmd, Recall),
-        Command::Rechunk(cmd) => with_global!(cmd, Rechunk),
-        Command::Stats(cmd) => with_global!(cmd, Stats),
-        Command::Sync(cmd) => with_global!(cmd, Sync),
-        Command::Unlock(cmd) => with_global!(cmd, Unlock),
-        Command::Verify(cmd) => with_global!(cmd, Verify),
+        Command::Mount(cmd) => (resolve_global(&cmd.global, &config), Command::Mount(cmd)),
+        Command::RebuildIndex(cmd) => (
+            resolve_global(&cmd.global, &config),
+            Command::RebuildIndex(cmd),
+        ),
+        Command::Recall(cmd) => (resolve_global(&cmd.global, &config), Command::Recall(cmd)),
+        Command::Rechunk(cmd) => (resolve_global(&cmd.global, &config), Command::Rechunk(cmd)),
+        Command::Stats(cmd) => (resolve_global(&cmd.global, &config), Command::Stats(cmd)),
+        Command::Sync(cmd) => (resolve_global(&cmd.global, &config), Command::Sync(cmd)),
+        Command::Tui(cmd) => (resolve_global(&cmd.global, &config), Command::Tui(cmd)),
+        Command::Unlock(cmd) => (resolve_global(&cmd.global, &config), Command::Unlock(cmd)),
+        Command::Verify(cmd) => (resolve_global(&cmd.global, &config), Command::Verify(cmd)),
     };
 
     let global = match global_result {
@@ -674,12 +685,20 @@ pub async fn parse_and_run() -> i32 {
     tracing::info!(target: "mapache", "called with args: {}", std::env::args().collect::<Vec<_>>().join(" "));
 
     let result = match command_result {
-        Command::Amend(cmd) => cmd_amend::run(&global, &cmd.args).await,
+        // Commands without global args
         Command::Bundle(cmd) => cmd_bundle::run(&cmd).await,
-        Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args).await,
         Command::Cache(cmd) => cmd_cache::run(&cmd),
         Command::Completion(cmd) => cmd_completion::run(&cmd),
         Command::Config(cmd) => cmd_config::run(&cmd).await,
+        // Tui needs extra config
+        Command::Tui(cmd) => {
+            let snapshot_cfg = config.snapshot.clone();
+            let forget_cfg = config.forget.clone();
+            cmd_tui::run(&global, &cmd.args, snapshot_cfg, forget_cfg).await
+        }
+        // Standard async commands
+        Command::Amend(cmd) => cmd_amend::run(&global, &cmd.args).await,
+        Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args).await,
         Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args).await,
         Command::Copy(cmd) => cmd_copy::run(&global, &cmd.args).await,
         Command::Diff(cmd) => cmd_diff::run(&global, &cmd.args).await,
@@ -699,11 +718,6 @@ pub async fn parse_and_run() -> i32 {
         Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args).await,
         Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args).await,
         Command::Sync(cmd) => cmd_sync::run(&global, &cmd.args).await,
-        Command::Tui(cmd) => {
-            let snapshot_cfg = config.snapshot.clone();
-            let forget_cfg = config.forget.clone();
-            cmd_tui::run(&global, &cmd.args, snapshot_cfg, forget_cfg).await
-        }
         Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args).await,
         Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args).await,
     };

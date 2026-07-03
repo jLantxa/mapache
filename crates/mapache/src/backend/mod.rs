@@ -57,12 +57,14 @@ where
 
         match attempt_res {
             Ok(Ok(val)) => return Ok(val),
-            Ok(Err(_)) if attempts < opts.max_attempts => {
+            Ok(Err(e)) if attempts < opts.max_attempts => {
+                tracing::warn!(target: "backend", "{name} attempt {} failed: {e:#}, retrying...", attempts + 1);
                 attempts += 1;
                 let wait = opts.base_delay * (2_u32.pow(attempts - 1));
                 tokio::time::sleep(wait).await;
             }
-            Err(_) if attempts < opts.max_attempts => {
+            Err(e) if attempts < opts.max_attempts => {
+                tracing::warn!(target: "backend", "{name} attempt {} timed out: {e:#}, retrying...", attempts + 1);
                 attempts += 1;
                 let wait = opts.base_delay * (2_u32.pow(attempts - 1));
                 tokio::time::sleep(wait).await;
@@ -70,7 +72,7 @@ where
             Ok(Err(e)) => {
                 return Err(e.context(format!("{} operation failed after multiple retries", name)));
             }
-            Err(_) => bail!("{} operation timed out after multiple retries", name),
+            Err(e) => bail!("{} operation timed out after multiple retries: {e:#}", name),
         }
     }
 }

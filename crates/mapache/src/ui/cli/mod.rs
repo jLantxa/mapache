@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use anyhow::Result;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     common,
@@ -79,7 +79,7 @@ fn read_line(prompt: &str) -> Result<String> {
 }
 
 #[cfg(unix)]
-fn read_password_impl(prompt: &str) -> Result<String> {
+fn read_password_impl(prompt: &str) -> Result<Zeroizing<String>> {
     use libc::{ECHO, STDIN_FILENO, TCSANOW, tcgetattr, tcsetattr};
 
     let mut stdout = io::stdout().lock();
@@ -115,11 +115,13 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     println!();
 
     res?;
-    Ok(password.trim().to_string())
+    let trimmed = password.trim().to_string();
+    password.zeroize();
+    Ok(Zeroizing::new(trimmed))
 }
 
 #[cfg(windows)]
-fn read_password_impl(prompt: &str) -> Result<String> {
+fn read_password_impl(prompt: &str) -> Result<Zeroizing<String>> {
     use windows_sys::Win32::System::Console::{
         ENABLE_ECHO_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
     };
@@ -153,16 +155,18 @@ fn read_password_impl(prompt: &str) -> Result<String> {
     }
 
     res?;
-    Ok(password.trim().to_string())
+    let trimmed = password.trim().to_string();
+    password.zeroize();
+    Ok(Zeroizing::new(trimmed))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn read_password_impl(prompt: &str) -> Result<String> {
-    read_line(prompt)
+fn read_password_impl(prompt: &str) -> Result<Zeroizing<String>> {
+    read_line(prompt).map(Zeroizing::new)
 }
 
 pub(crate) fn request_password(prompt: &str) -> Result<Zeroizing<String>> {
-    read_password_impl(prompt).map(Zeroizing::new)
+    read_password_impl(prompt)
 }
 
 pub(crate) fn request_input(prompt: &str) -> Result<Option<String>> {
@@ -178,10 +182,10 @@ pub(crate) fn request_input(prompt: &str) -> Result<Option<String>> {
 pub(crate) fn request_new_password(prompt: &str, confirmation: &str) -> Result<Zeroizing<String>> {
     let pw = read_password_impl(prompt)?;
     let confirm = read_password_impl(confirmation)?;
-    if pw != confirm {
+    if *pw != *confirm {
         anyhow::bail!("Passwords don't match");
     }
-    Ok(Zeroizing::new(pw))
+    Ok(pw)
 }
 
 /// Requests new authentication data (username and password) with confirmation

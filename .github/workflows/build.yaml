@@ -70,7 +70,7 @@ jobs:
           sh tools/docker/build-target.sh x86_64-unknown-linux-musl \
             "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
             "" zigbuild
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-linux-amd64
           path: target/x86_64-unknown-linux-musl/release/mapache
@@ -103,7 +103,7 @@ jobs:
           sh tools/docker/build-target.sh aarch64-unknown-linux-musl \
             "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
             "" zigbuild
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-linux-arm64
           path: target/aarch64-unknown-linux-musl/release/mapache
@@ -136,7 +136,7 @@ jobs:
           sh tools/docker/build-target.sh armv7-unknown-linux-musleabihf \
             "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" \
             "" zigbuild
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-linux-armv7
           path: target/armv7-unknown-linux-musleabihf/release/mapache
@@ -169,7 +169,7 @@ jobs:
         run: |
           sh tools/docker/build-target.sh aarch64-linux-android "" \
             "--no-default-features" build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-android-arm64
           path: target/aarch64-linux-android/release/mapache
@@ -200,7 +200,7 @@ jobs:
           sh tools/docker/build-target.sh x86_64-pc-windows-msvc \
             "-C target-feature=+crt-static" \
             "--features default" xwin
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-windows-amd64
           path: target/x86_64-pc-windows-msvc/release/mapache.exe
@@ -234,7 +234,7 @@ jobs:
         run: |
           sh tools/docker/build-target.sh aarch64-apple-darwin "" \
             "" build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-darwin-arm64
           path: target/aarch64-apple-darwin/release/mapache
@@ -270,7 +270,7 @@ jobs:
           find target -name 'mapache' -type f 2>/dev/null
           echo "=== target dir ==="
           ls -la target/x86_64-apple-darwin/release/mapache 2>/dev/null || echo "NOT FOUND at expected path"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-darwin-amd64
           path: target/x86_64-apple-darwin/release/mapache
@@ -341,7 +341,7 @@ jobs:
           echo "Packaged artifacts:"
           ls -la
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mapache-packaged
           path: dist/*

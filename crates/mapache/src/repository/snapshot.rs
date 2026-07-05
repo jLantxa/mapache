@@ -12,7 +12,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use anyhow::Result;
+use crate::common::error::Result;
 use async_stream::stream;
 use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt};

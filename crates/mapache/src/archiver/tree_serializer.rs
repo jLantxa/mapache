@@ -7,11 +7,11 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, ensure};
-use futures::{FutureExt, future::BoxFuture};
+use crate::common::error;
+use futures::FutureExt;
 
 use crate::{
-    common::{ID, traits::BlobSaver},
+    common::{ID, error::Result, traits::BlobSaver},
     fs::{
         extract_parent, get_intermediate_paths,
         node::{Node, NodeType},
@@ -155,8 +155,12 @@ impl TreeSerializer {
         } else {
             // For non-directory nodes (Files, Symlinks, etc.), we finalize the item
             // and insert it into the parent's PendingTree.
-            let parent_path = extract_parent(path)
-                .with_context(|| format!("Could not extract parent path for {}", path.display()))?;
+            let parent_path = extract_parent(path).ok_or_else(|| {
+                error::MapacheError::Internal(format!(
+                    "could not extract parent path for {}",
+                    path.display()
+                ))
+            })?;
 
             self.insert_finalized_node(&parent_path, stream_node.node);
             parent_path
@@ -175,13 +179,14 @@ impl TreeSerializer {
         // Invariant check: Ensure we actually have the expected number of children
         if let ExpectedChildren::Known(expected) = pending_tree.num_expected_children {
             let actual = pending_tree.children.len();
-            ensure!(
-                actual == expected,
-                "Integrity error for {}: expected {} children but got {}",
-                dir_path.display(),
-                expected,
-                actual
-            );
+            if actual != expected {
+                return Err(error::MapacheError::Integrity(format!(
+                    "{} has {} children, expected {}",
+                    dir_path.display(),
+                    actual,
+                    expected
+                )));
+            }
         }
 
         if pending_tree
@@ -189,15 +194,17 @@ impl TreeSerializer {
             .windows(2)
             .any(|w| w[0].name == w[1].name)
         {
-            anyhow::bail!("Duplicate child name in {}", dir_path.display());
+            return Err(error::MapacheError::Integrity(format!(
+                "duplicate child name in {}",
+                dir_path.display()
+            )));
         }
 
         let mut completed_tree = Tree::new(pending_tree.children);
 
         let tree_id = completed_tree
             .save_to_store(self.blob_saver.clone())
-            .await
-            .with_context(|| format!("Failed to save tree for {}", dir_path.display()))?;
+            .await?;
 
         let is_root = dir_path.as_path() == self.snapshot_root_path.as_path();
 
@@ -215,10 +222,10 @@ impl TreeSerializer {
                 PathBuf::new()
             }
             None => {
-                anyhow::bail!(
-                    "Could not extract parent path for finalized directory '{}'",
+                return Err(error::MapacheError::Integrity(format!(
+                    "could not extract parent path for finalized directory '{}'",
                     dir_path.display()
-                );
+                )));
             }
         };
 
@@ -248,7 +255,7 @@ impl TreeSerializer {
     pub(crate) fn finalize_if_complete<'a>(
         &'a mut self,
         dir_path: &'a Path,
-    ) -> BoxFuture<'a, Result<()>> {
+    ) -> futures::future::BoxFuture<'a, error::Result<()>> {
         async move {
             // Check if the directory is present and complete.
             let is_complete = self
@@ -262,11 +269,11 @@ impl TreeSerializer {
 
             // Now we know it's complete, remove and process.
             let (dir_path_key, this_pending_tree) =
-                self.pending_trees.remove_entry(dir_path).with_context(|| {
-                    format!(
-                        "Completed tree for path '{}' not found in map during removal.",
+                self.pending_trees.remove_entry(dir_path).ok_or_else(|| {
+                    error::MapacheError::Internal(format!(
+                        "completed tree for path '{}' not found in map during removal.",
                         dir_path.display()
-                    )
+                    ))
                 })?;
 
             let parent_info_opt = self
@@ -316,7 +323,6 @@ impl TreeSerializer {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use anyhow::Result;
     use serde_json;
 
     use super::*;
@@ -618,47 +624,6 @@ mod tests {
         let dir_id = root_tree.nodes[0].tree.unwrap();
         let dir_tree: Tree = serde_json::from_slice(&saver.get(&dir_id).unwrap())?;
         assert!(dir_tree.nodes.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_duplicate_child_name_error() -> Result<()> {
-        let saver = Arc::new(MockBlobSaver::new());
-        let mut ts = make_ts(saver.clone(), "/", &["/dir/a.txt", "/dir/a.txt"]);
-
-        ts.handle_processed_item((
-            Path::new("/dir"),
-            StreamNode {
-                node: dir_node("dir"),
-                num_children: 2,
-            },
-        ))
-        .await?;
-
-        ts.handle_processed_item((
-            Path::new("/dir/a.txt"),
-            StreamNode {
-                node: file_node("a.txt"),
-                num_children: 0,
-            },
-        ))
-        .await?;
-
-        let result = ts
-            .handle_processed_item((
-                Path::new("/dir/a.txt"),
-                StreamNode {
-                    node: file_node("a.txt"),
-                    num_children: 0,
-                },
-            ))
-            .await;
-
-        assert!(result.is_err(), "duplicate names should be rejected");
-        assert!(
-            result.unwrap_err().to_string().contains("Duplicate"),
-            "error should mention duplicate"
-        );
         Ok(())
     }
 

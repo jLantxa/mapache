@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{commands, fs};
+use crate::{
+    commands,
+    common::error::{MapacheError, Result},
+    fs,
+};
 
 /// Deserializes an optional list of strings, expanding `~` in each entry.
 pub(crate) fn deserialize_config_string_vec_opt<'de, D>(
@@ -226,11 +229,21 @@ impl MapacheConfig {
 }
 
 pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        MapacheError::Config(format!(
+            "Failed to read config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
 
-    let config: MapacheConfig = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+    let config: MapacheConfig = toml::from_str(&content).map_err(|e| {
+        MapacheError::Config(format!(
+            "Failed to parse config file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
 
     Ok(config)
 }

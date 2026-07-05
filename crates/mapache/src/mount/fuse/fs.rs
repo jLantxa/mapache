@@ -1,6 +1,6 @@
 use std::{ffi::OsStr, path::Path, sync::Arc};
 
-use anyhow::{Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use fuser::{
     Config, Errno, FileHandle, Filesystem, FopenFlags, Generation, INodeNo, KernelConfig,
     LockOwner, MountOption, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,
@@ -92,7 +92,7 @@ impl MapacheFS<dyn BlobLoader> {
             if let Err(unmount_err) = Self::unmount(mountpoint) {
                 tracing::warn!(target: "fuse", "Failed to unmount after mount error: {unmount_err}");
             }
-            return Err(anyhow!("FUSE error: {}", e));
+            return Err(MapacheError::Fuse(format!("{e}")));
         }
 
         Ok(())
@@ -109,9 +109,9 @@ impl MapacheFS<dyn BlobLoader> {
         #[cfg(target_os = "macos")]
         let mut cmd = std::process::Command::new("/usr/sbin/umount");
 
-        cmd.arg(mountpoint)
-            .output()
-            .map_err(|_| anyhow!("Failed to unmount {}", mountpoint.display()))?;
+        cmd.arg(mountpoint).output().map_err(|e| {
+            MapacheError::Fuse(format!("failed to unmount {}: {e}", mountpoint.display()))
+        })?;
 
         Ok(())
     }
@@ -172,7 +172,11 @@ impl<L: BlobLoader + ?Sized> MapacheFS<L> {
 }
 
 impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
-    fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), std::io::Error> {
+    fn init(
+        &mut self,
+        _req: &Request,
+        _config: &mut KernelConfig,
+    ) -> std::result::Result<(), std::io::Error> {
         tracing::debug!(target: "fuse", "FUSE filesystem initialized");
         self.rt_handle.block_on(async {
             if let Some(root_tree_id) = self.archive_root_tree {
@@ -254,10 +258,11 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
             return reply.entry(&TTL, &attr, Generation(0));
         }
 
-        let result = self.rt_handle.block_on(async {
-            self.ensure_loaded(parent).await?;
-            Ok::<_, anyhow::Error>(self.stash.read().get_attr_by_name(parent, &name_str))
-        });
+        let result: std::result::Result<Option<fuser::FileAttr>, MapacheError> =
+            self.rt_handle.block_on(async {
+                self.ensure_loaded(parent).await?;
+                Ok(self.stash.read().get_attr_by_name(parent, &name_str))
+            });
 
         match result {
             Ok(Some(attr)) => reply.entry(&TTL, &attr, Generation(0)),
@@ -347,9 +352,9 @@ impl<L: BlobLoader + ?Sized + 'static> Filesystem for MapacheFS<L> {
                 match stash.get_node(ino) {
                     Some(n) => match &n.kind {
                         NodeKind::File { blobs } => blobs.clone(),
-                        _ => bail!("Not a file"),
+                        _ => return Err(MapacheError::Internal("not a file".to_string())),
                     },
-                    None => bail!("Not found"),
+                    None => return Err(MapacheError::Internal("not found".to_string())),
                 }
             };
 

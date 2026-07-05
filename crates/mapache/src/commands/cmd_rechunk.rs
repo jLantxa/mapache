@@ -1,15 +1,15 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, io, sync::Arc, time::Instant};
 
-use anyhow::Result;
 use clap::Args;
 use futures::StreamExt;
 
 use crate::{
     archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{
-        ContentIdType, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, rewrite_snapshot_tree,
+        ContentIdType, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError,
+        rewrite_snapshot_tree,
     },
     repository::snapshot::SnapshotStream,
     ui::{
@@ -19,14 +19,23 @@ use crate::{
     utils::{self},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum RechunkError {
-    Interrupted = 130,
+    #[error("rechunk interrupted by user")]
+    Interrupted,
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for RechunkError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            RechunkError::Interrupted => 130,
+            RechunkError::Repo(_) => 1,
+            RechunkError::Io(_) => 1,
+        }
     }
 }
 
@@ -35,7 +44,7 @@ impl ToExitCode for RechunkError {
 #[clap(long_about = "Rechunk all snapshots using the current chunker and parameters.")]
 pub struct CmdArgs {}
 
-pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), RechunkError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -45,7 +54,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
             repo.reload_master_index().await?;
@@ -60,10 +69,8 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
             let mut i = 0;
             while let Some(res) = snapshot_stream.next().await {
                 if cleanup_handler.is_interrupted() {
-                    return Err(fail(
-                        "Rechunk interrupted by user.",
-                        RechunkError::Interrupted,
-                    ));
+                    tracing::info!(target: "rechunk", "Rechunk interrupted by user");
+                    return Err(RechunkError::Interrupted);
                 }
                 let (snapshot_id, mut snapshot) = res?;
                 ui::cli::log!(
@@ -103,7 +110,9 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
                 // Save the amended snapshot and delete the old snapshot file
                 repo.save_file(
                     &SaveID::CalculateID,
-                    serde_json::to_string(&snapshot)?.as_bytes(),
+                    serde_json::to_string(&snapshot)
+                        .map_err(|e| RechunkError::Repo(MapacheError::Serialization(e)))?
+                        .as_bytes(),
                     StorageHint {
                         file_type: ContentIdType::Snapshot,
                         is_metadata: true,

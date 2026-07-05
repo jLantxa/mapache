@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use crate::common::error::Result;
 use parking_lot::Mutex;
 
 use crate::{

@@ -1,6 +1,5 @@
-use std::path::PathBuf;
+use std::{io, path::PathBuf};
 
-use anyhow::Result;
 use clap::Args;
 use futures::StreamExt;
 use serde::Serialize;
@@ -8,24 +7,35 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail, find_use_snapshot,
+        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
         with_repository_lock,
     },
-    common::{ID, find_in_snapshot},
+    common::{ID, error::MapacheError, find_in_snapshot},
     fs::node::{Node, node_to_string},
     repository::snapshot::{Snapshot, SnapshotStream},
     ui,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum FindError {
-    RepoOpenFail = 10,
-    FindFailed = 20,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("search failed: {0}")]
+    FindFailed(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for FindError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            FindError::RepoOpenFail(_) => 10,
+            FindError::FindFailed(_) => 20,
+            FindError::Repo(_) => 1,
+            FindError::Io(_) => 1,
+        }
     }
 }
 
@@ -54,64 +64,31 @@ struct FindOutput {
     entries: Vec<FindEntry>,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), FindError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false))
-            .await
-            .map_err(|e| {
-                fail(
-                    format!("Failed to initialize backend: {}", e),
-                    FindError::FindFailed,
-                )
-            })?,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new().map_err(|e| {
-                fail(
-                    format!("Failed to initialize cleanup handler: {}", e),
-                    FindError::FindFailed,
-                )
-            })?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
-            repo.reload_master_index().await.map_err(|e| {
-                fail(
-                    format!("Failed to reload master index: {}", e),
-                    FindError::FindFailed,
-                )
-            })?;
+            repo.reload_master_index().await?;
 
             let snapshots: Vec<(ID, Snapshot)> = if let Some(use_snap) = &args.snapshot {
                 find_use_snapshot(repo.clone(), use_snap)
-                    .await
-                    .map_err(|e| {
-                        fail(
-                            format!("Failed to find snapshot: {}", e),
-                            FindError::FindFailed,
-                        )
-                    })?
+                    .await?
                     .into_iter()
                     .collect()
             } else {
-                let mut snapshot_stream = SnapshotStream::new(repo.clone()).await.map_err(|e| {
-                    fail(
-                        format!("Failed to open snapshot stream: {}", e),
-                        FindError::FindFailed,
-                    )
-                })?;
+                let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
                 let mut snaps = Vec::new();
                 while let Some(res) = snapshot_stream.next().await {
-                    snaps.push(res.map_err(|e| {
-                        fail(
-                            format!("Failed to read snapshot: {}", e),
-                            FindError::FindFailed,
-                        )
-                    })?);
+                    snaps.push(res?);
                 }
                 snaps
             };
@@ -135,9 +112,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 for (id, snap) in snapshots {
                     let found = find_in_snapshot(repo.clone(), &snap, &args.target)
                         .await
-                        .map_err(|e| {
-                            fail(format!("Search failed: {}", e), FindError::FindFailed)
-                        })?;
+                        .map_err(|e| FindError::FindFailed(e.to_string()))?;
                     for (path, node) in found {
                         entries.push(FindEntry {
                             snapshot_id: id.to_hex(),
@@ -151,9 +126,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 for (id, snap) in snapshots {
                     let found = find_in_snapshot(repo.clone(), &snap, &args.target)
                         .await
-                        .map_err(|e| {
-                            fail(format!("Search failed: {}", e), FindError::FindFailed)
-                        })?;
+                        .map_err(|e| FindError::FindFailed(e.to_string()))?;
                     if !found.is_empty() {
                         ui::cli::log!("Found in snapshot {}", id.to_hex());
                         for (path, node) in found {
@@ -168,14 +141,4 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         },
     )
     .await
-    .map_err(|e| {
-        if e.is::<crate::commands::error::MapacheError>() {
-            e
-        } else {
-            fail(
-                format!("Failed to open repository: {}", e),
-                FindError::RepoOpenFail,
-            )
-        }
-    })
 }

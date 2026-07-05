@@ -5,7 +5,6 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Context, Result};
 use argon2::Params;
 use parking_lot::Mutex;
 
@@ -15,6 +14,7 @@ use crate::{
         BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BUNDLE_SALT_LEN, BUNDLE_VERSION,
         BundleHeader, BundleIndex, BundleIndexEntry, BundleTrailer,
     },
+    common::error::{MapacheError, Result},
     common::{BlobType, ID, SaveID, traits::BlobSaver},
     repository::{manifest::Manifest, storage::SecureStorage},
 };
@@ -63,8 +63,7 @@ impl BundleWriter {
         };
 
         let header_bytes = header.to_binary();
-        file.write_all(&header_bytes)
-            .context("Failed to write header")?;
+        file.write_all(&header_bytes)?;
 
         Ok(Self {
             storage,
@@ -91,7 +90,7 @@ impl BundleWriter {
         let encoded_data = self
             .storage
             .encode(data.as_ref())
-            .context("Failed to encode blob data")?;
+            .map_err(|e| MapacheError::Crypto(format!("failed to encode blob data: {e}")))?;
         let length = encoded_data.len() as u32;
 
         let mut inner = self.inner.lock();
@@ -100,14 +99,8 @@ impl BundleWriter {
             return Ok(id);
         }
 
-        let offset = inner
-            .file
-            .stream_position()
-            .context("Failed to get file position")?;
-        inner
-            .file
-            .write_all(&encoded_data)
-            .context("Failed to write blob data")?;
+        let offset = inner.file.stream_position()?;
+        inner.file.write_all(&encoded_data)?;
 
         inner.index.entries.push(BundleIndexEntry {
             id,
@@ -123,36 +116,24 @@ impl BundleWriter {
     pub fn finalize(&self, root_tree_id: ID) -> Result<()> {
         let mut inner = self.inner.lock();
 
-        let index_offset = inner
-            .file
-            .stream_position()
-            .context("Failed to get file position for index")?;
+        let index_offset = inner.file.stream_position()?;
         let index_bytes = inner.index.to_binary();
         let encrypted_index = self
             .storage
             .encrypt(&index_bytes)
-            .context("Failed to encrypt index")?;
+            .map_err(|e| MapacheError::Crypto(format!("failed to encrypt index: {e}")))?;
         let index_len = encrypted_index.len() as u32;
-        inner
-            .file
-            .write_all(&encrypted_index)
-            .context("Failed to write index")?;
+        inner.file.write_all(&encrypted_index)?;
 
-        let manifest_offset = inner
-            .file
-            .stream_position()
-            .context("Failed to get file position for manifest")?;
+        let manifest_offset = inner.file.stream_position()?;
         let manifest = Manifest::new(BUNDLE_VERSION as u32);
         let manifest_bytes = manifest.to_binary();
         let encrypted_manifest = self
             .storage
             .encrypt(&manifest_bytes)
-            .context("Failed to encrypt manifest")?;
+            .map_err(|e| MapacheError::Crypto(format!("failed to encrypt manifest: {e}")))?;
         let manifest_len = encrypted_manifest.len() as u32;
-        inner
-            .file
-            .write_all(&encrypted_manifest)
-            .context("Failed to write manifest")?;
+        inner.file.write_all(&encrypted_manifest)?;
 
         let trailer = BundleTrailer {
             root_tree: root_tree_id,
@@ -167,17 +148,11 @@ impl BundleWriter {
         let encrypted_trailer = self
             .storage
             .encrypt(&trailer_bytes)
-            .context("Failed to encrypt trailer")?;
+            .map_err(|e| MapacheError::Crypto(format!("failed to encrypt trailer: {e}")))?;
         let trailer_size = encrypted_trailer.len() as u32;
 
-        inner
-            .file
-            .write_all(&encrypted_trailer)
-            .context("Failed to write trailer")?;
-        inner
-            .file
-            .write_all(&trailer_size.to_le_bytes())
-            .context("Failed to write trailer size")?;
+        inner.file.write_all(&encrypted_trailer)?;
+        inner.file.write_all(&trailer_size.to_le_bytes())?;
 
         Ok(())
     }

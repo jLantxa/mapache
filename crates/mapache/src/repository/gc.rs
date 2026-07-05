@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 
 use crate::{
@@ -84,7 +84,7 @@ pub struct Plan {
 /// Bails out if the shutdown signal has been raised.
 fn check_shutdown(signal: &AtomicBool) -> Result<()> {
     if signal.load(Ordering::Relaxed) {
-        bail!("Garbage collection interrupted by user");
+        return Err(MapacheError::Interrupted);
     }
     Ok(())
 }
@@ -283,7 +283,7 @@ impl Plan {
                     let size = repo.delete_file(ContentIdType::Pack, id, None).await?;
                     let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     r.update_task(GcTaskKind::DeletingUnusedPacks, current);
-                    Ok::<u64, anyhow::Error>(size)
+                    Ok::<u64, MapacheError>(size)
                 })
             })
             .try_buffer_unordered(16)
@@ -375,7 +375,12 @@ impl Plan {
                     let permit = sem
                         .acquire_many(u32::try_from(needed).unwrap_or(u32::MAX))
                         .await
-                        .context("Failed to acquire GC memory budget permit")?;
+                        .map_err(|e| {
+                            MapacheError::Repo(format!(
+                                "failed to acquire GC memory budget permit: {}",
+                                e
+                            ))
+                        })?;
 
                     // Build a fast lookup for blob types to avoid O(n²) linear search
                     let mut blob_types: IdMap<ID, common::BlobType> = IdMap::default();
@@ -421,9 +426,13 @@ impl Plan {
                                     result
                                 })
                                 .await
-                                .context("Repack task panicked")?
-                                .context("Repack blob failed")?;
-                                Ok::<(), anyhow::Error>(())
+                                .map_err(|e| {
+                                    MapacheError::Internal(format!("repack task panicked: {}", e))
+                                })?
+                                .map_err(|e| {
+                                    MapacheError::Repo(format!("repack blob failed: {}", e))
+                                })?;
+                                Ok::<(), MapacheError>(())
                             }
                         })
                         .buffer_unordered(max_concurrent)
@@ -436,7 +445,7 @@ impl Plan {
                     // the next GC run.
                     check_shutdown(&shutdown_signal)?;
 
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<(), MapacheError>(())
                 }
             })
             .buffer_unordered(max_concurrent)
@@ -609,7 +618,7 @@ async fn get_referenced_blobs_and_packs(
                             let repo = repo.clone();
                             async move {
                                 let tree = Tree::load_from_repo(repo.as_ref(), &tree_id).await?;
-                                Ok::<_, anyhow::Error>(Some(tree))
+                                Ok::<_, MapacheError>(Some(tree))
                             }
                             .right_future()
                         })
@@ -654,7 +663,7 @@ async fn get_referenced_blobs_and_packs(
                         }
                     }
                 }
-                Ok::<(), anyhow::Error>(())
+                Ok::<(), MapacheError>(())
             }
         })
         .buffer_unordered(4)
@@ -664,10 +673,18 @@ async fn get_referenced_blobs_and_packs(
     reporter.finish_task(GcTaskKind::SearchingReferencedBlobs);
 
     let final_blobs = Arc::try_unwrap(referenced_blobs)
-        .map_err(|_| anyhow!("Internal error: could not unwrap referenced_blobs Arc"))?
+        .map_err(|_| {
+            MapacheError::Internal(
+                "internal error: could not unwrap referenced_blobs Arc".to_string(),
+            )
+        })?
         .into_inner();
     let final_packs = Arc::try_unwrap(referenced_packs)
-        .map_err(|_| anyhow!("Internal error: could not unwrap referenced_packs Arc"))?
+        .map_err(|_| {
+            MapacheError::Internal(
+                "internal error: could not unwrap referenced_packs Arc".to_string(),
+            )
+        })?
         .into_inner();
 
     reporter.log(format!(
@@ -739,7 +756,7 @@ async fn delete_trash_files(
                         }
                     }
                 }
-                Ok::<Vec<PathBuf>, anyhow::Error>(found)
+                Ok::<Vec<PathBuf>, MapacheError>(found)
             }
         })
         .buffer_unordered(4) // Use a small concurrency factor to stay safe
@@ -791,7 +808,7 @@ mod tests {
         }
     }
 
-    async fn init_repo() -> anyhow::Result<(Arc<Repository>, Arc<MockBackend>)> {
+    async fn init_repo() -> Result<(Arc<Repository>, Arc<MockBackend>)> {
         let auth = make_auth();
         let backend = Arc::new(MockBackend::new());
         let backend_dyn: Arc<dyn StorageBackend> = backend.clone();
@@ -810,7 +827,7 @@ mod tests {
         }
     }
 
-    async fn save_snapshot(repo: &Arc<Repository>, tree_id: ID) -> anyhow::Result<()> {
+    async fn save_snapshot(repo: &Arc<Repository>, tree_id: ID) -> Result<()> {
         let snapshot = Snapshot {
             timestamp: Local::now(),
             tree: tree_id,
@@ -834,7 +851,7 @@ mod tests {
     /// Scenario: 3 data blobs saved, but only 1 is referenced by a snapshot.
     /// The 2 orphaned blobs must be deleted by GC.
     #[tokio::test]
-    async fn test_garbage_collection_removes_orphaned_blobs() -> anyhow::Result<()> {
+    async fn test_garbage_collection_removes_orphaned_blobs() -> Result<()> {
         let (repo, backend) = init_repo().await?;
 
         // Pack 1: save A, B, C (no snapshot yet, so all three are in a pack but
@@ -934,7 +951,7 @@ mod tests {
     /// Packs may still be repacked if they fall below the small-pack threshold,
     /// so deleted_bytes can be non-zero. What matters is that referenced blobs survive.
     #[tokio::test]
-    async fn test_gc_no_garbage() -> anyhow::Result<()> {
+    async fn test_gc_no_garbage() -> Result<()> {
         let (repo, _backend) = init_repo().await?;
 
         repo.init_pack_saver(2)?;
@@ -987,7 +1004,7 @@ mod tests {
 
     /// GC with multiple snapshots — shared blobs survive.
     #[tokio::test]
-    async fn test_gc_multiple_snapshots() -> anyhow::Result<()> {
+    async fn test_gc_multiple_snapshots() -> Result<()> {
         let (repo, _backend) = init_repo().await?;
 
         // Pack 1: A, B + tree1 + snapshot1
@@ -1063,7 +1080,7 @@ mod tests {
     /// abort with an "interrupted" error and must not mutate repository
     /// state.
     #[tokio::test]
-    async fn test_scan_aborts_on_shutdown_signal() -> anyhow::Result<()> {
+    async fn test_scan_aborts_on_shutdown_signal() -> Result<()> {
         let (repo, _backend) = init_repo().await?;
 
         repo.init_pack_saver(2)?;
@@ -1095,7 +1112,7 @@ mod tests {
     /// abort at the next safe checkpoint. The on-disk repository must remain
     /// in a state where every referenced blob can still be loaded.
     #[tokio::test]
-    async fn test_execute_aborts_on_shutdown_signal() -> anyhow::Result<()> {
+    async fn test_execute_aborts_on_shutdown_signal() -> Result<()> {
         let (repo, _backend) = init_repo().await?;
 
         repo.init_pack_saver(2)?;

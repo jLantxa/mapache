@@ -1,7 +1,22 @@
-use anyhow::Result;
+use std::io;
+
 use clap::Args;
 
-use crate::common::config::MapacheConfig;
+use crate::commands::ToExitCode;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl ToExitCode for ConfigError {
+    fn to_exit_code(&self) -> i32 {
+        match self {
+            ConfigError::Io(_) => 1,
+        }
+    }
+}
 
 #[derive(Args, Debug)]
 #[clap(about = "Manage configuration")]
@@ -20,11 +35,12 @@ pub enum ConfigCommand {
     },
 }
 
-pub async fn run(args: &CmdArgs) -> Result<()> {
+pub async fn run(args: &CmdArgs) -> Result<(), ConfigError> {
     match &args.command {
         ConfigCommand::Template { output } => {
-            let config = MapacheConfig::template();
-            let toml_str = toml::to_string_pretty(&config)?;
+            let config = crate::common::config::MapacheConfig::template();
+            let toml_str = toml::to_string_pretty(&config)
+                .map_err(|e| ConfigError::Io(io::Error::other(e)))?;
 
             // Comment out the generated TOML lines
             let mut template = String::from("# mapache configuration template\n");

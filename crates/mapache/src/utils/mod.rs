@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use chrono::{DateTime, Duration, Local};
 use zeroize::Zeroizing;
 
@@ -48,24 +48,22 @@ pub(crate) mod size {
 /// If no file is provided, it checks the MAPACHE_USERNAME and MAPACHE_PASSWORD environment variables.
 pub(crate) fn get_auth(password_file_path: &Option<PathBuf>) -> Result<Option<Auth>> {
     if let Some(path) = password_file_path {
-        let text = std::fs::read_to_string(path).with_context(|| {
-            format!("Could not read repository password from {}", path.display())
-        })?;
+        let text = std::fs::read_to_string(path)?;
 
         // Parse the text to extract the username and password
         let mut lines = text.lines();
         let username = lines
             .next()
-            .ok_or_else(|| anyhow::anyhow!("File {} is empty", path.display()))?
+            .ok_or_else(|| MapacheError::Config(format!("file {} is empty", path.display())))?
             .to_string();
 
         let password = lines
             .next()
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "File {} is missing the password on the second line",
+                MapacheError::Config(format!(
+                    "file {} is missing the password on the second line",
                     path.display()
-                )
+                ))
             })?
             .to_string();
 
@@ -153,8 +151,9 @@ pub(crate) fn pretty_print_system_time(
     time: SystemTime,
     format_str: Option<&str>,
 ) -> Result<String> {
-    time.duration_since(UNIX_EPOCH)
-        .with_context(|| format!("SystemTime {time:?} is before UNIX EPOCH"))?;
+    time.duration_since(UNIX_EPOCH).map_err(|e| {
+        MapacheError::Integrity(format!("SystemTime {time:?} is before UNIX epoch: {e}"))
+    })?;
 
     let format = format_str.unwrap_or("%Y-%m-%d %H:%M:%S");
 
@@ -272,14 +271,16 @@ pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
             current_num_str.push(c);
         } else {
             if current_num_str.is_empty() {
-                return Err(anyhow!(
-                    "Invalid duration format: unit '{c}' without preceding number in \"{s}\""
-                ));
+                return Err(MapacheError::Format(format!(
+                    "invalid duration format: unit '{c}' without preceding number in \"{s}\""
+                )));
             }
 
-            let num = current_num_str
-                .parse::<i64>()
-                .with_context(|| format!("Failed to parse number before unit '{c}' in \"{s}\""))?;
+            let num = current_num_str.parse::<i64>().map_err(|e| {
+                MapacheError::Format(format!(
+                    "failed to parse number before unit '{c}' in \"{s}\": {e}"
+                ))
+            })?;
 
             match c {
                 's' => total_duration += Duration::seconds(num),
@@ -288,16 +289,20 @@ pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
                 'd' => total_duration += Duration::days(num),
                 'w' => total_duration += Duration::weeks(num),
                 'y' => total_duration += Duration::days(num * 365),
-                _ => return Err(anyhow!("Invalid duration unit: '{c}' in \"{s}\"")),
+                _ => {
+                    return Err(MapacheError::Format(format!(
+                        "invalid duration unit: '{c}' in \"{s}\""
+                    )));
+                }
             }
             current_num_str.clear();
         }
     }
 
     if !current_num_str.is_empty() {
-        return Err(anyhow!(
-            "Invalid duration format: trailing number '{current_num_str}' without unit in \"{s}\""
-        ));
+        return Err(MapacheError::Format(format!(
+            "invalid duration format: trailing number '{current_num_str}' without unit in \"{s}\""
+        )));
     }
 
     Ok(total_duration)
@@ -314,7 +319,7 @@ pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
 
     let num: f64 = num_str
         .parse()
-        .with_context(|| format!("Invalid number: {num_str}"))?;
+        .map_err(|e| MapacheError::Format(format!("invalid number: {num_str}: {e}")))?;
 
     let multiplier = match unit.trim() {
         "" | "B" | "B/S" => 1u64,
@@ -326,7 +331,7 @@ pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
         "GB" | "GB/S" => size::GB,
         "T" | "TIB" | "TIB/S" => size::TiB,
         "TB" | "TB/S" => size::TB,
-        _ => bail!("Invalid unit: {unit}"),
+        _ => return Err(MapacheError::Format(format!("invalid unit: {unit}"))),
     };
 
     Ok((num * multiplier as f64) as u64)
@@ -482,7 +487,10 @@ pub fn count_files(dir_path: &Path) -> Result<usize> {
 /// This prevents path traversal attacks.
 pub(crate) fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
     if relative.is_absolute() {
-        bail!("Relative path cannot be absolute: {}", relative.display());
+        return Err(MapacheError::Config(format!(
+            "Relative path cannot be absolute: {}",
+            relative.display()
+        )));
     }
 
     let joined = base.join(relative);
@@ -490,11 +498,11 @@ pub(crate) fn secure_join(base: &Path, relative: &Path) -> Result<PathBuf> {
     let normalized_base = fs::get_absolute_normalized_path(base)?;
 
     if !normalized.starts_with(&normalized_base) {
-        bail!(
+        return Err(MapacheError::Integrity(format!(
             "Path traversal detected: {} is outside of {}",
             normalized.display(),
             normalized_base.display()
-        );
+        )));
     }
 
     Ok(normalized)
@@ -729,7 +737,8 @@ mod tests {
     #[test]
     fn test_pretty_print_system_time() -> Result<()> {
         let naive_str = "2025-12-01 18:00";
-        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")?;
+        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")
+            .map_err(|e| MapacheError::Format(e.to_string()))?;
         let datetime_with_local_offset: DateTime<Local> =
             Local.from_local_datetime(&naive_datetime).unwrap();
         let time: SystemTime = datetime_with_local_offset.into();
@@ -758,7 +767,8 @@ mod tests {
     #[test]
     fn test_pretty_print_timestamp() -> Result<()> {
         let naive_str = "2025-12-01 18:00";
-        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")?;
+        let naive_datetime = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M")
+            .map_err(|e| MapacheError::Format(e.to_string()))?;
         let datetime: DateTime<Local> = Local.from_local_datetime(&naive_datetime).unwrap();
 
         let formatted = pretty_print_timestamp(&datetime, None);

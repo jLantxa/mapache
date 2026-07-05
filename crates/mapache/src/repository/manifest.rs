@@ -1,4 +1,4 @@
-use anyhow::Context;
+use crate::common::error::{MapacheError, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +45,7 @@ impl Manifest {
         buf
     }
 
-    pub fn from_binary(bytes: &[u8]) -> anyhow::Result<Self> {
+    pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let mut cur = bytes;
         let version = get_u32(&mut cur)?;
         let id = ID::from_bytes(get_array(&mut cur)?);
@@ -54,7 +54,7 @@ impl Manifest {
         let utc = Utc
             .timestamp_opt(timestamp_secs, timestamp_nsecs)
             .single()
-            .context("invalid manifest timestamp")?;
+            .ok_or_else(|| MapacheError::Format("invalid manifest timestamp".to_string()))?;
         let created_time = utc.with_timezone(&Local);
         Ok(Self {
             version,

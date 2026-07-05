@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use anyhow::{Context, Result, bail};
+use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
 
 use crate::{
@@ -41,8 +41,10 @@ pub async fn delete_nodes(
         opts.exclude,
     )
     .await
-    .with_context(|| {
-        format!("Failed to initialize snapshot tree stream for root ID {root_tree_id:?}")
+    .map_err(|e| {
+        MapacheError::Internal(format!(
+            "failed to initialize snapshot tree stream for root ID {root_tree_id:?}: {e}"
+        ))
     })?;
 
     if !opts.no_preserve_root {
@@ -51,7 +53,7 @@ pub async fn delete_nodes(
 
     while let Some(item_result) = tree_stream.next().await {
         if opts.shutdown_signal.load(Ordering::Acquire) {
-            bail!("Interrupted");
+            return Err(MapacheError::Internal("interrupted".to_string()));
         }
 
         let (path, snapshot_tree) = match item_result {
@@ -60,7 +62,7 @@ pub async fn delete_nodes(
                 emit_event(
                     &opts.event_sender,
                     Event::Restore(RestoreEvent::Warning(format!(
-                        "Could not read snapshot subtree entry: {e}"
+                        "could not read snapshot subtree entry: {e}"
                     ))),
                 );
                 tracing::warn!(target: "restorer", "Could not read snapshot subtree entry: {e}");
@@ -113,12 +115,10 @@ fn process_local_directory(
                 );
                 return Ok(());
             } else {
-                return Err(e).with_context(|| {
-                    format!(
-                        "Could not read local directory '{}'",
-                        local_dir_path.display()
-                    )
-                });
+                return Err(MapacheError::Internal(format!(
+                    "could not read local directory '{}': {e}",
+                    local_dir_path.display()
+                )));
             }
         }
     };
@@ -130,7 +130,7 @@ fn process_local_directory(
                 emit_event(
                     &event_sender,
                     Event::Restore(RestoreEvent::Warning(format!(
-                        "Failed to read local node in '{}': {e}",
+                        "failed to read local node in '{}': {e}",
                         local_dir_path.display()
                     ))),
                 );
@@ -167,11 +167,11 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool, event_sender: EventSen
             Event::Restore(RestoreEvent::Log(format!("Deleted {path_to_delete:?}"))),
         );
         tracing::debug!(target: "restorer", "Deleting directory {:?}", path_to_delete);
-        std::fs::remove_dir_all(path_to_delete).with_context(|| {
-            format!(
-                "Failed to delete local directory '{}'",
+        std::fs::remove_dir_all(path_to_delete).map_err(|e| {
+            MapacheError::Internal(format!(
+                "failed to delete local directory '{}': {e}",
                 path_to_delete.display()
-            )
+            ))
         })?;
     } else {
         emit_event(
@@ -179,8 +179,11 @@ fn perform_deletion(path_to_delete: &Path, dry_run: bool, event_sender: EventSen
             Event::Restore(RestoreEvent::Log(format!("Deleted {path_to_delete:?}"))),
         );
         tracing::debug!(target: "restorer", "Deleting file {:?}", path_to_delete);
-        std::fs::remove_file(path_to_delete)
-            .with_context(|| format!("Failed to delete local file {path_to_delete:?}"))?;
+        std::fs::remove_file(path_to_delete).map_err(|e| {
+            MapacheError::Internal(format!(
+                "failed to delete local file {path_to_delete:?}: {e}"
+            ))
+        })?;
     }
 
     Ok(())

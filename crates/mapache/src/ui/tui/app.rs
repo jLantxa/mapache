@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::Result;
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::{Frame, Terminal, backend::Backend, style::Style, widgets::Block};
@@ -63,7 +63,9 @@ impl App {
         }
 
         while !self.should_quit {
-            terminal.draw(|frame| self.render(frame))?;
+            terminal
+                .draw(|frame| self.render(frame))
+                .map_err(|e| MapacheError::Internal(format!("terminal error: {e}")))?;
 
             if event::poll(Duration::from_millis(100))?
                 && let Event::Key(key) = event::read()?

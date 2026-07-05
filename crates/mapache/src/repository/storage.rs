@@ -1,11 +1,11 @@
 use aes_gcm_siv::{AeadInPlace, Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
-use anyhow::{Result, anyhow, bail};
 use argon2::Argon2;
 use parking_lot::Mutex;
 use zeroize::Zeroizing;
 
 use crate::{
     backend::WriteContents,
+    common::error::{MapacheError, Result},
     common::{self, defaults::DEFAULT_COMPRESSION},
 };
 
@@ -51,7 +51,7 @@ impl SecureStorage {
 
     pub fn get_encoding_context(&self) -> Result<EncodingContext> {
         let mut compressor = zstd::bulk::Compressor::new(self.compression_level)
-            .map_err(|e| anyhow!("zstd init failed: {e}"))?;
+            .map_err(|e| MapacheError::Compression(format!("zstd init failed: {e}")))?;
 
         // Use a maximum back-reference window the size of the biggest chunk.
         const ZSTD_WINDOW_LOG: u32 = common::defaults::NORMAL_CHUNK_SIZE
@@ -101,7 +101,7 @@ impl SecureStorage {
             let n = c
                 .compressor
                 .compress_to_buffer(data, &mut out[data_start..])
-                .map_err(|e| anyhow!("zstd failed: {e}"))?;
+                .map_err(|e| MapacheError::Compression(format!("zstd failed: {e}")))?;
             out.truncate(data_start + n);
         } else {
             out.extend_from_slice(data);
@@ -111,7 +111,7 @@ impl SecureStorage {
             let payload_mut = &mut out[data_start..];
             let tag = cipher
                 .encrypt_in_place_detached(Nonce::from_slice(&nonce_bytes), b"", payload_mut)
-                .map_err(|_| anyhow!("encryption failed"))?;
+                .map_err(|_| MapacheError::Crypto("encryption failed".to_string()))?;
             out.extend_from_slice(tag.as_slice());
         }
 
@@ -143,7 +143,7 @@ impl SecureStorage {
         let n = ctx
             .compressor
             .compress_to_buffer(data, &mut out)
-            .map_err(|e| anyhow!("zstd failed: {e}"))?;
+            .map_err(|e| MapacheError::Compression(format!("zstd failed: {e}")))?;
 
         // SAFETY: `compress_to_buffer` successfully wrote `n` bytes.
         unsafe {
@@ -153,7 +153,8 @@ impl SecureStorage {
     }
 
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
-        zstd::decode_all(data).map_err(|e| anyhow!("zstd decompression failed: {e}"))
+        zstd::decode_all(data)
+            .map_err(|e| MapacheError::Compression(format!("zstd decompression failed: {e}")))
     }
 
     /// Logic for encryption into a provided vector.
@@ -174,7 +175,7 @@ impl SecureStorage {
         let nonce = Nonce::from_slice(&nonce_bytes);
         let tag = cipher
             .encrypt_in_place_detached(nonce, b"", payload_mut)
-            .map_err(|_| anyhow!("encryption failed"))?;
+            .map_err(|_| MapacheError::Crypto("encryption failed".to_string()))?;
 
         out.extend_from_slice(tag.as_slice());
 
@@ -192,13 +193,13 @@ impl SecureStorage {
         };
 
         if data.len() < AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN {
-            bail!("invalid ciphertext");
+            Err(MapacheError::Integrity("invalid ciphertext".to_string()))?;
         }
 
         let (nonce, ciphertext_and_tag) = data.split_at(AES_GCM_NONCE_LEN);
         let decrypted = cipher
             .decrypt(Nonce::from_slice(nonce), ciphertext_and_tag)
-            .map_err(|_| anyhow!("decryption failed"))?;
+            .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))?;
         Ok(WriteContents::Owned(decrypted))
     }
 
@@ -209,7 +210,7 @@ impl SecureStorage {
         };
 
         if data.len() < AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN {
-            bail!("invalid ciphertext");
+            Err(MapacheError::Integrity("invalid ciphertext".to_string()))?;
         }
 
         let nonce = Nonce::clone_from_slice(&data[..AES_GCM_NONCE_LEN]);
@@ -225,7 +226,7 @@ impl SecureStorage {
 
         cipher
             .decrypt_in_place_detached(&nonce, b"", &mut data, &tag)
-            .map_err(|_| anyhow!("decryption failed"))?;
+            .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))?;
 
         Ok(data)
     }
@@ -279,7 +280,7 @@ impl SecureStorage {
         let mut key = [0u8; KEY_LEN];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut key)
-            .map_err(|e| anyhow!("argon2 derive failed: {e}"))?;
+            .map_err(|e| MapacheError::Crypto(format!("argon2 derive failed: {e}")))?;
         Ok(Zeroizing::new(key))
     }
 

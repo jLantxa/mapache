@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use crate::common::error::Result;
 use async_trait::async_trait;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};

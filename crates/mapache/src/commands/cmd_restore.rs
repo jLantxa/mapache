@@ -1,4 +1,5 @@
 use std::{
+    io,
     path::PathBuf,
     str::FromStr,
     sync::{
@@ -8,17 +9,16 @@ use std::{
     time::Instant,
 };
 
-use anyhow::Result;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        self, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
-        find_use_snapshot, with_repository_lock,
+        GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
+        with_repository_lock,
     },
-    common::{defaults::SHORT_SNAPSHOT_ID_LEN, hooks},
+    common::{defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError, hooks},
     fs::{
         calculate_lcp,
         filter::{
@@ -39,18 +39,35 @@ use crate::{
     utils,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum RestoreError {
-    RepoOpenFail = 10,
-    SnapshotNotFound = 20,
-    TargetError = 21,
-    RestoreFailed = 30,
-    Interrupted = 130,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("snapshot not found: {0}")]
+    SnapshotNotFound(String),
+    #[error("target path error: {0}")]
+    TargetError(String),
+    #[error("restore failed: {0}")]
+    RestoreFailed(String),
+    #[error("restore interrupted by user")]
+    Interrupted,
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for RestoreError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            RestoreError::RepoOpenFail(_) => 10,
+            RestoreError::SnapshotNotFound(_) => 20,
+            RestoreError::TargetError(_) => 21,
+            RestoreError::RestoreFailed(_) => 30,
+            RestoreError::Interrupted => 130,
+            RestoreError::Repo(_) => 1,
+            RestoreError::Io(_) => 1,
+        }
     }
 }
 
@@ -232,7 +249,7 @@ where
         .transpose()
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), RestoreError> {
     tracing::info!(target: "restore", "Starting restore command");
 
     let json_output = global_args.json;
@@ -241,14 +258,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false))
-            .await
-            .map_err(|e| {
-                fail(
-                    format!("Failed to initialize backend: {}", e),
-                    RestoreError::RestoreFailed,
-                )
-            })?,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
@@ -258,14 +268,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             let (id, snap) = find_use_snapshot(repo.clone(), &args.snapshot)
                 .await
-                .map_err(|_| fail("Snapshot not found", RestoreError::SnapshotNotFound))?
-                .ok_or_else(|| fail("Snapshot not found", RestoreError::SnapshotNotFound))?;
+                .map_err(|e| RestoreError::SnapshotNotFound(e.inner()))?
+                .ok_or_else(|| {
+                    RestoreError::SnapshotNotFound(
+                        "no snapshot matches the given identifier".to_string(),
+                    )
+                })?;
             let snapshot_pair = SnapshotPair { id, snapshot: snap };
 
             let target = args.target.as_ref().ok_or_else(|| {
-                fail(
-                    "Target path is required. Use --target or set it in config file.",
-                    RestoreError::TargetError,
+                RestoreError::TargetError(
+                    "target path is required. use --target or set it in config file.".to_string(),
                 )
             })?;
 
@@ -348,16 +361,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         hooks::run_post(hooks::restore(), "restore", &global_args.repo, &result_str).await;
     }
 
-    repo_result.map_err(|e| {
-        if e.is::<commands::error::MapacheError>() {
-            e
-        } else {
-            fail(
-                format!("Failed to open repository: {}", e),
-                RestoreError::RepoOpenFail,
-            )
-        }
-    })
+    repo_result
 }
 
 pub(crate) async fn run_with_repo(
@@ -368,11 +372,10 @@ pub(crate) async fn run_with_repo(
     snapshot_pair: SnapshotPair,
     start: Instant,
     json_output: bool,
-) -> Result<()> {
+) -> Result<(), RestoreError> {
     let target = args.target.as_ref().ok_or_else(|| {
-        fail(
-            "Target path is required. Use --target or set it in config file.",
-            RestoreError::TargetError,
+        RestoreError::TargetError(
+            "target path is required. use --target or set it in config file.".to_string(),
         )
     })?;
 
@@ -415,12 +418,8 @@ pub(crate) async fn run_with_repo(
         None
     };
 
-    let abs_normalized_target = get_absolute_normalized_path(target).map_err(|e| {
-        fail(
-            format!("Invalid target path: {}", e),
-            RestoreError::TargetError,
-        )
-    })?;
+    let abs_normalized_target = get_absolute_normalized_path(target)
+        .map_err(|e| RestoreError::TargetError(format!("invalid target path: {}", e.inner())))?;
 
     tracing::info!(target: "restore", "Restoring snapshot {} (root={:?}) to {:?}", snapshot_pair.id, snapshot_pair.snapshot.root, abs_normalized_target);
 
@@ -430,7 +429,7 @@ pub(crate) async fn run_with_repo(
             &event_sender_for_cleanup,
             Event::Restore(RestoreEvent::Finished),
         );
-    })?;
+    });
     cleanup_handler.add_lock(lock_handle);
 
     let restore_result = restorer::restore(
@@ -455,19 +454,13 @@ pub(crate) async fn run_with_repo(
 
     if restore_result.is_err() && cleanup_handler.is_interrupted() {
         tracing::info!(target: "restore", "Restore interrupted by user");
-        if !json_output {
-            ui::cli::log!("Restore interrupted by user.");
-        }
         emit_event(
             &counters.event_sender,
             Event::Restore(RestoreEvent::Finished),
         );
-        return Err(fail(
-            "Restore interrupted by user.",
-            RestoreError::Interrupted,
-        ));
+        return Err(RestoreError::Interrupted);
     }
-    restore_result?;
+    restore_result.map_err(|e| RestoreError::RestoreFailed(e.inner()))?;
 
     emit_event(
         &counters.event_sender,
@@ -493,15 +486,10 @@ pub(crate) async fn run_with_repo(
 
         if delete_result.is_err() && cleanup_handler.is_interrupted() {
             tracing::info!(target: "restore", "Post-restore cleanup interrupted by user");
-            if !json_output {
-                ui::cli::log!("Post-restore cleanup interrupted by user.");
-            }
-            return Err(fail(
-                "Post-restore cleanup interrupted by user.",
-                RestoreError::Interrupted,
-            ));
+            return Err(RestoreError::Interrupted);
         }
-        delete_result?;
+        delete_result
+            .map_err(|e| RestoreError::RestoreFailed(format!("delete failed: {}", e.inner())))?;
     }
 
     tracing::info!(target: "restore", "Restore command completed");

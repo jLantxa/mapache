@@ -1,6 +1,5 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
-use anyhow::{Result, bail};
 use chrono::Local;
 use clap::{ArgGroup, Parser};
 use serde::{Deserialize, Serialize};
@@ -8,10 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        self, GlobalArgs, Merge, ToExitCode, cleanup::CleanupHandler, fail, parse_tags,
+        self, GlobalArgs, Merge, ToExitCode, cleanup::CleanupHandler, parse_tags,
         with_repository_lock,
     },
-    common::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, hooks},
+    common::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
         retention::{RetentionRule, apply_retention_rules, filter_snapshots_by_hosts},
@@ -24,17 +23,32 @@ use crate::{
     utils::{self, collections::IdSet},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum ForgetError {
-    RepoOpenFail = 10,
-    InvalidRule = 20,
-    ForgetFailed = 30,
-    Interrupted = 130,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("invalid retention rule: {0}")]
+    InvalidRule(String),
+    #[error("forget failed: {0}")]
+    ForgetFailed(String),
+    #[error("forget interrupted by user")]
+    Interrupted,
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for ForgetError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            ForgetError::RepoOpenFail(_) => 10,
+            ForgetError::InvalidRule(_) => 20,
+            ForgetError::ForgetFailed(_) => 30,
+            ForgetError::Interrupted => 130,
+            ForgetError::Repo(_) => 1,
+            ForgetError::Io(_) => 1,
+        }
     }
 }
 
@@ -236,27 +250,24 @@ where
     }
 }
 
-pub fn parse_retention_number(s: &str) -> Result<usize> {
+pub fn parse_retention_number(s: &str) -> std::result::Result<usize, String> {
     if s == "all" {
         Ok(usize::MAX)
     } else {
-        let n = s.parse::<isize>();
-        match n {
-            Ok(num) => {
-                if num > 0 {
-                    Ok(num as usize)
-                } else {
-                    bail!("N must be greater than 0")
-                }
-            }
-            Err(_) => bail!("{s} is not a number"),
+        let n = s
+            .parse::<isize>()
+            .map_err(|_| format!("{s} is not a number"))?;
+        if n > 0 {
+            Ok(n as usize)
+        } else {
+            Err("n must be greater than 0".to_string())
         }
     }
 }
 
 const FORGET_MSG: &str = "forget";
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), ForgetError> {
     tracing::info!(target: "forget", "Starting forget command");
 
     let dry_run = args.dry_run;
@@ -266,14 +277,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(dry_run))
-            .await
-            .map_err(|e| {
-                fail(
-                    format!("Failed to initialize backend: {}", e),
-                    ForgetError::ForgetFailed,
-                )
-            })?,
+        new_backend_with_prompt(global_args.backend_options(dry_run)).await?,
         global_args.to_repo_config(),
         true,
         global_args.retry_lock_duration,
@@ -282,12 +286,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             let repo = repo.clone();
 
             // Phase 1: forget
-            let cleanup_handler = CleanupHandler::new().map_err(|e| {
-                fail(
-                    format!("Failed to initialize cleanup handler: {}", e),
-                    ForgetError::ForgetFailed,
-                )
-            })?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle.clone());
 
             if !dry_run {
@@ -312,7 +311,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     no_repack: false,
                 };
                 commands::cmd_clean::run_with_repo(json_output, &gc_args, repo, lock_handle)
-                    .await?;
+                    .await
+                    .map_err(|e| ForgetError::ForgetFailed(format!("gc failed: {e}")))?;
             }
 
             Ok(())
@@ -340,18 +340,13 @@ async fn forget_phase(
     args: &CmdArgs,
     json_output: bool,
     cleanup_handler: &CleanupHandler,
-) -> Result<()> {
+) -> Result<(), ForgetError> {
     let dry_run = args.dry_run;
 
     tracing::info!(target: "forget", "Loading snapshots");
     let mut snapshots_sorted: SnapshotEntryList = SnapshotStream::new(repo.clone())
         .await
-        .map_err(|e| {
-            fail(
-                format!("Failed to load snapshots: {}", e),
-                ForgetError::ForgetFailed,
-            )
-        })?
+        .map_err(|e| ForgetError::ForgetFailed(format!("failed to load snapshots: {}", e.inner())))?
         .collect_entries(true)
         .await?;
 
@@ -377,12 +372,7 @@ async fn forget_phase(
             let (id, _) = repo
                 .find(ContentIdType::Snapshot, prefix)
                 .await
-                .map_err(|_e| {
-                    fail(
-                        format!("Snapshot not found: {}", prefix),
-                        ForgetError::ForgetFailed,
-                    )
-                })?;
+                .map_err(|_e| ForgetError::ForgetFailed(format!("snapshot not found: {prefix}")))?;
             forget_ids.insert(id);
         }
         for e in &snapshots_sorted {
@@ -420,9 +410,8 @@ async fn forget_phase(
         }
 
         if retention_rules.is_empty() {
-            return Err(fail(
-                "At least one retention rule must be used.",
-                ForgetError::InvalidRule,
+            return Err(ForgetError::InvalidRule(
+                "at least one retention rule must be used.".to_string(),
             ));
         }
 
@@ -454,10 +443,10 @@ async fn forget_phase(
                 repo.delete_file(ContentIdType::Snapshot, &entry.id, None)
                     .await
                     .map_err(|e| {
-                        fail(
-                            format!("Failed to delete snapshot: {}", e),
-                            ForgetError::ForgetFailed,
-                        )
+                        ForgetError::ForgetFailed(format!(
+                            "failed to delete snapshot: {}",
+                            e.inner()
+                        ))
                     })?;
             } else {
                 repo.set_extension(
@@ -467,10 +456,10 @@ async fn forget_phase(
                 )
                 .await
                 .map_err(|e| {
-                    fail(
-                        format!("Failed to mark snapshot for deletion: {}", e),
-                        ForgetError::ForgetFailed,
-                    )
+                    ForgetError::ForgetFailed(format!(
+                        "failed to mark snapshot for deletion: {}",
+                        e.inner()
+                    ))
                 })?;
             }
         }
@@ -503,13 +492,8 @@ async fn forget_phase(
     }
 
     if cleanup_handler.is_interrupted() {
-        if !json_output {
-            ui::cli::log!("Forget interrupted by user.");
-        }
-        return Err(fail(
-            "Forget interrupted by user.",
-            ForgetError::Interrupted,
-        ));
+        tracing::info!(target: "forget", "Forget interrupted by user");
+        return Err(ForgetError::Interrupted);
     }
 
     Ok(())

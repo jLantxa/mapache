@@ -3,8 +3,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use anyhow::Result;
-
 use crate::repository::lock::LockHandle;
 
 pub struct CleanupHandler {
@@ -13,12 +11,18 @@ pub struct CleanupHandler {
     abort_handle: tokio::task::AbortHandle,
 }
 
+impl Default for CleanupHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CleanupHandler {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Self {
         Self::new_with_callback(|| {})
     }
 
-    pub fn new_with_callback<F>(callback: F) -> Result<Self>
+    pub fn new_with_callback<F>(callback: F) -> Self
     where
         F: Fn() + Send + 'static,
     {
@@ -26,10 +30,7 @@ impl CleanupHandler {
         Self::new_with_interrupt_and_callback(interrupted, callback)
     }
 
-    pub fn new_with_interrupt_and_callback<F>(
-        interrupted: Arc<AtomicBool>,
-        callback: F,
-    ) -> Result<Self>
+    pub fn new_with_interrupt_and_callback<F>(interrupted: Arc<AtomicBool>, callback: F) -> Self
     where
         F: Fn() + Send + 'static,
     {
@@ -48,11 +49,11 @@ impl CleanupHandler {
             }
         });
 
-        Ok(Self {
+        Self {
             interrupted,
             locks,
             abort_handle: join_handle.abort_handle(),
-        })
+        }
     }
 
     pub fn is_interrupted(&self) -> bool {

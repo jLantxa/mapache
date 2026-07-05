@@ -1,4 +1,5 @@
 use std::{
+    io,
     path::PathBuf,
     sync::{
         Arc,
@@ -7,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, bail};
+use crate::common::error::Result;
 use clap::Args;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use parking_lot::Mutex;
@@ -15,9 +16,10 @@ use serde::Serialize;
 
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler},
     common::{
         defaults::{DEFAULT_PACK_SIZE, UI_RATE_ESTIMATOR_WINDOW},
+        error::MapacheError,
         global::GlobalOpts,
     },
     repository::lock::{Lock, LockHandle},
@@ -26,17 +28,32 @@ use crate::{
     utils::{self, rate_estimator::RateEstimator},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum SyncError {
-    RepoOpenFail = 10,
-    BackendError = 11,
-    SyncFailed = 20,
-    Interrupted = 130,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("backend error: {0}")]
+    BackendError(String),
+    #[error("sync failed: {0}")]
+    SyncFailed(String),
+    #[error("sync interrupted by user")]
+    Interrupted,
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for SyncError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            SyncError::RepoOpenFail(_) => 10,
+            SyncError::BackendError(_) => 11,
+            SyncError::SyncFailed(_) => 20,
+            SyncError::Interrupted => 130,
+            SyncError::Repo(_) => 1,
+            SyncError::Io(_) => 1,
+        }
     }
 }
 
@@ -64,7 +81,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Result<(), SyncError> {
     let json_out = global_args.json;
 
     if json_out {
@@ -93,10 +110,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let src_backend = backend::new_backend_with_prompt(global_args.backend_options(false))
         .await
         .map_err(|e| {
-            fail(
-                format!("Failed to initialize source backend: {}", e),
-                SyncError::BackendError,
-            )
+            SyncError::BackendError(format!(
+                "failed to initialize source backend: {}",
+                e.inner()
+            ))
         })?;
 
     let dst_backend = backend::new_backend_with_prompt(BackendOptions {
@@ -109,15 +126,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     })
     .await
     .map_err(|e| {
-        fail(
-            format!("Failed to initialize destination backend: {}", e),
-            SyncError::BackendError,
-        )
+        SyncError::BackendError(format!(
+            "failed to initialize destination backend: {}",
+            e.inner()
+        ))
     })?;
 
-    let auth = match utils::get_auth(&global_args.auth_file)? {
+    let auth = match utils::get_auth(&global_args.auth_file)
+        .map_err(|e| SyncError::BackendError(format!("failed to get auth: {}", e.inner())))?
+    {
         Some(a) => a,
-        None => ui::cli::request_auth()?,
+        None => ui::cli::request_auth()
+            .map_err(|e| SyncError::BackendError(format!("failed to get auth: {}", e.inner())))?,
     };
 
     let repo_config = RepoConfig {
@@ -134,12 +154,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             repo_config,
         )
         .await
-        .map_err(|e| {
-            fail(
-                format!("Failed to open source repository: {}", e),
-                SyncError::RepoOpenFail,
-            )
-        })?;
+        .map_err(|e| SyncError::RepoOpenFail(e.to_string()))?;
         let lock = LockHandle::new(
             repo.clone(),
             Arc::new(parking_lot::Mutex::new(Lock::new(false))),
@@ -156,12 +171,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             global_args.retry_lock_duration,
         )
         .await
-        .map_err(|e| {
-            fail(
-                format!("Failed to open source repository: {}", e),
-                SyncError::RepoOpenFail,
-            )
-        })?
+        .map_err(|e| SyncError::RepoOpenFail(e.to_string()))?
     };
 
     // Try to open the destination repo with the source auth to acquire a lock.
@@ -199,10 +209,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     };
 
     dst_backend.create().await.map_err(|e| {
-        fail(
-            format!("Failed to create destination backend: {}", e),
-            SyncError::BackendError,
-        )
+        SyncError::BackendError(format!(
+            "failed to create destination backend: {}",
+            e.inner()
+        ))
     })?;
 
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
@@ -210,7 +220,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             "\n{}",
             "Process interrupted. Cleaning up...".bold().yellow()
         );
-    })?;
+    });
     cleanup_handler.add_lock(Some(src_lock.clone()));
     if let Some(lock) = &dst_lock {
         cleanup_handler.add_lock(Some(lock.clone()));
@@ -233,14 +243,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         if let Some(lock) = dst_lock {
             lock.unlock().await;
         }
-        return Err(fail("Sync interrupted by user.", SyncError::Interrupted));
+        return Err(SyncError::Interrupted);
     }
-    sync_result.map_err(|e| {
-        fail(
-            format!("Synchronization failed: {}", e),
-            SyncError::SyncFailed,
-        )
-    })?;
+    sync_result.map_err(|e| SyncError::SyncFailed(e.to_string()))?;
 
     if json_out {
         #[derive(Serialize)]
@@ -316,7 +321,8 @@ async fn sync_backends(
             let total = to_delete.len();
             for (i, node) in to_delete.iter().enumerate() {
                 if shutdown_signal.load(Ordering::Acquire) {
-                    bail!("Interrupted");
+                    tracing::info!(target: "sync", "Sync delete interrupted by user");
+                    return Err(MapacheError::Internal("interrupted".to_string()));
                 }
 
                 tracing::debug!(target: "sync", "Deleting {:?}", node.path());
@@ -355,7 +361,8 @@ async fn sync_backends(
 
             for node in to_delete {
                 if shutdown_signal.load(Ordering::Acquire) {
-                    bail!("Interrupted");
+                    tracing::info!(target: "sync", "Sync delete interrupted by user");
+                    return Err(MapacheError::Internal("interrupted".to_string()));
                 }
 
                 tracing::debug!(target: "sync", "Deleting {:?}", node.path());
@@ -385,7 +392,8 @@ async fn sync_backends(
 
                 async move {
                     if shutdown_signal.load(Ordering::Acquire) {
-                        bail!("Interrupted");
+                        tracing::info!(target: "sync", "Sync copy interrupted by user");
+                        return Err(MapacheError::Internal("interrupted".to_string()));
                     }
 
                     match node {
@@ -418,7 +426,7 @@ async fn sync_backends(
                             total: total_copy,
                         },
                     );
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<(), MapacheError>(())
                 }
             })
             .buffer_unordered(4);
@@ -471,7 +479,8 @@ async fn sync_backends(
 
                 async move {
                     if shutdown_signal.load(Ordering::Acquire) {
-                        bail!("Interrupted");
+                        tracing::info!(target: "sync", "Sync copy interrupted by user");
+                        return Err(MapacheError::Internal("interrupted".to_string()));
                     }
 
                     match node {
@@ -492,7 +501,7 @@ async fn sync_backends(
                     bar.inc(1);
                     let pos = bar.position() as f64;
                     sync_rate.lock().observe(pos);
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<(), MapacheError>(())
                 }
             })
             .buffer_unordered(4); // Use 4 concurrent copy operations

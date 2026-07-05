@@ -1,8 +1,8 @@
-use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::{
     backend::WriteContents,
+    common::error::Result,
     common::{BlobType, ID, SaveID},
 };
 

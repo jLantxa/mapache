@@ -11,10 +11,14 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::{common::ID, ui::cli::color::Colorize, utils};
+use crate::{
+    common::ID,
+    common::error::{MapacheError, Result},
+    ui::cli::color::Colorize,
+    utils,
+};
 
 /// The type of a node (file, directory, symlink, etc.)
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,7 +366,7 @@ impl Node {
         let path_owned = path.to_owned();
         tokio::task::spawn_blocking(move || Self::from_path_sync(&path_owned, with_atime))
             .await
-            .context("Node creation panicked")?
+            .map_err(|e| MapacheError::Internal(format!("node creation panicked: {}", e)))?
     }
 
     /// Synchronous version of `from_path`, optionally capturing access time.
@@ -408,7 +412,7 @@ impl Node {
             Self::fetch_metadata_and_type_sync(&path_owned, follow_symlinks, with_atime)
         })
         .await
-        .context("Metadata fetching panicked")?
+        .map_err(|e| MapacheError::Internal(format!("metadata fetching panicked: {}", e)))?
     }
 
     fn fetch_metadata_and_type_sync(
@@ -418,7 +422,8 @@ impl Node {
     ) -> Result<(Metadata, NodeType)> {
         #[cfg(target_os = "linux")]
         {
-            let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+            let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+                .map_err(|e| MapacheError::Format(e.to_string()))?;
             // SAFETY: `statx` is a C struct containing only integer types; zeroed is
             // a valid initial state. It is overwritten by `statx()` before any reads.
             let mut sx: linux_statx::statx = unsafe { std::mem::zeroed() };
@@ -465,13 +470,13 @@ impl Node {
                 } else if (mode & libc::S_IFMT) == libc::S_IFSOCK {
                     NodeType::Socket
                 } else {
-                    bail!("Unsupported file type");
+                    return Err(MapacheError::Repo("unsupported file type".to_string()));
                 };
                 return Ok((meta, node_type));
             } else {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() != Some(libc::ENOSYS) {
-                    return Err(anyhow::Error::from(err));
+                    return Err(MapacheError::Io(err));
                 }
                 // Fallback to std::fs if statx is not supported
             }
@@ -536,17 +541,18 @@ impl Node {
         let mut node = self.clone();
         let updated_node = tokio::task::spawn_blocking(move || {
             node.populate_symlink_info_sync(&path_owned)?;
-            Ok::<_, anyhow::Error>(node)
+            Ok::<_, MapacheError>(node)
         })
         .await
-        .context("Symlink info populating panicked")??;
+        .map_err(|e| {
+            MapacheError::Internal(format!("symlink info populating panicked: {}", e))
+        })??;
         *self = updated_node;
         Ok(())
     }
 
     fn populate_symlink_info_sync(&mut self, path: &Path) -> Result<()> {
-        let target = std::fs::read_link(path)
-            .with_context(|| format!("Failed to read symlink target for: {}", path.display()))?;
+        let target = std::fs::read_link(path)?;
 
         let mut info = SymlinkInfo {
             target_path: target.clone(),
@@ -667,11 +673,15 @@ fn get_node_type(meta: &FsMetadata) -> Result<NodeType> {
             } else if file_type.is_socket() {
                 NodeType::Socket
             } else {
-                bail!("Found unsupported Unix file type")
+                return Err(MapacheError::Repo(
+                    "found unsupported Unix file type".to_string(),
+                ));
             }
         }
         #[cfg(not(unix))]
-        bail!("Found unsupported non-Unix file type")
+        return Err(MapacheError::Repo(
+            "found unsupported non-Unix file type".to_string(),
+        ));
     };
 
     Ok(node_type)

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, anyhow};
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -51,10 +51,11 @@ impl LocalFS {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !readonly => return Ok(()),
             Err(e) => {
-                return Err(e).context(format!(
-                    "Failed to retrieve metadata for permission change: {}",
-                    full_path.display()
-                ));
+                return Err(MapacheError::Backend(format!(
+                    "failed to retrieve metadata for permission change: {}: {}",
+                    full_path.display(),
+                    e
+                )));
             }
         };
 
@@ -77,12 +78,13 @@ impl LocalFS {
 
         tokio::fs::set_permissions(&full_path, perms)
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to set permissions (readonly={}) on {}",
+            .map_err(|e| {
+                MapacheError::Backend(format!(
+                    "failed to set permissions (readonly={}) on {}: {}",
                     readonly,
-                    full_path.display()
-                )
+                    full_path.display(),
+                    e
+                ))
             })
     }
 
@@ -120,11 +122,12 @@ impl StorageBackend for LocalFS {
     async fn create(&self) -> Result<()> {
         tokio::fs::create_dir_all(&self.base_path)
             .await
-            .with_context(|| {
-                format!(
-                    "Could not create repository backend root at {}",
-                    self.base_path.display()
-                )
+            .map_err(|e| {
+                MapacheError::Backend(format!(
+                    "could not create repository backend root at {}: {}",
+                    self.base_path.display(),
+                    e
+                ))
             })?;
 
         #[cfg(unix)]
@@ -141,15 +144,20 @@ impl StorageBackend for LocalFS {
         let full_path = self.full_path(path);
         tracing::trace!(target: "backend", "LocalFS: read {:?} (offset={}, length={})", path, offset, length);
 
-        let mut file = tokio::fs::File::open(&full_path)
-            .await
-            .with_context(|| format!("Could not open file for reading: '{}'", path.display()))?;
+        let mut file = tokio::fs::File::open(&full_path).await.map_err(|e| {
+            MapacheError::Backend(format!(
+                "could not open file for reading: '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
 
-        let metadata = file.metadata().await.with_context(|| {
-            format!(
-                "Could not get metadata for size calculation: '{}'",
-                path.display()
-            )
+        let metadata = file.metadata().await.map_err(|e| {
+            MapacheError::Backend(format!(
+                "could not get metadata for size calculation: '{}': {}",
+                path.display(),
+                e
+            ))
         })?;
         let file_size = metadata.len();
 
@@ -162,12 +170,13 @@ impl StorageBackend for LocalFS {
 
         file.seek(SeekFrom::Start(start_position))
             .await
-            .with_context(|| {
-                format!(
-                    "Could not seek to {} in '{}'",
+            .map_err(|e| {
+                MapacheError::Backend(format!(
+                    "could not seek to {} in '{}': {}",
                     start_position,
-                    path.display()
-                )
+                    path.display(),
+                    e
+                ))
             })?;
 
         let bytes_remaining: usize = file_size.saturating_sub(start_position) as usize;
@@ -177,12 +186,13 @@ impl StorageBackend for LocalFS {
         };
 
         let mut data = vec![0u8; read_length];
-        file.read_exact(&mut data).await.with_context(|| {
-            format!(
-                "Could not read {} bytes from '{}'",
+        file.read_exact(&mut data).await.map_err(|e| {
+            MapacheError::Backend(format!(
+                "could not read {} bytes from '{}': {}",
                 read_length,
-                path.display()
-            )
+                path.display(),
+                e
+            ))
         })?;
 
         Ok(data)
@@ -218,7 +228,7 @@ impl StorageBackend for LocalFS {
                     file.write_all(&data)?;
                     file.sync_all()?;
                 } else {
-                    return Err(anyhow::Error::from(e));
+                    return Err(MapacheError::Io(e));
                 }
             }
 
@@ -231,7 +241,7 @@ impl StorageBackend for LocalFS {
             Ok(())
         })
         .await
-        .map_err(|e| anyhow!("Blocking task failed: {}", e))?
+        .map_err(|e| MapacheError::Backend(format!("blocking task failed: {}", e)))?
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
@@ -246,12 +256,13 @@ impl StorageBackend for LocalFS {
 
         tokio::fs::rename(&fullpath_from, &fullpath_to)
             .await
-            .with_context(|| {
-                format!(
-                    "Could not rename '{}' to '{}' in local backend",
+            .map_err(|e| {
+                MapacheError::Backend(format!(
+                    "could not rename '{}' to '{}' in local backend: {}",
                     from.display(),
-                    to.display()
-                )
+                    to.display(),
+                    e
+                ))
             })?;
 
         // Repository files are generally treated as immutable once written
@@ -283,24 +294,28 @@ impl StorageBackend for LocalFS {
                 let _ = self.set_readonly_status(path, false).await;
 
                 if metadata.is_dir() {
-                    tokio::fs::remove_dir_all(&full_path)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Could not remove directory '{}' recursively",
-                                path.display()
-                            )
-                        })
+                    tokio::fs::remove_dir_all(&full_path).await.map_err(|e| {
+                        MapacheError::Backend(format!(
+                            "could not remove directory '{}' recursively: {}",
+                            path.display(),
+                            e
+                        ))
+                    })
                 } else {
-                    tokio::fs::remove_file(&full_path)
-                        .await
-                        .with_context(|| format!("Could not remove file '{}'", path.display()))
+                    tokio::fs::remove_file(&full_path).await.map_err(|e| {
+                        MapacheError::Backend(format!(
+                            "could not remove file '{}': {}",
+                            path.display(),
+                            e
+                        ))
+                    })
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(anyhow!(e).context(format!(
-                "Failed to determine type of path '{}' for removal",
-                path.display()
+            Err(e) => Err(MapacheError::Backend(format!(
+                "failed to determine type of path '{}' for removal: {}",
+                path.display(),
+                e
             ))),
         }
     }
@@ -315,25 +330,37 @@ impl StorageBackend for LocalFS {
         let mut nodes = Vec::new();
         tracing::debug!(target: "backend", "LocalFS: list_dir {:?}", path);
 
-        let mut read_dir = tokio::fs::read_dir(&full_path).await.with_context(|| {
-            format!("Could not list contents of directory '{}'", path.display())
+        let mut read_dir = tokio::fs::read_dir(&full_path).await.map_err(|e| {
+            MapacheError::Backend(format!(
+                "could not list contents of directory '{}': {}",
+                path.display(),
+                e
+            ))
         })?;
 
-        while let Some(entry) = read_dir
-            .next_entry()
-            .await
-            .with_context(|| format!("Failed while iterating directory '{}'", path.display()))?
-        {
+        while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
+            MapacheError::Backend(format!(
+                "failed while iterating directory '{}': {}",
+                path.display(),
+                e
+            ))
+        })? {
             let entry_path = entry.path();
-            let metadata = entry.metadata().await.with_context(|| {
-                format!("Could not get metadata for '{}'", entry_path.display())
+            let metadata = entry.metadata().await.map_err(|e| {
+                MapacheError::Backend(format!(
+                    "could not get metadata for '{}': {}",
+                    entry_path.display(),
+                    e
+                ))
             })?;
 
             // Strip the base_path to keep paths relative to the repo root
             let relative = entry_path
                 .strip_prefix(&self.base_path)
                 .map(Path::to_path_buf)
-                .context("Found entry outside of repository base path")?;
+                .map_err(|_| {
+                    MapacheError::Backend("found entry outside of repository base path".into())
+                })?;
 
             if metadata.is_file() {
                 nodes.push(BackendNode::File(relative, metadata.len()));
@@ -363,9 +390,9 @@ impl StorageBackend for LocalFS {
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {
         let full_path = self.full_path(path);
-        let meta = tokio::fs::symlink_metadata(&full_path)
-            .await
-            .with_context(|| format!("lstat failed for {}", path.display()))?;
+        let meta = tokio::fs::symlink_metadata(&full_path).await.map_err(|e| {
+            MapacheError::Backend(format!("lstat failed for {}: {}", path.display(), e))
+        })?;
 
         let (perm, uid, gid) = {
             #[cfg(unix)]

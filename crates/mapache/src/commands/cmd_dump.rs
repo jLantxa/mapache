@@ -1,28 +1,43 @@
-use std::{io::Write, path::PathBuf};
+use std::{io, io::Write, path::PathBuf};
 
-use anyhow::{Context, Result};
 use clap::Args;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail, find_use_snapshot,
+        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
         with_repository_lock,
     },
+    common::error::MapacheError,
     fs::tree::find_serialized_node,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum DumpError {
-    RepoOpenFail = 10,
-    SnapshotNotFound = 20,
-    PathNotFound = 21,
-    DumpFailed = 30,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("snapshot not found: {0}")]
+    SnapshotNotFound(String),
+    #[error("path not found: {0}")]
+    PathNotFound(String),
+    #[error("dump failed: {0}")]
+    DumpFailed(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for DumpError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            DumpError::RepoOpenFail(_) => 10,
+            DumpError::SnapshotNotFound(_) => 20,
+            DumpError::PathNotFound(_) => 21,
+            DumpError::DumpFailed(_) => 30,
+            DumpError::Repo(_) => 1,
+            DumpError::Io(_) => 1,
+        }
     }
 }
 
@@ -38,7 +53,7 @@ pub struct CmdArgs {
     pub path: PathBuf,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), DumpError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
@@ -48,31 +63,44 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
             repo.reload_master_index().await?;
 
             let (_snapshot_id, snap) = find_use_snapshot(repo.clone(), &args.snapshot)
                 .await
-                .map_err(|_| fail("Snapshot not found", DumpError::SnapshotNotFound))?
-                .ok_or_else(|| fail("Snapshot not found", DumpError::SnapshotNotFound))?;
+                .map_err(|e| DumpError::SnapshotNotFound(e.inner()))?
+                .ok_or_else(|| {
+                    DumpError::SnapshotNotFound(
+                        "no snapshot matches the given identifier".to_string(),
+                    )
+                })?;
 
             let node = find_serialized_node(repo.as_ref(), &snap.tree, &args.path)
                 .await?
-                .ok_or_else(|| fail("Path not found", DumpError::PathNotFound))?;
+                .ok_or_else(|| {
+                    DumpError::PathNotFound(format!(
+                        "'{}' does not exist in snapshot",
+                        args.path.display()
+                    ))
+                })?;
 
             if !node.is_file() {
-                return Err(fail("Path is not a regular file", DumpError::DumpFailed));
+                return Err(DumpError::DumpFailed(
+                    "path is not a regular file".to_string(),
+                ));
             }
 
             let mut stdout = std::io::stdout();
             if let Some(blob_ids) = &node.blobs {
                 for blob_id in blob_ids {
-                    let data = repo
-                        .load_blob(blob_id)
-                        .await
-                        .with_context(|| format!("Failed to load blob {blob_id}"))?;
+                    let data = repo.load_blob(blob_id).await.map_err(|e| {
+                        DumpError::DumpFailed(format!(
+                            "failed to load blob {blob_id}: {}",
+                            e.inner()
+                        ))
+                    })?;
                     stdout.write_all(&data)?;
                 }
             }

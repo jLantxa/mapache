@@ -1,10 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 
 use crate::{
     backend::Handle,
+    common::error::{MapacheError, Result},
     common::{BlobType, ContentIdType, ID, defaults},
     repository::{index::BlobLocator, repo::Repository},
 };
@@ -107,9 +107,14 @@ pub async fn download_pack_segments<T: Send + 'static>(
                         segment.source_len(),
                     )
                     .await
-                    .with_context(|| format!("Failed to read pack {}", segment.pack_id))?;
+                    .map_err(|e| {
+                        MapacheError::Backend(format!(
+                            "Failed to read pack {}: {}",
+                            segment.pack_id, e
+                        ))
+                    })?;
 
-                Ok::<(_, Vec<u8>), anyhow::Error>((segment, data))
+                Ok::<(_, Vec<u8>), MapacheError>((segment, data))
             }
         })
         .buffer_unordered(8)
@@ -139,7 +144,7 @@ impl BlobLoader {
                 .repo
                 .index()
                 .get(id)
-                .with_context(|| format!("Blob {id} not found in index"))?;
+                .ok_or(MapacheError::NotInIndex(*id))?;
             locators.push((*id, loc));
         }
         self.load_with_locators(locators).await
@@ -177,20 +182,19 @@ impl BlobLoader {
             for (id, loc, _) in segment.blobs {
                 let blob_offset = loc.offset as u64;
                 if blob_offset < segment.min_offset {
-                    return Err(anyhow::anyhow!(
+                    return Err(MapacheError::Integrity(format!(
                         "Blob offset {} is before segment start {}",
-                        blob_offset,
-                        segment.min_offset
-                    ));
+                        blob_offset, segment.min_offset
+                    )));
                 }
                 let start = (blob_offset - segment.min_offset) as usize;
                 let end = start + loc.length as usize;
                 if end > data.len() {
-                    return Err(anyhow::anyhow!(
+                    return Err(MapacheError::Integrity(format!(
                         "Blob end {} exceeds segment data length {}",
                         end,
                         data.len()
-                    ));
+                    )));
                 }
 
                 let decoded = self.repo.secure_storage().decode(&data[start..end])?;

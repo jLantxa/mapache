@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use argon2;
 use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt, future::BoxFuture};
@@ -32,7 +32,7 @@ pub enum KeyManagerError {
     /// A keyfile is corrupted or invalid
     InvalidKeyfile(String),
     /// Other errors (I/O, decompression, etc.)
-    Other(anyhow::Error),
+    Other(MapacheError),
 }
 
 impl KeyManagerError {
@@ -56,7 +56,7 @@ impl std::fmt::Display for KeyManagerError {
             KeyManagerError::NoKeyfilesFound => {
                 write!(
                     f,
-                    "No keyfiles found. This repository may not be properly initialized."
+                    "no keyfiles found. This repository may not be properly initialized."
                 )
             }
             KeyManagerError::NoMatchingKeyfile => {
@@ -118,7 +118,7 @@ impl KeyFile {
             .t_cost(self.t)
             .p_cost(self.p)
             .build()
-            .map_err(|e| anyhow!("Invalid Argon2 parameters: {e}"))
+            .map_err(|e| MapacheError::Crypto(format!("invalid Argon2 parameters: {e}")))
     }
 }
 
@@ -156,10 +156,13 @@ impl Stream for KeyFileStream {
 
             self.loading_future = Some(Box::pin(async move {
                 if !backend.is_file(&path).await {
-                    bail!("Not a file");
+                    Err(MapacheError::Repo("not a file".to_string()))?;
                 }
 
-                let id_str = path.file_name().context("No filename")?.to_string_lossy();
+                let id_str = path
+                    .file_name()
+                    .ok_or_else(|| MapacheError::Format("no filename".to_string()))?
+                    .to_string_lossy();
                 let id = ID::from_hex(&id_str)?;
 
                 let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
@@ -177,7 +180,7 @@ impl Stream for KeyFileStream {
             match fut.as_mut().poll(cx) {
                 Poll::Ready(Ok(res)) => Poll::Ready(Some(Ok(res))),
                 Poll::Ready(Err(e)) => {
-                    if e.downcast_ref::<serde_json::Error>().is_some() {
+                    if matches!(e, MapacheError::Serialization(_)) {
                         ui::cli::warning!("Failed to parse keyfile: {}", e);
                         self.loading_future = None;
                         return self.poll_next(cx);
@@ -221,7 +224,11 @@ impl KeyManager {
 
         ss.decrypt(&encrypted_key)
             .map(|c| Zeroizing::new(c.into_owned()))
-            .context("Could not retrieve master key from this keyfile")
+            .map_err(|e| {
+                MapacheError::Crypto(format!(
+                    "could not retrieve master key from this keyfile: {e}"
+                ))
+            })
     }
 
     /// Generates a new KeyFile for the master key with a new password
@@ -261,7 +268,13 @@ impl KeyManager {
         tracing::debug!(target: "keys", "Retrieving master key (path={:?})", keyfile_path);
         self.retrieve_master_key_internal(auth, keyfile_path)
             .await
-            .map_err(anyhow::Error::new)
+            .map_err(|e| match e {
+                KeyManagerError::NoMatchingKeyfile => {
+                    MapacheError::Auth("Incorrect username or password".to_string())
+                }
+                KeyManagerError::Other(inner) => inner,
+                other => MapacheError::Repo(format!("{other}")),
+            })
     }
 
     async fn retrieve_master_key_internal(
@@ -274,14 +287,14 @@ impl KeyManager {
                 tracing::debug!(target: "keys", "Reading key file from local path: {:?}", path);
 
                 let keyfile_data =
-                    std::fs::read(path).map_err(|e| KeyManagerError::Other(e.into()))?;
+                    std::fs::read(path).map_err(|e| KeyManagerError::Other(MapacheError::Io(e)))?;
 
                 let ss = SecureStorage::new();
                 let keyfile_bytes = ss
                     .decompress(&keyfile_data)
                     .map_err(KeyManagerError::Other)?;
                 let keyfile: KeyFile = serde_json::from_slice(&keyfile_bytes).map_err(|e| {
-                    KeyManagerError::InvalidKeyfile(format!("KeyFile at {path:?} is invalid: {e}"))
+                    KeyManagerError::InvalidKeyfile(format!("keyFile at {path:?} is invalid: {e}"))
                 })?;
 
                 if keyfile.username != auth.username {
@@ -328,7 +341,9 @@ impl KeyManager {
         if stream.next().await.is_some() {
             Ok(())
         } else {
-            bail!("No keyfiles found. This repository may not be properly initialized.")
+            Err(MapacheError::Repo(
+                "No keyfiles found. This repository may not be properly initialized.".to_string(),
+            ))?
         }
     }
 
@@ -370,7 +385,9 @@ impl KeyManager {
         match matches.len() {
             0 => Ok(None),
             1 => Ok(Some(matches.swap_remove(0))),
-            _ => bail!("More than one Keyfile found for username {username}"),
+            _ => Err(MapacheError::Integrity(format!(
+                "more than one Keyfile found for username {username}"
+            )))?,
         }
     }
 
@@ -433,12 +450,12 @@ impl KeyManager {
     pub async fn find_id_with_prefix(&self, prefix: &str) -> Result<(ID, PathBuf)> {
         if prefix.len() > 2 * common::ID_LENGTH {
             // A hex string has 2 characters per byte.
-            bail!(
-                "Invalid prefix length. The prefix must not be longer than the ID ({} chars)",
+            return Err(MapacheError::Format(format!(
+                "invalid prefix length. The prefix must not be longer than the ID ({} chars)",
                 2 * common::ID_LENGTH
-            );
+            )));
         } else if prefix.is_empty() {
-            bail!("Prefix cannot be empty");
+            Err(MapacheError::Format("prefix cannot be empty".to_string()))?;
         }
 
         let entries = self.backend.list_dir(Path::new(KEYS_DIR)).await?;
@@ -448,7 +465,7 @@ impl KeyManager {
             let file_path = node.into_path();
             let filename = file_path
                 .file_name()
-                .context("File should have a name")?
+                .ok_or_else(|| MapacheError::Format("file should have a name".to_string()))?
                 .to_string_lossy();
             if filename.starts_with(prefix) {
                 matches.push((filename.into_owned(), file_path));
@@ -456,15 +473,19 @@ impl KeyManager {
         }
 
         if matches.is_empty() {
-            bail!("Keyfile with prefix {prefix} doesn't exist");
+            return Err(MapacheError::NotFound(format!(
+                "keyfile with prefix {prefix} doesn't exist"
+            )));
         }
         if matches.len() > 1 {
-            bail!("Prefix {prefix} is ambiguous");
+            return Err(MapacheError::Format(format!(
+                "prefix {prefix} is ambiguous"
+            )));
         }
 
         let (filename, filepath) = matches
             .pop()
-            .ok_or_else(|| anyhow!("Keyfile match set is empty"))?;
+            .ok_or_else(|| MapacheError::Integrity("keyfile match set is empty".to_string()))?;
         let id = ID::from_hex(&filename)?;
         Ok((id, filepath))
     }

@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, Write};
 
-use anyhow::Result;
+use crate::common::error::{MapacheError, Result};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
@@ -90,7 +90,9 @@ fn read_password_impl(prompt: &str) -> Result<Zeroizing<String>> {
         // SAFETY: FFI call to tcgetattr with STDIN_FILENO and pointer to t.
         let mut t = std::mem::zeroed();
         if tcgetattr(STDIN_FILENO, &mut t) != 0 {
-            return Err(anyhow::anyhow!("Failed to get terminal attributes"));
+            return Err(MapacheError::Internal(
+                "Failed to get terminal attributes".to_string(),
+            ));
         }
         t
     };
@@ -101,7 +103,9 @@ fn read_password_impl(prompt: &str) -> Result<Zeroizing<String>> {
     unsafe {
         // SAFETY: FFI call to tcsetattr to disable echoing.
         if tcsetattr(STDIN_FILENO, TCSANOW, &termios) != 0 {
-            return Err(anyhow::anyhow!("Failed to set terminal attributes"));
+            return Err(MapacheError::Internal(
+                "Failed to set terminal attributes".to_string(),
+            ));
         }
     }
 
@@ -183,7 +187,7 @@ pub(crate) fn request_new_password(prompt: &str, confirmation: &str) -> Result<Z
     let pw = read_password_impl(prompt)?;
     let confirm = read_password_impl(confirmation)?;
     if *pw != *confirm {
-        anyhow::bail!("Passwords don't match");
+        return Err(MapacheError::Internal("passwords don't match".to_string()));
     }
     Ok(pw)
 }

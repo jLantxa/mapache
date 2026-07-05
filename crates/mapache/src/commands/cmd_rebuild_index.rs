@@ -1,30 +1,39 @@
 use std::{
+    io,
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
-use anyhow::Result;
 use clap::Args;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
-    common::{ContentIdType, ID},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    common::{ContentIdType, ID, error::MapacheError},
     repository::{index::MasterIndex, packer::Packer},
     ui::{self, cli::color::Colorize, default_bar_draw_target},
     utils::{self},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum RebuildIndexError {
-    Interrupted = 130,
+    #[error("index rebuild interrupted by user")]
+    Interrupted,
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for RebuildIndexError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            RebuildIndexError::Interrupted => 130,
+            RebuildIndexError::Repo(_) => 1,
+            RebuildIndexError::Io(_) => 1,
+        }
     }
 }
 
@@ -36,7 +45,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), RebuildIndexError> {
     tracing::info!(target: "rebuild-index", "Starting rebuild-index command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -53,7 +62,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     "\n{}",
                     "Process interrupted. Cleaning up...".bold().yellow()
                 );
-            })?;
+            });
             cleanup_handler.add_lock(lock_handle);
 
             let start = Instant::now();
@@ -129,10 +138,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             for (pack_id, res) in results {
                 if cleanup_handler.is_interrupted() {
-                    return Err(fail(
-                        "Rebuild-index interrupted by user.",
-                        RebuildIndexError::Interrupted,
-                    ));
+                    tracing::info!(target: "rebuild-index", "Rebuild index interrupted by user");
+                    return Err(RebuildIndexError::Interrupted);
                 }
 
                 match res {
@@ -144,7 +151,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     }
                     Err(e) => {
                         error_count += 1;
-                        ui::cli::error!("Error reading pack {pack_id}: {e}");
+                        ui::cli::error!("error reading pack {pack_id}: {e}");
                     }
                 }
                 populate_bar.inc(1);
@@ -200,7 +207,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                                 deleted_size_ptr.fetch_add(size, Ordering::AcqRel);
                             }
                             Err(e) => {
-                                ui::cli::error!("Failed to delete index {}: {}", id, e);
+                                ui::cli::error!("failed to delete index {}: {}", id, e);
                             }
                         }
                         index_delete_bar.inc(1);

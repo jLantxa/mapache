@@ -7,7 +7,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use russh::{
     client,
@@ -51,13 +51,19 @@ impl std::fmt::Display for SftpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SftpError::AuthenticationFailed(user) => {
-                write!(f, "SFTP authentication failed for user: {}", user)
+                write!(f, "sftp authentication failed for user: {}", user)
             }
         }
     }
 }
 
 impl std::error::Error for SftpError {}
+
+impl From<russh::Error> for MapacheError {
+    fn from(e: russh::Error) -> Self {
+        MapacheError::Backend(e.to_string())
+    }
+}
 
 /// Supported authentication methods for the SFTP backend.
 #[derive(Clone, Debug)]
@@ -79,12 +85,12 @@ struct MapacheSftpHandler {
 }
 
 impl client::Handler for MapacheSftpHandler {
-    type Error = anyhow::Error;
+    type Error = MapacheError;
 
     async fn check_server_key(
         &mut self,
         server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
+    ) -> std::result::Result<bool, Self::Error> {
         const SSH_KNOWN_HOSTS_PATH: &str = ".ssh/known_hosts";
 
         let known_hosts_path = if let Some(ref path) = self.known_hosts_path {
@@ -144,15 +150,15 @@ impl client::Handler for MapacheSftpHandler {
         }
 
         if found_host {
-            bail!(
-                "Security Alert: Remote host identification has changed for '{}'.\n\
+            return Err(MapacheError::Backend(format!(
+                "security alert: Remote host identification has changed for '{}'.\n\
                  This could indicate a man-in-the-middle attack or a legitimate host key rotation.\n\
                  The host key fingerprint received was {}.\n\
                  Please verify the server's key or update your known_hosts file at {:?}.",
                 self.host,
                 utils::base64::encode(&server_public_key.to_bytes().unwrap_or_default()),
                 known_hosts_path
-            );
+            )));
         }
 
         // Host not found in known_hosts. Prompt the user.
@@ -168,7 +174,8 @@ impl client::Handler for MapacheSftpHandler {
         );
 
         let prompt = "Are you sure you want to continue connecting (yes/no/[fingerprint])?";
-        let input = ui::cli::request_input(prompt)?
+        let input = ui::cli::request_input(prompt)
+            .map_err(|e| MapacheError::Config(format!("failed to read user input: {e}")))?
             .unwrap_or_default()
             .to_lowercase();
 
@@ -190,8 +197,11 @@ impl client::Handler for MapacheSftpHandler {
                 .open(&known_hosts_path)?;
 
             use std::io::Write;
-            let key_base64 =
-                utils::base64::encode(&server_public_key.to_bytes().map_err(|e| anyhow!(e))?);
+            let key_base64 = utils::base64::encode(
+                &server_public_key
+                    .to_bytes()
+                    .map_err(|e| MapacheError::Backend(e.to_string()))?,
+            );
             writeln!(
                 file,
                 "{} {} {}",
@@ -202,7 +212,9 @@ impl client::Handler for MapacheSftpHandler {
 
             Ok(true)
         } else {
-            bail!("Host key verification failed.");
+            Err(MapacheError::Backend(
+                "host key verification failed.".to_string(),
+            ))?
         }
     }
 }
@@ -235,44 +247,58 @@ impl SftpConnection {
 
         let mut session = client::connect(config, (host, port), handler)
             .await
-            .context("Failed to connect to SFTP server")?;
+            .map_err(|e| match &e {
+                MapacheError::Auth(_) | MapacheError::Backend(_) => e,
+                _ => MapacheError::Backend(format!("failed to connect to SFTP server: {}", e)),
+            })?;
 
         let auth_res = match auth_method {
             AuthMethod::Password(password) => session
                 .authenticate_password(username, password.as_str())
                 .await
-                .context("SSH password authentication failed")?,
+                .map_err(|e| {
+                    MapacheError::Backend(format!("ssh password authentication failed: {}", e))
+                })?,
             AuthMethod::PubKey {
                 private_key,
                 passphrase,
             } => {
                 let key = load_secret_key(private_key, passphrase.as_ref().map(|p| p.as_str()))
-                    .context("Failed to load private key")?;
+                    .map_err(|e| {
+                        MapacheError::Backend(format!("failed to load private key: {}", e))
+                    })?;
                 let pk = PrivateKeyWithHashAlg::new(Arc::new(key), None);
                 session
                     .authenticate_publickey(username, pk)
                     .await
-                    .context("SSH public key authentication failed")?
+                    .map_err(|e| {
+                        MapacheError::Backend(format!(
+                            "ssh public key authentication failed: {}",
+                            e
+                        ))
+                    })?
             }
         };
 
         if !auth_res.success() {
             let user = username.to_string();
-            return Err(anyhow!(SftpError::AuthenticationFailed(user)));
+            return Err(MapacheError::Auth(format!(
+                "sftp authentication failed for user: {}",
+                user
+            )));
         }
 
         let channel = session
             .channel_open_session()
             .await
-            .context("Failed to open SSH channel")?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .context("Failed to request SFTP subsystem")?;
+            .map_err(|e| MapacheError::Backend(format!("failed to open SSH channel: {}", e)))?;
+        channel.request_subsystem(true, "sftp").await.map_err(|e| {
+            MapacheError::Backend(format!("failed to request SFTP subsystem: {}", e))
+        })?;
 
-        let sftp = SftpSession::new(channel.into_stream())
-            .await
-            .context("Failed to initialize SFTP session")?;
+        let sftp = SftpSession::new(channel.into_stream()).await.map_err(|e| {
+            MapacheError::Backend(format!("failed to initialize SFTP session: {}", e))
+        })?;
 
         Ok(Self {
             sftp,
@@ -328,8 +354,19 @@ impl SftpConnectionManager {
             SftpConnection::new(&username, &host, port, known_hosts.clone(), &auth_method),
         )
         .await
-        .context("Timeout establishing initial SFTP connection")?
-        .context("Failed to establish initial SFTP connection")?;
+        .map_err(|e| {
+            MapacheError::Backend(format!(
+                "timeout establishing initial SFTP connection: {}",
+                e
+            ))
+        })?
+        .map_err(|e| match &e {
+            MapacheError::Auth(_) | MapacheError::Backend(_) => e,
+            _ => MapacheError::Backend(format!(
+                "failed to establish initial SFTP connection: {}",
+                e
+            )),
+        })?;
 
         connections.push(Mutex::new(Arc::new(first_conn)));
 
@@ -403,8 +440,19 @@ impl SftpConnectionManager {
                 ),
             )
             .await
-            .context("Timeout re-establishing SFTP connection")?
-            .context("Failed to re-establish SFTP connection")?;
+            .map_err(|e| {
+                MapacheError::Backend(format!("timeout re-establishing SFTP connection: {}", e))
+            })?
+            .map_err(|e| {
+                let detail = match &e {
+                    MapacheError::Backend(s) => s.clone(),
+                    _ => e.to_string(),
+                };
+                MapacheError::Backend(format!(
+                    "failed to re-establish SFTP connection: {}",
+                    detail
+                ))
+            })?;
             *guard = Arc::new(conn);
         }
 
@@ -478,11 +526,17 @@ impl SftpBackend {
     async fn create_dir_all_full(sftp: &SftpSession, full_path: &Path) -> Result<()> {
         let path_str = full_path.to_string_lossy().to_string();
         if Self::exists_exact_full(sftp, full_path).await {
-            let meta = sftp.metadata(&path_str).await?;
+            let meta = sftp
+                .metadata(&path_str)
+                .await
+                .map_err(|e| MapacheError::Backend(e.to_string()))?;
             if meta.is_dir() {
                 return Ok(());
             }
-            bail!("Path {:?} exists but is not a directory", full_path);
+            return Err(MapacheError::Backend(format!(
+                "path {:?} exists but is not a directory",
+                full_path
+            )));
         }
 
         if let Some(parent) = full_path.parent()
@@ -491,8 +545,11 @@ impl SftpBackend {
             Box::pin(Self::create_dir_all_full(sftp, parent)).await?;
         }
 
-        sftp.create_dir(&path_str).await.with_context(|| {
-            format!("Failed to create directory {:?} in sftp backend", full_path)
+        sftp.create_dir(&path_str).await.map_err(|e| {
+            MapacheError::Backend(format!(
+                "failed to create directory {:?} in sftp backend: {}",
+                full_path, e
+            ))
         })?;
 
         // Set default permissions for new directory (e.g. 0o700)
@@ -510,7 +567,12 @@ impl SftpBackend {
         let mut stat = match sftp.metadata(&path_str).await {
             Ok(s) => s,
             Err(_) if !readonly => return Ok(()),
-            Err(e) => return Err(anyhow!(e)).context("Failed to stat remote file"),
+            Err(e) => {
+                return Err(MapacheError::Backend(format!(
+                    "failed to stat remote file: {}",
+                    e
+                )));
+            }
         };
 
         let is_dir = stat.is_dir();
@@ -518,7 +580,9 @@ impl SftpBackend {
             let new_perm = set_readonly_mode(perm, readonly, is_dir);
             if new_perm != perm {
                 stat.permissions = Some(new_perm);
-                sftp.set_metadata(&path_str, stat).await?;
+                sftp.set_metadata(&path_str, stat)
+                    .await
+                    .map_err(|e| MapacheError::Backend(e.to_string()))?;
             }
         }
         Ok(())
@@ -532,16 +596,24 @@ impl SftpBackend {
         let path_str = full_path.to_string_lossy().to_string();
         let _ = Self::set_readonly_status_full(sftp, full_path, false).await;
 
-        let meta = sftp.symlink_metadata(&path_str).await?;
+        let meta = sftp
+            .symlink_metadata(&path_str)
+            .await
+            .map_err(|e| MapacheError::Backend(e.to_string()))?;
         if meta.is_file() {
-            return sftp
-                .remove_file(&path_str)
-                .await
-                .with_context(|| format!("Failed to remove file {:?} in sftp backend", full_path));
+            return sftp.remove_file(&path_str).await.map_err(|e| {
+                MapacheError::Backend(format!(
+                    "failed to remove file {:?} in sftp backend: {}",
+                    full_path, e
+                ))
+            });
         }
 
         if meta.is_dir() {
-            let entries = sftp.read_dir(&path_str).await?;
+            let entries = sftp
+                .read_dir(&path_str)
+                .await
+                .map_err(|e| MapacheError::Backend(e.to_string()))?;
             for entry in entries {
                 let name = entry.file_name();
                 if name == "." || name == ".." {
@@ -550,8 +622,11 @@ impl SftpBackend {
                 let p = full_path.join(name);
                 Box::pin(Self::remove_recursively_full(sftp, &p)).await?;
             }
-            return sftp.remove_dir(&path_str).await.with_context(|| {
-                format!("Failed to remove directory {:?} in sftp backend", full_path)
+            return sftp.remove_dir(&path_str).await.map_err(|e| {
+                MapacheError::Backend(format!(
+                    "failed to remove directory {:?} in sftp backend: {}",
+                    full_path, e
+                ))
             });
         }
 
@@ -559,7 +634,7 @@ impl SftpBackend {
         if let Err(e) = sftp.remove_file(&path_str).await
             && let Err(_e2) = sftp.remove_dir(&path_str).await
         {
-            return Err(anyhow!(e));
+            return Err(MapacheError::Backend(e.to_string()));
         }
         Ok(())
     }
@@ -575,9 +650,12 @@ impl SftpBackend {
             let _ = sftp.remove_file(&to_str).await;
         }
 
-        sftp.rename(&from_str, &to_str)
-            .await
-            .with_context(|| format!("Failed to rename {:?} -> {:?}", full_from, full_to))?;
+        sftp.rename(&from_str, &to_str).await.map_err(|e| {
+            MapacheError::Backend(format!(
+                "failed to rename {:?} -> {:?}: {}",
+                full_from, full_to, e
+            ))
+        })?;
 
         let _ = Self::set_readonly_status_full(sftp, full_to, true).await;
 
@@ -618,13 +696,19 @@ impl StorageBackend for SftpBackend {
                 .sftp
                 .open(full.to_string_lossy().to_string())
                 .await
-                .with_context(|| format!("Failed to open file {:?} for reading", handle.path))?;
+                .map_err(|e| {
+                    MapacheError::Backend(format!(
+                        "failed to open file {:?} for reading: {}",
+                        handle.path, e
+                    ))
+                })?;
 
             let real_offset = match offset {
                 o if o >= 0 => o as u64,
                 _ => file
                     .metadata()
-                    .await?
+                    .await
+                    .map_err(|e| MapacheError::Backend(e.to_string()))?
                     .size
                     .unwrap_or(0)
                     .saturating_sub(offset.unsigned_abs() as u64),
@@ -678,7 +762,12 @@ impl StorageBackend for SftpBackend {
                     OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
                 )
                 .await
-                .with_context(|| format!("Failed to create tmp file {:?}", tmp_path))?;
+                .map_err(|e| {
+                    MapacheError::Backend(format!(
+                        "failed to create tmp file {:?}: {}",
+                        tmp_path, e
+                    ))
+                })?;
 
             if let Some(l) = &limiter {
                 // Stack: BufWriter -> ThrottledWriter -> SftpFile
@@ -725,7 +814,12 @@ impl StorageBackend for SftpBackend {
                 .sftp
                 .read_dir(full.to_string_lossy())
                 .await
-                .with_context(|| format!("Could not list directory {:?} in sftp backend", path))?;
+                .map_err(|e| {
+                    MapacheError::Backend(format!(
+                        "could not list directory {:?} in sftp backend: {}",
+                        path, e
+                    ))
+                })?;
 
             let mut out = Vec::new();
             for entry in entries {
@@ -800,7 +894,11 @@ impl StorageBackend for SftpBackend {
 
         self.retry(|| async {
             let conn = self.manager.get_connection().await?;
-            let meta = conn.sftp.symlink_metadata(full.to_string_lossy()).await?;
+            let meta = conn
+                .sftp
+                .symlink_metadata(full.to_string_lossy())
+                .await
+                .map_err(|e| MapacheError::Backend(e.to_string()))?;
 
             let to_system_time = |t: u32| {
                 if t == 0 {

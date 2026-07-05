@@ -1,4 +1,5 @@
 use std::{
+    io,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -7,7 +8,6 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, bail};
 use clap::Args;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -16,8 +16,10 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
-    common::{ID, defaults::UI_RATE_ESTIMATOR_WINDOW, global::GlobalOpts, hooks},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    common::{
+        ID, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError, global::GlobalOpts, hooks,
+    },
     fs::tree::SerializedNodeStream,
     repository::{
         lock::LockHandle,
@@ -30,18 +32,35 @@ use crate::{
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
-    RepoOpenFail = 10,
-    CorruptPacks = 20,
-    CorruptSnapshots = 21,
-    VerifyFailed = 22,
-    Interrupted = 130,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("corrupt packs detected: {0}")]
+    CorruptPacks(String),
+    #[error("corrupt snapshots detected: {0}")]
+    CorruptSnapshots(String),
+    #[error("verification failed: {0}")]
+    VerifyFailed(String),
+    #[error("verify interrupted by user")]
+    Interrupted,
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for VerifyError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            VerifyError::RepoOpenFail(_) => 10,
+            VerifyError::CorruptPacks(_) => 20,
+            VerifyError::CorruptSnapshots(_) => 21,
+            VerifyError::VerifyFailed(_) => 22,
+            VerifyError::Interrupted => 130,
+            VerifyError::Repo(_) => 1,
+            VerifyError::Io(_) => 1,
+        }
     }
 }
 
@@ -76,7 +95,7 @@ pub struct CmdArgs {
 
 fn parse_sample_percentage(s: &str) -> Result<f64, String> {
     if !s.ends_with('%') {
-        return Err("Sample percentage must end with '%' (e.g. 10.5%)".to_string());
+        return Err("sample percentage must end with '%' (e.g. 10.5%)".to_string());
     }
     let num_str = &s[..s.len() - 1];
     let val = num_str
@@ -84,7 +103,7 @@ fn parse_sample_percentage(s: &str) -> Result<f64, String> {
         .map_err(|_| format!("'{}' is not a valid number", num_str))?;
 
     if !(0.0..=100.0).contains(&val) {
-        return Err("Sample percentage must be between 0 and 100".to_string());
+        return Err("sample percentage must be between 0 and 100".to_string());
     }
     Ok(val)
 }
@@ -130,7 +149,7 @@ struct VerifyReport<'a> {
     json_out: bool,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), VerifyError> {
     let json_out = global_args.json;
     tracing::info!(target: "verify", "Starting verify command");
     if !json_out && global_args.no_cache {
@@ -147,10 +166,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         new_backend_with_prompt(global_args.backend_options(false))
             .await
             .map_err(|e| {
-                fail(
-                    format!("Failed to initialize backend: {}", e),
-                    VerifyError::VerifyFailed,
-                )
+                VerifyError::VerifyFailed(format!("failed to initialize backend: {}", e.inner()))
             })?,
         {
             let mut config = global_args.to_repo_config();
@@ -161,7 +177,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, secure_storage, lock_handle| async move {
-            // Run pre-hook: abort command if it fails
             hooks::run_pre(hooks::verify(), "verify", &global_args.repo).await?;
 
             run_with_repo(repo, secure_storage, lock_handle, args, json_out).await
@@ -173,18 +188,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         Ok(_) => "success".to_string(),
         Err(e) => format!("{e}"),
     };
-    // Run post-hook: warning on failure, always continues
     hooks::run_post(hooks::verify(), "verify", &global_args.repo, &result_str).await;
 
-    repo_result.map_err(|e| {
-        if e.is::<commands::error::MapacheError>() {
-            e
-        } else {
-            fail(
-                format!("Failed to open repository: {}", e),
-                VerifyError::RepoOpenFail,
-            )
-        }
+    repo_result.map_err(|e| match e {
+        VerifyError::Repo(err) => VerifyError::RepoOpenFail(err.inner()),
+        other => other,
     })
 }
 
@@ -194,13 +202,13 @@ pub async fn run_with_repo(
     lock_handle: Option<LockHandle>,
     args: &CmdArgs,
     json_out: bool,
-) -> Result<()> {
+) -> Result<(), VerifyError> {
     let cleanup_handler = CleanupHandler::new_with_callback(move || {
         ui::cli::log!(
             "\n{}",
             "Process interrupted. Cleaning up...".bold().yellow()
         );
-    })?;
+    });
     cleanup_handler.add_lock(lock_handle);
 
     let start = Instant::now();
@@ -262,10 +270,8 @@ pub async fn run_with_repo(
         };
         let failed_early = verify_packs_physically(&verify_ctx, &packs_to_verify).await?;
         if cleanup_handler.is_interrupted() {
-            return Err(fail(
-                "Verify interrupted by user.",
-                VerifyError::Interrupted,
-            ));
+            tracing::info!(target: "verify", "Verify interrupted by user");
+            return Err(VerifyError::Interrupted);
         }
         failed_early
     } else {
@@ -289,10 +295,8 @@ pub async fn run_with_repo(
             )
             .await?;
     } else if cleanup_handler.is_interrupted() {
-        return Err(fail(
-            "Verify interrupted by user.",
-            VerifyError::Interrupted,
-        ));
+        tracing::info!(target: "verify", "Verify interrupted by user");
+        return Err(VerifyError::Interrupted);
     }
 
     // Back-referencing Corruption
@@ -358,7 +362,7 @@ pub async fn run_with_repo(
                             }
                         }
                     }
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<(), crate::common::error::MapacheError>(())
                 }
             })
             .buffer_unordered(4)
@@ -386,7 +390,7 @@ async fn check_index_consistency(
     packs_all: &IdSet<ID>,
     args: &CmdArgs,
     json_out: bool,
-) -> Result<IdSet<ID>> {
+) -> Result<IdSet<ID>, VerifyError> {
     ui::cli::log!("{}", "Verifying Index Consistency...".bold());
     tracing::info!(target: "verify", "Verifying index consistency");
     let mut missing_packs = IdSet::default();
@@ -410,7 +414,9 @@ async fn check_index_consistency(
             ui::cli::log!("  - Missing Pack: {}", p);
         }
         if args.fail_early {
-            bail!("Index consistency check failed.");
+            return Err(VerifyError::VerifyFailed(
+                "index consistency check failed.".to_string(),
+            ));
         }
     } else {
         tracing::info!(target: "verify", "Index consistency check passed");
@@ -441,7 +447,10 @@ async fn check_index_consistency(
     Ok(missing_packs)
 }
 
-async fn verify_packs_physically(ctx: &VerifyCtx<'_>, packs_to_verify: &[ID]) -> Result<bool> {
+async fn verify_packs_physically(
+    ctx: &VerifyCtx<'_>,
+    packs_to_verify: &[ID],
+) -> Result<bool, VerifyError> {
     let suffix = if ctx.is_sampled { " (sampled)" } else { "" };
     ui::cli::log!("{}", format!("Verifying Pack Integrity{suffix}...").bold());
 
@@ -540,7 +549,7 @@ async fn verify_packs_physically(ctx: &VerifyCtx<'_>, packs_to_verify: &[ID]) ->
                             if json_out {
                                 let mut parts = Vec::new();
                                 if pack_stats.bit_rot {
-                                    parts.push("Bit-rot detected".to_string());
+                                    parts.push("bit-rot detected".to_string());
                                 }
                                 if !pack_stats.corrupt_blobs.is_empty() {
                                     parts.push(format!(
@@ -684,7 +693,7 @@ async fn verify_snapshots_logically(
     args: &CmdArgs,
     json_out: bool,
     cleanup_handler: &CleanupHandler,
-) -> Result<(bool, usize, usize)> {
+) -> Result<(bool, usize, usize), VerifyError> {
     ui::cli::log!("{}", "Verifying Snapshot References...".bold());
 
     let snapshots_corrupt = AtomicUsize::new(0);
@@ -705,14 +714,16 @@ async fn verify_snapshots_logically(
                     ui::json::emit_static(
                         "verify_error",
                         &VerifyErrorMsg {
-                            error: format!("Failed to load snapshot: {:?}", e),
+                            error: format!("failed to load snapshot: {:?}", e),
                         },
                     );
                 }
 
                 snapshots_corrupt.fetch_add(1, Ordering::Relaxed);
                 if args.fail_early {
-                    bail!("Verification halted due to corrupted snapshot.");
+                    return Err(VerifyError::CorruptSnapshots(
+                        "verification halted due to corrupted snapshot.".to_string(),
+                    ));
                 }
             }
         }
@@ -812,7 +823,7 @@ async fn verify_snapshots_logically(
     ))
 }
 
-fn emit_final_report(report: &VerifyReport<'_>) -> Result<()> {
+fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
     if report.json_out {
         let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
         let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
@@ -873,13 +884,11 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<()> {
             );
         }
 
-        let code = if packs_corrupt_count > 0 {
-            VerifyError::CorruptPacks
+        return Err(if packs_corrupt_count > 0 {
+            VerifyError::CorruptPacks("repository integrity check failed".to_string())
         } else {
-            VerifyError::CorruptSnapshots
-        };
-
-        return Err(fail("Repository integrity check failed.", code));
+            VerifyError::CorruptSnapshots("repository integrity check failed".to_string())
+        });
     }
 
     if dangling_count > 0 {
@@ -935,7 +944,7 @@ fn emit_blob_corruption_json(blob_id: &ID, path: &Path, snapshot_id: &ID) {
             blob_id: blob_id.to_short_hex(8),
             path: path.display().to_string(),
             snapshot: snapshot_id.to_short_hex(12),
-            error: "Corrupt blob affects this file".to_string(),
+            error: "corrupt blob affects this file".to_string(),
         },
     );
 }

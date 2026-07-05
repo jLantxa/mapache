@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use anyhow::Result;
+use crate::common::error::Result;
 use async_trait::async_trait;
 use tokio::{
     io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf},

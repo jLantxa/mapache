@@ -356,19 +356,6 @@ pub(crate) fn try_restore_node_metadata(
             ))),
         );
     }
-
-    // 5. fsync metadata changes to disk
-    #[cfg(not(windows))]
-    if let Err(e) = std::fs::File::open(dst_path).and_then(|f| f.sync_all()) {
-        emit_event(
-            event_sender,
-            Event::Restore(RestoreEvent::Warning(format!(
-                "Could not fsync {}: {}",
-                dst_path.display(),
-                e
-            ))),
-        );
-    }
 }
 
 /// Restores extended attributes (xattrs) for a node.

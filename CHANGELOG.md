@@ -12,8 +12,8 @@
 ### Changed
 
 - **Restorer**: Ordered metadata restoration as chown, xattrs, chmod, mtime;
-  batched file restoration with a streaming pass; fsync metadata after restore;
-  verify hardlink content and fall back to copy on failure.
+  batched file restoration with a streaming pass;verify hardlink content and
+  fall back to copy on failure.
 
 ## v0.5.1
 

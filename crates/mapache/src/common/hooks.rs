@@ -1,11 +1,13 @@
 use std::{sync::OnceLock, time::Duration};
 
-use anyhow::{Context, Result};
 use tokio::{process::Command, time::timeout};
 
-use crate::common::{
-    config::{CommandHooks, HooksConfig},
-    vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR},
+use crate::{
+    common::error::{MapacheError, Result},
+    common::{
+        config::{CommandHooks, HooksConfig},
+        vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR},
+    },
 };
 
 static HOOKS: OnceLock<HooksConfig> = OnceLock::new();
@@ -113,24 +115,30 @@ async fn run_hook(
     child.env_remove(USERNAME_ENVVAR);
     child.env_remove(PASSWORD_ENVVAR);
 
-    let mut child = child
-        .spawn()
-        .with_context(|| format!("Failed to execute hook for {command_name}"))?;
+    let mut child = child.spawn().map_err(|e| {
+        MapacheError::Hook(format!("Failed to execute hook for {command_name}: {e}"))
+    })?;
 
     let status = match timeout_duration {
         Some(t) => match timeout(t, child.wait()).await {
             Ok(Ok(status)) => status,
-            Ok(Err(e)) => return Err(e).context(format!("Hook process for {command_name} failed")),
+            Ok(Err(e)) => {
+                return Err(MapacheError::Hook(format!(
+                    "Hook process for {command_name} failed: {e}"
+                )));
+            }
             Err(_) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                anyhow::bail!("Hook for {command_name} timed out after {}s", t.as_secs());
+                return Err(MapacheError::Hook(format!(
+                    "Hook for {command_name} timed out after {}s",
+                    t.as_secs()
+                )));
             }
         },
-        None => child
-            .wait()
-            .await
-            .context(format!("Hook process for {command_name} failed"))?,
+        None => child.wait().await.map_err(|e| {
+            MapacheError::Hook(format!("Hook process for {command_name} failed: {e}"))
+        })?,
     };
 
     if !status.success() {
@@ -138,7 +146,9 @@ async fn run_hook(
             .code()
             .map(|c| c.to_string())
             .unwrap_or_else(|| "signal".to_string());
-        anyhow::bail!("Hook for {command_name} exited with {code}");
+        return Err(MapacheError::Hook(format!(
+            "Hook for {command_name} exited with {code}"
+        )));
     }
 
     Ok(())

@@ -1,16 +1,18 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Context, Result, anyhow};
 use clap::Args;
 use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        self, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
-        find_use_snapshot, with_repository_lock,
+        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
+        with_repository_lock,
     },
-    common::ID,
+    common::{ID, error::MapacheError},
     fs::{
         node::{Metadata, Node, NodeType, node_to_string},
         tree::{Tree, find_serialized_node},
@@ -19,17 +21,32 @@ use crate::{
     ui::{self, cli::color::Colorize},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum LsError {
-    RepoOpenFail = 10,
-    SnapshotNotFound = 20,
-    PathNotFound = 21,
-    LsFailed = 30,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("snapshot not found: {0}")]
+    SnapshotNotFound(String),
+    #[error("path not found: {0}")]
+    PathNotFound(String),
+    #[error("list failed: {0}")]
+    LsFailed(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for LsError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            LsError::RepoOpenFail(_) => 10,
+            LsError::SnapshotNotFound(_) => 20,
+            LsError::PathNotFound(_) => 21,
+            LsError::LsFailed(_) => 30,
+            LsError::Repo(_) => 1,
+            LsError::Io(_) => 1,
+        }
     }
 }
 
@@ -68,52 +85,39 @@ struct LsOutput {
     entries: Vec<LsEntry>,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), LsError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false))
-            .await
-            .map_err(|e| {
-                fail(
-                    format!("Failed to initialize backend: {}", e),
-                    LsError::LsFailed,
-                )
-            })?,
+        new_backend_with_prompt(global_args.backend_options(false)).await?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new().map_err(|e| {
-                fail(
-                    format!("Failed to initialize cleanup handler: {}", e),
-                    LsError::LsFailed,
-                )
-            })?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
-            repo.reload_master_index().await.map_err(|e| {
-                fail(
-                    format!("Failed to reload master index: {}", e),
-                    LsError::LsFailed,
-                )
-            })?;
+            repo.reload_master_index().await?;
 
             let (_snapshot_id, snapshot) =
                 match find_use_snapshot(repo.clone(), &args.snapshot).await {
                     Ok(Some(pair)) => pair,
                     _ => {
-                        return Err(fail("Snapshot not found", LsError::SnapshotNotFound));
+                        return Err(LsError::SnapshotNotFound("Snapshot not found".to_string()));
                     }
                 };
 
             let node = if let Some(p) = &args.path {
                 find_serialized_node(repo.as_ref(), &snapshot.tree, p)
                     .await
-                    .map_err(|e| fail(format!("Error finding path: {}", e), LsError::LsFailed))?
-                    .with_context(|| format!("'{}' does not exist in snapshot", p.display()))
-                    .map_err(|e| fail(e.to_string(), LsError::PathNotFound))?
+                    .map_err(|e| LsError::LsFailed(format!("Error finding path: {e}")))?
+                    .ok_or_else(|| {
+                        LsError::PathNotFound(format!(
+                            "'{}' does not exist in snapshot",
+                            p.display()
+                        ))
+                    })?
             } else {
                 Node::new_root(&snapshot.tree)
             };
@@ -126,22 +130,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                 global_args.json,
             )
             .await
-            .map_err(|e| fail(format!("Listing failed: {}", e), LsError::LsFailed))?;
+            .map_err(|e| LsError::LsFailed(format!("Listing failed: {e}")))?;
 
             Ok(())
         },
     )
     .await
-    .map_err(|e| {
-        if e.is::<commands::error::MapacheError>() {
-            e
-        } else {
-            fail(
-                format!("Failed to open repository: {}", e),
-                LsError::RepoOpenFail,
-            )
-        }
-    })
 }
 
 /// List the contents of a node.
@@ -151,7 +145,7 @@ async fn ls(
     repo: &Repository,
     args: &CmdArgs,
     json_out: bool,
-) -> Result<()> {
+) -> Result<(), LsError> {
     if json_out {
         return ls_json(path, node, repo, args).await;
     }
@@ -172,7 +166,12 @@ async fn ls(
 }
 
 /// JSON output for ls
-async fn ls_json(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+async fn ls_json(
+    path: &Path,
+    node: &Node,
+    repo: &Repository,
+    args: &CmdArgs,
+) -> Result<(), LsError> {
     if !node.is_dir() {
         ui::json::emit_static(
             "ls",
@@ -191,10 +190,9 @@ async fn ls_json(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) ->
         ls_recursive_json(path, node, repo, &mut entries).await?;
         ui::json::emit_static("ls", &LsOutput { entries });
     } else {
-        let tree_id = node
-            .tree
-            .as_ref()
-            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
+        let tree_id = node.tree.as_ref().ok_or_else(|| {
+            LsError::LsFailed(format!("Directory node missing tree ID: {}", node.name))
+        })?;
         let mut tree = Tree::load_from_repo(repo, tree_id).await?;
         tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         let entries: Vec<LsEntry> = tree
@@ -212,16 +210,20 @@ async fn ls_json(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) ->
 }
 
 /// List a snapshot tree.
-async fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArgs) -> Result<()> {
+async fn ls_recursive(
+    path: &Path,
+    node: &Node,
+    repo: &Repository,
+    args: &CmdArgs,
+) -> Result<(), LsError> {
     let mut stack: Vec<(PathBuf, Node)> = Vec::new();
 
     if node.is_dir() && args.recursive {
         stack.push((path.to_path_buf(), node.clone()));
     } else if node.is_dir() {
-        let tree_id = node
-            .tree
-            .as_ref()
-            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
+        let tree_id = node.tree.as_ref().ok_or_else(|| {
+            LsError::LsFailed(format!("Directory node missing tree ID: {}", node.name))
+        })?;
         let mut tree = Tree::load_from_repo(repo, tree_id).await?;
         tree.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         print_tree(&tree, args);
@@ -229,10 +231,9 @@ async fn ls_recursive(path: &Path, node: &Node, repo: &Repository, args: &CmdArg
     }
 
     while let Some((parent_path, node)) = stack.pop() {
-        let tree_id = node
-            .tree
-            .as_ref()
-            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
+        let tree_id = node.tree.as_ref().ok_or_else(|| {
+            LsError::LsFailed(format!("Directory node missing tree ID: {}", node.name))
+        })?;
         let current_path = parent_path.join(&node.name);
 
         let mut tree = Tree::load_from_repo(repo, tree_id).await?;
@@ -261,15 +262,14 @@ async fn ls_recursive_json(
     node: &Node,
     repo: &Repository,
     entries: &mut Vec<LsEntry>,
-) -> Result<()> {
+) -> Result<(), LsError> {
     let mut stack: Vec<(PathBuf, Node)> = Vec::new();
     stack.push((path.to_path_buf(), node.clone()));
 
     while let Some((parent_path, node)) = stack.pop() {
-        let tree_id = node
-            .tree
-            .as_ref()
-            .ok_or_else(|| anyhow!("Directory node missing tree ID: {}", node.name))?;
+        let tree_id = node.tree.as_ref().ok_or_else(|| {
+            LsError::LsFailed(format!("Directory node missing tree ID: {}", node.name))
+        })?;
         let current_path = parent_path.join(&node.name);
 
         let mut tree = Tree::load_from_repo(repo, tree_id).await?;

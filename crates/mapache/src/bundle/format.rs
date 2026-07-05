@@ -1,4 +1,5 @@
 use crate::{
+    common::error::Result,
     common::{BlobType, ID},
     utils::binary::{
         get_array, get_u8, get_u16, get_u32, get_u64, put_bytes, put_u8, put_u16, put_u32, put_u64,
@@ -65,7 +66,7 @@ impl BundleHeader {
         buf
     }
 
-    pub fn from_binary(bytes: &[u8]) -> anyhow::Result<Self> {
+    pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let mut cur = bytes;
         Ok(Self {
             magic: get_array(&mut cur)?,
@@ -90,7 +91,7 @@ impl BundleTrailer {
         buf
     }
 
-    pub fn from_binary(bytes: &[u8]) -> anyhow::Result<Self> {
+    pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let mut cur = bytes;
         Ok(Self {
             root_tree: ID::from_bytes(get_array(&mut cur)?),
@@ -114,7 +115,7 @@ impl BundleIndexEntry {
         buf
     }
 
-    pub fn from_binary(bytes: &[u8]) -> anyhow::Result<Self> {
+    pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let mut cur = bytes;
         Ok(Self {
             id: ID::from_bytes(get_array(&mut cur)?),
@@ -136,7 +137,7 @@ impl BundleIndex {
         buf
     }
 
-    pub fn from_binary(bytes: &[u8]) -> anyhow::Result<Self> {
+    pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let mut cur = bytes;
         let len = get_u64(&mut cur)? as usize;
         let mut entries = Vec::with_capacity(len);

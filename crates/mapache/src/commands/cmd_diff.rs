@@ -1,12 +1,13 @@
-use anyhow::Result;
+use std::io;
+
 use clap::Args;
 use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    common::{ContentIdType, ID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError},
     fs::tree::{NodeDiff, create_diff_stream},
     repository::snapshot::DiffCounts,
     ui::{
@@ -19,6 +20,26 @@ use crate::{
     utils::format_size_binary,
 };
 
+#[derive(Debug, thiserror::Error)]
+pub enum DiffError {
+    #[error("snapshot not found: {0}")]
+    SnapshotNotFound(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl ToExitCode for DiffError {
+    fn to_exit_code(&self) -> i32 {
+        match self {
+            DiffError::SnapshotNotFound(_) => 20,
+            DiffError::Repo(_) => 1,
+            DiffError::Io(_) => 1,
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 #[clap(about = "Show differences between snapshots")]
 pub struct CmdArgs {
@@ -29,17 +50,19 @@ pub struct CmdArgs {
     pub target_snapshot_id: String,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), DiffError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        new_backend_with_prompt(global_args.backend_options(false))
+            .await
+            .map_err(|e| DiffError::SnapshotNotFound(format!("Failed to initialize backend: {e}")))?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
             repo.reload_master_index().await?;

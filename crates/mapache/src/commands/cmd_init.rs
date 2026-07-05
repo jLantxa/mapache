@@ -1,26 +1,40 @@
-use anyhow::Result;
+use std::io;
+
 use clap::Args;
 use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode, fail},
-    common::{ID, defaults::SHORT_REPO_ID_LEN},
+    commands::{GlobalArgs, ToExitCode},
+    common::{ID, defaults::SHORT_REPO_ID_LEN, error::MapacheError},
     repository::repo::Repository,
     ui::{self, json::emit_static},
     utils,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    AuthFail = 1,
-    BackendError = 2,
-    RepoInitError = 3,
+    #[error("authentication failed: {0}")]
+    AuthFail(String),
+    #[error("backend initialization failed: {0}")]
+    BackendError(String),
+    #[error("repository initialization failed: {0}")]
+    RepoInitError(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for InitError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            InitError::AuthFail(_) => 1,
+            InitError::BackendError(_) => 2,
+            InitError::RepoInitError(_) => 3,
+            InitError::Repo(_) => 1,
+            InitError::Io(_) => 1,
+        }
     }
 }
 
@@ -30,26 +44,23 @@ pub struct CmdArgs {}
 
 const INIT_MSG: &str = "init";
 
-pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), InitError> {
     tracing::info!(target: "init", "Initializing repository at {}", global_args.repo);
 
     let backend = new_backend_with_prompt(global_args.backend_options(false))
         .await
         .map_err(|e| {
             tracing::error!(target: "init", "Backend initialization failed: {:#}", e);
-            fail(
-                format!("Failed to initialize backend: {:#}", e),
-                InitError::BackendError,
-            )
+            InitError::BackendError(format!("Failed to initialize backend: {:#}", e))
         })?;
 
     tracing::info!(target: "init", "Backend initialized");
 
     let auth = match utils::get_auth(&global_args.auth_file)? {
         Some(a) => a,
-        None => ui::cli::request_new_auth().map_err(|_| {
+        None => ui::cli::request_new_auth().map_err(|e| {
             tracing::error!(target: "init", "Authentication failed");
-            fail("Authentication failed", InitError::AuthFail)
+            InitError::AuthFail(e.to_string())
         })?,
     };
 
@@ -59,13 +70,10 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<()> {
         .await
         .map_err(|e| {
             tracing::error!(target: "init", "Repository::init failed: {e}");
-            fail(
-                format!(
-                    "Failed to initialize repository in {:?}: {}",
-                    global_args.repo, e
-                ),
-                InitError::RepoInitError,
-            )
+            InitError::RepoInitError(format!(
+                "Failed to initialize repository in {:?}: {}",
+                global_args.repo, e
+            ))
         })?;
 
     tracing::info!(

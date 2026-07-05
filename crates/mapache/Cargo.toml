@@ -12,7 +12,6 @@ workspace = true
 
 [dependencies]
 aes-gcm-siv = "0.11.1"
-anyhow = "1.0.103"
 argon2 = "0.5.3"
 async-stream = "0.3.6"
 async-trait = "0.1.89"
@@ -42,6 +41,7 @@ rust-s3 = { version = "0.37.2", default-features = false, features = [
 ] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+thiserror = "2.0.18"
 tokio = { version = "1.52", features = [
   "rt",
   "rt-multi-thread",
@@ -79,6 +79,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+anyhow = "1.0.103"
 rstest = "0.26.1"
 scopeguard = "1.2.0"
 tempfile = "3.27.0"

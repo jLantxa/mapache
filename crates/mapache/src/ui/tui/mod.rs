@@ -1,6 +1,6 @@
 use std::{io, sync::Arc};
 
-use anyhow::Result;
+use crate::common::error::Result;
 use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},

@@ -4,11 +4,11 @@ use std::{
     thread,
 };
 
-use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::{
     archiver::{processor, processor::ReusableBuffers, progress::SnapshotProgress},
+    common::error::Result,
     common::traits::BlobSaver,
     fs::tree::{NodeDiff, StreamNode},
     ui::events::EventSender,

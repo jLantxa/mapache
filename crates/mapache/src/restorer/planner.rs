@@ -9,7 +9,7 @@ use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use tokio::task::spawn_blocking;
 
 use crate::{
@@ -67,19 +67,19 @@ impl Restorer {
             Strategy::Overwrite => Ok(true),
             Strategy::Skip => Ok(false),
             Strategy::Newer => {
-                let local_metadata = fs::symlink_metadata(restore_path).with_context(|| {
-                    format!(
-                        "Failed to get metadata for local file {}",
+                let local_metadata = fs::symlink_metadata(restore_path).map_err(|e| {
+                    MapacheError::Internal(format!(
+                        "Failed to get metadata for local file {}: {e}",
                         restore_path.display()
-                    )
+                    ))
                 })?;
 
                 if let Some(repo_mtime) = node.metadata.modified_time {
-                    let local_mtime = local_metadata.modified().with_context(|| {
-                        format!(
-                            "Failed to get modified time for local file {}",
+                    let local_mtime = local_metadata.modified().map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Failed to get modified time for local file {}: {e}",
                             restore_path.display()
-                        )
+                        ))
                     })?;
 
                     let local_size = local_metadata.len();
@@ -100,7 +100,10 @@ impl Restorer {
                 if node.is_dir() {
                     return Ok(true);
                 }
-                bail!("Target {} exists already", restore_path.display());
+                Err(MapacheError::Internal(format!(
+                    "Target {} exists already",
+                    restore_path.display()
+                )))
             }
         }
     }
@@ -128,7 +131,7 @@ impl Restorer {
             for blob_id in blobs {
                 let locator = index
                     .get_data(&blob_id)
-                    .ok_or_else(|| anyhow!("Blob {} not found in index", blob_id))?;
+                    .ok_or(MapacheError::NotInIndex(blob_id))?;
 
                 let mut hasher = hash::Hasher::new();
                 let mut remaining = locator.raw_length as u64;
@@ -149,7 +152,10 @@ impl Restorer {
                                 blob_offset + read_total as u64,
                             )?;
                             if n == 0 {
-                                anyhow::bail!("Unexpected EOF while reading blob for verification");
+                                return Err(MapacheError::Internal(
+                                    "Unexpected EOF while reading blob for verification"
+                                        .to_string(),
+                                ));
                             }
                             read_total += n;
                         }
@@ -169,7 +175,8 @@ impl Restorer {
             }
             Ok(true)
         })
-        .await?
+        .await
+        .map_err(|e| MapacheError::Internal(format!("Background task failed: {e}")))?
     }
 }
 
@@ -180,7 +187,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
-    use anyhow::Result;
+    use crate::common::error::Result;
     use parking_lot::Mutex;
     use tempfile::tempdir;
     use zeroize::Zeroizing;

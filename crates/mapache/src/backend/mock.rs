@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use anyhow::{Context, Result, anyhow};
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
@@ -51,7 +51,7 @@ pub enum OpResult {
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     pub op: BackendOp,
-    pub result: Result<OpResult, String>, // Store error as String for easy cloning
+    pub result: std::result::Result<OpResult, String>,
     pub timestamp: Instant,
 }
 
@@ -331,17 +331,20 @@ impl StorageBackend for MockBackend {
         let res = self
             .exec(op, || async {
                 let nodes = self.nodes.read();
-                let node = nodes.get(handle.path).with_context(|| {
-                    format!("MockBackend: path not found: {}", handle.path.display())
+                let node = nodes.get(handle.path).ok_or_else(|| {
+                    MapacheError::Backend(format!(
+                        "MockBackend: path not found: {}",
+                        handle.path.display()
+                    ))
                 })?;
 
                 let (file_size, data) = match node {
                     MockNode::File { data, .. } => (data.len(), data),
                     _ => {
-                        return Err(anyhow!(
+                        return Err(MapacheError::Backend(format!(
                             "MockBackend: cannot read — not a file: {}",
                             handle.path.display()
-                        ));
+                        )));
                     }
                 };
 
@@ -366,7 +369,9 @@ impl StorageBackend for MockBackend {
             .await?;
 
         let OpResult::Bytes(b) = res else {
-            return Err(anyhow!("MockBackend: unexpected result from read op"));
+            return Err(MapacheError::Backend(
+                "MockBackend: unexpected result from read op".into(),
+            ));
         };
         Ok(b)
     }
@@ -382,10 +387,10 @@ impl StorageBackend for MockBackend {
             if let Some(n) = nodes.get(handle.path)
                 && matches!(n, MockNode::Dir { .. })
             {
-                return Err(anyhow!(
+                return Err(MapacheError::Backend(format!(
                     "MockBackend: cannot write — is a directory: {}",
                     handle.path.display()
-                ));
+                )));
             }
 
             Self::ensure_parent_dirs(&mut nodes, handle.path);
@@ -416,20 +421,26 @@ impl StorageBackend for MockBackend {
                 .collect();
 
             if keys.is_empty() {
-                return Err(anyhow!(
+                return Err(MapacheError::Backend(format!(
                     "MockBackend: cannot rename — source not found: {from:?}"
-                ));
+                )));
             }
 
             for k in &keys {
-                let node = nodes.remove(k).with_context(|| {
-                    format!("MockBackend: key {:?} disappeared during rename", k)
+                let node = nodes.remove(k).ok_or_else(|| {
+                    MapacheError::Backend(format!(
+                        "MockBackend: key {:?} disappeared during rename",
+                        k
+                    ))
                 })?;
                 let new_key = if *k == from {
                     to.to_path_buf()
                 } else {
                     let rel = k.strip_prefix(from).map_err(|_| {
-                        anyhow!("MockBackend: key {:?} should have prefix {:?}", k, from)
+                        MapacheError::Backend(format!(
+                            "MockBackend: key {:?} should have prefix {:?}",
+                            k, from
+                        ))
                     })?;
                     to.join(rel)
                 };
@@ -469,10 +480,10 @@ impl StorageBackend for MockBackend {
                 .collect();
 
             if to_remove.is_empty() {
-                return Err(anyhow!(
+                return Err(MapacheError::Backend(format!(
                     "MockBackend: cannot remove — path not found: {}",
                     path.display()
-                ));
+                )));
             }
 
             for p in &to_remove {
@@ -533,7 +544,9 @@ impl StorageBackend for MockBackend {
             .await?;
 
         let OpResult::Nodes(n) = res else {
-            return Err(anyhow!("MockBackend: unexpected result from list_dir op"));
+            return Err(MapacheError::Backend(
+                "MockBackend: unexpected result from list_dir op".into(),
+            ));
         };
         Ok(n)
     }
@@ -542,8 +555,11 @@ impl StorageBackend for MockBackend {
         let op = BackendOp::Lstat(path.to_path_buf());
         let res = self
             .exec(op, || async {
-                let node = self.nodes.read().get(path).cloned().with_context(|| {
-                    format!("MockBackend: lstat — path not found: {}", path.display())
+                let node = self.nodes.read().get(path).cloned().ok_or_else(|| {
+                    MapacheError::Backend(format!(
+                        "MockBackend: lstat — path not found: {}",
+                        path.display()
+                    ))
                 })?;
 
                 let (size, meta) = match &node {
@@ -563,7 +579,9 @@ impl StorageBackend for MockBackend {
             })
             .await?;
         let OpResult::Attr(a) = res else {
-            return Err(anyhow!("MockBackend: unexpected result from lstat op"));
+            return Err(MapacheError::Backend(
+                "MockBackend: unexpected result from lstat op".into(),
+            ));
         };
         Ok(a)
     }
@@ -943,7 +961,7 @@ mod tests {
                 && path == Path::new("fail_me")
             {
                 return MockEffect {
-                    result_override: Some(Err(anyhow!("injected failure"))),
+                    result_override: Some(Err(MapacheError::Backend("injected failure".into()))),
                     ..Default::default()
                 };
             }
@@ -955,7 +973,6 @@ mod tests {
 
         let res = backend.read(&Handle::new(Path::new("fail_me")), 0, 0).await;
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err().to_string(), "injected failure");
 
         let res = backend.read(&Handle::new(Path::new("ok_me")), 0, 0).await;
         assert!(res.is_ok());

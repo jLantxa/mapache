@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use s3::{Bucket, Region, creds::Credentials};
 use zeroize::Zeroizing;
@@ -27,16 +27,18 @@ impl S3Backend {
         secret_key: Zeroizing<String>,
     ) -> Result<Self> {
         let region = if endpoint == "amazonaws.com" {
-            region.parse::<Region>().map_err(|e| anyhow::anyhow!(e))?
+            region
+                .parse::<Region>()
+                .map_err(|e| MapacheError::Backend(format!("{}", e)))?
         } else {
             Region::Custom { region, endpoint }
         };
 
         let credentials =
             Credentials::new(Some(&*access_key), Some(&*secret_key), None, None, None)
-                .map_err(|e| anyhow::anyhow!(e))?;
+                .map_err(|e| MapacheError::Backend(format!("{}", e)))?;
         let bucket = Bucket::new(&bucket_name, region, credentials)
-            .map_err(|e| anyhow::anyhow!(e))?
+            .map_err(|e| MapacheError::Backend(format!("{}", e)))?
             .with_path_style();
 
         Ok(Self {
@@ -59,7 +61,9 @@ impl S3Backend {
         key_path
             .strip_prefix(&self.prefix)
             .map(PathBuf::from)
-            .context("S3 key does not match backend prefix")
+            .map_err(|e| {
+                MapacheError::Backend(format!("S3 key does not match backend prefix: {}", e))
+            })
     }
 
     async fn connectivity_check(&self) -> Result<()> {
@@ -81,13 +85,20 @@ impl S3Backend {
                 Ok((res, code))
             })
             .await
-            .context("S3 backend: connectivity check failed")?;
+            .map_err(|e| {
+                MapacheError::Backend(format!("S3 backend: connectivity check failed: {}", e))
+            })?;
 
         if status == 403 {
-            bail!("S3 backend: Access denied to bucket");
+            Err(MapacheError::Backend(
+                "S3 backend: Access denied to bucket".to_string(),
+            ))?;
         }
         if status >= 400 {
-            bail!("S3 backend: connectivity check failed (HTTP {})", status);
+            return Err(MapacheError::Backend(format!(
+                "S3 backend: connectivity check failed (HTTP {})",
+                status
+            )));
         }
         Ok(())
     }
@@ -123,7 +134,10 @@ impl StorageBackend for S3Backend {
                 let start = if offset < 0 {
                     let (head, code) = self.bucket.head_object(&key).await?;
                     if code >= 400 {
-                        bail!("S3 head failed for range read: HTTP {}", code);
+                        return Err(MapacheError::Backend(format!(
+                            "S3 head failed for range read: HTTP {}",
+                            code
+                        )));
                     }
                     let size = head.content_length.unwrap_or(0) as u64;
                     size.saturating_sub(offset.unsigned_abs() as u64)
@@ -141,7 +155,10 @@ impl StorageBackend for S3Backend {
             };
 
             if response.status_code() >= 400 {
-                bail!("S3 read failed: HTTP {}", response.status_code());
+                return Err(MapacheError::Backend(format!(
+                    "S3 read failed: HTTP {}",
+                    response.status_code()
+                )));
             }
             Ok(response.into_bytes().to_vec())
         })
@@ -158,7 +175,10 @@ impl StorageBackend for S3Backend {
             self.retry(|| async {
                 let response = self.bucket.put_object(&key, &contents).await?;
                 if response.status_code() >= 400 {
-                    bail!("S3 write failed: HTTP {}", response.status_code());
+                    return Err(MapacheError::Backend(format!(
+                        "S3 write failed: HTTP {}",
+                        response.status_code()
+                    )));
                 }
                 Ok(())
             })
@@ -209,7 +229,10 @@ impl StorageBackend for S3Backend {
                     Err(e) => {
                         // Abort upload on failure
                         let _ = self.bucket.abort_upload(&key, &upload_id).await;
-                        return Err(e).context(format!("Failed to upload part {}", part_number));
+                        return Err(MapacheError::Backend(format!(
+                            "Failed to upload part {}: {}",
+                            part_number, e
+                        )));
                     }
                 }
             }
@@ -220,10 +243,10 @@ impl StorageBackend for S3Backend {
                     .complete_multipart_upload(&key, &upload_id, completed_parts.clone())
                     .await?;
                 if complete_res.status_code() >= 400 {
-                    bail!(
+                    return Err(MapacheError::Backend(format!(
                         "S3 multipart complete failed: HTTP {}",
                         complete_res.status_code()
-                    );
+                    )));
                 }
                 Ok(())
             })
@@ -252,7 +275,10 @@ impl StorageBackend for S3Backend {
                 .copy_object_internal(&src_key, &dest_key)
                 .await?;
             if code >= 400 {
-                bail!("S3 rename (copy phase) failed: HTTP {}", code);
+                return Err(MapacheError::Backend(format!(
+                    "S3 rename (copy phase) failed: HTTP {}",
+                    code
+                )));
             }
             Ok(())
         })
@@ -261,10 +287,10 @@ impl StorageBackend for S3Backend {
         self.retry(|| async {
             let resp = self.bucket.delete_object(&src_key).await?;
             if resp.status_code() >= 400 {
-                bail!(
+                return Err(MapacheError::Backend(format!(
                     "S3 rename (delete phase) failed: HTTP {}",
                     resp.status_code()
-                );
+                )));
             }
             Ok(())
         })
@@ -283,7 +309,10 @@ impl StorageBackend for S3Backend {
         self.retry(|| async {
             let resp = self.bucket.delete_object(&key).await?;
             if resp.status_code() >= 400 && resp.status_code() != 404 {
-                bail!("S3 remove failed: HTTP {}", resp.status_code());
+                return Err(MapacheError::Backend(format!(
+                    "S3 remove failed: HTTP {}",
+                    resp.status_code()
+                )));
             }
             Ok(())
         })
@@ -318,10 +347,14 @@ impl StorageBackend for S3Backend {
                 .await?;
 
             if status_code >= 400 {
-                bail!("S3 list failed with status {}", status_code);
+                return Err(MapacheError::Backend(format!(
+                    "S3 list failed with status {}",
+                    status_code
+                )));
             }
 
             // "Directories" (Common Prefixes)
+
             if let Some(prefixes) = result.common_prefixes {
                 for p in prefixes {
                     let dir_key = p.prefix.trim_end_matches('/');
@@ -391,7 +424,10 @@ impl StorageBackend for S3Backend {
         self.retry(|| async {
             let (head, code) = self.bucket.head_object(&key).await?;
             if code >= 400 {
-                bail!("S3 lstat failed: HTTP {}", code);
+                return Err(MapacheError::Backend(format!(
+                    "S3 lstat failed: HTTP {}",
+                    code
+                )));
             }
 
             Ok(NodeAttr {
@@ -439,7 +475,10 @@ impl StorageBackend for S3Backend {
                 .await?;
 
             if status_code >= 400 {
-                bail!("S3 list failed with status {}", status_code);
+                return Err(MapacheError::Backend(format!(
+                    "S3 list failed with status {}",
+                    status_code
+                )));
             }
 
             for obj in result.contents {
@@ -461,6 +500,12 @@ impl StorageBackend for S3Backend {
         nodes.sort();
         nodes.dedup();
         Ok(nodes)
+    }
+}
+
+impl From<s3::error::S3Error> for MapacheError {
+    fn from(e: s3::error::S3Error) -> Self {
+        MapacheError::Backend(e.to_string())
     }
 }
 

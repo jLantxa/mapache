@@ -12,7 +12,7 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
 use url::Url;
@@ -70,9 +70,17 @@ where
                 tokio::time::sleep(wait).await;
             }
             Ok(Err(e)) => {
-                return Err(e.context(format!("{} operation failed after multiple retries", name)));
+                return Err(MapacheError::Backend(format!(
+                    "{} operation failed after multiple retries: {}",
+                    name, e
+                )));
             }
-            Err(e) => bail!("{} operation timed out after multiple retries: {e:#}", name),
+            Err(e) => {
+                return Err(MapacheError::Backend(format!(
+                    "{} operation timed out after multiple retries: {e:#}",
+                    name
+                )));
+            }
         }
     }
 }
@@ -198,7 +206,7 @@ pub trait StorageBackend: Send + Sync {
                     match node {
                         BackendNode::Dir(dir_path) => {
                             let sub = backend.list_dir_recursive(&dir_path).await?;
-                            Ok::<Vec<BackendNode>, anyhow::Error>(sub)
+                            Ok::<Vec<BackendNode>, MapacheError>(sub)
                         }
                         BackendNode::File(_, _) => Ok(vec![node]),
                     }
@@ -250,7 +258,9 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                     },
                     None => {
                         let prompt = format!("{username}@{host}'s password");
-                        sftp::AuthMethod::Password(ui::cli::request_password(&prompt)?)
+                        sftp::AuthMethod::Password(ui::cli::request_password(&prompt).map_err(
+                            |e| MapacheError::Config(format!("Failed to read password: {e}")),
+                        )?)
                     }
                 };
 
@@ -268,7 +278,7 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
                     Err(e)
                         if opts.ssh_privatekey.is_none()
                             && password_try_count < MAX_PASSWORD_RETRIES - 1
-                            && e.chain().any(|err| err.is::<sftp::SftpError>()) =>
+                            && matches!(e, MapacheError::Auth(_)) =>
                     {
                         password_try_count += 1;
                         ui::cli::log!("Incorrect password. Try again.");
@@ -281,27 +291,33 @@ pub async fn new_backend_with_prompt(opts: BackendOptions) -> Result<Arc<dyn Sto
             tracing::info!(target: "backend", "Initializing S3 backend (bucket: {}, prefix: {:?})", bucket, prefix);
             let endpoint = match std::env::var("AWS_ENDPOINT_URL") {
                 Ok(v) => v,
-                Err(_) => ui::cli::request_input("S3 Endpoint (leave empty for AWS)")?
+                Err(_) => ui::cli::request_input("S3 Endpoint (leave empty for AWS)")
+                    .map_err(|e| MapacheError::Config(format!("Failed to read S3 endpoint: {e}")))?
                     .unwrap_or_else(|| "amazonaws.com".to_string()),
             };
 
             let region = match std::env::var("AWS_DEFAULT_REGION") {
                 Ok(v) => v,
-                Err(_) => {
-                    ui::cli::request_input("S3 Region")?.unwrap_or_else(|| "us-east-1".to_string())
-                }
+                Err(_) => ui::cli::request_input("S3 Region")
+                    .map_err(|e| MapacheError::Config(format!("Failed to read S3 region: {e}")))?
+                    .unwrap_or_else(|| "us-east-1".to_string()),
             };
 
             let access_key = match std::env::var("AWS_ACCESS_KEY_ID") {
                 Ok(v) => Zeroizing::new(v),
-                Err(_) => {
-                    Zeroizing::new(ui::cli::request_input("AWS Access Key ID")?.unwrap_or_default())
-                }
+                Err(_) => Zeroizing::new(
+                    ui::cli::request_input("AWS Access Key ID")
+                        .map_err(|e| {
+                            MapacheError::Config(format!("Failed to read access key: {e}"))
+                        })?
+                        .unwrap_or_default(),
+                ),
             };
 
             let secret_key = match std::env::var("AWS_SECRET_ACCESS_KEY") {
                 Ok(v) => Zeroizing::new(v),
-                Err(_) => ui::cli::request_password("AWS Secret Access Key")?,
+                Err(_) => ui::cli::request_password("AWS Secret Access Key")
+                    .map_err(|e| MapacheError::Config(format!("Failed to read secret key: {e}")))?,
             };
 
             Arc::new(S3Backend::new(
@@ -356,31 +372,41 @@ impl BackendUrl {
             return Ok(BackendUrl::Local(PathBuf::from(url_str)));
         }
 
-        let parsed_url = Url::parse(url_str).context("Failed to parse URL")?;
+        let parsed_url = Url::parse(url_str)
+            .map_err(|e| MapacheError::Backend(format!("Failed to parse URL: {}", e)))?;
 
         match parsed_url.scheme() {
             "file" => {
                 let path = parsed_url
                     .to_file_path()
-                    .map_err(|_| anyhow!("Invalid file URL: {}", url_str))?;
+                    .map_err(|_| MapacheError::Backend(format!("Invalid file URL: {}", url_str)))?;
                 Ok(BackendUrl::Local(path))
             }
             "sftp" => {
                 let user = percent_decode_str(parsed_url.username())
                     .decode_utf8()
-                    .context("SFTP username contains invalid UTF-8")?
+                    .map_err(|e| {
+                        MapacheError::Backend(format!(
+                            "SFTP username contains invalid UTF-8: {}",
+                            e
+                        ))
+                    })?
                     .to_string();
 
                 let host = parsed_url
                     .host_str()
-                    .ok_or_else(|| anyhow!("SFTP URL '{url_str}' requires a host"))?
+                    .ok_or_else(|| {
+                        MapacheError::Backend(format!("SFTP URL '{url_str}' requires a host"))
+                    })?
                     .to_string();
 
                 let port = parsed_url.port().unwrap_or(22);
 
                 let path_str = percent_decode_str(parsed_url.path())
                     .decode_utf8()
-                    .context("SFTP path contains invalid UTF-8")?
+                    .map_err(|e| {
+                        MapacheError::Backend(format!("SFTP path contains invalid UTF-8: {}", e))
+                    })?
                     .to_string();
 
                 // Handle relative vs absolute path in SFTP
@@ -398,24 +424,28 @@ impl BackendUrl {
             "s3" => {
                 let bucket = parsed_url
                     .host_str()
-                    .ok_or_else(|| anyhow!("S3 URL '{url_str}' requires a bucket name (host)"))?
+                    .ok_or_else(|| {
+                        MapacheError::Backend(format!(
+                            "S3 URL '{url_str}' requires a bucket name (host)"
+                        ))
+                    })?
                     .to_string();
 
                 let prefix_str = percent_decode_str(parsed_url.path())
                     .decode_utf8()
-                    .context("S3 prefix contains invalid UTF-8")?
+                    .map_err(|e| {
+                        MapacheError::Backend(format!("S3 prefix contains invalid UTF-8: {}", e))
+                    })?
                     .to_string();
                 let prefix = PathBuf::from(prefix_str.trim_start_matches('/'));
 
                 Ok(BackendUrl::S3(bucket, prefix))
             }
-            _ => {
-                bail!(
-                    "Unsupported URL scheme: '{}' for URL '{}'",
-                    parsed_url.scheme(),
-                    url_str
-                );
-            }
+            _ => Err(MapacheError::Config(format!(
+                "Unsupported URL scheme: '{}' for URL '{}'",
+                parsed_url.scheme(),
+                url_str
+            )))?,
         }
     }
 }

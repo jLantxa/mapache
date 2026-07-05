@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use chrono::Duration;
 use futures::{StreamExt, stream};
@@ -230,7 +230,9 @@ impl Repository {
         tracing::info!(target: "repo", "Checking for existing repository");
         if backend.path_exists(Path::new(MANIFEST_PATH)).await {
             tracing::error!(target: "repo", "Repository already exists");
-            bail!("Repository already exists (manifest found)");
+            return Err(MapacheError::RepoAlreadyExists(
+                "manifest found".to_string(),
+            ));
         }
 
         backend
@@ -239,7 +241,7 @@ impl Repository {
             .inspect_err(
                 |e| tracing::error!(target: "repo", "Failed to create root directory: {e}"),
             )
-            .context("Could not create root directory")?;
+            .map_err(|e| MapacheError::Backend(format!("Could not create root directory: {e}")))?;
         tracing::debug!(target: "repo", "Root directory created");
 
         let keys_path = PathBuf::from(KEYS_DIR);
@@ -251,7 +253,7 @@ impl Repository {
         let master_key = KeyManager::generate_new_master_key();
         let keyfile = KeyManager::generate_key_file(auth, &master_key)
             .inspect_err(|e| tracing::error!(target: "repo", "Key generation failed: {e}"))
-            .context("Could not generate key")?;
+            .map_err(|e| MapacheError::Crypto(format!("Could not generate key: {e}")))?;
         tracing::info!(
             target: "repo",
             "Keyfile generated (Argon2 m={}, t={}, p={})",
@@ -372,16 +374,18 @@ impl Repository {
         let manifest = backend
             .read(&Handle::new(manifest_path), 0, 0)
             .await
-            .context("This is not a mapache repository.")?;
-        let manifest = secure_storage
-            .decode(&manifest)
-            .context("Could not decode the manifest file")?;
+            .map_err(|e| MapacheError::Repo(format!("This is not a mapache repository: {e}")))?;
+        let manifest = secure_storage.decode(&manifest).map_err(|e| {
+            MapacheError::Crypto(format!("Could not decode the manifest file: {e}"))
+        })?;
         let manifest: Manifest = serde_json::from_slice(&manifest)?;
         tracing::info!(target: "repo", "Manifest loaded (v{})", manifest.version());
 
         let version = manifest.version();
         if version > THIS_REPOSITORY_VERSION {
-            bail!("Invalid repository version '{version}'");
+            return Err(MapacheError::Repo(format!(
+                "Invalid repository version '{version}'"
+            )));
         }
 
         let repo = Repository::open(backend, secure_storage.clone(), config).await?;
@@ -473,7 +477,9 @@ impl Repository {
             let tx_guard = self.pack_saver_tx.read();
             tx_guard
                 .as_ref()
-                .context("Packer is stopped or not initialized")?
+                .ok_or_else(|| {
+                    MapacheError::Repo("Packer is stopped or not initialized".to_string())
+                })?
                 .clone()
         };
 
@@ -483,7 +489,7 @@ impl Repository {
             data: encoded_data,
             raw_length,
         })
-        .map_err(|_| anyhow::anyhow!("Packer channel closed"))?;
+        .map_err(|_| MapacheError::Repo("Packer channel closed".to_string()))?;
 
         // Only mark as pending after the packer confirmed receipt,
         // so a send failure doesn't orphan the blob.
@@ -505,7 +511,7 @@ impl Repository {
                 )
                 .await
             }
-            None => bail!("Could not find blob {id:?} in index"),
+            None => Err(MapacheError::NotInIndex(*id))?,
         }
     }
 
@@ -630,13 +636,15 @@ impl Repository {
         let snapshot_path = self.snapshot_path.join(id.to_hex());
 
         if !self.backend.path_exists(&snapshot_path).await {
-            bail!("Snapshot {id} doesn't exist")
+            return Err(MapacheError::SnapshotNotFound(format!(
+                "Snapshot {id} doesn't exist"
+            )));
         }
 
         self.backend
             .remove(&snapshot_path)
             .await
-            .with_context(|| format!("Could not remove snapshot {id}"))
+            .map_err(|e| MapacheError::Backend(format!("Could not remove snapshot {id}: {e}")))
     }
 
     /// Loads a snapshot by ID
@@ -651,7 +659,9 @@ impl Repository {
                 extension,
             )
             .await
-            .with_context(|| format!("No snapshot with ID '{id}' exists"))?;
+            .map_err(|e| {
+                MapacheError::SnapshotNotFound(format!("No snapshot with ID '{id}' exists: {e}"))
+            })?;
         let snapshot: Snapshot = serde_json::from_slice(&snapshot)?;
         Ok(snapshot)
     }
@@ -669,7 +679,7 @@ impl Repository {
         let ids = self
             .list_files(ContentIdType::Snapshot)
             .await
-            .context("Could not list snapshots")?
+            .map_err(|e| MapacheError::Backend(format!("Could not list snapshots: {e}")))?
             .into_iter()
             .filter_map(|path| {
                 path.file_name()
@@ -705,7 +715,11 @@ impl Repository {
         let ids = self
             .list_files_with_extension(ContentIdType::Snapshot, Some(REPO_DROPPED_EXTENSION))
             .await
-            .context("Failed to list files with the dropped snapshot extension")?
+            .map_err(|e| {
+                MapacheError::Backend(format!(
+                    "Failed to list files with the dropped snapshot extension: {e}"
+                ))
+            })?
             .into_iter()
             .filter_map(|path| {
                 path.file_stem()
@@ -743,7 +757,9 @@ impl Repository {
                 None,
             )
             .await
-            .with_context(|| format!("Could not load index {}", id.to_hex()))?;
+            .map_err(|e| {
+                MapacheError::Repo(format!("Could not load index {}: {e}", id.to_hex()))
+            })?;
         let index = serde_json::from_slice(&index)?;
         Ok(index)
     }
@@ -773,7 +789,9 @@ impl Repository {
                 None,
             )
             .await
-            .with_context(|| format!("Could not load lock file {}", id.to_hex()))?;
+            .map_err(|e| {
+                MapacheError::Repo(format!("Could not load lock file {}: {e}", id.to_hex()))
+            })?;
         let lock = serde_json::from_slice(&lock)?;
         Ok(lock)
     }
@@ -803,15 +821,15 @@ impl Repository {
     ) -> Result<(ID, PathBuf)> {
         if prefix.len() > 2 * common::ID_LENGTH {
             // A hex string has 2 characters per byte.
-            bail!(
+            return Err(MapacheError::Format(format!(
                 "Invalid prefix length. The prefix must not be longer than the ID ({} chars)",
                 2 * common::ID_LENGTH
-            );
+            )));
         } else if prefix.is_empty() {
             // Although it is technically possible to use an empty prefix, which would find a match
             // if only one file of the type exists. let's consider this invalid as it can be
             // potentially ambiguous or lead to errors.
-            bail!("Prefix cannot be empty");
+            return Err(MapacheError::Format("Prefix cannot be empty".to_string()));
         }
 
         let type_files = self.list_files_with_extension(file_type, extension).await?;
@@ -820,24 +838,34 @@ impl Repository {
         for file_path in type_files {
             let file_stem = match file_path.file_stem() {
                 Some(os_str) => os_str.to_string_lossy().into_owned(),
-                None => bail!("Failed to list file for type {file_type}"),
+                None => {
+                    return Err(MapacheError::Repo(format!(
+                        "Failed to list file for type {file_type}"
+                    )));
+                }
             };
 
             if file_stem.starts_with(prefix) {
                 if matches.is_empty() {
                     matches.push((file_stem, file_path));
                 } else {
-                    bail!("Prefix {prefix} is ambiguous");
+                    return Err(MapacheError::Format(format!(
+                        "Prefix {prefix} is ambiguous"
+                    )));
                 }
             }
         }
 
         if matches.is_empty() {
-            bail!("File type {file_type} with prefix {prefix} doesn't exist");
+            return Err(MapacheError::NotFound(format!(
+                "File type {file_type} with prefix {prefix} doesn't exist"
+            )));
         }
 
         let (file_stem, filepath) = matches.pop().ok_or_else(|| {
-            anyhow!("Expected to find matching file after successful prefix search")
+            MapacheError::Integrity(
+                "Expected to find matching file after successful prefix search".to_string(),
+            )
         })?;
         let id = ID::from_hex(&file_stem)?;
 
@@ -893,9 +921,10 @@ impl Repository {
             tokio::task::spawn_blocking(move || {
                 handle
                     .join()
-                    .map_err(|_| anyhow::anyhow!("Pack saver thread panicked"))?
+                    .map_err(|_| MapacheError::Internal("Pack saver thread panicked".to_string()))?
             })
-            .await??;
+            .await
+            .map_err(|e| MapacheError::Internal(format!("Pack saver task panicked: {e}")))??;
         }
 
         tracing::info!(target: "repo", "Persisting index");
@@ -1056,7 +1085,7 @@ impl Repository {
 
                         async move {
                             let entries = backend.list_dir(&dir).await?;
-                            Ok::<Vec<PathBuf>, anyhow::Error>(
+                            Ok::<Vec<PathBuf>, MapacheError>(
                                 entries.into_iter().map(|n| n.into_path()).collect(),
                             )
                         }
@@ -1141,13 +1170,19 @@ impl Repository {
 
                     let index = tokio::task::spawn_blocking(move || {
                         let index_file = secure_storage.decode(&index_data)?;
-                        let index_file: IndexFile = serde_json::from_slice(&index_file)
-                            .with_context(|| {
-                                format!("Failed to load index file {}", id.to_short_hex(4))
+                        let index_file: IndexFile =
+                            serde_json::from_slice(&index_file).map_err(|e| {
+                                MapacheError::Format(format!(
+                                    "Failed to load index file {}: {e}",
+                                    id.to_short_hex(4)
+                                ))
                             })?;
-                        Ok::<_, anyhow::Error>(Index::from_index_file(index_file, id))
+                        Ok::<_, MapacheError>(Index::from_index_file(index_file, id))
                     })
-                    .await??;
+                    .await
+                    .map_err(|e| {
+                        MapacheError::Internal(format!("Index loading task panicked: {e}"))
+                    })??;
 
                     Ok(Some(index))
                 }
@@ -1225,7 +1260,9 @@ impl Repository {
                     };
 
                     if start_time.elapsed() >= timeout.to_std().unwrap_or_default() {
-                        bail!("Timeout acquiring repository lock");
+                        return Err(MapacheError::LockExpired(
+                            "Timeout acquiring repository lock".to_string(),
+                        ));
                     }
 
                     let mut rng = rng();
@@ -1241,7 +1278,12 @@ impl Repository {
                         wait_time.as_seconds_f32()
                     );
 
-                    tokio::time::sleep(wait_time.to_std()?).await;
+                    tokio::time::sleep(
+                        wait_time.to_std().map_err(|e| {
+                            MapacheError::Repo(format!("Duration out of range: {e}"))
+                        })?,
+                    )
+                    .await;
                 }
             }
         }
@@ -1256,7 +1298,7 @@ impl Repository {
 
         self.save_lock(&new_lock)
             .await
-            .context("Failed to write new lock file")?;
+            .map_err(|e| MapacheError::Backend(format!("Failed to write new lock file: {e}")))?;
 
         let all_locks = match self.get_locks().await {
             Ok(locks) => locks,
@@ -1306,7 +1348,7 @@ impl Repository {
                     lock.context().join(" ")
                 );
 
-                bail!(info);
+                return Err(MapacheError::Locked(info));
             }
         }
 
@@ -1370,11 +1412,8 @@ impl Repository {
             };
 
             // Attempt to deserialize the lock
-            let lock_obj_result: Result<Lock, serde_json::Error> =
-                serde_json::from_slice(&decoded_lock);
-            match lock_obj_result {
-                Ok(lock_obj) => locks.push(lock_obj),
-                Err(_) => continue,
+            if let Ok(lock_obj) = serde_json::from_slice::<Lock>(&decoded_lock) {
+                locks.push(lock_obj);
             }
         }
 
@@ -1540,14 +1579,15 @@ mod tests {
                     WriteContents::Borrowed(data.as_bytes()),
                     SaveID::CalculateID,
                 )?;
-                Ok::<_, anyhow::Error>(id)
+                Ok::<_, MapacheError>(id)
             }));
         }
 
         let ids: Vec<ID> = join_all(handles)
             .await
             .into_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| MapacheError::Internal(e.to_string()))?
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
 
@@ -1563,14 +1603,15 @@ mod tests {
             let id = *id;
             load_handles.push(tokio::spawn(async move {
                 let loaded = r.load_blob(&id).await?;
-                Ok::<_, anyhow::Error>(loaded)
+                Ok::<_, MapacheError>(loaded)
             }));
         }
 
         let loaded_data: Vec<Vec<u8>> = join_all(load_handles)
             .await
             .into_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| MapacheError::Internal(e.to_string()))?
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
 
@@ -1652,9 +1693,15 @@ mod tests {
             | (true, true, false)
             | (true, false, true)
             | (false, false, false) => Ok(()),
-            (true, false, false) => bail!("Should not fail to acquire lock"),
+            (true, false, false) => {
+                return Err(MapacheError::Integrity(
+                    "Should not fail to acquire lock".to_string(),
+                ));
+            }
             (false, true, true) | (false, true, false) | (false, false, true) => {
-                bail!("Should fail to acquire lock")
+                return Err(MapacheError::Integrity(
+                    "Should fail to acquire lock".to_string(),
+                ));
             }
         }
     }

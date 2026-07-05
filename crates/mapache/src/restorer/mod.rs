@@ -27,7 +27,7 @@ use std::{
     },
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use clap::ValueEnum;
 use futures::StreamExt;
 use parking_lot::Mutex;
@@ -171,10 +171,9 @@ impl FileHandleCache {
     ) -> Result<&File> {
         if self.handles.contains_key(&file_idx) {
             self.touch(file_idx);
-            return self
-                .handles
-                .get(&file_idx)
-                .ok_or_else(|| anyhow!("File handle disappeared from cache"));
+            return self.handles.get(&file_idx).ok_or_else(|| {
+                MapacheError::Internal("File handle disappeared from cache".to_string())
+            });
         }
 
         if self.handles.len() >= self.max_handles
@@ -186,8 +185,11 @@ impl FileHandleCache {
         let file = if !initialized.load(std::sync::atomic::Ordering::Acquire) {
             if let Ok(m) = fs::symlink_metadata(path) {
                 if m.file_type().is_symlink() {
-                    fs::remove_file(path).with_context(|| {
-                        format!("Failed to remove symlink at {}", path.display())
+                    fs::remove_file(path).map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Failed to remove symlink at {}: {e}",
+                            path.display()
+                        ))
                     })?;
                 } else {
                     restorer.clear_readonly_attribute(path)?;
@@ -195,13 +197,20 @@ impl FileHandleCache {
             }
 
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create parent directory for {}", path.display())
+                fs::create_dir_all(parent).map_err(|e| {
+                    MapacheError::Internal(format!(
+                        "Failed to create parent directory for {}: {e}",
+                        path.display()
+                    ))
                 })?;
             }
 
-            let mut f = Self::open_file_for_restore(path, true)
-                .with_context(|| format!("Failed to create/truncate file: {}", path.display()))?;
+            let mut f = Self::open_file_for_restore(path, true).map_err(|e| {
+                MapacheError::Internal(format!(
+                    "Failed to create/truncate file: {}: {e}",
+                    path.display()
+                ))
+            })?;
 
             if plan.size > 0 {
                 if restorer.opts.preallocate {
@@ -209,8 +218,11 @@ impl FileHandleCache {
                         tracing::warn!(target: "restorer", "Failed to preallocate file {}: {e}", path.display());
                     }
                 } else {
-                    f.set_len(plan.size).with_context(|| {
-                        format!("Failed to set length for sparse file: {}", path.display())
+                    f.set_len(plan.size).map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Failed to set length for sparse file: {}: {e}",
+                            path.display()
+                        ))
                     })?;
                 }
             }
@@ -218,15 +230,19 @@ impl FileHandleCache {
             initialized.store(true, std::sync::atomic::Ordering::Release);
             f
         } else {
-            Self::open_file_for_restore(path, false)
-                .with_context(|| format!("Failed to open file for writing: {}", path.display()))?
+            Self::open_file_for_restore(path, false).map_err(|e| {
+                MapacheError::Internal(format!(
+                    "Failed to open file for writing: {}: {e}",
+                    path.display()
+                ))
+            })?
         };
 
         self.handles.insert(file_idx, file);
         self.order.push_back(file_idx);
-        self.handles
-            .get(&file_idx)
-            .ok_or_else(|| anyhow!("Failed to retrieve file handle after insertion"))
+        self.handles.get(&file_idx).ok_or_else(|| {
+            MapacheError::Internal("Failed to retrieve file handle after insertion".to_string())
+        })
     }
 
     fn open_file_for_restore(path: &Path, create: bool) -> io::Result<std::fs::File> {
@@ -340,7 +356,7 @@ impl Restorer {
             // SAFETY: FFI call to posix_fallocate with a valid file descriptor.
             let result = unsafe { libc::posix_fallocate(fd, 0, length as libc::off_t) };
             if result != 0 {
-                return Err(anyhow!(std::io::Error::from_raw_os_error(result)));
+                return Err(MapacheError::Io(std::io::Error::from_raw_os_error(result)));
             }
             Ok(())
         }
@@ -370,7 +386,7 @@ impl Restorer {
             }
 
             if res == -1 {
-                return Err(anyhow!(std::io::Error::last_os_error()));
+                return Err(MapacheError::Io(std::io::Error::last_os_error()));
             }
 
             file.set_len(length)?;
@@ -391,11 +407,11 @@ impl Restorer {
 
     #[cfg_attr(windows, allow(clippy::permissions_set_readonly_false))]
     fn clear_readonly_attribute(&self, path: &Path) -> Result<()> {
-        let metadata = fs::metadata(path).with_context(|| {
-            format!(
-                "Failed to get metadata for permission change: {}",
+        let metadata = fs::metadata(path).map_err(|e| {
+            MapacheError::Internal(format!(
+                "Failed to get metadata for permission change: {}: {e}",
                 path.display()
-            )
+            ))
         })?;
 
         let mut perms = metadata.permissions();
@@ -404,8 +420,11 @@ impl Restorer {
         {
             if perms.readonly() {
                 perms.set_readonly(false);
-                fs::set_permissions(path, perms).with_context(|| {
-                    format!("Failed to clear readonly attribute on {}", path.display())
+                fs::set_permissions(path, perms).map_err(|e| {
+                    MapacheError::Internal(format!(
+                        "Failed to clear readonly attribute on {}: {e}",
+                        path.display()
+                    ))
                 })?;
             }
         }
@@ -416,8 +435,11 @@ impl Restorer {
             let mode = perms.mode();
             if mode & 0o200 == 0 {
                 perms.set_mode(mode | 0o200);
-                fs::set_permissions(path, perms).with_context(|| {
-                    format!("Failed to set write permission on {}", path.display())
+                fs::set_permissions(path, perms).map_err(|e| {
+                    MapacheError::Internal(format!(
+                        "Failed to set write permission on {}: {e}",
+                        path.display()
+                    ))
                 })?;
             }
         }
@@ -469,7 +491,7 @@ impl Restorer {
 
         while let Some(node_res) = node_stream.next().await {
             if self.shutdown_signal.load(Ordering::Acquire) {
-                bail!("Interrupted");
+                return Err(MapacheError::Interrupted);
             }
 
             node_visited += 1;
@@ -599,7 +621,7 @@ impl Restorer {
                             ))),
                         );
                         if self.opts.quit_on_error {
-                            bail!("{e}");
+                            return Err(MapacheError::Internal(format!("{e}")));
                         }
                         true
                     }
@@ -760,7 +782,7 @@ impl Restorer {
             let hardlinks = std::mem::take(&mut *pending_hardlinks.lock());
             for (secondary, primary) in &hardlinks {
                 if self.shutdown_signal.load(Ordering::Acquire) {
-                    bail!("Interrupted");
+                    return Err(MapacheError::Interrupted);
                 }
                 if let Some(parent) = secondary.parent()
                     && let Err(e) = fs::create_dir_all(parent)
@@ -771,7 +793,7 @@ impl Restorer {
                         e
                     );
                     if self.opts.quit_on_error {
-                        bail!(msg);
+                        return Err(MapacheError::Internal(msg));
                     }
                     emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
                     continue;
@@ -785,7 +807,7 @@ impl Restorer {
                         e
                     );
                     if self.opts.quit_on_error {
-                        bail!(msg);
+                        return Err(MapacheError::Internal(msg));
                     }
                     emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
                     continue;
@@ -798,7 +820,7 @@ impl Restorer {
                         e
                     );
                     if self.opts.quit_on_error {
-                        bail!(msg);
+                        return Err(MapacheError::Internal(msg));
                     }
                     emit_event(
                         &self.event_sender,
@@ -816,7 +838,7 @@ impl Restorer {
                             copy_err
                         );
                         if self.opts.quit_on_error {
-                            bail!(msg);
+                            return Err(MapacheError::Internal(msg));
                         }
                         emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
                     }

@@ -1,33 +1,3 @@
-use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
-
-use anyhow::{Error, Result, anyhow, bail};
-use chrono::Duration;
-use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
-use serde::{Deserialize, Serialize, Serializer};
-
-use crate::{
-    backend::{BackendOptions, StorageBackend},
-    common::{
-        ContentIdType, ID,
-        config::{MapacheConfig, load_config},
-        defaults::{
-            DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
-            MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
-        },
-        global::{MAPACHE_VERSION_INFO, THIS_MAPACHE_VERSION, set_global_opts_with_args},
-        hooks,
-    },
-    repository::{
-        keys::KeyManagerError,
-        lock::LockHandle,
-        repo::{RepoConfig, Repository},
-        snapshot::{Snapshot, SnapshotStream},
-        storage::SecureStorage,
-    },
-    ui::{self, cli},
-    utils::{self, size},
-};
-
 // Subcommands
 pub mod cmd_amend;
 pub mod cmd_bundle;
@@ -61,7 +31,37 @@ pub mod cmd_verify;
 pub mod cleanup;
 pub mod error;
 
-pub(crate) use error::{ToExitCode, fail};
+pub(crate) use error::ToExitCode;
+
+use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
+
+use chrono::Duration;
+use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
+use serde::{Deserialize, Serialize, Serializer};
+
+use crate::{
+    backend::{BackendOptions, StorageBackend},
+    commands::error::CmdError,
+    common::{
+        ContentIdType, ID,
+        config::{MapacheConfig, load_config},
+        defaults::{
+            DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
+            MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
+        },
+        error::{MapacheError, Result},
+        global::{MAPACHE_VERSION_INFO, THIS_MAPACHE_VERSION, set_global_opts_with_args},
+        hooks,
+    },
+    repository::{
+        lock::LockHandle,
+        repo::{RepoConfig, Repository},
+        snapshot::{Snapshot, SnapshotStream},
+        storage::SecureStorage,
+    },
+    ui::{self, cli},
+    utils::{self, size},
+};
 
 /// mapache CLI definition
 #[derive(Parser, Debug)]
@@ -408,12 +408,12 @@ impl GlobalArgs {
 
 /// Converts merged CLI+config global options into concrete GlobalArgs.
 /// Applies defaults for any remaining None values.
-fn cli_to_global_args(cli: &CliGlobalArgs) -> Result<GlobalArgs> {
+fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, String> {
     let repo = cli
         .repo
         .clone()
         .or_else(|| env::var("MAPACHE_REPOSITORY").ok())
-        .ok_or_else(|| anyhow!("Repository path is required. Use --repo, set MAPACHE_REPOSITORY, or add it to config file."))?;
+        .ok_or_else(|| "Repository path is required. Use --repo, set MAPACHE_REPOSITORY, or add it to config file.".to_string())?;
 
     let pack_size_mib = cli.pack_size_mib.unwrap_or(DEFAULT_PACK_SIZE_MIB);
     let compression_level = cli.compression_level.unwrap_or(DEFAULT_COMPRESSION);
@@ -437,16 +437,18 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> Result<GlobalArgs> {
     })
 }
 
-fn parse_bandwidth(s: &str) -> Result<u64, String> {
+fn parse_bandwidth(s: &str) -> std::result::Result<u64, String> {
     utils::parse_bandwidth(s).map_err(|e| e.to_string())
 }
 
-fn pack_size_parser(s: &str) -> Result<f32> {
-    let val = s.parse::<f32>()?;
+fn pack_size_parser(s: &str) -> std::result::Result<f32, String> {
+    let val = s
+        .parse::<f32>()
+        .map_err(|e| format!("Invalid pack size: {e}"))?;
     if !(MIN_CONFIGURABLE_PACK_SIZE_MIB..=MAX_CONFIGURABLE_PACK_SIZE_MIB).contains(&val) {
-        bail!(
+        return Err(format!(
             "Pack size must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB"
-        );
+        ));
     }
     Ok(val)
 }
@@ -476,7 +478,7 @@ impl Compression {
 }
 
 impl FromStr for Compression {
-    type Err = Error;
+    type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let result = match s.to_lowercase().as_str() {
@@ -492,13 +494,13 @@ impl FromStr for Compression {
             return Ok(variant);
         }
 
-        s.strip_prefix("level:")
-            .ok_or_else(|| anyhow!("Invalid compression format: {s}"))
-            .and_then(|val| {
-                val.parse::<i32>()
-                    .map(Self::Manual)
-                    .map_err(|_| anyhow!("Invalid compression level: {val}"))
-            })
+        match s.strip_prefix("level:") {
+            Some(val) => val
+                .parse::<i32>()
+                .map(Self::Manual)
+                .map_err(|_| format!("Invalid compression level: {val}")),
+            None => Err(format!("Invalid compression format: {s}")),
+        }
     }
 }
 
@@ -515,7 +517,7 @@ impl std::fmt::Display for Compression {
     }
 }
 
-fn parse_compression_level(s: &str) -> Result<Compression> {
+fn parse_compression_level(s: &str) -> std::result::Result<Compression, String> {
     Compression::from_str(s)
 }
 
@@ -528,13 +530,13 @@ pub enum UseSnapshot {
 }
 
 impl FromStr for UseSnapshot {
-    type Err = Error;
+    type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "latest" => Ok(Self::Latest),
             _ if !s.is_empty() => Ok(Self::SnapshotId(s.to_string())),
-            _ => Err(anyhow!("Invalid snapshot: use 'latest' or a snapshot ID")),
+            _ => Err("Invalid snapshot: use 'latest' or a snapshot ID".to_string()),
         }
     }
 }
@@ -553,7 +555,7 @@ pub(crate) async fn find_use_snapshot(
     use_snapshot: &UseSnapshot,
 ) -> Result<Option<(ID, Snapshot)>> {
     match use_snapshot {
-        UseSnapshot::Latest => SnapshotStream::new(repo.clone()).await?.latest().await,
+        UseSnapshot::Latest => Ok(SnapshotStream::new(repo.clone()).await?.latest().await?),
         UseSnapshot::SnapshotId(prefix) => {
             let (id, _) = repo.find(ContentIdType::Snapshot, prefix).await?;
             let snap = repo.load_snapshot(&id, None).await?;
@@ -574,7 +576,10 @@ pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
 }
 
 /// Resolve global args with config merging.
-fn resolve_global(cli: &CliGlobalArgs, config: &MapacheConfig) -> Result<GlobalArgs> {
+fn resolve_global(
+    cli: &CliGlobalArgs,
+    config: &MapacheConfig,
+) -> std::result::Result<GlobalArgs, String> {
     let mut g = cli.clone();
     if let Some(cfg) = &config.global {
         g.merge(cfg.clone());
@@ -587,7 +592,7 @@ fn resolve_global_with_extra<T: Merge + Clone + clap::Args>(
     mut cmd: WithGlobal<T>,
     config: &MapacheConfig,
     extra: &Option<T>,
-) -> (Result<GlobalArgs>, WithGlobal<T>) {
+) -> (std::result::Result<GlobalArgs, String>, WithGlobal<T>) {
     if let Some(cfg) = extra {
         cmd.args.merge(cfg.clone());
     }
@@ -684,49 +689,90 @@ pub async fn parse_and_run() -> i32 {
 
     tracing::info!(target: "mapache", "called with args: {}", std::env::args().collect::<Vec<_>>().join(" "));
 
-    let result = match command_result {
+    let result: std::result::Result<(), error::CmdError> = match command_result {
         // Commands without global args
-        Command::Bundle(cmd) => cmd_bundle::run(&cmd).await,
-        Command::Cache(cmd) => cmd_cache::run(&cmd),
-        Command::Completion(cmd) => cmd_completion::run(&cmd),
-        Command::Config(cmd) => cmd_config::run(&cmd).await,
+        Command::Bundle(cmd) => cmd_bundle::run(&cmd).await.map_err(CmdError::new),
+        Command::Cache(cmd) => cmd_cache::run(&cmd).map_err(CmdError::new),
+        Command::Completion(cmd) => cmd_completion::run(&cmd).map_err(CmdError::new),
+        Command::Config(cmd) => cmd_config::run(&cmd).await.map_err(CmdError::new),
         // Tui needs extra config
         Command::Tui(cmd) => {
             let snapshot_cfg = config.snapshot.clone();
             let forget_cfg = config.forget.clone();
-            cmd_tui::run(&global, &cmd.args, snapshot_cfg, forget_cfg).await
+            cmd_tui::run(&global, &cmd.args, snapshot_cfg, forget_cfg)
+                .await
+                .map_err(CmdError::new)
         }
         // Standard async commands
-        Command::Amend(cmd) => cmd_amend::run(&global, &cmd.args).await,
-        Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args).await,
-        Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args).await,
-        Command::Copy(cmd) => cmd_copy::run(&global, &cmd.args).await,
-        Command::Diff(cmd) => cmd_diff::run(&global, &cmd.args).await,
-        Command::Dump(cmd) => cmd_dump::run(&global, &cmd.args).await,
-        Command::Find(cmd) => cmd_find::run(&global, &cmd.args).await,
-        Command::Forget(cmd) => cmd_forget::run(&global, &cmd.args).await,
-        Command::Init(cmd) => cmd_init::run(&global, &cmd.args).await,
-        Command::Key(cmd) => cmd_key::run(&global, &cmd.args).await,
-        Command::Log(cmd) => cmd_log::run(&global, &cmd.args).await,
-        Command::Ls(cmd) => cmd_ls::run(&global, &cmd.args).await,
+        Command::Amend(cmd) => cmd_amend::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Copy(cmd) => cmd_copy::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Diff(cmd) => cmd_diff::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Dump(cmd) => cmd_dump::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Find(cmd) => cmd_find::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Forget(cmd) => cmd_forget::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Init(cmd) => cmd_init::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Key(cmd) => cmd_key::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Log(cmd) => cmd_log::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Ls(cmd) => cmd_ls::run(&global, &cmd.args).await.map_err(CmdError::new),
         #[cfg(all(feature = "mount", unix))]
-        Command::Mount(cmd) => cmd_mount::run(&global, &cmd.args).await,
-        Command::RebuildIndex(cmd) => cmd_rebuild_index::run(&global, &cmd.args).await,
-        Command::Recall(cmd) => cmd_recall::run(&global, &cmd.args).await,
-        Command::Rechunk(cmd) => cmd_rechunk::run(&global, &cmd.args).await,
-        Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args).await,
-        Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args).await,
-        Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args).await,
-        Command::Sync(cmd) => cmd_sync::run(&global, &cmd.args).await,
-        Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args).await,
-        Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args).await,
+        Command::Mount(cmd) => cmd_mount::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::RebuildIndex(cmd) => cmd_rebuild_index::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Recall(cmd) => cmd_recall::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Rechunk(cmd) => cmd_rechunk::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Sync(cmd) => cmd_sync::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
+        Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
     };
 
     if let Err(ref e) = result {
-        let exit_code = e
-            .downcast_ref::<error::MapacheError>()
-            .map(|me| me.exit_code)
-            .unwrap_or(error::GENERIC_ERROR_CODE);
+        let exit_code = e.exit_code();
 
         tracing::error!(target: "mapache", "return exit code {}: {}", exit_code, e);
 
@@ -734,15 +780,15 @@ pub async fn parse_and_run() -> i32 {
             ui::cli::error!("{:#}", e);
         } else {
             #[derive(Serialize)]
-            struct ErrorMessage<'a> {
-                msg: &'a str,
+            struct ErrorMessage {
+                msg: String,
                 exit_code: i32,
             }
 
             ui::json::emit_static(
                 "exit_error",
                 &ErrorMessage {
-                    msg: &e.to_string(),
+                    msg: e.to_string(),
                     exit_code,
                 },
             );
@@ -793,7 +839,8 @@ pub async fn open_repository(
 
     // If auth is provided (from file or env), try it once.
     if let Some(a) = auth.take() {
-        return Repository::try_open_unlocked(&a, key_file_path, backend, config).await;
+        let val = Repository::try_open_unlocked(&a, key_file_path, backend, config).await?;
+        return Ok(val);
     }
 
     // Otherwise, loop with prompts
@@ -801,18 +848,14 @@ pub async fn open_repository(
     let mut password_try_count = 0;
 
     loop {
-        let current_auth = cli::request_auth()?;
+        let current_auth = cli::request_auth().map_err(|e| MapacheError::Auth(e.to_string()))?;
 
         match Repository::try_open_unlocked(&current_auth, key_file_path, backend.clone(), config)
             .await
         {
             Ok(val) => return Ok(val),
             Err(e) => {
-                let is_retryable = e
-                    .chain()
-                    .find_map(|err| err.downcast_ref::<KeyManagerError>())
-                    .map(|key_err| !key_err.is_fatal())
-                    .unwrap_or(false);
+                let is_retryable = e.to_string().contains("No valid KeyFile found");
 
                 if is_retryable {
                     password_try_count += 1;
@@ -833,7 +876,7 @@ pub async fn open_repository(
 /// When `no_lock` is true, the repository is opened without acquiring a lock and a
 /// no-op lock handle is returned.
 #[allow(clippy::too_many_arguments)]
-pub async fn with_repository_lock<F, Fut, T>(
+pub async fn with_repository_lock<F, Fut, T, E>(
     auth_file: Option<&PathBuf>,
     key_file_path: Option<&PathBuf>,
     backend: Arc<dyn StorageBackend>,
@@ -842,10 +885,11 @@ pub async fn with_repository_lock<F, Fut, T>(
     retry_duration: Option<Duration>,
     no_lock: bool,
     f: F,
-) -> Result<T>
+) -> std::result::Result<T, E>
 where
     F: FnOnce(Arc<Repository>, Arc<SecureStorage>, Option<LockHandle>) -> Fut,
-    Fut: std::future::Future<Output = Result<T>>,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+    E: From<MapacheError>,
 {
     let (repo, storage, lock) = if no_lock {
         let (repo, storage) = open_repository(auth_file, key_file_path, backend, config).await?;
@@ -893,7 +937,7 @@ pub async fn open_repository_with_lock(
 
     // If auth is provided (from file or env), try it once.
     if let Some(a) = auth.take() {
-        return Repository::try_open_with_lock(
+        let val = Repository::try_open_with_lock(
             &a,
             key_file_path,
             backend,
@@ -901,7 +945,8 @@ pub async fn open_repository_with_lock(
             exclusive_lock,
             retry_duration,
         )
-        .await;
+        .await?;
+        return Ok(val);
     }
 
     // Otherwise, loop with prompts
@@ -909,7 +954,7 @@ pub async fn open_repository_with_lock(
     let mut password_try_count = 0;
 
     loop {
-        let current_auth = cli::request_auth()?;
+        let current_auth = cli::request_auth().map_err(|e| MapacheError::Auth(e.to_string()))?;
 
         match Repository::try_open_with_lock(
             &current_auth,
@@ -923,11 +968,7 @@ pub async fn open_repository_with_lock(
         {
             Ok(val) => return Ok(val),
             Err(e) => {
-                let is_retryable = e
-                    .chain()
-                    .find_map(|err| err.downcast_ref::<KeyManagerError>())
-                    .map(|key_err| !key_err.is_fatal())
-                    .unwrap_or(false);
+                let is_retryable = e.to_string().contains("No valid KeyFile found");
 
                 if is_retryable {
                     password_try_count += 1;

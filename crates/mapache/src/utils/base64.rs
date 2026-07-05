@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use crate::common::error::{MapacheError, Result};
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -28,7 +28,7 @@ pub(crate) fn encode(input: &[u8]) -> String {
 
 pub(crate) fn decode(input: &str) -> Result<Vec<u8>> {
     if !input.len().is_multiple_of(4) {
-        bail!("invalid base64 length");
+        return Err(MapacheError::Format("invalid base64 length".into()));
     }
     let padding = input.bytes().rev().take(2).filter(|&b| b == b'=').count();
     let out_len = input.len() / 4 * 3 - padding;
@@ -44,7 +44,12 @@ pub(crate) fn decode(input: &str) -> Result<Vec<u8>> {
                 b'+' => 62,
                 b'/' => 63,
                 b'=' => 0,
-                _ => bail!("invalid base64 character: {}", c as char),
+                _ => {
+                    return Err(MapacheError::Format(format!(
+                        "invalid base64 character: {}",
+                        c as char
+                    )));
+                }
             };
         }
         let triple = (buf[0] << 18) | (buf[1] << 12) | (buf[2] << 6) | buf[3];

@@ -1,11 +1,12 @@
-use anyhow::{Context, Result, bail};
+use std::io;
+
 use clap::{ArgGroup, Args};
 use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, cleanup::CleanupHandler, parse_tags, with_repository_lock},
-    common::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, parse_tags, with_repository_lock},
+    common::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError},
     repository::{
         repo::REPO_DROPPED_EXTENSION,
         snapshot::{SnapshotEntry, SnapshotEntryList, SnapshotStream},
@@ -16,6 +17,26 @@ use crate::{
     },
     utils,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum LogError {
+    #[error("snapshot not found: {0}")]
+    SnapshotNotFound(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl ToExitCode for LogError {
+    fn to_exit_code(&self) -> i32 {
+        match self {
+            LogError::SnapshotNotFound(_) => 20,
+            LogError::Repo(_) => 1,
+            LogError::Io(_) => 1,
+        }
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Show all snapshots present in the repository")]
@@ -44,17 +65,21 @@ pub struct CmdArgs {
 
 const LOG_MSG: &str = "log";
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), LogError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        new_backend_with_prompt(global_args.backend_options(false))
+            .await
+            .map_err(|e| {
+                LogError::SnapshotNotFound(format!("Failed to initialize backend: {e}"))
+            })?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
             let show_active = args.all || !args.dropped;
@@ -83,19 +108,25 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     snapshots
                 }
                 Some(prefix) => {
-                    let (id, path) = repo
-                        .find(ContentIdType::Snapshot, prefix)
-                        .await
-                        .with_context(|| format!("Could not find snapshot {prefix}"))?;
+                    let (id, path) =
+                        repo.find(ContentIdType::Snapshot, prefix)
+                            .await
+                            .map_err(|e| {
+                                LogError::SnapshotNotFound(format!(
+                                    "Could not find snapshot {prefix}: {e}"
+                                ))
+                            })?;
 
                     let ext = path.extension().and_then(|s| s.to_str());
                     let active = match ext {
                         Some(REPO_DROPPED_EXTENSION) => false,
                         None => true,
-                        _ => bail!(
-                            "Snapshot {} not found",
-                            id.to_short_hex(SHORT_SNAPSHOT_ID_LEN)
-                        ),
+                        _ => {
+                            return Err(LogError::SnapshotNotFound(format!(
+                                "Snapshot {} not found",
+                                id.to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                            )));
+                        }
                     };
 
                     let snapshot = repo.load_snapshot(&id, ext).await?;

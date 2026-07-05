@@ -1,11 +1,11 @@
 use std::{
     collections::BTreeSet,
+    io,
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
 
-use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use futures::StreamExt;
 
@@ -13,12 +13,12 @@ use crate::{
     archiver::progress::SnapshotProgress,
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        EMPTY_TAG_MARK, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
         find_use_snapshot, parse_tags, with_repository_lock,
     },
     common::{
         ContentIdType, ID, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN,
-        rewrite_snapshot_tree,
+        error::MapacheError, rewrite_snapshot_tree,
     },
     fs::filter::{
         merge_filtered_paths, parse_relative_filter_paths, read_filtered_paths_from_file,
@@ -31,14 +31,23 @@ use crate::{
     utils,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum AmendError {
-    Interrupted = 130,
+    #[error("amend interrupted by user: {0}")]
+    Interrupted(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for AmendError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            AmendError::Interrupted(_) => 130,
+            AmendError::Repo(_) => 1,
+            AmendError::Io(_) => 1,
+        }
     }
 }
 
@@ -85,7 +94,7 @@ pub struct CmdArgs {
     pub exclude_file: Option<PathBuf>,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), AmendError> {
     tracing::info!(target: "amend", "Starting amend command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -96,7 +105,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
             let start = Instant::now();
@@ -113,14 +122,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             } else {
                 match find_use_snapshot(repo.clone(), &args.snapshot).await {
                     Ok(Some((id, snap))) => snapshots.push((id, snap)),
-                    Ok(None) | Err(_) => bail!("Snapshot not found"),
+                    Ok(None) | Err(_) => {
+                        return Err(AmendError::Interrupted("Snapshot not found".to_string()));
+                    }
                 }
             }
 
             let num_snapshots = snapshots.len();
             for (i, (id, snapshot)) in snapshots.iter_mut().rev().enumerate() {
                 if cleanup_handler.is_interrupted() {
-                    return Err(fail("Amend interrupted by user.", AmendError::Interrupted));
+                    return Err(AmendError::Interrupted(
+                        "Amend interrupted by user.".to_string(),
+                    ));
                 }
 
                 let amend_str = format!(
@@ -162,7 +175,7 @@ async fn amend(
     snapshot: &mut Snapshot,
     args: &CmdArgs,
     shutdown_signal: Arc<AtomicBool>,
-) -> Result<()> {
+) -> Result<(), AmendError> {
     tracing::info!(target: "amend", "Amending snapshot {}", origin_snapshot_id.to_short_hex(8));
     snapshot.summary.amends = Some(*origin_snapshot_id);
 
@@ -217,7 +230,9 @@ async fn amend(
     let (new_id, _meta_size) = repo
         .save_file(
             &SaveID::CalculateID,
-            serde_json::to_string(&snapshot)?.as_bytes(),
+            serde_json::to_string(&snapshot)
+                .map_err(|e| AmendError::Repo(MapacheError::Serialization(e)))?
+                .as_bytes(),
             StorageHint {
                 file_type: ContentIdType::Snapshot,
                 is_metadata: true,

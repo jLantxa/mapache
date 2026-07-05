@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::Result;
+use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use futures::StreamExt;
@@ -116,7 +116,7 @@ impl DiffScreen {
 
         let mut diff_stream = create_diff_stream(repo.clone(), src_snap.tree, tgt_snap.tree)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create diff stream: {}", e))?;
+            .map_err(|e| MapacheError::Internal(format!("Failed to create diff stream: {e}")))?;
         let mut entries: Vec<DiffEntry> = Vec::new();
         let mut counts = DiffCounts::default();
 

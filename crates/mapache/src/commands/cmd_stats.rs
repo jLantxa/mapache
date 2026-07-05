@@ -1,9 +1,9 @@
 use std::{
+    io,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
 use clap::Args;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -11,8 +11,8 @@ use serde::Serialize;
 
 use crate::{
     backend::{StorageBackend, new_backend_with_prompt},
-    commands::{GlobalArgs, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, global::GlobalOpts},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    common::{ContentIdType, error::MapacheError, global::GlobalOpts},
     fs::{node::NodeType, tree::SerializedNodeStream},
     repository::{
         packer::Packer,
@@ -23,6 +23,23 @@ use crate::{
     ui::{self, SPINNER_TICK_CHARS, default_bar_draw_target},
     utils::{self, collections::IdSet},
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum StatsError {
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl ToExitCode for StatsError {
+    fn to_exit_code(&self) -> i32 {
+        match self {
+            StatsError::Repo(_) => 1,
+            StatsError::Io(_) => 1,
+        }
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 #[clap(about = "Show repository statistics")]
@@ -87,17 +104,23 @@ struct StatsOutput {
     total_repo_bytes: u64,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), StatsError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false)).await?,
+        new_backend_with_prompt(global_args.backend_options(false))
+            .await
+            .map_err(|e| {
+                StatsError::Io(io::Error::other(format!(
+                    "Failed to initialize backend: {e}",
+                )))
+            })?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, secure_storage, lock_handle| async move {
-            let cleanup_handler = CleanupHandler::new()?;
+            let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle);
 
             repo.reload_master_index().await?;
@@ -121,7 +144,7 @@ async fn stats_repository(
     backend: Arc<dyn StorageBackend>,
     args: &CmdArgs,
     json_out: bool,
-) -> Result<()> {
+) -> Result<(), StatsError> {
     let spinner = ProgressBar::new_spinner();
     spinner.set_draw_target(default_bar_draw_target());
     spinner.set_style(
@@ -137,7 +160,7 @@ async fn stats_repository(
         backend: &dyn StorageBackend,
         label: &str,
         files: &[PathBuf],
-    ) -> Result<u64> {
+    ) -> Result<u64, StatsError> {
         let mut total = 0u64;
         let len = files.len();
         for (i, path) in files.iter().enumerate() {
@@ -227,7 +250,13 @@ async fn stats_repository(
                 pack_id,
             )
             .await
-            .with_context(|| format!("Failed to parse footer for pack {}", pack_id.to_hex()))?;
+            .map_err(|e| {
+                StatsError::Repo(MapacheError::Internal(format!(
+                    "Failed to parse footer for pack {}: {}",
+                    pack_id.to_hex(),
+                    e
+                )))
+            })?;
 
             spinner.set_message(format!("parsing pack footers {}/{}", idx + 1, num_pack_ids));
 
@@ -474,7 +503,7 @@ struct SnapshotAnalysis {
 async fn analyze_snapshots(
     repo: Arc<Repository>,
     spinner: &ProgressBar,
-) -> Result<SnapshotAnalysis> {
+) -> Result<SnapshotAnalysis, StatsError> {
     let mut total_raw_data_size = 0u64;
     let mut total_encoded_data_size = 0u64;
     let mut num_referenced_blobs = 0u64; // total (data + tree)

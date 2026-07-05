@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use crate::common::error::{MapacheError, Result};
 
 pub(crate) fn put_u8(buf: &mut Vec<u8>, v: u8) {
     buf.push(v);
@@ -51,10 +51,10 @@ pub(crate) fn put_bytes(buf: &mut Vec<u8>, v: &[u8]) {
 
 pub(crate) fn get_exact<'a>(buf: &mut &'a [u8], len: usize) -> Result<&'a [u8]> {
     if buf.len() < len {
-        bail!(
+        return Err(MapacheError::Format(format!(
             "unexpected end of input: needed {len} bytes, have {}",
             buf.len()
-        );
+        )));
     }
     let (val, rest) = buf.split_at(len);
     *buf = rest;

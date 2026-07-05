@@ -1,13 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use futures::StreamExt;
 
 use crate::{
     backend::{Handle, WriteContents, new_backend_with_prompt},
-    commands::GlobalArgs,
-    common::{ContentIdType, ID, defaults::DEFAULT_COMPRESSION},
+    commands::{GlobalArgs, ToExitCode},
+    common::{ContentIdType, ID, defaults::DEFAULT_COMPRESSION, error::MapacheError},
     repository::{
         keys::{KeyFileStream, KeyManager},
         repo::{Auth, KEYS_DIR},
@@ -19,6 +21,26 @@ use crate::{
     },
     utils::{self},
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum KeyError {
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+}
+
+impl ToExitCode for KeyError {
+    fn to_exit_code(&self) -> i32 {
+        match self {
+            KeyError::RepoOpenFail(_) => 10,
+            KeyError::Io(_) => 1,
+            KeyError::Repo(_) => 1,
+        }
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 pub struct AddArgs {
@@ -72,7 +94,7 @@ pub struct CmdArgs {
     pub subcommand: KeySubcommand,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), KeyError> {
     match &args.subcommand {
         KeySubcommand::List => run_list(global_args).await,
         KeySubcommand::Add(args) => run_add(global_args, args).await,
@@ -82,8 +104,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     }
 }
 
-async fn run_list(global_args: &GlobalArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
+async fn run_list(global_args: &GlobalArgs) -> Result<(), KeyError> {
+    let backend = new_backend_with_prompt(global_args.backend_options(false))
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to initialize backend: {e}")))?;
 
     let mut table = Table::new();
     table.set_headers(vec![
@@ -92,9 +116,12 @@ async fn run_list(global_args: &GlobalArgs) -> Result<()> {
         "Created".bold().yellow().to_string(),
     ]);
 
-    let mut keyfile_stream = KeyFileStream::new(backend.clone()).await?;
+    let mut keyfile_stream = KeyFileStream::new(backend.clone())
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to open key stream: {e}")))?;
     while let Some(res) = keyfile_stream.next().await {
-        let (id, keyfile) = res?;
+        let (id, keyfile) =
+            res.map_err(|e| KeyError::RepoOpenFail(format!("Failed to read key file: {e}")))?;
         table.add_row(vec![
             keyfile.username,
             id.to_short_hex(6),
@@ -107,24 +134,33 @@ async fn run_list(global_args: &GlobalArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
-    let auth = request_auth()?;
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
+async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<(), KeyError> {
+    let auth = request_auth()
+        .map_err(|e| KeyError::RepoOpenFail(format!("Authentication failed: {e}")))?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to initialize backend: {e}")))?;
 
     let key_manager = KeyManager::new(backend.clone());
     let (_key_id, master_key) = key_manager
         .retrieve_master_key(&auth, global_args.key.as_ref())
-        .await?;
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to retrieve master key: {e}")))?;
 
     ui::cli::log!("\nCreating new user key...");
-    let new_auth = request_new_auth()?;
-    let new_key_file =
-        KeyManager::generate_key_file(&new_auth, &master_key).context("Could not generate key")?;
+    let new_auth = request_new_auth()
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to get new auth: {e}")))?;
+    let new_key_file = KeyManager::generate_key_file(&new_auth, &master_key)
+        .map_err(|e| KeyError::RepoOpenFail(format!("Could not generate key: {e}")))?;
 
     let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
-    let new_keyfile_json = serde_json::to_string_pretty(&new_key_file)?;
-    let new_keyfile_json = ss.compress(new_keyfile_json.as_bytes())?;
+    let new_keyfile_json = serde_json::to_string_pretty(&new_key_file)
+        .map_err(MapacheError::Serialization)
+        .map_err(KeyError::Repo)?;
+    let new_keyfile_json = ss
+        .compress(new_keyfile_json.as_bytes())
+        .map_err(|e| KeyError::RepoOpenFail(format!("Compression failed: {e}")))?;
     let new_keyfile_id = ID::from_content(&new_keyfile_json);
 
     match &args.output_keyfile_path {
@@ -136,53 +172,89 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<()> {
             let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
             backend
                 .write(&handle, WriteContents::Owned(new_keyfile_json))
-                .await?;
+                .await
+                .map_err(|e| KeyError::RepoOpenFail(format!("Failed to write key file: {e}")))?;
         }
     }
 
     Ok(())
 }
 
-async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<()> {
+async fn run_delete(global_args: &GlobalArgs, args: &DeleteArgs) -> Result<(), KeyError> {
     tracing::info!(target: "key", "Starting key delete command (id={})", args.id);
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to initialize backend: {e}")))?;
     let key_manager = KeyManager::new(backend.clone());
-    let (id, path) = key_manager.find_id_with_prefix(&args.id).await?;
+    let (id, path) = key_manager
+        .find_id_with_prefix(&args.id)
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to find key: {e}")))?;
     tracing::info!(target: "key", "Deleting key file {}", id.to_short_hex(8));
-    backend.remove(&path).await
+    backend
+        .remove(&path)
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to remove key file: {e}")))?;
+    Ok(())
 }
 
-async fn run_password_change(global_args: &GlobalArgs, _args: &PasswordChangeArgs) -> Result<()> {
-    let auth = request_auth()?;
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
+async fn run_password_change(
+    global_args: &GlobalArgs,
+    _args: &PasswordChangeArgs,
+) -> Result<(), KeyError> {
+    let auth = request_auth()
+        .map_err(|e| KeyError::RepoOpenFail(format!("Authentication failed: {e}")))?;
+    let backend = new_backend_with_prompt(global_args.backend_options(false))
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to initialize backend: {e}")))?;
 
     let key_manager = KeyManager::new(backend.clone());
     let (old_id, old_keyfile) = key_manager
         .load_keyfile_with_username(&auth.username)
-        .await?
-        .with_context(|| format!("No keyfile found for username {}", auth.username))?;
-    let master_key = KeyManager::decode_master_key(&auth.password, &old_keyfile)?;
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to load keyfile: {e}")))?
+        .ok_or_else(|| {
+            KeyError::RepoOpenFail(format!("No keyfile found for username {}", auth.username))
+        })?;
+    let master_key = KeyManager::decode_master_key(&auth.password, &old_keyfile)
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to decode master key: {e}")))?;
 
     let new_auth = Auth {
         username: auth.username.clone(),
-        password: ui::cli::request_new_password("Enter the new password", "Confirm password")?,
+        password: ui::cli::request_new_password("Enter the new password", "Confirm password")
+            .map_err(|e| KeyError::RepoOpenFail(format!("Password prompt failed: {e}")))?,
     };
 
-    let new_keyfile = KeyManager::generate_key_file(&new_auth, &master_key)?;
+    let new_keyfile = KeyManager::generate_key_file(&new_auth, &master_key)
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to generate key file: {e}")))?;
     tracing::info!(target: "key", "Saving updated key file for user {}", auth.username);
-    key_manager.save_keyfile(&new_keyfile).await?;
+    key_manager
+        .save_keyfile(&new_keyfile)
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to save key file: {e}")))?;
     tracing::info!(target: "key", "Deleting old key file {}", old_id.to_short_hex(8));
-    key_manager.delete_keyfile_with_id(&old_id).await?;
+    key_manager
+        .delete_keyfile_with_id(&old_id)
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to delete old key file: {e}")))?;
 
     Ok(())
 }
 
-async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<()> {
-    let backend = new_backend_with_prompt(global_args.backend_options(false)).await?;
+async fn run_export(global_args: &GlobalArgs, args: &ExportArgs) -> Result<(), KeyError> {
+    let backend = new_backend_with_prompt(global_args.backend_options(false))
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to initialize backend: {e}")))?;
     let key_manager = KeyManager::new(backend.clone());
 
-    let (id, _path) = key_manager.find_id_with_prefix(&args.id).await?;
-    let raw_keyfile = key_manager.load_raw_keyfile(&id).await?;
+    let (id, _path) = key_manager
+        .find_id_with_prefix(&args.id)
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to find key: {e}")))?;
+    let raw_keyfile = key_manager
+        .load_raw_keyfile(&id)
+        .await
+        .map_err(|e| KeyError::RepoOpenFail(format!("Failed to load key file: {e}")))?;
 
     std::fs::write(&args.output_path, &raw_keyfile)?;
 

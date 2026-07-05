@@ -4,9 +4,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use anyhow::Result;
-
-use crate::utils::collections::{FxHashMap, FxHashSet};
+use crate::{
+    common::error::Result,
+    utils::collections::{FxHashMap, FxHashSet},
+};
 
 pub mod filetime;
 pub mod filter;

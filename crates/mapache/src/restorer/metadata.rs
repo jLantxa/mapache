@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-use anyhow::{Result, bail};
+use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
 use parking_lot::Mutex;
 
@@ -117,7 +117,7 @@ impl Restorer {
         dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
         for (p, meta) in dirs {
             if self.shutdown_signal.load(Ordering::Acquire) {
-                bail!("Interrupted");
+                return Err(MapacheError::Internal("Interrupted".to_string()));
             }
             if repo_fs::path_exists(&p).await {
                 super::node_restorer::try_restore_node_metadata(

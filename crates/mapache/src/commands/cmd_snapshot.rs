@@ -1,12 +1,12 @@
 use std::{
     collections::BTreeSet,
+    io,
     path::PathBuf,
     str::FromStr,
     sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
 
-use anyhow::{Result, bail};
 use clap::{ArgGroup, Args};
 use serde::{Deserialize, Serialize};
 
@@ -14,12 +14,13 @@ use crate::{
     archiver::{self, SnapshotOptions, progress::SnapshotProcessSummary},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, fail,
+        EMPTY_TAG_MARK, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
         find_use_snapshot, parse_tags, with_repository_lock,
     },
     common::{
         self, ContentIdType, ID, config,
         defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        error::MapacheError,
         hooks,
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
     },
@@ -48,19 +49,38 @@ use crate::{
     utils,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
-    BackendError = 11,
-    RepoOpenFail = 12,
-    SourcePathError = 20,
-    ParentNotFound = 21,
-    SnapshotFailed = 30,
-    Interrupted = 130,
+    #[error("backend error: {0}")]
+    BackendError(String),
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("invalid source path: {0}")]
+    SourcePathError(String),
+    #[error("parent snapshot not found: {0}")]
+    ParentNotFound(String),
+    #[error("snapshot creation failed: {0}")]
+    SnapshotFailed(String),
+    #[error("snapshot interrupted by user: {0}")]
+    Interrupted(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for SnapshotError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            SnapshotError::BackendError(_) => 11,
+            SnapshotError::RepoOpenFail(_) => 12,
+            SnapshotError::SourcePathError(_) => 20,
+            SnapshotError::ParentNotFound(_) => 21,
+            SnapshotError::SnapshotFailed(_) => 30,
+            SnapshotError::Interrupted(_) => 130,
+            SnapshotError::Repo(_) => 1,
+            SnapshotError::Io(_) => 1,
+        }
     }
 }
 
@@ -262,25 +282,24 @@ impl From<&CmdArgs> for SnapshotRunOptions {
     }
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), SnapshotError> {
     tracing::info!(target: "snapshot", "Starting snapshot command");
 
     if args.stdin
         && global_args.auth_file.is_none()
         && (get_envvar(USERNAME_ENVVAR).is_none() || get_envvar(PASSWORD_ENVVAR).is_none())
     {
-        return Err(fail(
+        return Err(SnapshotError::SourcePathError(
             "--stdin requires --auth-file or both MAPACHE_USERNAME and \
              MAPACHE_PASSWORD env vars (stdin is consumed by backup data, \
-             so password cannot be prompted interactively)",
-            SnapshotError::SourcePathError,
+             so password cannot be prompted interactively)"
+                .to_string(),
         ));
     }
 
     if args.paths.is_empty() && !args.stdin {
-        return Err(fail(
-            "No source paths provided.",
-            SnapshotError::SourcePathError,
+        return Err(SnapshotError::SourcePathError(
+            "No source paths provided.".to_string(),
         ));
     };
 
@@ -295,10 +314,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         new_backend_with_prompt(global_args.backend_options(dry_run))
             .await
             .map_err(|e| {
-                fail(
-                    format!("Failed to initialize backend: {}", e),
-                    SnapshotError::SnapshotFailed,
-                )
+                SnapshotError::SnapshotFailed(format!("Failed to initialize backend: {e}"))
             })?,
         global_args.to_repo_config(),
         false,
@@ -396,9 +412,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     if !json_output {
                         ui::cli::log!("Snapshot interrupted by user.");
                     }
-                    return Err(fail(
-                        "Snapshot interrupted by user.",
-                        SnapshotError::Interrupted,
+                    return Err(SnapshotError::Interrupted(
+                        "Snapshot interrupted by user.".to_string(),
                     ));
                 }
                 _ => {}
@@ -449,7 +464,7 @@ pub(crate) async fn run_with_repo(
     event_sender: EventSender,
     parent_snapshot_pair: Option<SnapshotPair>,
     shutdown_signal: Option<Arc<AtomicBool>>,
-) -> Result<SnapshotOutcome> {
+) -> Result<SnapshotOutcome, SnapshotError> {
     let as_root = options.as_root;
     let skip_if_unchanged = options.skip_if_unchanged;
     let num_readers = options.num_readers;
@@ -467,11 +482,15 @@ pub(crate) async fn run_with_repo(
         options.paths.clone()
     } else {
         if options.paths.len() != 1 {
-            bail!("Only one path can be the snapshot root");
+            return Err(SnapshotError::SourcePathError(
+                "Only one path can be the snapshot root".to_string(),
+            ));
         }
         let root = &options.paths[0];
         if !root.is_dir() {
-            bail!("The snapshot root must be a directory");
+            return Err(SnapshotError::SourcePathError(
+                "The snapshot root must be a directory".to_string(),
+            ));
         }
 
         let mut dir = tokio::fs::read_dir(root).await?;
@@ -493,10 +512,10 @@ pub(crate) async fn run_with_repo(
                 let _ = absolute_source_paths.insert(absolute_path);
             }
             Err(e) => {
-                return Err(fail(
-                    format!("Error processing path {:?}: {}", path, e),
-                    SnapshotError::SourcePathError,
-                ));
+                return Err(SnapshotError::SourcePathError(format!(
+                    "Error processing path {:?}: {}",
+                    path, e
+                )));
             }
         }
     }
@@ -523,10 +542,7 @@ pub(crate) async fn run_with_repo(
         // Read exclude paths from file if provided.
         let excludes_from_file = match &options.exclude_file {
             Some(path) => Some(read_filtered_paths_from_file(path).map_err(|e| {
-                fail(
-                    format!("Error reading exclude file: {}", e),
-                    SnapshotError::SourcePathError,
-                )
+                SnapshotError::SourcePathError(format!("Error reading exclude file: {e}"))
             })?),
             None => None,
         };
@@ -571,7 +587,7 @@ pub(crate) async fn run_with_repo(
                         diff_counts: Default::default(),
                     },
                 )));
-            })?
+            })
         }
         None => CleanupHandler::new_with_callback(move || {
             event_sender_for_cleanup(Event::Backup(BackupEvent::Finished(
@@ -581,15 +597,12 @@ pub(crate) async fn run_with_repo(
                     diff_counts: Default::default(),
                 },
             )));
-        })?,
+        }),
     };
     cleanup_handler.add_lock(lock_handle);
 
     repo.init_pack_saver(num_packers).map_err(|e| {
-        fail(
-            format!("Failed to initialize pack saver: {}", e),
-            SnapshotError::SnapshotFailed,
-        )
+        SnapshotError::SnapshotFailed(format!("Failed to initialize pack saver: {e}"))
     })?;
 
     // Process and save new snapshot
@@ -616,10 +629,7 @@ pub(crate) async fn run_with_repo(
     // Flush repo and finalize pack saver
     tracing::info!(target: "snapshot", "Flushing and finalizing repository");
     let repo_stats = repo.flush_and_finalize_pack_saver().await.map_err(|e| {
-        fail(
-            format!("Failed to finalize snapshot: {}", e),
-            SnapshotError::SnapshotFailed,
-        )
+        SnapshotError::SnapshotFailed(format!("Failed to finalize snapshot: {}", e))
     })?;
 
     // Handle potential interruption or error
@@ -632,10 +642,9 @@ pub(crate) async fn run_with_repo(
             }
 
             tracing::error!(target: "snapshot", "Snapshot archival failed: {e}");
-            return Err(fail(
-                format!("Snapshot failed: {}", e),
-                SnapshotError::SnapshotFailed,
-            ));
+            return Err(SnapshotError::SnapshotFailed(format!(
+                "Snapshot failed: {e}"
+            )));
         }
     };
 
@@ -670,7 +679,9 @@ pub(crate) async fn run_with_repo(
         let (new_snapshot_id, new_snapshot_size) = repo
             .save_file(
                 &common::SaveID::CalculateID,
-                serde_json::to_string(&new_snapshot)?.as_bytes(),
+                serde_json::to_string(&new_snapshot)
+                    .map_err(|e| SnapshotError::Repo(MapacheError::Serialization(e)))?
+                    .as_bytes(),
                 StorageHint {
                     is_metadata: true,
                     file_type: ContentIdType::Snapshot,
@@ -714,7 +725,7 @@ pub(crate) async fn resolve_parent_snapshot(
     repo: Arc<Repository>,
     no_parent: bool,
     parent: Option<UseSnapshot>,
-) -> Result<Option<SnapshotPair>> {
+) -> Result<Option<SnapshotPair>, SnapshotError> {
     if no_parent {
         return Ok(None);
     }
@@ -722,10 +733,10 @@ pub(crate) async fn resolve_parent_snapshot(
     match find_use_snapshot(repo, &use_snapshot).await {
         Ok(Some((id, snapshot))) => Ok(Some(SnapshotPair { id, snapshot })),
         Ok(None) => Ok(None),
-        Err(e) => Err(fail(
-            format!("Parent snapshot not found: {}", e),
-            SnapshotError::ParentNotFound,
-        )),
+        Err(e) => Err(SnapshotError::ParentNotFound(format!(
+            "Parent snapshot not found: {}",
+            e
+        ))),
     }
 }
 

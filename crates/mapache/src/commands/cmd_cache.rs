@@ -1,15 +1,16 @@
 use std::{
+    io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-use anyhow::{Result, anyhow};
 use clap::Args;
 use rayon::prelude::*;
 
 use crate::{
     backend::cache::CacheBackend,
-    common::defaults::SHORT_REPO_ID_LEN,
+    commands::ToExitCode,
+    common::{defaults::SHORT_REPO_ID_LEN, error::MapacheError},
     ui::{
         self,
         cli::{
@@ -19,6 +20,23 @@ use crate::{
     },
     utils,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum CacheError {
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl ToExitCode for CacheError {
+    fn to_exit_code(&self) -> i32 {
+        match self {
+            CacheError::Repo(_) => 1,
+            CacheError::Io(_) => 1,
+        }
+    }
+}
 
 #[derive(Args, Debug)]
 #[clap(about = "List and cleanup cache directories")]
@@ -32,7 +50,7 @@ pub struct CmdArgs {
     pub clear: bool,
 }
 
-pub fn run(args: &CmdArgs) -> Result<()> {
+pub fn run(args: &CmdArgs) -> Result<(), CacheError> {
     let cache_base = CacheBackend::default_dir();
 
     if let Some(list) = &args.delete_ids {
@@ -45,7 +63,7 @@ pub fn run(args: &CmdArgs) -> Result<()> {
 }
 
 /// List all cache folders.
-fn list(cache_base: &Path) -> Result<()> {
+fn list(cache_base: &Path) -> Result<(), CacheError> {
     if !cache_base.exists() {
         ui::cli::warning!(
             "Cache base directory does not exist: {}",
@@ -107,7 +125,7 @@ fn list(cache_base: &Path) -> Result<()> {
 }
 
 /// Deletes cache folders by prefix.
-fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
+fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<(), CacheError> {
     tracing::info!(target: "cache", "Starting cache cleanup (base={:?})", cache_base);
     if !cache_base.exists() {
         ui::cli::warning!(
@@ -157,11 +175,14 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
                         .map(|(n, _)| n.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    return Err(anyhow!(
-                        "Ambiguous prefix '{}' matches multiple folders: {}",
-                        prefix.cyan(),
-                        names
-                    ));
+                    return Err(CacheError::Io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Ambiguous prefix '{}' matches multiple folders: {}",
+                            prefix.cyan(),
+                            names
+                        ),
+                    )));
                 }
             }
         }
@@ -179,7 +200,10 @@ fn cleanup(cache_base: &Path, folder_prefixes: &[String]) -> Result<()> {
     // Parallel deletion
     let num_deleted = AtomicUsize::new(0);
     let freed = AtomicU64::new(0);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .map_err(|e| CacheError::Io(io::Error::other(e)))?;
     pool.install(|| {
         to_delete.par_iter().for_each(|path| {
             let name = path

@@ -324,7 +324,9 @@ impl InitBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_init::run(global, &self.args).await
+        mapache::commands::cmd_init::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -368,7 +370,9 @@ impl VerifyBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_verify::run(global, &self.args).await
+        mapache::commands::cmd_verify::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -386,7 +390,9 @@ impl RecallBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_recall::run(global, &self.args).await
+        mapache::commands::cmd_recall::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -481,7 +487,9 @@ impl SnapshotBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_snapshot::run(global, &self.args).await
+        mapache::commands::cmd_snapshot::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -568,7 +576,9 @@ impl RestoreBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_restore::run(global, &self.args).await
+        mapache::commands::cmd_restore::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -621,7 +631,9 @@ impl AmendBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_amend::run(global, &self.args).await
+        mapache::commands::cmd_amend::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -664,7 +676,9 @@ impl BundleBuilder {
     }
 
     pub async fn run(self) -> Result<()> {
-        mapache::commands::cmd_bundle::run(&self.args).await
+        mapache::commands::cmd_bundle::run(&self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -714,7 +728,9 @@ impl ForgetBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_forget::run(global, &self.args).await
+        mapache::commands::cmd_forget::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -746,7 +762,9 @@ impl CleanBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_clean::run(global, &self.args).await
+        mapache::commands::cmd_clean::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -775,7 +793,9 @@ impl LogBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_log::run(global, &self.args).await
+        mapache::commands::cmd_log::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -793,7 +813,9 @@ impl StatsBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_stats::run(global, &self.args).await
+        mapache::commands::cmd_stats::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -811,7 +833,9 @@ impl CatBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_cat::run(global, &self.args).await
+        mapache::commands::cmd_cat::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -840,7 +864,9 @@ impl SyncBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_sync::run(global, &self.args).await
+        mapache::commands::cmd_sync::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -858,7 +884,9 @@ impl RebuildIndexBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_rebuild_index::run(global, &self.args).await
+        mapache::commands::cmd_rebuild_index::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -876,7 +904,9 @@ impl RechunkBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_rechunk::run(global, &self.args).await
+        mapache::commands::cmd_rechunk::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -899,7 +929,9 @@ impl UnlockBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_unlock::run(global, &self.args).await
+        mapache::commands::cmd_unlock::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 

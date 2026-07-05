@@ -18,7 +18,7 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error;
 use chrono::Local;
 use futures::StreamExt;
 use parking_lot::Mutex;
@@ -31,7 +31,7 @@ use crate::{
         progress::SnapshotProgress,
         tree_serializer::TreeSerializer,
     },
-    common::{self, global::MAPACHE_VERSION_INFO, traits::BlobSaver},
+    common::{self, error::Result, global::MAPACHE_VERSION_INFO, traits::BlobSaver},
     fs::{
         filter::PathFilter,
         node::{Metadata, Node, NodeType},
@@ -78,7 +78,7 @@ struct PipelineStatus {
     /// abort execution early. Only fatal, unrecoverable errors should be signaled.
     fatal_error_flag: AtomicBool,
     /// Stores the first error that triggered the shutdown to report back to the user.
-    first_error: Mutex<Option<anyhow::Error>>,
+    first_error: Mutex<Option<error::MapacheError>>,
     shutdown_signal: Arc<AtomicBool>,
 
     event_sender: EventSender,
@@ -105,7 +105,7 @@ impl PipelineStatus {
         self.finished_flag.store(true, Ordering::Release);
     }
 
-    fn signal_fatal(&self, err: anyhow::Error) {
+    fn signal_fatal(&self, err: error::MapacheError) {
         let already_errored = self.fatal_error_flag.swap(true, Ordering::Release);
         if !already_errored {
             // Only the first task to "flip" the switch gets to log the error.
@@ -350,8 +350,9 @@ pub(crate) async fn snapshot(
                                 drop(batch);
                                 if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err()
                                     && !status.is_failed() {
-                                        status.signal_fatal(anyhow!("Chunker pool channel closed"));
-
+                                        status.signal_fatal(error::MapacheError::Chunking(
+                                            "Chunker pool channel closed".to_string(),
+                                        ));
                                 }
                             }
                         } else {
@@ -363,13 +364,17 @@ pub(crate) async fn snapshot(
                             if !pending.is_empty()
                                 && pool_sender.send(ChunkerPoolMsg::Batch(pending)).is_err()
                                 && !status.is_failed() {
-                                    status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                                    status.signal_fatal(error::MapacheError::Chunking(
+                                        "Chunker pool channel closed".to_string(),
+                                    ));
 
                                 return;
                             }
                             if pool_sender.send(ChunkerPoolMsg::Single(Box::new(job))).is_err()
                                 && !status.is_failed() {
-                                    status.signal_fatal(anyhow!("Chunker pool channel closed"));
+                                    status.signal_fatal(error::MapacheError::Chunking(
+                                        "Chunker pool channel closed".to_string(),
+                                    ));
                             }
                         }
                     } else {
@@ -432,7 +437,7 @@ pub(crate) async fn snapshot(
         let result = tokio::task::spawn_blocking(move || {
             while let Ok(chunker_result) = receiver.recv() {
                 if forwarder_status.is_failed() {
-                    return Ok::<(), anyhow::Error>(());
+                    return Ok::<(), error::MapacheError>(());
                 }
 
                 match chunker_result.result {
@@ -483,7 +488,10 @@ pub(crate) async fn snapshot(
             .handle_processed_item((path.as_path(), stream_node))
             .await
         {
-            status.signal_fatal(e.context(format!("Serializer error at {path:?}")));
+            status.signal_fatal(error::MapacheError::Repo(format!(
+                "Serializer error at {:?}: {}",
+                path, e
+            )));
             break;
         }
     }
@@ -499,13 +507,13 @@ pub(crate) async fn snapshot(
         if let Some(err) = status.first_error.lock().take() {
             return Err(err);
         }
-        bail!("Snapshot aborted by user or fatal error");
+        return Err(error::MapacheError::Interrupted);
     }
 
     tree_serializer.finalize_root().await?;
     let root_tree_id = tree_serializer
         .root_tree()
-        .context("Root tree ID not set")?;
+        .ok_or_else(|| error::MapacheError::Internal("Root tree ID not set".to_string()))?;
 
     status.signal_finished();
     let summary = progress.summary();
@@ -570,7 +578,9 @@ fn spawn_scanner_task(
         .await;
 
         if let Err(e) = res {
-            status.signal_fatal(anyhow!("Scanner panicked or failed: {e}"));
+            status.signal_fatal(error::MapacheError::Internal(format!(
+                "Scanner panicked or failed: {e}"
+            )));
         }
 
         tracing::info!(target: "archiver", "Background scanner finished");
@@ -669,7 +679,6 @@ mod tests {
     use tempfile::tempdir;
     use zeroize::Zeroizing;
 
-    use super::*;
     use crate::{
         backend::{
             StorageHint,
@@ -680,6 +689,7 @@ mod tests {
         ui::events::noop_sender,
     };
 
+    use super::*;
     #[tokio::test]
     async fn test_archiver_atomic_ordering() -> Result<()> {
         let auth = Auth {
@@ -782,7 +792,9 @@ mod tests {
         backend.add_hook(Arc::new(|op| {
             if let BackendOp::Write { .. } = op {
                 return MockEffect {
-                    result_override: Some(Err(anyhow!("write failed"))),
+                    result_override: Some(Err(error::MapacheError::Backend(
+                        "write failed".to_string(),
+                    ))),
                     ..Default::default()
                 };
             }

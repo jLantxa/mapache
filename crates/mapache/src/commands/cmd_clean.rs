@@ -1,13 +1,12 @@
-use std::{sync::Arc, time::Instant};
+use std::{io, sync::Arc, time::Instant};
 
-use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{self, GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
-    common::{defaults::DEFAULT_GC_TOLERANCE, hooks},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    common::{defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
     repository::{gc, lock::LockHandle, repo::Repository},
     ui::{
         self,
@@ -18,17 +17,32 @@ use crate::{
     utils::{self},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum CleanError {
-    RepoOpenFail = 10,
-    ScanFailed = 20,
-    ExecuteFailed = 30,
-    Interrupted = 130,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("scan failed: {0}")]
+    ScanFailed(String),
+    #[error("cleanup execution failed: {0}")]
+    ExecuteFailed(String),
+    #[error("cleanup interrupted by user: {0}")]
+    Interrupted(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for CleanError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            CleanError::RepoOpenFail(_) => 10,
+            CleanError::ScanFailed(_) => 20,
+            CleanError::ExecuteFailed(_) => 30,
+            CleanError::Interrupted(_) => 130,
+            CleanError::Repo(_) => 1,
+            CleanError::Io(_) => 1,
+        }
     }
 }
 
@@ -53,19 +67,14 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CleanError> {
     tracing::info!(target: "clean", "Starting clean command");
     let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(args.dry_run))
             .await
-            .map_err(|e| {
-                fail(
-                    format!("Failed to initialize backend: {}", e),
-                    CleanError::ExecuteFailed,
-                )
-            })?,
+            .map_err(|e| CleanError::ExecuteFailed(format!("Failed to initialize backend: {e}")))?,
         global_args.to_repo_config(),
         true,
         global_args.retry_lock_duration,
@@ -90,16 +99,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         hooks::run_post(hooks::clean(), "clean", &global_args.repo, &result_str).await;
     }
 
-    repo_result.map_err(|e| {
-        if e.is::<commands::error::MapacheError>() {
-            e
-        } else {
-            fail(
-                format!("Failed to open repository: {}", e),
-                CleanError::RepoOpenFail,
-            )
-        }
-    })
+    repo_result.map_err(|e| CleanError::RepoOpenFail(format!("Failed to open repository: {e}")))
 }
 
 /// Run the garbage collector against an already-locked repository.
@@ -113,14 +113,11 @@ pub async fn run_with_repo(
     args: &CmdArgs,
     repo: Arc<Repository>, // The repository must have its master index loaded
     lock_handle: Option<LockHandle>,
-) -> Result<()> {
+) -> Result<(), CleanError> {
     tracing::info!(target: "clean", "Reloading master index");
-    repo.reload_master_index().await.map_err(|e| {
-        fail(
-            format!("Failed to reload master index: {}", e),
-            CleanError::ExecuteFailed,
-        )
-    })?;
+    repo.reload_master_index()
+        .await
+        .map_err(|e| CleanError::ExecuteFailed(format!("Failed to reload master index: {e}")))?;
 
     let event_sender = cli_gc::make_event_sender();
     let sender_for_cleanup = event_sender.clone();
@@ -130,13 +127,7 @@ pub async fn run_with_repo(
             added_bytes: 0,
             deleted_bytes: 0,
         }));
-    })
-    .map_err(|e| {
-        fail(
-            format!("Failed to initialize cleanup handler: {}", e),
-            CleanError::ExecuteFailed,
-        )
-    })?;
+    });
     cleanup_handler.add_lock(lock_handle);
     let shutdown_signal = cleanup_handler.interrupted.clone();
 
@@ -165,12 +156,9 @@ pub async fn run_with_repo(
             if !json_output {
                 ui::cli::log!("Clean interrupted by user.");
             }
-            return fail("Clean interrupted by user.", CleanError::Interrupted);
+            return CleanError::Interrupted("Clean interrupted by user.".to_string());
         }
-        fail(
-            format!("Failed to scan repository: {}", e),
-            CleanError::ScanFailed,
-        )
+        CleanError::ScanFailed(format!("Failed to scan repository: {e}"))
     })?;
     tracing::info!(target: "clean", "GC scan finished. Plan: {} packs to remove, {} to repack", plan.unused_packs.len() + plan.obsolete_packs.len(), plan.small_packs.len());
 
@@ -208,12 +196,9 @@ pub async fn run_with_repo(
                 if !json_output {
                     ui::cli::log!("Clean interrupted by user.");
                 }
-                return fail("Clean interrupted by user.", CleanError::Interrupted);
+                return CleanError::Interrupted("Clean interrupted by user.".to_string());
             }
-            fail(
-                format!("Failed to execute GC plan: {}", e),
-                CleanError::ExecuteFailed,
-            )
+            CleanError::ExecuteFailed(format!("Failed to execute GC plan: {e}"))
         })?;
         tracing::info!(target: "clean", "GC execution finished. Added: {}, Deleted: {}", utils::format_size_binary(gc_sizes.added_bytes, 1), utils::format_size_binary(gc_sizes.deleted_bytes, 1));
         (gc_sizes.added_bytes, gc_sizes.deleted_bytes)

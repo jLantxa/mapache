@@ -5,7 +5,7 @@ use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
 use rayon::prelude::*;
 use tokio::task::spawn_blocking;
@@ -128,7 +128,7 @@ pub(crate) async fn restore_packs(
 
             async move {
                 if shutdown_signal.load(Ordering::Acquire) {
-                    bail!("Interrupted");
+                    return Err(MapacheError::Interrupted);
                 }
 
                 let path = repo.get_path(ContentIdType::Pack, &segment.pack_id);
@@ -145,7 +145,12 @@ pub(crate) async fn restore_packs(
                         segment.source_len(),
                     )
                     .await
-                    .with_context(|| format!("Failed to read pack {}", segment.pack_id))?;
+                    .map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Failed to read pack {}: {e}",
+                            segment.pack_id
+                        ))
+                    })?;
 
                 tracing::debug!(target: "restorer", "Segment from pack {} downloaded ({} bytes)",
                     segment.pack_id.to_short_hex(8), segment_data.len());
@@ -155,7 +160,7 @@ pub(crate) async fn restore_packs(
 
                 while !blobs.is_empty() {
                     if shutdown_signal.load(Ordering::Acquire) {
-                        bail!("Interrupted");
+                        return Err(MapacheError::Interrupted);
                     }
 
                     let mut batch = Vec::new();
@@ -178,26 +183,28 @@ pub(crate) async fn restore_packs(
                             .map(|(blob_id, locator, targets)| {
                                 let blob_offset = locator.offset as u64;
                                 if blob_offset < min_offset {
-                                    anyhow::bail!(
+                                    return Err(MapacheError::Format(format!(
                                         "Blob offset {} is before segment start {}",
-                                        blob_offset,
-                                        min_offset
-                                    );
+                                        blob_offset, min_offset
+                                    )));
                                 }
                                 let start = (blob_offset - min_offset) as usize;
                                 let end = start + locator.length as usize;
                                 if end > data_arc_inner.len() {
-                                    anyhow::bail!(
+                                    return Err(MapacheError::Format(format!(
                                         "Blob end {} exceeds segment data length {}",
                                         end,
                                         data_arc_inner.len()
-                                    );
+                                    )));
                                 }
                                 let encoded_blob = &data_arc_inner[start..end];
 
-                                let decoded_data = secure_storage_inner
-                                    .decode(encoded_blob)
-                                    .with_context(|| format!("Failed to decode blob {blob_id}"))?;
+                                let decoded_data =
+                                    secure_storage_inner.decode(encoded_blob).map_err(|e| {
+                                        MapacheError::Internal(format!(
+                                            "Failed to decode blob {blob_id}: {e}"
+                                        ))
+                                    })?;
 
                                 Ok(DecodedBlob {
                                     data: decoded_data,
@@ -207,7 +214,7 @@ pub(crate) async fn restore_packs(
                             .collect()
                     })
                     .await
-                    .map_err(|e| anyhow!(e))?;
+                    .map_err(|e| MapacheError::Internal(format!("Task panicked: {e}")))?;
 
                     let mut file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
                     for res in decoded_results {
@@ -232,14 +239,14 @@ pub(crate) async fn restore_packs(
                         .await?;
                 }
 
-                Ok::<(), anyhow::Error>(())
+                Ok::<(), MapacheError>(())
             }
         })
         .buffer_unordered(defaults.restore_pack_prefetch);
 
     while let Some(res) = download_stream.next().await {
         if restorer.shutdown_signal.load(Ordering::Acquire) {
-            bail!("Interrupted");
+            return Err(MapacheError::Interrupted);
         }
         res?;
     }
@@ -266,7 +273,7 @@ async fn flush_file_batches(
                 let file_path = ctx.files[file_idx].path.clone();
                 let file_path_for_write = file_path.clone();
                 let ctx_inner = ctx.clone();
-                let write_result = spawn_blocking(move || -> Result<u64, anyhow::Error> {
+                let write_result = spawn_blocking(move || -> Result<u64> {
                     let mut cache_guard = ctx_inner.handle_cache.get_shard(file_idx).lock();
                     let file = cache_guard.get_handle(
                         file_idx,
@@ -281,15 +288,13 @@ async fn flush_file_batches(
                         let mut write_offset = offset;
                         while !data_remaining.is_empty() {
                             #[cfg(unix)]
-                            let n = file
-                                .write_at(data_remaining, write_offset)
-                                .map_err(|e| anyhow!(e))?;
+                            let n = file.write_at(data_remaining, write_offset)?;
                             #[cfg(windows)]
-                            let n = file
-                                .seek_write(data_remaining, write_offset)
-                                .map_err(|e| anyhow!(e))?;
+                            let n = file.seek_write(data_remaining, write_offset)?;
                             if n == 0 {
-                                anyhow::bail!("Failed to write data: wrote 0 bytes");
+                                return Err(MapacheError::Internal(
+                                    "Failed to write data: wrote 0 bytes".to_string(),
+                                ));
                             }
                             data_remaining = &data_remaining[n..];
                             write_offset += n as u64;
@@ -299,7 +304,7 @@ async fn flush_file_batches(
                     Ok(written)
                 })
                 .await
-                .map_err(|e| anyhow!(e))?;
+                .map_err(|e| MapacheError::Internal(format!("Task panicked: {e}")))?;
 
                 match write_result {
                     Ok(_bytes) => {
@@ -312,7 +317,7 @@ async fn flush_file_batches(
                     Err(e) => {
                         let err_msg = format!("Failed to write to file index {file_idx}: {e}");
                         if ctx.quit_on_error {
-                            bail!(err_msg);
+                            return Err(MapacheError::Internal(err_msg));
                         }
                         emit_event(
                             &ctx.event_sender,
@@ -321,7 +326,7 @@ async fn flush_file_batches(
                     }
                 }
 
-                Ok::<(), anyhow::Error>(())
+                Ok::<(), MapacheError>(())
             }
         })
         .buffer_unordered(concurrency);

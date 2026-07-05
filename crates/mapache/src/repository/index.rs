@@ -6,12 +6,12 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, anyhow, bail};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::StorageHint,
+    common::error::{MapacheError, Result},
     common::{self, BlobType, ContentIdType, ID},
     repository::{
         packer::PackedBlobDescriptor,
@@ -689,7 +689,9 @@ impl MasterIndex {
                 .indices
                 .iter_mut()
                 .find(|idx| idx.is_pending())
-                .ok_or_else(|| anyhow!("No pending index available to add pack {pack_id}"))?;
+                .ok_or_else(|| {
+                    MapacheError::Repo(format!("No pending index available to add pack {pack_id}"))
+                })?;
 
             tracing::debug!(target: "index", "Adding pack {} ({} blobs) to pending index #{}", pack_id.to_short_hex(8), num_blobs, pending_index.instance_id);
             pending_index.add_pack(pack_id, descriptors);
@@ -874,7 +876,10 @@ impl MasterIndex {
         });
 
         if matched.len() > 1 {
-            bail!("Prefix '{}' is ambiguous", prefix);
+            return Err(MapacheError::Format(format!(
+                "Prefix '{}' is ambiguous",
+                prefix
+            )));
         }
 
         Ok(matched.first().cloned())

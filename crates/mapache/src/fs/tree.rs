@@ -6,7 +6,6 @@ use std::{
     task::{Context as TaskContext, Poll},
 };
 
-use anyhow::{Context, Result, anyhow};
 use async_stream::try_stream;
 use futures::future::BoxFuture;
 use futures::{StreamExt, stream::Stream};
@@ -15,6 +14,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::{
     backend::WriteContents,
+    common::error::{MapacheError, Result},
     common::{BlobType, ID, SaveID, traits::BlobSaver},
     fs::{calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
     repository::repo::Repository,
@@ -39,21 +39,19 @@ impl Tree {
 
         let (tree_id, owned_back) = tokio::task::spawn_blocking(move || {
             owned.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-            let bytes = serde_json::to_vec(&owned).context("Failed to serialize tree")?;
+            let bytes = serde_json::to_vec(&owned).map_err(MapacheError::Serialization)?;
 
             // Perform the CPU-intensive encryption/saving right here in the worker thread!
-            let id = blob_saver
-                .save_blob(
-                    BlobType::Tree,
-                    WriteContents::Owned(bytes),
-                    SaveID::CalculateID,
-                )
-                .context("Failed to save tree blob to storage")?;
+            let id = blob_saver.save_blob(
+                BlobType::Tree,
+                WriteContents::Owned(bytes),
+                SaveID::CalculateID,
+            )?;
 
-            Ok::<_, anyhow::Error>((id, owned))
+            Ok::<_, MapacheError>((id, owned))
         })
         .await
-        .context("Tree serialization panicked")??;
+        .map_err(|e| MapacheError::Internal(format!("Tree serialization panicked: {}", e)))??;
 
         *self = owned_back;
         Ok(tree_id)
@@ -61,12 +59,10 @@ impl Tree {
 
     /// Load a tree from the repository.
     pub async fn load_from_repo(repo: &Repository, root_id: &ID) -> Result<Tree> {
-        let tree_object = repo
-            .load_blob(root_id)
-            .await
-            .with_context(|| format!("Failed to load tree blob with ID {root_id}"))?;
-        let tree: Tree = serde_json::from_slice(&tree_object)
-            .with_context(|| format!("Failed to deserialize tree with ID {root_id}"))?;
+        let tree_object = repo.load_blob(root_id).await?;
+        let tree: Tree = serde_json::from_slice(&tree_object).map_err(|e| {
+            MapacheError::Format(format!("Failed to deserialize tree with ID {root_id}: {e}"))
+        })?;
         Ok(tree)
     }
 }
@@ -118,15 +114,13 @@ impl FSNodeStream {
                     .into_par_iter()
                     .filter(|path| filter.allow(path))
                     .map(|path| {
-                        let node = Node::from_path_sync(&path, with_atime).with_context(|| {
-                            format!("Path {} does not exist or is inaccessible", path.display())
-                        })?;
+                        let node = Node::from_path_sync(&path, with_atime)?;
                         Ok((path, node))
                     })
                     .collect::<Result<Vec<_>>>()
             })
             .await
-            .context("Path statting panicked")??
+            .map_err(|e| MapacheError::Internal(format!("Path statting panicked: {}", e)))??
         };
 
         let mut allowed_paths = allowed_paths;
@@ -175,7 +169,7 @@ impl FSNodeStream {
             while state.intermediate_paths.last().is_some() || state.stack.last().is_some() {
                 let take_intermediate = match (state.intermediate_paths.last(), state.stack.last()) {
                     (None, None) => {
-                        yield (PathBuf::new(), Err(anyhow!("Internal error: both intermediate_paths and stack are empty")));
+                        yield (PathBuf::new(), Err(MapacheError::Internal("Internal error: both intermediate_paths and stack are empty".to_string())));
                         continue;
                     }
                     (Some(_), None) => true,
@@ -237,7 +231,7 @@ impl FSNodeStream {
                         use rayon::prelude::*;
 
                         let entries = std::fs::read_dir(&path_clone)
-                            .with_context(|| format!("Failed to read directory: {}", path_clone.display()))?;
+                            .map_err(MapacheError::Io)?;
 
                         // Collect entries into a vector to allow parallel processing.
                         // We avoid stating everything here, just collecting the names and paths.
@@ -248,19 +242,17 @@ impl FSNodeStream {
                             .filter(|entry| filter.allow(&entry.path()))
                             .map(|entry| {
                                 let child_path = entry.path();
-                                let child_node = Node::from_path_sync(&child_path, with_atime).with_context(
-                                    || format!("Failed to build node for: {}", child_path.display()),
-                                )?;
+                                let child_node = Node::from_path_sync(&child_path, with_atime)?;
                                 Ok((entry.file_name(), child_node))
                             })
                             .collect();
 
                         let mut children = children_results?;
                         children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
-                        Ok::<_, anyhow::Error>(children)
+                        Ok::<_, MapacheError>(children)
                     })
                     .await
-                    .context("Directory scanning panicked")?;
+                    .map_err(|e| MapacheError::Internal(format!("Directory scanning panicked: {}", e)))?;
 
                     match children_res {
                         Ok(children) => {
@@ -326,7 +318,7 @@ impl SerializedNodeStream {
         if let Some(id) = root_id {
             let tree = Tree::load_from_repo(&repo, &id)
                 .await
-                .map_err(|e| anyhow!("Failed to load root tree {id}: {e}"))?;
+                .map_err(|e| MapacheError::Repo(format!("Failed to load root tree {id}: {e}")))?;
 
             let parent = Arc::new(base_path);
             for node in tree.nodes.into_iter().rev() {
@@ -407,8 +399,12 @@ where
         }
     }
 
-    fn with_ctx(err: anyhow::Error, msg: &'static str) -> anyhow::Error {
-        err.context(msg)
+    fn with_ctx(err: MapacheError, msg: &'static str) -> MapacheError {
+        let msg = format!("{}: {err}", msg);
+        match err {
+            MapacheError::Internal(_) => MapacheError::Internal(msg),
+            other => other,
+        }
     }
 }
 
@@ -435,8 +431,8 @@ where
                 let err = match item {
                     Some(Err(e)) => e,
                     _ => {
-                        return Poll::Ready(Some(Err(anyhow!(
-                            "Stream state inconsistency in 'previous' stream"
+                        return Poll::Ready(Some(Err(MapacheError::Internal(
+                            "Stream state inconsistency in 'previous' stream".to_string(),
                         ))));
                     }
                 };
@@ -449,8 +445,8 @@ where
                 let err = match item {
                     Some(Err(e)) => e,
                     _ => {
-                        return Poll::Ready(Some(Err(anyhow!(
-                            "Stream state inconsistency in 'next' stream"
+                        return Poll::Ready(Some(Err(MapacheError::Internal(
+                            "Stream state inconsistency in 'next' stream".to_string(),
                         ))));
                     }
                 };
@@ -464,8 +460,8 @@ where
                     let (path, node_res) = match item {
                         Some(Ok(t)) => t,
                         _ => {
-                            return Poll::Ready(Some(Err(anyhow!(
-                                "Stream state inconsistency in 'previous' stream"
+                            return Poll::Ready(Some(Err(MapacheError::Internal(
+                                "Stream state inconsistency in 'previous' stream".to_string(),
                             ))));
                         }
                     };
@@ -476,8 +472,8 @@ where
                     let (path, node_res) = match item {
                         Some(Ok(t)) => t,
                         _ => {
-                            return Poll::Ready(Some(Err(anyhow!(
-                                "Stream state inconsistency in 'next' stream"
+                            return Poll::Ready(Some(Err(MapacheError::Internal(
+                                "Stream state inconsistency in 'next' stream".to_string(),
                             ))));
                         }
                     };
@@ -490,16 +486,16 @@ where
                     let (path, node_p_res) = match p_item {
                         Some(Ok(t)) => t,
                         _ => {
-                            return Poll::Ready(Some(Err(anyhow!(
-                                "Stream state inconsistency in 'previous' stream"
+                            return Poll::Ready(Some(Err(MapacheError::Internal(
+                                "Stream state inconsistency in 'previous' stream".to_string(),
                             ))));
                         }
                     };
                     let (_, node_n_res) = match n_item {
                         Some(Ok(t)) => t,
                         _ => {
-                            return Poll::Ready(Some(Err(anyhow!(
-                                "Stream state inconsistency in 'next' stream"
+                            return Poll::Ready(Some(Err(MapacheError::Internal(
+                                "Stream state inconsistency in 'next' stream".to_string(),
                             ))));
                         }
                     };
@@ -525,8 +521,8 @@ where
                 let (path, node_res) = match item {
                     Some(Ok(t)) => t,
                     _ => {
-                        return Poll::Ready(Some(Err(anyhow!(
-                            "Stream state inconsistency in 'previous' stream"
+                        return Poll::Ready(Some(Err(MapacheError::Internal(
+                            "Stream state inconsistency in 'previous' stream".to_string(),
                         ))));
                     }
                 };
@@ -539,8 +535,8 @@ where
                 let (path, node_res) = match item {
                     Some(Ok(t)) => t,
                     _ => {
-                        return Poll::Ready(Some(Err(anyhow!(
-                            "Stream state inconsistency in 'next' stream"
+                        return Poll::Ready(Some(Err(MapacheError::Internal(
+                            "Stream state inconsistency in 'next' stream".to_string(),
                         ))));
                     }
                 };
@@ -680,15 +676,13 @@ impl SerializedNodeDataReader {
         let blobs = node
             .blobs
             .as_ref()
-            .ok_or_else(|| anyhow!("Node has no blobs"))?;
+            .ok_or_else(|| MapacheError::Integrity("Node has no blobs".to_string()))?;
         let index = repo.index();
         let mut prefix = vec![0];
         let mut acc = 0u64;
 
         for id in blobs {
-            let entry = index
-                .get(id)
-                .ok_or_else(|| anyhow!("Blob {id} not found"))?;
+            let entry = index.get(id).ok_or(MapacheError::NotInIndex(*id))?;
             acc += entry.raw_length as u64;
             prefix.push(acc);
         }
@@ -774,10 +768,11 @@ pub async fn find_serialized_node(
     let mut components = path.components().peekable();
 
     while let Some(component) = components.next() {
-        let name = component
-            .as_os_str()
-            .to_str()
-            .ok_or_else(|| anyhow!("Path component contains invalid UTF-8: {:?}", component))?;
+        let name = component.as_os_str().to_str().ok_or_else(|| {
+            MapacheError::Format(format!(
+                "Path component contains invalid UTF-8: {component:?}"
+            ))
+        })?;
 
         let tree = Tree::load_from_repo(repo, &current_tree_id).await?;
 
@@ -788,9 +783,9 @@ pub async fn find_serialized_node(
                     return Ok(Some(node.clone()));
                 } else {
                     current_tree_id = node.tree.ok_or_else(|| {
-                        anyhow!(
+                        MapacheError::Integrity(format!(
                             "Path component '{name}' is not a directory in tree {current_tree_id}"
-                        )
+                        ))
                     })?;
                 }
             }
@@ -805,8 +800,9 @@ pub async fn find_serialized_node(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use anyhow::Result;
     use futures::StreamExt; // for collect(), boxed_local()
+
+    use crate::common::error::Result;
     use tempfile::tempdir;
 
     use super::*;

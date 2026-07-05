@@ -5,11 +5,11 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Result, bail};
 use futures::StreamExt;
 
 use crate::{
     common::ID,
+    common::error::{MapacheError, Result},
     fs::{self, tree::SerializedNodeStream},
     repository::repo::Repository,
     utils::collections::FxHashMap,
@@ -554,7 +554,7 @@ pub(crate) fn normalized_exclude_paths(
             } else {
                 match fs::get_absolute_normalized_path(&pbuf) {
                     Ok(normalized_path) => normalized_vec.push(normalized_path),
-                    Err(e) => bail!("{path_str:?}: {e}"),
+                    Err(e) => return Err(MapacheError::Config(format!("{path_str:?}: {e}"))),
                 };
             }
         }
@@ -610,7 +610,7 @@ pub async fn expand_include_paths(
 }
 
 pub(crate) fn read_filtered_paths_from_file(path: &Path) -> Result<Vec<String>> {
-    let content = std::fs::read_to_string(path)?;
+    let content = std::fs::read_to_string(path).map_err(MapacheError::Io)?;
     Ok(content
         .lines()
         .map(|l| l.trim())

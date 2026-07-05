@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
+use crate::common::error::Result;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Notify;

@@ -11,12 +11,12 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, Result, anyhow};
 use chunker::Chunker;
 
 use crate::{
     archiver::SnapshotProgress,
     backend::WriteContents,
+    common::error::{MapacheError, Result},
     common::{self, BlobType, ID, SaveID, traits::BlobSaver},
     fs::{
         node::Node,
@@ -105,8 +105,10 @@ pub(crate) fn process_item_sync(
 
     let out = match diff_type {
         NodeDiff::Deleted => {
-            let prev = prev_node.with_context(|| {
-                format!("Inconsistent state: Deleted diff but no prev_node for {path:?}")
+            let prev = prev_node.ok_or_else(|| {
+                MapacheError::Internal(format!(
+                    "Inconsistent state: Deleted diff but no prev_node for {path:?}"
+                ))
             })?;
             report_node_diff(&prev.node, diff_type, ctx.progress);
             None
@@ -114,12 +116,16 @@ pub(crate) fn process_item_sync(
 
         NodeDiff::Unchanged => {
             let mut next = next_node
-                .with_context(|| {
-                    format!("Inconsistent state: Unchanged diff but no next_node for {path:?}")
+                .ok_or_else(|| {
+                    MapacheError::Internal(format!(
+                        "Inconsistent state: Unchanged diff but no next_node for {path:?}"
+                    ))
                 })?
                 .clone();
-            let prev = prev_node.with_context(|| {
-                format!("Inconsistent state: Unchanged diff but no prev_node for {path:?}")
+            let prev = prev_node.ok_or_else(|| {
+                MapacheError::Internal(format!(
+                    "Inconsistent state: Unchanged diff but no prev_node for {path:?}"
+                ))
             })?;
 
             if next.node.is_file() {
@@ -140,8 +146,10 @@ pub(crate) fn process_item_sync(
 
         NodeDiff::New | NodeDiff::Changed => {
             let mut next = next_node
-                .with_context(|| {
-                    format!("Inconsistent state: New/Changed diff but no next_node for {path:?}")
+                .ok_or_else(|| {
+                    MapacheError::Internal(format!(
+                        "Inconsistent state: New/Changed diff but no next_node for {path:?}"
+                    ))
                 })?
                 .clone();
 
@@ -250,7 +258,11 @@ pub(crate) fn process_stdin_sync(
     );
 
     let mut next = next_node
-        .with_context(|| format!("Inconsistent state: stdin but no next_node for {STDIN_PATH:?}"))?
+        .ok_or_else(|| {
+            MapacheError::Internal(format!(
+                "Inconsistent state: stdin but no next_node for {STDIN_PATH:?}"
+            ))
+        })?
         .clone();
 
     if next.node.is_file() {
@@ -336,7 +348,8 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
                 let chunk = match result {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = chunk_tx.send(Err(e));
+                        let _ = chunk_tx
+                            .send(Err(MapacheError::Chunking(format!("Chunking failed: {e}"))));
                         return;
                     }
                 };
@@ -352,7 +365,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
             let chunk_data = msg?;
 
             if shutdown_signal.load(Ordering::Acquire) {
-                return Err(anyhow!("Shutdown signal received"));
+                return Err(MapacheError::Interrupted);
             }
 
             let chunk_len = chunk_data.len() as u64;
@@ -392,7 +405,8 @@ fn store_small_file<R: Read>(
         return Ok(vec![]); // Empty files produce an empty vector of blobs
     }
 
-    let size = usize::try_from(file_size).context("File too large for this platform")?;
+    let size = usize::try_from(file_size)
+        .map_err(|e| MapacheError::Config(format!("File too large for this platform: {e}")))?;
     buf.clear();
     buf.reserve(size);
 

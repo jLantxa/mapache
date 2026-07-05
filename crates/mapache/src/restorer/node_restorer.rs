@@ -7,7 +7,7 @@ use std::{fs::OpenOptions, io::Write, path::Path, time::SystemTime};
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
-use anyhow::{Context, Result};
+use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
 
 use crate::{
@@ -32,18 +32,17 @@ pub(crate) async fn restore_node_to_path(
 ) -> Result<()> {
     match node.node_type {
         NodeType::File => {
-            let blocks = node
-                .blobs
-                .as_ref()
-                .context("File Node must have contents (even if empty)")?;
+            let blocks = node.blobs.as_ref().ok_or_else(|| {
+                MapacheError::Internal("File Node must have contents (even if empty)".to_string())
+            })?;
 
             let dst_file = if !dry_run {
                 if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!(
-                            "Could not create parent directories for file {}",
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Could not create parent directories for file {}: {e}",
                             dst_path.display()
-                        )
+                        ))
                     })?;
                 }
 
@@ -53,7 +52,12 @@ pub(crate) async fn restore_node_to_path(
                         .write(true)
                         .truncate(true)
                         .open(dst_path)
-                        .with_context(|| format!("Could not create file {}", dst_path.display()))?,
+                        .map_err(|e| {
+                            MapacheError::Internal(format!(
+                                "Could not create file {}: {e}",
+                                dst_path.display()
+                            ))
+                        })?,
                 )
             } else {
                 None
@@ -61,13 +65,13 @@ pub(crate) async fn restore_node_to_path(
 
             let stream = futures::stream::iter(blocks.iter().cloned().enumerate())
                 .map(|(index, blob_id)| async move {
-                    let res = restorer.repo.load_blob(&blob_id).await.with_context(|| {
-                        format!(
-                            "Could not load block #{} ({}) for restoring file {}",
+                    let res = restorer.repo.load_blob(&blob_id).await.map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Could not load block #{} ({}) for restoring file {}: {e}",
                             index + 1,
                             blob_id,
                             dst_path.display()
-                        )
+                        ))
                     });
                     (index, blob_id, res)
                 })
@@ -85,13 +89,13 @@ pub(crate) async fn restore_node_to_path(
                 let chunk_size = buf.len() as u64;
 
                 if !dry_run && let Some(mut file) = dst_file.as_ref() {
-                    file.write_all(&buf).with_context(|| {
-                        format!(
-                            "Could not restore block #{} ({}) to file {}",
+                    file.write_all(&buf).map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Could not restore block #{} ({}) to file {}: {e}",
                             index + 1,
                             blob_id,
                             dst_path.display()
-                        )
+                        ))
                     })?;
                 }
 
@@ -107,8 +111,11 @@ pub(crate) async fn restore_node_to_path(
 
         NodeType::Directory => {
             if !dry_run {
-                std::fs::create_dir_all(dst_path).with_context(|| {
-                    format!("Could not create directory {}", dst_path.display())
+                std::fs::create_dir_all(dst_path).map_err(|e| {
+                    MapacheError::Internal(format!(
+                        "Could not create directory {}: {e}",
+                        dst_path.display()
+                    ))
                 })?;
 
                 // We don't restore metadata for directories now, as the filetimes
@@ -135,15 +142,22 @@ pub(crate) async fn restore_node_to_path(
             if !dry_run {
                 // Create all parent directories before the symlink
                 if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!("Could not create parent directories for symlink {dst_path:?}")
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        MapacheError::Internal(format!(
+                            "Could not create parent directories for symlink {dst_path:?}: {e}"
+                        ))
                     })?;
                 }
 
                 #[cfg(unix)]
                 {
-                    std::os::unix::fs::symlink(&symlink_info.target_path, dst_path)
-                        .with_context(|| format!("Could not create symlink {dst_path:?}"))?;
+                    std::os::unix::fs::symlink(&symlink_info.target_path, dst_path).map_err(
+                        |e| {
+                            MapacheError::Internal(format!(
+                                "Could not create symlink {dst_path:?}: {e}"
+                            ))
+                        },
+                    )?;
                 }
                 #[cfg(windows)]
                 {
@@ -151,16 +165,20 @@ pub(crate) async fn restore_node_to_path(
                         // Directory symlink
                         Some(NodeType::Directory) => {
                             std::os::windows::fs::symlink_dir(&symlink_info.target_path, dst_path)
-                                .with_context(|| {
-                                    format!("Could not create directory symlink {dst_path:?}")
+                                .map_err(|e| {
+                                    MapacheError::Internal(format!(
+                                        "Could not create directory symlink {dst_path:?}: {e}"
+                                    ))
                                 })?;
                         }
 
                         // Everything else (not a directory)
                         Some(_) => {
                             std::os::windows::fs::symlink_file(&symlink_info.target_path, dst_path)
-                                .with_context(|| {
-                                    format!("Could not create file symlink {dst_path:?}")
+                                .map_err(|e| {
+                                    MapacheError::Internal(format!(
+                                        "Could not create file symlink {dst_path:?}: {e}"
+                                    ))
                                 })?;
                         }
                         // No type info. Show warning.
@@ -275,11 +293,12 @@ pub fn restore_times(
         let ft_atime = atime.map_or(ft_mtime, |atime| FileTime::from(*atime));
 
         if is_symlink {
-            fs::filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime)
-                .context("Could not set symlink file times")?;
+            fs::filetime::set_symlink_file_times(dst_path, ft_atime, ft_mtime).map_err(|e| {
+                MapacheError::Internal(format!("Could not set symlink file times: {e}"))
+            })?;
         } else {
             fs::filetime::set_file_times(dst_path, ft_atime, ft_mtime)
-                .context("Could not set file times")?;
+                .map_err(|e| MapacheError::Internal(format!("Could not set file times: {e}")))?;
         }
     }
 
@@ -568,8 +587,12 @@ mod tests {
         // Manually set the file's current mtime to the past
         let ft_mtime = FileTime::from(prev_mtime);
         let ft_atime = node.metadata.accessed_time.map_or(ft_mtime, FileTime::from);
-        fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime)
-            .with_context(|| format!("Could not set modified time for {}", file_path.display()))?;
+        fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime).map_err(|e| {
+            MapacheError::Internal(format!(
+                "Could not set modified time for {}: {e}",
+                file_path.display()
+            ))
+        })?;
 
         // Create a dummy node with the original metadata to restore from
         let original_metadata = node.metadata.clone();
@@ -608,8 +631,12 @@ mod tests {
 
         let ft_atime = FileTime::from(original_atime);
         let ft_mtime = FileTime::from(original_mtime);
-        fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime)
-            .with_context(|| format!("Could not set file times for {}", file_path.display()))?;
+        fs::filetime::set_file_times(&file_path, ft_atime, ft_mtime).map_err(|e| {
+            MapacheError::Internal(format!(
+                "Could not set file times for {}: {e}",
+                file_path.display()
+            ))
+        })?;
 
         // Capture node metadata WITH atime
         let node = Node::from_path(&file_path, true).await?;

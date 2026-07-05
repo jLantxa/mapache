@@ -1,9 +1,9 @@
 use std::{
+    io,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
 
-use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use futures::StreamExt;
 
@@ -14,7 +14,8 @@ use crate::{
         tree_serializer::TreeSerializer,
     },
     bundle::{reader::BundleReader, writer::BundleWriter},
-    commands::{Compression, DEFAULT_COMPRESSION, parse_compression_level},
+    commands::{Compression, DEFAULT_COMPRESSION, ToExitCode, parse_compression_level},
+    common::error::MapacheError,
     common::{
         ID,
         defaults::DEFAULT_SNAPSHOT_READERS,
@@ -41,6 +42,29 @@ use crate::{
     mount::fuse::fs::{MapacheFS, MountOptions},
     utils::size,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum BundleError {
+    #[error("bundle failed: {0}")]
+    BundleFailed(String),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error("config error: {0}")]
+    Config(String),
+}
+
+impl ToExitCode for BundleError {
+    fn to_exit_code(&self) -> i32 {
+        match self {
+            BundleError::BundleFailed(_) => 20,
+            BundleError::Io(_) => 1,
+            BundleError::Repo(_) => 1,
+            BundleError::Config(_) => 10,
+        }
+    }
+}
 
 #[derive(Args, Debug, Clone)]
 #[clap(
@@ -142,7 +166,7 @@ impl Default for CmdArgs {
     }
 }
 
-pub async fn run(args: &CmdArgs) -> Result<()> {
+pub async fn run(args: &CmdArgs) -> Result<(), BundleError> {
     if args.bundle {
         run_create(args).await
     } else if args.extract {
@@ -152,23 +176,23 @@ pub async fn run(args: &CmdArgs) -> Result<()> {
     }
 }
 
-async fn run_create(args: &CmdArgs) -> Result<()> {
+async fn run_create(args: &CmdArgs) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Starting bundle create command");
     let output = args
         .output
         .as_ref()
-        .context("-o is required for bundle mode")?;
+        .ok_or_else(|| BundleError::Config("-o is required for bundle mode".to_string()))?;
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => cli::request_new_password("Enter bundle password", "Confirm password")?,
+        None => cli::request_new_password("Enter bundle password", "Confirm password")
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     };
 
-    let bundle_writer = Arc::new(BundleWriter::new(
-        output,
-        &password,
-        args.compression_level.to_level(),
-    )?);
+    let bundle_writer = Arc::new(
+        BundleWriter::new(output, &password, args.compression_level.to_level())
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
+    );
     let shutdown_signal = Arc::new(AtomicBool::new(false));
     let progress = Arc::new(SnapshotProgress::new());
 
@@ -364,14 +388,16 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
             .await?;
     }
 
-    process_task.await?;
+    process_task
+        .await
+        .map_err(|e| BundleError::BundleFailed(format!("Process task panicked: {e}")))?;
 
     let _ = scanner_handle.await;
 
     tree_serializer.finalize_root().await?;
     let root_tree_id = tree_serializer
         .root_tree()
-        .context("Root tree ID not set")?;
+        .ok_or_else(|| BundleError::BundleFailed("Root tree ID not set".to_string()))?;
 
     let summary = progress.summary();
     event_sender(Event::Backup(BackupEvent::Finished(summary)));
@@ -379,20 +405,24 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
     writer_finalize(bundle_writer.as_ref(), root_tree_id, output, &progress).await
 }
 
-async fn run_extract(args: &CmdArgs) -> Result<()> {
+async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Starting bundle extract command (bundle={:?}, target={:?})", args.input[0], args.output);
     if args.input.len() != 1 {
-        bail!("Extract mode requires exactly one bundle file as input");
+        return Err(BundleError::BundleFailed(
+            "Extract mode requires exactly one bundle file as input".to_string(),
+        ));
     }
     let bundle = &args.input[0];
     let destination = args.output.as_deref().unwrap_or(std::path::Path::new("."));
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => cli::request_password("Enter bundle password")?,
+        None => cli::request_password("Enter bundle password")
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     };
 
-    let reader = BundleReader::open(bundle, &password)?;
+    let reader = BundleReader::open(bundle, &password)
+        .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
     let root_tree_id = reader.trailer.root_tree;
     let loader = Arc::new(reader);
 
@@ -458,10 +488,12 @@ async fn run_extract(args: &CmdArgs) -> Result<()> {
 }
 
 #[cfg(all(feature = "mount", unix))]
-async fn run_mount(args: &CmdArgs) -> Result<()> {
+async fn run_mount(args: &CmdArgs) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Starting bundle mount command (bundle={:?})", args.input[0]);
     if args.input.len() != 2 {
-        bail!("Mount mode requires: bundle.mapache <mountpoint>");
+        return Err(BundleError::BundleFailed(
+            "Mount mode requires: bundle.mapache <mountpoint>".to_string(),
+        ));
     }
     let bundle = &args.input[0];
     let mountpoint = &args.input[1];
@@ -471,27 +503,33 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
 
     if !path_exists(&actual_mountpoint).await {
         if args.create {
-            std::fs::create_dir_all(&actual_mountpoint).context("Could not create mount point")?;
+            std::fs::create_dir_all(&actual_mountpoint)?;
             created_mountpoint = true;
         } else {
-            bail!("Mountpoint doesn't exist. Use -c to create it automatically.");
+            return Err(BundleError::BundleFailed(
+                "Mountpoint doesn't exist. Use -c to create it automatically.".to_string(),
+            ));
         }
     } else if !actual_mountpoint.is_dir() {
-        bail!("Mountpoint must be a directory");
+        return Err(BundleError::BundleFailed(
+            "Mountpoint must be a directory".to_string(),
+        ));
     }
 
     let canonical_mountpoint = get_absolute_normalized_path(&actual_mountpoint)?;
 
     let password = match &args.internal_password {
         Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => cli::request_password("Enter bundle password")?,
+        None => cli::request_password("Enter bundle password")
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     };
 
-    let reader = BundleReader::open(bundle, &password)?;
+    let reader = BundleReader::open(bundle, &password)
+        .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
     let root_tree_id = reader.trailer.root_tree;
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 
-    let cleanup_handler = CleanupHandler::new()?;
+    let cleanup_handler = CleanupHandler::new();
     cli::log!(
         "Mounting bundle {} in {}",
         bundle.display().to_string().bold(),
@@ -517,6 +555,7 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
                 created_time: chrono::Local::now(),
             },
         )
+        .map_err(|e| BundleError::BundleFailed(e.to_string()))
     })
     .await?;
 
@@ -528,18 +567,22 @@ async fn run_mount(args: &CmdArgs) -> Result<()> {
 }
 
 #[cfg(not(all(feature = "mount", unix)))]
-async fn run_mount(_args: &CmdArgs) -> Result<()> {
-    bail!("Mount mode requires FUSE support on Unix systems. Compile with the 'fuse' feature.");
+async fn run_mount(_args: &CmdArgs) -> Result<(), BundleError> {
+    Err(BundleError::BundleFailed(
+        "Mount mode requires FUSE support on Unix systems. Compile with the 'fuse' feature."
+            .to_string(),
+    ))
 }
 
 #[cfg(all(feature = "mount", unix))]
-pub(crate) async fn run_mount_loop<F>(
+pub(crate) async fn run_mount_loop<F, E>(
     mountpoint: &std::path::Path,
     cleanup_handler: CleanupHandler,
     mount_fn: F,
-) -> Result<()>
+) -> Result<(), E>
 where
-    F: FnOnce(&std::path::Path) -> Result<()> + Send + 'static,
+    F: FnOnce(&std::path::Path) -> Result<(), E> + Send + 'static,
+    E: From<MapacheError> + Send + 'static,
 {
     cli::log!(
         "Press {} to finish or unmount the filesystem manually.",
@@ -551,7 +594,7 @@ where
 
     tokio::select! {
         res = mount_res => {
-            res.context("Mount task panicked")??;
+            res.map_err(|e| E::from(MapacheError::Internal(format!("Mount task panicked: {e}"))))??;
         }
         _ = async {
             loop {
@@ -575,9 +618,11 @@ async fn writer_finalize(
     root_tree_id: ID,
     output_path: &PathBuf,
     progress: &SnapshotProgress,
-) -> Result<()> {
+) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Finalizing bundle with root tree {}", root_tree_id.to_short_hex(8));
-    writer.finalize(root_tree_id)?;
+    writer
+        .finalize(root_tree_id)
+        .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
 
     let final_size = std::fs::metadata(output_path)?.len();
     let summary = progress.summary();
@@ -625,7 +670,7 @@ async fn writer_finalize(
     Ok(())
 }
 
-async fn scan_bundle_tree<L>(loader: Arc<L>, tree_id: &ID) -> Result<(usize, u64)>
+async fn scan_bundle_tree<L>(loader: Arc<L>, tree_id: &ID) -> Result<(usize, u64), BundleError>
 where
     L: BlobLoader + ?Sized + 'static,
 {
@@ -634,8 +679,12 @@ where
     let mut stack = vec![*tree_id];
 
     while let Some(current_id) = stack.pop() {
-        let data = loader.load_blob(&current_id).await?;
-        let tree: Tree = serde_json::from_slice(&data)?;
+        let data = loader
+            .load_blob(&current_id)
+            .await
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+        let tree: Tree =
+            serde_json::from_slice(&data).map_err(|e| BundleError::BundleFailed(e.to_string()))?;
 
         for node in tree.nodes {
             total_items += 1;
@@ -657,7 +706,7 @@ async fn extract_nodes_parallel<L>(
     destination: &Path,
     workers: usize,
     event_sender: EventSender,
-) -> Result<()>
+) -> Result<(), BundleError>
 where
     L: BlobLoader + ?Sized + 'static,
 {

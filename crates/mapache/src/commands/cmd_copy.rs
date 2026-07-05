@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    fmt,
+    fmt, io,
     path::PathBuf,
     sync::{
         Arc,
@@ -9,7 +9,6 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, bail};
 use clap::Args;
 use futures::{StreamExt, stream};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -18,10 +17,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backend::{self, BackendOptions, WriteContents},
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, open_repository},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, open_repository},
     common::{
         BlobType, ContentIdType, ID, SaveID,
         defaults::{DEFAULT_PACK_SIZE, UI_RATE_ESTIMATOR_WINDOW},
+        error::MapacheError,
     },
     fs::tree::Tree,
     repository::{
@@ -33,17 +33,32 @@ use crate::{
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum CopyError {
-    RepoOpenFail = 10,
-    BackendError = 11,
-    CopyFailed = 20,
-    Interrupted = 130,
+    #[error("failed to open repository: {0}")]
+    RepoOpenFail(String),
+    #[error("backend error: {0}")]
+    BackendError(String),
+    #[error("copy failed: {0}")]
+    CopyFailed(String),
+    #[error("copy interrupted by user: {0}")]
+    Interrupted(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for CopyError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            CopyError::RepoOpenFail(_) => 10,
+            CopyError::BackendError(_) => 11,
+            CopyError::CopyFailed(_) => 20,
+            CopyError::Interrupted(_) => 130,
+            CopyError::Repo(_) => 1,
+            CopyError::Io(_) => 1,
+        }
     }
 }
 
@@ -80,7 +95,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyError> {
     let json_out = global_args.json;
 
     // Open source repository
@@ -104,12 +119,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         limit_download: global_args.limit_download,
     })
     .await
-    .map_err(|e| {
-        fail(
-            format!("Failed to initialize source backend: {e}"),
-            CopyError::BackendError,
-        )
-    })?;
+    .map_err(|e| CopyError::BackendError(format!("Failed to initialize source backend: {e}")))?;
 
     let (src_repo, _src_ss) = open_repository(
         global_args.auth_file.as_ref(),
@@ -118,12 +128,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo_config,
     )
     .await
-    .map_err(|e| {
-        fail(
-            format!("Failed to open source repository: {e}"),
-            CopyError::RepoOpenFail,
-        )
-    })?;
+    .map_err(|e| CopyError::RepoOpenFail(format!("Failed to open source repository: {e}")))?;
 
     // Open destination repository
 
@@ -134,10 +139,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
     let dst_backend = backend::new_backend_with_prompt(global_args.backend_options(args.dry_run))
         .await
         .map_err(|e| {
-            fail(
-                format!("Failed to initialize destination backend: {e}"),
-                CopyError::BackendError,
-            )
+            CopyError::BackendError(format!("Failed to initialize destination backend: {e}"))
         })?;
 
     let (dst_repo, _dst_ss) = open_repository(
@@ -147,12 +149,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         repo_config,
     )
     .await
-    .map_err(|e| {
-        fail(
-            format!("Failed to open destination repository: {e}"),
-            CopyError::RepoOpenFail,
-        )
-    })?;
+    .map_err(|e| CopyError::RepoOpenFail(format!("Failed to open destination repository: {e}")))?;
 
     // Reload master indices for blob lookup
     src_repo.reload_master_index().await?;
@@ -262,7 +259,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
             "\n{}",
             "Process interrupted. Cleaning up...".bold().yellow()
         );
-    })?;
+    });
 
     let start = Instant::now();
 
@@ -278,10 +275,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
     if result.is_err() && cleanup_handler.is_interrupted() {
         tracing::info!(target: "copy", "Copy interrupted by user");
-        return Err(fail("Copy interrupted by user.", CopyError::Interrupted));
+        return Err(CopyError::Interrupted(
+            "Copy interrupted by user.".to_string(),
+        ));
     }
 
-    result.map_err(|e| fail(format!("Copy failed: {e}"), CopyError::CopyFailed))?;
+    result.map_err(|e| CopyError::CopyFailed(format!("Copy failed: {e}")))?;
 
     if json_out {
         #[derive(Serialize)]
@@ -313,7 +312,7 @@ async fn select_snapshots(
     snapshot_filters: Option<Vec<String>>,
     host_filters: Vec<String>,
     tag_filters: Vec<String>,
-) -> Result<Vec<(ID, crate::repository::snapshot::Snapshot)>> {
+) -> Result<Vec<(ID, crate::repository::snapshot::Snapshot)>, CopyError> {
     use crate::repository::snapshot::SnapshotEntry;
 
     let stream = SnapshotStream::new(repo.clone()).await?;
@@ -346,7 +345,7 @@ async fn collect_blobs(
     src_repo: Arc<Repository>,
     snapshots: &[(ID, crate::repository::snapshot::Snapshot)],
     json_out: bool,
-) -> Result<(Vec<(ID, BlobType)>, u64)> {
+) -> Result<(Vec<(ID, BlobType)>, u64), CopyError> {
     let mut blob_list: Vec<(ID, BlobType)> = Vec::new();
     let mut tree_stack: Vec<ID> = Vec::new();
     let mut visited_trees: IdSet<ID> = IdSet::default();
@@ -416,7 +415,7 @@ async fn copy_snapshots(
     blob_list: Vec<(ID, BlobType)>,
     shutdown_signal: Arc<AtomicBool>,
     json_out: bool,
-) -> Result<()> {
+) -> Result<(), CopyError> {
     let total_blobs = blob_list.len();
 
     // Filter out blobs already present in destination
@@ -518,7 +517,7 @@ async fn copy_snapshots(
 
             async move {
                 if shutdown_signal.load(Ordering::Acquire) {
-                    bail!("Interrupted");
+                    return Err(CopyError::Interrupted("Interrupted".to_string()));
                 }
 
                 let data = src_repo.load_blob(&id).await?;
@@ -532,8 +531,8 @@ async fn copy_snapshots(
                     )
                 })
                 .await
-                .map_err(|e| anyhow::anyhow!("Encoding task failed: {e}"))??;
-
+                .map_err(|e| CopyError::CopyFailed(format!("Encoding task failed: {e}")))?
+                .map_err(CopyError::Repo)?;
                 let copied = bytes_copied.fetch_add(size, Ordering::Relaxed) + size;
 
                 if json_out {
@@ -553,7 +552,7 @@ async fn copy_snapshots(
                     );
                 }
 
-                Ok::<_, anyhow::Error>(())
+                Ok::<_, CopyError>(())
             }
         })
         .buffer_unordered(8);
@@ -589,7 +588,7 @@ async fn write_snapshots_to_dest(
     dst_repo: &Repository,
     snapshots: &[(ID, crate::repository::snapshot::Snapshot)],
     json_out: bool,
-) -> Result<()> {
+) -> Result<(), CopyError> {
     let total = snapshots.len();
     if !json_out && total > 0 {
         ui::cli::log!("{}", "Writing snapshots...".bold());

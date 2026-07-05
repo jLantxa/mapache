@@ -1,30 +1,39 @@
 use std::{
+    io,
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
-use anyhow::Result;
 use clap::Args;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, fail, with_repository_lock},
-    common::{ContentIdType, ID},
+    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    common::{ContentIdType, ID, error::MapacheError},
     repository::{index::MasterIndex, packer::Packer},
     ui::{self, cli::color::Colorize, default_bar_draw_target},
     utils::{self},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, thiserror::Error)]
 pub enum RebuildIndexError {
-    Interrupted = 130,
+    #[error("index rebuild interrupted by user: {0}")]
+    Interrupted(String),
+    #[error(transparent)]
+    Repo(#[from] MapacheError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl ToExitCode for RebuildIndexError {
     fn to_exit_code(&self) -> i32 {
-        *self as i32
+        match self {
+            RebuildIndexError::Interrupted(_) => 130,
+            RebuildIndexError::Repo(_) => 1,
+            RebuildIndexError::Io(_) => 1,
+        }
     }
 }
 
@@ -36,7 +45,7 @@ pub struct CmdArgs {
     pub dry_run: bool,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), RebuildIndexError> {
     tracing::info!(target: "rebuild-index", "Starting rebuild-index command");
     with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -53,7 +62,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
                     "\n{}",
                     "Process interrupted. Cleaning up...".bold().yellow()
                 );
-            })?;
+            });
             cleanup_handler.add_lock(lock_handle);
 
             let start = Instant::now();
@@ -129,9 +138,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
 
             for (pack_id, res) in results {
                 if cleanup_handler.is_interrupted() {
-                    return Err(fail(
-                        "Rebuild-index interrupted by user.",
-                        RebuildIndexError::Interrupted,
+                    return Err(RebuildIndexError::Interrupted(
+                        "Rebuild-index interrupted by user.".to_string(),
                     ));
                 }
 

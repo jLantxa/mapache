@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::common::error::{MapacheError, Result};
 use futures::stream::{self, StreamExt};
 use rayon::prelude::*;
 use tokio::sync::mpsc;
@@ -41,7 +41,9 @@ pub async fn verify_pack(
     tracing::debug!(target: "verify", "Verifying pack {}", pack_id.to_short_hex(8));
     let pack_path = repo.get_path(ContentIdType::Pack, &pack_id);
     let attr = backend.lstat(&pack_path).await?;
-    let pack_size = attr.size.ok_or_else(|| anyhow!("Pack size unknown"))?;
+    let pack_size = attr
+        .size
+        .ok_or_else(|| MapacheError::Internal("Pack size unknown".to_string()))?;
 
     if pack_size <= CHUNK_SIZE as u64 {
         tracing::trace!(target: "verify", "Using inline verification for pack {}", pack_id.to_short_hex(8));
@@ -61,17 +63,15 @@ async fn verify_pack_inline(
     pack_path: std::path::PathBuf,
 ) -> Result<PackStats> {
     let handle = Handle::new(&pack_path);
-    let raw_data = backend
-        .read(&handle, 0, 0)
-        .await
-        .context("Failed to read pack file for verification")?;
+    let raw_data = backend.read(&handle, 0, 0).await.map_err(|e| {
+        MapacheError::Backend(format!("Failed to read pack file for verification: {e}"))
+    })?;
 
     tokio::task::spawn_blocking(move || {
         let file_hash = ID::from_content(&raw_data);
         let bit_rot = file_hash != pack_id;
 
-        let pack_header = Packer::parse_footer(&secure_storage, &raw_data)
-            .context("Failed to parse pack footer")?;
+        let pack_header = Packer::parse_footer(&secure_storage, &raw_data)?;
 
         let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
             .par_iter()
@@ -122,7 +122,8 @@ async fn verify_pack_inline(
             bit_rot,
         })
     })
-    .await?
+    .await
+    .map_err(|e| MapacheError::Internal(format!("Verification task panicked: {}", e)))?
 }
 
 /// Streaming path for packs > CHUNK_SIZE: read footer, then stream data in chunks,
@@ -140,15 +141,18 @@ async fn verify_pack_streaming(
     let footer_len_bytes = backend
         .read(&handle, -4, 4)
         .await
-        .context("Failed to read pack footer length")?;
-    let footer_len = u32::from_le_bytes(footer_len_bytes.as_slice().try_into()?) as usize;
+        .map_err(|e| MapacheError::Backend(format!("Failed to read pack footer length: {e}")))?;
+    let footer_len = u32::from_le_bytes(footer_len_bytes.as_slice().try_into().map_err(
+        |e: std::array::TryFromSliceError| {
+            MapacheError::Format(format!("Invalid footer length bytes: {}", e))
+        },
+    )?) as usize;
     let footer_raw = backend
         .read(&handle, -(4 + footer_len as isize), 4 + footer_len)
         .await
-        .context("Failed to read pack footer")?;
+        .map_err(|e| MapacheError::Backend(format!("Failed to read pack footer: {e}")))?;
 
-    let pack_header = Packer::parse_footer(&secure_storage, &footer_raw)
-        .context("Failed to parse pack footer")?;
+    let pack_header = Packer::parse_footer(&secure_storage, &footer_raw)?;
 
     let data_end = pack_header
         .last()
@@ -174,7 +178,8 @@ async fn verify_pack_streaming(
                     pending_verifications.push(tokio::task::spawn_blocking(move || batch_verify(&batch, &ss)));
                 }
                 Some(res) = pending_verifications.next() => {
-                    let (v, c, b) = res.context("Verification task panicked")?;
+                    let (v, c, b) = res
+                        .map_err(|e| MapacheError::Internal(format!("Verification task panicked: {}", e)))?;
                     v_total += v;
                     c_total.extend(c);
                     b_total += b;
@@ -184,7 +189,7 @@ async fn verify_pack_streaming(
                 }
             }
         }
-        Ok::<(usize, Vec<ID>, u64), anyhow::Error>((v_total, c_total, b_total))
+        Ok::<(usize, Vec<ID>, u64), MapacheError>((v_total, c_total, b_total))
     });
 
     let chunk_size = CHUNK_SIZE;
@@ -200,8 +205,12 @@ async fn verify_pack_streaming(
                 let data = backend
                     .read(&handle, offset as isize, to_read)
                     .await
-                    .context("Failed to read pack chunk during verification")?;
-                Ok::<(u64, Vec<u8>), anyhow::Error>((offset, data))
+                    .map_err(|e| {
+                        MapacheError::Backend(format!(
+                            "Failed to read pack chunk during verification: {e}"
+                        ))
+                    })?;
+                Ok::<(u64, Vec<u8>), MapacheError>((offset, data))
             }
         })
         .buffered(4);
@@ -258,7 +267,9 @@ async fn verify_pack_streaming(
                 batch_tx
                     .send(std::mem::take(&mut pending_blobs))
                     .await
-                    .context("Failed to send batch to verifier")?;
+                    .map_err(|e| {
+                        MapacheError::Repo(format!("Failed to send batch to verifier: {}", e))
+                    })?;
                 pending_blobs_size = 0;
             }
         }
@@ -268,15 +279,15 @@ async fn verify_pack_streaming(
     bit_rot_hasher.update(&footer_raw);
 
     if !pending_blobs.is_empty() {
-        batch_tx
-            .send(pending_blobs)
-            .await
-            .context("Failed to send final batch to verifier")?;
+        batch_tx.send(pending_blobs).await.map_err(|e| {
+            MapacheError::Repo(format!("Failed to send final batch to verifier: {}", e))
+        })?;
     }
     drop(batch_tx);
 
-    let (verified_blobs, corrupt_blobs, bytes_processed) =
-        verifier_handle.await.context("Verifier task panicked")??;
+    let (verified_blobs, corrupt_blobs, bytes_processed) = verifier_handle
+        .await
+        .map_err(|e| MapacheError::Internal(format!("Verifier task panicked: {}", e)))??;
 
     let bit_rot = bit_rot_hasher.finalize() != pack_id;
     let index = repo.index();
@@ -336,7 +347,10 @@ pub async fn verify_snapshot_refs(
 
     // Validate the root tree exists first
     if repo.index().get(&tree_id).is_none() {
-        bail!("Snapshot root tree {} is missing from index", tree_id);
+        return Err(MapacheError::Integrity(format!(
+            "Snapshot root tree {} is missing from index",
+            tree_id
+        )));
     }
 
     let mut stack = vec![tree_id];
@@ -356,15 +370,17 @@ pub async fn verify_snapshot_refs(
                 match index.get(id) {
                     Some(blob_locator) => {
                         if !existing_packs.contains(&blob_locator.pack_id) {
-                            bail!(
+                            return Err(MapacheError::Integrity(format!(
                                 "Broken Reference: Pack {} referenced by blob {} is missing from storage",
-                                blob_locator.pack_id,
-                                id
-                            );
+                                blob_locator.pack_id, id
+                            )));
                         }
                     }
                     None => {
-                        bail!("Broken Reference: Blob {} is missing from index", id);
+                        return Err(MapacheError::Integrity(format!(
+                            "Broken Reference: Blob {} is missing from index",
+                            id
+                        )));
                     }
                 }
             }

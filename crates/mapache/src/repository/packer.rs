@@ -6,13 +6,13 @@ use std::{
     thread::JoinHandle,
 };
 
-use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::Mutex;
 use rand::{RngExt, rng};
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint},
+    common::error::{MapacheError, Result},
     common::{BlobType, ContentIdType, ID, SaveID, defaults::FOOTER_BLOB_MULTIPLE},
     repository::{
         repo::{Repository, SizePair},
@@ -138,11 +138,14 @@ impl Packer {
         encoded_data: &[u8],
         raw_size: u64,
     ) -> Result<()> {
-        let offset =
-            u32::try_from(self.buffer.len()).context("Pack buffer offset exceeds u32::MAX")?;
-        let length =
-            u32::try_from(encoded_data.len()).context("Blob encoded length exceeds u32::MAX")?;
-        let raw_length = u32::try_from(raw_size).context("Blob raw size exceeds u32::MAX")?;
+        let offset = u32::try_from(self.buffer.len()).map_err(|e| {
+            MapacheError::Integrity(format!("Pack buffer offset exceeds u32::MAX: {e}"))
+        })?;
+        let length = u32::try_from(encoded_data.len()).map_err(|e| {
+            MapacheError::Integrity(format!("Blob encoded length exceeds u32::MAX: {e}"))
+        })?;
+        let raw_length = u32::try_from(raw_size)
+            .map_err(|e| MapacheError::Integrity(format!("Blob raw size exceeds u32::MAX: {e}")))?;
 
         self.buffer.extend_from_slice(encoded_data);
 
@@ -267,8 +270,14 @@ impl Packer {
 
         // We don't know a priori if this pack contains metadata, so we cannot use a StorageHint.
         let handle = Handle::new(&pack_path);
-        let footer_length_bytes: [u8; 4] =
-            backend.read(&handle, -4, 4).await?.as_slice().try_into()?;
+        let footer_length_bytes: [u8; 4] = backend
+            .read(&handle, -4, 4)
+            .await?
+            .as_slice()
+            .try_into()
+            .map_err(|e: std::array::TryFromSliceError| {
+                MapacheError::Format(format!("Invalid footer length bytes: {e}"))
+            })?;
         let encoded_footer_length = u32::from_le_bytes(footer_length_bytes) as usize;
 
         let footer_data = backend
@@ -293,19 +302,19 @@ impl Packer {
         use crate::utils::binary::{get_array, get_u8, get_u32};
 
         if footer_data.len() < 4 {
-            bail!("Pack footer too short");
+            return Err(MapacheError::Format("Pack footer too short".to_string()));
         }
         let footer_length_bytes: [u8; 4] = footer_data[(footer_data.len() - 4)..]
             .try_into()
-            .context("Could not read footer length")?;
+            .map_err(|e| MapacheError::Format(format!("Could not read footer length: {e}")))?;
         let encoded_footer_length = u32::from_le_bytes(footer_length_bytes) as usize;
 
         if encoded_footer_length + 4 > footer_data.len() {
-            bail!(
+            return Err(MapacheError::Integrity(format!(
                 "Pack footer length {} exceeds data length {}",
                 encoded_footer_length,
                 footer_data.len()
-            );
+            )));
         }
 
         let footer_blob_info = secure_storage.decode(
@@ -475,13 +484,13 @@ impl PackSaver {
                                 None,
                             )
                             .await
-                            .context("Upload failed")?;
+                            .map_err(|e| MapacheError::Backend(format!("Upload failed: {e}")))?;
 
                             // Register with the index
                             repo.index()
                                 .add_pack(&repo, &pack_id, descriptors)
                                 .await
-                                .context("Index update failed")
+                                .map_err(|e| MapacheError::Repo(format!("Index update failed: {e}")))
                         });
 
                         let index_size = match upload_and_index {
@@ -529,10 +538,10 @@ impl PackSaver {
         // Get initial packers for the main thread active slots
         let data_packer = empty_rx
             .recv()
-            .context("Failed to initialize data packer")?;
+            .map_err(|e| MapacheError::Repo(format!("Failed to initialize data packer: {e}")))?;
         let tree_packer = empty_rx
             .recv()
-            .context("Failed to initialize tree packer")?;
+            .map_err(|e| MapacheError::Repo(format!("Failed to initialize tree packer: {e}")))?;
 
         Ok(Self {
             rx,
@@ -583,7 +592,7 @@ impl PackSaver {
         let res = self
             .worker_handle
             .join()
-            .map_err(|_| anyhow::anyhow!("Worker panicked"));
+            .map_err(|_| MapacheError::Internal("Worker panicked".to_string()));
         tracing::info!(target: "packer", "Pack saver loop finished");
         res?
     }
@@ -606,14 +615,14 @@ impl PackSaver {
         let mut new_packer = self
             .empty_packer_rx
             .recv()
-            .context("Worker pool died or no free packers")?;
+            .map_err(|e| MapacheError::Repo(format!("Worker pool died or no free packers: {e}")))?;
 
         std::mem::swap(packer_ref, &mut new_packer);
 
         // Send the full packer to workers
         self.full_packer_tx
             .send((new_packer, blob_type))
-            .context("Failed to dispatch pack to workers")?;
+            .map_err(|e| MapacheError::Repo(format!("Failed to dispatch pack to workers: {e}")))?;
 
         Ok(())
     }
@@ -709,8 +718,8 @@ mod tests {
         // Finalize (Simulating worker action)
         let result = packer
             .finalize_and_extract()
-            .context("Finalize failed")?
-            .context("Should return result")?;
+            .map_err(|e| MapacheError::Repo(format!("Finalize failed: {e}")))?
+            .ok_or_else(|| MapacheError::Integrity("Should return result".to_string()))?;
 
         // CHANGE THIS:
         // result.descriptors includes the padding blobs added for obfuscation

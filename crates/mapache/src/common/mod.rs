@@ -1,5 +1,6 @@
 pub(crate) mod config;
 pub mod defaults;
+pub mod error;
 pub mod global;
 pub mod hash;
 pub(crate) mod hooks;
@@ -13,7 +14,6 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::io::AsyncReadExt;
@@ -23,6 +23,7 @@ use crate::{
         processor::chunk_and_store_file, progress::SnapshotProgress,
         tree_serializer::TreeSerializer,
     },
+    common::error::{MapacheError, Result},
     fs::{
         filter::{GlobRule, PathFilter},
         node::Node,
@@ -78,16 +79,16 @@ impl ID {
     /// Converts a hex string into an ID.
     /// Returns an `Err` if the string is not valid hex or not the correct length.
     pub fn from_hex(hex_str: &str) -> Result<Self> {
-        let expected_len = ID_LENGTH * 2; // Each byte is 2 hex characters
+        let expected_len = ID_LENGTH * 2;
         let hex_len = hex_str.len();
         if hex_len != expected_len {
-            bail!(format!(
+            return Err(MapacheError::Format(format!(
                 "Invalid ID length: expected {} hex characters ({} bytes), found {} hex characters ({} bytes)",
                 expected_len,
                 expected_len / 2,
                 hex_len,
                 hex_len / 2
-            ));
+            )));
         }
 
         let mut bytes = [0; ID_LENGTH];
@@ -96,15 +97,21 @@ impl ID {
         for byte in bytes.iter_mut() {
             let high_nibble_char = chars
                 .next()
-                .with_context(|| "unexpected end of hex string")?;
+                .ok_or_else(|| MapacheError::Format("unexpected end of hex string".to_string()))?;
             let low_nibble_char = chars
                 .next()
-                .with_context(|| "unexpected end of hex string")?;
+                .ok_or_else(|| MapacheError::Format("unexpected end of hex string".to_string()))?;
 
-            let high_nibble = Self::hex_char_to_byte(high_nibble_char)
-                .with_context(|| format!("Invalid hexadecimal character: '{high_nibble_char}'"))?;
-            let low_nibble = Self::hex_char_to_byte(low_nibble_char)
-                .with_context(|| format!("Invalid hexadecimal character: '{low_nibble_char}'"))?;
+            let high_nibble = Self::hex_char_to_byte(high_nibble_char).ok_or_else(|| {
+                MapacheError::Format(format!(
+                    "Invalid hexadecimal character: '{high_nibble_char}'"
+                ))
+            })?;
+            let low_nibble = Self::hex_char_to_byte(low_nibble_char).ok_or_else(|| {
+                MapacheError::Format(format!(
+                    "Invalid hexadecimal character: '{low_nibble_char}'"
+                ))
+            })?;
 
             *byte = (high_nibble << 4) | low_nibble;
         }
@@ -165,14 +172,16 @@ pub enum BlobType {
 }
 
 impl TryFrom<u8> for BlobType {
-    type Error = anyhow::Error;
+    type Error = MapacheError;
 
-    fn try_from(v: u8) -> Result<Self, Self::Error> {
+    fn try_from(v: u8) -> std::result::Result<Self, Self::Error> {
         match v {
             0x00 => Ok(BlobType::Data),
             0x01 => Ok(BlobType::Tree),
             0xff => Ok(BlobType::Padding),
-            other => anyhow::bail!("invalid blob type byte: {other}"),
+            other => Err(MapacheError::Format(format!(
+                "invalid blob type byte: {other}"
+            ))),
         }
     }
 }
@@ -311,11 +320,9 @@ pub(crate) async fn rewrite_snapshot_tree(
                     stream_node.node.metadata.size,
                 )));
             } else {
-                let blobs = stream_node
-                    .node
-                    .blobs
-                    .as_ref()
-                    .context("File Node must have contents")?;
+                let blobs = stream_node.node.blobs.as_ref().ok_or_else(|| {
+                    MapacheError::Integrity("File Node must have contents".to_string())
+                })?;
 
                 let rechunked_blobs = if let Some(map) = rechunked_blobs_list_map.as_deref_mut() {
                     if let Some(rechunked) = map.get(blobs) {
@@ -368,7 +375,7 @@ pub(crate) async fn rewrite_snapshot_tree(
     tree_serializer.finalize_root().await?;
     snapshot.tree = tree_serializer
         .root_tree()
-        .context("Failed to serialize root tree")?;
+        .ok_or_else(|| MapacheError::Internal("Failed to serialize root tree".to_string()))?;
 
     Ok(())
 }
@@ -385,7 +392,7 @@ async fn run_rechunk_task(
     let sync_reader = BlockingBridge { inner: reader };
 
     let size = node.metadata.size;
-    tokio::task::spawn_blocking(move || {
+    let res = tokio::task::spawn_blocking(move || {
         chunk_and_store_file(
             repo.as_ref(),
             sync_reader,
@@ -396,7 +403,9 @@ async fn run_rechunk_task(
         )
     })
     .await
-    .map_err(|e| anyhow::anyhow!("Rechunk task panicked: {}", e))?
+    .map_err(|e| MapacheError::Internal(format!("Rechunk task panicked: {}", e)))??;
+
+    Ok(res)
 }
 
 pub enum SaveID {

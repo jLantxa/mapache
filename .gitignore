@@ -10,6 +10,7 @@
 
 # Project-specific
 .antigravitycli
+.opencode
 /_*
 
 # Environment

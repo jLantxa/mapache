@@ -23,6 +23,7 @@ use crate::{
     fs::{
         calculate_lcp,
         filter::PathFilter,
+        get_absolute_normalized_path,
         node::{Metadata, Node},
         tree::{FSNodeStream, NodeDiff, StreamNode, Tree},
     },
@@ -37,7 +38,7 @@ use crate::{
 #[cfg(all(feature = "mount", unix))]
 use crate::{
     commands::cleanup::CleanupHandler,
-    fs::{get_absolute_normalized_path, path_exists},
+    fs::path_exists,
     mount::fuse::fs::{MapacheFS, MountOptions},
     utils::size,
 };
@@ -172,10 +173,31 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
     let shutdown_signal = Arc::new(AtomicBool::new(false));
     let progress = Arc::new(SnapshotProgress::new());
 
-    let absolute_source_paths: Vec<PathBuf> = args
-        .input
+    // Normalize source paths to absolute, canonical form.
+    // Uses get_absolute_normalized_path (lexical, no filesystem access) rather than
+    // canonicalize() to avoid Windows \\?\ verbatim prefixes, keeping paths in a
+    // consistent format for PathFilter trie matching with exclude paths.
+    let mut absolute_source_paths = Vec::new();
+    for p in &args.input {
+        match get_absolute_normalized_path(p) {
+            Ok(abs) => absolute_source_paths.push(abs),
+            Err(_) => absolute_source_paths.push(p.clone()),
+        }
+    }
+
+    // Normalize exclude paths: resolve relative/msys-style paths to absolute,
+    // but leave glob patterns as-is.
+    let exclude_paths: Vec<PathBuf> = args
+        .exclude
         .iter()
-        .map(|p| p.canonicalize().unwrap_or(p.clone()))
+        .map(|p| {
+            let s = p.to_string_lossy();
+            if s.contains('*') || s.contains('?') {
+                p.clone()
+            } else {
+                get_absolute_normalized_path(p).unwrap_or_else(|_| p.clone())
+            }
+        })
         .collect();
 
     let snapshot_root_path = if absolute_source_paths.len() == 1 {
@@ -202,7 +224,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
 
     let scanner_sender = event_sender.clone();
     let scanner_paths = absolute_source_paths.clone();
-    let scanner_exclude = args.exclude.clone();
+    let scanner_exclude = exclude_paths.clone();
     let scanner_shutdown = shutdown_signal.clone();
     let scanner_handle = tokio::spawn(async move {
         spawn_background_scanner(
@@ -217,7 +239,7 @@ async fn run_create(args: &CmdArgs) -> Result<()> {
     let snapshot_options = SnapshotOptions {
         absolute_source_paths,
         snapshot_root_path: snapshot_root_path.clone(),
-        exclude_paths: args.exclude.clone(),
+        exclude_paths: exclude_paths.clone(),
         parent_snapshot: None,
         tags: Default::default(),
         description: Some(format!("Bundle of {:?}", args.input)),

@@ -15,6 +15,12 @@
   batched file restoration with a streaming pass;verify hardlink content and
   fall back to copy on failure.
 
+## v0.5.2
+
+### Fixed
+
+- Fixed `--exclude` paths in `mapache bundle`.
+
 ## v0.5.1
 
 ### Fixed

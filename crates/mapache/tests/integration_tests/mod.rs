@@ -663,6 +663,11 @@ impl BundleBuilder {
         self
     }
 
+    pub fn exclude(mut self, exclude: Vec<PathBuf>) -> Self {
+        self.args.exclude = exclude;
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         mapache::commands::cmd_bundle::run(&self.args).await
     }

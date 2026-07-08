@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.2
+
+### Fixed
+
+- Fixed `--exclude` paths in `mapache bundle`.
+
 ## v0.5.1
 
 ### Fixed

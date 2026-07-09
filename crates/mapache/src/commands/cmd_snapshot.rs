@@ -284,6 +284,29 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<()> {
         ));
     };
 
+    // Verify source paths exist before acquiring the repository lock
+    if !args.stdin {
+        for path in &args.paths {
+            let normalized = fs::get_absolute_normalized_path(path).map_err(|e| {
+                fail(
+                    format!("Error processing path {:?}: {}", path, e),
+                    SnapshotError::SourcePathError,
+                )
+            })?;
+            if !normalized.try_exists().map_err(|e| {
+                fail(
+                    format!("Error accessing path {:?}: {}", normalized, e),
+                    SnapshotError::SourcePathError,
+                )
+            })? {
+                return Err(fail(
+                    format!("Source path does not exist: {:?}", normalized.display()),
+                    SnapshotError::SourcePathError,
+                ));
+            }
+        }
+    }
+
     let dry_run = args.dry_run;
 
     let num_readers = args.num_readers.unwrap_or(DEFAULT_SNAPSHOT_READERS);

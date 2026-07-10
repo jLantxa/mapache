@@ -49,7 +49,7 @@ impl BundleWriter {
 
         let storage = SecureStorage::new()
             .with_compression(compression_level)
-            .with_key(&*key);
+            .with_key(&*key)?;
 
         let mut file = File::create(path)?;
 

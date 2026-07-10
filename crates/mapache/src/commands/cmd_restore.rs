@@ -16,7 +16,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{
         GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
-        with_repository_lock,
+        merge_opt, with_repository_lock,
     },
     common::{defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError, hooks},
     fs::{
@@ -196,45 +196,19 @@ impl CmdArgs {
 
 impl Merge for CmdArgs {
     fn merge(&mut self, other: Self) {
-        if other.target.is_some() {
-            self.target = other.target;
-        }
-        if other.include.is_some() {
-            self.include = other.include;
-        }
-        if other.include_file.is_some() {
-            self.include_file = other.include_file;
-        }
-        if other.exclude.is_some() {
-            self.exclude = other.exclude;
-        }
-        if other.exclude_file.is_some() {
-            self.exclude_file = other.exclude_file;
-        }
-        if other.strip_prefix.is_some() {
-            self.strip_prefix = other.strip_prefix;
-        }
-        if other.strategy.is_some() {
-            self.strategy = other.strategy;
-        }
-        if other.delete.is_some() {
-            self.delete = other.delete;
-        }
-        if other.no_preserve_root.is_some() {
-            self.no_preserve_root = other.no_preserve_root;
-        }
-        if other.quit_on_error.is_some() {
-            self.quit_on_error = other.quit_on_error;
-        }
-        if other.sparse.is_some() {
-            self.sparse = other.sparse;
-        }
-        if other.verify.is_some() {
-            self.verify = other.verify;
-        }
-        if other.batch_size.is_some() {
-            self.batch_size = other.batch_size;
-        }
+        merge_opt(&mut self.target, other.target);
+        merge_opt(&mut self.include, other.include);
+        merge_opt(&mut self.include_file, other.include_file);
+        merge_opt(&mut self.exclude, other.exclude);
+        merge_opt(&mut self.exclude_file, other.exclude_file);
+        merge_opt(&mut self.strip_prefix, other.strip_prefix);
+        merge_opt(&mut self.strategy, other.strategy);
+        merge_opt(&mut self.delete, other.delete);
+        merge_opt(&mut self.no_preserve_root, other.no_preserve_root);
+        merge_opt(&mut self.quit_on_error, other.quit_on_error);
+        merge_opt(&mut self.sparse, other.sparse);
+        merge_opt(&mut self.verify, other.verify);
+        merge_opt(&mut self.batch_size, other.batch_size);
     }
 }
 

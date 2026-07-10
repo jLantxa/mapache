@@ -9,7 +9,7 @@ pub(crate) mod progress;
 pub(crate) mod tree_serializer;
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -602,61 +602,57 @@ fn scan_recursive(
     scan_items: &mut u64,
     scan_bytes: &mut u64,
 ) {
-    // Exit early if user requested shutdown or another part of the pipeline failed
-    if status.is_failed() || status.is_finished() {
-        return;
-    }
+    let mut stack = VecDeque::new();
+    stack.push_back(path.to_path_buf());
 
-    if !filter.allow(path) {
-        return;
-    }
+    while let Some(current) = stack.pop_front() {
+        if status.is_failed() || status.is_finished() {
+            return;
+        }
 
-    match Node::from_path_sync(path, false) {
-        Ok(node) => {
-            *scan_items += 1;
-            let size = if node.is_file() {
-                node.metadata.size
-            } else {
-                0
-            };
-            *scan_bytes += size;
+        if !filter.allow(&current) {
+            continue;
+        }
 
-            emit_event(
-                &event_sender,
-                Event::Backup(BackupEvent::ScanProgress {
-                    items: 1,
-                    bytes: size,
-                }),
-            );
-
-            if node.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(path) {
-                    for entry in entries.flatten() {
-                        scan_recursive(
-                            &entry.path(),
-                            filter.clone(),
-                            status.clone(),
-                            event_sender.clone(),
-                            scan_items,
-                            scan_bytes,
-                        );
-                    }
+        match Node::from_path_sync(&current, false) {
+            Ok(node) => {
+                *scan_items += 1;
+                let size = if node.is_file() {
+                    node.metadata.size
                 } else {
-                    // read_dir already failed, collect error string outside the move closure
-                    let msg = format!("Error reading directory {}", path.display());
-                    emit_event(&event_sender, Event::Backup(BackupEvent::Warning(msg)));
+                    0
+                };
+                *scan_bytes += size;
+
+                emit_event(
+                    &event_sender,
+                    Event::Backup(BackupEvent::ScanProgress {
+                        items: 1,
+                        bytes: size,
+                    }),
+                );
+
+                if node.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&current) {
+                        for entry in entries.flatten() {
+                            stack.push_back(entry.path());
+                        }
+                    } else {
+                        let msg = format!("error reading directory {}", current.display());
+                        emit_event(&event_sender, Event::Backup(BackupEvent::Warning(msg)));
+                    }
                 }
             }
-        }
-        Err(e) => {
-            emit_event(
-                &event_sender,
-                Event::Backup(BackupEvent::Warning(format!(
-                    "Error scanning {}: {}",
-                    path.display(),
-                    e
-                ))),
-            );
+            Err(e) => {
+                emit_event(
+                    &event_sender,
+                    Event::Backup(BackupEvent::Warning(format!(
+                        "error scanning {}: {}",
+                        current.display(),
+                        e
+                    ))),
+                );
+            }
         }
     }
 }

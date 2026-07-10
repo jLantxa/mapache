@@ -220,7 +220,7 @@ impl KeyManager {
             SecureStorage::derive_key::<32>(password, &salt, keyfile.argon2_params()?)?;
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
-            .with_key(&*intermediate_key);
+            .with_key(&*intermediate_key)?;
 
         ss.decrypt(&encrypted_key)
             .map(|c| Zeroizing::new(c.into_owned()))
@@ -244,7 +244,7 @@ impl KeyManager {
 
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
-            .with_key(&*intermediate_key);
+            .with_key(&*intermediate_key)?;
 
         let encrypted_key = ss.encrypt(master_key)?;
 

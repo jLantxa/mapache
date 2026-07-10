@@ -15,7 +15,7 @@ use crate::{
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
-        find_use_snapshot, parse_tags, with_repository_lock,
+        find_use_snapshot, merge_opt, parse_tags, with_repository_lock,
     },
     common::{
         self, ContentIdType, ID, config,
@@ -185,51 +185,25 @@ impl Merge for CmdArgs {
             self.paths = other.paths;
         }
 
-        if other.as_root.is_some() {
-            self.as_root = other.as_root;
-        }
+        merge_opt(&mut self.as_root, other.as_root);
 
         config::merge_option_vec(&mut self.exclude, other.exclude);
 
-        if other.exclude_file.is_some() {
-            self.exclude_file = other.exclude_file;
-        }
-
-        if other.tags_str.is_some() {
-            self.tags_str = other.tags_str;
-        }
-
-        if other.description.is_some() {
-            self.description = other.description;
-        }
+        merge_opt(&mut self.exclude_file, other.exclude_file);
+        merge_opt(&mut self.tags_str, other.tags_str);
+        merge_opt(&mut self.description, other.description);
 
         // skip: no_parent
 
-        if other.no_scan.is_some() {
-            self.no_scan = other.no_scan;
-        }
-
-        if other.skip_if_unchanged.is_some() {
-            self.skip_if_unchanged = other.skip_if_unchanged;
-        }
-
-        if other.parent.is_some() {
-            self.parent = other.parent;
-        }
-
-        if other.num_readers.is_some() {
-            self.num_readers = other.num_readers;
-        }
-
-        if other.num_packers.is_some() {
-            self.num_packers = other.num_packers;
-        }
+        merge_opt(&mut self.no_scan, other.no_scan);
+        merge_opt(&mut self.skip_if_unchanged, other.skip_if_unchanged);
+        merge_opt(&mut self.parent, other.parent);
+        merge_opt(&mut self.num_readers, other.num_readers);
+        merge_opt(&mut self.num_packers, other.num_packers);
 
         // skip: dry_run
 
-        if other.with_atime.is_some() {
-            self.with_atime = other.with_atime;
-        }
+        merge_opt(&mut self.with_atime, other.with_atime);
 
         // skip: stdin
     }

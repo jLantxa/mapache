@@ -38,6 +38,7 @@ use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
 use chrono::Duration;
 use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize, Serializer};
+use zeroize::Zeroizing;
 
 use crate::{
     backend::{BackendOptions, StorageBackend},
@@ -55,7 +56,7 @@ use crate::{
     },
     repository::{
         lock::LockHandle,
-        repo::{RepoConfig, Repository},
+        repo::{Auth, RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
         storage::SecureStorage,
     },
@@ -122,6 +123,12 @@ pub enum Command {
 /// the command line).
 pub trait Merge {
     fn merge(&mut self, other: Self);
+}
+
+fn merge_opt<T>(dst: &mut Option<T>, src: Option<T>) {
+    if src.is_some() {
+        *dst = src;
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -246,51 +253,21 @@ impl CliGlobalArgs {
 
 impl Merge for CliGlobalArgs {
     fn merge(&mut self, other: Self) {
-        if other.repo.is_some() {
-            self.repo = other.repo;
-        }
-        if other.no_cache.is_some() {
-            self.no_cache = other.no_cache;
-        }
-        if other.ssh_privatekey.is_some() {
-            self.ssh_privatekey = other.ssh_privatekey;
-        }
-        if other.ssh_known_hosts.is_some() {
-            self.ssh_known_hosts = other.ssh_known_hosts;
-        }
-        if other.auth_file.is_some() {
-            self.auth_file = other.auth_file;
-        }
-        if other.pack_size_mib.is_some() {
-            self.pack_size_mib = other.pack_size_mib;
-        }
-        if other.key.is_some() {
-            self.key = other.key;
-        }
-        if other.quiet.is_some() {
-            self.quiet = other.quiet;
-        }
-        if other.json.is_some() {
-            self.json = other.json;
-        }
-        if other.verbosity.is_some() {
-            self.verbosity = other.verbosity;
-        }
-        if other.compression_level.is_some() {
-            self.compression_level = other.compression_level;
-        }
-        if other.retry_lock_duration.is_some() {
-            self.retry_lock_duration = other.retry_lock_duration;
-        }
-        if other.limit_upload.is_some() {
-            self.limit_upload = other.limit_upload;
-        }
-        if other.limit_download.is_some() {
-            self.limit_download = other.limit_download;
-        }
-        if other.no_lock.is_some() {
-            self.no_lock = other.no_lock;
-        }
+        merge_opt(&mut self.repo, other.repo);
+        merge_opt(&mut self.no_cache, other.no_cache);
+        merge_opt(&mut self.ssh_privatekey, other.ssh_privatekey);
+        merge_opt(&mut self.ssh_known_hosts, other.ssh_known_hosts);
+        merge_opt(&mut self.auth_file, other.auth_file);
+        merge_opt(&mut self.pack_size_mib, other.pack_size_mib);
+        merge_opt(&mut self.key, other.key);
+        merge_opt(&mut self.quiet, other.quiet);
+        merge_opt(&mut self.json, other.json);
+        merge_opt(&mut self.verbosity, other.verbosity);
+        merge_opt(&mut self.compression_level, other.compression_level);
+        merge_opt(&mut self.retry_lock_duration, other.retry_lock_duration);
+        merge_opt(&mut self.limit_upload, other.limit_upload);
+        merge_opt(&mut self.limit_download, other.limit_download);
+        merge_opt(&mut self.no_lock, other.no_lock);
     }
 }
 
@@ -822,14 +799,14 @@ impl GlobalArgs {
     }
 }
 
-/// Helper to open a repository with interactive authentication if needed.
-pub async fn open_repository(
-    auth_file: Option<&PathBuf>,
-    key_file_path: Option<&PathBuf>,
-    backend: Arc<dyn StorageBackend>,
-    config: RepoConfig,
-) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
-    let mut auth = match utils::get_auth(&auth_file.cloned()) {
+/// Resolves authentication from file/env or falls back to interactive prompt,
+/// then retries the open operation on auth errors.
+async fn open_with_retry<T, F, Fut>(auth_file: Option<&PathBuf>, open_fn: F) -> Result<T>
+where
+    F: Fn(Zeroizing<String>, String) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let auth = match utils::get_auth(&auth_file.cloned()) {
         Ok(a) => a,
         Err(e) => {
             tracing::warn!("{e:#} — falling back to interactive prompt");
@@ -838,9 +815,8 @@ pub async fn open_repository(
     };
 
     // If auth is provided (from file or env), try it once.
-    if let Some(a) = auth.take() {
-        let val = Repository::try_open_unlocked(&a, key_file_path, backend, config).await?;
-        return Ok(val);
+    if let Some(a) = auth {
+        return open_fn(a.password, a.username).await;
     }
 
     // Otherwise, loop with prompts
@@ -850,9 +826,7 @@ pub async fn open_repository(
     loop {
         let current_auth = cli::request_auth().map_err(|e| MapacheError::Auth(e.to_string()))?;
 
-        match Repository::try_open_unlocked(&current_auth, key_file_path, backend.clone(), config)
-            .await
-        {
+        match open_fn(current_auth.password, current_auth.username).await {
             Ok(val) => return Ok(val),
             Err(e) => {
                 let is_retryable = matches!(e, MapacheError::Auth(_));
@@ -868,6 +842,23 @@ pub async fn open_repository(
             }
         }
     }
+}
+
+/// Helper to open a repository with interactive authentication if needed.
+pub async fn open_repository(
+    auth_file: Option<&PathBuf>,
+    key_file_path: Option<&PathBuf>,
+    backend: Arc<dyn StorageBackend>,
+    config: RepoConfig,
+) -> Result<(Arc<Repository>, Arc<SecureStorage>)> {
+    open_with_retry(auth_file, |password, username| {
+        let backend = backend.clone();
+        async move {
+            let auth = Auth { username, password };
+            Repository::try_open_unlocked(&auth, key_file_path, backend, config).await
+        }
+    })
+    .await
 }
 
 /// Helper to open a repository with a lock and interactive authentication if needed,
@@ -927,60 +918,22 @@ pub async fn open_repository_with_lock(
     exclusive_lock: bool,
     retry_duration: Option<Duration>,
 ) -> Result<(Arc<Repository>, Arc<SecureStorage>, LockHandle)> {
-    let mut auth = match utils::get_auth(&auth_file.cloned()) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!("{e:#} — falling back to interactive prompt");
-            None
+    open_with_retry(auth_file, |password, username| {
+        let backend = backend.clone();
+        async move {
+            let auth = Auth { username, password };
+            Repository::try_open_with_lock(
+                &auth,
+                key_file_path,
+                backend,
+                config,
+                exclusive_lock,
+                retry_duration,
+            )
+            .await
         }
-    };
-
-    // If auth is provided (from file or env), try it once.
-    if let Some(a) = auth.take() {
-        let val = Repository::try_open_with_lock(
-            &a,
-            key_file_path,
-            backend,
-            config,
-            exclusive_lock,
-            retry_duration,
-        )
-        .await?;
-        return Ok(val);
-    }
-
-    // Otherwise, loop with prompts
-    const MAX_PASSWORD_RETRIES: u32 = 3;
-    let mut password_try_count = 0;
-
-    loop {
-        let current_auth = cli::request_auth().map_err(|e| MapacheError::Auth(e.to_string()))?;
-
-        match Repository::try_open_with_lock(
-            &current_auth,
-            key_file_path,
-            backend.clone(),
-            config,
-            exclusive_lock,
-            retry_duration,
-        )
-        .await
-        {
-            Ok(val) => return Ok(val),
-            Err(e) => {
-                let is_retryable = matches!(e, MapacheError::Auth(_));
-
-                if is_retryable {
-                    password_try_count += 1;
-                    if password_try_count < MAX_PASSWORD_RETRIES {
-                        ui::cli::log!("Incorrect username or password. Try again.");
-                        continue;
-                    }
-                }
-                return Err(e);
-            }
-        }
-    }
+    })
+    .await
 }
 
 #[cfg(test)]

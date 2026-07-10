@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        self, GlobalArgs, Merge, ToExitCode, cleanup::CleanupHandler, parse_tags,
+        self, GlobalArgs, Merge, ToExitCode, cleanup::CleanupHandler, merge_opt, parse_tags,
         with_repository_lock,
     },
     common::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
@@ -167,44 +167,22 @@ impl Merge for CmdArgs {
             self.forget = other.forget;
         }
         // skip: force
-        if other.tags_str.is_some() {
-            self.tags_str = other.tags_str;
-        }
+        merge_opt(&mut self.tags_str, other.tags_str);
         if !other.hosts.is_empty() {
             self.hosts = other.hosts;
         }
-        if other.keep_last.is_some() {
-            self.keep_last = other.keep_last;
-        }
-        if other.keep_within.is_some() {
-            self.keep_within = other.keep_within;
-        }
-        if other.keep_yearly.is_some() {
-            self.keep_yearly = other.keep_yearly;
-        }
-        if other.keep_monthly.is_some() {
-            self.keep_monthly = other.keep_monthly;
-        }
-        if other.keep_weekly.is_some() {
-            self.keep_weekly = other.keep_weekly;
-        }
-        if other.keep_daily.is_some() {
-            self.keep_daily = other.keep_daily;
-        }
-        if other.keep_hourly.is_some() {
-            self.keep_hourly = other.keep_hourly;
-        }
-        if other.keep_tags.is_some() {
-            self.keep_tags = other.keep_tags;
-        }
-        if other.keep_min.is_some() {
-            self.keep_min = other.keep_min;
-        }
+        merge_opt(&mut self.keep_last, other.keep_last);
+        merge_opt(&mut self.keep_within, other.keep_within);
+        merge_opt(&mut self.keep_yearly, other.keep_yearly);
+        merge_opt(&mut self.keep_monthly, other.keep_monthly);
+        merge_opt(&mut self.keep_weekly, other.keep_weekly);
+        merge_opt(&mut self.keep_daily, other.keep_daily);
+        merge_opt(&mut self.keep_hourly, other.keep_hourly);
+        merge_opt(&mut self.keep_tags, other.keep_tags);
+        merge_opt(&mut self.keep_min, other.keep_min);
         // skip: dry_run
         // skip: run_gc
-        if other.tolerance.is_some() {
-            self.tolerance = other.tolerance;
-        }
+        merge_opt(&mut self.tolerance, other.tolerance);
     }
 }
 

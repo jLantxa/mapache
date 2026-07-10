@@ -481,10 +481,13 @@ impl Plan {
                 let r = r.clone();
                 let pos = pos.clone();
                 async move {
-                    let size = repo
-                        .delete_file(ContentIdType::Index, id, None)
-                        .await
-                        .unwrap_or(0);
+                    let size = match repo.delete_file(ContentIdType::Index, id, None).await {
+                        Ok(size) => size,
+                        Err(e) => {
+                            tracing::warn!(target: "gc", "failed to delete index {id}: {e}");
+                            0
+                        }
+                    };
                     let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     r.update_task(GcTaskKind::DeletingOldIndices, current);
                     size
@@ -526,10 +529,13 @@ impl Plan {
                 let pos = pos.clone();
                 async move {
                     // Perform the async delete
-                    let size = repo
-                        .delete_file(ContentIdType::Pack, id, None)
-                        .await
-                        .unwrap_or(0);
+                    let size = match repo.delete_file(ContentIdType::Pack, id, None).await {
+                        Ok(size) => size,
+                        Err(e) => {
+                            tracing::warn!(target: "gc", "failed to delete pack {id}: {e}");
+                            0
+                        }
+                    };
 
                     let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     r.update_task(GcTaskKind::DeletingObsoletePacks, current);

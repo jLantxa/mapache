@@ -75,17 +75,25 @@ where
         .collect()
 }
 
-/// Converts a config string to a PathBuf, expanding leading `~` to $HOME
-/// and resolving `.`/`..` components.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
+}
+
+/// Converts a config string to a PathBuf, expanding leading `~` to the user's
+/// home directory and resolving `.`/`..` components.
 pub(crate) fn config_path(s: &str) -> Result<PathBuf> {
-    let path = if let Some(rest) = s.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        PathBuf::from(home).join(rest)
-    } else if s == "~"
-        && let Ok(home) = std::env::var("HOME")
-    {
-        PathBuf::from(home)
+    let path = if let Some(rest) = s.strip_prefix("~/") {
+        let home = home_dir().ok_or_else(|| {
+            MapacheError::Config("cannot expand '~': neither $HOME nor $USERPROFILE is set".into())
+        })?;
+        home.join(rest)
+    } else if s == "~" {
+        home_dir().ok_or_else(|| {
+            MapacheError::Config("cannot expand '~': neither $HOME nor $USERPROFILE is set".into())
+        })?
     } else {
         PathBuf::from(s)
     };

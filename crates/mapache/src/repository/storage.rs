@@ -41,12 +41,17 @@ impl SecureStorage {
     }
 
     /// Set a 32-byte key and initialize the cipher (immutable afterward)
-    pub fn with_key(mut self, key: &[u8]) -> Self {
-        assert_eq!(key.len(), 32);
+    pub fn with_key(mut self, key: &[u8]) -> Result<Self> {
+        if key.len() != 32 {
+            return Err(MapacheError::Internal(format!(
+                "secure storage requires a 32-byte key, got {} bytes",
+                key.len()
+            )));
+        }
 
         let aes_key = AesKey::<Aes256GcmSiv>::from_slice(key);
         self.cipher = Some(Aes256GcmSiv::new(aes_key));
-        self
+        Ok(self)
     }
 
     pub fn get_encoding_context(&self) -> Result<EncodingContext> {
@@ -369,7 +374,8 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         let key = TEST_KEY;
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
-            .with_key(&key);
+            .with_key(&key)
+            .unwrap();
 
         let ciphertext = ss.encode(TEXT)?;
         let decoded_plaintext = ss.decode(&ciphertext)?;
@@ -382,7 +388,9 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_encryption_decryption_with_key() -> Result<()> {
         // No compression: length checks are stable (nonce + tag overhead)
         let key = TEST_KEY;
-        let ss = SecureStorage::new().with_key(&key);
+        let ss = SecureStorage::new()
+            .with_key(&key)
+            .expect("valid 32-byte key");
 
         let original_data = TEXT.as_slice();
         let encrypted_data = ss.encrypt(original_data)?;
@@ -428,7 +436,9 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[test]
     fn test_decrypt_invalid_data_length() {
         let key = TEST_KEY;
-        let ss = SecureStorage::new().with_key(&key);
+        let ss = SecureStorage::new()
+            .with_key(&key)
+            .expect("valid 32-byte key");
 
         // Shorter than nonce length
         let too_short_data = [0u8; AES_GCM_NONCE_LEN - 1];
@@ -440,7 +450,9 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[test]
     fn test_decrypt_tampered_data() -> Result<()> {
         let key = TEST_KEY;
-        let ss = SecureStorage::new().with_key(&key);
+        let ss = SecureStorage::new()
+            .with_key(&key)
+            .expect("valid 32-byte key");
 
         let original_data = TEXT.as_slice();
         let mut encrypted_data = ss.encrypt(original_data)?;
@@ -459,7 +471,8 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         let key = TEST_KEY;
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
-            .with_key(&key);
+            .with_key(&key)
+            .unwrap();
 
         let mut ectx = ss.get_encoding_context()?;
 
@@ -473,7 +486,9 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     #[test]
     fn test_decrypt_in_place() -> Result<()> {
         let key = TEST_KEY;
-        let ss = SecureStorage::new().with_key(&key);
+        let ss = SecureStorage::new()
+            .with_key(&key)
+            .expect("valid 32-byte key");
 
         let encrypted_data = ss.encrypt(TEXT)?;
         let decrypted_data = ss.decrypt_in_place(encrypted_data)?;
@@ -487,7 +502,8 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         let key = TEST_KEY;
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
-            .with_key(&key);
+            .with_key(&key)
+            .unwrap();
 
         let encoded_data = ss.encode(TEXT)?;
         let decoded_data = ss.decode_owned(encoded_data)?;

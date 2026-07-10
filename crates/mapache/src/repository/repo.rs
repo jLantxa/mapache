@@ -4,15 +4,14 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
 };
+
+use serde::de::DeserializeOwned;
 
 use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use chrono::Duration;
 use futures::{StreamExt, stream};
-use parking_lot::Mutex;
-use rand::{RngExt, rng};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -32,7 +31,7 @@ use crate::{
         storage::{EncodingContext, SecureStorage},
     },
     ui::{self},
-    utils::{self, collections::IdSet},
+    utils::collections::IdSet,
 };
 
 pub const THIS_REPOSITORY_VERSION: u32 = 1;
@@ -262,7 +261,7 @@ impl Repository {
         let secure_storage = Arc::new(
             SecureStorage::new()
                 .with_compression(Compression::Fast.to_level())
-                .with_key(&master_key),
+                .with_key(&master_key)?,
         );
 
         let keyfile_json = serde_json::to_string_pretty(&keyfile)?;
@@ -364,7 +363,7 @@ impl Repository {
         let secure_storage = Arc::new(
             SecureStorage::new()
                 .with_compression(config.compression.to_level())
-                .with_key(&master_key),
+                .with_key(&master_key)?,
         );
 
         let manifest_path = Path::new(MANIFEST_PATH);
@@ -598,6 +597,27 @@ impl Repository {
         }
     }
 
+    /// Loads a file and deserializes its content.
+    async fn load_deserialized<T: DeserializeOwned>(
+        &self,
+        id: &ID,
+        file_type: ContentIdType,
+        extension: Option<&str>,
+    ) -> Result<T> {
+        let data = self
+            .load_file(
+                id,
+                StorageHint {
+                    file_type,
+                    is_metadata: true,
+                },
+                extension,
+            )
+            .await?;
+        serde_json::from_slice(&data)
+            .map_err(|e| MapacheError::Format(format!("failed to deserialize {file_type}: {e}")))
+    }
+
     /// Deletes a file from the repository
     pub async fn delete_file(
         &self,
@@ -745,21 +765,7 @@ impl Repository {
 
     /// Loads an index file.
     pub async fn load_index(&self, id: &ID) -> Result<IndexFile> {
-        let index: Vec<u8> = self
-            .load_file(
-                id,
-                StorageHint {
-                    file_type: ContentIdType::Index,
-                    is_metadata: true,
-                },
-                None,
-            )
-            .await
-            .map_err(|e| {
-                MapacheError::Repo(format!("could not load index {}: {e}", id.to_hex()))
-            })?;
-        let index = serde_json::from_slice(&index)?;
-        Ok(index)
+        self.load_deserialized(id, ContentIdType::Index, None).await
     }
 
     /// Loads the repository manifest.
@@ -777,37 +783,12 @@ impl Repository {
 
     /// Loads a lock file.
     pub async fn load_lock(&self, id: &ID) -> Result<Lock> {
-        let lock: Vec<u8> = self
-            .load_file(
-                id,
-                StorageHint {
-                    file_type: ContentIdType::Lock,
-                    is_metadata: true,
-                },
-                None,
-            )
-            .await
-            .map_err(|e| {
-                MapacheError::Repo(format!("could not load lock file {}: {e}", id.to_hex()))
-            })?;
-        let lock = serde_json::from_slice(&lock)?;
-        Ok(lock)
+        self.load_deserialized(id, ContentIdType::Lock, None).await
     }
 
     /// Loads a KeyFile.
     pub async fn load_key(&self, id: &ID) -> Result<keys::KeyFile> {
-        let key = self
-            .load_file(
-                id,
-                StorageHint {
-                    file_type: ContentIdType::Key,
-                    is_metadata: true,
-                },
-                None,
-            )
-            .await?;
-        let key = serde_json::from_slice(&key)?;
-        Ok(key)
+        self.load_deserialized(id, ContentIdType::Key, None).await
     }
 
     /// Finds a file in the repository using an ID prefix
@@ -967,27 +948,6 @@ impl Repository {
         self.secure_storage.get_encoding_context()
     }
 
-    /// Reads from a pack file with offset and length.
-    /// This function decodes the data.
-    pub async fn read_from_pack_and_decode(
-        &self,
-        blob_type: BlobType,
-        id: &ID,
-        offset: u64,
-        length: u64,
-    ) -> Result<Vec<u8>> {
-        let path = self.get_path(ContentIdType::Pack, id);
-        let data = self
-            .backend
-            .read(
-                &Handle::new_with_hint(&path, ContentIdType::Pack, blob_type == BlobType::Tree),
-                offset as isize,
-                length as usize,
-            )
-            .await?;
-        self.secure_storage.decode_owned(data)
-    }
-
     /// Lists all packs in the repository.
     pub async fn list_packs(&self) -> Result<IdSet<ID>> {
         let (packs, _) = self.list_packs_and_trash().await?;
@@ -1038,70 +998,60 @@ impl Repository {
         }
     }
 
+    /// Returns the directory path for a file type.
+    fn dir_for_type(&self, file_type: ContentIdType) -> Option<&Path> {
+        match file_type {
+            ContentIdType::Snapshot => Some(&self.snapshot_path),
+            ContentIdType::Key => Some(&self.keys_path),
+            ContentIdType::Index => Some(&self.index_path),
+            ContentIdType::Lock => Some(&self.locks_path),
+            ContentIdType::Pack => None,
+        }
+    }
+
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
     /// with all extensions included.
     pub async fn list_all_files(&self, file_type: ContentIdType) -> Result<Vec<PathBuf>> {
-        match file_type {
-            ContentIdType::Snapshot => Ok(self
+        if let Some(dir) = self.dir_for_type(file_type) {
+            return Ok(self
                 .backend
-                .list_dir(&self.snapshot_path)
+                .list_dir(dir)
                 .await?
                 .into_iter()
                 .map(|n| n.into_path())
-                .collect()),
-            ContentIdType::Key => Ok(self
-                .backend
-                .list_dir(&self.keys_path)
-                .await?
-                .into_iter()
-                .map(|n| n.into_path())
-                .collect()),
-            ContentIdType::Index => Ok(self
-                .backend
-                .list_dir(&self.index_path)
-                .await?
-                .into_iter()
-                .map(|n| n.into_path())
-                .collect()),
-            ContentIdType::Lock => Ok(self
-                .backend
-                .list_dir(&self.locks_path)
-                .await?
-                .into_iter()
-                .map(|n| n.into_path())
-                .collect()),
-            ContentIdType::Pack => {
-                use futures::stream::{self, StreamExt};
+                .collect());
+        }
 
-                let backend = self.backend.clone();
-                let objects_path = self.objects_path.clone();
+        // Pack: fanout with concurrency
+        use futures::stream::{self, StreamExt};
 
-                let results = stream::iter(0..(1 << (4 * OBJECTS_DIR_FANOUT)))
-                    .map(|n| {
-                        let backend = backend.clone();
-                        let dir = objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
+        let backend = self.backend.clone();
+        let objects_path = self.objects_path.clone();
 
-                        async move {
-                            let entries = backend.list_dir(&dir).await?;
-                            Ok::<Vec<PathBuf>, MapacheError>(
-                                entries.into_iter().map(|n| n.into_path()).collect(),
-                            )
-                        }
-                    })
-                    .buffer_unordered(4) // Use conservative concurrency
-                    .collect::<Vec<_>>()
-                    .await;
+        let results = stream::iter(0..(1 << (4 * OBJECTS_DIR_FANOUT)))
+            .map(|n| {
+                let backend = backend.clone();
+                let dir = objects_path.join(format!("{n:0>OBJECTS_DIR_FANOUT$x}"));
 
-                let mut files = Vec::new();
-                for res in results {
-                    for path in res? {
-                        files.push(path);
-                    }
+                async move {
+                    let entries = backend.list_dir(&dir).await?;
+                    Ok::<Vec<PathBuf>, MapacheError>(
+                        entries.into_iter().map(|n| n.into_path()).collect(),
+                    )
                 }
+            })
+            .buffer_unordered(4) // Use conservative concurrency
+            .collect::<Vec<_>>()
+            .await;
 
-                Ok(files)
+        let mut files = Vec::new();
+        for res in results {
+            for path in res? {
+                files.push(path);
             }
         }
+
+        Ok(files)
     }
 
     /// Lists all paths belonging to a file type (objects, snapshots, indices, etc.)
@@ -1233,191 +1183,6 @@ impl Repository {
         self.secure_storage.decode_owned(data)
     }
 
-    /// Try to acquire a lock with a retry deadline
-    async fn try_acquire_lock_with_retry(
-        &self,
-        exclusive: bool,
-        retry_duration: Option<Duration>,
-    ) -> Result<Arc<Mutex<Lock>>> {
-        let start_time = Instant::now();
-
-        const MIN_BASE_WAIT_INTERVAL_MS: i64 = 5 * 1000;
-        const MAX_BASE_WAIT_INTERVAL_MS: i64 = 60 * 1000;
-        const MAX_JITTER_MS: i64 = 1000;
-
-        let mut base_wait_interval_ms = MIN_BASE_WAIT_INTERVAL_MS;
-
-        loop {
-            match self.try_acquire_lock_once(exclusive).await {
-                Ok(lock) => return Ok(lock),
-
-                Err(e) => {
-                    let timeout = match retry_duration {
-                        Some(t) => t,
-                        None => return Err(e),
-                    };
-
-                    if start_time.elapsed() >= timeout.to_std().unwrap_or_default() {
-                        return Err(MapacheError::LockExpired(
-                            "timeout acquiring repository lock".to_string(),
-                        ));
-                    }
-
-                    let mut rng = rng();
-                    let jitter_millis = rng.random_range(0..MAX_JITTER_MS);
-                    let mean_wait_interval =
-                        Duration::milliseconds(base_wait_interval_ms - (MAX_JITTER_MS / 2));
-                    let wait_time = mean_wait_interval + Duration::milliseconds(jitter_millis);
-                    base_wait_interval_ms =
-                        std::cmp::min(MAX_BASE_WAIT_INTERVAL_MS, 2 * base_wait_interval_ms);
-
-                    ui::cli::warning!(
-                        "The repository is locked by another process. Waiting {:.0?} seconds before retrying...",
-                        wait_time.as_seconds_f32()
-                    );
-
-                    tokio::time::sleep(
-                        wait_time.to_std().map_err(|e| {
-                            MapacheError::Repo(format!("duration out of range: {e}"))
-                        })?,
-                    )
-                    .await;
-                }
-            }
-        }
-    }
-
-    /// Try to acquire a lock just once without retrying
-    async fn try_acquire_lock_once(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
-        self.backend.create_dir(&PathBuf::from(LOCKS_DIR)).await?;
-        let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
-
-        let new_lock_id = *new_lock.lock().id();
-
-        self.save_lock(&new_lock)
-            .await
-            .map_err(|e| MapacheError::Backend(format!("failed to write new lock file: {e}")))?;
-
-        let all_locks = match self.get_locks().await {
-            Ok(locks) => locks,
-            Err(e) => {
-                let _ = self
-                    .delete_file(ContentIdType::Lock, &new_lock_id, None)
-                    .await;
-                return Err(e);
-            }
-        };
-
-        for lock in all_locks {
-            // Skip the lock we just wrote
-            if lock.id() == &new_lock_id {
-                continue;
-            }
-
-            // Clean up stale locks from other processes.
-            // A lock is stale if it's expired OR if the process is dead on the same host.
-            if lock.is_stale() {
-                let _ = self.delete_file(ContentIdType::Lock, lock.id(), None).await;
-                continue;
-            }
-
-            if exclusive || lock.is_exclusive() {
-                // A race condition occurred, or a conflict was already present.
-                // The NEWLY written lock must be cleaned up and the attempt must fail.
-                let _ = self
-                    .delete_file(ContentIdType::Lock, &new_lock_id, None)
-                    .await;
-
-                let info = format!(
-                    "conflict detected with existing lock.\n\
-                     ID:      {}\n\
-                     Host:    {}\n\
-                     User:    {}\n\
-                     PID:     {}\n\
-                     Started: {}\n\
-                     Context: {}",
-                    lock.id().to_short_hex(4),
-                    lock.hostname(),
-                    lock.username(),
-                    lock.pid(),
-                    lock.creation_time()
-                        .map(|t| utils::pretty_print_timestamp(&t, None))
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    lock.context().join(" ")
-                );
-
-                return Err(MapacheError::Locked(info));
-            }
-        }
-
-        Ok(new_lock)
-    }
-
-    async fn save_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
-        let (lock_id, lock_bytes) = {
-            let lock_guard = lock.lock();
-            let id = *lock_guard.id();
-            let json = serde_json::to_string(&*lock_guard)?;
-            (id, json.into_bytes())
-        };
-
-        self.save_file(
-            &SaveID::WithID(lock_id),
-            &lock_bytes,
-            StorageHint {
-                file_type: ContentIdType::Lock,
-                is_metadata: true,
-            },
-            None,
-        )
-        .await?;
-
-        Ok(())
-    }
-
-    pub async fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
-        lock.lock().refresh();
-        self.save_lock(lock).await
-    }
-
-    /// Get all locks in the repository. If a lock file cannot be read, decoded
-    /// or deserialized, it will be ignored.
-    pub async fn get_locks(&self) -> Result<Vec<Lock>> {
-        let all_lock_paths = self.list_files(ContentIdType::Lock).await?;
-        let mut locks = Vec::new();
-
-        for path in all_lock_paths {
-            // Attempt to read the lock file
-            let lock_data_result = self
-                .backend
-                .read(
-                    &Handle::new_with_hint(&path, ContentIdType::Lock, true),
-                    0,
-                    0,
-                )
-                .await;
-
-            let lock = match lock_data_result {
-                Ok(data) => data,
-                Err(_) => continue,
-            };
-
-            // Attempt to decode the lock data
-            let decoded_lock_result = self.secure_storage.decode(&lock);
-            let decoded_lock = match decoded_lock_result {
-                Ok(data) => data,
-                Err(_) => continue,
-            };
-
-            // Attempt to deserialize the lock
-            if let Ok(lock_obj) = serde_json::from_slice::<Lock>(&decoded_lock) {
-                locks.push(lock_obj);
-            }
-        }
-
-        Ok(locks)
-    }
-
     pub fn pack_size(&self) -> u64 {
         self.max_packer_size
     }
@@ -1428,6 +1193,7 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::Local;
+    use parking_lot::Mutex;
     use rstest::rstest;
     use tempfile::tempdir;
 
@@ -1666,7 +1432,7 @@ mod tests {
             SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params()?)?;
         let ss = SecureStorage::new()
             .with_compression(Compression::Fast.to_level())
-            .with_key(&*intermediate_key);
+            .with_key(&*intermediate_key)?;
 
         let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();
 

@@ -1,18 +1,22 @@
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Local};
 use parking_lot::Mutex;
+use rand::{RngExt, rng};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::{ContentIdType, ID},
-    repository::repo::Repository,
+    backend::{Handle, StorageHint},
+    common::error::{MapacheError, Result},
+    common::{ContentIdType, ID, SaveID},
+    repository::repo::{LOCKS_DIR, Repository},
     ui, utils,
 };
 
@@ -321,6 +325,194 @@ impl LockHandle {
 impl Drop for LockHandle {
     fn drop(&mut self) {
         self.trigger_unlock();
+    }
+}
+
+impl Repository {
+    /// Try to acquire a lock with a retry deadline
+    pub(crate) async fn try_acquire_lock_with_retry(
+        &self,
+        exclusive: bool,
+        retry_duration: Option<chrono::Duration>,
+    ) -> Result<Arc<Mutex<Lock>>> {
+        let start_time = Instant::now();
+
+        const MIN_BASE_WAIT_INTERVAL_MS: i64 = 5 * 1000;
+        const MAX_BASE_WAIT_INTERVAL_MS: i64 = 60 * 1000;
+        const MAX_JITTER_MS: i64 = 1000;
+
+        let mut base_wait_interval_ms = MIN_BASE_WAIT_INTERVAL_MS;
+
+        loop {
+            match self.try_acquire_lock_once(exclusive).await {
+                Ok(lock) => return Ok(lock),
+
+                Err(e) => {
+                    let timeout = match retry_duration {
+                        Some(t) => t,
+                        None => return Err(e),
+                    };
+
+                    if start_time.elapsed() >= timeout.to_std().unwrap_or_default() {
+                        return Err(MapacheError::LockExpired(
+                            "timeout acquiring repository lock".to_string(),
+                        ));
+                    }
+
+                    let mut rng = rng();
+                    let jitter_millis = rng.random_range(0..MAX_JITTER_MS);
+                    let mean_wait_interval =
+                        chrono::Duration::milliseconds(base_wait_interval_ms - (MAX_JITTER_MS / 2));
+                    let wait_time =
+                        mean_wait_interval + chrono::Duration::milliseconds(jitter_millis);
+                    base_wait_interval_ms =
+                        std::cmp::min(MAX_BASE_WAIT_INTERVAL_MS, 2 * base_wait_interval_ms);
+
+                    ui::cli::warning!(
+                        "The repository is locked by another process. Waiting {:.0?} seconds before retrying...",
+                        wait_time.as_seconds_f32()
+                    );
+
+                    tokio::time::sleep(
+                        wait_time.to_std().map_err(|e| {
+                            MapacheError::Repo(format!("duration out of range: {e}"))
+                        })?,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    /// Try to acquire a lock just once without retrying
+    async fn try_acquire_lock_once(&self, exclusive: bool) -> Result<Arc<Mutex<Lock>>> {
+        self.backend().create_dir(&PathBuf::from(LOCKS_DIR)).await?;
+        let new_lock = Arc::new(Mutex::new(Lock::new(exclusive)));
+
+        let new_lock_id = *new_lock.lock().id();
+
+        self.save_lock(&new_lock)
+            .await
+            .map_err(|e| MapacheError::Backend(format!("failed to write new lock file: {e}")))?;
+
+        let all_locks = match self.get_locks().await {
+            Ok(locks) => locks,
+            Err(e) => {
+                let _ = self
+                    .delete_file(ContentIdType::Lock, &new_lock_id, None)
+                    .await;
+                return Err(e);
+            }
+        };
+
+        for lock in all_locks {
+            // Skip the lock we just wrote
+            if lock.id() == &new_lock_id {
+                continue;
+            }
+
+            // Clean up stale locks from other processes.
+            // A lock is stale if it's expired OR if the process is dead on the same host.
+            if lock.is_stale() {
+                let _ = self.delete_file(ContentIdType::Lock, lock.id(), None).await;
+                continue;
+            }
+
+            if exclusive || lock.is_exclusive() {
+                // A race condition occurred, or a conflict was already present.
+                // The NEWLY written lock must be cleaned up and the attempt must fail.
+                let _ = self
+                    .delete_file(ContentIdType::Lock, &new_lock_id, None)
+                    .await;
+
+                let info = format!(
+                    "conflict detected with existing lock.\n\
+                     ID:      {}\n\
+                     Host:    {}\n\
+                     User:    {}\n\
+                     PID:     {}\n\
+                     Started: {}\n\
+                     Context: {}",
+                    lock.id().to_short_hex(4),
+                    lock.hostname(),
+                    lock.username(),
+                    lock.pid(),
+                    lock.creation_time()
+                        .map(|t| utils::pretty_print_timestamp(&t, None))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    lock.context().join(" ")
+                );
+
+                return Err(MapacheError::Locked(info));
+            }
+        }
+
+        Ok(new_lock)
+    }
+
+    pub(crate) async fn save_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
+        let (lock_id, lock_bytes) = {
+            let lock_guard = lock.lock();
+            let id = *lock_guard.id();
+            let json = serde_json::to_string(&*lock_guard)?;
+            (id, json.into_bytes())
+        };
+
+        self.save_file(
+            &SaveID::WithID(lock_id),
+            &lock_bytes,
+            StorageHint {
+                file_type: ContentIdType::Lock,
+                is_metadata: true,
+            },
+            None,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn refresh_lock(&self, lock: &Arc<Mutex<Lock>>) -> Result<()> {
+        lock.lock().refresh();
+        self.save_lock(lock).await
+    }
+
+    /// Get all locks in the repository. If a lock file cannot be read, decoded
+    /// or deserialized, it will be ignored.
+    pub async fn get_locks(&self) -> Result<Vec<Lock>> {
+        let all_lock_paths = self.list_files(ContentIdType::Lock).await?;
+        let mut locks = Vec::new();
+
+        for path in all_lock_paths {
+            // Attempt to read the lock file
+            let lock_data_result = self
+                .backend()
+                .read(
+                    &Handle::new_with_hint(&path, ContentIdType::Lock, true),
+                    0,
+                    0,
+                )
+                .await;
+
+            let lock = match lock_data_result {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+
+            // Attempt to decode the lock data
+            let decoded_lock_result = self.secure_storage().decode(&lock);
+            let decoded_lock = match decoded_lock_result {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+
+            // Attempt to deserialize the lock
+            if let Ok(lock_obj) = serde_json::from_slice::<Lock>(&decoded_lock) {
+                locks.push(lock_obj);
+            }
+        }
+
+        Ok(locks)
     }
 }
 

@@ -204,8 +204,13 @@ async fn verify_pack_streaming(
             let pack_path = pack_path.clone();
             async move {
                 let handle = Handle::new(&pack_path);
+                let read_offset = i64::try_from(offset).map_err(|_| {
+                    MapacheError::Backend(format!(
+                        "pack offset too large for signed read: {offset}"
+                    ))
+                })?;
                 let data = backend
-                    .read(&handle, offset as isize, to_read)
+                    .read(&handle, read_offset as isize, to_read)
                     .await
                     .map_err(|e| {
                         MapacheError::Backend(format!(
@@ -358,6 +363,7 @@ pub async fn verify_snapshot_refs(
 
     let mut stack = vec![tree_id];
     let index = repo.index();
+    let mut verified_count: usize = 0;
 
     while let Some(current_tree_id) = stack.pop() {
         // Global Deduplication: Skip if this tree has already been verified
@@ -386,6 +392,7 @@ pub async fn verify_snapshot_refs(
                         )));
                     }
                 }
+                verified_count += 1;
             }
 
             if let Some(subtree_id) = node.tree {
@@ -395,5 +402,5 @@ pub async fn verify_snapshot_refs(
     }
 
     tracing::info!(target: "verify", "Snapshot {} references verified successfully", snapshot_id.to_short_hex(8));
-    Ok(0)
+    Ok(verified_count)
 }

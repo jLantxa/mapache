@@ -393,7 +393,10 @@ impl StorageBackend for S3Backend {
             Ok(code == 200)
         })
         .await
-        .unwrap_or(false)
+        .unwrap_or_else(|e| {
+            tracing::warn!(target: "backend", "s3: is_file check failed for {}: {e}", path.display());
+            false
+        })
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
@@ -416,7 +419,10 @@ impl StorageBackend for S3Backend {
             Ok(code == 200 && (!result.contents.is_empty() || result.common_prefixes.is_some()))
         })
         .await
-        .unwrap_or(false)
+        .unwrap_or_else(|e| {
+            tracing::warn!(target: "backend", "s3: is_dir check failed for {}: {e}", path.display());
+            false
+        })
     }
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {

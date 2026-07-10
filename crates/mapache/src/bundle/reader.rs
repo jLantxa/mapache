@@ -93,7 +93,7 @@ impl BundleReader {
             .map_err(|e| {
                 MapacheError::Crypto(format!("failed to derive key from password: {e}"))
             })?;
-        let storage = SecureStorage::new().with_key(&*key);
+        let storage = SecureStorage::new().with_key(&*key)?;
 
         file.seek(SeekFrom::End(-(BUNDLE_TRAILER_SIZE_LEN as i64)))?;
         let mut size_bytes = [0u8; BUNDLE_TRAILER_SIZE_LEN];

@@ -705,7 +705,8 @@ mod tests {
         let secure_storage = Arc::new(
             SecureStorage::new()
                 .with_compression(DEFAULT_COMPRESSION.to_level())
-                .with_key(&key),
+                .with_key(&key)
+                .expect("valid 32-byte key"),
         );
 
         let mut packer = Packer::new(1024, secure_storage.clone())?;
@@ -747,7 +748,8 @@ mod tests {
         let secure_storage = Arc::new(
             SecureStorage::new()
                 .with_compression(DEFAULT_COMPRESSION.to_level())
-                .with_key(&key),
+                .with_key(&key)
+                .expect("valid 32-byte key"),
         );
 
         let mut packer = Packer::new(1024, secure_storage.clone())?;

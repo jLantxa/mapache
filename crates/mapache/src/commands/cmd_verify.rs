@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{
         ID, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError, global::GlobalOpts, hooks,
     },
@@ -91,6 +91,9 @@ pub struct CmdArgs {
     /// Verify only a random percentage of packs (e.g. 10.5%)
     #[clap(long, value_parser = parse_sample_percentage)]
     pub sample: Option<f64>,
+
+    #[clap(flatten)]
+    pub hook_args: HookArgs,
 }
 
 fn parse_sample_percentage(s: &str) -> Result<f64, String> {
@@ -177,7 +180,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), VerifyE
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, secure_storage, lock_handle| async move {
-            hooks::run_pre(hooks::verify(), "verify", &global_args.repo).await?;
+            hooks::run_pre(
+                hooks::command_hooks(),
+                "verify",
+                &global_args.repo,
+                args.hook_args.pre_hook.as_deref(),
+            )
+            .await?;
 
             run_with_repo(repo, secure_storage, lock_handle, args, json_out).await
         },
@@ -188,7 +197,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), VerifyE
         Ok(_) => "success".to_string(),
         Err(e) => format!("{e}"),
     };
-    hooks::run_post(hooks::verify(), "verify", &global_args.repo, &result_str).await;
+    hooks::run_post(
+        hooks::command_hooks(),
+        "verify",
+        &global_args.repo,
+        &result_str,
+        args.hook_args.post_hook.as_deref(),
+    )
+    .await;
 
     repo_result.map_err(|e| match e {
         VerifyError::Repo(err) => VerifyError::RepoOpenFail(err.inner()),

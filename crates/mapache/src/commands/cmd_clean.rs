@@ -5,13 +5,12 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
+    commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
     repository::{gc, lock::LockHandle, repo::Repository},
     ui::{
         self,
-        cli::color::Colorize,
-        cli::gc as cli_gc,
+        cli::{color::Colorize, gc as cli_gc},
         events::{Event, GcEvent},
     },
     utils::{self},
@@ -65,6 +64,9 @@ pub struct CmdArgs {
     /// making changes to the repository.
     #[clap(long, default_value_t = false)]
     pub dry_run: bool,
+
+    #[clap(flatten)]
+    pub hook_args: HookArgs,
 }
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CleanError> {
@@ -84,7 +86,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CleanEr
         |repo, _, lock_handle| async move {
             if !args.dry_run {
                 // Run pre-hook: abort command if it fails
-                hooks::run_pre(hooks::clean(), "clean", &global_args.repo).await?;
+                hooks::run_pre(
+                    hooks::command_hooks(),
+                    "clean",
+                    &global_args.repo,
+                    args.hook_args.pre_hook.as_deref(),
+                )
+                .await?;
             }
 
             run_with_repo(global_args.json, args, repo, lock_handle).await
@@ -98,7 +106,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CleanEr
     };
     if !args.dry_run {
         // Run post-hook: warning on failure, always continues
-        hooks::run_post(hooks::clean(), "clean", &global_args.repo, &result_str).await;
+        hooks::run_post(
+            hooks::command_hooks(),
+            "clean",
+            &global_args.repo,
+            &result_str,
+            args.hook_args.post_hook.as_deref(),
+        )
+        .await;
     }
 
     repo_result.map_err(|e| CleanError::RepoOpenFail(e.to_string()))

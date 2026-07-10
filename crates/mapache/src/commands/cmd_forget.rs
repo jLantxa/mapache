@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::new_backend_with_prompt,
     commands::{
-        self, GlobalArgs, Merge, ToExitCode, cleanup::CleanupHandler, merge_opt, parse_tags,
-        with_repository_lock,
+        self, GlobalArgs, HookArgs, Merge, ToExitCode, cleanup::CleanupHandler, merge_opt,
+        parse_tags, with_repository_lock,
     },
     common::{ContentIdType, ID, defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
     repository::{
@@ -136,6 +136,9 @@ pub struct CmdArgs {
     /// pack file before repacking.
     #[clap(short, long)]
     pub tolerance: Option<f32>,
+
+    #[clap(flatten)]
+    pub hook_args: HookArgs,
 }
 
 impl CmdArgs {
@@ -157,6 +160,7 @@ impl CmdArgs {
             dry_run: false,
             run_gc: false,
             tolerance: Some(0.0),
+            hook_args: HookArgs::default(),
         }
     }
 }
@@ -269,7 +273,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), ForgetE
 
             if !dry_run {
                 // Run pre-hook: abort command if it fails
-                hooks::run_pre(hooks::forget(), "forget", &global_args.repo).await?;
+                hooks::run_pre(
+                    hooks::command_hooks(),
+                    "forget",
+                    &global_args.repo,
+                    args.hook_args.pre_hook.as_deref(),
+                )
+                .await?;
             }
 
             forget_phase(repo.clone(), args, json_output, &cleanup_handler).await?;
@@ -287,6 +297,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), ForgetE
                     tolerance: args.tolerance.unwrap_or(DEFAULT_GC_TOLERANCE * 100.0),
                     dry_run,
                     no_repack: false,
+                    hook_args: HookArgs::default(),
                 };
                 commands::cmd_clean::run_with_repo(json_output, &gc_args, repo, lock_handle)
                     .await
@@ -304,7 +315,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), ForgetE
     };
     if !dry_run {
         // Run post-hook: warning on failure, always continues
-        hooks::run_post(hooks::forget(), "forget", &global_args.repo, &result_str).await;
+        hooks::run_post(
+            hooks::command_hooks(),
+            "forget",
+            &global_args.repo,
+            &result_str,
+            args.hook_args.post_hook.as_deref(),
+        )
+        .await;
     }
 
     repo_result

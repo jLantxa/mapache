@@ -185,6 +185,17 @@ pub struct HooksConfig {
 }
 
 impl HooksConfig {
+    pub(crate) fn get_command(&self, name: &str) -> Option<CommandHooks> {
+        match name {
+            "snapshot" => self.snapshot.clone(),
+            "restore" => self.restore.clone(),
+            "forget" => self.forget.clone(),
+            "clean" => self.clean.clone(),
+            "verify" => self.verify.clone(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn template() -> Self {
         Self {
             snapshot: Some(CommandHooks {

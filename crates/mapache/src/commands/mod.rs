@@ -36,7 +36,7 @@ pub(crate) use error::ToExitCode;
 use std::{collections::BTreeSet, env, path::PathBuf, str::FromStr, sync::Arc};
 
 use chrono::Duration;
-use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize, Serializer};
 use zeroize::Zeroizing;
 
@@ -249,6 +249,20 @@ impl CliGlobalArgs {
             no_lock: Some(false),
         }
     }
+}
+
+/// CLI flags for overriding hooks. Flattened into each command's CmdArgs.
+#[derive(Args, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HookArgs {
+    /// Shell command to run before the main command (overrides TOML pre-hook)
+    #[clap(long = "pre-hook")]
+    #[serde(skip)]
+    pub pre_hook: Option<String>,
+
+    /// Shell command to run after the main command (overrides TOML post-hook)
+    #[clap(long = "post-hook")]
+    #[serde(skip)]
+    pub post_hook: Option<String>,
 }
 
 impl Merge for CliGlobalArgs {
@@ -601,8 +615,18 @@ pub async fn parse_and_run() -> i32 {
     // Initialize runtime defaults from config
     init_runtime_defaults(config.runtime.as_ref());
 
-    // Initialize hooks from config
-    hooks::init(config.hooks.clone().unwrap_or_default());
+    // Initialize hooks for the current command only
+    let command_name = match &args.command {
+        Command::Snapshot(_) => Some("snapshot"),
+        Command::Restore(_) => Some("restore"),
+        Command::Forget(_) => Some("forget"),
+        Command::Clean(_) => Some("clean"),
+        Command::Verify(_) => Some("verify"),
+        _ => None,
+    };
+    let cmd_hooks =
+        command_name.and_then(|name| config.hooks.as_ref().and_then(|h| h.get_command(name)));
+    hooks::init(cmd_hooks);
 
     let (global_result, command_result) = match args.command {
         // Commands without repository URL

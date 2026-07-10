@@ -14,8 +14,8 @@ use crate::{
     archiver::{self, SnapshotOptions, progress::SnapshotProcessSummary},
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
-        EMPTY_TAG_MARK, GlobalArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
-        find_use_snapshot, merge_opt, parse_tags, with_repository_lock,
+        EMPTY_TAG_MARK, GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot,
+        cleanup::CleanupHandler, find_use_snapshot, merge_opt, parse_tags, with_repository_lock,
     },
     common::{
         self, ContentIdType, ID, config,
@@ -155,6 +155,9 @@ pub struct CmdArgs {
     /// Requires --auth-file or MAPACHE_USERNAME/MAPACHE_PASSWORD env vars.
     #[clap(long, conflicts_with_all = &["paths", "exclude", "exclude_file", "parent", "as_root"])]
     pub stdin: bool,
+
+    #[clap(flatten)]
+    pub hook_args: HookArgs,
 }
 
 impl CmdArgs {
@@ -175,6 +178,7 @@ impl CmdArgs {
             dry_run: false,
             with_atime: Some(false),
             stdin: false,
+            hook_args: HookArgs::default(),
         }
     }
 }
@@ -353,7 +357,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Snapsho
 
             if !dry_run {
                 // Run pre-hook: abort command if it fails
-                hooks::run_pre(hooks::snapshot(), "snapshot", &global_args.repo).await?;
+                hooks::run_pre(
+                    hooks::command_hooks(),
+                    "snapshot",
+                    &global_args.repo,
+                    args.hook_args.pre_hook.as_deref(),
+                )
+                .await?;
             }
 
             let result = run_with_repo(
@@ -427,10 +437,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Snapsho
     if !dry_run {
         // Run post-hook: warning on failure, always continues
         hooks::run_post(
-            hooks::snapshot(),
+            hooks::command_hooks(),
             "snapshot",
             &global_args.repo,
             &result_str,
+            args.hook_args.post_hook.as_deref(),
         )
         .await;
     }

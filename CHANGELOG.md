@@ -4,10 +4,13 @@
 
 ### Added
 
-- **`hooks`**: Added pre/post hook support for `snapshot`, `restore`,  `forget`,
+- **`hooks`**: Added pre/post hook support for `snapshot`, `restore`, `forget`,
   `clean`, and `verify` commands. Hooks are configured in the TOML config file
   and receive `MAPACHE_COMMAND`, `MAPACHE_REPOSITORY`, and `MAPACHE_RESULT`
   environment variables. Optional timeout per hook. Skipped on `--dry-run`.
+  Supports `--pre-hook` and `--post-hook` CLI flags to override the
+  TOML-configured hooks for a single invocation. Only the hooks for the active
+  command are loaded into memory.
 
 ### Changed
 

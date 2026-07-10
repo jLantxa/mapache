@@ -128,6 +128,7 @@ async fn inner_test_mount(auto_mount: bool) -> Result<()> {
         dry_run: false,
         with_atime: None,
         stdin: false,
+        hook_args: Default::default(),
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await
@@ -249,6 +250,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         dry_run: false,
         with_atime: None,
         stdin: false,
+        hook_args: Default::default(),
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await
@@ -278,6 +280,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         dry_run: false,
         with_atime: None,
         stdin: false,
+        hook_args: Default::default(),
     };
     commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
         .await

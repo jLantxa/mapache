@@ -345,6 +345,7 @@ impl VerifyBuilder {
                 with_cache: false,
                 fail_early: false,
                 sample: None,
+                hook_args: Default::default(),
             },
         }
     }
@@ -422,6 +423,7 @@ impl SnapshotBuilder {
                 dry_run: false,
                 with_atime: None,
                 stdin: false,
+                hook_args: Default::default(),
             },
         }
     }
@@ -521,6 +523,7 @@ impl RestoreBuilder {
                 delete: Some(false),
                 no_preserve_root: Some(false),
                 batch_size: None,
+                hook_args: Default::default(),
             },
         }
     }
@@ -713,6 +716,7 @@ impl ForgetBuilder {
                 keep_tags: None,
                 hosts: Vec::new(),
                 keep_min: None,
+                hook_args: Default::default(),
             },
         }
     }
@@ -752,6 +756,7 @@ impl CleanBuilder {
                 tolerance: 0.0,
                 dry_run: false,
                 no_repack: false,
+                hook_args: Default::default(),
             },
         }
     }

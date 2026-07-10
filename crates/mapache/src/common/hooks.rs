@@ -5,49 +5,38 @@ use tokio::{process::Command, time::timeout};
 use crate::{
     common::error::{MapacheError, Result},
     common::{
-        config::{CommandHooks, HooksConfig},
+        config::CommandHooks,
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR},
     },
 };
 
-static HOOKS: OnceLock<HooksConfig> = OnceLock::new();
+static HOOKS: OnceLock<Option<CommandHooks>> = OnceLock::new();
 
-const DEFAULT_HOOKS: HooksConfig = HooksConfig {
-    snapshot: None,
-    restore: None,
-    forget: None,
-    clean: None,
-    verify: None,
-};
-
-pub(crate) fn init(hooks: HooksConfig) {
+pub(crate) fn init(hooks: Option<CommandHooks>) {
     let _ = HOOKS.set(hooks);
 }
 
-pub(crate) fn config() -> &'static HooksConfig {
-    HOOKS.get().unwrap_or(&DEFAULT_HOOKS)
+pub(crate) fn command_hooks() -> Option<&'static CommandHooks> {
+    HOOKS.get().and_then(|h| h.as_ref())
 }
-
-macro_rules! hook_accessor {
-    ($name:ident) => {
-        pub(crate) fn $name() -> Option<&'static CommandHooks> {
-            config().$name.as_ref()
-        }
-    };
-}
-
-hook_accessor!(snapshot);
-hook_accessor!(restore);
-hook_accessor!(forget);
-hook_accessor!(clean);
-hook_accessor!(verify);
 
 /// Run the pre-hook. Fails (aborts the command) if the hook exits non-zero.
+/// If `cli_hook` is provided and non-empty, it overrides the TOML pre-hook.
 pub(crate) async fn run_pre(
     cmd_hooks: Option<&CommandHooks>,
     command_name: &str,
     repo: &str,
+    cli_hook: Option<&str>,
 ) -> Result<()> {
+    // CLI override takes priority
+    if let Some(cmd) = cli_hook.filter(|s| !s.is_empty()) {
+        if let Err(e) = run_hook(cmd, command_name, repo, None, None).await {
+            tracing::error!(target: "hooks", "pre-hook failed: {e}");
+            return Err(e);
+        }
+        return Ok(());
+    }
+
     let Some(hook) = cmd_hooks.and_then(|h| h.pre.as_ref()) else {
         return Ok(());
     };
@@ -66,12 +55,22 @@ pub(crate) async fn run_pre(
 }
 
 /// Run the post-hook. Warnings are logged on failure.
+/// If `cli_hook` is provided and non-empty, it overrides the TOML post-hook.
 pub(crate) async fn run_post(
     cmd_hooks: Option<&CommandHooks>,
     command_name: &str,
     repo: &str,
     result: &str,
+    cli_hook: Option<&str>,
 ) {
+    // CLI override takes priority
+    if let Some(cmd) = cli_hook.filter(|s| !s.is_empty()) {
+        if let Err(e) = run_hook(cmd, command_name, repo, Some(result), None).await {
+            tracing::warn!(target: "hooks", "post-hook warning: {e}");
+        }
+        return;
+    }
+
     let Some(hook) = cmd_hooks.and_then(|h| h.post.as_ref()) else {
         return;
     };
@@ -246,24 +245,51 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_pre() {
-        assert!(run_pre(None, "cmd", "repo").await.is_ok());
-        assert!(run_pre(Some(&pre_hooks("")), "cmd", "repo").await.is_ok());
+        assert!(run_pre(None, "cmd", "repo", None).await.is_ok());
         assert!(
-            run_pre(Some(&pre_hooks("true")), "cmd", "repo")
+            run_pre(Some(&pre_hooks("")), "cmd", "repo", None)
                 .await
                 .is_ok()
         );
         assert!(
-            run_pre(Some(&pre_hooks("false")), "cmd", "repo")
+            run_pre(Some(&pre_hooks("true")), "cmd", "repo", None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            run_pre(Some(&pre_hooks("false")), "cmd", "repo", None)
                 .await
                 .is_err()
+        );
+        // CLI override takes priority over TOML
+        assert!(
+            run_pre(Some(&pre_hooks("false")), "cmd", "repo", Some("true"))
+                .await
+                .is_ok()
+        );
+        assert!(run_pre(None, "cmd", "repo", Some("false")).await.is_err());
+        // Empty CLI hook falls through to TOML
+        assert!(
+            run_pre(Some(&pre_hooks("true")), "cmd", "repo", Some(""))
+                .await
+                .is_ok()
         );
     }
 
     #[tokio::test]
     async fn test_run_post() {
-        run_post(None, "cmd", "repo", "success").await;
-        run_post(Some(&post_hooks("")), "cmd", "repo", "success").await;
-        run_post(Some(&post_hooks("false")), "cmd", "repo", "success").await;
+        run_post(None, "cmd", "repo", "success", None).await;
+        run_post(Some(&post_hooks("")), "cmd", "repo", "success", None).await;
+        run_post(Some(&post_hooks("false")), "cmd", "repo", "success", None).await;
+        // CLI override takes priority
+        run_post(
+            Some(&post_hooks("false")),
+            "cmd",
+            "repo",
+            "success",
+            Some("true"),
+        )
+        .await;
+        run_post(None, "cmd", "repo", "success", Some("false")).await;
     }
 }

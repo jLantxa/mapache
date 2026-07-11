@@ -20,16 +20,29 @@ use crate::{
     utils::size,
 };
 
+/// Describes the restore decision for a single node.
+#[derive(Debug, Clone)]
+pub(crate) enum RestorePlan {
+    /// The node should not be restored (already matches or strategy says skip).
+    Skip,
+    /// The node must be fully restored (all blobs).
+    FullRestore,
+    /// Only the listed blob indices differ from local content and need download.
+    /// All other blobs already match the local file.
+    SelectiveRestore { changed_blobs: Vec<usize> },
+}
+
 impl Restorer {
-    /// Checks if a node should be restored based on the current restoration strategy.
+    /// Decides how a node should be restored based on the current strategy and
+    /// (when `verify` is enabled) per-blob content matching.
     pub(crate) async fn should_restore_node(
         &self,
         node: &Node,
         restore_path: &Path,
         index: Arc<MasterIndex>,
-    ) -> Result<bool> {
+    ) -> Result<RestorePlan> {
         if !repo_fs::path_exists(restore_path).await {
-            return Ok(true);
+            return Ok(RestorePlan::FullRestore);
         }
 
         if node.is_file()
@@ -44,28 +57,30 @@ impl Restorer {
                     .times_match(local_mtime, node.metadata.modified_time);
 
                 if mtime_matches && !self.opts.verify {
-                    return Ok(false);
+                    return Ok(RestorePlan::Skip);
                 }
 
-                let content_matches = match self
-                    .verify_file_content(node, restore_path, index)
-                    .await
-                {
-                    Ok(matches) => matches,
+                match self.verify_file_content(node, restore_path, index).await {
+                    Ok(changed) if changed.is_empty() => return Ok(RestorePlan::Skip),
+                    Ok(changed) => {
+                        let total = node.blobs.as_ref().map_or(0, |b| b.len());
+                        if changed.len() >= total {
+                            return Ok(RestorePlan::FullRestore);
+                        }
+                        return Ok(RestorePlan::SelectiveRestore {
+                            changed_blobs: changed,
+                        });
+                    }
                     Err(e) => {
                         tracing::warn!(target: "restorer", "Could not verify file {:?}: {e}", restore_path);
-                        false
                     }
-                };
-                if content_matches {
-                    return Ok(false);
                 }
             }
         }
 
         match self.opts.strategy {
-            Strategy::Overwrite => Ok(true),
-            Strategy::Skip => Ok(false),
+            Strategy::Overwrite => Ok(RestorePlan::FullRestore),
+            Strategy::Skip => Ok(RestorePlan::Skip),
             Strategy::Newer => {
                 let local_metadata = fs::symlink_metadata(restore_path).map_err(|e| {
                     MapacheError::Internal(format!(
@@ -84,21 +99,21 @@ impl Restorer {
 
                     let local_size = local_metadata.len();
                     if local_mtime < repo_mtime {
-                        return Ok(true);
+                        return Ok(RestorePlan::FullRestore);
                     }
 
                     if local_mtime == repo_mtime && local_size != node.metadata.size {
-                        return Ok(true);
+                        return Ok(RestorePlan::FullRestore);
                     }
 
-                    return Ok(false);
+                    return Ok(RestorePlan::Skip);
                 }
 
-                Ok(true)
+                Ok(RestorePlan::FullRestore)
             }
             Strategy::Fail => {
                 if node.is_dir() {
-                    return Ok(true);
+                    return Ok(RestorePlan::FullRestore);
                 }
                 Err(MapacheError::Internal(format!(
                     "target {} exists already",
@@ -109,29 +124,33 @@ impl Restorer {
     }
 
     /// Verifies that the content of a local file matches the blobs in the repository.
+    /// Returns the list of blob indices whose content does NOT match the local file
+    /// (i.e. blobs that need to be re-downloaded and written).
+    /// An empty vector means the entire file content is identical.
     async fn verify_file_content(
         &self,
         node: &Node,
         local_path: &Path,
         index: Arc<MasterIndex>,
-    ) -> Result<bool> {
+    ) -> Result<Vec<usize>> {
         let blobs = match &node.blobs {
             Some(b) => b.clone(),
-            None => return Ok(true),
+            None => return Ok(Vec::new()),
         };
 
         let local_path = local_path.to_path_buf();
         spawn_blocking(move || {
             let file = File::open(&local_path)?;
             let mut offset = 0;
+            let mut changed = Vec::new();
 
             const VERIFY_BUFFER_SIZE: usize = size::MiB as usize;
             let mut buffer = vec![0u8; VERIFY_BUFFER_SIZE];
 
-            for blob_id in blobs {
+            for (idx, blob_id) in blobs.iter().enumerate() {
                 let locator = index
-                    .get_data(&blob_id)
-                    .ok_or(MapacheError::NotInIndex(blob_id))?;
+                    .get_data(blob_id)
+                    .ok_or(MapacheError::NotInIndex(*blob_id))?;
 
                 let mut hasher = hash::Hasher::new();
                 let mut remaining = locator.raw_length as u64;
@@ -168,12 +187,12 @@ impl Restorer {
                 }
 
                 let actual_id = hasher.finalize();
-                if actual_id != blob_id {
-                    return Ok(false);
+                if actual_id != *blob_id {
+                    changed.push(idx);
                 }
                 offset += locator.raw_length as u64;
             }
-            Ok(true)
+            Ok(changed)
         })
         .await
         .map_err(|e| MapacheError::Internal(format!("background task failed: {e}")))?
@@ -200,6 +219,8 @@ mod tests {
     use crate::repository::repo::{Auth, Repository};
     use crate::restorer::{RestoreOptions, Restorer, Strategy};
     use crate::ui::events::noop_sender;
+
+    use super::RestorePlan;
 
     fn auth() -> Auth {
         Auth {
@@ -271,9 +292,12 @@ mod tests {
             let path = PathBuf::from("/does/not/exist");
             let index = Arc::new(MasterIndex::new());
             assert!(
-                restorer
-                    .should_restore_node(&file_node(100), &path, index)
-                    .await?,
+                matches!(
+                    restorer
+                        .should_restore_node(&file_node(100), &path, index)
+                        .await?,
+                    RestorePlan::FullRestore
+                ),
                 "strategy {strategy:?} should restore missing paths"
             );
         }
@@ -286,11 +310,12 @@ mod tests {
         let path = tmp.path().join("existing.txt");
         std::fs::write(&path, "data")?;
         let index = Arc::new(MasterIndex::new());
-        assert!(
+        assert!(matches!(
             restorer
                 .should_restore_node(&file_node(999), &path, index)
-                .await?
-        );
+                .await?,
+            RestorePlan::FullRestore
+        ));
         Ok(())
     }
 
@@ -300,11 +325,12 @@ mod tests {
         let path = tmp.path().join("existing.txt");
         std::fs::write(&path, "data")?;
         let index = Arc::new(MasterIndex::new());
-        assert!(
-            !restorer
+        assert!(matches!(
+            restorer
                 .should_restore_node(&file_node(999), &path, index)
-                .await?
-        );
+                .await?,
+            RestorePlan::Skip
+        ));
         Ok(())
     }
 
@@ -329,11 +355,12 @@ mod tests {
         let path = tmp.path().join("existing_dir");
         std::fs::create_dir(&path)?;
         let index = Arc::new(MasterIndex::new());
-        assert!(
+        assert!(matches!(
             restorer
                 .should_restore_node(&dir_node(), &path, index)
-                .await?
-        );
+                .await?,
+            RestorePlan::FullRestore
+        ));
         Ok(())
     }
 
@@ -356,7 +383,10 @@ mod tests {
             ..Default::default()
         };
         let index = Arc::new(MasterIndex::new());
-        assert!(!restorer.should_restore_node(&node, &path, index).await?);
+        assert!(matches!(
+            restorer.should_restore_node(&node, &path, index).await?,
+            RestorePlan::Skip
+        ));
         Ok(())
     }
 }

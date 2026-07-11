@@ -76,7 +76,9 @@ pub(crate) async fn restore_packs(
     let handle_cache = Arc::new(ShardedFileHandleCache::new(defaults.restore_max_open_files));
 
     for (idx, file) in files.iter().enumerate() {
-        if file.num_blobs == 0 && !file.is_hardlink && !file.path.exists() || file.size == 0 {
+        if !file.is_selective
+            && (file.num_blobs == 0 && !file.is_hardlink && !file.path.exists() || file.size == 0)
+        {
             let mut cache_guard = handle_cache.get_shard(idx).lock();
             cache_guard.get_handle(idx, &file.path, file, &initialized[idx], restorer)?;
         }

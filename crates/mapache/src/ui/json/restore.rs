@@ -152,6 +152,16 @@ pub(crate) fn make_event_sender(
                     state.emit_status_update();
                 }
             }
+            RestoreEvent::BlobsSkipped { count, bytes } => {
+                #[derive(Serialize)]
+                struct BlobsSkippedMsg {
+                    count: u64,
+                    bytes: u64,
+                }
+                state
+                    .json_reporter
+                    .emit("blobs_skipped", &BlobsSkippedMsg { count, bytes });
+            }
             RestoreEvent::Warning(ref msg) => {
                 state.warning_counter.fetch_add(1, Ordering::Relaxed);
                 state

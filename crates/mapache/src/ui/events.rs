@@ -76,6 +76,8 @@ pub enum RestoreEvent {
     ItemProcessed(PathBuf),
     /// A number of bytes written.
     BytesProcessed(u64),
+    /// Blobs skipped because they already match local content (incremental restore).
+    BlobsSkipped { count: u64, bytes: u64 },
     /// Non-fatal warning.
     Warning(String),
     /// Recoverable error.

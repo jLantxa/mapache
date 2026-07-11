@@ -10,6 +10,8 @@ mod pack_restorer;
 mod planner;
 mod sync;
 
+pub(crate) use planner::RestorePlan;
+
 pub use sync::{SyncOpts, delete_nodes};
 
 #[cfg(not(unix))]
@@ -35,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common::{ID, defaults},
-    fs::tree::SerializedNodeStream,
+    fs::{node::Node, tree::SerializedNodeStream},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
     utils,
@@ -127,6 +129,9 @@ pub(crate) struct FileRestorePlan {
     pub(crate) num_blobs: u32,
     pub(crate) size: u64,
     pub(crate) is_hardlink: bool,
+    /// When true, the file was opened without truncation and only changed blobs
+    /// were written. Used by the incremental restorer (--verify).
+    pub(crate) is_selective: bool,
 }
 
 #[derive(Clone)]
@@ -205,27 +210,38 @@ impl FileHandleCache {
                 })?;
             }
 
-            let mut f = Self::open_file_for_restore(path, true).map_err(|e| {
-                MapacheError::Internal(format!(
-                    "failed to create/truncate file: {}: {e}",
-                    path.display()
-                ))
-            })?;
+            let f = if plan.is_selective {
+                // Selective restore: open without truncating so unchanged bytes are preserved.
+                Self::open_file_for_restore(path, false).map_err(|e| {
+                    MapacheError::Internal(format!(
+                        "failed to open file for selective restore: {}: {e}",
+                        path.display()
+                    ))
+                })?
+            } else {
+                let mut f = Self::open_file_for_restore(path, true).map_err(|e| {
+                    MapacheError::Internal(format!(
+                        "failed to create/truncate file: {}: {e}",
+                        path.display()
+                    ))
+                })?;
 
-            if plan.size > 0 {
-                if restorer.opts.preallocate {
-                    if let Err(e) = restorer.preallocate_file(&mut f, plan.size) {
-                        tracing::warn!(target: "restorer", "Failed to preallocate file {}: {e}", path.display());
+                if plan.size > 0 {
+                    if restorer.opts.preallocate {
+                        if let Err(e) = restorer.preallocate_file(&mut f, plan.size) {
+                            tracing::warn!(target: "restorer", "Failed to preallocate file {}: {e}", path.display());
+                        }
+                    } else {
+                        f.set_len(plan.size).map_err(|e| {
+                            MapacheError::Internal(format!(
+                                "failed to set length for sparse file: {}: {e}",
+                                path.display()
+                            ))
+                        })?;
                     }
-                } else {
-                    f.set_len(plan.size).map_err(|e| {
-                        MapacheError::Internal(format!(
-                            "failed to set length for sparse file: {}: {e}",
-                            path.display()
-                        ))
-                    })?;
                 }
-            }
+                f
+            };
 
             initialized.store(true, std::sync::atomic::Ordering::Release);
             f
@@ -604,13 +620,132 @@ impl Restorer {
 
             // File: check strategy, then add to accumulator
             if node.is_file() {
-                let should_restore = self
+                let restore_plan = self
                     .should_restore_node(&node, &restore_path, index.clone())
                     .await;
 
-                let skip_file = match should_restore {
-                    Ok(true) => false,
-                    Ok(false) => true,
+                match restore_plan {
+                    Ok(RestorePlan::Skip) => {
+                        if dry_run {
+                            emit_event(
+                                &self.event_sender,
+                                Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                            );
+                        }
+                        continue;
+                    }
+                    Ok(RestorePlan::SelectiveRestore { changed_blobs }) => {
+                        // Look up all blobs to compute offsets, but only add changed ones to pack map
+                        let mut file_blobs = Vec::new();
+                        if let Some(blobs) = &node.blobs {
+                            let mut offset_in_file = 0u64;
+                            for blob_id in blobs {
+                                match index.get_data(blob_id) {
+                                    Some(locator) => {
+                                        file_blobs.push((*blob_id, locator, offset_in_file));
+                                        offset_in_file += locator.raw_length as u64;
+                                    }
+                                    None => {
+                                        emit_event(
+                                            &self.event_sender,
+                                            Event::Restore(RestoreEvent::Error(format!(
+                                                "Blob {blob_id} not found in index"
+                                            ))),
+                                        );
+                                    }
+                                };
+                            }
+                        }
+
+                        // Emit BlobsSkipped event for incremental restore progress
+                        let total_blob_count = node.blobs.as_ref().map_or(0, |b| b.len());
+                        let skipped_count =
+                            (total_blob_count as u32).saturating_sub(changed_blobs.len() as u32);
+                        if skipped_count > 0 {
+                            let total_bytes: u64 = file_blobs
+                                .iter()
+                                .map(|(_, loc, _)| loc.raw_length as u64)
+                                .sum();
+                            let changed_bytes: u64 = changed_blobs
+                                .iter()
+                                .filter_map(|&idx| file_blobs.get(idx))
+                                .map(|(_, loc, _)| loc.raw_length as u64)
+                                .sum();
+                            emit_event(
+                                &self.event_sender,
+                                Event::Restore(RestoreEvent::BlobsSkipped {
+                                    count: skipped_count as u64,
+                                    bytes: total_bytes - changed_bytes,
+                                }),
+                            );
+                        }
+
+                        let file_idx = chunk_files.len();
+                        chunk_files.push(FileRestorePlan {
+                            path: restore_path.clone(),
+                            num_blobs: changed_blobs.len() as u32,
+                            size: node.metadata.size,
+                            is_hardlink: false,
+                            is_selective: true,
+                        });
+
+                        // Hardlink detection
+                        let is_hardlink_secondary = detect_hardlink(
+                            &node,
+                            &restore_path,
+                            &primary_hardlinks,
+                            &pending_hardlinks,
+                        );
+
+                        if is_hardlink_secondary {
+                            chunk_files[file_idx].is_hardlink = true;
+                        } else {
+                            for &blob_idx in &changed_blobs {
+                                if let Some((blob_id, locator, offset_in_file)) =
+                                    file_blobs.get(blob_idx)
+                                {
+                                    chunk_packs.entry(locator.pack_id).or_default().push((
+                                        *blob_id,
+                                        BlobRestoreRequest {
+                                            file_idx,
+                                            offset_in_file: *offset_in_file,
+                                            blob_offset: locator.offset,
+                                            blob_length: locator.length,
+                                            raw_length: locator.raw_length,
+                                        },
+                                    ));
+                                }
+                            }
+
+                            if let (Some(dev), Some(inode)) =
+                                (node.metadata.dev, node.metadata.inode)
+                                && node.metadata.nlink.unwrap_or(0) > 1
+                            {
+                                let node_blobs = node.blobs.as_deref().unwrap_or(&[]);
+                                let fingerprint = compute_blob_fingerprint(node_blobs);
+                                primary_hardlinks
+                                    .lock()
+                                    .entry((dev, inode))
+                                    .or_insert_with(|| (restore_path.clone(), fingerprint));
+                            }
+                        }
+
+                        // Flush if the chunk is full
+                        if chunk_files.len() >= batch_size {
+                            let chunk_files = Arc::new(std::mem::take(&mut chunk_files));
+                            let chunk_packs = Arc::new(std::mem::take(&mut chunk_packs));
+                            pack_restorer::restore_packs(
+                                self,
+                                chunk_files,
+                                chunk_packs,
+                                secure_storage.clone(),
+                                dry_run,
+                            )
+                            .await?;
+                        }
+                        continue;
+                    }
+                    Ok(RestorePlan::FullRestore) => { /* fall through to full restore below */ }
                     Err(e) => {
                         emit_event(
                             &self.event_sender,
@@ -623,21 +758,11 @@ impl Restorer {
                         if self.opts.quit_on_error {
                             return Err(MapacheError::Internal(format!("{e}")));
                         }
-                        true
+                        continue;
                     }
-                };
-
-                if skip_file {
-                    if dry_run {
-                        emit_event(
-                            &self.event_sender,
-                            Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
-                        );
-                    }
-                    continue;
                 }
 
-                // Look up blobs
+                // Full restore: look up all blobs
                 let mut file_blobs = Vec::new();
                 if let Some(blobs) = &node.blobs {
                     let mut offset_in_file = 0;
@@ -665,49 +790,29 @@ impl Restorer {
                     num_blobs: 0,
                     size: node.metadata.size,
                     is_hardlink: false,
+                    is_selective: false,
                 });
 
                 // Hardlink detection with content verification
-                let is_hardlink_secondary = {
-                    if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode) {
-                        let nlink = node.metadata.nlink;
-                        if nlink.unwrap_or(0) > 1 {
-                            let node_blobs = node.blobs.as_deref().unwrap_or(&[]);
-                            let fingerprint = compute_blob_fingerprint(node_blobs);
-                            let mut idx = primary_hardlinks.lock();
-                            if let Some((primary_path, primary_fp)) = idx.get(&(dev, inode)) {
-                                if *primary_fp == fingerprint {
-                                    pending_hardlinks
-                                        .lock()
-                                        .push((restore_path.clone(), primary_path.clone()));
-                                    drop(idx);
-                                    chunk_files[file_idx].is_hardlink = true;
-                                    true
-                                } else {
-                                    drop(idx);
-                                    emit_event(
-                                        &self.event_sender,
-                                        Event::Restore(RestoreEvent::Warning(format!(
-                                            "Hardlink content mismatch for {}: blob fingerprint differs from primary, restoring as separate file",
-                                            restore_path.display()
-                                        ))),
-                                    );
-                                    false
-                                }
-                            } else {
-                                idx.insert((dev, inode), (restore_path.clone(), fingerprint));
-                                drop(idx);
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                };
+                let is_hardlink_secondary =
+                    detect_hardlink(&node, &restore_path, &primary_hardlinks, &pending_hardlinks);
 
-                if !is_hardlink_secondary {
+                if is_hardlink_secondary {
+                    chunk_files[file_idx].is_hardlink = true;
+                    if !dry_run
+                        && let Some(parent) = restore_path.parent()
+                        && let Err(e) = fs::create_dir_all(parent)
+                    {
+                        emit_event(
+                            &self.event_sender,
+                            Event::Restore(RestoreEvent::Error(format!(
+                                "Failed to create parent for hardlink {}: {}",
+                                restore_path.display(),
+                                e
+                            ))),
+                        );
+                    }
+                } else {
                     let num_blobs = file_blobs.len().min(u32::MAX as usize) as u32;
                     for (blob_id, locator, offset_in_file) in &file_blobs {
                         chunk_packs.entry(locator.pack_id).or_default().push((
@@ -722,29 +827,6 @@ impl Restorer {
                         ));
                     }
                     chunk_files[file_idx].num_blobs = num_blobs;
-
-                    if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode)
-                        && node.metadata.nlink.unwrap_or(0) > 1
-                    {
-                        let node_blobs = node.blobs.as_deref().unwrap_or(&[]);
-                        let fingerprint = compute_blob_fingerprint(node_blobs);
-                        primary_hardlinks
-                            .lock()
-                            .entry((dev, inode))
-                            .or_insert_with(|| (restore_path.clone(), fingerprint));
-                    }
-                } else if !dry_run
-                    && let Some(parent) = restore_path.parent()
-                    && let Err(e) = fs::create_dir_all(parent)
-                {
-                    emit_event(
-                        &self.event_sender,
-                        Event::Restore(RestoreEvent::Error(format!(
-                            "Failed to create parent for hardlink {}: {}",
-                            restore_path.display(),
-                            e
-                        ))),
-                    );
                 }
 
                 // Flush if the chunk is full
@@ -914,4 +996,39 @@ fn compute_blob_fingerprint(blobs: &[ID]) -> [u8; 32] {
         hasher.update(&blob_id.0);
     }
     hasher.finalize().into()
+}
+
+/// Detects whether a file node is a hardlink secondary (already seen primary).
+/// Returns `true` if this is a secondary and registers the pending hardlink.
+fn detect_hardlink(
+    node: &Node,
+    restore_path: &Path,
+    primary_hardlinks: &PrimaryHardlinks,
+    pending_hardlinks: &Arc<Mutex<Vec<HardlinkByPath>>>,
+) -> bool {
+    if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode) {
+        let nlink = node.metadata.nlink;
+        if nlink.unwrap_or(0) > 1 {
+            let node_blobs = node.blobs.as_deref().unwrap_or(&[]);
+            let fingerprint = compute_blob_fingerprint(node_blobs);
+            let mut idx = primary_hardlinks.lock();
+            if let Some((primary_path, primary_fp)) = idx.get(&(dev, inode)) {
+                if *primary_fp == fingerprint {
+                    pending_hardlinks
+                        .lock()
+                        .push((restore_path.to_path_buf(), primary_path.clone()));
+                    drop(idx);
+                    return true;
+                } else {
+                    drop(idx);
+                    return false;
+                }
+            } else {
+                idx.insert((dev, inode), (restore_path.to_path_buf(), fingerprint));
+                drop(idx);
+                return false;
+            }
+        }
+    }
+    false
 }

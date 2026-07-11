@@ -913,4 +913,137 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_restore_incremental_skip_unchanged() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        let file_path = backup_path.join("file.txt");
+        std::fs::write(&file_path, "Original content")?;
+
+        ctx.init_repo().await?;
+
+        // Snapshot
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        // First restore (creates the file)
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
+
+        let restored_file = restore_path.join("file.txt");
+        assert_eq!(std::fs::read_to_string(&restored_file)?, "Original content");
+
+        // Second restore with --verify should skip (content unchanged)
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .verify(true)
+            .run(&ctx.global)
+            .await?;
+
+        assert_eq!(std::fs::read_to_string(&restored_file)?, "Original content");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_restore_incremental_partial_change() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        // Create a large file so it gets split into multiple blobs
+        let file_path = backup_path.join("large.bin");
+        let content_a = vec![0xAA_u8; 512 * 1024]; // 512 KiB
+        std::fs::write(&file_path, &content_a)?;
+
+        ctx.init_repo().await?;
+
+        // Snapshot A
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        // Restore to get the file locally
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .run(&ctx.global)
+            .await?;
+
+        let restored_file = restore_path.join("large.bin");
+        assert_eq!(std::fs::read(&restored_file)?, content_a);
+
+        // Modify only the first 16 bytes of the backup source
+        let mut content_b = content_a.clone();
+        content_b[..16].copy_from_slice(&[0xBB_u8; 16]);
+        std::fs::write(&file_path, &content_b)?;
+
+        // Snapshot B
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        // Restore with --verify should still produce correct content
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .verify(true)
+            .run(&ctx.global)
+            .await?;
+
+        assert_eq!(std::fs::read(&restored_file)?, content_b);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_restore_incremental_new_file() -> Result<()> {
+        let ctx = TestContext::new().await?;
+        let backup_path = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&backup_path)?;
+
+        let file_path = backup_path.join("new_file.txt");
+        std::fs::write(&file_path, "brand new content")?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        // Restore to a fresh target (file doesn't exist locally)
+        let restore_path = ctx._tmp_dir.path().join("restore_fresh");
+        ctx.restore_builder(restore_path.clone())
+            .strategy(Strategy::Overwrite)
+            .verify(true)
+            .run(&ctx.global)
+            .await?;
+
+        let restored_file = restore_path.join("new_file.txt");
+        assert!(restored_file.exists());
+        assert_eq!(
+            std::fs::read_to_string(&restored_file)?,
+            "brand new content"
+        );
+
+        Ok(())
+    }
 }

@@ -238,6 +238,9 @@ pub(crate) fn make_event_sender(
             RestoreEvent::BytesProcessed(bytes) => {
                 state.processed_bytes(bytes);
             }
+            RestoreEvent::BlobsSkipped { count: _, bytes } => {
+                state.processed_bytes(bytes);
+            }
             RestoreEvent::Warning(ref msg) => {
                 state.warning(msg);
             }

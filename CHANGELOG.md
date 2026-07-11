@@ -14,6 +14,11 @@
 
 ### Changed
 
+- **Incremental restore with `--verify`**: When `--verify` is used, the restorer
+  now checks each blob individually against the local file content. Only blobs
+  whose content has changed are downloaded and written; unchanged blobs are
+  skipped, preserving existing bytes on disk. This significantly speeds up
+  repeated restores of large files where only a fraction of the content changed.
 - **Restorer**: Ordered metadata restoration as chown, xattrs, chmod, mtime;
   batched file restoration with a streaming pass;verify hardlink content and
   fall back to copy on failure.

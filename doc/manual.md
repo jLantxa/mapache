@@ -254,7 +254,7 @@ Argon2id to produce wrapping keys that encrypt the master key.
 
 Mapache can read settings from a TOML configuration file specified via
 `--with-config <PATH>`. The file supports `[global]`, `[snapshot]`, `[restore]`,
-`[forget]`, and `[runtime]` sections.
+`[forget]`, `[runtime]`, and `[hooks]` sections.
 
 Generate the canonical template with:
 
@@ -309,6 +309,12 @@ blobs-per-index-file = 65535
 index-flush-timeout-secs = 600
 s3-multipart-threshold = 134217728
 s3-multipart-part-size = 134217728
+
+[hooks.snapshot.pre]
+command = "echo 'Starting snapshot'"
+
+[hooks.snapshot.post]
+command = "echo 'Snapshot finished: $MAPACHE_RESULT'"
 ```
 
 CLI flags override config file values. Config file values supplement CLI lists
@@ -704,7 +710,7 @@ be a snapshot ID prefix or `latest` (default).
 | `--no-preserve-root` | Allow `--delete` to remove root-level items |
 | `--quit-on-error` | Exit immediately on the first restore error |
 | `--sparse` | Create sparse files instead of preallocating |
-| `--verify` | Force content verification (hash check) even if mtime matches |
+| `--verify` | Verify content by hashing each blob and skip unchanged data (incremental restore) |
 | `--batch-size <N>` | Max files per batch. Limits peak memory. Default: no limit (all files at once) |
 | `--dry-run` | Simulate restoration |
 
@@ -759,6 +765,12 @@ on some filesystems but may cause fragmentation.
 By default, mapache skips content verification for files whose modification
 time matches the snapshot (optimization). Use `--verify` to force reading and
 hashing every restored file.
+
+When `--verify` is active, the restorer performs **incremental restore**: each
+blob is individually compared against the local file content. Only blobs whose
+hash differs from the on-disk data are downloaded and written; unchanged blobs
+are skipped. This significantly speeds up repeated restores of large files
+where only a small fraction of the content changed.
 
 ### Dry Run
 
@@ -1312,6 +1324,8 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `--limit-upload <SPEED>` | Upload bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
 | `--limit-download <SPEED>` | Download bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
 | `--json` | Output results in JSON format (supported by most commands) |
+| `--pre-hook <CMD>` | Shell command to run before the main command (overrides TOML config) |
+| `--post-hook <CMD>` | Shell command to run after the main command (overrides TOML config) |
 
 ### Compression Levels
 
@@ -1380,6 +1394,8 @@ mapache snapshot [PATHS...] -r <URL>
   --dry-run               Simulate without making changes
   --stdin                 Read data from stdin as file /stdin
   --with-atime            Store file access times
+  --pre-hook <CMD>        Shell command to run before snapshot (overrides config)
+  --post-hook <CMD>       Shell command to run after snapshot (overrides config)
 ```
 
 ### `mapache restore`
@@ -1399,8 +1415,10 @@ mapache restore [SNAPSHOT] --target <PATH> -r <URL>
   --no-preserve-root      Allow --delete at root level
   --quit-on-error         Exit immediately on restore error
   --sparse                Create sparse files
-  --verify                Force content verification
+  --verify                Verify content by hashing each blob (incremental restore)
   --batch-size <N>        Max files per batch (limits memory; default: no limit)
+  --pre-hook <CMD>        Shell command to run before restore (overrides config)
+  --post-hook <CMD>       Shell command to run after restore (overrides config)
   --dry-run               Simulate restoration
 ```
 
@@ -1425,6 +1443,8 @@ mapache forget [SNAPSHOT_IDS...] -r <URL>
   --dry-run               Show what would be removed
   --clean                 Run garbage collector after
   -t, --tolerance <%>     GC garbage tolerance (0–100)
+  --pre-hook <CMD>        Shell command to run before forget (overrides config)
+  --post-hook <CMD>       Shell command to run after forget (overrides config)
 ```
 
 ### `mapache log`
@@ -1498,6 +1518,8 @@ mapache clean -r <URL>
   -t, --tolerance <%>     Garbage tolerance (0–100, default: 0)
   --no-repack             Skip repacking
   --dry-run               Simulate without making changes
+  --pre-hook <CMD>        Shell command to run before clean (overrides config)
+  --post-hook <CMD>       Shell command to run after clean (overrides config)
 ```
 
 ### `mapache verify`
@@ -1511,6 +1533,8 @@ mapache verify -r <URL>
   --with-cache            Use local cache (disabled by default)
   --fail-early            Stop on first error
   --sample <%>            Verify random sample of packs (e.g., 10.5%)
+  --pre-hook <CMD>        Shell command to run before verify (overrides config)
+  --post-hook <CMD>       Shell command to run after verify (overrides config)
 ```
 
 ### `mapache key`

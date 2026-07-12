@@ -403,4 +403,148 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn cli_hook_override() -> Result<()> {
+        let harness = HookTest::new().await?;
+        let backup_dir = harness.ctx.backup_data_path.clone().unwrap();
+        let path_0 = &backup_dir.join("0").to_string_lossy().to_string();
+        let path_file = &backup_dir.join("file.txt").to_string_lossy().to_string();
+
+        // --pre-hook on CLI overrides TOML pre-hook
+        let toml_marker = harness.marker("override_toml");
+        let cli_marker = harness.marker("override_cli");
+        harness.write_config(&format!(
+            "[hooks.snapshot.pre]\ncommand = \"touch {}\"\n",
+            toml_marker.display()
+        ));
+        let bin = env!("CARGO_BIN_EXE_mapache");
+        let output = std::process::Command::new(bin)
+            .arg("--with-config")
+            .arg(harness.config_path())
+            .arg("snapshot")
+            .arg("--pre-hook")
+            .arg(format!("touch {}", cli_marker.display()))
+            .arg("--quiet")
+            .arg("--repo")
+            .arg(&harness.ctx.repo_path)
+            .arg("--auth-file")
+            .arg(&harness.ctx.auth_file_path)
+            .arg(path_0)
+            .arg(path_file)
+            .arg("--no-cache")
+            .output()?;
+        assert!(output.status.success());
+        assert!(cli_marker.exists(), "CLI pre-hook should run");
+        assert!(
+            !toml_marker.exists(),
+            "TOML pre-hook should NOT run when CLI overrides"
+        );
+
+        // --post-hook on CLI overrides TOML post-hook
+        let toml_post = harness.marker("override_toml_post");
+        let cli_post = harness.marker("override_cli_post");
+        harness.write_config(&format!(
+            "[hooks.snapshot.post]\ncommand = \"touch {}\"\n",
+            toml_post.display()
+        ));
+        let output = std::process::Command::new(bin)
+            .arg("--with-config")
+            .arg(harness.config_path())
+            .arg("snapshot")
+            .arg("--post-hook")
+            .arg(format!("touch {}", cli_post.display()))
+            .arg("--quiet")
+            .arg("--repo")
+            .arg(&harness.ctx.repo_path)
+            .arg("--auth-file")
+            .arg(&harness.ctx.auth_file_path)
+            .arg(path_0)
+            .arg(path_file)
+            .arg("--no-cache")
+            .output()?;
+        assert!(output.status.success());
+        assert!(cli_post.exists(), "CLI post-hook should run");
+        assert!(
+            !toml_post.exists(),
+            "TOML post-hook should NOT run when CLI overrides"
+        );
+
+        // --pre-hook without TOML config works standalone
+        let standalone = harness.marker("standalone_cli");
+        harness.write_config("");
+        let output = std::process::Command::new(bin)
+            .arg("--with-config")
+            .arg(harness.config_path())
+            .arg("snapshot")
+            .arg("--pre-hook")
+            .arg(format!("touch {}", standalone.display()))
+            .arg("--quiet")
+            .arg("--repo")
+            .arg(&harness.ctx.repo_path)
+            .arg("--auth-file")
+            .arg(&harness.ctx.auth_file_path)
+            .arg(path_0)
+            .arg(path_file)
+            .arg("--no-cache")
+            .output()?;
+        assert!(output.status.success());
+        assert!(standalone.exists(), "CLI-only pre-hook should run");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn post_hook_failure_is_non_fatal() -> Result<()> {
+        let harness = HookTest::new().await?;
+        let backup_dir = harness.ctx.backup_data_path.clone().unwrap();
+        let path_0 = &backup_dir.join("0").to_string_lossy().to_string();
+        let path_file = &backup_dir.join("file.txt").to_string_lossy().to_string();
+
+        // post-hook fails but command still succeeds
+        harness.write_config("[hooks.snapshot.post]\ncommand = \"false\"\n");
+        assert!(
+            harness
+                .run(&["snapshot", path_0, path_file])?
+                .status
+                .success(),
+            "command should succeed even when post-hook fails"
+        );
+
+        // pre-hook fails → command aborted (for contrast)
+        harness.write_config("[hooks.snapshot.pre]\ncommand = \"false\"\n");
+        assert!(
+            !harness
+                .run(&["snapshot", path_0, path_file])?
+                .status
+                .success(),
+            "command should fail when pre-hook fails"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn post_hook_receives_error_message() -> Result<()> {
+        let harness = HookTest::new().await?;
+
+        // Force a command failure: forget with non-existent snapshot ID
+        let result_file = harness.marker("error_result");
+        harness.write_config(&format!(
+            "[hooks.forget.post]\ncommand = \"echo \\\"$MAPACHE_RESULT\\\" > {}\"\n",
+            result_file.display()
+        ));
+        let output = harness.run(&["forget", "--force", "deadbeef0000"])?;
+        assert!(!output.status.success());
+
+        let content = std::fs::read_to_string(&result_file)?;
+        let trimmed = content.trim();
+        assert_ne!(trimmed, "success", "should contain error, not success");
+        assert!(
+            !trimmed.is_empty(),
+            "MAPACHE_RESULT should have an error message"
+        );
+
+        Ok(())
+    }
 }

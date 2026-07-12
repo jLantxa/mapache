@@ -292,4 +292,49 @@ mod tests {
         .await;
         run_post(None, "cmd", "repo", "success", Some("false")).await;
     }
+
+    #[tokio::test]
+    async fn test_run_post_timeout() {
+        assert!(
+            run_hook(
+                "sleep 5",
+                "cmd",
+                "repo",
+                Some("success"),
+                Some(Duration::from_millis(100)),
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sensitive_env_stripped() {
+        // Set sensitive env vars in the current process; the hook should NOT
+        // see them because run_hook strips MAPACHE_USERNAME and MAPACHE_PASSWORD.
+        // SAFETY: single-threaded test, no concurrent env access.
+        unsafe {
+            std::env::set_var(USERNAME_ENVVAR, "secret_user");
+            std::env::set_var(PASSWORD_ENVVAR, "secret_pass");
+        }
+
+        // Hook succeeds if neither sensitive var is set.
+        assert!(
+            run_hook(
+                r#"test -z "${MAPACHE_USERNAME-}" && test -z "${MAPACHE_PASSWORD-}" "#,
+                "cmd",
+                "repo",
+                None,
+                None,
+            )
+            .await
+            .is_ok()
+        );
+
+        // SAFETY: single-threaded test, no concurrent env access.
+        unsafe {
+            std::env::remove_var(USERNAME_ENVVAR);
+            std::env::remove_var(PASSWORD_ENVVAR);
+        }
+    }
 }

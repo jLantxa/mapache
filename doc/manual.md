@@ -375,6 +375,18 @@ Each hook can specify:
 Hooks can be configured for: `snapshot`, `restore`, `forget`, `clean`, and
 `verify`.
 
+### CLI Override
+
+The `--pre-hook` and `--post-hook` flags can be passed on the command line to
+override the TOML-configured hook for a single invocation. An empty string
+falls through to the TOML hook. When a CLI override is used, the `timeout`
+from the TOML config is **not** applied.
+
+```bash
+mapache snapshot /data --pre-hook "echo starting"
+mapache snapshot /data --post-hook ""   # falls through to TOML hook
+```
+
 ### Environment Variables
 
 The following variables are passed to every hook script:
@@ -384,6 +396,21 @@ The following variables are passed to every hook script:
 | `MAPACHE_COMMAND` | The mapache command being run (e.g. `snapshot`, `restore`) |
 | `MAPACHE_REPOSITORY` | The repository URL |
 | `MAPACHE_RESULT` | (Post hooks only) `"success"` or the error message if the command failed |
+
+For security, the `MAPACHE_USERNAME` and `MAPACHE_PASSWORD` environment
+variables are **stripped** from the hook environment and are never accessible
+to hook scripts.
+
+### Timeout
+
+When a timeout is configured and the hook exceeds it, the child process is
+killed immediately. For **pre hooks**, this is treated as a failure and the
+command is aborted. For **post hooks**, the timeout is only logged as a warning
+and does not affect the command result.
+
+### Shell Execution
+
+Hook commands are executed via `sh -c` on Unix and `cmd /C` on Windows.
 
 ### Dry Run
 
@@ -639,6 +666,8 @@ Using `--dry-run` shows what would be backed up without writing any data:
 mapache snapshot ~/Documents --dry-run -r /backup/myrepo
 ```
 
+Hooks are also skipped during dry runs (see [Hooks](#6-hooks)).
+
 ### Stdin Backup
 
 Use `--stdin` to back up data from a pipe or redirected file as a single
@@ -779,7 +808,8 @@ mapache restore --target /tmp/restore --dry-run
 ```
 
 Simulates the full restore process (including conflict detection, path
-filtering, and deletion) without touching the filesystem.
+filtering, and deletion) without touching the filesystem. Hooks are also
+skipped (see [Hooks](#6-hooks)).
 
 ### Restore Output
 
@@ -969,6 +999,7 @@ mapache forget --keep-daily 7 --dry-run
 ```
 
 Shows which snapshots would be kept and removed without making changes.
+Hooks are also skipped during dry runs (see [Hooks](#6-hooks)).
 
 ---
 
@@ -1000,6 +1031,8 @@ The garbage collector:
 The garbage collector can be safely interrupted with SIGINT/SIGTERM (Ctrl+C).
 The shutdown signal is checked at safe checkpoints between GC phases, so no
 data corruption occurs. This also applies to `forget --clean`.
+
+Hooks are skipped when running with `--dry-run` (see [Hooks](#6-hooks)).
 
 ---
 

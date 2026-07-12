@@ -358,6 +358,14 @@ impl Metadata {
             _ => false,
         }
     }
+
+    /// Exact timestamp comparison with no tolerance. Used by the archiver to
+    /// detect file changes that must trigger re-chunking, where even small
+    /// mtime differences indicate the content may have changed.
+    #[inline]
+    pub fn times_match_exact(t1: Option<SystemTime>, t2: Option<SystemTime>) -> bool {
+        t1 == t2
+    }
 }
 
 impl Node {
@@ -644,8 +652,8 @@ impl Node {
         let other_meta = &other.metadata;
 
         this_meta.size != other_meta.size
-            || !this_meta.times_match(this_meta.modified_time, other_meta.modified_time)
-            || !other_meta.times_match(this_meta.created_time, other_meta.created_time)
+            || !Metadata::times_match_exact(this_meta.modified_time, other_meta.modified_time)
+            || !Metadata::times_match_exact(this_meta.created_time, other_meta.created_time)
             || this_meta.inode != other_meta.inode
     }
 }

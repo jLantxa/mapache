@@ -521,9 +521,8 @@ dependencies = [
 
 [[package]]
 name = "chunker"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
- "anyhow",
  "blake3",
  "rand 0.10.2",
  "rstest",

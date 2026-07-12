@@ -22,9 +22,7 @@
 //! The masks are randomly generated to distribute the 'one' bits evenly between
 //! bits 0..48.
 
-use std::io::Read;
-
-use anyhow::{Result, anyhow};
+use std::io::{self, Read};
 
 use crate::lookup::{GEAR, GEAR_LS, MASKS};
 
@@ -32,6 +30,38 @@ mod lookup;
 
 #[cfg(test)]
 mod tests;
+
+/// Errors that can occur during chunking.
+#[derive(Debug)]
+pub enum ChunkerError {
+    /// An I/O error occurred while reading from the source.
+    Io(io::Error),
+}
+
+impl std::fmt::Display for ChunkerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChunkerError::Io(e) => write!(f, "I/O error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ChunkerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ChunkerError::Io(e) => Some(e),
+        }
+    }
+}
+
+impl From<io::Error> for ChunkerError {
+    fn from(e: io::Error) -> Self {
+        ChunkerError::Io(e)
+    }
+}
+
+/// A `Result` type alias using [`ChunkerError`].
+pub type Result<T> = std::result::Result<T, ChunkerError>;
 
 /// The absolute minimum chunk size in bytes (64 B).
 pub const TOTAL_MIN_SIZE: usize = 64;
@@ -329,7 +359,7 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
                     continue;
                 }
                 Err(e) => {
-                    return Some(Err(anyhow!("Read error: {e}")));
+                    return Some(Err(ChunkerError::Io(e)));
                 }
             }
         }

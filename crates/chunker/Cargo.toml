@@ -1,6 +1,6 @@
 [package]
 name = "chunker"
-version = "0.2.4"
+version = "0.2.5"
 publish = false
 edition = "2024"
 description = "FastCDC (Fast Content-Defined Chunking) implementation"
@@ -15,7 +15,6 @@ name = "chunker-lookup"
 path = "src/bin/lookup_gen.rs"
 
 [dependencies]
-anyhow = "1.0.103"
 blake3 = "1.8.5"
 rand = "0.10.2"
 

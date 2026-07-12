@@ -1,10 +1,9 @@
 use std::io::Cursor;
 
-use anyhow::{Result, anyhow};
 use rand::Rng;
 use rstest::rstest;
 
-use crate::{Chunker, Normalization, lookup::MASKS};
+use crate::{Chunker, Normalization, Result, lookup::MASKS};
 
 #[allow(non_upper_case_globals)]
 const kiB: usize = 1024;
@@ -33,10 +32,8 @@ fn chunk_and_analyze(chunker: &Chunker, data: &[u8]) -> Result<f64> {
         total_bytes += chunk.length;
     }
 
+    assert!(!chunk_lengths.is_empty(), "chunking produced no chunks");
     let count = chunk_lengths.len();
-    if count == 0 {
-        return Err(anyhow!("Chunking produced no chunks."));
-    }
 
     let mean = total_bytes as f64 / count as f64;
 

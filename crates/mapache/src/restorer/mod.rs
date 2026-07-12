@@ -626,6 +626,16 @@ impl Restorer {
 
                 match restore_plan {
                     Ok(RestorePlan::Skip) => {
+                        let total_blob_count = node.blobs.as_ref().map_or(0, |b| b.len());
+                        if total_blob_count > 0 || node.metadata.size > 0 {
+                            emit_event(
+                                &self.event_sender,
+                                Event::Restore(RestoreEvent::BlobsSkipped {
+                                    count: total_blob_count as u64,
+                                    bytes: node.metadata.size,
+                                }),
+                            );
+                        }
                         if dry_run {
                             emit_event(
                                 &self.event_sender,

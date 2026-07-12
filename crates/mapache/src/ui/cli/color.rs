@@ -367,6 +367,9 @@ impl Colorize for Styled {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static COLOR_MUTEX: Mutex<()> = Mutex::new(());
 
     fn with_color() {
         set_color_override(true);
@@ -378,18 +381,21 @@ mod tests {
 
     #[test]
     fn bold_wraps_in_ansi() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         assert_eq!("\x1b[1mhello\x1b[0m", "hello".bold().to_string());
     }
 
     #[test]
     fn red_wraps_in_ansi() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         assert_eq!("\x1b[31mhello\x1b[0m", "hello".red().to_string());
     }
 
     #[test]
     fn chaining_combines_codes() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         let s = "hello".red().bold();
         let out = s.to_string();
@@ -401,6 +407,7 @@ mod tests {
 
     #[test]
     fn normal_strips_styles() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         let s = "hello".red().bold().normal();
         assert_eq!("hello", s.to_string());
@@ -408,6 +415,7 @@ mod tests {
 
     #[test]
     fn colors_disabled_returns_plain_text() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         without_color();
         assert_eq!("hello", "hello".red().to_string());
         assert_eq!("hello", "hello".bold().to_string());
@@ -416,6 +424,7 @@ mod tests {
 
     #[test]
     fn colorize_works_on_string() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         let s = String::from("test").cyan();
         assert_eq!("\x1b[36mtest\x1b[0m", s.to_string());
@@ -423,6 +432,7 @@ mod tests {
 
     #[test]
     fn styled_chaining() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         let s = "hello".red().bold().italic();
         let out = s.to_string();
@@ -433,6 +443,7 @@ mod tests {
 
     #[test]
     fn normal_on_styled_strips_all() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         let s = "hello".red().bold();
         assert_eq!("hello", s.normal().to_string());
@@ -440,12 +451,14 @@ mod tests {
 
     #[test]
     fn empty_string() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         assert_eq!("\x1b[31m\x1b[0m", "".red().to_string());
     }
 
     #[test]
     fn display_and_to_string_match() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         let s = "display test".yellow();
         assert_eq!(s.to_string(), format!("{s}"));
@@ -453,6 +466,7 @@ mod tests {
 
     #[test]
     fn all_codes_have_distinct_output() {
+        let _lock = COLOR_MUTEX.lock().unwrap();
         with_color();
         let inputs = ["red", "green", "blue", "bold", "italic"];
         for text in &inputs {

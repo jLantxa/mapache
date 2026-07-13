@@ -24,14 +24,6 @@ RUN dnf update -y && \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN rustup target add x86_64-unknown-linux-musl \
-    aarch64-unknown-linux-musl \
-    armv7-unknown-linux-musleabihf \
-    aarch64-linux-android \
-    x86_64-pc-windows-msvc \
-    x86_64-apple-darwin \
-    aarch64-apple-darwin
-
 RUN cargo install cargo-xwin cargo-zigbuild
 
 # Pre-download Windows CRT/SDK (so builds don't fetch at runtime)
@@ -94,6 +86,9 @@ ENV CARGO_PROFILE_RELEASE_LTO="true"
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
 
 COPY build-target.sh /build-target.sh
+COPY targets /targets
+
+RUN for t in $(awk '!/^#|^$/{print $1}' /targets); do rustup target add "$t"; done
 
 WORKDIR /mapache
 CMD ["/bin/bash"]

@@ -2,7 +2,7 @@
 name = "mapache"
 version = "0.5.2"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.91.1"
 description = "Fast, secure, deduplicating, incremental backup tool"
 license = "GPL-3.0-only"
 repository.workspace = true

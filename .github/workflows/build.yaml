@@ -304,40 +304,42 @@ jobs:
         run: |
           cd dist
           safe_ref="${{ needs.setup.outputs.safe_ref }}"
-          ls -la
 
-          # Each artifact dir is named mapache-{platform}-{arch}
+          # Collect raw binaries and compute checksums before compressing
+          : > checksums.txt
           for dir in mapache-*; do
             [ -d "$dir" ] || continue
             binary=$(find "$dir" -type f | head -1)
             [ -z "$binary" ] && continue
 
             rest="${dir#mapache-}"
-
-            # Detect .exe from the actual binary, not the dir name
+            platform="${rest%-*}"
+            arch="${rest##*-}"
             ext=""
             case "$binary" in
               *.exe) ext=".exe" ;;
             esac
 
-            platform="${rest%-*}"
-            arch="${rest##*-}"
-
-            mv "$binary" "mapache${ext}"
-
-            case "$platform" in
-              windows|darwin)
-                zip -m "mapache_${safe_ref}_${platform}_${arch}.zip" "mapache${ext}"
-                ;;
-              *)
-                tar -cJf "mapache_${safe_ref}_${platform}_${arch}.tar.xz" "mapache${ext}"
-                rm "mapache${ext}"
-                ;;
-            esac
-
+            name="mapache_${safe_ref}_${platform}_${arch}${ext}"
+            mv "$binary" "$name"
+            sha256sum "$name" >> checksums.txt
             rm -rf "$dir"
           done
 
+          echo "Checksums:"
+          cat checksums.txt
+
+          # Compress
+          for f in mapache_*; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.exe)          zip -m "${f%.exe}.zip" "$f" ;;
+              *darwin*|*windows*) zip -m "${f}.zip" "$f" ;;
+              *)              tar -cJf "${f}.tar.xz" "$f" && rm "$f" ;;
+            esac
+          done
+
+          echo ""
           echo "Packaged artifacts:"
           ls -la
 

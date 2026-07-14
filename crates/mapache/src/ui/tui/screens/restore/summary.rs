@@ -17,7 +17,7 @@ pub fn render_summary(
     state: &TaskProgressState,
     result: &Option<Option<String>>,
 ) {
-    let inner = area.inner(ratatui::layout::Margin::new(2, 1));
+    let inner = area.inner(theme::CONTENT_MARGIN);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(10), Constraint::Length(1)])

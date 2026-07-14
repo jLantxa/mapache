@@ -140,7 +140,7 @@ impl StorageBackend for S3Backend {
                         )));
                     }
                     let size = head.content_length.unwrap_or(0) as u64;
-                    size.saturating_sub(offset.unsigned_abs() as u64)
+                    super::resolve_read_offset(size, offset)
                 } else {
                     offset as u64
                 };

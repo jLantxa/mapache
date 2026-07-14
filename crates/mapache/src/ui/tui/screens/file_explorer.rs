@@ -262,30 +262,17 @@ impl Screen for FileExplorerScreen {
         match key.code {
             KeyCode::Esc => Some(Transition::Pop),
             KeyCode::Char('q') => Some(Transition::Quit),
-            KeyCode::Up => {
-                self.list_state.previous(self.current_tree.nodes.len());
-                None
-            }
-            KeyCode::Down => {
-                self.list_state.next(self.current_tree.nodes.len());
-                None
-            }
-            KeyCode::PageDown | KeyCode::Char(' ') => {
+            KeyCode::Char(' ') => {
                 self.list_state
                     .page_next(self.current_tree.nodes.len(), self.last_height as usize);
                 None
             }
-            KeyCode::PageUp => {
-                self.list_state
-                    .page_previous(self.current_tree.nodes.len(), self.last_height as usize);
-                None
-            }
-            KeyCode::Home => {
-                self.list_state.home(self.current_tree.nodes.len());
-                None
-            }
-            KeyCode::End => {
-                self.list_state.end(self.current_tree.nodes.len());
+            key if self.list_state.handle_nav_keys(
+                key,
+                self.current_tree.nodes.len(),
+                self.last_height as usize,
+            ) =>
+            {
                 None
             }
             KeyCode::Enter | KeyCode::Right => {

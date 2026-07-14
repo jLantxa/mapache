@@ -53,7 +53,7 @@ pub async fn delete_nodes(
 
     while let Some(item_result) = tree_stream.next().await {
         if opts.shutdown_signal.load(Ordering::Acquire) {
-            return Err(MapacheError::Internal("interrupted".to_string()));
+            return Err(MapacheError::Interrupted);
         }
 
         let (path, snapshot_tree) = match item_result {

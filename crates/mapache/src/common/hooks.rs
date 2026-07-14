@@ -1,4 +1,4 @@
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 
 use tokio::{process::Command, time::timeout};
 
@@ -9,16 +9,6 @@ use crate::{
         vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR},
     },
 };
-
-static HOOKS: OnceLock<Option<CommandHooks>> = OnceLock::new();
-
-pub(crate) fn init(hooks: Option<CommandHooks>) {
-    let _ = HOOKS.set(hooks);
-}
-
-pub(crate) fn command_hooks() -> Option<&'static CommandHooks> {
-    HOOKS.get().and_then(|h| h.as_ref())
-}
 
 /// Run the pre-hook. Fails (aborts the command) if the hook exits non-zero.
 /// If `cli_hook` is provided and non-empty, it overrides the TOML pre-hook.
@@ -83,6 +73,39 @@ pub(crate) async fn run_post(
     if let Err(e) = run_hook(&hook.command, command_name, repo, Some(result), timeout).await {
         tracing::warn!(target: "hooks", "post-hook warning: {e}");
     }
+}
+
+/// Runs the pre-hook for a command, skipping in dry-run mode.
+pub(crate) async fn run_command_pre(
+    cmd_hooks: Option<&CommandHooks>,
+    command_name: &str,
+    repo: &str,
+    cli_hook: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
+    if !dry_run {
+        run_pre(cmd_hooks, command_name, repo, cli_hook).await?;
+    }
+    Ok(())
+}
+
+/// Runs the post-hook for a command, skipping in dry-run mode.
+pub(crate) async fn run_command_post<E: std::fmt::Display>(
+    cmd_hooks: Option<&CommandHooks>,
+    command_name: &str,
+    repo: &str,
+    result: &std::result::Result<(), E>,
+    cli_hook: Option<&str>,
+    dry_run: bool,
+) {
+    if dry_run {
+        return;
+    }
+    let result_str = match result {
+        Ok(()) => "success".to_string(),
+        Err(e) => format!("{e}"),
+    };
+    run_post(cmd_hooks, command_name, repo, &result_str, cli_hook).await;
 }
 
 async fn run_hook(

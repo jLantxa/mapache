@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::common::error::Result;
 use async_trait::async_trait;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -14,7 +13,7 @@ use ratatui::{
 
 use crate::{
     commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
-    common::{defaults::SHORT_SNAPSHOT_ID_LEN, global::THIS_MAPACHE_VERSION},
+    common::{defaults::SHORT_SNAPSHOT_ID_LEN, error::Result, global::THIS_MAPACHE_VERSION},
     repository::{
         lock::LockHandle,
         repo::Repository,
@@ -27,7 +26,7 @@ use crate::{
             snapshot::SnapshotCreateScreen, snapshot_detail::SnapshotDetailScreen,
         },
         theme,
-        widgets::{StateNavigation, TextInput, TextInputAction},
+        widgets::{FilterAction, StateNavigation, TextInput},
     },
     utils,
 };
@@ -212,15 +211,15 @@ impl DashboardScreen {
             return;
         };
 
-        match input.handle_key(key) {
-            TextInputAction::Cancel => {
+        match input.handle_filter_key(key) {
+            FilterAction::Cancel => {
                 self.filter = None;
                 self.apply_filter();
             }
-            TextInputAction::Confirm | TextInputAction::Edited => {
+            FilterAction::Apply => {
                 self.apply_filter();
             }
-            TextInputAction::None => {}
+            FilterAction::None => {}
         }
     }
 
@@ -497,21 +496,7 @@ impl DashboardScreen {
                     theme::THEME.footer,
                 ))
             } else {
-                let text = input.text();
-                let cursor = input.cursor();
-                let before: String = text.chars().take(cursor).collect();
-                let after: String = text.chars().skip(cursor).collect();
-                let mut spans = vec![Span::raw("> ")];
-                spans.push(Span::raw(before));
-                if after.is_empty() {
-                    spans.push(Span::styled(" ", Style::default().underlined()));
-                } else {
-                    let cursor_char: String = after.chars().take(1).collect();
-                    let rest: String = after.chars().skip(1).collect();
-                    spans.push(Span::styled(cursor_char, Style::default().underlined()));
-                    spans.push(Span::raw(rest));
-                }
-                Line::from(spans)
+                input.render_line("> ")
             };
             let filter_widget = Paragraph::new(filter_text).block(theme::block("Filter"));
             frame.render_widget(filter_widget, area);
@@ -581,7 +566,7 @@ impl DashboardScreen {
 impl Screen for DashboardScreen {
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let inner_content = area.inner(Margin::new(2, 1));
+        let inner_content = area.inner(theme::CONTENT_MARGIN);
 
         let diff_status_height: u16 = if self.diff_source.is_some() { 2 } else { 1 };
 
@@ -704,30 +689,12 @@ impl Screen for DashboardScreen {
                 self.filter = Some(TextInput::new());
                 None
             }
-            KeyCode::Down => {
-                self.table_state.next(self.display_len());
-                None
-            }
-            KeyCode::Up => {
-                self.table_state.previous(self.display_len());
-                None
-            }
-            KeyCode::PageDown => {
-                self.table_state
-                    .page_next(self.display_len(), self.last_height as usize);
-                None
-            }
-            KeyCode::PageUp => {
-                self.table_state
-                    .page_previous(self.display_len(), self.last_height as usize);
-                None
-            }
-            KeyCode::Home => {
-                self.table_state.home(self.display_len());
-                None
-            }
-            KeyCode::End => {
-                self.table_state.end(self.display_len());
+            key if self.table_state.handle_nav_keys(
+                key,
+                self.display_len(),
+                self.last_height as usize,
+            ) =>
+            {
                 None
             }
             KeyCode::Enter => {

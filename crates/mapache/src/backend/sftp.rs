@@ -516,7 +516,7 @@ impl SftpBackend {
 
     #[inline]
     fn full_path(&self, path: &Path) -> PathBuf {
-        self.base_path.join(path)
+        super::join_base_path(&self.base_path, path)
     }
 
     async fn exists_exact_full(sftp: &SftpSession, full_path: &Path) -> bool {
@@ -703,16 +703,13 @@ impl StorageBackend for SftpBackend {
                     ))
                 })?;
 
-            let real_offset = match offset {
-                o if o >= 0 => o as u64,
-                _ => file
-                    .metadata()
-                    .await
-                    .map_err(|e| MapacheError::Backend(e.to_string()))?
-                    .size
-                    .unwrap_or(0)
-                    .saturating_sub(offset.unsigned_abs() as u64),
-            };
+            let file_size = file
+                .metadata()
+                .await
+                .map_err(|e| MapacheError::Backend(e.to_string()))?
+                .size
+                .unwrap_or(0);
+            let real_offset = super::resolve_read_offset(file_size, offset);
             file.seek(std::io::SeekFrom::Start(real_offset)).await?;
 
             let mut contents = if length > 0 {
@@ -829,11 +826,11 @@ impl StorageBackend for SftpBackend {
                 }
                 let path = path.join(name);
                 let metadata = entry.metadata();
-                if metadata.is_file() {
-                    out.push(BackendNode::File(path, metadata.len()));
-                } else if metadata.is_dir() {
-                    out.push(BackendNode::Dir(path));
-                }
+                out.push(super::classify_backend_node(
+                    path,
+                    metadata.is_file(),
+                    metadata.len(),
+                ));
             }
 
             Ok(out)

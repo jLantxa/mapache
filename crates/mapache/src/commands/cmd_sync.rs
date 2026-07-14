@@ -24,7 +24,10 @@ use crate::{
     },
     repository::lock::{Lock, LockHandle},
     repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
-    ui::{self, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target},
+    ui::{
+        self, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target,
+        default_progress_style,
+    },
     utils::{self, rate_estimator::RateEstimator},
 };
 
@@ -322,7 +325,7 @@ async fn sync_backends(
             for (i, node) in to_delete.iter().enumerate() {
                 if shutdown_signal.load(Ordering::Acquire) {
                     tracing::info!(target: "sync", "Sync delete interrupted by user");
-                    return Err(MapacheError::Internal("interrupted".to_string()));
+                    return Err(MapacheError::Interrupted);
                 }
 
                 tracing::debug!(target: "sync", "Deleting {:?}", node.path());
@@ -353,16 +356,15 @@ async fn sync_backends(
                 default_bar_draw_target(),
             )
             .with_style(
-                ProgressStyle::default_bar()
+                default_progress_style()
                     .template("[{percent} %] [{bar:20.cyan/white}] Deleting files: {pos}/{len}")
-                    .expect("invalid progress bar template for sync delete")
-                    .progress_chars("=> "),
+                    .expect("invalid progress bar template for sync delete"),
             );
 
             for node in to_delete {
                 if shutdown_signal.load(Ordering::Acquire) {
                     tracing::info!(target: "sync", "Sync delete interrupted by user");
-                    return Err(MapacheError::Internal("interrupted".to_string()));
+                    return Err(MapacheError::Interrupted);
                 }
 
                 tracing::debug!(target: "sync", "Deleting {:?}", node.path());
@@ -393,7 +395,7 @@ async fn sync_backends(
                 async move {
                     if shutdown_signal.load(Ordering::Acquire) {
                         tracing::info!(target: "sync", "Sync copy interrupted by user");
-                        return Err(MapacheError::Internal("interrupted".to_string()));
+                        return Err(MapacheError::Interrupted);
                     }
 
                     match node {
@@ -443,12 +445,11 @@ async fn sync_backends(
             default_bar_draw_target(),
         )
         .with_style(
-            ProgressStyle::default_bar()
+            default_progress_style()
                 .template(
                     "[{percent} %] [{bar:20.cyan/white}] Copying files: {pos}/{len} [ETA: {custom_eta}]",
                 )
                 .expect("invalid progress bar template for sync copy")
-                .progress_chars("=> ")
                 .with_key(
                     "custom_eta",
                     {
@@ -480,7 +481,7 @@ async fn sync_backends(
                 async move {
                     if shutdown_signal.load(Ordering::Acquire) {
                         tracing::info!(target: "sync", "Sync copy interrupted by user");
-                        return Err(MapacheError::Internal("interrupted".to_string()));
+                        return Err(MapacheError::Interrupted);
                     }
 
                     match node {

@@ -18,7 +18,8 @@ use crate::{
         cleanup::CleanupHandler, find_use_snapshot, merge_opt, parse_tags, with_repository_lock,
     },
     common::{
-        self, ContentIdType, ID, config,
+        self, ContentIdType, ID,
+        config::{self, CommandHooks},
         defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
         error::MapacheError,
         hooks,
@@ -260,7 +261,11 @@ impl From<&CmdArgs> for SnapshotRunOptions {
     }
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), SnapshotError> {
+pub async fn run(
+    global_args: &GlobalArgs,
+    args: &CmdArgs,
+    cmd_hooks: Option<&CommandHooks>,
+) -> Result<(), SnapshotError> {
     tracing::info!(target: "snapshot", "Starting snapshot command");
 
     if args.stdin
@@ -355,16 +360,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Snapsho
                 snapshot::make_event_sender(None, None, num_readers)
             };
 
-            if !dry_run {
-                // Run pre-hook: abort command if it fails
-                hooks::run_pre(
-                    hooks::command_hooks(),
-                    "snapshot",
-                    &global_args.repo,
-                    args.hook_args.pre_hook.as_deref(),
-                )
-                .await?;
-            }
+            hooks::run_command_pre(
+                cmd_hooks,
+                "snapshot",
+                &global_args.repo,
+                args.hook_args.pre_hook.as_deref(),
+                dry_run,
+            )
+            .await?;
 
             let result = run_with_repo(
                 repo,
@@ -403,11 +406,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Snapsho
                     } else {
                         ui::cli::log!("");
                         show_cli_summary(completion, args.dry_run);
-                        let prefix = if args.dry_run {
-                            format!("{} ", "[DRY RUN]".bold().purple())
-                        } else {
-                            String::new()
-                        };
+                        let prefix = super::dry_run_prefix(args.dry_run);
                         ui::cli::log!(
                             "{}Processed {} in {}",
                             prefix,
@@ -430,21 +429,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Snapsho
     )
     .await;
 
-    let result_str = match &repo_result {
-        Ok(_) => "success".to_string(),
-        Err(e) => format!("{e}"),
-    };
-    if !dry_run {
-        // Run post-hook: warning on failure, always continues
-        hooks::run_post(
-            hooks::command_hooks(),
-            "snapshot",
-            &global_args.repo,
-            &result_str,
-            args.hook_args.post_hook.as_deref(),
-        )
-        .await;
-    }
+    hooks::run_command_post(
+        cmd_hooks,
+        "snapshot",
+        &global_args.repo,
+        &repo_result,
+        args.hook_args.post_hook.as_deref(),
+        dry_run,
+    )
+    .await;
 
     repo_result
 }

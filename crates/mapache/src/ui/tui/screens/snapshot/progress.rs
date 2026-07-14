@@ -120,7 +120,7 @@ pub enum ProgressAction {
 
 pub fn render_progress(frame: &mut Frame, state: &ProgressState) {
     let area = frame.area();
-    let inner = area.inner(ratatui::layout::Margin::new(2, 1));
+    let inner = area.inner(theme::CONTENT_MARGIN);
 
     let has_errors = state.has_errors();
     let error_height = if has_errors { 5 } else { 0 };

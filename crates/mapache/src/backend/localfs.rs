@@ -30,7 +30,7 @@ impl LocalFS {
 
     /// Helper to resolve a repository-relative path to an absolute path on disk.
     fn full_path(&self, path: &Path) -> PathBuf {
-        self.base_path.join(path)
+        super::join_base_path(&self.base_path, path)
     }
 
     #[inline(always)]
@@ -161,12 +161,7 @@ impl StorageBackend for LocalFS {
         })?;
         let file_size = metadata.len();
 
-        let start_position: u64 = if offset >= 0 {
-            offset as u64
-        } else {
-            let abs_offset = offset.unsigned_abs() as u64;
-            file_size.saturating_sub(abs_offset)
-        };
+        let start_position = super::resolve_read_offset(file_size, offset);
 
         file.seek(SeekFrom::Start(start_position))
             .await
@@ -362,11 +357,11 @@ impl StorageBackend for LocalFS {
                     MapacheError::Backend("found entry outside of repository base path".into())
                 })?;
 
-            if metadata.is_file() {
-                nodes.push(BackendNode::File(relative, metadata.len()));
-            } else if metadata.is_dir() {
-                nodes.push(BackendNode::Dir(relative));
-            }
+            nodes.push(super::classify_backend_node(
+                relative,
+                metadata.is_file(),
+                metadata.len(),
+            ));
         }
 
         Ok(nodes)

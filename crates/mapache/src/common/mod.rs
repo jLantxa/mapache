@@ -403,7 +403,7 @@ async fn run_rechunk_task(
         )
     })
     .await
-    .map_err(|e| MapacheError::Internal(format!("rechunk task panicked: {}", e)))??;
+    .map_err(|e| MapacheError::task_panicked("rechunk", e))??;
 
     Ok(res)
 }

@@ -529,6 +529,29 @@ pub fn set_readonly_mode(mode: u32, readonly: bool, is_dir: bool) -> u32 {
     }
 }
 
+/// Resolves a read offset: negative offsets count from the end of the file.
+pub fn resolve_read_offset(file_size: u64, offset: isize) -> u64 {
+    if offset >= 0 {
+        offset as u64
+    } else {
+        file_size.saturating_sub(offset.unsigned_abs() as u64)
+    }
+}
+
+/// Joins a backend base path with a repo-relative path.
+pub fn join_base_path(base: &Path, path: &Path) -> PathBuf {
+    base.join(path)
+}
+
+/// Classifies a filesystem entry into a `BackendNode` based on metadata.
+pub fn classify_backend_node(path: PathBuf, is_file: bool, size: u64) -> BackendNode {
+    if is_file {
+        BackendNode::File(path, size)
+    } else {
+        BackendNode::Dir(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

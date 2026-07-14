@@ -183,7 +183,7 @@ pub enum ConfigAction {
 
 pub fn render_config(frame: &mut Frame, form: &SnapshotForm) {
     let area = frame.area();
-    let inner = area.inner(ratatui::layout::Margin::new(2, 1));
+    let inner = area.inner(theme::CONTENT_MARGIN);
 
     let chunks = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)

@@ -171,66 +171,27 @@ pub(crate) fn pretty_print_timestamp(
 
 // --- Duration Utilities ---
 
-/// Pretty prints a `std::time::Duration` in a human-readable format.
-/// Attempts to show up to two most significant units.
-/// Milliseconds are only shown if the total duration is less than one second.
-pub(crate) fn pretty_print_duration(duration: std::time::Duration) -> String {
-    let total_seconds = duration.as_secs();
-    let milliseconds = duration.subsec_millis();
-
-    // Handle the absolute zero case
-    if total_seconds == 0 && milliseconds == 0 {
-        return "0s".to_string();
-    }
-
+/// Core duration decomposition: returns (days, hours, minutes, seconds, millis) from total seconds.
+fn decompose_duration(total_seconds: u64, millis: u64) -> (u64, u64, u64, u64, u64) {
     let days = total_seconds / 86_400;
     let hours = (total_seconds % 86_400) / 3_600;
     let minutes = (total_seconds % 3_600) / 60;
     let seconds = total_seconds % 60;
-
-    let mut parts = Vec::with_capacity(2);
-
-    if days > 0 {
-        parts.push(format!("{days}d"));
-    }
-
-    if hours > 0 && parts.len() < 2 {
-        parts.push(format!("{hours}h"));
-    }
-
-    if minutes > 0 && parts.len() < 2 {
-        parts.push(format!("{minutes}m"));
-    }
-
-    if seconds > 0 && parts.len() < 2 {
-        parts.push(format!("{seconds}s"));
-    }
-
-    // Only show ms if we haven't reached a full second yet
-    if total_seconds == 0 && milliseconds > 0 {
-        parts.push(format!("{milliseconds}ms"));
-    }
-
-    parts.join(" ")
+    (days, hours, minutes, seconds, millis)
 }
 
-/// Pretty prints a `chrono::Duration` in a human-readable format.
-/// Shows up to `max_parts` most significant units.
-pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts: usize) -> String {
-    let total_seconds = duration.num_seconds().unsigned_abs();
-    let millis = (duration.num_milliseconds() as u64) % 1000;
-
-    if total_seconds == 0 && millis > 0 {
-        return format!("{}ms", millis);
-    }
-
-    let days = total_seconds / 86_400;
-    let hours = (total_seconds % 86_400) / 3_600;
-    let minutes = (total_seconds % 3_600) / 60;
-    let seconds = total_seconds % 60;
-
+/// Formats decomposed duration parts into a human-readable string with up to `max_parts` entries.
+/// If `show_ms` is true and total is sub-second, appends milliseconds.
+fn format_duration_parts(
+    days: u64,
+    hours: u64,
+    minutes: u64,
+    seconds: u64,
+    millis: u64,
+    max_parts: usize,
+    show_ms: bool,
+) -> String {
     let mut parts = Vec::with_capacity(max_parts);
-
     if days > 0 {
         parts.push(format!("{days}d"));
     }
@@ -243,12 +204,36 @@ pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts
     if seconds > 0 && parts.len() < max_parts {
         parts.push(format!("{seconds}s"));
     }
-
+    if show_ms && parts.is_empty() && millis > 0 {
+        parts.push(format!("{millis}ms"));
+    }
     if parts.is_empty() {
         "0s".to_string()
     } else {
         parts.join(" ")
     }
+}
+
+/// Pretty prints a `std::time::Duration` in a human-readable format.
+/// Attempts to show up to two most significant units.
+/// Milliseconds are only shown if the total duration is less than one second.
+pub(crate) fn pretty_print_duration(duration: std::time::Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let millis = duration.subsec_millis();
+    if total_seconds == 0 && millis == 0 {
+        return "0s".to_string();
+    }
+    let (d, h, m, s, ms) = decompose_duration(total_seconds, millis as u64);
+    format_duration_parts(d, h, m, s, ms, 2, total_seconds == 0)
+}
+
+/// Pretty prints a `chrono::Duration` in a human-readable format.
+/// Shows up to `max_parts` most significant units.
+pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts: usize) -> String {
+    let total_seconds = duration.num_seconds().unsigned_abs();
+    let millis = (duration.num_milliseconds() as u64) % 1000;
+    let (d, h, m, s, ms) = decompose_duration(total_seconds, millis);
+    format_duration_parts(d, h, m, s, ms, max_parts, false)
 }
 
 /// Parses a duration string (e.g., "1d", "2w", "3m", "4y", "5h", "6s") into a `chrono::Duration`.

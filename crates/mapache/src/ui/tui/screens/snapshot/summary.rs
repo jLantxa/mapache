@@ -23,7 +23,7 @@ pub enum SummaryAction {
 
 pub fn render_summary(frame: &mut Frame, summary: &Option<SummaryResult>) {
     let area = frame.area();
-    let inner = area.inner(Margin::new(2, 1));
+    let inner = area.inner(theme::CONTENT_MARGIN);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

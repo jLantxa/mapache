@@ -117,7 +117,7 @@ impl Restorer {
         dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
         for (p, meta) in dirs {
             if self.shutdown_signal.load(Ordering::Acquire) {
-                return Err(MapacheError::Internal("interrupted".to_string()));
+                return Err(MapacheError::Interrupted);
             }
             if repo_fs::path_exists(&p).await {
                 super::node_restorer::try_restore_node_metadata(

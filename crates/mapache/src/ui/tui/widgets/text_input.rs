@@ -1,10 +1,21 @@
 use crossterm::event::KeyCode;
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 
 pub enum TextInputAction {
     None,
     Edited,
     Cancel,
     Confirm,
+}
+
+/// Result of handling a filter key event.
+pub enum FilterAction {
+    None,
+    Apply,
+    Cancel,
 }
 
 pub struct TextInput {
@@ -131,6 +142,34 @@ impl TextInput {
 
     pub fn cursor_end(&mut self) {
         self.cursor = self.buffer.chars().count();
+    }
+
+    /// Renders the input text as a `Line` with the cursor shown as an underlined character.
+    pub fn render_line(&self, prefix: &str) -> Line<'static> {
+        let text = self.text();
+        let cursor = self.cursor();
+        let before: String = text.chars().take(cursor).collect();
+        let after: String = text.chars().skip(cursor).collect();
+        let mut spans = vec![Span::raw(prefix.to_string())];
+        spans.push(Span::raw(before));
+        if after.is_empty() {
+            spans.push(Span::styled(" ", Style::default().underlined()));
+        } else {
+            let cursor_char: String = after.chars().take(1).collect();
+            let rest: String = after.chars().skip(1).collect();
+            spans.push(Span::styled(cursor_char, Style::default().underlined()));
+            spans.push(Span::raw(rest));
+        }
+        Line::from(spans)
+    }
+
+    /// Handles filter-specific key events: Cancel clears the filter, Confirm/Edited triggers re-filter.
+    pub fn handle_filter_key(&mut self, key: KeyCode) -> FilterAction {
+        match self.handle_key(key) {
+            TextInputAction::Cancel => FilterAction::Cancel,
+            TextInputAction::Confirm | TextInputAction::Edited => FilterAction::Apply,
+            TextInputAction::None => FilterAction::None,
+        }
     }
 }
 

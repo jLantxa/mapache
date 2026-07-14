@@ -20,7 +20,7 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, open_repository},
     common::{
         BlobType, ContentIdType, ID, SaveID,
-        defaults::{DEFAULT_PACK_SIZE, UI_RATE_ESTIMATOR_WINDOW},
+        defaults::{DEFAULT_PACK_SIZE, SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
         error::MapacheError,
     },
     fs::tree::Tree,
@@ -309,8 +309,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
     tracing::info!(target: "copy", "Copy command completed in {:?}", start.elapsed());
     Ok(())
 }
-
-const SHORT_SNAPSHOT_ID_LEN: usize = 8;
 
 /// Select snapshots from source based on filters.
 async fn select_snapshots(

@@ -7,7 +7,7 @@ use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Margin},
+    layout::{Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span, Text},
     widgets::{Paragraph, Row, Table, TableState},
@@ -203,28 +203,10 @@ impl ForgetScreen {
                 self.selected.toggle_all();
                 ForgetAction::None
             }
-            KeyCode::Down => {
-                self.table_state.next(self.entries.len());
-                ForgetAction::None
-            }
-            KeyCode::Up => {
-                self.table_state.previous(self.entries.len());
-                ForgetAction::None
-            }
-            KeyCode::PageDown => {
-                self.table_state.page_next(self.entries.len(), 10);
-                ForgetAction::None
-            }
-            KeyCode::PageUp => {
-                self.table_state.page_previous(self.entries.len(), 10);
-                ForgetAction::None
-            }
-            KeyCode::Home => {
-                self.table_state.home(self.entries.len());
-                ForgetAction::None
-            }
-            KeyCode::End => {
-                self.table_state.end(self.entries.len());
+            key if self
+                .table_state
+                .handle_nav_keys(key, self.entries.len(), 10) =>
+            {
                 ForgetAction::None
             }
             _ => ForgetAction::None,
@@ -287,7 +269,7 @@ impl ForgetScreen {
                 Constraint::Min(3),
                 Constraint::Length(2),
             ])
-            .split(area.inner(Margin::new(2, 1)));
+            .split(area.inner(theme::CONTENT_MARGIN));
 
         let selected = self.selected_count();
         let header = Paragraph::new(format!(
@@ -426,7 +408,7 @@ impl Screen for ForgetScreen {
             ForgetPhase::Selection => self.render_selection(frame),
             ForgetPhase::Retention => {
                 let area = frame.area();
-                let inner = area.inner(Margin::new(2, 1));
+                let inner = area.inner(theme::CONTENT_MARGIN);
                 self.retention.render(frame, inner);
             }
             ForgetPhase::Confirm => {

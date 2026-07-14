@@ -126,7 +126,7 @@ async fn verify_pack_inline(
         })
     })
     .await
-    .map_err(|e| MapacheError::Internal(format!("verification task panicked: {}", e)))?
+    .map_err(|e| MapacheError::task_panicked("verification", e))?
 }
 
 /// Streaming path for packs > CHUNK_SIZE: read footer, then stream data in chunks,
@@ -181,7 +181,7 @@ async fn verify_pack_streaming(
                 }
                 Some(res) = pending_verifications.next() => {
                     let (v, c, b) = res
-                        .map_err(|e| MapacheError::Internal(format!("verification task panicked: {}", e)))?;
+                        .map_err(|e| MapacheError::task_panicked("verification", e))?;
                     v_total += v;
                     c_total.extend(c);
                     b_total += b;
@@ -295,7 +295,7 @@ async fn verify_pack_streaming(
 
     let (verified_blobs, corrupt_blobs, bytes_processed) = verifier_handle
         .await
-        .map_err(|e| MapacheError::Internal(format!("verifier task panicked: {}", e)))??;
+        .map_err(|e| MapacheError::task_panicked("verifier", e))??;
 
     let bit_rot = bit_rot_hasher.finalize() != pack_id;
     let index = repo.index();

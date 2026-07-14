@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use crate::{
     common::global::GlobalOpts,
     ui::{
-        SPINNER_TICK_CHARS, default_bar_draw_target,
+        SPINNER_TICK_CHARS, default_bar_draw_target, default_progress_style,
         events::{Event, EventSender, GcEvent, GcTaskKind},
     },
 };
@@ -88,10 +88,9 @@ fn start_new_bar(state: &CliGcState, kind: GcTaskKind, total: Option<u64>) {
                 _ => "[{percent} %] [{bar:20.cyan/white}] {pos} / {len}",
             };
             pb.set_style(
-                ProgressStyle::default_bar()
+                default_progress_style()
                     .template(template)
                     .expect("invalid progress bar template for GC bar progress")
-                    .progress_chars("=> ")
                     .tick_chars(SPINNER_TICK_CHARS),
             );
             pb

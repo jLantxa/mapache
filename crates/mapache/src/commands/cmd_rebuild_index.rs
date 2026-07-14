@@ -6,14 +6,14 @@ use std::{
 
 use clap::Args;
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ContentIdType, ID, error::MapacheError},
     repository::{index::MasterIndex, packer::Packer},
-    ui::{self, cli::color::Colorize, default_bar_draw_target},
+    ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils::{self},
 };
 
@@ -88,10 +88,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                 default_bar_draw_target(),
             )
             .with_style(
-                ProgressStyle::default_bar()
+                default_progress_style()
                     .template("[{bar:20.cyan/white}] Scanning packs: {pos}/{len}")
-                    .expect("invalid progress bar template for rebuild scanning")
-                    .progress_chars("=> "),
+                    .expect("invalid progress bar template for rebuild scanning"),
             );
 
             let results: Vec<_> = futures::stream::iter(all_pack_ids.iter())
@@ -127,10 +126,9 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                 default_bar_draw_target(),
             )
             .with_style(
-                ProgressStyle::default_bar()
+                default_progress_style()
                     .template("[{bar:20.cyan/white}] Building index: {pos}/{len}")
-                    .expect("invalid progress bar template for rebuild building")
-                    .progress_chars("=> "),
+                    .expect("invalid progress bar template for rebuild building"),
             );
 
             let mut blob_count = 0;
@@ -185,12 +183,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                 default_bar_draw_target(),
             )
             .with_style(
-                ProgressStyle::default_bar()
+                default_progress_style()
                     .template(
                         "[{percent} %] [{bar:20.cyan/white}] Deleting old index files: {pos}/{len}",
                     )
-                    .expect("invalid progress bar template for rebuild delete")
-                    .progress_chars("=> "),
+                    .expect("invalid progress bar template for rebuild delete"),
             );
 
             let deleted_size = AtomicU64::new(0);
@@ -244,16 +241,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
                 );
             }
 
-            let prefix = if args.dry_run {
-                format!("{} ", "[DRY RUN]".bold().purple())
-            } else {
-                String::new()
-            };
+            let prefix = super::dry_run_prefix(args.dry_run);
 
             ui::cli::log!(
                 "\n{}Finished in {}",
                 prefix,
-                utils::pretty_print_duration(start.elapsed(),),
+                utils::pretty_print_duration(start.elapsed()),
             );
             tracing::info!(target: "rebuild-index", "Rebuild-index command completed in {:?}", start.elapsed());
 

@@ -616,7 +616,7 @@ where
 
     tokio::select! {
         res = mount_res => {
-            res.map_err(|e| E::from(MapacheError::Internal(format!("mount task panicked: {e}"))))??;
+            res.map_err(|e| E::from(MapacheError::task_panicked("mount", e)))??;
         }
         _ = async {
             loop {

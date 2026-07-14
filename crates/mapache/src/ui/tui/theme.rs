@@ -8,6 +8,9 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
+/// Standard inner margin for content areas in TUI screens.
+pub(crate) const CONTENT_MARGIN: Margin = Margin::new(2, 1);
+
 /// Electric Pastel colour palette used throughout the TUI.
 #[expect(dead_code)]
 pub(crate) struct Theme {
@@ -227,3 +230,6 @@ pub fn format_tags(tags: impl IntoIterator<Item = impl AsRef<str>>) -> String {
     }
     result
 }
+
+/// Characters used for the loading spinner animation in TUI screens.
+pub const SPINNER_CHARS: &[char] = &['\u{25D0}', '\u{25D3}', '\u{25D1}', '\u{25D2}'];

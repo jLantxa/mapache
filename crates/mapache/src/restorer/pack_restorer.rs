@@ -216,7 +216,7 @@ pub(crate) async fn restore_packs(
                             .collect()
                     })
                     .await
-                    .map_err(|e| MapacheError::Internal(format!("task panicked: {e}")))?;
+                    .map_err(|e| MapacheError::task_panicked("pack restore", e))?;
 
                     let mut file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
                     for res in decoded_results {
@@ -306,7 +306,7 @@ async fn flush_file_batches(
                     Ok(written)
                 })
                 .await
-                .map_err(|e| MapacheError::Internal(format!("task panicked: {e}")))?;
+                .map_err(|e| MapacheError::task_panicked("pack restore", e))?;
 
                 match write_result {
                     Ok(_bytes) => {

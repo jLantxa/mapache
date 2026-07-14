@@ -201,14 +201,7 @@ impl FileHandleCache {
                 }
             }
 
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    MapacheError::Internal(format!(
-                        "failed to create parent directory for {}: {e}",
-                        path.display()
-                    ))
-                })?;
-            }
+            Restorer::ensure_parent_dir(path)?;
 
             let f = if plan.is_selective {
                 // Selective restore: open without truncating so unchanged bytes are preserved.
@@ -337,6 +330,29 @@ impl Restorer {
     pub(crate) fn return_buffer(&self, mut buf: Vec<u8>) {
         buf.clear();
         self.buffers.lock().push_back(buf);
+    }
+
+    /// Handles an error during restoration: if `quit_on_error` is set, returns
+    /// an error; otherwise emits a warning/error event and continues.
+    fn handle_quit_on_error(&self, msg: String, err: impl std::fmt::Display) -> Result<()> {
+        if self.opts.quit_on_error {
+            return Err(MapacheError::Internal(format!("{err}")));
+        }
+        emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+        Ok(())
+    }
+
+    /// Creates all parent directories for a path if they don't exist.
+    fn ensure_parent_dir(path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                MapacheError::Internal(format!(
+                    "failed to create parent directory for {}: {e}",
+                    path.display()
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     /// Creates a shallow clone of the restorer for worker threads.
@@ -884,10 +900,7 @@ impl Restorer {
                         secondary.display(),
                         e
                     );
-                    if self.opts.quit_on_error {
-                        return Err(MapacheError::Internal(msg));
-                    }
-                    emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                    self.handle_quit_on_error(msg, &e)?;
                     continue;
                 }
                 if let Err(e) = fs::remove_file(secondary)
@@ -898,10 +911,7 @@ impl Restorer {
                         secondary.display(),
                         e
                     );
-                    if self.opts.quit_on_error {
-                        return Err(MapacheError::Internal(msg));
-                    }
-                    emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                    self.handle_quit_on_error(msg, &e)?;
                     continue;
                 }
                 if let Err(e) = fs::hard_link(primary, secondary) {
@@ -911,9 +921,7 @@ impl Restorer {
                         primary.display(),
                         e
                     );
-                    if self.opts.quit_on_error {
-                        return Err(MapacheError::Internal(msg));
-                    }
+                    self.handle_quit_on_error(msg, &e)?;
                     emit_event(
                         &self.event_sender,
                         Event::Restore(RestoreEvent::Warning(format!(
@@ -929,10 +937,7 @@ impl Restorer {
                             secondary.display(),
                             copy_err
                         );
-                        if self.opts.quit_on_error {
-                            return Err(MapacheError::Internal(msg));
-                        }
-                        emit_event(&self.event_sender, Event::Restore(RestoreEvent::Error(msg)));
+                        self.handle_quit_on_error(msg, &copy_err)?;
                     }
                 }
             }

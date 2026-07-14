@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use futures::StreamExt;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, ListState, Paragraph},
@@ -42,8 +42,6 @@ struct DiffEntry {
     has_changes: bool,
     expanded: bool,
 }
-
-const SPINNER_CHARS: &[char] = &['\u{25D0}', '\u{25D3}', '\u{25D1}', '\u{25D2}'];
 
 struct DiffLoadResult {
     entries: Vec<DiffEntry>,
@@ -495,21 +493,7 @@ impl DiffScreen {
         let filter_text = if input.is_empty() {
             Line::from(Span::styled(" Filter by path... ", theme::THEME.footer))
         } else {
-            let text = input.text();
-            let cursor = input.cursor();
-            let before: String = text.chars().take(cursor).collect();
-            let after: String = text.chars().skip(cursor).collect();
-            let mut spans = vec![Span::raw(" ")];
-            spans.push(Span::raw(before));
-            if after.is_empty() {
-                spans.push(Span::styled(" ", Style::default().underlined()));
-            } else {
-                let cursor_char: String = after.chars().take(1).collect();
-                let rest: String = after.chars().skip(1).collect();
-                spans.push(Span::styled(cursor_char, Style::default().underlined()));
-                spans.push(Span::raw(rest));
-            }
-            Line::from(spans)
+            input.render_line(" ")
         };
         let filter_widget = Paragraph::new(filter_text).block(theme::block("Filter"));
         frame.render_widget(filter_widget, area);
@@ -611,7 +595,8 @@ impl DiffScreen {
     }
 
     fn render_loading(&self, frame: &mut Frame, area: Rect) {
-        let spinner = SPINNER_CHARS[(self.spinner_tick as usize) % SPINNER_CHARS.len()];
+        let spinner =
+            theme::SPINNER_CHARS[(self.spinner_tick as usize) % theme::SPINNER_CHARS.len()];
         let msg = Paragraph::new(Line::from(Span::styled(
             format!(" {} Computing differences... ", spinner),
             theme::THEME.info,
@@ -729,7 +714,7 @@ impl Screen for DiffScreen {
         }
 
         let area = frame.area();
-        let inner = area.inner(Margin::new(2, 1));
+        let inner = area.inner(theme::CONTENT_MARGIN);
 
         let detail_h = if self.loading || self.error.is_some() {
             0
@@ -828,30 +813,10 @@ impl Screen for DiffScreen {
                 self.navigate_snapshot(1);
                 None
             }
-            KeyCode::Down => {
-                self.list_state.next(self.visible.len());
-                None
-            }
-            KeyCode::Up => {
-                self.list_state.previous(self.visible.len());
-                None
-            }
-            KeyCode::PageDown => {
-                self.list_state
-                    .page_next(self.visible.len(), self.last_height);
-                None
-            }
-            KeyCode::PageUp => {
-                self.list_state
-                    .page_previous(self.visible.len(), self.last_height);
-                None
-            }
-            KeyCode::Home => {
-                self.list_state.home(self.visible.len());
-                None
-            }
-            KeyCode::End => {
-                self.list_state.end(self.visible.len());
+            key if self
+                .list_state
+                .handle_nav_keys(key, self.visible.len(), self.last_height) =>
+            {
                 None
             }
             _ => None,

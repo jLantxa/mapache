@@ -903,7 +903,7 @@ impl Repository {
                     .map_err(|_| MapacheError::Internal("pack saver thread panicked".to_string()))?
             })
             .await
-            .map_err(|e| MapacheError::Internal(format!("pack saver task panicked: {e}")))??;
+            .map_err(|e| MapacheError::task_panicked("pack saver", e))??;
         }
 
         tracing::info!(target: "repo", "Persisting index");
@@ -1128,9 +1128,7 @@ impl Repository {
                         Ok::<_, MapacheError>(Index::from_index_file(index_file, id))
                     })
                     .await
-                    .map_err(|e| {
-                        MapacheError::Internal(format!("index loading task panicked: {e}"))
-                    })??;
+                    .map_err(|e| MapacheError::task_panicked("index loading", e))??;
 
                     Ok(Some(index))
                 }

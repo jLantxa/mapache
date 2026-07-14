@@ -87,7 +87,7 @@ impl RestoreConfig {
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let header_height = if self.paths.is_some() { 4 } else { 3 };
-        let inner = area.inner(ratatui::layout::Margin::new(2, 1));
+        let inner = area.inner(theme::CONTENT_MARGIN);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([

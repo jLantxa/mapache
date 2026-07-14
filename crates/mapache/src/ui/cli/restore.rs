@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressState};
 use parking_lot::Mutex;
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     ui::{
         SPINNER_TICK_CHARS,
         cli::color::Colorize,
-        default_bar_draw_target,
+        default_bar_draw_target, default_progress_style,
         events::{Event, EventSender, RestoreEvent},
     },
     utils::{self, rate_estimator::RateEstimator},
@@ -125,10 +125,9 @@ pub(crate) fn make_event_sender(
     let companion_bar = mp.add(ProgressBar::no_length());
 
     progress_bar.set_style(
-        ProgressStyle::default_bar()
+        default_progress_style()
             .template("[{percent} %] [{bar:20.cyan/white}] [{custom_elapsed}] [{processed_bytes_fmt}] [{data_rate}/s] [ETA: {custom_eta}]")
             .expect("Invalid progress bar template for restore progress")
-            .progress_chars("=> ")
             .tick_chars(SPINNER_TICK_CHARS)
             .with_key("custom_elapsed", |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                 let _ = w.write_str(&utils::pretty_print_duration(_state.elapsed()));
@@ -176,7 +175,7 @@ pub(crate) fn make_event_sender(
     let err_clone = error_counter.clone();
     let warn_clone = warning_counter.clone();
     companion_bar.set_style(
-        ProgressStyle::default_bar()
+        default_progress_style()
             .template("[{processed_items_fmt}] [{errors} errors, {warnings} warnings]")
             .expect("Invalid progress bar template for restore companion bar")
             .with_key(

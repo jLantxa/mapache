@@ -11,7 +11,7 @@ use std::{
 
 use clap::Args;
 use futures::{StreamExt, stream};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressState};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, open_repository},
     common::{
         BlobType, ContentIdType, ID, SaveID,
-        defaults::{DEFAULT_PACK_SIZE, UI_RATE_ESTIMATOR_WINDOW},
+        defaults::{DEFAULT_PACK_SIZE, SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
         error::MapacheError,
     },
     fs::tree::Tree,
@@ -29,7 +29,7 @@ use crate::{
         retention::filter_snapshots_by_hosts,
         snapshot::SnapshotStream,
     },
-    ui::{self, cli::color::Colorize, default_bar_draw_target},
+    ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
 };
 
@@ -310,8 +310,6 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
     Ok(())
 }
 
-const SHORT_SNAPSHOT_ID_LEN: usize = 8;
-
 /// Select snapshots from source based on filters.
 async fn select_snapshots(
     repo: Arc<Repository>,
@@ -467,10 +465,9 @@ async fn copy_snapshots(
         Some(
             ProgressBar::with_draw_target(Some(transfer_bytes), default_bar_draw_target())
                 .with_style(
-                    ProgressStyle::default_bar()
+                    default_progress_style()
                         .template("[{percent}%] [{bar:20.cyan/white}] [{custom_elapsed}] {bytes_fmt} / {total_fmt} [{copy_rate}/s] [ETA: {custom_eta}]")
                         .expect("invalid progress bar template for copy")
-                        .progress_chars("=> ")
                         .with_key("bytes_fmt", {
                             move |state: &ProgressState, w: &mut dyn fmt::Write| {
                                 let _ = write!(w, "{}", utils::format_size_binary(state.pos(), 3));

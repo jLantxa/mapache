@@ -6,6 +6,12 @@ pub mod tui;
 
 pub(crate) const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
+/// Returns a `ProgressStyle` pre-configured with the project's standard progress chars.
+/// Callers only need to set `.template(...)` and any custom `.with_key(...)`.
+pub(crate) fn default_progress_style() -> indicatif::ProgressStyle {
+    indicatif::ProgressStyle::default_bar().progress_chars("=> ")
+}
+
 /// Returns the default draw target for progress bars, with a preconfigured refresh rate
 /// and verbosity.
 pub(crate) fn default_bar_draw_target() -> indicatif::ProgressDrawTarget {

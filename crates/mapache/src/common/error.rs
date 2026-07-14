@@ -71,6 +71,10 @@ pub enum MapacheError {
 }
 
 impl MapacheError {
+    pub fn task_panicked(name: &str, e: impl std::fmt::Display) -> Self {
+        MapacheError::Internal(format!("{name} task panicked: {e}"))
+    }
+
     /// Returns the inner detail without the Display prefix.
     /// For `Backend("msg")` returns `"msg"` instead of `"backend error: msg"`.
     /// For variants wrapping external types, returns the full Display.

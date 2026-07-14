@@ -7,7 +7,11 @@ use std::{
 use anyhow::{Context, Result};
 use mapache::{
     backend::{StorageBackend, localfs::LocalFS, read_backend_dir},
-    commands::{Compression, GlobalArgs},
+    commands::{
+        Compression, GlobalArgs, UseSnapshot, cmd_amend, cmd_bundle, cmd_cat, cmd_clean,
+        cmd_forget, cmd_init, cmd_log, cmd_rebuild_index, cmd_recall, cmd_rechunk, cmd_restore,
+        cmd_snapshot, cmd_stats, cmd_sync, cmd_unlock, cmd_verify,
+    },
     common::{defaults::DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
     repository::repo::{Auth, Repository},
 };
@@ -252,7 +256,7 @@ impl TestContext {
     }
 
     /// Creates a default Cat CmdArgs builder.
-    pub fn cat_builder(&self, object: mapache::commands::cmd_cat::Object) -> CatBuilder {
+    pub fn cat_builder(&self, object: cmd_cat::Object) -> CatBuilder {
         CatBuilder::new(object)
     }
 
@@ -312,32 +316,30 @@ impl TestContext {
 
 #[derive(Clone)]
 pub struct InitBuilder {
-    pub args: mapache::commands::cmd_init::CmdArgs,
+    pub args: cmd_init::CmdArgs,
 }
 
 impl InitBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_init;
+        use cmd_init;
         Self {
             args: cmd_init::CmdArgs {},
         }
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_init::run(global, &self.args)
-            .await
-            .map_err(Into::into)
+        cmd_init::run(global, &self.args).await.map_err(Into::into)
     }
 }
 
 #[derive(Clone)]
 pub struct VerifyBuilder {
-    pub args: mapache::commands::cmd_verify::CmdArgs,
+    pub args: cmd_verify::CmdArgs,
 }
 
 impl VerifyBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_verify;
+        use cmd_verify;
         Self {
             args: cmd_verify::CmdArgs {
                 read_packs: false,
@@ -371,7 +373,7 @@ impl VerifyBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_verify::run(global, &self.args)
+        cmd_verify::run(global, &self.args, None)
             .await
             .map_err(Into::into)
     }
@@ -379,19 +381,19 @@ impl VerifyBuilder {
 
 #[derive(Clone)]
 pub struct RecallBuilder {
-    pub args: mapache::commands::cmd_recall::CmdArgs,
+    pub args: cmd_recall::CmdArgs,
 }
 
 impl RecallBuilder {
     pub fn new(id: String) -> Self {
-        use mapache::commands::cmd_recall;
+        use cmd_recall;
         Self {
             args: cmd_recall::CmdArgs { id },
         }
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_recall::run(global, &self.args)
+        cmd_recall::run(global, &self.args)
             .await
             .map_err(Into::into)
     }
@@ -399,13 +401,12 @@ impl RecallBuilder {
 
 #[derive(Clone)]
 pub struct SnapshotBuilder {
-    pub args: mapache::commands::cmd_snapshot::CmdArgs,
+    pub args: cmd_snapshot::CmdArgs,
 }
 
 #[allow(dead_code)]
 impl SnapshotBuilder {
     pub fn new(paths: Vec<PathBuf>) -> Self {
-        use mapache::commands::{UseSnapshot, cmd_snapshot};
         Self {
             args: cmd_snapshot::CmdArgs {
                 paths,
@@ -468,7 +469,7 @@ impl SnapshotBuilder {
         self
     }
 
-    pub fn parent(mut self, parent: mapache::commands::UseSnapshot) -> Self {
+    pub fn parent(mut self, parent: UseSnapshot) -> Self {
         self.args.parent = Some(parent);
         self
     }
@@ -489,7 +490,7 @@ impl SnapshotBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_snapshot::run(global, &self.args)
+        cmd_snapshot::run(global, &self.args, None)
             .await
             .map_err(Into::into)
     }
@@ -497,7 +498,7 @@ impl SnapshotBuilder {
 
 #[derive(Clone)]
 pub struct RestoreBuilder {
-    pub args: mapache::commands::cmd_restore::CmdArgs,
+    pub args: cmd_restore::CmdArgs,
 }
 
 impl RestoreBuilder {
@@ -579,7 +580,7 @@ impl RestoreBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_restore::run(global, &self.args)
+        cmd_restore::run(global, &self.args, None)
             .await
             .map_err(Into::into)
     }
@@ -587,12 +588,12 @@ impl RestoreBuilder {
 
 #[derive(Clone)]
 pub struct AmendBuilder {
-    pub args: mapache::commands::cmd_amend::CmdArgs,
+    pub args: cmd_amend::CmdArgs,
 }
 
 impl AmendBuilder {
     pub fn new() -> Self {
-        use mapache::commands::{UseSnapshot, cmd_amend};
+        use {UseSnapshot, cmd_amend};
         Self {
             args: cmd_amend::CmdArgs {
                 snapshot: UseSnapshot::Latest,
@@ -634,20 +635,17 @@ impl AmendBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_amend::run(global, &self.args)
-            .await
-            .map_err(Into::into)
+        cmd_amend::run(global, &self.args).await.map_err(Into::into)
     }
 }
 
 #[derive(Clone)]
 pub struct BundleBuilder {
-    pub args: mapache::commands::cmd_bundle::CmdArgs,
+    pub args: cmd_bundle::CmdArgs,
 }
 
 impl BundleBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_bundle;
         Self {
             args: cmd_bundle::CmdArgs::default(),
         }
@@ -684,20 +682,18 @@ impl BundleBuilder {
     }
 
     pub async fn run(self) -> Result<()> {
-        mapache::commands::cmd_bundle::run(&self.args)
-            .await
-            .map_err(Into::into)
+        cmd_bundle::run(&self.args).await.map_err(Into::into)
     }
 }
 
 #[derive(Clone)]
 pub struct ForgetBuilder {
-    pub args: mapache::commands::cmd_forget::CmdArgs,
+    pub args: cmd_forget::CmdArgs,
 }
 
 impl ForgetBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_forget;
+        use cmd_forget;
         Self {
             args: cmd_forget::CmdArgs {
                 forget: Vec::new(),
@@ -737,7 +733,7 @@ impl ForgetBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_forget::run(global, &self.args)
+        cmd_forget::run(global, &self.args, None)
             .await
             .map_err(Into::into)
     }
@@ -745,12 +741,12 @@ impl ForgetBuilder {
 
 #[derive(Clone)]
 pub struct CleanBuilder {
-    pub args: mapache::commands::cmd_clean::CmdArgs,
+    pub args: cmd_clean::CmdArgs,
 }
 
 impl CleanBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_clean;
+        use cmd_clean;
         Self {
             args: cmd_clean::CmdArgs {
                 tolerance: 0.0,
@@ -772,7 +768,7 @@ impl CleanBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_clean::run(global, &self.args)
+        cmd_clean::run(global, &self.args, None)
             .await
             .map_err(Into::into)
     }
@@ -780,12 +776,11 @@ impl CleanBuilder {
 
 #[derive(Clone)]
 pub struct LogBuilder {
-    pub args: mapache::commands::cmd_log::CmdArgs,
+    pub args: cmd_log::CmdArgs,
 }
 
 impl LogBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_log;
         Self {
             args: cmd_log::CmdArgs {
                 snapshot: None,
@@ -803,60 +798,53 @@ impl LogBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_log::run(global, &self.args)
-            .await
-            .map_err(Into::into)
+        cmd_log::run(global, &self.args).await.map_err(Into::into)
     }
 }
 
 #[derive(Clone)]
 pub struct StatsBuilder {
-    pub args: mapache::commands::cmd_stats::CmdArgs,
+    pub args: cmd_stats::CmdArgs,
 }
 
 impl StatsBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_stats;
+        use cmd_stats;
         Self {
             args: cmd_stats::CmdArgs { full: false },
         }
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_stats::run(global, &self.args)
-            .await
-            .map_err(Into::into)
+        cmd_stats::run(global, &self.args).await.map_err(Into::into)
     }
 }
 
 #[derive(Clone)]
 pub struct CatBuilder {
-    pub args: mapache::commands::cmd_cat::CmdArgs,
+    pub args: cmd_cat::CmdArgs,
 }
 
 impl CatBuilder {
-    pub fn new(object: mapache::commands::cmd_cat::Object) -> Self {
-        use mapache::commands::cmd_cat;
+    pub fn new(object: cmd_cat::Object) -> Self {
+        use cmd_cat;
         Self {
             args: cmd_cat::CmdArgs { object },
         }
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_cat::run(global, &self.args)
-            .await
-            .map_err(Into::into)
+        cmd_cat::run(global, &self.args).await.map_err(Into::into)
     }
 }
 
 #[derive(Clone)]
 pub struct SyncBuilder {
-    pub args: mapache::commands::cmd_sync::CmdArgs,
+    pub args: cmd_sync::CmdArgs,
 }
 
 impl SyncBuilder {
     pub fn new(target: String) -> Self {
-        use mapache::commands::cmd_sync;
         Self {
             args: cmd_sync::CmdArgs {
                 target,
@@ -874,27 +862,24 @@ impl SyncBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_sync::run(global, &self.args)
-            .await
-            .map_err(Into::into)
+        cmd_sync::run(global, &self.args).await.map_err(Into::into)
     }
 }
 
 #[derive(Clone)]
 pub struct RebuildIndexBuilder {
-    pub args: mapache::commands::cmd_rebuild_index::CmdArgs,
+    pub args: cmd_rebuild_index::CmdArgs,
 }
 
 impl RebuildIndexBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_rebuild_index;
         Self {
             args: cmd_rebuild_index::CmdArgs { dry_run: false },
         }
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_rebuild_index::run(global, &self.args)
+        cmd_rebuild_index::run(global, &self.args)
             .await
             .map_err(Into::into)
     }
@@ -902,19 +887,18 @@ impl RebuildIndexBuilder {
 
 #[derive(Clone)]
 pub struct RechunkBuilder {
-    pub args: mapache::commands::cmd_rechunk::CmdArgs,
+    pub args: cmd_rechunk::CmdArgs,
 }
 
 impl RechunkBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_rechunk;
         Self {
             args: cmd_rechunk::CmdArgs {},
         }
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_rechunk::run(global, &self.args)
+        cmd_rechunk::run(global, &self.args)
             .await
             .map_err(Into::into)
     }
@@ -922,12 +906,11 @@ impl RechunkBuilder {
 
 #[derive(Clone)]
 pub struct UnlockBuilder {
-    pub args: mapache::commands::cmd_unlock::CmdArgs,
+    pub args: cmd_unlock::CmdArgs,
 }
 
 impl UnlockBuilder {
     pub fn new() -> Self {
-        use mapache::commands::cmd_unlock;
         Self {
             args: cmd_unlock::CmdArgs { force: false },
         }
@@ -939,7 +922,7 @@ impl UnlockBuilder {
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
-        mapache::commands::cmd_unlock::run(global, &self.args)
+        cmd_unlock::run(global, &self.args)
             .await
             .map_err(Into::into)
     }

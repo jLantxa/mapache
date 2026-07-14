@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
@@ -48,8 +48,6 @@ enum SearchUpdate {
     },
     Done(Vec<FindResult>),
 }
-
-const SPINNER_CHARS: &[char] = &['\u{25D0}', '\u{25D3}', '\u{25D1}', '\u{25D2}'];
 
 pub struct FindScreen {
     repo: Arc<Repository>,
@@ -257,7 +255,7 @@ impl FindScreen {
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let spinner = SPINNER_CHARS[(self.spinner_tick % 4) as usize];
+        let spinner = theme::SPINNER_CHARS[(self.spinner_tick % 4) as usize];
 
         let (msg, style) = if self.is_searching {
             let msg = format!(" {} {}", spinner, self.status_message);
@@ -444,7 +442,7 @@ impl Screen for FindScreen {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
 
         let area = frame.area();
-        let inner = area.inner(Margin::new(2, 1));
+        let inner = area.inner(theme::CONTENT_MARGIN);
 
         let has_results = !self.results.is_empty();
         let detail_height = if has_results && self.selected_result().is_some() {
@@ -543,30 +541,12 @@ impl Screen for FindScreen {
                         None
                     }
                 }
-                KeyCode::Down => {
-                    self.list_state.next(self.display_len());
-                    None
-                }
-                KeyCode::Up => {
-                    self.list_state.previous(self.display_len());
-                    None
-                }
-                KeyCode::PageDown => {
-                    self.list_state
-                        .page_next(self.display_len(), self.last_height);
-                    None
-                }
-                KeyCode::PageUp => {
-                    self.list_state
-                        .page_previous(self.display_len(), self.last_height);
-                    None
-                }
-                KeyCode::Home => {
-                    self.list_state.home(self.display_len());
-                    None
-                }
-                KeyCode::End => {
-                    self.list_state.end(self.display_len());
+                key if self.list_state.handle_nav_keys(
+                    key,
+                    self.display_len(),
+                    self.last_height,
+                ) =>
+                {
                     None
                 }
                 _ => None,

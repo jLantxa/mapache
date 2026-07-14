@@ -426,9 +426,7 @@ impl Plan {
                                     result
                                 })
                                 .await
-                                .map_err(|e| {
-                                    MapacheError::Internal(format!("repack task panicked: {}", e))
-                                })?
+                                .map_err(|e| MapacheError::task_panicked("repack", e))?
                                 .map_err(|e| {
                                     MapacheError::Repo(format!("repack blob failed: {}", e))
                                 })?;

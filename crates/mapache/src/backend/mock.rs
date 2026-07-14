@@ -348,11 +348,7 @@ impl StorageBackend for MockBackend {
                     }
                 };
 
-                let start: usize = if offset >= 0 {
-                    offset as usize
-                } else {
-                    file_size.saturating_sub(offset.unsigned_abs())
-                };
+                let start = super::resolve_read_offset(file_size as u64, offset) as usize;
 
                 if start >= file_size {
                     return Ok(OpResult::Bytes(Vec::new()));

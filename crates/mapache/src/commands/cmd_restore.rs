@@ -18,7 +18,7 @@ use crate::{
         GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
         find_use_snapshot, merge_opt, with_repository_lock,
     },
-    common::{defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError, hooks},
+    common::{config::CommandHooks, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError, hooks},
     fs::{
         calculate_lcp,
         filter::{
@@ -227,7 +227,11 @@ where
         .transpose()
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), RestoreError> {
+pub async fn run(
+    global_args: &GlobalArgs,
+    args: &CmdArgs,
+    cmd_hooks: Option<&CommandHooks>,
+) -> Result<(), RestoreError> {
     tracing::info!(target: "restore", "Starting restore command");
 
     let json_output = global_args.json;
@@ -309,16 +313,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Restore
 
             let start = Instant::now();
 
-            if !dry_run {
-                // Run pre-hook: abort command if it fails
-                hooks::run_pre(
-                    hooks::command_hooks(),
-                    "restore",
-                    &global_args.repo,
-                    args.hook_args.pre_hook.as_deref(),
-                )
-                .await?;
-            }
+            hooks::run_command_pre(
+                cmd_hooks,
+                "restore",
+                &global_args.repo,
+                args.hook_args.pre_hook.as_deref(),
+                dry_run,
+            )
+            .await?;
 
             run_with_repo(
                 repo,
@@ -336,21 +338,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Restore
     )
     .await;
 
-    let result_str = match &repo_result {
-        Ok(_) => "success".to_string(),
-        Err(e) => format!("{e}"),
-    };
-    if !dry_run {
-        // Run post-hook: warning on failure, always continues
-        hooks::run_post(
-            hooks::command_hooks(),
-            "restore",
-            &global_args.repo,
-            &result_str,
-            args.hook_args.post_hook.as_deref(),
-        )
-        .await;
-    }
+    hooks::run_command_post(
+        cmd_hooks,
+        "restore",
+        &global_args.repo,
+        &repo_result,
+        args.hook_args.post_hook.as_deref(),
+        dry_run,
+    )
+    .await;
 
     repo_result
 }
@@ -511,11 +507,7 @@ pub(crate) async fn run_with_repo(
             },
         );
     } else {
-        let prefix = if dry_run {
-            format!("{} ", "[DRY RUN]".bold().purple())
-        } else {
-            String::new()
-        };
+        let prefix = super::dry_run_prefix(dry_run);
         ui::cli::log!(
             "{}Restored {} ({}) in {} with {} and {}",
             prefix,

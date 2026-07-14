@@ -130,7 +130,7 @@ async fn inner_test_mount(auto_mount: bool) -> Result<()> {
         stdin: false,
         hook_args: Default::default(),
     };
-    commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
+    cmd_snapshot::run(&ctx.global, &snapshot_args, None)
         .await
         .context("Failed to run cmd_snapshot")?;
 
@@ -252,7 +252,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         stdin: false,
         hook_args: Default::default(),
     };
-    commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
+    cmd_snapshot::run(&ctx.global, &snapshot_args, None)
         .await
         .context("Failed to run cmd_snapshot 1")?;
 
@@ -282,7 +282,7 @@ async fn test_mount_multiple_snapshots() -> Result<()> {
         stdin: false,
         hook_args: Default::default(),
     };
-    commands::cmd_snapshot::run(&ctx.global, &snapshot_args)
+    cmd_snapshot::run(&ctx.global, &snapshot_args, None)
         .await
         .context("Failed to run cmd_snapshot 2")?;
 

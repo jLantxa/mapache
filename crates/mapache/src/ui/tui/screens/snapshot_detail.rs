@@ -246,7 +246,7 @@ impl Screen for SnapshotDetailScreen {
 
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let inner = area.inner(Margin::new(2, 1));
+        let inner = area.inner(theme::CONTENT_MARGIN);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

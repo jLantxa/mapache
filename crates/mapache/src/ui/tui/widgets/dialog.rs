@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget},
 };
 
-use crate::ui::tui::theme;
+use crate::ui::tui::{theme, widgets::wrap_line};
 
 const DIALOG_MIN_WIDTH: u16 = 30;
 const DIALOG_PADDING: u16 = 2;
@@ -92,34 +92,5 @@ impl Dialog {
 
         ratatui::widgets::Clear.render(popup_area, frame.buffer_mut());
         frame.render_widget(content, popup_area);
-    }
-}
-
-fn wrap_line(line: &Line<'_>, max_width: usize, out: &mut Vec<Line<'static>>) {
-    if line.spans.is_empty() {
-        out.push(Line::from(""));
-        return;
-    }
-
-    let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    let full_style = line.spans.first().map(|s| s.style);
-
-    let chars: Vec<char> = full_text.chars().collect();
-    let total = chars.len();
-    if total == 0 {
-        out.push(Line::from(""));
-        return;
-    }
-
-    let mut start = 0;
-    while start < total {
-        let end = (start + max_width).min(total);
-        let segment: String = chars[start..end].iter().collect();
-        if let Some(style) = full_style {
-            out.push(Line::from(Span::styled(segment, style)));
-        } else {
-            out.push(Line::from(segment));
-        }
-        start = end;
     }
 }

@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
+    common::{config::CommandHooks, defaults::DEFAULT_GC_TOLERANCE, error::MapacheError, hooks},
     repository::{gc, lock::LockHandle, repo::Repository},
     ui::{
         self,
@@ -69,7 +69,11 @@ pub struct CmdArgs {
     pub hook_args: HookArgs,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CleanError> {
+pub async fn run(
+    global_args: &GlobalArgs,
+    args: &CmdArgs,
+    cmd_hooks: Option<&CommandHooks>,
+) -> Result<(), CleanError> {
     tracing::info!(target: "clean", "Starting clean command");
     let repo_result = with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -84,37 +88,29 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CleanEr
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, _, lock_handle| async move {
-            if !args.dry_run {
-                // Run pre-hook: abort command if it fails
-                hooks::run_pre(
-                    hooks::command_hooks(),
-                    "clean",
-                    &global_args.repo,
-                    args.hook_args.pre_hook.as_deref(),
-                )
-                .await?;
-            }
+            hooks::run_command_pre(
+                cmd_hooks,
+                "clean",
+                &global_args.repo,
+                args.hook_args.pre_hook.as_deref(),
+                args.dry_run,
+            )
+            .await?;
 
             run_with_repo(global_args.json, args, repo, lock_handle).await
         },
     )
     .await;
 
-    let result_str = match &repo_result {
-        Ok(_) => "success".to_string(),
-        Err(e) => format!("{e}"),
-    };
-    if !args.dry_run {
-        // Run post-hook: warning on failure, always continues
-        hooks::run_post(
-            hooks::command_hooks(),
-            "clean",
-            &global_args.repo,
-            &result_str,
-            args.hook_args.post_hook.as_deref(),
-        )
-        .await;
-    }
+    hooks::run_command_post(
+        cmd_hooks,
+        "clean",
+        &global_args.repo,
+        &repo_result,
+        args.hook_args.post_hook.as_deref(),
+        args.dry_run,
+    )
+    .await;
 
     repo_result.map_err(|e| CleanError::RepoOpenFail(e.to_string()))
 }

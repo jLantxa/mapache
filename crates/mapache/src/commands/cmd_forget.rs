@@ -249,7 +249,11 @@ pub fn parse_retention_number(s: &str) -> std::result::Result<usize, String> {
 
 const FORGET_MSG: &str = "forget";
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), ForgetError> {
+pub async fn run(
+    global_args: &GlobalArgs,
+    args: &CmdArgs,
+    cmd_hooks: Option<&crate::common::config::CommandHooks>,
+) -> Result<(), ForgetError> {
     tracing::info!(target: "forget", "Starting forget command");
 
     let dry_run = args.dry_run;
@@ -271,16 +275,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), ForgetE
             let cleanup_handler = CleanupHandler::new();
             cleanup_handler.add_lock(lock_handle.clone());
 
-            if !dry_run {
-                // Run pre-hook: abort command if it fails
-                hooks::run_pre(
-                    hooks::command_hooks(),
-                    "forget",
-                    &global_args.repo,
-                    args.hook_args.pre_hook.as_deref(),
-                )
-                .await?;
-            }
+            hooks::run_command_pre(
+                cmd_hooks,
+                "forget",
+                &global_args.repo,
+                args.hook_args.pre_hook.as_deref(),
+                dry_run,
+            )
+            .await?;
 
             forget_phase(repo.clone(), args, json_output, &cleanup_handler).await?;
             drop(cleanup_handler);
@@ -309,21 +311,15 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), ForgetE
     )
     .await;
 
-    let result_str = match &repo_result {
-        Ok(_) => "success".to_string(),
-        Err(e) => format!("{e}"),
-    };
-    if !dry_run {
-        // Run post-hook: warning on failure, always continues
-        hooks::run_post(
-            hooks::command_hooks(),
-            "forget",
-            &global_args.repo,
-            &result_str,
-            args.hook_args.post_hook.as_deref(),
-        )
-        .await;
-    }
+    hooks::run_command_post(
+        cmd_hooks,
+        "forget",
+        &global_args.repo,
+        &repo_result,
+        args.hook_args.post_hook.as_deref(),
+        dry_run,
+    )
+    .await;
 
     repo_result
 }

@@ -18,7 +18,7 @@ use crate::{
     ui::{
         SPINNER_TICK_CHARS,
         cli::color::Colorize,
-        default_bar_draw_target,
+        default_bar_draw_target, default_progress_style,
         events::{BackupEvent, Event, EventSender},
     },
     utils,
@@ -74,10 +74,9 @@ pub fn make_event_sender(
     //  Data Bar
     let data_bar = mp.add(ProgressBar::new(total_bytes));
     data_bar.set_style(
-            ProgressStyle::default_bar()
+            default_progress_style()
                 .template(&format!("{bytes_label:<6} [{{bar:20.cyan/white}}] [{{percent}}%] {{processed_bytes_fmt}} [{{bytes_per_sec}}]"))
                 .expect("invalid progress bar template for bundle bytes")
-                .progress_chars("=> ")
                 .with_key("processed_bytes_fmt", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                     let bytes = state.pos();
                     let total = state.len().unwrap_or(0);
@@ -94,11 +93,10 @@ pub fn make_event_sender(
     // Items Bar
     let items_bar = mp.add(ProgressBar::new(total_items));
     items_bar.set_style(
-        ProgressStyle::default_bar()
+        default_progress_style()
             .template(&format!("{items_label:<6} {{pos}} / {{len}}"))
             .expect("invalid progress bar template for bundle items")
-            .tick_chars(SPINNER_TICK_CHARS)
-            .progress_chars("=> "),
+            .tick_chars(SPINNER_TICK_CHARS),
     );
     items_bar.enable_steady_tick(refresh_interval);
 

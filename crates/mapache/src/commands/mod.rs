@@ -52,7 +52,6 @@ use crate::{
         },
         error::{MapacheError, Result},
         global::{MAPACHE_VERSION_INFO, THIS_MAPACHE_VERSION, set_global_opts_with_args},
-        hooks,
     },
     repository::{
         lock::LockHandle,
@@ -60,7 +59,10 @@ use crate::{
         snapshot::{Snapshot, SnapshotStream},
         storage::SecureStorage,
     },
-    ui::{self, cli},
+    ui::{
+        self,
+        cli::{self, color::Colorize},
+    },
     utils::{self, size},
 };
 
@@ -626,7 +628,6 @@ pub async fn parse_and_run() -> i32 {
     };
     let cmd_hooks =
         command_name.and_then(|name| config.hooks.as_ref().and_then(|h| h.get_command(name)));
-    hooks::init(cmd_hooks);
 
     let (global_result, command_result) = match args.command {
         // Commands without repository URL
@@ -711,7 +712,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args)
+        Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args, cmd_hooks.as_ref())
             .await
             .map_err(CmdError::new),
         Command::Copy(cmd) => cmd_copy::run(&global, &cmd.args)
@@ -726,7 +727,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Find(cmd) => cmd_find::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Forget(cmd) => cmd_forget::run(&global, &cmd.args)
+        Command::Forget(cmd) => cmd_forget::run(&global, &cmd.args, cmd_hooks.as_ref())
             .await
             .map_err(CmdError::new),
         Command::Init(cmd) => cmd_init::run(&global, &cmd.args)
@@ -752,10 +753,10 @@ pub async fn parse_and_run() -> i32 {
         Command::Rechunk(cmd) => cmd_rechunk::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args)
+        Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args, cmd_hooks.as_ref())
             .await
             .map_err(CmdError::new),
-        Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args)
+        Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args, cmd_hooks.as_ref())
             .await
             .map_err(CmdError::new),
         Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args)
@@ -767,7 +768,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args)
+        Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args, cmd_hooks.as_ref())
             .await
             .map_err(CmdError::new),
     };
@@ -958,6 +959,15 @@ pub async fn open_repository_with_lock(
         }
     })
     .await
+}
+
+/// Returns a formatted "[DRY RUN]" prefix if dry run is enabled, empty string otherwise.
+pub(crate) fn dry_run_prefix(dry_run: bool) -> String {
+    if dry_run {
+        format!("{} ", "[DRY RUN]".bold().purple())
+    } else {
+        String::new()
+    }
 }
 
 #[cfg(test)]

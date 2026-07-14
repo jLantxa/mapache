@@ -6,9 +6,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, open_repository},
     common::ContentIdType,
-    repository::repo::RepoConfig,
-    ui,
-    utils::{self, size},
+    ui, utils,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -42,17 +40,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), UnlockE
             UnlockError::RepoOpenFail(format!("failed to initialize backend: {}", e.inner()))
         })?;
 
-    let config = RepoConfig {
-        pack_size: (global_args.pack_size_mib * size::MiB as f32) as u64,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-    };
-
     let (repo, _) = open_repository(
         global_args.auth_file.as_ref(),
         global_args.key.as_ref(),
         backend,
-        config,
+        global_args.to_repo_config(),
     )
     .await
     .map_err(|e| UnlockError::RepoOpenFail(e.inner()))?;

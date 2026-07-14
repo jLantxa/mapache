@@ -3,7 +3,10 @@ use std::time::Instant;
 use ratatui::{Frame, layout::Rect};
 
 use crate::ui::events::RestoreEvent;
-use crate::ui::tui::widgets::{TaskProgressState, TaskProgressWidget};
+use crate::ui::tui::{
+    theme,
+    widgets::{TaskProgressState, TaskProgressWidget},
+};
 
 pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
     match event {
@@ -43,6 +46,6 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
 
 pub fn render_progress(frame: &mut Frame, area: Rect, state: &TaskProgressState) {
     let widget = TaskProgressWidget::new(state, "Restore Progress");
-    let inner = area.inner(ratatui::layout::Margin::new(2, 1));
+    let inner = area.inner(theme::CONTENT_MARGIN);
     widget.render(frame, inner);
 }

@@ -10,7 +10,7 @@ use std::{
 
 use clap::Args;
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressState};
 use parking_lot::Mutex;
 use serde::Serialize;
 
@@ -18,7 +18,8 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{
-        ID, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError, global::GlobalOpts, hooks,
+        ID, config::CommandHooks, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError,
+        global::GlobalOpts, hooks,
     },
     fs::tree::SerializedNodeStream,
     repository::{
@@ -28,7 +29,7 @@ use crate::{
         storage::SecureStorage,
         verify::{verify_pack, verify_snapshot_refs},
     },
-    ui::{self, cli::color::Colorize, default_bar_draw_target},
+    ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
 };
 
@@ -152,7 +153,11 @@ struct VerifyReport<'a> {
     json_out: bool,
 }
 
-pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), VerifyError> {
+pub async fn run(
+    global_args: &GlobalArgs,
+    args: &CmdArgs,
+    cmd_hooks: Option<&CommandHooks>,
+) -> Result<(), VerifyError> {
     let json_out = global_args.json;
     tracing::info!(target: "verify", "Starting verify command");
     if !json_out && global_args.no_cache {
@@ -180,11 +185,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), VerifyE
         global_args.retry_lock_duration,
         global_args.no_lock,
         |repo, secure_storage, lock_handle| async move {
-            hooks::run_pre(
-                hooks::command_hooks(),
+            hooks::run_command_pre(
+                cmd_hooks,
                 "verify",
                 &global_args.repo,
                 args.hook_args.pre_hook.as_deref(),
+                false,
             )
             .await?;
 
@@ -193,16 +199,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), VerifyE
     )
     .await;
 
-    let result_str = match &repo_result {
-        Ok(_) => "success".to_string(),
-        Err(e) => format!("{e}"),
-    };
-    hooks::run_post(
-        hooks::command_hooks(),
+    hooks::run_command_post(
+        cmd_hooks,
         "verify",
         &global_args.repo,
-        &result_str,
+        &repo_result,
         args.hook_args.post_hook.as_deref(),
+        false,
     )
     .await;
 
@@ -472,12 +475,11 @@ async fn verify_packs_physically(
 
     let verify_rate = Arc::new(Mutex::new(RateEstimator::new(UI_RATE_ESTIMATOR_WINDOW)));
 
-    let style = ProgressStyle::default_bar()
+    let style = default_progress_style()
         .template(
             "[{custom_elapsed}] [{bar:25.cyan/white}] [ETA: {custom_eta}] {pos}/{len} packs ({msg})",
         )
         .expect("invalid progress bar template for verify pack integrity")
-        .progress_chars("=> ")
         .with_key(
             "custom_elapsed",
             |state: &ProgressState, w: &mut dyn std::fmt::Write| {

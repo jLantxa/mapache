@@ -19,7 +19,7 @@ use crate::{
     ui::{
         SPINNER_TICK_CHARS,
         cli::color::Colorize,
-        default_bar_draw_target,
+        default_bar_draw_target, default_progress_style,
         events::{BackupEvent, Event, EventSender},
     },
     utils::{self, rate_estimator::RateEstimator},
@@ -161,8 +161,7 @@ pub fn make_event_sender(
         defaults::UI_RATE_ESTIMATOR_WINDOW,
     )));
 
-    let base_style = ProgressStyle::default_bar()
-        .progress_chars("=> ")
+    let base_style = default_progress_style()
         .with_key(
             "custom_elapsed",
             |state: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -232,7 +231,7 @@ pub fn make_event_sender(
     let error_counter_for_style = Arc::clone(&error_counter);
     let warning_counter_for_style = Arc::clone(&warning_counter);
     companion_bar.set_style(
-        ProgressStyle::default_bar()
+        default_progress_style()
             .template("[{items_info}] [{errors} errors, {warnings} warnings]")
             .expect("Invalid progress bar template for snapshot companion bar")
             .with_key(

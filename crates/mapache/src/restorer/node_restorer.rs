@@ -37,14 +37,7 @@ pub(crate) async fn restore_node_to_path(
             })?;
 
             let dst_file = if !dry_run {
-                if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| {
-                        MapacheError::Internal(format!(
-                            "could not create parent directories for file {}: {e}",
-                            dst_path.display()
-                        ))
-                    })?;
-                }
+                Restorer::ensure_parent_dir(dst_path)?;
 
                 Some(
                     OpenOptions::new()
@@ -141,13 +134,7 @@ pub(crate) async fn restore_node_to_path(
 
             if !dry_run {
                 // Create all parent directories before the symlink
-                if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| {
-                        MapacheError::Internal(format!(
-                            "could not create parent directories for symlink {dst_path:?}: {e}"
-                        ))
-                    })?;
-                }
+                Restorer::ensure_parent_dir(dst_path)?;
 
                 #[cfg(unix)]
                 {

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+
+- Using `--keep-yearly all` (and `--keep-monthly`, `--keep-weekly`,
+  `--keep-daily`, `--keep-hourly`) deleted all snapshots instead of keeping one
+  per period. Fixed by short-circuiting the arithmetic overflow caused by the
+  internal `usize::MAX` value.
+- `--keep-last 0` was accepted and kept zero snapshots, causing all snapshots to
+  be removed. Now rejected with a clear error. `--keep-last all` is also now
+  accepted.
+- The `restore_complete` JSON event always reported zero errors, warnings,
+  items, and bytes even when the restore had non-zero counts. The summary
+  counters now reflect the actual restore progress.
+
 ### Added
 
 - **`hooks`**: Added pre/post hook support for `snapshot`, `restore`, `forget`,

@@ -556,6 +556,14 @@ impl PackSaver {
         })
     }
 
+    fn packer_for(&mut self, blob_type: BlobType) -> Option<&mut Packer> {
+        match blob_type {
+            BlobType::Data => Some(&mut self.data_packer),
+            BlobType::Tree => Some(&mut self.tree_packer),
+            _ => None,
+        }
+    }
+
     /// Starts the main event loop.
     /// This loop is now extremely lightweight. It purely moves pointers.
     pub fn run(mut self) -> Result<()> {
@@ -568,10 +576,8 @@ impl PackSaver {
                     data,
                     raw_length,
                 } => {
-                    let packer = match blob_type {
-                        BlobType::Data => &mut self.data_packer,
-                        BlobType::Tree => &mut self.tree_packer,
-                        _ => continue,
+                    let Some(packer) = self.packer_for(blob_type) else {
+                        continue;
                     };
 
                     packer.add_blob(id, blob_type, &data, raw_length)?;

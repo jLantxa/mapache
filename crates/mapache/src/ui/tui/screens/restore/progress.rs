@@ -26,7 +26,7 @@ pub fn handle_event(state: &mut TaskProgressState, event: RestoreEvent) {
             state.add_processed_bytes(bytes);
         }
         RestoreEvent::BlobsSkipped { count: _, bytes } => {
-            // Treat skipped bytes as processed (no download needed).
+            state.skipped_bytes += bytes;
             state.add_processed_bytes(bytes);
         }
         RestoreEvent::Error(err) => {

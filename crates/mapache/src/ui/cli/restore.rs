@@ -23,6 +23,7 @@ use crate::{
 struct CliRestoreState {
     processed_items_count: Arc<AtomicU64>,
     processed_bytes_count: Arc<AtomicU64>,
+    skipped_bytes_count: Arc<AtomicU64>,
     error_counter: Arc<AtomicU64>,
     warning_counter: Arc<AtomicU64>,
     mp: MultiProgress,
@@ -53,6 +54,7 @@ impl CliRestoreState {
             .store(num_expected_bytes, Ordering::Relaxed);
         self.progress_bar.set_length(num_expected_bytes);
         self.processed_items_count.store(0, Ordering::Relaxed);
+        self.skipped_bytes_count.store(0, Ordering::Relaxed);
     }
 
     fn processed_item(&self, _path: &Path) {
@@ -69,6 +71,10 @@ impl CliRestoreState {
         self.progress_bar.inc(bytes);
         let pos = self.progress_bar.position() as f64;
         self.rate_estimator.lock().observe(pos);
+    }
+
+    fn skipped_bytes(&self, bytes: u64) {
+        self.skipped_bytes_count.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn error(&self, msg: &str) {
@@ -94,11 +100,13 @@ impl Drop for CliRestoreState {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn make_event_sender(
     num_expected_items: Option<u64>,
     num_expected_bytes: Option<u64>,
 ) -> (
     EventSender,
+    Arc<AtomicU64>,
     Arc<AtomicU64>,
     Arc<AtomicU64>,
     Arc<AtomicU64>,
@@ -109,6 +117,7 @@ pub(crate) fn make_event_sender(
 
     let processed_items_count = Arc::new(AtomicU64::new(0));
     let processed_bytes_count = Arc::new(AtomicU64::new(0));
+    let skipped_bytes_count = Arc::new(AtomicU64::new(0));
     let error_counter = Arc::new(AtomicU64::new(0));
     let warning_counter = Arc::new(AtomicU64::new(0));
     let num_expected_items_atom = Arc::new(AtomicU64::new(num_expected_items.unwrap_or(0)));
@@ -174,9 +183,10 @@ pub(crate) fn make_event_sender(
     let num_items_clone = num_expected_items_atom.clone();
     let err_clone = error_counter.clone();
     let warn_clone = warning_counter.clone();
+    let skipped_clone = skipped_bytes_count.clone();
     companion_bar.set_style(
         default_progress_style()
-            .template("[{processed_items_fmt}] [{errors} errors, {warnings} warnings]")
+            .template("[{processed_items_fmt}] {skipped_fmt}[{errors} errors, {warnings} warnings]")
             .expect("Invalid progress bar template for restore companion bar")
             .with_key(
                 "processed_items_fmt",
@@ -188,6 +198,15 @@ pub(crate) fn make_event_sender(
                         let _ = write!(w, "{items} / {total} items");
                     } else {
                         let _ = write!(w, "{items} items");
+                    }
+                },
+            )
+            .with_key(
+                "skipped_fmt",
+                move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let skipped = skipped_clone.load(Ordering::Relaxed);
+                    if skipped > 0 {
+                        let _ = write!(w, "[skipped {}]", utils::format_size_binary(skipped, 3));
                     }
                 },
             )
@@ -209,6 +228,7 @@ pub(crate) fn make_event_sender(
     let state = Arc::new(CliRestoreState {
         processed_items_count: processed_items_count.clone(),
         processed_bytes_count: processed_bytes_count.clone(),
+        skipped_bytes_count: skipped_bytes_count.clone(),
         error_counter: error_counter.clone(),
         warning_counter: warning_counter.clone(),
         mp,
@@ -239,6 +259,7 @@ pub(crate) fn make_event_sender(
             }
             RestoreEvent::BlobsSkipped { count: _, bytes } => {
                 state.processed_bytes(bytes);
+                state.skipped_bytes(bytes);
             }
             RestoreEvent::Warning(ref msg) => {
                 state.warning(msg);
@@ -261,5 +282,6 @@ pub(crate) fn make_event_sender(
         warning_counter,
         processed_items_count,
         processed_bytes_count,
+        skipped_bytes_count,
     )
 }

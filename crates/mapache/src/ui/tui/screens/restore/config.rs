@@ -45,6 +45,10 @@ impl RestoreConfig {
                 field_type: FormFieldType::Toggle(false),
             },
             FormField {
+                label: "Verify Content:".to_string(),
+                field_type: FormFieldType::Toggle(false),
+            },
+            FormField {
                 label: "Conflict strategy:".to_string(),
                 field_type: FormFieldType::Choice(
                     1, // Default to Overwrite
@@ -145,8 +149,12 @@ impl RestoreConfig {
         self.form.get_toggle(2).unwrap_or(false)
     }
 
+    pub fn get_verify(&self) -> bool {
+        self.form.get_toggle(3).unwrap_or(false)
+    }
+
     pub fn get_strategy(&self) -> Strategy {
-        match self.form.get_choice(3).unwrap_or(1) {
+        match self.form.get_choice(4).unwrap_or(1) {
             0 => Strategy::Fail,
             1 => Strategy::Overwrite,
             2 => Strategy::Skip,
@@ -170,10 +178,10 @@ impl RestoreConfig {
     }
 
     pub fn get_include(&self) -> Option<Vec<PathBuf>> {
-        Self::parse_paths(self.form.get_text(4).unwrap_or("")).or_else(|| self.paths.clone())
+        Self::parse_paths(self.form.get_text(5).unwrap_or("")).or_else(|| self.paths.clone())
     }
 
     pub fn get_exclude(&self) -> Option<Vec<PathBuf>> {
-        Self::parse_paths(self.form.get_text(5).unwrap_or(""))
+        Self::parse_paths(self.form.get_text(6).unwrap_or(""))
     }
 }

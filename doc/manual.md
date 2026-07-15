@@ -791,15 +791,27 @@ on some filesystems but may cause fragmentation.
 
 ### Verification
 
-By default, mapache skips content verification for files whose modification
-time matches the snapshot (optimization). Use `--verify` to force reading and
-hashing every restored file.
+By default, restore decides whether to overwrite a file based on the chosen
+strategy alone. Use `--verify` to enable **content-level verification**:
+the restorer reads each existing local file, hashes every blob, and compares
+the result against the repository index.
 
-When `--verify` is active, the restorer performs **incremental restore**: each
-blob is individually compared against the local file content. Only blobs whose
-hash differs from the on-disk data are downloaded and written; unchanged blobs
-are skipped. This significantly speeds up repeated restores of large files
-where only a small fraction of the content changed.
+| Strategy | verify=off | verify=on |
+|---|---|---|
+| `overwrite` | Always rewrites | Reads local file, skips unchanged blobs, only downloads and writes changed ones |
+| `skip` | Always skips | Always skips |
+| `fail` | Error if file exists | Error if file exists |
+| `newer` | Compares modification times | Reads local file and compares blob-by-blob; falls back to mtime if sizes differ or verification fails |
+
+When `--verify` is active with `overwrite` or `newer`, the restorer performs
+**incremental restore**: each blob is individually compared against the local
+file content. Only blobs whose hash differs from the on-disk data are
+downloaded and written; unchanged blobs are skipped. This significantly speeds
+up repeated restores of large files where only a small fraction of the content
+changed.
+
+If verification fails (e.g. unreadable file), the restorer falls back to the
+strategy's default behavior.
 
 ### Dry Run
 
@@ -960,13 +972,13 @@ Use `--force` for immediate deletion.
 
 | Rule | Description |
 |---|---|
-| `--keep-last <N>` | Keep the last N snapshots by time |
+| `--keep-last <N\|all>` | Keep the last N snapshots by time. `all` keeps every snapshot. `0` and negatives are rejected. |
 | `--keep-within <DUR>` | Keep all snapshots within a duration (e.g. `1d`, `2w`, `3m`, `30d`) |
-| `--keep-hourly <N\|all>` | Keep N hourly snapshots |
-| `--keep-daily <N\|all>` | Keep N daily snapshots |
-| `--keep-weekly <N\|all>` | Keep N weekly snapshots |
-| `--keep-monthly <N\|all>` | Keep N monthly snapshots |
-| `--keep-yearly <N\|all>` | Keep N yearly snapshots |
+| `--keep-hourly <N\|all>` | Keep N hourly snapshots. `all` keeps the latest snapshot in every hour that has one. |
+| `--keep-daily <N\|all>` | Keep N daily snapshots. `all` keeps the latest snapshot in every day that has one. |
+| `--keep-weekly <N\|all>` | Keep N weekly snapshots. `all` keeps the latest snapshot in every week that has one. |
+| `--keep-monthly <N\|all>` | Keep N monthly snapshots. `all` keeps the latest snapshot in every month that has one. |
+| `--keep-yearly <N\|all>` | Keep N yearly snapshots. `all` keeps the latest snapshot in every year that has one. |
 | `--keep-tags <TAGS>` | Always keep snapshots with these tags |
 | `--keep-min <N\|all>` | Always keep at least N snapshots after applying rules |
 
@@ -1464,7 +1476,7 @@ mapache forget [SNAPSHOT_IDS...] -r <URL>
   --force                 Immediately delete (don't just mark)
   --tags <TAGS>           Filter by tags
   --host <HOST>           Filter by host (repeatable)
-  --keep-last <N>         Keep last N snapshots
+  --keep-last <N|all>     Keep last N snapshots (or all)
   --keep-within <DUR>     Keep snapshots within duration
   --keep-hourly <N|all>   Keep N hourly snapshots
   --keep-daily <N|all>    Keep N daily snapshots

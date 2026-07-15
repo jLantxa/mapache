@@ -17,6 +17,7 @@ use crate::{
     fs::{self as repo_fs, node::Node},
     repository::index::MasterIndex,
     restorer::{Restorer, Strategy},
+    ui::events::{Event, RestoreEvent, emit_event},
     utils::size,
 };
 
@@ -45,42 +46,48 @@ impl Restorer {
             return Ok(RestorePlan::FullRestore);
         }
 
-        if node.is_file()
+        match self.opts.strategy {
+            Strategy::Skip => return Ok(RestorePlan::Skip),
+            Strategy::Fail if !node.is_dir() => {
+                return Err(MapacheError::Internal(format!(
+                    "target {} exists already",
+                    restore_path.display()
+                )));
+            }
+            _ => {}
+        }
+
+        if self.opts.verify
+            && node.is_file()
             && let Ok(local_metadata) = fs::symlink_metadata(restore_path)
+            && local_metadata.len() == node.metadata.size
         {
-            let local_size = local_metadata.len();
-            let local_mtime = local_metadata.modified().ok();
-
-            if local_size == node.metadata.size {
-                let mtime_matches = node
-                    .metadata
-                    .times_match(local_mtime, node.metadata.modified_time);
-
-                if mtime_matches && !self.opts.verify {
-                    return Ok(RestorePlan::Skip);
+            match self.verify_file_content(node, restore_path, index).await {
+                Ok(changed) if changed.is_empty() => return Ok(RestorePlan::Skip),
+                Ok(changed) => {
+                    let total = node.blobs.as_ref().map_or(0, |b| b.len());
+                    if changed.len() >= total {
+                        return Ok(RestorePlan::FullRestore);
+                    }
+                    return Ok(RestorePlan::SelectiveRestore {
+                        changed_blobs: changed,
+                    });
                 }
-
-                match self.verify_file_content(node, restore_path, index).await {
-                    Ok(changed) if changed.is_empty() => return Ok(RestorePlan::Skip),
-                    Ok(changed) => {
-                        let total = node.blobs.as_ref().map_or(0, |b| b.len());
-                        if changed.len() >= total {
-                            return Ok(RestorePlan::FullRestore);
-                        }
-                        return Ok(RestorePlan::SelectiveRestore {
-                            changed_blobs: changed,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(target: "restorer", "Could not verify file {:?}: {e}", restore_path);
-                    }
+                Err(e) => {
+                    tracing::warn!(target: "restorer", "Could not verify file {:?}: {e}", restore_path);
+                    emit_event(
+                        &self.event_sender,
+                        Event::Restore(RestoreEvent::Warning(format!(
+                            "Could not verify {}: {e}",
+                            restore_path.display()
+                        ))),
+                    );
                 }
             }
         }
 
         match self.opts.strategy {
             Strategy::Overwrite => Ok(RestorePlan::FullRestore),
-            Strategy::Skip => Ok(RestorePlan::Skip),
             Strategy::Newer => {
                 let local_metadata = fs::symlink_metadata(restore_path).map_err(|e| {
                     MapacheError::Internal(format!(
@@ -111,15 +118,8 @@ impl Restorer {
 
                 Ok(RestorePlan::FullRestore)
             }
-            Strategy::Fail => {
-                if node.is_dir() {
-                    return Ok(RestorePlan::FullRestore);
-                }
-                Err(MapacheError::Internal(format!(
-                    "target {} exists already",
-                    restore_path.display()
-                )))
-            }
+            Strategy::Fail => Ok(RestorePlan::FullRestore),
+            Strategy::Skip => Ok(RestorePlan::Skip),
         }
     }
 
@@ -366,7 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_same_size_mtime_skips() -> Result<()> {
-        let (restorer, tmp) = create_restorer(Strategy::Overwrite, false).await;
+        let (restorer, tmp) = create_restorer(Strategy::Skip, false).await;
         let path = tmp.path().join("existing.txt");
         std::fs::write(&path, "0123456789")?;
         let mtime = std::fs::symlink_metadata(&path)?.modified()?;
@@ -386,6 +386,32 @@ mod tests {
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::Skip
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_ignores_mtime_match() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Overwrite, false).await;
+        let path = tmp.path().join("existing.txt");
+        std::fs::write(&path, "0123456789")?;
+        let mtime = std::fs::symlink_metadata(&path)?.modified()?;
+
+        let node = Node {
+            name: "existing.txt".into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 10,
+                modified_time: Some(mtime),
+                ..Default::default()
+            },
+            blobs: Some(vec![]),
+            ..Default::default()
+        };
+        let index = Arc::new(MasterIndex::new());
+        assert!(matches!(
+            restorer.should_restore_node(&node, &path, index).await?,
+            RestorePlan::FullRestore
         ));
         Ok(())
     }

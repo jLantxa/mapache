@@ -16,6 +16,7 @@ pub struct ProgressBar {
     expected_bytes: u64,
     processed_items: u64,
     expected_items: u64,
+    skipped_bytes: u64,
     elapsed: std::time::Duration,
     scanning: bool,
     cancelling: bool,
@@ -31,6 +32,7 @@ impl ProgressBar {
             expected_bytes: 0,
             processed_items: 0,
             expected_items: 0,
+            skipped_bytes: 0,
             elapsed: std::time::Duration::ZERO,
             scanning: false,
             cancelling: false,
@@ -61,6 +63,11 @@ impl ProgressBar {
     pub fn items(mut self, processed: u64, expected: u64) -> Self {
         self.processed_items = processed;
         self.expected_items = expected;
+        self
+    }
+
+    pub fn skipped(mut self, skipped: u64) -> Self {
+        self.skipped_bytes = skipped;
         self
     }
 
@@ -179,6 +186,12 @@ impl ProgressBar {
             spans.push(Span::raw(spacer));
             spans.push(Span::styled("Items: ", bold));
             spans.push(Span::raw(format!("{}", self.processed_items)));
+        }
+
+        if self.skipped_bytes > 0 {
+            spans.push(Span::raw(spacer));
+            spans.push(Span::styled("Skipped: ", bold));
+            spans.push(Span::raw(utils::format_size_binary(self.skipped_bytes, 3)));
         }
 
         Line::from(spans)

@@ -77,6 +77,7 @@ pub(crate) struct RestoreCounters {
     pub(crate) warning_count: Arc<AtomicU64>,
     pub(crate) total_items: Arc<AtomicU64>,
     pub(crate) total_bytes: Arc<AtomicU64>,
+    pub(crate) skipped_bytes: Arc<AtomicU64>,
 }
 
 impl std::fmt::Display for Strategy {
@@ -237,106 +238,115 @@ pub async fn run(
     let json_output = global_args.json;
     let dry_run = args.dry_run;
 
-    let repo_result = with_repository_lock(
-        global_args.auth_file.as_ref(),
-        global_args.key.as_ref(),
-        new_backend_with_prompt(global_args.backend_options(false)).await?,
-        global_args.to_repo_config(),
-        false,
-        global_args.retry_lock_duration,
-        global_args.no_lock,
-        |repo, _secure_storage, lock_handle| async move {
-            repo.reload_master_index().await?;
+    let repo_result =
+        with_repository_lock(
+            global_args.auth_file.as_ref(),
+            global_args.key.as_ref(),
+            new_backend_with_prompt(global_args.backend_options(false)).await?,
+            global_args.to_repo_config(),
+            false,
+            global_args.retry_lock_duration,
+            global_args.no_lock,
+            |repo, _secure_storage, lock_handle| async move {
+                repo.reload_master_index().await?;
 
-            let (id, snap) = find_use_snapshot(repo.clone(), &args.snapshot)
-                .await
-                .map_err(|e| RestoreError::SnapshotNotFound(e.inner()))?
-                .ok_or_else(|| {
-                    RestoreError::SnapshotNotFound(
-                        "no snapshot matches the given identifier".to_string(),
+                let (id, snap) = find_use_snapshot(repo.clone(), &args.snapshot)
+                    .await
+                    .map_err(|e| RestoreError::SnapshotNotFound(e.inner()))?
+                    .ok_or_else(|| {
+                        RestoreError::SnapshotNotFound(
+                            "no snapshot matches the given identifier".to_string(),
+                        )
+                    })?;
+                let snapshot_pair = SnapshotPair { id, snapshot: snap };
+
+                let target = args.target.as_ref().ok_or_else(|| {
+                    RestoreError::TargetError(
+                        "target path is required. use --target or set it in config file."
+                            .to_string(),
                     )
                 })?;
-            let snapshot_pair = SnapshotPair { id, snapshot: snap };
 
-            let target = args.target.as_ref().ok_or_else(|| {
-                RestoreError::TargetError(
-                    "target path is required. use --target or set it in config file.".to_string(),
-                )
-            })?;
-
-            if json_output {
-                #[derive(Serialize)]
-                struct RestoreStartMsg {
-                    snapshot: String,
-                    target: String,
-                    dry_run: bool,
-                    strategy: String,
-                }
-
-                ui::json::emit_static(
-                    "restore_start",
-                    &RestoreStartMsg {
-                        snapshot: snapshot_pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
-                        target: target.display().to_string(),
-                        dry_run: args.dry_run,
-                        strategy: args.strategy.clone().unwrap_or(Strategy::Fail).to_string(),
-                    },
-                );
-            } else {
-                if args.dry_run {
-                    log!("{}", "[DRY RUN]".bold().purple());
-                }
-                log_always!(
-                    "Restoring snapshot {}",
-                    snapshot_pair
-                        .id
-                        .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
-                        .bold()
-                        .yellow()
-                );
-            }
-
-            let (event_sender, error_count, warning_count, total_items, total_bytes) =
                 if json_output {
+                    #[derive(Serialize)]
+                    struct RestoreStartMsg {
+                        snapshot: String,
+                        target: String,
+                        dry_run: bool,
+                        strategy: String,
+                    }
+
+                    ui::json::emit_static(
+                        "restore_start",
+                        &RestoreStartMsg {
+                            snapshot: snapshot_pair.id.to_short_hex(SHORT_SNAPSHOT_ID_LEN),
+                            target: target.display().to_string(),
+                            dry_run: args.dry_run,
+                            strategy: args.strategy.clone().unwrap_or(Strategy::Fail).to_string(),
+                        },
+                    );
+                } else {
+                    if args.dry_run {
+                        log!("{}", "[DRY RUN]".bold().purple());
+                    }
+                    log_always!(
+                        "Restoring snapshot {}",
+                        snapshot_pair
+                            .id
+                            .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                            .bold()
+                            .yellow()
+                    );
+                }
+
+                let (
+                    event_sender,
+                    error_count,
+                    warning_count,
+                    total_items,
+                    total_bytes,
+                    skipped_bytes,
+                ) = if json_output {
                     json_restore::make_event_sender(None, None)
                 } else {
                     restore::make_event_sender(None, None)
                 };
 
-            let counters = RestoreCounters {
-                event_sender,
-                error_count,
-                warning_count,
-                total_items,
-                total_bytes,
-            };
+                let counters = RestoreCounters {
+                    event_sender,
+                    error_count,
+                    warning_count,
+                    total_items,
+                    total_bytes,
+                    skipped_bytes,
+                };
 
-            let start = Instant::now();
+                let start = Instant::now();
 
-            hooks::run_command_pre(
-                cmd_hooks,
-                "restore",
-                &global_args.repo,
-                args.hook_args.pre_hook.as_deref(),
-                dry_run,
-            )
-            .await?;
+                hooks::run_command_pre(
+                    cmd_hooks,
+                    "restore",
+                    &global_args.repo,
+                    args.hook_args.pre_hook.as_deref(),
+                    dry_run,
+                )
+                .await?;
 
-            run_with_repo(
-                repo,
-                lock_handle,
-                args,
-                counters,
-                snapshot_pair,
-                start,
-                json_output,
-            )
-            .await?;
+                run_with_repo(
+                    repo,
+                    lock_handle,
+                    args,
+                    counters,
+                    snapshot_pair,
+                    start,
+                    json_output,
+                )
+                .await?;
 
-            Ok(())
-        },
-    )
-    .await;
+                Ok(())
+            },
+        )
+        .await;
 
     hooks::run_command_post(
         cmd_hooks,
@@ -484,6 +494,7 @@ pub(crate) async fn run_with_repo(
     let warns = counters.warning_count.load(Ordering::Relaxed);
     let items = counters.total_items.load(Ordering::Relaxed);
     let bytes = counters.total_bytes.load(Ordering::Relaxed);
+    let skipped = counters.skipped_bytes.load(Ordering::Relaxed);
     if json_output {
         #[derive(Serialize)]
         struct RestoreCompleteMsg {
@@ -492,6 +503,7 @@ pub(crate) async fn run_with_repo(
             warnings: u64,
             total_items: u64,
             total_bytes: u64,
+            skipped_bytes: u64,
             dry_run: bool,
         }
 
@@ -503,20 +515,34 @@ pub(crate) async fn run_with_repo(
                 warnings: warns,
                 total_items: items,
                 total_bytes: bytes,
+                skipped_bytes: skipped,
                 dry_run,
             },
         );
     } else {
         let prefix = super::dry_run_prefix(dry_run);
-        ui::cli::log!(
-            "{}Restored {} ({}) in {} with {} and {}",
-            prefix,
-            utils::format_count(items, "item", "items"),
-            utils::format_size_binary(bytes, 3),
-            utils::pretty_print_duration(start.elapsed()),
-            utils::format_count(errs, "error", "errors"),
-            utils::format_count(warns, "warning", "warnings"),
-        );
+        if skipped > 0 {
+            ui::cli::log!(
+                "{}Restored {} ({}) in {} with {} and {}, {} skipped",
+                prefix,
+                utils::format_count(items, "item", "items"),
+                utils::format_size_binary(bytes, 3),
+                utils::pretty_print_duration(start.elapsed()),
+                utils::format_count(errs, "error", "errors"),
+                utils::format_count(warns, "warning", "warnings"),
+                utils::format_size_binary(skipped, 3),
+            );
+        } else {
+            ui::cli::log!(
+                "{}Restored {} ({}) in {} with {} and {}",
+                prefix,
+                utils::format_count(items, "item", "items"),
+                utils::format_size_binary(bytes, 3),
+                utils::pretty_print_duration(start.elapsed()),
+                utils::format_count(errs, "error", "errors"),
+                utils::format_count(warns, "warning", "warnings"),
+            );
+        }
     }
     Ok(())
 }

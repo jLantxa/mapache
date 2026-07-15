@@ -87,7 +87,7 @@ impl RestoreScreen {
             },
             quit_on_error: false,
             preallocate: true,
-            verify: false,
+            verify: self.config.get_verify(),
             include: self.config.get_include(),
             exclude: self.config.get_exclude(),
             batch_size: None,

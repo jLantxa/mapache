@@ -716,31 +716,27 @@ mod tests {
 
         let new_metadata = std::fs::metadata(&restored_file)?;
         assert_eq!(new_metadata.len(), original_content.len() as u64);
-        // We might have some precision issues depending on platform, but set_file_times should help.
 
-        // Run restore again WITHOUT verify. It should skip because size and mtime match.
+        // Run restore again with Overwrite + no verify. Overwrite always rewrites.
         ctx.restore_builder(restore_path.clone())
             .strategy(Strategy::Overwrite)
             .verify(false)
             .run(&ctx.global)
             .await?;
 
-        assert_eq!(std::fs::read_to_string(&restored_file)?, modified_content);
+        assert_eq!(std::fs::read_to_string(&restored_file)?, original_content);
 
-        // Modify mtime but keep modified content.
-        // It should detect that content DOES NOT match (automatic verification on mtime mismatch) and RESTORE it.
-        let different_filetime =
-            FileTime::from_last_modification_time(&std::fs::metadata(&restored_file)?);
-        let future_time = FileTime::from_unix_time(different_filetime.unix_seconds() + 1000, 0);
-        set_file_times(&restored_file, future_time, future_time)?;
+        // Overwrite + verify: rewrites but skips unchanged blobs (incremental restore)
+        std::fs::write(&restored_file, modified_content)?;
+        set_file_times(&restored_file, original_filetime, original_filetime)?;
 
         ctx.restore_builder(restore_path.clone())
             .strategy(Strategy::Overwrite)
-            .verify(false)
+            .verify(true)
             .run(&ctx.global)
             .await?;
 
-        // It should have restored original content because hashes didn't match.
+        // Content should be original (blobs match, so selective restore skips unchanged)
         assert_eq!(std::fs::read_to_string(&restored_file)?, original_content);
 
         // Test overwriting a readonly file

@@ -17,6 +17,7 @@ use crate::{
 pub struct TaskProgressState {
     pub expected_bytes: u64,
     pub processed_bytes: u64,
+    pub skipped_bytes: u64,
     pub expected_items: u64,
     pub processed_items: u64,
     pub errors: Vec<String>,
@@ -35,6 +36,7 @@ impl TaskProgressState {
         Self {
             expected_bytes: 0,
             processed_bytes: 0,
+            skipped_bytes: 0,
             expected_items: 0,
             processed_items: 0,
             errors: Vec::new(),
@@ -127,6 +129,7 @@ impl<'a> TaskProgressWidget<'a> {
         let progress_bar = ProgressBar::new()
             .bytes(self.state.processed_bytes, self.state.expected_bytes)
             .items(self.state.processed_items, self.state.expected_items)
+            .skipped(self.state.skipped_bytes)
             .elapsed(self.state.elapsed())
             .scanning(self.state.scanning)
             .cancelling(self.state.cancelling)

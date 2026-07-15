@@ -133,7 +133,11 @@ impl SecureStorage {
 
     /// Compress using a reusable context. Returns owned Vec.
     #[allow(clippy::uninit_vec)]
-    pub fn compress_managed(&self, ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn compress_managed(
+        &self,
+        ctx: &mut EncodingContext,
+        data: &[u8],
+    ) -> Result<Vec<u8>> {
         let bound = zstd::zstd_safe::compress_bound(data.len());
         let mut out = Vec::with_capacity(bound);
 
@@ -160,31 +164,6 @@ impl SecureStorage {
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>> {
         zstd::decode_all(data)
             .map_err(|e| MapacheError::Compression(format!("zstd decompression failed: {e}")))
-    }
-
-    /// Logic for encryption into a provided vector.
-    fn encrypt_into(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let Some(cipher) = &self.cipher else {
-            return Ok(data.to_vec());
-        };
-
-        let total = AES_GCM_NONCE_LEN + data.len() + AES_GCM_TAG_LEN;
-        let mut out = Vec::with_capacity(total);
-
-        let nonce_bytes: [u8; AES_GCM_NONCE_LEN] = rand::random();
-
-        out.extend_from_slice(&nonce_bytes);
-        out.extend_from_slice(data);
-
-        let payload_mut = &mut out[AES_GCM_NONCE_LEN..];
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let tag = cipher
-            .encrypt_in_place_detached(nonce, b"", payload_mut)
-            .map_err(|_| MapacheError::Crypto("encryption failed".to_string()))?;
-
-        out.extend_from_slice(tag.as_slice());
-
-        Ok(out)
     }
 
     #[inline]
@@ -234,12 +213,6 @@ impl SecureStorage {
             .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))?;
 
         Ok(data)
-    }
-
-    /// Encrypt using a context (though buffers are no longer held).
-    #[inline]
-    pub fn encrypt_managed(&self, _ctx: &mut EncodingContext, data: &[u8]) -> Result<Vec<u8>> {
-        self.encrypt_into(data)
     }
 
     pub fn encode(&self, data: &[u8]) -> Result<Vec<u8>> {

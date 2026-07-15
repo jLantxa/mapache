@@ -366,27 +366,15 @@ impl Repository {
                 .with_key(&master_key)?,
         );
 
-        let manifest_path = Path::new(MANIFEST_PATH);
+        let repo = Repository::open(backend, secure_storage.clone(), config).await?;
+        tracing::info!(target: "repo", "Repository opened");
 
-        let manifest = backend
-            .read(&Handle::new(manifest_path), 0, 0)
-            .await
-            .map_err(|e| MapacheError::Repo(format!("this is not a mapache repository: {e}")))?;
-        let manifest = secure_storage.decode(&manifest).map_err(|e| {
-            MapacheError::Crypto(format!("could not decode the manifest file: {e}"))
-        })?;
-        let manifest: Manifest = serde_json::from_slice(&manifest)?;
-        tracing::info!(target: "repo", "Manifest loaded (v{})", manifest.version());
-
-        let version = manifest.version();
+        let version = repo.manifest().version();
         if version > THIS_REPOSITORY_VERSION {
             return Err(MapacheError::Repo(format!(
                 "invalid repository version '{version}'"
             )));
         }
-
-        let repo = Repository::open(backend, secure_storage.clone(), config).await?;
-        tracing::info!(target: "repo", "Repository opened");
 
         Ok((repo, secure_storage))
     }
@@ -694,59 +682,49 @@ impl Repository {
 
     /// Lists all snapshot IDs
     pub async fn list_snapshot_ids(&self) -> Result<Vec<ID>> {
-        let ids = self
-            .list_files(ContentIdType::Snapshot)
+        self.list_ids_for(ContentIdType::Snapshot, None)
             .await
-            .map_err(|e| MapacheError::Backend(format!("could not list snapshots: {e}")))?
-            .into_iter()
-            .filter_map(|path| {
-                path.file_name()
-                    .and_then(|s| s.to_str())
-                    .and_then(|file_name| ID::from_hex(file_name).ok())
-            })
-            .collect();
-
-        Ok(ids)
+            .map_err(|e| MapacheError::Backend(format!("could not list snapshots: {e}")))
     }
 
     pub(crate) async fn list_index_ids(&self) -> Result<Vec<ID>> {
-        let index_paths = self.list_files(ContentIdType::Index).await?;
-        let mut index_ids = Vec::with_capacity(index_paths.len());
-
-        for file_path in index_paths {
-            let Some(file_name) = file_path.file_name() else {
-                continue;
-            };
-            let file_name = file_name.to_string_lossy().to_string();
-
-            match ID::from_hex(&file_name) {
-                Ok(id) => index_ids.push(id),
-                Err(_) => continue, // Ignore invalid ID names
-            }
-        }
-
-        Ok(index_ids)
+        self.list_ids_for(ContentIdType::Index, None).await
     }
 
     /// Lists all .dropped snapshot IDs
     pub(crate) async fn list_dropped_snapshot_ids(&self) -> Result<Vec<ID>> {
-        let ids = self
-            .list_files_with_extension(ContentIdType::Snapshot, Some(REPO_DROPPED_EXTENSION))
+        self.list_ids_for(ContentIdType::Snapshot, Some(REPO_DROPPED_EXTENSION))
             .await
             .map_err(|e| {
                 MapacheError::Backend(format!(
                     "failed to list files with the dropped snapshot extension: {e}"
                 ))
-            })?
+            })
+    }
+
+    /// Lists all IDs for a given file type, optionally filtered by extension.
+    async fn list_ids_for(
+        &self,
+        file_type: ContentIdType,
+        extension: Option<&str>,
+    ) -> Result<Vec<ID>> {
+        let paths = self.list_files_with_extension(file_type, extension).await?;
+        Ok(Self::ids_from_paths(paths, extension.is_some()))
+    }
+
+    fn ids_from_paths(paths: Vec<PathBuf>, use_stem: bool) -> Vec<ID> {
+        paths
             .into_iter()
             .filter_map(|path| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .and_then(|file_stem| ID::from_hex(file_stem).ok())
+                let name = if use_stem {
+                    path.file_stem()
+                } else {
+                    path.file_name()
+                };
+                name.and_then(|s| s.to_str())
+                    .and_then(|name| ID::from_hex(name).ok())
             })
-            .collect();
-
-        Ok(ids)
+            .collect()
     }
 
     /// Loads a pack.
@@ -1023,8 +1001,6 @@ impl Repository {
         }
 
         // Pack: fanout with concurrency
-        use futures::stream::{self, StreamExt};
-
         let backend = self.backend.clone();
         let objects_path = self.objects_path.clone();
 

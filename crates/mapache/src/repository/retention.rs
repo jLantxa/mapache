@@ -3,7 +3,7 @@ use std::{
     hash::Hash,
 };
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 
 use crate::{
     common::ID,
@@ -53,6 +53,14 @@ pub fn apply_retention_rules(
     let now_date = now.date_naive();
     let timezone = now.timezone();
 
+    // The "all" retention value (`--keep-yearly all` etc.) is parsed as `usize::MAX`.
+    // For a period rule it means "keep the latest snapshot of every period present",
+    // which `keep_latest_per_period` produces when the cutoff is far enough in the
+    // past to include every snapshot. Computing the cutoff arithmetically for
+    // `usize::MAX` instead overflows (`(n - 1) as i32` wraps to a small negative
+    // number, pushing the cutoff into the future) and would keep nothing.
+    let all_cutoff: DateTime<Local> = DateTime::<Utc>::MIN_UTC.with_timezone(&timezone);
+
     // Policies are applied sequentially, and the results are unioned.
     for rule in rules {
         let ids_to_keep = match rule {
@@ -76,24 +84,33 @@ pub fn apply_retention_rules(
             }
             RetentionRule::KeepYearly(n) => {
                 // Cutoff is Jan 1st of the year (N-1) years ago.
-                let target_year = now.year() - ((*n - 1) as i32);
-                let cutoff = match NaiveDate::from_ymd_opt(target_year, 1, 1)
-                    .and_then(|d| d.and_hms_opt(0, 0, 0))
-                {
-                    Some(naive_datetime) => timezone
-                        .from_local_datetime(&naive_datetime)
-                        .earliest()
-                        .unwrap_or_else(|| {
-                            timezone
-                                .from_local_datetime(&(naive_datetime + Duration::hours(1)))
-                                .earliest()
-                                .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
-                        }),
-                    None => now,
+                let cutoff = if *n == usize::MAX {
+                    all_cutoff
+                } else {
+                    let target_year = now.year() - ((*n - 1) as i32);
+                    match NaiveDate::from_ymd_opt(target_year, 1, 1)
+                        .and_then(|d| d.and_hms_opt(0, 0, 0))
+                    {
+                        Some(naive_datetime) => timezone
+                            .from_local_datetime(&naive_datetime)
+                            .earliest()
+                            .unwrap_or_else(|| {
+                                timezone
+                                    .from_local_datetime(&(naive_datetime + Duration::hours(1)))
+                                    .earliest()
+                                    .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
+                            }),
+                        None => now,
+                    }
                 };
 
                 keep_latest_per_period(snapshots_sorted, |s| s.timestamp.year(), cutoff)
             }
+            RetentionRule::KeepMonthly(n) if *n == usize::MAX => keep_latest_per_period(
+                snapshots_sorted,
+                |s| (s.timestamp.year(), s.timestamp.month()),
+                all_cutoff,
+            ),
             RetentionRule::KeepMonthly(n) => {
                 // Cutoff is the 1st of the month N months ago.
                 let cutoff = match (|| {
@@ -132,22 +149,26 @@ pub fn apply_retention_rules(
             }
             RetentionRule::KeepWeekly(n) => {
                 // Cutoff is the Monday 00:00 of the week N weeks ago (ISO 8601 start of week).
-                let current_monday_date =
-                    now_date - Duration::days(now_date.weekday().num_days_from_monday() as i64);
+                let cutoff = if *n == usize::MAX {
+                    all_cutoff
+                } else {
+                    let current_monday_date =
+                        now_date - Duration::days(now_date.weekday().num_days_from_monday() as i64);
 
-                let target_monday_date = current_monday_date - Duration::weeks((*n - 1) as i64);
+                    let target_monday_date = current_monday_date - Duration::weeks((*n - 1) as i64);
 
-                let cutoff = match target_monday_date.and_hms_opt(0, 0, 0) {
-                    Some(naive_datetime) => timezone
-                        .from_local_datetime(&naive_datetime)
-                        .earliest()
-                        .unwrap_or_else(|| {
-                            timezone
-                                .from_local_datetime(&(naive_datetime + Duration::hours(1)))
-                                .earliest()
-                                .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
-                        }),
-                    None => now,
+                    match target_monday_date.and_hms_opt(0, 0, 0) {
+                        Some(naive_datetime) => timezone
+                            .from_local_datetime(&naive_datetime)
+                            .earliest()
+                            .unwrap_or_else(|| {
+                                timezone
+                                    .from_local_datetime(&(naive_datetime + Duration::hours(1)))
+                                    .earliest()
+                                    .unwrap_or(naive_datetime.and_utc().with_timezone(&timezone))
+                            }),
+                        None => now,
+                    }
                 };
 
                 keep_latest_per_period(
@@ -158,34 +179,44 @@ pub fn apply_retention_rules(
             }
             RetentionRule::KeepDaily(n) => {
                 // Calculate midnight of the current day for the anchor.
-                let cutoff = match now_date.and_hms_opt(0, 0, 0) {
-                    Some(naive_midnight) => {
-                        let now_midnight = naive_midnight
-                            .and_local_timezone(timezone)
-                            .earliest()
-                            .unwrap_or_else(|| {
-                                (naive_midnight + Duration::hours(1))
-                                    .and_local_timezone(timezone)
-                                    .earliest()
-                                    .unwrap_or(naive_midnight.and_utc().with_timezone(&timezone))
-                            });
-                        // Cutoff is midnight of the day N days ago.
-                        now_midnight - Duration::days((*n - 1) as i64)
+                let cutoff = if *n == usize::MAX {
+                    all_cutoff
+                } else {
+                    match now_date.and_hms_opt(0, 0, 0) {
+                        Some(naive_midnight) => {
+                            let now_midnight = naive_midnight
+                                .and_local_timezone(timezone)
+                                .earliest()
+                                .unwrap_or_else(|| {
+                                    (naive_midnight + Duration::hours(1))
+                                        .and_local_timezone(timezone)
+                                        .earliest()
+                                        .unwrap_or(
+                                            naive_midnight.and_utc().with_timezone(&timezone),
+                                        )
+                                });
+                            // Cutoff is midnight of the day N days ago.
+                            now_midnight - Duration::days((*n - 1) as i64)
+                        }
+                        None => now,
                     }
-                    None => now,
                 };
 
                 keep_latest_per_period(snapshots_sorted, |s| s.timestamp.date_naive(), cutoff)
             }
             RetentionRule::KeepHourly(n) => {
-                // Truncate 'now' to the start of the current hour.
-                let now_truncated = now
-                    .with_minute(0)
-                    .and_then(|d| d.with_second(0))
-                    .unwrap_or(now);
+                let cutoff = if *n == usize::MAX {
+                    all_cutoff
+                } else {
+                    // Truncate 'now' to the start of the current hour.
+                    let now_truncated = now
+                        .with_minute(0)
+                        .and_then(|d| d.with_second(0))
+                        .unwrap_or(now);
 
-                // Cutoff is the start of the hour N hours ago.
-                let cutoff = now_truncated - Duration::hours((*n - 1) as i64);
+                    // Cutoff is the start of the hour N hours ago.
+                    now_truncated - Duration::hours((*n - 1) as i64)
+                };
 
                 keep_latest_per_period(
                     snapshots_sorted,
@@ -693,6 +724,65 @@ mod tests {
 
         // Should keep 10, not reduced to 5
         assert_eq!(kept_ids.len(), 10);
+    }
+
+    #[test]
+    fn test_keep_yearly_all_keeps_latest_per_year() {
+        // "all" is parsed as usize::MAX by the CLI (`--keep-yearly all`). It must
+        // keep the latest snapshot of EVERY year present (deduping within a year),
+        // not keep zero and not keep every snapshot.
+        let snapshots = create_mock_snapshots();
+        let rules = vec![RetentionRule::KeepYearly(usize::MAX)];
+        let kept_ids = apply_retention_rules(
+            &snapshots.iter().collect::<Vec<_>>(),
+            &rules,
+            None,
+            test_now(),
+        );
+
+        let expected_ids = create_expected_ids(&[
+            0,  // Latest in 2021
+            1,  // Latest in 2022
+            13, // Latest in 2023
+            15, // Latest in 2024
+            22, // Latest in 2025
+        ]);
+        assert_eq!(kept_ids, expected_ids);
+    }
+
+    #[test]
+    fn test_period_rules_all_keep_every_isolated_period() {
+        // Each snapshot is one year apart, so every one is alone in its own
+        // year / month / week / day / hour bucket. With the "all" value
+        // (usize::MAX) every period rule must therefore keep all of them.
+        let now = test_now();
+        let snapshots = [
+            create_snapshot(0, now - Duration::days(365 * 4), &[], None),
+            create_snapshot(1, now - Duration::days(365 * 3), &[], None),
+            create_snapshot(2, now - Duration::days(365 * 2), &[], None),
+            create_snapshot(3, now - Duration::days(365), &[], None),
+            create_snapshot(4, now, &[], None),
+        ];
+        let all_ids = create_expected_ids(&[0, 1, 2, 3, 4]);
+
+        for rule in [
+            RetentionRule::KeepYearly(usize::MAX),
+            RetentionRule::KeepMonthly(usize::MAX),
+            RetentionRule::KeepWeekly(usize::MAX),
+            RetentionRule::KeepDaily(usize::MAX),
+            RetentionRule::KeepHourly(usize::MAX),
+        ] {
+            let kept_ids = apply_retention_rules(
+                &snapshots.iter().collect::<Vec<_>>(),
+                std::slice::from_ref(&rule),
+                None,
+                now,
+            );
+            assert_eq!(
+                kept_ids, all_ids,
+                "rule {rule:?} with \"all\" must keep every period"
+            );
+        }
     }
 
     #[test]

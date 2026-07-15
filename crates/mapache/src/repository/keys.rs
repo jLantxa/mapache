@@ -335,35 +335,6 @@ impl KeyManager {
         }
     }
 
-    /// Check if any keyfiles exist in the repository
-    pub async fn keyfiles_exist(&self) -> Result<()> {
-        let mut stream = KeyFileStream::new(self.backend.clone()).await?;
-        if stream.next().await.is_some() {
-            Ok(())
-        } else {
-            Err(MapacheError::Repo(
-                "No keyfiles found. This repository may not be properly initialized.".to_string(),
-            ))?
-        }
-    }
-
-    /// Load a keyfile with a given ID
-    pub async fn load_keyfile_with_id(&self, id: &ID) -> Result<Option<KeyFile>> {
-        let path = PathBuf::from(KEYS_DIR).join(id.to_hex());
-        tracing::debug!(target: "keys", "Loading key file {}", id.to_short_hex(8));
-        if !self.backend.path_exists(&path).await {
-            return Ok(None);
-        }
-
-        let ss = SecureStorage::new();
-        let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
-        let keyfile_data = self.backend.read(&handle, 0, 0).await?;
-        let keyfile_bytes = ss.decompress(&keyfile_data)?;
-        let keyfile: KeyFile = serde_json::from_slice(&keyfile_bytes)?;
-
-        Ok(Some(keyfile))
-    }
-
     /// Load a keyfile with a given username
     pub async fn load_keyfile_with_username(
         &self,

@@ -94,21 +94,19 @@ impl BlobMap {
     }
 
     fn freeze(&mut self) {
-        if matches!(self, BlobMap::Mutable(_)) {
-            let map = std::mem::replace(
-                self,
-                BlobMap::Immutable(Vec::new(), BloomFilter::new(1, 0.01)),
-            );
-            if let BlobMap::Mutable(map) = map {
-                let mut vec: Vec<(ID, BlobLocationInternal)> = map.into_iter().collect();
-                vec.sort_unstable_by_key(|(id, _)| *id);
-                let mut bf = BloomFilter::new(vec.len(), 0.01);
-                for (id, _) in &vec {
-                    bf.insert(id);
-                }
-                *self = BlobMap::Immutable(vec, bf);
-            }
+        let BlobMap::Mutable(map) = std::mem::replace(
+            self,
+            BlobMap::Immutable(Vec::new(), BloomFilter::new(1, 0.01)),
+        ) else {
+            return;
+        };
+        let mut vec: Vec<(ID, BlobLocationInternal)> = map.into_iter().collect();
+        vec.sort_unstable_by_key(|(id, _)| *id);
+        let mut bf = BloomFilter::new(vec.len(), 0.01);
+        for (id, _) in &vec {
+            bf.insert(id);
         }
+        *self = BlobMap::Immutable(vec, bf);
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = (&ID, &BlobLocationInternal)> + '_> {
@@ -320,11 +318,6 @@ impl Index {
     /// Look up a data blob location directly.
     fn get_data_location(&self, id: &ID) -> Option<&BlobLocationInternal> {
         self.data_ids.get(id)
-    }
-
-    /// Look up a tree blob location directly.
-    fn get_tree_location(&self, id: &ID) -> Option<&BlobLocationInternal> {
-        self.tree_ids.get(id)
     }
 
     /// Adds all blob descriptors from a specific pack to the index.
@@ -573,16 +566,6 @@ impl MasterIndex {
         lock.indices.iter().rev().find_map(|idx| {
             idx.get_data_location(id)
                 .and_then(|l| idx.resolve_location(l, BlobType::Data))
-        })
-    }
-
-    // Search backwards for Tree blobs specifically.
-    pub fn get_tree(&self, id: &ID) -> Option<BlobLocator> {
-        let lock = self.inner.read();
-
-        lock.indices.iter().rev().find_map(|idx| {
-            idx.get_tree_location(id)
-                .and_then(|l| idx.resolve_location(l, BlobType::Tree))
         })
     }
 

@@ -42,10 +42,10 @@ struct WarningMsg<'a> {
 struct JsonRestoreState {
     json_reporter: JsonReporter,
     visited_nodes: AtomicU64,
-    processed_items_count: AtomicU64,
-    processed_bytes_count: AtomicU64,
-    error_counter: AtomicU64,
-    warning_counter: AtomicU64,
+    processed_items_count: Arc<AtomicU64>,
+    processed_bytes_count: Arc<AtomicU64>,
+    error_counter: Arc<AtomicU64>,
+    warning_counter: Arc<AtomicU64>,
     current_stage: Arc<Mutex<String>>,
     last_update: Arc<Mutex<Instant>>,
     start_time: Instant,
@@ -109,10 +109,10 @@ pub(crate) fn make_event_sender(
     let state = Arc::new(JsonRestoreState {
         json_reporter: JsonReporter::new(true),
         visited_nodes: AtomicU64::new(0),
-        processed_items_count: AtomicU64::new(0),
-        processed_bytes_count: AtomicU64::new(0),
-        error_counter: AtomicU64::new(0),
-        warning_counter: AtomicU64::new(0),
+        processed_items_count: processed_items_count.clone(),
+        processed_bytes_count: processed_bytes_count.clone(),
+        error_counter: error_counter.clone(),
+        warning_counter: warning_counter.clone(),
         current_stage: Arc::new(Mutex::new(String::new())),
         last_update: Arc::new(Mutex::new(Instant::now())),
         start_time: Instant::now(),
@@ -200,4 +200,37 @@ pub(crate) fn make_event_sender(
         processed_items_count,
         processed_bytes_count,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // The tuple returned by `make_event_sender` feeds the final `restore_complete`
+    // JSON summary in `cmd_restore`. Regression guard: those counters must be the
+    // same allocations the event closure mutates, otherwise the completion summary
+    // always reports zero errors/warnings/items/bytes regardless of what happened
+    // during the restore.
+    #[test]
+    fn returned_counters_reflect_emitted_events() {
+        let (sender, errors, warnings, items, bytes) = make_event_sender(Some(7), Some(52));
+        let emit = |ev| sender(Event::Restore(ev));
+
+        emit(RestoreEvent::PlanBuilt {
+            total_items: 7,
+            total_bytes: 52,
+        });
+        emit(RestoreEvent::ItemProcessed(PathBuf::from("a")));
+        emit(RestoreEvent::ItemProcessed(PathBuf::from("b")));
+        emit(RestoreEvent::BytesProcessed(30));
+        emit(RestoreEvent::Warning("w1".to_string()));
+        emit(RestoreEvent::Warning("w2".to_string()));
+        emit(RestoreEvent::Error("e1".to_string()));
+
+        assert_eq!(errors.load(Ordering::Relaxed), 1, "error count");
+        assert_eq!(warnings.load(Ordering::Relaxed), 2, "warning count");
+        assert_eq!(items.load(Ordering::Relaxed), 2, "processed items");
+        assert_eq!(bytes.load(Ordering::Relaxed), 30, "processed bytes");
+    }
 }

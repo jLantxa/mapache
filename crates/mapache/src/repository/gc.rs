@@ -197,6 +197,51 @@ pub async fn scan(
     Ok(plan)
 }
 
+/// Delete a set of objects from the repository in parallel, reporting
+/// progress through the given reporter. Returns the total bytes freed.
+async fn delete_objects(
+    repo: &Repository,
+    ids: &IdSet<ID>,
+    content_type: ContentIdType,
+    task_kind: GcTaskKind,
+    label: &str,
+    reporter: &GcReporter,
+    concurrency: usize,
+) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    reporter.start_task(task_kind, Some(ids.len() as u64));
+    let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    let deleted_size = stream::iter(ids)
+        .map(|id| {
+            let r = reporter.clone();
+            let pos = pos.clone();
+            async move {
+                let size = match repo.delete_file(content_type, id, None).await {
+                    Ok(size) => size,
+                    Err(e) => {
+                        tracing::warn!(target: "gc", "failed to delete {label} {id}: {e}");
+                        0
+                    }
+                };
+                let current = pos.fetch_add(1, Ordering::Relaxed) + 1;
+                r.update_task(task_kind, current);
+                size
+            }
+        })
+        .buffer_unordered(concurrency)
+        .fold(0u64, |acc, size| async move { acc + size })
+        .await;
+
+    reporter.finish_task(task_kind);
+    reporter.log(format!("Deleted {} {label}s", pos.load(Ordering::Relaxed)));
+
+    Ok(deleted_size)
+}
+
 impl Plan {
     /// Execute the plan, consuming it. Checks the shutdown signal between
     /// phases only, so on-disk state stays consistent on interruption.
@@ -263,40 +308,17 @@ impl Plan {
 
     /// Delete packs that contain no referenced blobs.
     async fn delete_unused_packs(&self, event_sender: EventSender) -> Result<u64> {
-        if self.unused_packs.is_empty() {
-            return Ok(0);
-        }
-
         let r = GcReporter(event_sender);
-        r.start_task(
+        delete_objects(
+            &self.repo,
+            &self.unused_packs,
+            ContentIdType::Pack,
             GcTaskKind::DeletingUnusedPacks,
-            Some(self.unused_packs.len() as u64),
-        );
-        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-        let deleted_size = stream::iter(&self.unused_packs)
-            .map(|id| {
-                let repo = &self.repo;
-                let r = r.clone();
-                let pos = pos.clone();
-                Ok(async move {
-                    let size = repo.delete_file(ContentIdType::Pack, id, None).await?;
-                    let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    r.update_task(GcTaskKind::DeletingUnusedPacks, current);
-                    Ok::<u64, MapacheError>(size)
-                })
-            })
-            .try_buffer_unordered(16)
-            .try_fold(0, |acc, size| async move { Ok(acc + size) })
-            .await?;
-
-        r.finish_task(GcTaskKind::DeletingUnusedPacks);
-        r.log(format!(
-            "Deleted {} unused packs",
-            pos.load(std::sync::atomic::Ordering::Relaxed)
-        ));
-
-        Ok(deleted_size)
+            "unused pack",
+            &r,
+            16,
+        )
+        .await
     }
 
     /// Repack referenced blobs from obsolete packs to new packs.
@@ -454,104 +476,39 @@ impl Plan {
         Ok(())
     }
 
-    /// Delete old index files
+    /// Delete old index files.
     /// This operation must be performed after the master index has been cleaned up
     /// and all referenced packs have been repacked.
     async fn delete_old_indices(&mut self, event_sender: EventSender) -> Result<u64> {
-        // Make sure that the new index files don't overlap the files to delete.
         let new_index_ids = self.repo.index().ids();
         self.index_ids.retain(|id| !new_index_ids.contains(id));
 
-        if self.index_ids.is_empty() {
-            return Ok(0);
-        }
-
         let r = GcReporter(event_sender);
-        r.start_task(
+        delete_objects(
+            &self.repo,
+            &self.index_ids,
+            ContentIdType::Index,
             GcTaskKind::DeletingOldIndices,
-            Some(self.index_ids.len() as u64),
-        );
-        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-        let deleted_size = stream::iter(&self.index_ids)
-            .map(|id| {
-                let repo = &self.repo;
-                let r = r.clone();
-                let pos = pos.clone();
-                async move {
-                    let size = match repo.delete_file(ContentIdType::Index, id, None).await {
-                        Ok(size) => size,
-                        Err(e) => {
-                            tracing::warn!(target: "gc", "failed to delete index {id}: {e}");
-                            0
-                        }
-                    };
-                    let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    r.update_task(GcTaskKind::DeletingOldIndices, current);
-                    size
-                }
-            })
-            .buffer_unordered(8)
-            .fold(0u64, |acc, size| async move { acc + size })
-            .await;
-
-        r.finish_task(GcTaskKind::DeletingOldIndices);
-
-        r.log(format!(
-            "Deleted {} obsolete index files",
-            pos.load(std::sync::atomic::Ordering::Relaxed)
-        ));
-
-        Ok(deleted_size)
+            "obsolete index file",
+            &r,
+            8,
+        )
+        .await
     }
 
     /// Delete all pack files marked as obsolete.
     async fn delete_obsolete_packs(&self, event_sender: EventSender) -> Result<u64> {
-        if self.obsolete_packs.is_empty() {
-            return Ok(0);
-        }
-
         let r = GcReporter(event_sender);
-        r.start_task(
+        delete_objects(
+            &self.repo,
+            &self.obsolete_packs,
+            ContentIdType::Pack,
             GcTaskKind::DeletingObsoletePacks,
-            Some(self.obsolete_packs.len() as u64),
-        );
-        let pos = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-        // Convert the IdSet into an async stream.
-        // We map each ID to an async delete operation and process them in parallel.
-        let deleted_size = stream::iter(&self.obsolete_packs)
-            .map(|id| {
-                let repo = &self.repo;
-                let r = r.clone();
-                let pos = pos.clone();
-                async move {
-                    // Perform the async delete
-                    let size = match repo.delete_file(ContentIdType::Pack, id, None).await {
-                        Ok(size) => size,
-                        Err(e) => {
-                            tracing::warn!(target: "gc", "failed to delete pack {id}: {e}");
-                            0
-                        }
-                    };
-
-                    let current = pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    r.update_task(GcTaskKind::DeletingObsoletePacks, current);
-                    size
-                }
-            })
-            .buffer_unordered(8)
-            .fold(0u64, |acc, size| async move { acc + size })
-            .await;
-
-        r.finish_task(GcTaskKind::DeletingObsoletePacks);
-
-        r.log(format!(
-            "Deleted {} obsolete packs",
-            pos.load(std::sync::atomic::Ordering::Relaxed)
-        ));
-
-        Ok(deleted_size)
+            "obsolete pack",
+            &r,
+            8,
+        )
+        .await
     }
 }
 

@@ -80,8 +80,9 @@ pub struct CmdArgs {
     #[arg(long = "host", value_parser)]
     pub hosts: Vec<String>,
 
-    /// Keep the last N snapshots.
-    #[arg(long, group = "retention_rules")]
+    /// Keep the last N snapshots. N must be greater than 0 or "all".
+    #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
+    #[serde(deserialize_with = "deserialize_retention_opt")]
     pub keep_last: Option<usize>,
 
     /// Keep snapshots within a specified duration (e.g., '1d', '2w', '3m', '4y', '5h', '6s').
@@ -495,4 +496,46 @@ async fn forget_phase(
 struct MsgForget {
     kept: SnapshotEntryList,
     removed: SnapshotEntryList,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    // `--keep-last 0` must be rejected, exactly like the other `--keep-*` rules.
+    // Previously `keep_last` used a plain integer parser with no lower bound, so
+    // `--keep-last 0` produced `KeepLast(0)`, which keeps zero snapshots and (with
+    // no `--keep-min`) silently forgets every snapshot in the repository.
+    #[test]
+    fn keep_last_rejects_zero() {
+        let err = CmdArgs::try_parse_from(["forget", "--keep-last", "0"])
+            .expect_err("--keep-last 0 must be rejected");
+        assert!(
+            err.to_string().contains("greater than 0"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn keep_last_rejects_negative() {
+        assert!(
+            CmdArgs::try_parse_from(["forget", "--keep-last", "-3"]).is_err(),
+            "--keep-last -3 must be rejected"
+        );
+    }
+
+    #[test]
+    fn keep_last_accepts_all() {
+        let args = CmdArgs::try_parse_from(["forget", "--keep-last", "all"])
+            .expect("--keep-last all must parse");
+        assert_eq!(args.keep_last, Some(usize::MAX));
+    }
+
+    #[test]
+    fn keep_last_accepts_positive() {
+        let args = CmdArgs::try_parse_from(["forget", "--keep-last", "5"])
+            .expect("--keep-last 5 must parse");
+        assert_eq!(args.keep_last, Some(5));
+    }
 }

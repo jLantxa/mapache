@@ -276,17 +276,17 @@ impl LockHandle {
     }
 
     async fn perform_delete(&self) {
+        Self::delete_lock_file(&self.repo, &self.lock).await;
+    }
+
+    async fn delete_lock_file(repo: &Repository, lock: &Mutex<Lock>) {
         // Get the ID without holding the lock across an await point
         let lock_id = {
-            let lock_guard = self.lock.lock();
+            let lock_guard = lock.lock();
             *lock_guard.id()
         };
 
-        if let Err(e) = self
-            .repo
-            .delete_file(ContentIdType::Lock, &lock_id, None)
-            .await
-        {
+        if let Err(e) = repo.delete_file(ContentIdType::Lock, &lock_id, None).await {
             tracing::warn!(target: "repo", "Failed to delete lock {}: {e}", lock_id.to_short_hex(8));
         }
     }
@@ -313,9 +313,7 @@ impl LockHandle {
                     };
 
                     tracing::info!(target: "repo", "Releasing lock {} (triggered)", lock_id.to_short_hex(8));
-                    if let Err(e) = repo.delete_file(ContentIdType::Lock, &lock_id, None).await {
-                        tracing::warn!(target: "repo", "Failed to delete lock {}: {e}", lock_id.to_short_hex(8));
-                    }
+                    Self::delete_lock_file(&repo, &lock).await;
                 }
             });
         }
@@ -481,34 +479,26 @@ impl Repository {
     /// or deserialized, it will be ignored.
     pub async fn get_locks(&self) -> Result<Vec<Lock>> {
         let all_lock_paths = self.list_files(ContentIdType::Lock).await?;
-        let mut locks = Vec::new();
 
+        let mut locks = Vec::new();
         for path in all_lock_paths {
-            // Attempt to read the lock file
-            let lock_data_result = self
+            let Some(data) = self
                 .backend()
                 .read(
                     &Handle::new_with_hint(&path, ContentIdType::Lock, true),
                     0,
                     0,
                 )
-                .await;
-
-            let lock = match lock_data_result {
-                Ok(data) => data,
-                Err(_) => continue,
+                .await
+                .ok()
+            else {
+                continue;
             };
-
-            // Attempt to decode the lock data
-            let decoded_lock_result = self.secure_storage().decode(&lock);
-            let decoded_lock = match decoded_lock_result {
-                Ok(data) => data,
-                Err(_) => continue,
+            let Some(decoded) = self.secure_storage().decode(&data).ok() else {
+                continue;
             };
-
-            // Attempt to deserialize the lock
-            if let Ok(lock_obj) = serde_json::from_slice::<Lock>(&decoded_lock) {
-                locks.push(lock_obj);
+            if let Ok(lock) = serde_json::from_slice::<Lock>(&decoded) {
+                locks.push(lock);
             }
         }
 

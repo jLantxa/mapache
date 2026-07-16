@@ -6,6 +6,12 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
+# quick-xml v0.38.4 (via rust-s3 v0.37.2) — upstream has no fix yet.
+# RUSTSEC-2026-0194: Quadratic CPU exhaustion in attribute duplicate-name check.
+# RUSTSEC-2026-0195: Unbounded namespace allocation in NsReader (OOM).
+# Both are High severity DoS requiring crafted XML input from a remote source.
+# mapache does not use NsReader and does not call attributes() with default
+# checks on untrusted input, so the practical risk is minimal.
 ignore = [
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",

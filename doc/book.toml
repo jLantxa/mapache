@@ -1,0 +1,14 @@
+[book]
+title = "mapache"
+authors = ["jlantxa"]
+language = "en"
+src = "."
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/jlantxa/mapache"
+edit-url-template = "https://github.com/jlantxa/mapache/edit/main/doc/{path}"
+

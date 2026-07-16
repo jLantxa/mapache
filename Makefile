@@ -90,7 +90,7 @@ cov:
 
 clean:
 	cargo clean
-	rm -rf ./build/
+	rm -rf ./build/ ./doc/book/
 
 cloc:
 	@cloc . --exclude-dir=target --timeout 0

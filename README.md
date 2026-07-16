@@ -14,6 +14,13 @@ designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
 their own validation before relying on it for primary backups.
 
+## Documentation
+
+Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.github.io/mapache/)**.
+
+- [Manual](https://jlantxa.github.io/mapache/manual.html) — complete usage reference
+- [Design](https://jlantxa.github.io/mapache/design.html) — repository format and architecture
+
 ## Key Features
 
 - **Performance:** parallel multi-threaded backup and restore pipeline.
@@ -127,6 +134,12 @@ the `Releases` page for a specific released version.
 
   ```bash
   mapache snapshot ~/Documents -r /path/to/repo
+  ```
+
+#### **Launch the TUI**
+
+  ```bash
+  mapache tui -r /path/to/repo
   ```
 
 #### **List snapshots**

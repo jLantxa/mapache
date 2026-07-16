@@ -1,5 +1,6 @@
 /target
 /build
+/doc/book
 
 # IDE
 .vscode/

@@ -84,6 +84,7 @@ clippy:
 cov:
 	env MAPACHE_TEST_VERBOSE=true \
 		cargo llvm-cov --workspace --html --quiet \
+		--ignore-filename-regex 'crates/mapache/src/ui/tui' \
 		< /dev/null 2> /dev/null
 	xdg-open ./target/llvm-cov/html/index.html
 

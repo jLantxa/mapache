@@ -107,6 +107,26 @@ pub(crate) fn make_event_sender(
     Arc<AtomicU64>,
     Arc<AtomicU64>,
 ) {
+    make_event_sender_with_reporter(
+        JsonReporter::new(true),
+        num_expected_items,
+        num_expected_bytes,
+    )
+}
+
+#[allow(clippy::type_complexity)]
+fn make_event_sender_with_reporter(
+    json_reporter: JsonReporter,
+    num_expected_items: Option<u64>,
+    num_expected_bytes: Option<u64>,
+) -> (
+    EventSender,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+) {
     let error_counter = Arc::new(AtomicU64::new(0));
     let warning_counter = Arc::new(AtomicU64::new(0));
     let processed_items_count = Arc::new(AtomicU64::new(0));
@@ -114,7 +134,7 @@ pub(crate) fn make_event_sender(
     let skipped_bytes_count = Arc::new(AtomicU64::new(0));
 
     let state = Arc::new(JsonRestoreState {
-        json_reporter: JsonReporter::new(true),
+        json_reporter,
         visited_nodes: AtomicU64::new(0),
         processed_items_count: processed_items_count.clone(),
         processed_bytes_count: processed_bytes_count.clone(),
@@ -227,7 +247,7 @@ mod tests {
     #[test]
     fn returned_counters_reflect_emitted_events() {
         let (sender, errors, warnings, items, bytes, skipped) =
-            make_event_sender(Some(7), Some(52));
+            make_event_sender_with_reporter(JsonReporter::sink(), Some(7), Some(52));
         let emit = |ev| sender(Event::Restore(ev));
 
         emit(RestoreEvent::PlanBuilt {

@@ -14,14 +14,22 @@ static GLOBAL_JSON_REPORTER: LazyLock<JsonReporter> = LazyLock::new(|| JsonRepor
 
 pub(crate) struct JsonReporter {
     auto_flush: bool,
-    writer: Mutex<BufWriter<std::io::Stdout>>,
+    writer: Mutex<Box<dyn Write + Send>>,
 }
 
 impl JsonReporter {
     pub(crate) fn new(auto_flush: bool) -> Self {
         Self {
             auto_flush,
-            writer: Mutex::new(BufWriter::with_capacity(8192, std::io::stdout())),
+            writer: Mutex::new(Box::new(BufWriter::with_capacity(8192, std::io::stdout()))),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink() -> Self {
+        Self {
+            auto_flush: false,
+            writer: Mutex::new(Box::new(std::io::sink())),
         }
     }
 

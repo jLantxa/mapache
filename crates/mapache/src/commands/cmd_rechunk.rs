@@ -4,13 +4,13 @@ use clap::Args;
 use futures::StreamExt;
 
 use crate::{
-    archiver::progress::SnapshotProgress,
+    archiver::{
+        progress::SnapshotProgress,
+        rewrite::{RewriteCtx, rewrite_snapshot_tree},
+    },
     backend::{StorageHint, new_backend_with_prompt},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{
-        ContentIdType, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError,
-        rewrite_snapshot_tree,
-    },
+    common::{ContentIdType, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError},
     repository::snapshot::SnapshotStream,
     ui::{
         self,

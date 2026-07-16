@@ -12,10 +12,10 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::{
-    common::{defaults::SHORT_SNAPSHOT_ID_LEN, find_in_snapshot},
+    common::defaults::SHORT_SNAPSHOT_ID_LEN,
     fs::node::Node,
     repository::{
-        repo::Repository,
+        repo::{Repository, find_in_snapshot},
         snapshot::{SnapshotEntry, SnapshotEntryList},
     },
     ui::tui::{

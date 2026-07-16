@@ -10,16 +10,16 @@ use clap::{ArgGroup, Args};
 use futures::StreamExt;
 
 use crate::{
-    archiver::progress::SnapshotProgress,
+    archiver::{
+        progress::SnapshotProgress,
+        rewrite::{RewriteCtx, rewrite_snapshot_tree},
+    },
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
         find_use_snapshot, parse_tags, with_repository_lock,
     },
-    common::{
-        ContentIdType, ID, RewriteCtx, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN,
-        error::MapacheError, rewrite_snapshot_tree,
-    },
+    common::{ContentIdType, ID, SaveID, defaults::SHORT_SNAPSHOT_ID_LEN, error::MapacheError},
     fs::filter::{
         merge_filtered_paths, parse_relative_filter_paths, read_filtered_paths_from_file,
     },

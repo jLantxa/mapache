@@ -6,6 +6,7 @@
 pub(crate) mod chunker_pool;
 pub(crate) mod processor;
 pub(crate) mod progress;
+pub(crate) mod rewrite;
 pub(crate) mod tree_serializer;
 
 use std::{

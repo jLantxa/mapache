@@ -10,9 +10,12 @@ use crate::{
         GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
         with_repository_lock,
     },
-    common::{ID, error::MapacheError, find_in_snapshot},
+    common::{ID, error::MapacheError},
     fs::node::{Node, node_to_string},
-    repository::snapshot::{Snapshot, SnapshotStream},
+    repository::{
+        repo::find_in_snapshot,
+        snapshot::{Snapshot, SnapshotStream},
+    },
     ui,
 };
 

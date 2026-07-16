@@ -1162,6 +1162,39 @@ impl Repository {
     }
 }
 
+/// Finds a terminal node in a snapshot tree by name or glob.
+pub async fn find_in_snapshot(
+    repo: Arc<Repository>,
+    snapshot: &Snapshot,
+    pattern: &str,
+) -> Result<Vec<(PathBuf, crate::fs::node::Node)>> {
+    use crate::fs::{filter::GlobRule, tree::SerializedNodeStream};
+
+    let root_tree_id = snapshot.tree;
+    let starts_with_slash = pattern.starts_with('/');
+    let pattern = pattern.trim_start_matches('/');
+    let search_path = if starts_with_slash || pattern.contains('/') {
+        PathBuf::from(pattern)
+    } else {
+        Path::new("**").join(pattern)
+    };
+    let glob_rule = GlobRule::new(&search_path);
+    let mut stream =
+        SerializedNodeStream::new(repo, Some(root_tree_id), PathBuf::new(), None, None).await?;
+    let mut results = Vec::new();
+
+    while let Some(res) = stream.next().await {
+        let (node_path, stream_node_res) = res?;
+        let stream_node = stream_node_res?;
+
+        if glob_rule.is_strict_match(&node_path) {
+            results.push((node_path, stream_node.node));
+        }
+    }
+
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

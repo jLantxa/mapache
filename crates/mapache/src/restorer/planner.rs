@@ -415,4 +415,139 @@ mod tests {
         ));
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_newer_restores_when_local_older() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Newer, false).await;
+        let path = tmp.path().join("file.txt");
+        std::fs::write(&path, "data")?;
+        // Set local mtime to the past (1 hour ago)
+        crate::fs::filetime::set_file_times(
+            &path,
+            crate::fs::filetime::FileTime::from_unix_time(1_000_000, 0),
+            crate::fs::filetime::FileTime::from_unix_time(1_000_000, 0),
+        )?;
+        let local_mtime = std::fs::symlink_metadata(&path)?.modified()?;
+
+        let node = Node {
+            name: "file.txt".into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 4,
+                modified_time: Some(local_mtime + std::time::Duration::from_secs(3600)),
+                ..Default::default()
+            },
+            blobs: Some(vec![]),
+            ..Default::default()
+        };
+        let index = Arc::new(MasterIndex::new());
+        assert!(matches!(
+            restorer.should_restore_node(&node, &path, index).await?,
+            RestorePlan::FullRestore
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_newer_skips_when_local_newer() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Newer, false).await;
+        let path = tmp.path().join("file.txt");
+        std::fs::write(&path, "data")?;
+        let local_mtime = std::fs::symlink_metadata(&path)?.modified()?;
+
+        let node = Node {
+            name: "file.txt".into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 4,
+                modified_time: Some(local_mtime - std::time::Duration::from_secs(3600)),
+                ..Default::default()
+            },
+            blobs: Some(vec![]),
+            ..Default::default()
+        };
+        let index = Arc::new(MasterIndex::new());
+        assert!(matches!(
+            restorer.should_restore_node(&node, &path, index).await?,
+            RestorePlan::Skip
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_newer_same_mtime_different_size_restores() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Newer, false).await;
+        let path = tmp.path().join("file.txt");
+        std::fs::write(&path, "data")?;
+        let mtime = std::fs::symlink_metadata(&path)?.modified()?;
+
+        let node = Node {
+            name: "file.txt".into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 999, // different from actual file size (4)
+                modified_time: Some(mtime),
+                ..Default::default()
+            },
+            blobs: Some(vec![]),
+            ..Default::default()
+        };
+        let index = Arc::new(MasterIndex::new());
+        assert!(matches!(
+            restorer.should_restore_node(&node, &path, index).await?,
+            RestorePlan::FullRestore
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_newer_same_mtime_same_size_skips() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Newer, false).await;
+        let path = tmp.path().join("file.txt");
+        std::fs::write(&path, "data")?;
+        let mtime = std::fs::symlink_metadata(&path)?.modified()?;
+
+        let node = Node {
+            name: "file.txt".into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 4,
+                modified_time: Some(mtime),
+                ..Default::default()
+            },
+            blobs: Some(vec![]),
+            ..Default::default()
+        };
+        let index = Arc::new(MasterIndex::new());
+        assert!(matches!(
+            restorer.should_restore_node(&node, &path, index).await?,
+            RestorePlan::Skip
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_newer_no_repo_mtime_restores() -> Result<()> {
+        let (restorer, tmp) = create_restorer(Strategy::Newer, false).await;
+        let path = tmp.path().join("file.txt");
+        std::fs::write(&path, "data")?;
+
+        let node = Node {
+            name: "file.txt".into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 4,
+                modified_time: None, // no repo mtime
+                ..Default::default()
+            },
+            blobs: Some(vec![]),
+            ..Default::default()
+        };
+        let index = Arc::new(MasterIndex::new());
+        assert!(matches!(
+            restorer.should_restore_node(&node, &path, index).await?,
+            RestorePlan::FullRestore
+        ));
+        Ok(())
+    }
 }

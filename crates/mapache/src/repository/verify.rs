@@ -404,3 +404,113 @@ pub async fn verify_snapshot_refs(
     tracing::info!(target: "verify", "Snapshot {} references verified successfully", snapshot_id.to_short_hex(8));
     Ok(verified_count)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn storage_with_key() -> SecureStorage {
+        let key = [0x42u8; 32];
+        SecureStorage::new().with_key(&key).unwrap()
+    }
+
+    #[test]
+    fn batch_verify_empty() {
+        let storage = storage_with_key();
+        let (verified, corrupt, bytes) = batch_verify(&[], &storage);
+        assert_eq!(verified, 0);
+        assert!(corrupt.is_empty());
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn batch_verify_all_valid() {
+        let storage = storage_with_key();
+        let plaintexts: Vec<Vec<u8>> = (0..5).map(|i| format!("blob-{i}").into_bytes()).collect();
+        let batch: Vec<(ID, Vec<u8>)> = plaintexts
+            .iter()
+            .map(|p| (ID::from_content(p), storage.encode(p).unwrap()))
+            .collect();
+
+        let (verified, corrupt, bytes) = batch_verify(&batch, &storage);
+        assert_eq!(verified, 5);
+        assert!(corrupt.is_empty());
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn batch_verify_all_corrupt_wrong_id() {
+        let storage = storage_with_key();
+        let plaintexts: Vec<Vec<u8>> = (0..3).map(|i| format!("blob-{i}").into_bytes()).collect();
+        let batch: Vec<(ID, Vec<u8>)> = plaintexts
+            .iter()
+            .map(|p| {
+                // Use a wrong ID (hash of different content)
+                let wrong_id = ID::from_content(b"wrong");
+                (wrong_id, storage.encode(p).unwrap())
+            })
+            .collect();
+
+        let (verified, corrupt, bytes) = batch_verify(&batch, &storage);
+        assert_eq!(verified, 0);
+        assert_eq!(corrupt.len(), 3);
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn batch_verify_all_corrupt_garbage_data() {
+        let storage = storage_with_key();
+        let batch: Vec<(ID, Vec<u8>)> = (0..3)
+            .map(|i| {
+                let id = ID::from_content(format!("blob-{i}").as_bytes());
+                // Random garbage that won't decrypt
+                (id, vec![0xff; 100])
+            })
+            .collect();
+
+        let (verified, corrupt, bytes) = batch_verify(&batch, &storage);
+        assert_eq!(verified, 0);
+        assert_eq!(corrupt.len(), 3);
+        assert_eq!(bytes, 300);
+    }
+
+    #[test]
+    fn batch_verify_mixed_valid_and_corrupt() {
+        let storage = storage_with_key();
+        let valid_plain = b"valid-data";
+        let corrupt_plain = b"corrupt-data";
+
+        let batch: Vec<(ID, Vec<u8>)> = vec![
+            (
+                ID::from_content(valid_plain),
+                storage.encode(valid_plain).unwrap(),
+            ),
+            (
+                ID::from_content(b"wrong"),
+                storage.encode(corrupt_plain).unwrap(),
+            ),
+            (
+                ID::from_content(valid_plain),
+                storage.encode(valid_plain).unwrap(),
+            ),
+            // garbage data
+            (ID::from_content(b"another"), vec![0xde, 0xad, 0xbe, 0xef]),
+        ];
+
+        let (verified, corrupt, bytes) = batch_verify(&batch, &storage);
+        assert_eq!(verified, 2);
+        assert_eq!(corrupt.len(), 2);
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn batch_verify_bytes_processed_counts_encoded_size() {
+        let storage = storage_with_key();
+        let data = vec![0xaa; 1000];
+        let encoded = storage.encode(&data).unwrap();
+        let batch = vec![(ID::from_content(&data), encoded.clone())];
+
+        let (_, _, bytes) = batch_verify(&batch, &storage);
+        assert_eq!(bytes, encoded.len() as u64);
+    }
+}

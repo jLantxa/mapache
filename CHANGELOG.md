@@ -36,13 +36,13 @@
   batched file restoration with a streaming pass;verify hardlink content and
   fall back to copy on failure.
 
-## v0.5.2
+## v0.5.2 (2026-07-08)
 
 ### Fixed
 
 - Fixed `--exclude` paths in `mapache bundle`.
 
-## v0.5.1
+## v0.5.1 (2026-06-27)
 
 ### Fixed
 
@@ -54,7 +54,7 @@
 - **`copy` command**: Copy snapshots from one repository to another with
   support for `--host`, `--tags`, and `--snapshot` filters.
 
-## v0.5.0
+## v0.5.0 (2026-06-23)
 
 ### Added
 
@@ -108,7 +108,7 @@
   several of these silently returned success (exit `0`) on interrupt, leaving
   scripts with no way to detect the cancellation.
 
-## v0.4.2
+## v0.4.2 (2026-05-31)
 
 ### Security
 
@@ -129,7 +129,7 @@
 - **S3 Backend**: Fixed a bug where paths in the S3 backend were incorrectly
   joined, potentially bypassing the prefix configuration.
 
-## v0.4.1
+## v0.4.1 (2026-05-31)
 
 ### Fixes
 
@@ -147,7 +147,7 @@
 - **Archiver Performance**: Overlap I/O and content-defined chunking with
   compression and encryption for improved snapshot throughput.
 
-## v0.4.0
+## v0.4.0 (2026-05-28)
 
 ### Changes
 
@@ -184,7 +184,7 @@
 - **Key export**: Added `key export` subcommand to extract a key file from the
   repository and save it locally.
 
-## v0.3.0
+## v0.3.0 (2026-05-05)
 
 ### Changes
 
@@ -222,7 +222,7 @@
   - Fixed a bug in `restore` with `--delete` where some nodes were not
     correctly identified for deletion.
 
-## v0.2.3
+## v0.2.3 (2026-04-01)
 
 ### Fixes
 
@@ -238,7 +238,7 @@
   - Windows file attributes (Hidden, System, etc.).
   - Improved directory metadata restoration with a bottom-up pass.
 
-## v0.2.2
+## v0.2.2 (2026-03-22)
 
 ### Fixes
 
@@ -253,7 +253,7 @@
   rate. SFTP implements native throttling by sending chunks of dynamic size,
   targeting the limit as an average rate.
 
-## v0.2.1
+## v0.2.1 (2026-03-08)
 
 ### Fixes
 
@@ -273,7 +273,7 @@
 - Improved scanning of node metadata, making the processing of small files
   a bit faster.
 
-## v0.2.0
+## v0.2.0 (2026-03-02)
 
 ### Fixes
 
@@ -309,7 +309,7 @@
   - Index-to-pack consistency checks to ensure all indexed blobs physically
     exist.
 
-## v0.1.8
+## v0.1.8 (2026-02-05)
 
 ### Changes
 
@@ -323,7 +323,7 @@
 - The repository master index is now only loaded when necessary, saving some
   RAM for those commands that don't need to access the index.
 
-## v0.1.7
+## v0.1.7 (2026-01-29)
 
 ### Fixes
 
@@ -341,7 +341,7 @@
 - `mapache find` now accepts patterns and allows finding in a selected snapshot.
 - Minor changes to the snapshot report.
 
-## v0.1.6
+## v0.1.6 (2026-01-26)
 
 ### Changes
 
@@ -357,7 +357,7 @@
 - Fixed abbreviation of Windows paths appending a redundant separator after the
   root prefix.
 
-## v0.1.5
+## v0.1.5 (2026-01-24)
 
 ### Changes
 
@@ -373,7 +373,7 @@
 - Using the `mimalloc` allocator on Windows.
 - `mapache cache` now displays the total size of the local cache.
 
-## v0.1.4
+## v0.1.4 (2026-01-16)
 
 ### Changes
 
@@ -384,7 +384,7 @@
 
 - Fixed size reported by `rebuild-index`.
 
-## v0.1.3
+## v0.1.3 (2026-01-15)
 
 ### Changes
 
@@ -397,7 +397,7 @@
   loaded into RAM when strictly necessary (e.g., during clean or rebuild-index),
   drastically reducing the memory footprint for large repositories.
 
-## v0.1.2
+## v0.1.2 (2026-01-11)
 
 ### Changes
 
@@ -411,7 +411,7 @@
 - Optimizations to the index affecting the garbage collector.
 - Optimizations to the FUSE internals.
 
-## v0.1.1
+## v0.1.1 (2025-12-18)
 
 ### Changes
 
@@ -427,7 +427,7 @@
 
 - Read-only files can now be renamed and deleted in Windows 10.
 
-## v0.1.0
+## v0.1.0 (2025-11-27)
 
 ### Changes
 
@@ -444,7 +444,7 @@
 - Added a `--skip-if-unchanged` flag to `mapache snapshot` to skip saving
   snapshots without new changes.
 
-## v0.1.0-beta.5
+## v0.1.0-beta.5 (2025-11-14)
 
 ### Changes
 
@@ -458,7 +458,7 @@
 - Failing to read a symlink's target is not an error. Mapache stores all the
   metadata it can and continue.
 
-## v0.1.0-beta.4
+## v0.1.0-beta.4 (2025-11-01)
 
 ### Changes
 
@@ -482,7 +482,7 @@
 - Enforce read concurrency in snapshot cmd.
 - Fixed unclear cleanup handler logs in snapshot cmd.
 
-## v0.1.0-beta.3a
+## v0.1.0-beta.3a (2025-10-27)
 
 ### Changes
 
@@ -496,7 +496,7 @@
   reduce download operations.
 - Added a `cache` command to manage cache folders.
 
-## v0.1.0-beta.2a
+## v0.1.0-beta.2a (2025-10-12)
 
 ### Changes
 
@@ -521,14 +521,14 @@
 
 - Added many new tests, which helped find some bugs.
 
-## v0.1.0-beta.1
+## v0.1.0-beta.1 (2025-09-28)
 
 ### Fixes
 
 - Create restore target only once.
 - Don't fail if directory was already restored.
 
-## v0.1.0-alpha.5
+## v0.1.0-alpha.5 (2025-09-15)
 
 ### Enhancements
 
@@ -552,24 +552,24 @@
 - Don't follow symlinks when normalizing source paths.
 - Create parent directories before restoring symlinks
 
-## v0.1.0-alpha.4
+## v0.1.0-alpha.4 (2025-08-29)
 
 - Added a progress spinner to log stats progress while analyzing snapshots.
 - Added cross-compile support to compile builds for x64 Linux and Windows.
 
-## v0.1.0-alpha.3
+## v0.1.0-alpha.3 (2025-08-15)
 
 - Diverse cleanups and micro-optimizations
 - Cleaner report of restore warnings and errors
 - Fix 'latest' symlink in FUSE mount
 
-## v0.1.0-alpha.2
+## v0.1.0-alpha.2 (2025-08-13)
 
 - Fix cmd_mount not writing lock file
 - Repack small packs based on the current pack size value
 - Updated dependencies
 
-## v0.1.0-alpha.1
+## v0.1.0-alpha.1 (2025-08-07)
 
 This is the first pre-release version of mapache.
 

@@ -285,6 +285,58 @@ mod tests {
     }
 
     #[test]
+    fn test_id_from_hex_boundary_lengths() {
+        // Exactly 63 chars (1 byte short)
+        let short = "00".repeat(31) + "0";
+        assert!(ID::from_hex(&short).is_err());
+
+        // Exactly 65 chars (1 byte over)
+        let long = "00".repeat(32) + "00";
+        assert!(ID::from_hex(&long).is_err());
+    }
+
+    #[test]
+    fn test_id_all_zeros() {
+        let hex = "0".repeat(64);
+        let id = ID::from_hex(&hex).unwrap();
+        assert_eq!(id.0, [0x00; 32]);
+        assert_eq!(id.to_hex(), hex);
+    }
+
+    #[test]
+    fn test_id_all_ff() {
+        let hex = "f".repeat(64);
+        let id = ID::from_hex(&hex).unwrap();
+        assert_eq!(id.0, [0xFF; 32]);
+        assert_eq!(id.to_hex(), hex);
+    }
+
+    #[test]
+    fn test_id_uppercase_hex_roundtrip() {
+        let lower = "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210";
+        let upper = lower.to_uppercase();
+        let id = ID::from_hex(&upper).unwrap();
+        assert_eq!(id.to_hex(), lower);
+    }
+
+    #[test]
+    fn test_id_partial_uppercase() {
+        let lower = "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210";
+        let mixed = lower[..20].to_uppercase() + &lower[20..];
+        let id = ID::from_hex(&mixed).unwrap();
+        assert_eq!(id.to_hex(), lower);
+    }
+
+    #[test]
+    fn test_id_from_bytes_zeroes_and_max() {
+        let zeroes = ID::from_bytes([0x00; 32]);
+        assert_eq!(zeroes.to_hex(), "0".repeat(64));
+
+        let maxes = ID::from_bytes([0xFF; 32]);
+        assert_eq!(maxes.to_hex(), "f".repeat(64));
+    }
+
+    #[test]
     fn test_id_serialization() {
         let id = ID::new_random();
         let json = serde_json::to_string(&id).unwrap();

@@ -993,4 +993,62 @@ mod tests {
         assert!(backend.path_exists(Path::new("lying_path")).await);
         assert!(!backend.path_exists(Path::new("other")).await);
     }
+
+    #[tokio::test]
+    async fn test_clear_hooks() {
+        let backend = MockBackend::new();
+        backend.add_hook(Arc::new(|op| {
+            if matches!(op, BackendOp::PathExists(_)) {
+                return MockEffect {
+                    result_override: Some(Ok(OpResult::Bool(true))),
+                    ..Default::default()
+                };
+            }
+            MockEffect::default()
+        }));
+
+        // Hook intercepts — all paths exist
+        assert!(backend.path_exists(Path::new("anything")).await);
+
+        backend.clear_hooks();
+
+        // Hook removed — no nodes inserted, so nothing exists
+        assert!(!backend.path_exists(Path::new("anything")).await);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_hooks_stack() {
+        let backend = MockBackend::new();
+        let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let c = counter.clone();
+        backend.add_hook(Arc::new(move |_| {
+            c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            MockEffect::default()
+        }));
+
+        let c = counter.clone();
+        backend.add_hook(Arc::new(move |_| {
+            c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            MockEffect::default()
+        }));
+
+        backend.path_exists(Path::new("test")).await;
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn test_clear_history() {
+        let backend = MockBackend::new();
+        let handle = Handle::new(Path::new("a.txt"));
+        backend
+            .write(&handle, WriteContents::Borrowed(b"data"))
+            .await
+            .unwrap();
+        backend.path_exists(handle.path).await;
+
+        assert_eq!(backend.history().len(), 2);
+        backend.clear_history();
+        assert!(backend.history().is_empty());
+    }
 }

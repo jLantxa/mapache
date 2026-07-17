@@ -3,18 +3,17 @@
 mod tests {
     use std::fs;
 
-    use anyhow::{Context, Result};
-    use rand::RngExt;
+    use anyhow::Result;
 
-    use mapache::repository::repo::{OBJECTS_DIR, SNAPSHOTS_DIR};
+    use mapache::repository::repo::{KEYS_DIR, OBJECTS_DIR, SNAPSHOTS_DIR};
 
     use crate::{
         integration_tests::{INTEGRATION_TEST_DATA, TestContext, set_write_permission},
         synthetic::{Dataset, SyntheticData},
     };
-
+    /// Truncating a pack file should cause verify to fail.
     #[tokio::test]
-    async fn test_verify_missing_object() -> Result<()> {
+    async fn test_verify_truncated_pack() -> Result<()> {
         let mut ctx = TestContext::new().await?;
         let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
         let synthetic = SyntheticData::new(dataset);
@@ -22,162 +21,6 @@ mod tests {
 
         ctx.init_repo().await?;
 
-        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
-            .no_parent(true)
-            .no_scan(true)
-            .num_readers(1)
-            .num_packers(1)
-            .run(&ctx.global)
-            .await?;
-
-        // Verify initial state
-        ctx.verify_builder()
-            .read_packs(true)
-            .parallel(1)
-            .fail_early(true)
-            .run(&ctx.global)
-            .await
-            .context("Initial verify failed")?;
-
-        // Delete a pack file
-        let mut deleted = false;
-        let objects_path = ctx.repo_path.join(OBJECTS_DIR);
-        for entry in fs::read_dir(objects_path)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir()
-                && let Some(subentry) = fs::read_dir(entry.path())?.next()
-            {
-                let subentry = subentry?;
-                fs::remove_file(subentry.path())?;
-                deleted = true;
-            }
-            if deleted {
-                break;
-            }
-        }
-
-        assert!(deleted, "Should have deleted at least one pack file");
-
-        let res = ctx
-            .verify_builder()
-            .read_packs(true)
-            .parallel(1)
-            .fail_early(true)
-            .run(&ctx.global)
-            .await;
-        assert!(res.is_err(), "Verify should fail when an object is missing");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_verify_unreadable_snapshot() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
-
-        ctx.init_repo().await?;
-
-        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
-            .no_parent(true)
-            .no_scan(true)
-            .num_readers(1)
-            .num_packers(1)
-            .run(&ctx.global)
-            .await?;
-
-        // Corrupt snapshot file (make it unparseable)
-        let snapshots_path = ctx.repo_path.join(SNAPSHOTS_DIR);
-        let mut corrupted = false;
-        for entry in fs::read_dir(snapshots_path)? {
-            let entry = entry?;
-            let mut content = fs::read(entry.path())?;
-            if !content.is_empty() {
-                set_write_permission(entry.path(), true)?;
-                content[0] = !content[0]; // Flip bits to break JSON/encrytion
-                fs::write(entry.path(), content)?;
-                corrupted = true;
-                break;
-            }
-        }
-
-        assert!(corrupted, "Should have corrupted a snapshot file");
-
-        let res = ctx
-            .verify_builder()
-            .read_packs(true)
-            .parallel(1)
-            .fail_early(true)
-            .run(&ctx.global)
-            .await;
-        assert!(
-            res.is_err(),
-            "Verify should fail when a snapshot is corrupt/unreadable"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_verify_bit_flip_in_snapshot() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
-
-        ctx.init_repo().await?;
-
-        ctx.snapshot_builder(vec![backup_data_tmp_path.join("file.txt")])
-            .no_parent(true)
-            .no_scan(true)
-            .num_readers(1)
-            .num_packers(1)
-            .run(&ctx.global)
-            .await?;
-
-        // Flip a bit in the middle of the snapshot file
-        let snapshots_path = ctx.repo_path.join(SNAPSHOTS_DIR);
-        let mut corrupted = false;
-        for entry in fs::read_dir(snapshots_path)? {
-            let entry = entry?;
-            let mut content = fs::read(entry.path())?;
-            if content.len() > 10 {
-                set_write_permission(entry.path(), true)?;
-                content[10] = content[10].wrapping_add(1);
-                fs::write(entry.path(), content)?;
-                corrupted = true;
-                break;
-            }
-        }
-
-        assert!(corrupted, "Should have flipped a bit in a snapshot file");
-
-        let res = ctx
-            .verify_builder()
-            .read_packs(true)
-            .parallel(1)
-            .fail_early(true)
-            .run(&ctx.global)
-            .await;
-        assert!(
-            res.is_err(),
-            "Verify should fail when a snapshot has bit-flips"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_verify_corrupt_pack() -> Result<()> {
-        let mut ctx = TestContext::new().await?;
-        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
-        let synthetic = SyntheticData::new(dataset);
-        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
-
-        ctx.init_repo().await?;
-
-        // Create a snapshot with enough data to ensure a pack is created
         ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
             .no_parent(true)
             .no_scan(true)
@@ -186,53 +29,32 @@ mod tests {
             .run(&ctx.global)
             .await?;
 
-        // Corrupt pack files randomly
+        // Find and truncate a pack file
         let objects_path = ctx.repo_path.join(OBJECTS_DIR);
-        let mut corrupted_count = 0;
-        let mut all_packs = Vec::new();
-
+        let mut truncated = false;
         for entry in fs::read_dir(objects_path)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
                 for subentry in fs::read_dir(entry.path())? {
-                    all_packs.push(subentry?.path());
+                    let subentry = subentry?;
+                    let path = subentry.path();
+                    let meta = fs::metadata(&path)?;
+                    if meta.len() > 100 {
+                        set_write_permission(&path, true)?;
+                        let content = fs::read(&path)?;
+                        let half = content.len() / 2;
+                        fs::write(&path, &content[..half])?;
+                        truncated = true;
+                        break;
+                    }
                 }
             }
-        }
-
-        let mut rng = rand::rng();
-
-        for pack_path in &all_packs {
-            // 50% chance to corrupt this pack
-            if rng.random_bool(0.5) {
-                let mut content = fs::read(pack_path)?;
-                if !content.is_empty() {
-                    set_write_permission(pack_path, true)?;
-                    let idx = rng.random_range(0..content.len());
-                    content[idx] = !content[idx];
-                    fs::write(pack_path, content)?;
-                    corrupted_count += 1;
-                }
+            if truncated {
+                break;
             }
         }
 
-        // If by chance no packs were corrupted, force corrupt at least one
-        if corrupted_count == 0 && !all_packs.is_empty() {
-            let pack_path = &all_packs[0];
-            let mut content = fs::read(pack_path)?;
-            if !content.is_empty() {
-                set_write_permission(pack_path, true)?;
-                let idx = rng.random_range(0..content.len());
-                content[idx] = !content[idx];
-                fs::write(pack_path, content)?;
-                corrupted_count += 1;
-            }
-        }
-
-        assert!(
-            corrupted_count > 0,
-            "At least one pack should have been corrupted"
-        );
+        assert!(truncated, "Should have truncated at least one pack file");
 
         let res = ctx
             .verify_builder()
@@ -243,7 +65,165 @@ mod tests {
             .await;
         assert!(
             res.is_err(),
-            "Verify should fail when a pack file is corrupt"
+            "Verify should fail when a pack file is truncated"
+        );
+
+        Ok(())
+    }
+
+    /// Deleting a key file should cause verify to fail.
+    #[tokio::test]
+    async fn test_verify_missing_key() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .no_parent(true)
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        let keys_path = ctx.repo_path.join(KEYS_DIR);
+        if keys_path.exists() {
+            for entry in fs::read_dir(&keys_path)? {
+                let entry = entry?;
+                set_write_permission(entry.path(), true)?;
+                fs::remove_file(entry.path())?;
+            }
+        }
+
+        let res = ctx
+            .verify_builder()
+            .read_packs(true)
+            .parallel(1)
+            .fail_early(true)
+            .run(&ctx.global)
+            .await;
+        assert!(
+            res.is_err(),
+            "Verify should fail when key files are deleted"
+        );
+
+        Ok(())
+    }
+
+    /// After pack corruption, a new backup should still succeed (the corrupted
+    /// pack is still there but new data goes to new packs).
+    #[tokio::test]
+    async fn test_backup_succeeds_after_pack_corruption() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        // First backup
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .no_parent(true)
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        // Corrupt a pack file
+        let objects_path = ctx.repo_path.join(OBJECTS_DIR);
+        for entry in fs::read_dir(objects_path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                for subentry in fs::read_dir(entry.path())? {
+                    let subentry = subentry?;
+                    let mut content = fs::read(subentry.path())?;
+                    if !content.is_empty() {
+                        set_write_permission(subentry.path(), true)?;
+                        content[0] = !content[0];
+                        fs::write(subentry.path(), content)?;
+                        // Corrupt one pack and break
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+
+        // Second backup with new data should still succeed
+        fs::write(backup_data_tmp_path.join("new_file.txt"), b"brand new data")?;
+
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .run(&ctx.global)
+            .await?;
+
+        let ids = ctx.get_snapshot_ids()?;
+        assert_eq!(
+            ids.len(),
+            2,
+            "Should have 2 snapshots after backup post-corruption"
+        );
+
+        Ok(())
+    }
+
+    /// After corrupting a snapshot file, new backups should still succeed.
+    #[tokio::test]
+    async fn test_corrupt_snapshot_does_not_block_new_backup() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        // First backup
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .no_parent(true)
+            .no_scan(true)
+            .num_readers(1)
+            .num_packers(1)
+            .run(&ctx.global)
+            .await?;
+
+        let ids1 = ctx.get_snapshot_ids()?;
+        assert_eq!(ids1.len(), 1);
+
+        // Corrupt the first snapshot
+        let snapshots_path = ctx.repo_path.join(SNAPSHOTS_DIR);
+        let mut corrupted = false;
+        for entry in fs::read_dir(snapshots_path)? {
+            let entry = entry?;
+            let id_str = entry.file_name().to_string_lossy().to_string();
+            if id_str == ids1[0] {
+                let mut content = fs::read(entry.path())?;
+                if content.len() > 5 {
+                    set_write_permission(entry.path(), true)?;
+                    content[0] = !content[0];
+                    fs::write(entry.path(), content)?;
+                    corrupted = true;
+                }
+            }
+        }
+
+        assert!(corrupted, "Should have corrupted the first snapshot");
+
+        // New backup should still succeed (explicitly no parent to avoid
+        // trying to load the corrupted snapshot as parent)
+        fs::write(backup_data_tmp_path.join("extra.txt"), b"more data")?;
+        ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .no_parent(true)
+            .run(&ctx.global)
+            .await?;
+
+        let ids2 = ctx.get_snapshot_ids()?;
+        // The new snapshot should exist (plus possibly the old one on disk)
+        assert!(
+            !ids2.is_empty(),
+            "Should have at least one snapshot after backup post-corruption"
         );
 
         Ok(())

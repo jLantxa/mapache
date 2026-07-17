@@ -425,4 +425,123 @@ mod tests {
         snapshot.summary.processed_bytes = 12345;
         assert_eq!(snapshot.size(), 12345);
     }
+
+    #[test]
+    fn test_diff_counts_multiple_increments() {
+        let mut counts = DiffCounts::default();
+        // 10 new files, 3 new dirs
+        for _ in 0..10 {
+            counts.increment(false, &NodeDiff::New);
+        }
+        for _ in 0..3 {
+            counts.increment(true, &NodeDiff::New);
+        }
+        assert_eq!(counts.new_files, 10);
+        assert_eq!(counts.new_dirs, 3);
+        assert_eq!(counts.deleted_files, 0);
+        assert_eq!(counts.changed_files, 0);
+    }
+
+    #[test]
+    fn test_diff_counts_serialization_roundtrip() {
+        let counts = DiffCounts {
+            new_files: 5,
+            deleted_files: 2,
+            changed_files: 3,
+            new_dirs: 1,
+            deleted_dirs: 0,
+            changed_dirs: 4,
+            unchanged_files: 100,
+            unchanged_dirs: 10,
+        };
+        let json = serde_json::to_string(&counts).unwrap();
+        let deserialized: DiffCounts = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.new_files, 5);
+        assert_eq!(deserialized.deleted_files, 2);
+        assert_eq!(deserialized.changed_files, 3);
+        assert_eq!(deserialized.new_dirs, 1);
+        assert_eq!(deserialized.deleted_dirs, 0);
+        assert_eq!(deserialized.changed_dirs, 4);
+        assert_eq!(deserialized.unchanged_files, 100);
+        assert_eq!(deserialized.unchanged_dirs, 10);
+    }
+
+    #[test]
+    fn test_snapshot_summary_defaults_to_zero() {
+        let summary = SnapshotSummary::default();
+        assert_eq!(summary.processed_items_count, 0);
+        assert_eq!(summary.processed_bytes, 0);
+        assert_eq!(summary.raw_bytes, 0);
+        assert_eq!(summary.encoded_bytes, 0);
+        assert_eq!(summary.data_blobs, 0);
+        assert_eq!(summary.meta_blobs, 0);
+        assert!(summary.amends.is_none());
+    }
+
+    #[test]
+    fn test_snapshot_summary_serialization_roundtrip() {
+        let summary = SnapshotSummary {
+            processed_items_count: 42,
+            processed_bytes: 9999,
+            raw_bytes: 8888,
+            encoded_bytes: 7777,
+            meta_raw_bytes: 666,
+            meta_encoded_bytes: 555,
+            total_raw_bytes: 9554,
+            total_encoded_bytes: 8332,
+            data_blobs: 10,
+            meta_blobs: 5,
+            diff_counts: DiffCounts {
+                new_files: 1,
+                deleted_files: 0,
+                changed_files: 2,
+                new_dirs: 3,
+                deleted_dirs: 0,
+                changed_dirs: 0,
+                unchanged_files: 100,
+                unchanged_dirs: 10,
+            },
+            amends: Some(ID::from_content(b"test")),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        let deserialized: SnapshotSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.processed_items_count, 42);
+        assert_eq!(deserialized.processed_bytes, 9999);
+        assert_eq!(deserialized.data_blobs, 10);
+        assert_eq!(deserialized.diff_counts.new_files, 1);
+        assert_eq!(deserialized.diff_counts.unchanged_files, 100);
+        assert!(deserialized.amends.is_some());
+    }
+
+    #[test]
+    fn test_snapshot_serialization_roundtrip() {
+        let snapshot = Snapshot {
+            timestamp: Local::now(),
+            parent: Some(ID::from_content(b"parent")),
+            tree: ID::from_content(b"tree"),
+            root: PathBuf::from("/home/user/data"),
+            paths: vec![PathBuf::from("/home"), PathBuf::from("/etc")],
+            tags: ["release".into(), "important".into()].into_iter().collect(),
+            description: Some("test snapshot".to_string()),
+            summary: SnapshotSummary {
+                processed_items_count: 100,
+                processed_bytes: 50000,
+                ..Default::default()
+            },
+            hostname: Some("server-1".to_string()),
+            username: Some("admin".to_string()),
+            version: Some("0.5.0".to_string()),
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let deserialized: Snapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.root, PathBuf::from("/home/user/data"));
+        assert_eq!(deserialized.paths.len(), 2);
+        assert!(deserialized.tags.contains("release"));
+        assert!(deserialized.tags.contains("important"));
+        assert_eq!(deserialized.description.as_deref(), Some("test snapshot"));
+        assert_eq!(deserialized.summary.processed_items_count, 100);
+        assert_eq!(deserialized.hostname.as_deref(), Some("server-1"));
+        assert_eq!(deserialized.username.as_deref(), Some("admin"));
+        assert_eq!(deserialized.version.as_deref(), Some("0.5.0"));
+    }
 }

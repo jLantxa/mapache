@@ -543,10 +543,44 @@ mod tests {
     }
 
     #[test]
-    fn test_lock_new_for_test() {
-        let past = Local::now() - ChronoDuration::hours(1);
-        let lock = Lock::new_for_test(true, past);
-        assert_eq!(*lock.timestamp(), past);
+    fn test_lock_refresh_resets_expiry() {
+        let past = Local::now() - ChronoDuration::hours(2);
+        let mut lock = Lock::new_for_test(true, past);
         assert!(lock.is_expired());
+        lock.refresh();
+        assert!(!lock.is_expired());
+    }
+
+    #[test]
+    fn test_lock_not_stale_when_fresh() {
+        let lock = Lock::new(true);
+        // A fresh lock should not be stale (assuming process is alive, which it is for tests)
+        assert!(!lock.is_stale());
+    }
+
+    #[test]
+    fn test_lock_stale_when_expired() {
+        let past = Local::now() - ChronoDuration::hours(2);
+        let lock = Lock::new_for_test(true, past);
+        assert!(lock.is_stale());
+    }
+
+    #[test]
+    fn test_lock_serialization_roundtrip() {
+        let lock = Lock::new(true);
+        let json = serde_json::to_string(&lock).unwrap();
+        let parsed: Lock = serde_json::from_str(&json).unwrap();
+        assert_eq!(lock.id(), parsed.id());
+        assert_eq!(lock.is_exclusive(), parsed.is_exclusive());
+        assert_eq!(lock.pid(), parsed.pid());
+        assert_eq!(lock.hostname(), parsed.hostname());
+        assert_eq!(lock.username(), parsed.username());
+    }
+
+    #[test]
+    fn test_lock_id_uniqueness() {
+        let lock1 = Lock::new(true);
+        let lock2 = Lock::new(true);
+        assert_ne!(lock1.id(), lock2.id());
     }
 }

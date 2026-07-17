@@ -113,4 +113,37 @@ mod tests {
         assert!(!bf.contains(&id1));
         assert!(!bf.contains(&id2));
     }
+
+    #[test]
+    fn test_bloom_filter_false_positive_rate() {
+        let n = 500;
+        let mut bf = BloomFilter::new(n, 0.01);
+        let mut inserted = Vec::new();
+        for i in 0..n {
+            let id = ID::from_content(i.to_string().as_bytes());
+            bf.insert(&id);
+            inserted.push(id);
+        }
+
+        // All inserted IDs must be found
+        for id in &inserted {
+            assert!(bf.contains(id));
+        }
+
+        // Check false positive rate on fresh IDs
+        let test_count = 100000;
+        let mut false_positives = 0;
+        for i in n..n + test_count {
+            let id = ID::from_content(i.to_string().as_bytes());
+            if bf.contains(&id) {
+                false_positives += 1;
+            }
+        }
+
+        let fp_rate = false_positives as f64 / test_count as f64;
+        assert!(
+            fp_rate <= 0.01,
+            "False positive rate {fp_rate:.4} exceeds 1% threshold"
+        );
+    }
 }

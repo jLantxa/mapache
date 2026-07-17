@@ -646,4 +646,98 @@ mod tests {
             panic!("Failed to parse S3 URL");
         }
     }
+
+    #[tokio::test]
+    async fn test_retry_succeeds_on_first_attempt() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempts = AtomicU32::new(0);
+        let opts = RetryOptions {
+            max_attempts: 3,
+            base_delay: std::time::Duration::from_millis(10),
+            request_timeout: std::time::Duration::from_secs(5),
+        };
+
+        let result = retry("test_op", &opts, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<_, MapacheError>(42) }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_retry_succeeds_after_failures() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempts = AtomicU32::new(0);
+        let opts = RetryOptions {
+            max_attempts: 3,
+            base_delay: std::time::Duration::from_millis(10),
+            request_timeout: std::time::Duration::from_secs(5),
+        };
+
+        let result = retry("test_op", &opts, || {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(MapacheError::Backend("transient error".to_string()))
+                } else {
+                    Ok(42)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_retry_exhausts_attempts() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempts = AtomicU32::new(0);
+        let opts = RetryOptions {
+            max_attempts: 2,
+            base_delay: std::time::Duration::from_millis(10),
+            request_timeout: std::time::Duration::from_secs(5),
+        };
+
+        let result = retry("test_op", &opts, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async { Err::<i32, MapacheError>(MapacheError::Backend("permanent".to_string())) }
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3); // 1 initial + 2 retries
+    }
+
+    #[tokio::test]
+    async fn test_retry_handles_timeout() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempts = AtomicU32::new(0);
+        let opts = RetryOptions {
+            max_attempts: 1,
+            base_delay: std::time::Duration::from_millis(10),
+            request_timeout: std::time::Duration::from_millis(50),
+        };
+
+        let result = retry("test_op", &opts, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                Ok::<i32, MapacheError>(42)
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        // 1 initial + 1 retry = 2 attempts
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
 }

@@ -1055,3 +1055,111 @@ fn detect_hardlink(
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fs::node::{Metadata, Node, NodeType};
+
+    fn make_file_node(name: &str, blobs: Vec<ID>, dev: u64, inode: u64, nlink: u64) -> Node {
+        Node {
+            name: name.into(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                dev: Some(dev),
+                inode: Some(inode),
+                nlink: Some(nlink),
+                ..Default::default()
+            },
+            blobs: Some(blobs),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_compute_blob_fingerprint_deterministic() {
+        let blobs = vec![ID::from_content(b"blob-a"), ID::from_content(b"blob-b")];
+        let fp1 = compute_blob_fingerprint(&blobs);
+        let fp2 = compute_blob_fingerprint(&blobs);
+        assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_compute_blob_fingerprint_different_blobs() {
+        let a = vec![ID::from_content(b"x"), ID::from_content(b"y")];
+        let b = vec![ID::from_content(b"y"), ID::from_content(b"x")];
+        assert_ne!(compute_blob_fingerprint(&a), compute_blob_fingerprint(&b));
+    }
+
+    #[test]
+    fn test_detect_hardlink_primary() {
+        let primary = make_file_node("a.txt", vec![ID::from_content(b"same")], 10, 20, 2);
+        let path = PathBuf::from("/restore/a.txt");
+        let primaries: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let is_secondary = detect_hardlink(&primary, &path, &primaries, &pending);
+        assert!(!is_secondary);
+        assert!(primaries.lock().contains_key(&(10, 20)));
+    }
+
+    #[test]
+    fn test_detect_hardlink_secondary() {
+        let blobs = vec![ID::from_content(b"shared")];
+        let primary = make_file_node("a.txt", blobs.clone(), 10, 20, 2);
+        let secondary = make_file_node("b.txt", blobs, 10, 20, 2);
+        let primary_path = PathBuf::from("/restore/a.txt");
+        let secondary_path = PathBuf::from("/restore/b.txt");
+        let primaries: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
+
+        assert!(!detect_hardlink(
+            &primary,
+            &primary_path,
+            &primaries,
+            &pending
+        ));
+        assert!(detect_hardlink(
+            &secondary,
+            &secondary_path,
+            &primaries,
+            &pending
+        ));
+        let p = pending.lock();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].0, secondary_path);
+        assert_eq!(p[0].1, primary_path);
+    }
+
+    #[test]
+    fn test_detect_hardlink_content_mismatch() {
+        let primary = make_file_node("a.txt", vec![ID::from_content(b"content1")], 10, 20, 2);
+        let different = make_file_node("b.txt", vec![ID::from_content(b"content2")], 10, 20, 2);
+        let primary_path = PathBuf::from("/restore/a.txt");
+        let different_path = PathBuf::from("/restore/b.txt");
+        let primaries: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
+
+        detect_hardlink(&primary, &primary_path, &primaries, &pending);
+        let is_secondary = detect_hardlink(&different, &different_path, &primaries, &pending);
+        assert!(
+            !is_secondary,
+            "different content should not be detected as hardlink secondary"
+        );
+    }
+
+    #[test]
+    fn test_detect_hardlink_no_nlink() {
+        let node = make_file_node("a.txt", vec![ID::from_content(b"data")], 10, 20, 1);
+        let path = PathBuf::from("/restore/a.txt");
+        let primaries: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let is_secondary = detect_hardlink(&node, &path, &primaries, &pending);
+        assert!(!is_secondary);
+        assert!(
+            primaries.lock().is_empty(),
+            "nlink=1 should not register primary"
+        );
+    }
+}

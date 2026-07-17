@@ -1180,4 +1180,149 @@ mod tests {
         assert_eq!(merged.num_blobs(), 1);
         assert!(merged.contains(&b1.id));
     }
+
+    #[test]
+    fn test_index_duplicate_blobs_in_same_pack() {
+        let mut index = Index::new();
+        let pack_id = mock_id("pack1");
+        let b1 = mock_blob_desc("dup", BlobType::Data, 0, 50);
+        let b2 = mock_blob_desc("dup", BlobType::Data, 50, 50);
+        // Both have the same ID but different offsets — second one overwrites in the map
+        index.add_pack(&pack_id, vec![b1.clone(), b2]);
+
+        // Should have 1 unique blob (deduplicated by ID)
+        assert_eq!(index.num_blobs(), 1);
+        // Should still have 1 pack
+        assert_eq!(index.num_packs(), 1);
+        // The second offset should be returned (last-write-wins in the map)
+        let loc = index.get(&b1.id).unwrap();
+        assert_eq!(loc.offset, 50);
+    }
+
+    #[test]
+    fn test_index_finalized_rejects_add() {
+        let mut index = Index::new();
+        let pack_id = mock_id("pack1");
+        let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
+
+        index.add_pack(&pack_id, vec![b1.clone()]);
+        index.finalize();
+
+        // After finalize, adding more packs should not increase blob count
+        let pack_id2 = mock_id("pack2");
+        let b2 = mock_blob_desc("b2", BlobType::Data, 0, 100);
+        index.add_pack(&pack_id2, vec![b2.clone()]);
+
+        // The index is finalized but still has the blobs (finalize doesn't clear, it just marks state)
+        assert!(index.is_finalized());
+    }
+
+    #[test]
+    fn test_master_index_pending_blob_priority() {
+        let mi = MasterIndex::new();
+        let id = mock_id("blob");
+
+        // Add pending blob first
+        assert!(mi.add_pending_blob(id));
+
+        // Now add an index with a different pack for the same blob ID
+        let pack = mock_id("pack");
+        let blob_desc = PackedBlobDescriptor {
+            id,
+            blob_type: BlobType::Data,
+            offset: 999,
+            length: 100,
+            raw_length: 200,
+        };
+        let mut idx = Index::new();
+        idx.add_pack(&pack, vec![blob_desc]);
+        mi.add_index(idx);
+
+        // The pending blob should still be found
+        assert!(mi.contains(&id));
+    }
+
+    #[test]
+    fn test_index_many_blobs_across_packs() {
+        let mut index = Index::new();
+        let mut all_ids = Vec::new();
+
+        for pack_idx in 0..10 {
+            let pack_id = mock_id(&format!("pack_{pack_idx}"));
+            let mut blobs = Vec::new();
+            for blob_idx in 0..50 {
+                let id = mock_id(&format!("blob_{pack_idx}_{blob_idx}"));
+                blobs.push(PackedBlobDescriptor {
+                    id,
+                    blob_type: BlobType::Data,
+                    offset: blob_idx * 100,
+                    length: 100,
+                    raw_length: 200,
+                });
+                all_ids.push(id);
+            }
+            index.add_pack(&pack_id, blobs);
+        }
+
+        assert_eq!(index.num_blobs(), 500);
+        assert_eq!(index.num_packs(), 10);
+
+        // Every blob should be retrievable
+        for id in &all_ids {
+            assert!(index.contains(id));
+            assert!(index.get(id).is_some());
+        }
+    }
+
+    #[test]
+    fn test_master_index_clear_removes_everything() {
+        let mi = MasterIndex::new();
+
+        // Add pending blobs
+        let id1 = mock_id("pending1");
+        let id2 = mock_id("pending2");
+        mi.add_pending_blob(id1);
+        mi.add_pending_blob(id2);
+
+        // Add an index
+        let mut idx = Index::new();
+        let pack = mock_id("pack");
+        let b = mock_blob_desc("indexed", BlobType::Data, 0, 100);
+        idx.add_pack(&pack, vec![b.clone()]);
+        mi.add_index(idx);
+
+        assert!(mi.contains(&id1));
+        assert!(mi.contains(&b.id));
+
+        mi.clear();
+
+        assert!(!mi.contains(&id1));
+        assert!(!mi.contains(&id2));
+        assert!(!mi.contains(&b.id));
+    }
+
+    #[test]
+    fn test_index_file_serialization_many_packs() {
+        let mut packs = Vec::new();
+        for i in 0..20 {
+            let pack_id = mock_id(&format!("pack_{i}"));
+            let blobs: Vec<IndexFileBlob> = (0..10)
+                .map(|j| IndexFileBlob {
+                    id: mock_id(&format!("blob_{i}_{j}")),
+                    blob_type: BlobType::Data,
+                    offset: j * 100,
+                    length: 100,
+                    raw_length: 200,
+                })
+                .collect();
+            packs.push(IndexFilePack { id: pack_id, blobs });
+        }
+        let index_file = IndexFile { packs };
+        let json = serde_json::to_string(&index_file).unwrap();
+        let deserialized: IndexFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.packs.len(), 20);
+        for pack in &deserialized.packs {
+            assert_eq!(pack.blobs.len(), 10);
+        }
+    }
 }

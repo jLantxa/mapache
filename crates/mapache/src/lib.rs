@@ -22,3 +22,6 @@ pub mod utils;
 
 #[cfg(all(feature = "mount", unix))]
 pub(crate) mod mount;
+
+#[cfg(test)]
+mod tests;

@@ -323,4 +323,79 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_cache_hit_after_miss() -> Result<()> {
+        let mock = Arc::new(MockBackend::new());
+        mock.put_file("my_file", b"cached data".to_vec());
+
+        let temp_dir = tempfile::tempdir()?;
+        let cache = Arc::new(CacheBackend::new(
+            temp_dir.path().to_path_buf(),
+            mock.clone(),
+        ));
+
+        let handle = Handle {
+            path: Path::new("my_file"),
+            hint: Some(StorageHint {
+                file_type: ContentIdType::Snapshot,
+                is_metadata: true,
+            }),
+        };
+
+        // First read: cache miss, backend is read
+        let data = cache.read(&handle, 0, 0).await?;
+        assert_eq!(data, b"cached data");
+
+        let reads_after_first = mock
+            .history()
+            .iter()
+            .filter(|e| matches!(e.op, BackendOp::Read { .. }))
+            .count();
+        assert_eq!(reads_after_first, 1);
+
+        // Second read: cache hit, no additional backend read
+        let data2 = cache.read(&handle, 0, 0).await?;
+        assert_eq!(data2, b"cached data");
+
+        let reads_after_second = mock
+            .history()
+            .iter()
+            .filter(|e| matches!(e.op, BackendOp::Read { .. }))
+            .count();
+        assert_eq!(reads_after_second, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_through() -> Result<()> {
+        let mock = Arc::new(MockBackend::new());
+        let temp_dir = tempfile::tempdir()?;
+        let cache = Arc::new(CacheBackend::new(
+            temp_dir.path().to_path_buf(),
+            mock.clone(),
+        ));
+
+        let handle = Handle {
+            path: Path::new("write_file"),
+            hint: Some(StorageHint {
+                file_type: ContentIdType::Snapshot,
+                is_metadata: true,
+            }),
+        };
+
+        let data = b"hello world";
+        cache.write(&handle, WriteContents::Borrowed(data)).await?;
+
+        // Verify data was written to the backend
+        let backend_data = mock.get_file("write_file").unwrap();
+        assert_eq!(backend_data, data);
+
+        // Verify data was also written to the cache
+        let cached = cache.cache.read(&handle, 0, 0).await?;
+        assert_eq!(cached, data);
+
+        Ok(())
+    }
 }

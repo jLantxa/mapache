@@ -451,4 +451,21 @@ mod tests {
         // Should be almost instant now
         assert!(start.elapsed().as_millis() < 200);
     }
+
+    #[tokio::test]
+    async fn test_concurrent_consume() {
+        let limiter = Arc::new(RateLimiter::new(10_000));
+        let mut handles = Vec::new();
+
+        for _ in 0..10 {
+            let lim = limiter.clone();
+            handles.push(tokio::spawn(async move {
+                lim.wait(1000).await;
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+    }
 }

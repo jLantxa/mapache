@@ -44,3 +44,54 @@ impl ShardedIdSet {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::ID;
+
+    #[test]
+    fn test_insert_and_contains() {
+        let set = ShardedIdSet::new();
+        let id = ID::from_content(b"hello");
+        assert!(set.insert(id));
+        assert!(set.contains(&id));
+    }
+
+    #[test]
+    fn test_insert_duplicate() {
+        let set = ShardedIdSet::new();
+        let id = ID::from_content(b"hello");
+        assert!(set.insert(id));
+        assert!(!set.insert(id));
+        assert!(set.contains(&id));
+    }
+
+    #[test]
+    fn test_remove() {
+        let set = ShardedIdSet::new();
+        let id = ID::from_content(b"hello");
+        set.insert(id);
+        assert!(set.remove(&id));
+        assert!(!set.contains(&id));
+    }
+
+    #[test]
+    fn test_remove_nonexistent() {
+        let set = ShardedIdSet::new();
+        let id = ID::from_content(b"hello");
+        assert!(!set.remove(&id));
+    }
+
+    #[test]
+    fn test_clear() {
+        let set = ShardedIdSet::new();
+        let id1 = ID::from_content(b"hello");
+        let id2 = ID::from_content(b"world");
+        set.insert(id1);
+        set.insert(id2);
+        set.clear();
+        assert!(!set.contains(&id1));
+        assert!(!set.contains(&id2));
+    }
+}

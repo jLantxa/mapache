@@ -266,3 +266,81 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
 
     Ok(config)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_path_tilde_slash() {
+        let home = std::env::var("HOME").unwrap();
+        let result = config_path("~/Documents").unwrap();
+        let expected = PathBuf::from(&home).join("Documents");
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_config_path_tilde_only() {
+        let home = std::env::var("HOME").unwrap();
+        let result = config_path("~").unwrap();
+        assert_eq!(result, PathBuf::from(home));
+    }
+
+    #[test]
+    fn test_config_path_no_home() {
+        let old_home = std::env::var("HOME").ok();
+        let old_userprofile = std::env::var("USERPROFILE").ok();
+        // SAFETY: single-threaded test, no concurrent env access.
+        unsafe {
+            std::env::remove_var("HOME");
+            std::env::remove_var("USERPROFILE");
+        }
+
+        let result = config_path("~/foo");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            MapacheError::Config(msg) => assert!(msg.contains("cannot expand")),
+            other => panic!("expected Config error, got: {other}"),
+        }
+
+        // Restore HOME and USERPROFILE
+        // SAFETY: single-threaded test, restoring env.
+        unsafe {
+            if let Some(home) = old_home {
+                std::env::set_var("HOME", home);
+            }
+            if let Some(up) = old_userprofile {
+                std::env::set_var("USERPROFILE", up);
+            }
+        }
+    }
+
+    #[test]
+    fn test_merge_option_vec() {
+        let mut both = Some(vec![1, 2]);
+        merge_option_vec(&mut both, Some(vec![3]));
+        assert_eq!(both, Some(vec![1, 2, 3]));
+
+        let mut left_only: Option<Vec<i32>> = None;
+        merge_option_vec(&mut left_only, Some(vec![1]));
+        assert_eq!(left_only, Some(vec![1]));
+
+        let mut right_only = Some(vec![1]);
+        merge_option_vec(&mut right_only, None);
+        assert_eq!(right_only, Some(vec![1]));
+
+        let mut neither: Option<Vec<i32>> = None;
+        merge_option_vec(&mut neither, None);
+        assert_eq!(neither, None);
+    }
+
+    #[test]
+    fn test_mapache_config_toml_roundtrip() {
+        let config = MapacheConfig::default();
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: MapacheConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(config.global.is_some(), parsed.global.is_some());
+        assert_eq!(config.runtime.is_some(), parsed.runtime.is_some());
+        assert_eq!(config.hooks.is_some(), parsed.hooks.is_some());
+    }
+}

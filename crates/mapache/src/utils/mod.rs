@@ -135,10 +135,11 @@ where
 
 /// Converts a byte slice to its hexadecimal string representation.
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
     for &b in bytes {
-        s.push(char::from_digit((b >> 4).into(), 16).expect("nibble fits in radix 16"));
-        s.push(char::from_digit((b & 0xf).into(), 16).expect("nibble fits in radix 16"));
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
     }
     s
 }

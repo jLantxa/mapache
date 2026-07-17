@@ -21,6 +21,7 @@ env:
   CARGO_PROFILE_RELEASE_LTO: true
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
   MAPACHE_RELEASE_TYPE: release
+  ZIG_VERSION: "0.16.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || inputs.ref }}
@@ -61,8 +62,8 @@ jobs:
           sudo apt-get install -y -qq pkg-config
       - name: Install zig
         run: |
-          curl -L https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz | sudo tar -xJ -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sudo tar -xJ -C /usr/local
+          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild
       - name: Build
@@ -94,8 +95,8 @@ jobs:
           sudo apt-get install -y -qq pkg-config
       - name: Install zig
         run: |
-          curl -L https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz | sudo tar -xJ -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sudo tar -xJ -C /usr/local
+          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild
       - name: Build
@@ -127,8 +128,8 @@ jobs:
           sudo apt-get install -y -qq pkg-config
       - name: Install zig
         run: |
-          curl -L https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz | sudo tar -xJ -C /usr/local
-          echo "/usr/local/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sudo tar -xJ -C /usr/local
+          echo "/usr/local/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild
       - name: Build

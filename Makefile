@@ -14,7 +14,7 @@ endif
 FEATURES ?= default
 BUILD_SH := sh tools/docker/build-target.sh
 
-all: check test fmt clippy debug release
+all: check fmt clippy test debug
 
 check:
 	cargo check
@@ -70,7 +70,7 @@ deny:
 	cargo deny
 
 test:
-	cargo test -r
+	cargo test
 
 doc:
 	cargo doc --no-deps --document-private-items

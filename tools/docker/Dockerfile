@@ -76,10 +76,11 @@ ENV AR_aarch64_linux_android="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux
 ENV CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
 
 # Download Zig (used by cargo-zigbuild for cross-compilation)
-RUN curl -L https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o /tmp/zig.tar.xz && \
+ARG ZIG_VERSION=0.16.0
+RUN curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz && \
     tar -xJf /tmp/zig.tar.xz -C /opt && \
     rm /tmp/zig.tar.xz
-ENV PATH="/opt/zig-x86_64-linux-0.16.0:${PATH}"
+ENV PATH="/opt/zig-x86_64-linux-${ZIG_VERSION}:${PATH}"
 
 # Apply high optimizations
 ENV CARGO_PROFILE_RELEASE_LTO="true"

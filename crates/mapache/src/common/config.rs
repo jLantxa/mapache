@@ -270,8 +270,10 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_config_path_tilde_slash() {
         let home = std::env::var("HOME").unwrap();
         let result = config_path("~/Documents").unwrap();
@@ -280,17 +282,42 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_path_tilde_only() {
         let home = std::env::var("HOME").unwrap();
         let result = config_path("~").unwrap();
         assert_eq!(result, PathBuf::from(home));
     }
 
+    struct EnvRestoreGuard {
+        home: Option<String>,
+        userprofile: Option<String>,
+    }
+
+    impl Drop for EnvRestoreGuard {
+        fn drop(&mut self) {
+            // SAFETY: only used in tests that are known not to run concurrently.
+            unsafe {
+                match &self.home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.userprofile {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
+            }
+        }
+    }
+
     #[test]
+    #[serial]
     fn test_config_path_no_home() {
-        let old_home = std::env::var("HOME").ok();
-        let old_userprofile = std::env::var("USERPROFILE").ok();
-        // SAFETY: single-threaded test, no concurrent env access.
+        let _guard = EnvRestoreGuard {
+            home: std::env::var("HOME").ok(),
+            userprofile: std::env::var("USERPROFILE").ok(),
+        };
+        // SAFETY: only used in tests that are known not to run concurrently.
         unsafe {
             std::env::remove_var("HOME");
             std::env::remove_var("USERPROFILE");
@@ -301,17 +328,6 @@ mod tests {
         match result.unwrap_err() {
             MapacheError::Config(msg) => assert!(msg.contains("cannot expand")),
             other => panic!("expected Config error, got: {other}"),
-        }
-
-        // Restore HOME and USERPROFILE
-        // SAFETY: single-threaded test, restoring env.
-        unsafe {
-            if let Some(home) = old_home {
-                std::env::set_var("HOME", home);
-            }
-            if let Some(up) = old_userprofile {
-                std::env::set_var("USERPROFILE", up);
-            }
         }
     }
 

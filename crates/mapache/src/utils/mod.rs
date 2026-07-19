@@ -248,6 +248,12 @@ pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts
 /// - `w`: weeks
 /// - `y`: years (approximated as 365 days)
 pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
+    if s.is_empty() {
+        return Err(MapacheError::Format(
+            "invalid duration format: empty string".to_string(),
+        ));
+    }
+
     let mut total_duration = Duration::zero();
     let mut current_num_str = String::new();
 
@@ -738,6 +744,7 @@ mod tests {
             err.to_string().contains("out of range"),
             "expected out-of-range error, got: {err}"
         );
+        assert!(parse_duration_string("").is_err());
         assert_eq!(parse_duration_string("1y").unwrap(), Duration::days(365));
     }
 

@@ -982,33 +982,3 @@ fn emit_blob_corruption_json(blob_id: &ID, path: &Path, snapshot_id: &ID) {
         },
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-
-    #[derive(Parser, Debug)]
-    #[command(no_binary_name = true)]
-    struct VerifyArgsParse {
-        #[command(flatten)]
-        args: CmdArgs,
-    }
-
-    #[test]
-    fn parallel_rejects_zero() {
-        let err = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "0"])
-            .expect_err("--parallel 0 must be rejected");
-        assert!(
-            err.to_string().contains("greater than 0"),
-            "unexpected error message: {err}"
-        );
-    }
-
-    #[test]
-    fn parallel_accepts_positive() {
-        let parsed = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "8"])
-            .expect("--parallel 8 must parse");
-        assert_eq!(parsed.args.parallel, 8);
-    }
-}

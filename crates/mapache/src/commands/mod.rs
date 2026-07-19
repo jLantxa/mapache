@@ -27,6 +27,8 @@ pub mod cmd_sync;
 pub mod cmd_tui;
 pub mod cmd_unlock;
 pub mod cmd_verify;
+#[cfg(test)]
+mod cmd_verify_parse_tests;
 
 pub mod cleanup;
 pub mod error;

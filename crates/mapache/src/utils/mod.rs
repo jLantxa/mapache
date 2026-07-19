@@ -248,11 +248,10 @@ pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts
 /// - `w`: weeks
 /// - `y`: years (approximated as 365 days)
 pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
-    let mut total_duration = Duration::seconds(0);
+    let mut total_duration = Duration::zero();
     let mut current_num_str = String::new();
-    let chars = s.chars();
 
-    for c in chars {
+    for c in s.chars() {
         if c.is_ascii_digit() {
             current_num_str.push(c);
         } else {
@@ -268,19 +267,19 @@ pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
                 ))
             })?;
 
-            match c {
-                's' => total_duration += Duration::seconds(num),
-                'm' => total_duration += Duration::minutes(num),
-                'h' => total_duration += Duration::hours(num),
-                'd' => total_duration += Duration::days(num),
-                'w' => total_duration += Duration::weeks(num),
+            let part = match c {
+                's' => Duration::try_seconds(num),
+                'm' => Duration::try_minutes(num),
+                'h' => Duration::try_hours(num),
+                'd' => Duration::try_days(num),
+                'w' => Duration::try_weeks(num),
                 'y' => {
                     let days = num.checked_mul(365).ok_or_else(|| {
                         MapacheError::Format(format!(
                             "duration value out of range for years in \"{s}\""
                         ))
                     })?;
-                    total_duration += Duration::days(days);
+                    Duration::try_days(days)
                 }
                 _ => {
                     return Err(MapacheError::Format(format!(
@@ -288,6 +287,17 @@ pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
                     )));
                 }
             }
+            .ok_or_else(|| {
+                MapacheError::Format(format!(
+                    "duration value out of range for '{num}{c}' in \"{s}\""
+                ))
+            })?;
+
+            total_duration = total_duration.checked_add(&part).ok_or_else(|| {
+                MapacheError::Format(format!(
+                    "duration value out of range when combining units in \"{s}\""
+                ))
+            })?;
             current_num_str.clear();
         }
     }
@@ -708,9 +718,22 @@ mod tests {
         assert!(parse_duration_string("1d1").is_err());
         assert!(parse_duration_string("1d 2h").is_err()); // spaces are not supported
 
-        // Years near i64::MAX/365 used to panic on `num * 365` instead of returning Err.
+        // Oversized year counts must Err, not panic on i64/chrono overflow.
         let overflow_years = format!("{}y", i64::MAX / 365 + 1);
         let err = parse_duration_string(&overflow_years).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "expected out-of-range error, got: {err}"
+        );
+        let huge_years = format!("{}y", i64::MAX / 365);
+        let err = parse_duration_string(&huge_years).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "expected out-of-range error, got: {err}"
+        );
+        // Non-year units must also Err (not panic) past chrono Duration limits.
+        let overflow_days = format!("{}d", i64::MAX);
+        let err = parse_duration_string(&overflow_days).unwrap_err();
         assert!(
             err.to_string().contains("out of range"),
             "expected out-of-range error, got: {err}"

@@ -274,7 +274,14 @@ pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
                 'h' => total_duration += Duration::hours(num),
                 'd' => total_duration += Duration::days(num),
                 'w' => total_duration += Duration::weeks(num),
-                'y' => total_duration += Duration::days(num * 365),
+                'y' => {
+                    let days = num.checked_mul(365).ok_or_else(|| {
+                        MapacheError::Format(format!(
+                            "duration value out of range for years in \"{s}\""
+                        ))
+                    })?;
+                    total_duration += Duration::days(days);
+                }
                 _ => {
                     return Err(MapacheError::Format(format!(
                         "invalid duration unit: '{c}' in \"{s}\""
@@ -700,6 +707,15 @@ mod tests {
         assert!(parse_duration_string("1as").is_err());
         assert!(parse_duration_string("1d1").is_err());
         assert!(parse_duration_string("1d 2h").is_err()); // spaces are not supported
+
+        // Years near i64::MAX/365 used to panic on `num * 365` instead of returning Err.
+        let overflow_years = format!("{}y", i64::MAX / 365 + 1);
+        let err = parse_duration_string(&overflow_years).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "expected out-of-range error, got: {err}"
+        );
+        assert_eq!(parse_duration_string("1y").unwrap(), Duration::days(365));
     }
 
     #[test]

@@ -77,8 +77,14 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = false)]
     pub read_packs: bool,
 
-    /// Number of packs to process in parallel
-    #[clap(short, long, default_value_t = 4, requires = "read_packs")]
+    /// Number of packs to process in parallel. N must be greater than 0.
+    #[clap(
+        short,
+        long,
+        default_value_t = 4,
+        requires = "read_packs",
+        value_parser = parse_parallel
+    )]
     pub parallel: usize,
 
     /// Use local cache
@@ -110,6 +116,16 @@ fn parse_sample_percentage(s: &str) -> Result<f64, String> {
         return Err("sample percentage must be between 0 and 100".to_string());
     }
     Ok(val)
+}
+
+fn parse_parallel(s: &str) -> Result<usize, String> {
+    let n = s
+        .parse::<usize>()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
+    if n == 0 {
+        return Err("parallel must be greater than 0".to_string());
+    }
+    Ok(n)
 }
 
 struct VerifyStats {
@@ -965,4 +981,34 @@ fn emit_blob_corruption_json(blob_id: &ID, path: &Path, snapshot_id: &ID) {
             error: "corrupt blob affects this file".to_string(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    #[command(no_binary_name = true)]
+    struct VerifyArgsParse {
+        #[command(flatten)]
+        args: CmdArgs,
+    }
+
+    #[test]
+    fn parallel_rejects_zero() {
+        let err = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "0"])
+            .expect_err("--parallel 0 must be rejected");
+        assert!(
+            err.to_string().contains("greater than 0"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn parallel_accepts_positive() {
+        let parsed = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "8"])
+            .expect("--parallel 8 must parse");
+        assert_eq!(parsed.args.parallel, 8);
+    }
 }

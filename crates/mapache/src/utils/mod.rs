@@ -320,7 +320,15 @@ pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
         _ => return Err(MapacheError::Format(format!("invalid unit: {unit}"))),
     };
 
-    Ok((num * multiplier as f64) as u64)
+    let product = num * multiplier as f64;
+    // f64→u64 casts saturate at u64::MAX; reject out-of-range products.
+    if !product.is_finite() || product < 0.0 || product >= u64::MAX as f64 {
+        return Err(MapacheError::Format(format!(
+            "bandwidth out of range: \"{s}\""
+        )));
+    }
+
+    Ok(product as u64)
 }
 
 // --- Permissions Utilities ---
@@ -718,6 +726,8 @@ mod tests {
         assert_eq!(parse_bandwidth("10MiB/s").unwrap(), 10 * 1024 * 1024);
         assert!(parse_bandwidth("abc").is_err());
         assert!(parse_bandwidth("10XX").is_err());
+        // Oversized number*unit must Err, not saturate to u64::MAX.
+        assert!(parse_bandwidth("1000000000000000TB").is_err());
     }
 
     #[test]

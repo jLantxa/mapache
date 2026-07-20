@@ -264,14 +264,17 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
         ))
     })?;
 
-    if config
-        .runtime
-        .as_ref()
-        .is_some_and(|runtime| runtime.restore_pack_prefetch == Some(0))
-    {
-        return Err(MapacheError::Config(
-            "runtime.restore_pack_prefetch must be greater than 0".into(),
-        ));
+    if let Some(runtime) = &config.runtime {
+        if runtime.restore_pack_prefetch == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.restore_pack_prefetch must be greater than 0".into(),
+            ));
+        }
+        if runtime.s3_multipart_part_size == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.s3_multipart_part_size must be greater than 0".into(),
+            ));
+        }
     }
 
     Ok(config)
@@ -382,6 +385,26 @@ mod tests {
         match err {
             MapacheError::Config(msg) => assert!(
                 msg.contains("restore_pack_prefetch must be greater than 0"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn s3_multipart_part_size_zero_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-s3-multipart-part-size-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, "[runtime]\ns3-multipart-part-size = 0\n").unwrap();
+        let err = load_config(&path).expect_err("multipart part size 0 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("s3_multipart_part_size must be greater than 0"),
                 "unexpected message: {msg}"
             ),
             other => panic!("unexpected error: {other:?}"),

@@ -14,6 +14,11 @@
 - The `restore_complete` JSON event always reported zero errors, warnings,
   items, and bytes even when the restore had non-zero counts. The summary
   counters now reflect the actual restore progress.
+- Passing `0` to `--parallel` (verify), `--readers`, or `--packers` (snapshot)
+  caused hangs or panics. Now rejected at parse time with a clear error.
+- Setting `gc-repack-concurrency`, `restore-blob-concurrency`, or
+  `s3-multipart-part-size` to `0` in the config file caused hangs or infinite
+  loops. Now rejected at config load with a clear error.
 
 ### Added
 

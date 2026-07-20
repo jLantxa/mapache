@@ -134,8 +134,8 @@ pub struct CmdArgs {
     #[serde(deserialize_with = "deserialize_use_snapshot_opt")]
     pub parent: Option<UseSnapshot>,
 
-    /// Number of files to process in parallel.
-    #[clap(long = "readers")]
+    /// Number of files to process in parallel. Must be greater than 0.
+    #[clap(long = "readers", value_parser = parse_readers)]
     pub num_readers: Option<usize>,
 
     /// Number of writer threads. Must be greater than 0.
@@ -837,6 +837,16 @@ fn parse_packers(s: &str) -> Result<usize, String> {
     Ok(n)
 }
 
+fn parse_readers(s: &str) -> Result<usize, String> {
+    let n = s
+        .parse::<usize>()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
+    if n == 0 {
+        return Err("readers must be greater than 0".to_string());
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,9 +870,26 @@ mod tests {
     }
 
     #[test]
+    fn readers_rejects_zero() {
+        let err = SnapshotArgsParse::try_parse_from(["--readers", "0"])
+            .expect_err("--readers 0 must be rejected");
+        assert!(
+            err.to_string().contains("greater than 0"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
     fn packers_accepts_positive() {
         let parsed =
             SnapshotArgsParse::try_parse_from(["--packers", "8"]).expect("--packers 8 must parse");
         assert_eq!(parsed.args.num_packers, Some(8));
+    }
+
+    #[test]
+    fn readers_accepts_positive() {
+        let parsed =
+            SnapshotArgsParse::try_parse_from(["--readers", "8"]).expect("--readers 8 must parse");
+        assert_eq!(parsed.args.num_readers, Some(8));
     }
 }

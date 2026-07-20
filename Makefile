@@ -67,7 +67,7 @@ release-darwin:
 	$(BUILD_SH) aarch64-apple-darwin "" "--no-default-features" zigbuild
 
 deny:
-	cargo deny
+	cargo deny check
 
 test:
 	cargo test

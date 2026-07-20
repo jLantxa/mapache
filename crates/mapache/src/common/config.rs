@@ -270,6 +270,11 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
                 "runtime.restore_pack_prefetch must be greater than 0".into(),
             ));
         }
+        if runtime.gc_repack_concurrency == Some(0) {
+            return Err(MapacheError::Config(
+                "runtime.gc_repack_concurrency must be greater than 0".into(),
+            ));
+        }
         if runtime.restore_blob_concurrency == Some(0) {
             return Err(MapacheError::Config(
                 "runtime.restore_blob_concurrency must be greater than 0".into(),
@@ -385,6 +390,26 @@ mod tests {
         match err {
             MapacheError::Config(msg) => assert!(
                 msg.contains("restore_pack_prefetch must be greater than 0"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gc_repack_concurrency_zero_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-repack-concurrency-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, "[runtime]\ngc-repack-concurrency = 0\n").unwrap();
+        let err = load_config(&path).expect_err("repack concurrency 0 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("gc_repack_concurrency must be greater than 0"),
                 "unexpected message: {msg}"
             ),
             other => panic!("unexpected error: {other:?}"),

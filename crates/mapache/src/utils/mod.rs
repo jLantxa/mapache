@@ -248,11 +248,16 @@ pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts
 /// - `w`: weeks
 /// - `y`: years (approximated as 365 days)
 pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
-    let mut total_duration = Duration::seconds(0);
-    let mut current_num_str = String::new();
-    let chars = s.chars();
+    if s.is_empty() {
+        return Err(MapacheError::Format(
+            "invalid duration format: empty string".to_string(),
+        ));
+    }
 
-    for c in chars {
+    let mut total_duration = Duration::zero();
+    let mut current_num_str = String::new();
+
+    for c in s.chars() {
         if c.is_ascii_digit() {
             current_num_str.push(c);
         } else {
@@ -268,19 +273,37 @@ pub(crate) fn parse_duration_string(s: &str) -> Result<Duration> {
                 ))
             })?;
 
-            match c {
-                's' => total_duration += Duration::seconds(num),
-                'm' => total_duration += Duration::minutes(num),
-                'h' => total_duration += Duration::hours(num),
-                'd' => total_duration += Duration::days(num),
-                'w' => total_duration += Duration::weeks(num),
-                'y' => total_duration += Duration::days(num * 365),
+            let part = match c {
+                's' => Duration::try_seconds(num),
+                'm' => Duration::try_minutes(num),
+                'h' => Duration::try_hours(num),
+                'd' => Duration::try_days(num),
+                'w' => Duration::try_weeks(num),
+                'y' => {
+                    let days = num.checked_mul(365).ok_or_else(|| {
+                        MapacheError::Format(format!(
+                            "duration value out of range for years in \"{s}\""
+                        ))
+                    })?;
+                    Duration::try_days(days)
+                }
                 _ => {
                     return Err(MapacheError::Format(format!(
                         "invalid duration unit: '{c}' in \"{s}\""
                     )));
                 }
             }
+            .ok_or_else(|| {
+                MapacheError::Format(format!(
+                    "duration value out of range for '{num}{c}' in \"{s}\""
+                ))
+            })?;
+
+            total_duration = total_duration.checked_add(&part).ok_or_else(|| {
+                MapacheError::Format(format!(
+                    "duration value out of range when combining units in \"{s}\""
+                ))
+            })?;
             current_num_str.clear();
         }
     }
@@ -320,7 +343,14 @@ pub(crate) fn parse_bandwidth(s: &str) -> Result<u64> {
         _ => return Err(MapacheError::Format(format!("invalid unit: {unit}"))),
     };
 
-    Ok((num * multiplier as f64) as u64)
+    let product = num * multiplier as f64;
+    if !product.is_finite() || product >= u64::MAX as f64 {
+        return Err(MapacheError::Format(format!(
+            "bandwidth out of range: \"{s}\""
+        )));
+    }
+
+    Ok(product as u64)
 }
 
 // --- Permissions Utilities ---
@@ -700,6 +730,29 @@ mod tests {
         assert!(parse_duration_string("1as").is_err());
         assert!(parse_duration_string("1d1").is_err());
         assert!(parse_duration_string("1d 2h").is_err()); // spaces are not supported
+
+        // Oversized year counts must Err, not panic on i64/chrono overflow.
+        let overflow_years = format!("{}y", i64::MAX / 365 + 1);
+        let err = parse_duration_string(&overflow_years).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "expected out-of-range error, got: {err}"
+        );
+        let huge_years = format!("{}y", i64::MAX / 365);
+        let err = parse_duration_string(&huge_years).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "expected out-of-range error, got: {err}"
+        );
+        // Non-year units must also Err (not panic) past chrono Duration limits.
+        let overflow_days = format!("{}d", i64::MAX);
+        let err = parse_duration_string(&overflow_days).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "expected out-of-range error, got: {err}"
+        );
+        assert!(parse_duration_string("").is_err());
+        assert_eq!(parse_duration_string("1y").unwrap(), Duration::days(365));
     }
 
     #[test]
@@ -718,6 +771,7 @@ mod tests {
         assert_eq!(parse_bandwidth("10MiB/s").unwrap(), 10 * 1024 * 1024);
         assert!(parse_bandwidth("abc").is_err());
         assert!(parse_bandwidth("10XX").is_err());
+        assert!(parse_bandwidth("1000000000000000TB").is_err());
     }
 
     #[test]

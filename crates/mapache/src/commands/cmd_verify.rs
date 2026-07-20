@@ -273,8 +273,7 @@ pub async fn run_with_repo(
     if let Some(sample_pct) = args.sample {
         use rand::seq::SliceRandom;
         let mut rng = rand::rng();
-        let target_count = ((packs_to_verify.len() as f64) * (sample_pct / 100.0)).round() as usize;
-        let target_count = target_count.clamp(1, packs_to_verify.len());
+        let target_count = sample_pack_count(packs_to_verify.len(), sample_pct);
 
         ui::cli::log!(
             "{} verifying {} out of {} packs ({:.2}% of the packs).\n",
@@ -983,6 +982,15 @@ fn emit_blob_corruption_json(blob_id: &ID, path: &Path, snapshot_id: &ID) {
     );
 }
 
+/// How many packs `--sample PCT%` should verify. `0%` and an empty pack list both yield 0.
+fn sample_pack_count(pack_count: usize, sample_pct: f64) -> usize {
+    if pack_count == 0 || sample_pct <= 0.0 {
+        return 0;
+    }
+    let rounded = ((pack_count as f64) * (sample_pct / 100.0)).round() as usize;
+    rounded.clamp(1, pack_count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,5 +1018,26 @@ mod tests {
         let parsed = VerifyArgsParse::try_parse_from(["--read-packs", "--parallel", "8"])
             .expect("--parallel 8 must parse");
         assert_eq!(parsed.args.parallel, 8);
+    }
+
+    #[test]
+    fn sample_zero_percent_verifies_no_packs() {
+        assert_eq!(sample_pack_count(2, 0.0), 0);
+        assert_eq!(sample_pack_count(10, 0.0), 0);
+        assert_eq!(sample_pack_count(1, 0.0), 0);
+    }
+
+    #[test]
+    fn sample_empty_pack_list_is_zero() {
+        assert_eq!(sample_pack_count(0, 10.0), 0);
+        assert_eq!(sample_pack_count(0, 0.0), 0);
+        assert_eq!(sample_pack_count(0, 100.0), 0);
+    }
+
+    #[test]
+    fn sample_positive_percent_keeps_at_least_one_when_packs_exist() {
+        assert_eq!(sample_pack_count(10, 50.0), 5);
+        assert_eq!(sample_pack_count(10, 100.0), 10);
+        assert_eq!(sample_pack_count(10, 0.01), 1);
     }
 }

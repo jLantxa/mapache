@@ -264,6 +264,16 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
         ))
     })?;
 
+    if config
+        .runtime
+        .as_ref()
+        .is_some_and(|runtime| runtime.restore_pack_prefetch == Some(0))
+    {
+        return Err(MapacheError::Config(
+            "runtime.restore_pack_prefetch must be greater than 0".into(),
+        ));
+    }
+
     Ok(config)
 }
 
@@ -358,5 +368,23 @@ mod tests {
         assert_eq!(config.global.is_some(), parsed.global.is_some());
         assert_eq!(config.runtime.is_some(), parsed.runtime.is_some());
         assert_eq!(config.hooks.is_some(), parsed.hooks.is_some());
+    }
+
+    #[test]
+    fn restore_pack_prefetch_zero_is_rejected() {
+        let dir =
+            std::env::temp_dir().join(format!("mapache-prefetch-zero-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, "[runtime]\nrestore-pack-prefetch = 0\n").unwrap();
+        let err = load_config(&path).expect_err("prefetch 0 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("restore_pack_prefetch must be greater than 0"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

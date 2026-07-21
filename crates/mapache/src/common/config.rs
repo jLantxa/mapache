@@ -287,6 +287,19 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
         }
     }
 
+    if let Some(snapshot) = &config.snapshot {
+        if snapshot.num_packers == Some(0) {
+            return Err(MapacheError::Config(
+                "snapshot.num-packers must be greater than 0".into(),
+            ));
+        }
+        if snapshot.num_readers == Some(0) {
+            return Err(MapacheError::Config(
+                "snapshot.num-readers must be greater than 0".into(),
+            ));
+        }
+    }
+
     Ok(config)
 }
 
@@ -455,6 +468,46 @@ mod tests {
         match err {
             MapacheError::Config(msg) => assert!(
                 msg.contains("restore_blob_concurrency must be greater than 0"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_num_packers_zero_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-snapshot-packers-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, "[snapshot]\nnum-packers = 0\n").unwrap();
+        let err = load_config(&path).expect_err("num-packers 0 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("snapshot.num-packers must be greater than 0"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_num_readers_zero_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-snapshot-readers-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        std::fs::write(&path, "[snapshot]\nnum-readers = 0\n").unwrap();
+        let err = load_config(&path).expect_err("num-readers 0 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("snapshot.num-readers must be greater than 0"),
                 "unexpected message: {msg}"
             ),
             other => panic!("unexpected error: {other:?}"),

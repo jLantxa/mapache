@@ -16,16 +16,19 @@ use crate::{
         progress::{SnapshotProcessSummary, SnapshotProgress},
         tree_serializer::TreeSerializer,
     },
-    backend::{self, BackendOptions, StorageHint, WriteContents},
+    backend::{self, StorageHint, WriteContents},
     bundle::{
         format::{BundleIndex, BundleIndexEntry},
         reader::BundleReader,
         writer::BundleWriter,
     },
-    commands::{GlobalArgs, ToExitCode, UseSnapshot, find_use_snapshot, open_repository},
+    commands::{
+        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
+        with_repository_lock,
+    },
     common::{
         BlobType, ContentIdType, ID, SaveID,
-        defaults::{DEFAULT_PACK_SIZE, DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
         error::MapacheError,
         traits::{BlobLoader, BlobSaver},
     },
@@ -36,8 +39,7 @@ use crate::{
         node::{Metadata, Node},
         tree::{FSNodeStream, NodeDiff, StreamNode, Tree},
     },
-    repository::repo::RepoConfig,
-    repository::repo::Repository,
+    repository::{lock::LockHandle, repo::Repository},
     restorer::node_restorer,
     ui::{
         self,
@@ -49,7 +51,6 @@ use crate::{
 };
 #[cfg(all(feature = "mount", unix))]
 use crate::{
-    commands::cleanup::CleanupHandler,
     fs::path_exists,
     mount::fuse::fs::{MapacheFS, MountOptions},
     utils::size,
@@ -544,71 +545,25 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
     Ok(())
 }
 
-async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
-    let use_snapshot = args
-        .export_snapshot
-        .as_ref()
-        .expect("export_snapshot must be Some");
-
-    let output = args
-        .output
-        .as_ref()
-        .ok_or_else(|| BundleError::Config("-o is required for export mode".to_string()))?;
-
-    if global.repo.is_empty() {
-        return Err(BundleError::Config(
-            "Repository path is required for export mode. Use -r, set MAPACHE_REPOSITORY, or add it to config file.".to_string(),
-        ));
-    }
-
-    tracing::info!(target: "bundle", "Starting bundle export: snapshot {} to {}", use_snapshot, output.display());
-
-    let password = match &args.internal_password {
-        Some(p) => zeroize::Zeroizing::new(p.clone()),
-        None => cli::request_new_password("Enter bundle password", "Confirm password")
-            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
-    };
-
-    // Open repository
-    let repo_config = RepoConfig {
-        pack_size: DEFAULT_PACK_SIZE,
-        use_cache: !global.no_cache,
-        compression: global.compression_level,
-    };
-
-    let repo_backend = backend::new_backend_with_prompt(BackendOptions {
-        repo_path: global.repo.clone(),
-        ssh_privatekey: global.ssh_privatekey.clone(),
-        ssh_known_hosts: global.ssh_known_hosts.clone(),
-        dry_backend: false,
-        limit_upload: global.limit_upload,
-        limit_download: global.limit_download,
-    })
-    .await
-    .map_err(|e| {
-        BundleError::BundleFailed(format!(
-            "failed to initialize repository backend: {}",
-            e.inner()
-        ))
-    })?;
-
-    let (repo, _ss) = open_repository(
-        global.auth_file.as_ref(),
-        global.key.as_ref(),
-        repo_backend,
-        repo_config,
-    )
-    .await
-    .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+async fn export_snapshot_impl(
+    repo: Arc<Repository>,
+    lock_handle: Option<LockHandle>,
+    use_snapshot: &UseSnapshot,
+    output: &Path,
+    password: &zeroize::Zeroizing<String>,
+    global: &GlobalArgs,
+    args: &CmdArgs,
+) -> Result<(), BundleError> {
+    let cleanup_handler = CleanupHandler::new();
+    cleanup_handler.add_lock(lock_handle);
 
     repo.reload_master_index().await?;
 
     // Resolve snapshot (supports "latest", prefix, or full ID)
     let (snap_id, snapshot) = find_use_snapshot(repo.clone(), use_snapshot)
-        .await
-        .map_err(|e| BundleError::BundleFailed(e.to_string()))?
+        .await?
         .ok_or_else(|| {
-            BundleError::BundleFailed(format!("no snapshot found matching '{}'", use_snapshot))
+            MapacheError::Repo(format!("no snapshot found matching '{}'", use_snapshot))
         })?;
 
     if !global.json {
@@ -626,8 +581,8 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
 
     // Create bundle writer
     let bundle_writer = Arc::new(
-        BundleWriter::new(output, &password, global.compression_level.to_level())
-            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
+        BundleWriter::new(output, password, global.compression_level.to_level())
+            .map_err(|e| MapacheError::Repo(e.to_string()))?,
     );
 
     // Collect all blob IDs from the snapshot tree
@@ -672,10 +627,9 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
                 }
             }
             Err(e) => {
-                return Err(BundleError::BundleFailed(format!(
-                    "failed to load tree {}: {}",
-                    tree_id, e
-                )));
+                return Err(
+                    MapacheError::Repo(format!("failed to load tree {}: {}", tree_id, e)).into(),
+                );
             }
         }
     }
@@ -726,28 +680,25 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
         None
     };
 
-    let results: Vec<Result<(), BundleError>> = stream::iter(blob_list)
+    let results: Vec<Result<(), MapacheError>> = stream::iter(blob_list)
         .map(|(blob_id, blob_type)| {
             let repo = repo.clone();
             let bundle_writer = bundle_writer.clone();
             let bar = bar.clone();
             let export_rate = export_rate.clone();
             async move {
-                let data = repo.load_blob(&blob_id).await.map_err(|e| {
-                    BundleError::BundleFailed(format!("failed to load blob {}: {}", blob_id, e))
-                })?;
-
+                let data = repo.load_blob(&blob_id).await?;
                 let blob_size = data.len() as u64;
 
-                bundle_writer
-                    .save_blob(
+                tokio::task::spawn_blocking(move || {
+                    bundle_writer.save_blob(
                         blob_type,
                         WriteContents::Owned(data),
                         SaveID::WithID(blob_id),
                     )
-                    .map_err(|e| {
-                        BundleError::BundleFailed(format!("failed to save blob to bundle: {}", e))
-                    })?;
+                })
+                .await
+                .map_err(|e| MapacheError::Repo(format!("export task panicked: {}", e)))??;
 
                 if let Some(ref bar) = bar {
                     bar.inc(blob_size);
@@ -758,7 +709,7 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
             }
         })
         .buffer_unordered(args.readers)
-        .collect::<Vec<Result<(), BundleError>>>()
+        .collect::<Vec<Result<(), MapacheError>>>()
         .await;
 
     for r in results {
@@ -772,10 +723,10 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
     // Finalize bundle
     bundle_writer
         .finalize(snapshot.tree)
-        .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+        .map_err(|e| MapacheError::Repo(e.to_string()))?;
 
     let final_size = std::fs::metadata(output)
-        .map_err(|e| BundleError::BundleFailed(format!("failed to stat bundle file: {}", e)))?
+        .map_err(|e| MapacheError::Repo(format!("failed to stat bundle file: {}", e)))?
         .len();
 
     let elapsed = start.elapsed();
@@ -832,6 +783,69 @@ async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), 
     }
 
     tracing::info!(target: "bundle", "Bundle export completed (size={}, blobs={})", final_size, total);
+    Ok(())
+}
+
+async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
+    let use_snapshot = args
+        .export_snapshot
+        .as_ref()
+        .expect("export_snapshot must be Some");
+
+    let output = args
+        .output
+        .as_ref()
+        .ok_or_else(|| BundleError::Config("-o is required for export mode".to_string()))?;
+
+    if global.repo.is_empty() {
+        return Err(BundleError::Config(
+            "Repository path is required for export mode. Use -r, set MAPACHE_REPOSITORY, or add it to config file.".to_string(),
+        ));
+    }
+
+    tracing::info!(target: "bundle", "Starting bundle export: snapshot {} to {}", use_snapshot, output.display());
+
+    let password = match &args.internal_password {
+        Some(p) => zeroize::Zeroizing::new(p.clone()),
+        None => cli::request_new_password("Enter bundle password", "Confirm password")
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
+    };
+
+    with_repository_lock(
+        global.auth_file.as_ref(),
+        global.key.as_ref(),
+        backend::new_backend_with_prompt(global.backend_options(false))
+            .await
+            .map_err(|e| {
+                BundleError::BundleFailed(format!(
+                    "failed to initialize repository backend: {}",
+                    e.inner()
+                ))
+            })?,
+        global.to_repo_config(),
+        false, // export is read-only on the repository
+        global.retry_lock_duration,
+        global.no_lock,
+        |repo, _secure_storage, lock_handle| {
+            let password = password.clone();
+            let use_snapshot = use_snapshot.clone();
+            let output = output.clone();
+            async move {
+                export_snapshot_impl(
+                    repo,
+                    lock_handle,
+                    &use_snapshot,
+                    &output,
+                    &password,
+                    global,
+                    args,
+                )
+                .await
+            }
+        },
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -1061,6 +1075,9 @@ async fn create_import_snapshot(
     use crate::repository::snapshot::{Snapshot, SnapshotSummary};
     use chrono::Local;
 
+    let abs_bundle_path = crate::fs::get_absolute_normalized_path(bundle_path)
+        .unwrap_or_else(|_| bundle_path.to_path_buf());
+
     let total_blobs = bundle_index.entries.len();
     let data_blobs: u64 = bundle_index
         .entries
@@ -1083,7 +1100,7 @@ async fn create_import_snapshot(
         timestamp: Local::now(),
         tree: root_tree_id,
         root: PathBuf::from("/"),
-        paths: vec![bundle_path.to_path_buf()],
+        paths: vec![abs_bundle_path],
         description: Some(format!(
             "Imported from bundle {}",
             bundle_path
@@ -1137,6 +1154,45 @@ async fn create_import_snapshot(
     Ok(snapshot_id)
 }
 
+async fn import_impl(
+    repo: Arc<Repository>,
+    lock_handle: Option<LockHandle>,
+    password: &zeroize::Zeroizing<String>,
+    global: &GlobalArgs,
+    args: &CmdArgs,
+) -> Result<(), BundleError> {
+    let cleanup_handler = CleanupHandler::new();
+    cleanup_handler.add_lock(lock_handle);
+
+    repo.reload_master_index().await?;
+    repo.init_pack_saver(args.readers)?;
+
+    for bundle_path in &args.input {
+        run_import_bundle(&repo, bundle_path, password, global, args).await?;
+    }
+
+    // Flush pack saver
+    if !global.json {
+        cli::log!(
+            "{} Persisting repository index...",
+            "[finalize]".bold().cyan()
+        );
+    }
+    repo.flush_and_finalize_pack_saver().await?;
+
+    if !global.json {
+        cli::log!();
+        if args.input.len() > 1 {
+            cli::log!("All {} bundles imported successfully.", args.input.len());
+        } else {
+            cli::log!("Bundle imported successfully.");
+        }
+    }
+
+    tracing::info!(target: "bundle", "Bundle import completed for {} bundles", args.input.len());
+    Ok(())
+}
+
 async fn run_import(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
     if args.input.is_empty() {
         return Err(BundleError::BundleFailed(
@@ -1158,66 +1214,28 @@ async fn run_import(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
             .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     };
 
-    // Open repository once for all bundles
-    let repo_config = RepoConfig {
-        pack_size: DEFAULT_PACK_SIZE,
-        use_cache: !global.no_cache,
-        compression: global.compression_level,
-    };
-
-    let repo_backend = backend::new_backend_with_prompt(BackendOptions {
-        repo_path: global.repo.clone(),
-        ssh_privatekey: global.ssh_privatekey.clone(),
-        ssh_known_hosts: global.ssh_known_hosts.clone(),
-        dry_backend: false,
-        limit_upload: global.limit_upload,
-        limit_download: global.limit_download,
-    })
-    .await
-    .map_err(|e| {
-        BundleError::BundleFailed(format!(
-            "failed to initialize repository backend: {}",
-            e.inner()
-        ))
-    })?;
-
-    let (repo, _ss) = open_repository(
+    with_repository_lock(
         global.auth_file.as_ref(),
         global.key.as_ref(),
-        repo_backend,
-        repo_config,
+        backend::new_backend_with_prompt(global.backend_options(false))
+            .await
+            .map_err(|e| {
+                BundleError::BundleFailed(format!(
+                    "failed to initialize repository backend: {}",
+                    e.inner()
+                ))
+            })?,
+        global.to_repo_config(),
+        false, // non-exclusive lock is used for snapshot/backup
+        global.retry_lock_duration,
+        global.no_lock,
+        |repo, _secure_storage, lock_handle| {
+            let password = password.clone();
+            async move { import_impl(repo, lock_handle, &password, global, args).await }
+        },
     )
-    .await
-    .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+    .await?;
 
-    repo.reload_master_index().await?;
-    repo.init_pack_saver(args.readers)?;
-
-    for bundle_path in &args.input {
-        run_import_bundle(&repo, bundle_path, &password, global, args).await?;
-    }
-
-    // Flush pack saver
-    if !global.json {
-        cli::log!(
-            "{} Persisting repository index...",
-            "[finalize]".bold().cyan()
-        );
-    }
-    repo.flush_and_finalize_pack_saver()
-        .await
-        .map_err(|e| BundleError::BundleFailed(format!("failed to finalize packs: {}", e)))?;
-
-    if !global.json {
-        cli::log!();
-        if args.input.len() > 1 {
-            cli::log!("All {} bundles imported successfully.", args.input.len());
-        } else {
-            cli::log!("Bundle imported successfully.");
-        }
-    }
-
-    tracing::info!(target: "bundle", "Bundle import completed for {} bundles", args.input.len());
     Ok(())
 }
 

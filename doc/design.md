@@ -497,3 +497,28 @@ are stored in the usual cache directory of the OS.
 
 Mapache provides a `cache` command to list and manage cache folders, including
 a cleanup option.
+
+## Bundle files
+
+A bundle file (`.mapache`) is a self-contained, encrypted archive that stores
+the same blob types used inside a repository: tree blobs, metadata blobs, and
+data blobs. The bundle uses its own independent encryption key derived from the
+bundle password (not the repository key).
+
+### Export and import
+
+The `--export-snapshot` command walks the snapshot tree, loads each referenced
+blob from the repository and writes it into the bundle preserving the original
+blob IDs. When the same bundle is later imported into a repository (or a
+different one), each blob is checked against the destination's master index.
+Blobs that already exist are skipped; only new blobs are written and packed.
+The imported snapshot tree is then persisted as a new snapshot.
+
+This design means:
+
+1. **Cross-repo deduplication** — importing a bundle into a repository that
+   already contains the same data stores no additional blobs. This is useful
+   for merging backups from different machines or migrating between repositories.
+2. **No format differences** — bundles and repositories store identical blob
+   types. Export does not re-encode or re-encrypt data; it simply relocates
+   the raw blobs into a single portable file.

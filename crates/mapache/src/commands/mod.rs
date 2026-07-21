@@ -88,7 +88,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Amend(WithGlobal<cmd_amend::CmdArgs>),
-    Bundle(cmd_bundle::CmdArgs),
+    Bundle(WithGlobal<cmd_bundle::CmdArgs>),
     Cache(cmd_cache::CmdArgs),
     Cat(WithGlobal<cmd_cat::CmdArgs>),
     Clean(WithGlobal<cmd_clean::CmdArgs>),
@@ -406,7 +406,7 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, St
         .repo
         .clone()
         .or_else(|| env::var("MAPACHE_REPOSITORY").ok())
-        .ok_or_else(|| "Repository path is required. Use --repo, set MAPACHE_REPOSITORY, or add it to config file.".to_string())?;
+        .unwrap_or_default();
 
     let pack_size_mib = cli.pack_size_mib.unwrap_or(DEFAULT_PACK_SIZE_MIB);
     let compression_level = cli.compression_level.unwrap_or(DEFAULT_COMPRESSION);
@@ -631,10 +631,11 @@ pub async fn parse_and_run() -> i32 {
 
     let (global_result, command_result) = match args.command {
         // Commands without repository URL
-        n @ (Command::Bundle(_)
-        | Command::Cache(_)
-        | Command::Completion(_)
-        | Command::Config(_)) => (Ok(GlobalArgs::default_no_repo()), n),
+        n @ (Command::Cache(_) | Command::Completion(_) | Command::Config(_)) => {
+            (Ok(GlobalArgs::default_no_repo()), n)
+        }
+        // Bundle resolves global args (repo is optional, needed only for export/import)
+        Command::Bundle(cmd) => (resolve_global(&cmd.global, &config), Command::Bundle(cmd)),
         // Commands with command-specific config merged into args
         Command::Forget(cmd) => {
             let (g, cmd) = resolve_global_with_extra(cmd, &config, &config.forget);
@@ -693,7 +694,9 @@ pub async fn parse_and_run() -> i32 {
 
     let result: std::result::Result<(), error::CmdError> = match command_result {
         // Commands without global args
-        Command::Bundle(cmd) => cmd_bundle::run(&cmd).await.map_err(CmdError::new),
+        Command::Bundle(cmd) => cmd_bundle::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
         Command::Cache(cmd) => cmd_cache::run(&cmd).map_err(CmdError::new),
         Command::Completion(cmd) => cmd_completion::run(&cmd).map_err(CmdError::new),
         Command::Config(cmd) => cmd_config::run(&cmd).await.map_err(CmdError::new),

@@ -269,7 +269,7 @@ impl TestContext {
         }
 
         // Commands that do NOT support global arguments
-        let no_global = matches!(args[0], "completion" | "bundle");
+        let no_global = matches!(args[0], "completion");
 
         let mut final_args = vec![args[0]];
         if !no_global {
@@ -682,8 +682,20 @@ impl BundleBuilder {
         self
     }
 
-    pub async fn run(self) -> Result<()> {
-        cmd_bundle::run(&self.args).await.map_err(Into::into)
+    pub fn export_snapshot(mut self, snapshot: mapache::commands::UseSnapshot) -> Self {
+        self.args.export_snapshot = Some(snapshot);
+        self
+    }
+
+    pub fn import(mut self, import: bool) -> Self {
+        self.args.import = import;
+        self
+    }
+
+    pub async fn run(self, global: &GlobalArgs) -> Result<()> {
+        cmd_bundle::run(global, &self.args)
+            .await
+            .map_err(Into::into)
     }
 }
 

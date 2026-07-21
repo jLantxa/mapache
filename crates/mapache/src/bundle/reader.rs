@@ -2,12 +2,14 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use crate::common::error::{MapacheError, Result};
 use argon2::ParamsBuilder;
 use async_trait::async_trait;
+use futures::StreamExt;
 use parking_lot::Mutex;
 
 use crate::{
@@ -16,7 +18,16 @@ use crate::{
         BUNDLE_TRAILER_SIZE_LEN, BundleHeader, BundleIndex, BundleTrailer,
     },
     common::{ID, traits::BlobLoader},
+    fs::{
+        node::Metadata,
+        tree::{NodeDiff, Tree},
+    },
     repository::storage::SecureStorage,
+    restorer::node_restorer,
+    ui::{
+        self,
+        events::{BackupEvent, Event, EventSender, RestoreEvent},
+    },
 };
 
 pub struct BundleReader {
@@ -151,4 +162,248 @@ impl BundleReader {
     pub fn index(&self) -> &BundleIndex {
         &self.index
     }
+}
+
+pub async fn scan_bundle_tree<L>(loader: Arc<L>, tree_id: &ID) -> Result<(usize, u64)>
+where
+    L: BlobLoader + ?Sized + 'static,
+{
+    let mut total_items = 0;
+    let mut total_bytes = 0;
+    let mut stack = vec![*tree_id];
+
+    while let Some(current_id) = stack.pop() {
+        let data = loader
+            .load_blob(&current_id)
+            .await
+            .map_err(|e| MapacheError::Repo(format!("failed to load tree: {e}")))?;
+        let tree: Tree = serde_json::from_slice(&data)
+            .map_err(|e| MapacheError::Repo(format!("failed to parse tree: {e}")))?;
+
+        for node in tree.nodes {
+            total_items += 1;
+            if node.is_dir() {
+                if let Some(subtree_id) = node.tree {
+                    stack.push(subtree_id);
+                }
+            } else if node.is_file() {
+                total_bytes += node.metadata.size;
+            }
+        }
+    }
+    Ok((total_items, total_bytes))
+}
+
+pub async fn extract_nodes_parallel<L>(
+    loader: Arc<L>,
+    root_id: &ID,
+    destination: &Path,
+    workers: usize,
+    event_sender: EventSender,
+) -> Result<()>
+where
+    L: BlobLoader + ?Sized + 'static,
+{
+    let (tx, rx) = tokio::sync::mpsc::channel::<(PathBuf, crate::fs::node::Node)>(4096);
+    let (dir_tx, dir_rx) = tokio::sync::mpsc::channel::<(PathBuf, Metadata)>(4096);
+
+    let loader_clone = loader.clone();
+    let dest_clone = destination.to_path_buf();
+    let sender_clone = event_sender.clone();
+    let root_id_val = *root_id;
+
+    let walk_task = tokio::spawn(async move {
+        let mut stack = vec![(dest_clone, root_id_val)];
+        while let Some((current_dest, current_id)) = stack.pop() {
+            let data = match loader_clone.load_blob(&current_id).await {
+                Ok(d) => d,
+                Err(e) => {
+                    sender_clone(Event::Backup(BackupEvent::Error(format!(
+                        "failed to load tree {}: {}",
+                        current_id, e
+                    ))));
+                    continue;
+                }
+            };
+            let tree: Tree = match serde_json::from_slice(&data) {
+                Ok(t) => t,
+                Err(e) => {
+                    sender_clone(Event::Backup(BackupEvent::Error(format!(
+                        "failed to parse tree {}: {}",
+                        current_id, e
+                    ))));
+                    continue;
+                }
+            };
+
+            for node in tree.nodes {
+                let node_path = current_dest.join(&node.name);
+                if node.is_dir() {
+                    let _ = std::fs::create_dir_all(&node_path);
+                    let _ = dir_tx
+                        .send((node_path.clone(), node.metadata.clone()))
+                        .await;
+                    if let Some(subtree_id) = node.tree {
+                        stack.push((node_path.clone(), subtree_id));
+                    }
+                }
+                if let Err(e) = tx.send((node_path, node)).await {
+                    sender_clone(Event::Backup(BackupEvent::Error(format!(
+                        "internal channel error: {}",
+                        e
+                    ))));
+                    break;
+                }
+            }
+        }
+    });
+
+    let meta_sender = make_meta_sender();
+
+    let process_future = async {
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        stream
+            .for_each_concurrent(workers, |(path, node)| {
+                let loader = loader.clone();
+                let sender = event_sender.clone();
+                let meta_sender = meta_sender.clone();
+                async move {
+                    sender(Event::Backup(BackupEvent::NodeProcessing {
+                        path: path.clone(),
+                        diff: NodeDiff::New,
+                        size_hint: Some(node.metadata.size),
+                    }));
+
+                    if !node.is_file() {
+                        if node.is_symlink()
+                            && let Some(symlink_info) = &node.symlink_info
+                        {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::symlink;
+                                if symlink(&symlink_info.target_path, &path).is_ok() {
+                                    node_restorer::try_restore_node_metadata(
+                                        &node.metadata,
+                                        true,
+                                        &path,
+                                        &meta_sender,
+                                    );
+                                }
+                            }
+
+                            #[cfg(not(unix))]
+                            let _ = symlink_info;
+                        }
+                        sender(Event::Backup(BackupEvent::NodeProcessed {
+                            path: path.clone(),
+                            diff: NodeDiff::New,
+                            size_hint: Some(node.metadata.size),
+                        }));
+                        return;
+                    }
+
+                    let blobs = match &node.blobs {
+                        Some(b) => b,
+                        None => {
+                            sender(Event::Backup(BackupEvent::NodeProcessed {
+                                path: path.clone(),
+                                diff: NodeDiff::New,
+                                size_hint: Some(node.metadata.size),
+                            }));
+                            return;
+                        }
+                    };
+
+                    let mut file = match std::fs::File::create(&path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            sender(Event::Backup(BackupEvent::Error(format!(
+                                "failed to create file {}: {}",
+                                path.display(),
+                                e
+                            ))));
+                            sender(Event::Backup(BackupEvent::NodeProcessed {
+                                path: path.clone(),
+                                diff: NodeDiff::New,
+                                size_hint: Some(node.metadata.size),
+                            }));
+                            return;
+                        }
+                    };
+
+                    let mut success = true;
+                    for blob_id in blobs {
+                        let data = match loader.load_blob(blob_id).await {
+                            Ok(d) => d,
+                            Err(e) => {
+                                sender(Event::Backup(BackupEvent::Error(format!(
+                                    "failed to load blob {} for {}: {}",
+                                    blob_id,
+                                    path.display(),
+                                    e
+                                ))));
+                                success = false;
+                                break;
+                            }
+                        };
+
+                        use std::io::Write;
+                        if let Err(e) = file.write_all(&data) {
+                            sender(Event::Backup(BackupEvent::Error(format!(
+                                "failed to write to {}: {}",
+                                path.display(),
+                                e
+                            ))));
+                            success = false;
+                            break;
+                        }
+                        sender(Event::Backup(
+                            BackupEvent::BytesProcessed(data.len() as u64),
+                        ));
+                    }
+
+                    drop(file);
+                    if success {
+                        node_restorer::try_restore_node_metadata(
+                            &node.metadata,
+                            false,
+                            &path,
+                            &meta_sender,
+                        );
+                    }
+
+                    sender(Event::Backup(BackupEvent::NodeProcessed {
+                        path: path.clone(),
+                        diff: NodeDiff::New,
+                        size_hint: Some(node.metadata.size),
+                    }));
+                }
+            })
+            .await;
+    };
+
+    let _ = futures::join!(walk_task, process_future);
+
+    let mut directories: Vec<(PathBuf, Metadata)> = Vec::new();
+    let mut dir_rx = dir_rx;
+    while let Some((path, meta)) = dir_rx.recv().await {
+        directories.push((path, meta));
+    }
+
+    directories.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
+    for (p, meta) in directories {
+        node_restorer::try_restore_node_metadata(&meta, false, &p, &meta_sender);
+    }
+
+    Ok(())
+}
+
+fn make_meta_sender() -> EventSender {
+    Arc::new(|event: Event| {
+        if let Event::Restore(RestoreEvent::Warning(ref msg)) = event {
+            ui::cli::warning!("{}", msg);
+        } else if let Event::Restore(RestoreEvent::Error(ref msg)) = event {
+            ui::cli::error!("{}", msg);
+        }
+    })
 }

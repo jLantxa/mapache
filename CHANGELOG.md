@@ -29,6 +29,11 @@
   Supports `--pre-hook` and `--post-hook` CLI flags to override the
   TOML-configured hooks for a single invocation. Only the hooks for the active
   command are loaded into memory.
+- **`bundle --export-snapshot`**: Export a repository snapshot to a
+  self-contained `.mapache` bundle file. Requires `-r` / `--repo`.
+- **`bundle --import`**: Import a `.mapache` bundle file as a new snapshot
+  into the repository. Already-present blobs are skipped automatically
+  (cross-repo deduplication). Requires `-r` / `--repo`.
 
 ### Changed
 

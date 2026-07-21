@@ -1,11 +1,14 @@
 use std::{
-    io,
+    fmt, io,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
+    time::Instant,
 };
 
 use clap::{ArgGroup, Args};
-use futures::StreamExt;
+use futures::{StreamExt, stream};
+use indicatif::{ProgressBar, ProgressState};
+use parking_lot::Mutex;
 
 use crate::{
     archiver::{
@@ -13,12 +16,20 @@ use crate::{
         progress::{SnapshotProcessSummary, SnapshotProgress},
         tree_serializer::TreeSerializer,
     },
-    bundle::{reader::BundleReader, writer::BundleWriter},
-    commands::{Compression, DEFAULT_COMPRESSION, ToExitCode, parse_compression_level},
-    common::error::MapacheError,
+    backend::{self, StorageHint, WriteContents},
+    bundle::{
+        format::{BundleIndex, BundleIndexEntry},
+        reader::BundleReader,
+        writer::BundleWriter,
+    },
+    commands::{
+        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
+        with_repository_lock,
+    },
     common::{
-        ID,
-        defaults::DEFAULT_SNAPSHOT_READERS,
+        BlobType, ContentIdType, ID, SaveID,
+        defaults::{DEFAULT_SNAPSHOT_READERS, SHORT_SNAPSHOT_ID_LEN},
+        error::MapacheError,
         traits::{BlobLoader, BlobSaver},
     },
     fs::{
@@ -28,17 +39,18 @@ use crate::{
         node::{Metadata, Node},
         tree::{FSNodeStream, NodeDiff, StreamNode, Tree},
     },
+    repository::{lock::LockHandle, repo::Repository},
     restorer::node_restorer,
     ui::{
         self,
         cli::{self, color::Colorize},
+        default_bar_draw_target, default_progress_style,
         events::{BackupEvent, Event, EventSender, RestoreEvent},
     },
-    utils::format_size_binary,
+    utils::{self, collections::IdSet, format_size_binary, rate_estimator::RateEstimator},
 };
 #[cfg(all(feature = "mount", unix))]
 use crate::{
-    commands::cleanup::CleanupHandler,
     fs::path_exists,
     mount::fuse::fs::{MapacheFS, MountOptions},
     utils::size,
@@ -69,8 +81,8 @@ impl ToExitCode for BundleError {
 
 #[derive(Args, Debug, Clone)]
 #[clap(
-    about = "Create, extract or mount .mapache bundle files",
-    group = ArgGroup::new("mode").required(true).args(&["bundle", "extract"]),
+    about = "Create, extract, mount or transfer .mapache bundle files",
+    group = ArgGroup::new("mode").required(true).args(&["bundle", "extract", "export_snapshot", "import"]),
 )]
 pub struct CmdArgs {
     /// Bundle mode: create a new bundle from source paths
@@ -81,13 +93,20 @@ pub struct CmdArgs {
     #[arg(short = 'x', long, group = "mode")]
     pub extract: bool,
 
+    /// Export mode: export a repository snapshot to a bundle file (requires -r)
+    #[arg(long = "export-snapshot", group = "mode")]
+    pub export_snapshot: Option<UseSnapshot>,
+
+    /// Import mode: import a bundle file as a snapshot into the repository (requires -r)
+    #[arg(short = 'i', long, group = "mode")]
+    pub import: bool,
+
     /// Mount mode: mount a bundle as a filesystem (FUSE)
     #[cfg(all(feature = "mount", unix))]
     #[arg(short, long, group = "mode")]
     pub mount: bool,
 
     /// Input: source paths (-a), bundle file (-x), or bundle + mountpoint (-m)
-    #[arg(required = true)]
     pub input: Vec<PathBuf>,
 
     /// Output: bundle file (-a) or destination directory (-x). Not used with -m.
@@ -97,10 +116,6 @@ pub struct CmdArgs {
     /// Glob patterns for paths to exclude (bundle mode only)
     #[arg(short = 'e', long)]
     pub exclude: Vec<PathBuf>,
-
-    /// Compression level [fastest|fast|balanced|better|best|level:val] (bundle mode only)
-    #[clap(long = "compression", value_parser = parse_compression_level, default_value_t = DEFAULT_COMPRESSION)]
-    pub compression_level: Compression,
 
     /// Number of parallel readers
     #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS)]
@@ -136,11 +151,12 @@ impl Default for CmdArgs {
         Self {
             bundle: false,
             extract: false,
+            export_snapshot: None,
+            import: false,
             mount: false,
             input: vec![],
             output: None,
             exclude: vec![],
-            compression_level: Compression::Balanced,
             readers: DEFAULT_SNAPSHOT_READERS,
             create: false,
             allow_other: false,
@@ -157,27 +173,47 @@ impl Default for CmdArgs {
         Self {
             bundle: false,
             extract: false,
+            export_snapshot: None,
+            import: false,
             input: vec![],
             output: None,
             exclude: vec![],
-            compression_level: Compression::Balanced,
             readers: DEFAULT_SNAPSHOT_READERS,
             internal_password: None,
         }
     }
 }
 
-pub async fn run(args: &CmdArgs) -> Result<(), BundleError> {
-    if args.bundle {
-        run_create(args).await
+pub async fn run(global: &crate::commands::GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
+    if args.export_snapshot.is_some() {
+        run_export_snapshot(global, args).await
+    } else if args.import {
+        run_import(global, args).await
+    } else if args.bundle {
+        if args.input.is_empty() {
+            return Err(BundleError::Config(
+                "bundle mode requires at least one input path".to_string(),
+            ));
+        }
+        run_create(global, args).await
     } else if args.extract {
+        if args.input.is_empty() {
+            return Err(BundleError::Config(
+                "extract mode requires a bundle file as input".to_string(),
+            ));
+        }
         run_extract(args).await
     } else {
+        if args.input.is_empty() {
+            return Err(BundleError::Config(
+                "mount mode requires a bundle file and mountpoint".to_string(),
+            ));
+        }
         run_mount(args).await
     }
 }
 
-async fn run_create(args: &CmdArgs) -> Result<(), BundleError> {
+async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
     tracing::info!(target: "bundle", "Starting bundle create command");
     let output = args
         .output
@@ -191,7 +227,7 @@ async fn run_create(args: &CmdArgs) -> Result<(), BundleError> {
     };
 
     let bundle_writer = Arc::new(
-        BundleWriter::new(output, &password, args.compression_level.to_level())
+        BundleWriter::new(output, &password, global.compression_level.to_level())
             .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     );
     let shutdown_signal = Arc::new(AtomicBool::new(false));
@@ -503,8 +539,702 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
     ]);
 
     cli::log!("{}", data_table.render());
-    cli::log!("{}", "Extraction completed successfully!".green().bold());
+    cli::log!("Extraction completed successfully");
     tracing::info!(target: "bundle", "Bundle extraction completed");
+
+    Ok(())
+}
+
+async fn export_snapshot_impl(
+    repo: Arc<Repository>,
+    lock_handle: Option<LockHandle>,
+    use_snapshot: &UseSnapshot,
+    output: &Path,
+    password: &zeroize::Zeroizing<String>,
+    global: &GlobalArgs,
+    args: &CmdArgs,
+) -> Result<(), BundleError> {
+    let cleanup_handler = CleanupHandler::new();
+    cleanup_handler.add_lock(lock_handle);
+
+    repo.reload_master_index().await?;
+
+    // Resolve snapshot (supports "latest", prefix, or full ID)
+    let (snap_id, snapshot) = find_use_snapshot(repo.clone(), use_snapshot)
+        .await?
+        .ok_or_else(|| {
+            MapacheError::Repo(format!("no snapshot found matching '{}'", use_snapshot))
+        })?;
+
+    if !global.json {
+        cli::log!(
+            "{} Exporting snapshot {} ({})...",
+            "[1/3]".bold().cyan(),
+            snap_id.to_short_hex(SHORT_SNAPSHOT_ID_LEN).bold(),
+            snapshot
+                .timestamp
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+                .bold()
+        );
+    }
+
+    // Create bundle writer
+    let bundle_writer = Arc::new(
+        BundleWriter::new(output, password, global.compression_level.to_level())
+            .map_err(|e| MapacheError::Repo(e.to_string()))?,
+    );
+
+    // Collect all blob IDs from the snapshot tree
+    if !global.json {
+        cli::log!("{} Walking snapshot tree...", "[2/3]".bold().cyan());
+    }
+
+    let mut blob_list: Vec<(ID, BlobType)> = Vec::new();
+    let mut tree_stack: Vec<ID> = Vec::new();
+    let mut visited_trees: IdSet<ID> = IdSet::default();
+    let mut visited_blobs: IdSet<ID> = IdSet::default();
+    let mut total_bytes: u64 = 0;
+
+    tree_stack.push(snapshot.tree);
+
+    while let Some(tree_id) = tree_stack.pop() {
+        if !visited_trees.insert(tree_id) {
+            continue;
+        }
+        blob_list.push((tree_id, BlobType::Tree));
+        if let Some(loc) = repo.index().get(&tree_id) {
+            total_bytes += loc.raw_length as u64;
+        }
+
+        match Tree::load_from_repo(repo.as_ref(), &tree_id).await {
+            Ok(tree) => {
+                for node in tree.nodes {
+                    if let Some(subtree_id) = node.tree {
+                        tree_stack.push(subtree_id);
+                    }
+                    if let Some(blob_ids) = node.blobs {
+                        for blob_id in blob_ids {
+                            if !visited_blobs.insert(blob_id) {
+                                continue;
+                            }
+                            blob_list.push((blob_id, BlobType::Data));
+                            if let Some(loc) = repo.index().get(&blob_id) {
+                                total_bytes += loc.raw_length as u64;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(
+                    MapacheError::Repo(format!("failed to load tree {}: {}", tree_id, e)).into(),
+                );
+            }
+        }
+    }
+
+    // Write blobs to bundle concurrently
+    let start = Instant::now();
+    let total = blob_list.len();
+
+    let export_rate = Arc::new(Mutex::new(RateEstimator::new(
+        crate::common::defaults::UI_RATE_ESTIMATOR_WINDOW,
+    )));
+    let bar = if !global.json {
+        Some(
+            ProgressBar::with_draw_target(Some(total_bytes), default_bar_draw_target()).with_style(
+                default_progress_style()
+                    .template("[{percent}%] [{bar:20.cyan/white}] [{custom_elapsed}] {bytes_fmt} / {total_fmt} [{data_rate}/s] [ETA: {custom_eta}]")
+                    .expect("invalid progress bar template for bundle export")
+                    .with_key("bytes_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&format_size_binary(state.pos(), 2));
+                    })
+                    .with_key("total_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&format_size_binary(state.len().unwrap_or(0), 2));
+                    })
+                    .with_key("custom_elapsed", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
+                    })
+                    .with_key("custom_eta", {
+                        let re = export_rate.clone();
+                        move |state: &ProgressState, w: &mut dyn fmt::Write| {
+                            let pos = state.pos() as f64;
+                            let total = state.len().map(|l| l as f64);
+                            match re.lock().eta(pos, total.unwrap_or(pos)) {
+                                Some(d) => { let _ = w.write_str(&utils::pretty_print_duration(d)); }
+                                None => { let _ = w.write_str("--"); }
+                            }
+                        }
+                    })
+                    .with_key("data_rate", {
+                        let re = export_rate.clone();
+                        move |_state: &ProgressState, w: &mut dyn fmt::Write| {
+                            let rate = re.lock().rate().floor() as u64;
+                            let _ = w.write_str(&format_size_binary(rate, 1));
+                        }
+                    }),
+            ),
+        )
+    } else {
+        None
+    };
+
+    let results: Vec<Result<(), MapacheError>> = stream::iter(blob_list)
+        .map(|(blob_id, blob_type)| {
+            let repo = repo.clone();
+            let bundle_writer = bundle_writer.clone();
+            let bar = bar.clone();
+            let export_rate = export_rate.clone();
+            async move {
+                let data = repo.load_blob(&blob_id).await?;
+                let blob_size = data.len() as u64;
+
+                tokio::task::spawn_blocking(move || {
+                    bundle_writer.save_blob(
+                        blob_type,
+                        WriteContents::Owned(data),
+                        SaveID::WithID(blob_id),
+                    )
+                })
+                .await
+                .map_err(|e| MapacheError::Repo(format!("export task panicked: {}", e)))??;
+
+                if let Some(ref bar) = bar {
+                    bar.inc(blob_size);
+                    export_rate.lock().observe(bar.position() as f64);
+                }
+
+                Ok(())
+            }
+        })
+        .buffer_unordered(args.readers)
+        .collect::<Vec<Result<(), MapacheError>>>()
+        .await;
+
+    for r in results {
+        r?;
+    }
+
+    if let Some(ref bar) = bar {
+        bar.finish_and_clear();
+    }
+
+    // Finalize bundle
+    bundle_writer
+        .finalize(snapshot.tree)
+        .map_err(|e| MapacheError::Repo(e.to_string()))?;
+
+    let final_size = std::fs::metadata(output)
+        .map_err(|e| MapacheError::Repo(format!("failed to stat bundle file: {}", e)))?
+        .len();
+
+    let elapsed = start.elapsed();
+
+    if !global.json {
+        cli::log!();
+        cli::log!("{}", "Export Summary:".bold().cyan());
+
+        let mut data_table = cli::table::Table::new();
+        data_table.add_row(vec![
+            "Snapshot".to_string(),
+            snap_id
+                .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                .bold()
+                .white()
+                .to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Exported blobs".to_string(),
+            total.to_string().bold().white().to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Original size".to_string(),
+            format_size_binary(total_bytes, 3)
+                .bold()
+                .white()
+                .to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Bundle size".to_string(),
+            format_size_binary(final_size, 3).bold().green().to_string(),
+        ]);
+
+        let ratio = if total_bytes > 0 {
+            (final_size as f64 / total_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        data_table.add_row(vec![
+            "Compression ratio".to_string(),
+            format!("{:.1}%", ratio).bold().yellow().to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Duration".to_string(),
+            utils::pretty_print_duration(elapsed)
+                .bold()
+                .white()
+                .to_string(),
+        ]);
+
+        cli::log!("{}", data_table.render());
+        cli::log!("Snapshot exported successfully");
+    }
+
+    tracing::info!(target: "bundle", "Bundle export completed (size={}, blobs={})", final_size, total);
+    Ok(())
+}
+
+async fn run_export_snapshot(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
+    let use_snapshot = args
+        .export_snapshot
+        .as_ref()
+        .expect("export_snapshot must be Some");
+
+    let output = args
+        .output
+        .as_ref()
+        .ok_or_else(|| BundleError::Config("-o is required for export mode".to_string()))?;
+
+    if global.repo.is_empty() {
+        return Err(BundleError::Config(
+            "Repository path is required for export mode. Use -r, set MAPACHE_REPOSITORY, or add it to config file.".to_string(),
+        ));
+    }
+
+    tracing::info!(target: "bundle", "Starting bundle export: snapshot {} to {}", use_snapshot, output.display());
+
+    let password = match &args.internal_password {
+        Some(p) => zeroize::Zeroizing::new(p.clone()),
+        None => cli::request_new_password("Enter bundle password", "Confirm password")
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
+    };
+
+    with_repository_lock(
+        global.auth_file.as_ref(),
+        global.key.as_ref(),
+        backend::new_backend_with_prompt(global.backend_options(false))
+            .await
+            .map_err(|e| {
+                BundleError::BundleFailed(format!(
+                    "failed to initialize repository backend: {}",
+                    e.inner()
+                ))
+            })?,
+        global.to_repo_config(),
+        false, // export is read-only on the repository
+        global.retry_lock_duration,
+        global.no_lock,
+        |repo, _secure_storage, lock_handle| {
+            let password = password.clone();
+            let use_snapshot = use_snapshot.clone();
+            let output = output.clone();
+            async move {
+                export_snapshot_impl(
+                    repo,
+                    lock_handle,
+                    &use_snapshot,
+                    &output,
+                    &password,
+                    global,
+                    args,
+                )
+                .await
+            }
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn run_import_bundle(
+    repo: &Arc<Repository>,
+    bundle_path: &Path,
+    password: &zeroize::Zeroizing<String>,
+    global: &GlobalArgs,
+    args: &CmdArgs,
+) -> Result<(), BundleError> {
+    tracing::info!(target: "bundle", "Importing bundle: {}", bundle_path.display());
+
+    let reader = BundleReader::open(bundle_path, password).map_err(|e| {
+        BundleError::BundleFailed(format!(
+            "failed to open bundle {}: {}",
+            bundle_path.display(),
+            e
+        ))
+    })?;
+    let root_tree_id = reader.trailer.root_tree;
+    let bundle_index = reader.index().clone();
+
+    let total_blobs = bundle_index.entries.len();
+    if !global.json {
+        cli::log!(
+            "{} {} analyzing ({} blobs)...",
+            "[1/3]".bold().cyan(),
+            bundle_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .bold(),
+            total_blobs
+        );
+    }
+
+    // Filter blobs: only import those not already in the repo
+    let dest_index = repo.index();
+    let to_import: Vec<BundleIndexEntry> = bundle_index
+        .entries
+        .iter()
+        .filter(|entry| !dest_index.contains(&entry.id))
+        .cloned()
+        .collect();
+
+    let skipped = total_blobs - to_import.len();
+    let import_bytes: u64 = to_import.iter().map(|e| e.raw_length as u64).sum();
+
+    if to_import.is_empty() {
+        if !global.json {
+            cli::log!(
+                "{} All blobs already present — creating snapshot...",
+                "[2/3]".bold().cyan()
+            );
+        }
+    } else if !global.json {
+        cli::log!(
+            "{} {} blobs ({}), {} already present...",
+            "[2/3]".bold().cyan(),
+            utils::format_count(to_import.len(), "blob", "blobs"),
+            format_size_binary(import_bytes, 3).bold(),
+            format!("{} skipped", skipped)
+        );
+    }
+
+    if to_import.is_empty() {
+        // Still create a snapshot pointing to the bundle's root tree
+        let _ =
+            create_import_snapshot(repo, bundle_path, &bundle_index, root_tree_id, global).await?;
+        return Ok(());
+    }
+
+    // Import blobs concurrently — load from bundle, encode + save to repo
+    let loader: Arc<dyn BlobLoader> = Arc::new(reader);
+
+    let import_rate = Arc::new(Mutex::new(RateEstimator::new(
+        crate::common::defaults::UI_RATE_ESTIMATOR_WINDOW,
+    )));
+    let bar = if !global.json {
+        Some(
+            ProgressBar::with_draw_target(Some(import_bytes), default_bar_draw_target()).with_style(
+                default_progress_style()
+                    .template("[{percent}%] [{bar:20.cyan/white}] [{custom_elapsed}] {bytes_fmt} / {total_fmt} [{data_rate}/s] [ETA: {custom_eta}]")
+                    .expect("invalid progress bar template for bundle import")
+                    .with_key("bytes_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&format_size_binary(state.pos(), 2));
+                    })
+                    .with_key("total_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&format_size_binary(state.len().unwrap_or(0), 2));
+                    })
+                    .with_key("custom_elapsed", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
+                    })
+                    .with_key("custom_eta", {
+                        let re = import_rate.clone();
+                        move |state: &ProgressState, w: &mut dyn fmt::Write| {
+                            let pos = state.pos() as f64;
+                            let total = state.len().map(|l| l as f64);
+                            match re.lock().eta(pos, total.unwrap_or(pos)) {
+                                Some(d) => { let _ = w.write_str(&utils::pretty_print_duration(d)); }
+                                None => { let _ = w.write_str("--"); }
+                            }
+                        }
+                    })
+                    .with_key("data_rate", {
+                        let re = import_rate.clone();
+                        move |_state: &ProgressState, w: &mut dyn fmt::Write| {
+                            let rate = re.lock().rate().floor() as u64;
+                            let _ = w.write_str(&format_size_binary(rate, 1));
+                        }
+                    }),
+            ),
+        )
+    } else {
+        None
+    };
+
+    let import_start = Instant::now();
+    let imported_count = to_import.len();
+
+    let results: Vec<Result<(), BundleError>> = stream::iter(to_import)
+        .map(|entry| {
+            let loader = loader.clone();
+            let repo_clone = repo.clone();
+            let bar = bar.clone();
+            let import_rate = import_rate.clone();
+            async move {
+                let data = loader.load_blob(&entry.id).await.map_err(|e| {
+                    BundleError::BundleFailed(format!("failed to load blob {}: {}", entry.id, e))
+                })?;
+
+                let blob_size = data.len() as u64;
+
+                tokio::task::spawn_blocking(move || {
+                    repo_clone.encode_and_save_blob(
+                        entry.blob_type,
+                        WriteContents::Owned(data),
+                        SaveID::WithID(entry.id),
+                    )
+                })
+                .await
+                .map_err(|e| BundleError::BundleFailed(format!("encoding task panicked: {}", e)))?
+                .map_err(|e| BundleError::BundleFailed(format!("failed to save blob: {}", e)))?;
+
+                if let Some(ref bar) = bar {
+                    bar.inc(blob_size);
+                    import_rate.lock().observe(bar.position() as f64);
+                }
+
+                Ok(())
+            }
+        })
+        .buffer_unordered(args.readers)
+        .collect::<Vec<Result<(), BundleError>>>()
+        .await;
+
+    for r in results {
+        r?;
+    }
+
+    if let Some(ref bar) = bar {
+        bar.finish_and_clear();
+    }
+
+    // Create snapshot for this bundle
+    let snapshot_id =
+        create_import_snapshot(repo, bundle_path, &bundle_index, root_tree_id, global).await?;
+
+    if !global.json {
+        let elapsed = import_start.elapsed();
+        cli::log!();
+        cli::log!("{}", "Import Summary:".bold().cyan());
+
+        let mut data_table = cli::table::Table::new();
+        data_table.add_row(vec![
+            "New snapshot".to_string(),
+            snapshot_id
+                .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                .bold()
+                .green()
+                .to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Blobs imported".to_string(),
+            imported_count.to_string().bold().white().to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Blobs skipped (existing)".to_string(),
+            skipped.to_string().bold().white().to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Imported size".to_string(),
+            format_size_binary(import_bytes, 3)
+                .bold()
+                .white()
+                .to_string(),
+        ]);
+        data_table.add_row(vec![
+            "Duration".to_string(),
+            utils::pretty_print_duration(elapsed)
+                .bold()
+                .white()
+                .to_string(),
+        ]);
+
+        cli::log!("{}", data_table.render());
+    }
+
+    tracing::info!(
+        target: "bundle",
+        "Bundle import completed (bundle={}, snapshot={}, blobs={})",
+        bundle_path.display(),
+        snapshot_id,
+        imported_count
+    );
+
+    Ok(())
+}
+
+async fn create_import_snapshot(
+    repo: &Arc<Repository>,
+    bundle_path: &Path,
+    bundle_index: &BundleIndex,
+    root_tree_id: ID,
+    global: &GlobalArgs,
+) -> Result<ID, BundleError> {
+    use crate::repository::snapshot::{Snapshot, SnapshotSummary};
+    use chrono::Local;
+
+    let abs_bundle_path = crate::fs::get_absolute_normalized_path(bundle_path)
+        .unwrap_or_else(|_| bundle_path.to_path_buf());
+
+    let total_blobs = bundle_index.entries.len();
+    let data_blobs: u64 = bundle_index
+        .entries
+        .iter()
+        .filter(|e| e.blob_type == BlobType::Data)
+        .count() as u64;
+    let meta_blobs: u64 = total_blobs as u64 - data_blobs;
+    let raw_bytes: u64 = bundle_index
+        .entries
+        .iter()
+        .map(|e| e.raw_length as u64)
+        .sum();
+    let meta_raw_bytes: u64 = bundle_index
+        .entries
+        .iter()
+        .filter(|e| e.blob_type != BlobType::Data)
+        .map(|e| e.raw_length as u64)
+        .sum();
+    let snapshot = Snapshot {
+        timestamp: Local::now(),
+        tree: root_tree_id,
+        root: PathBuf::from("/"),
+        paths: vec![abs_bundle_path],
+        description: Some(format!(
+            "Imported from bundle {}",
+            bundle_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )),
+        summary: SnapshotSummary {
+            processed_items_count: data_blobs,
+            processed_bytes: raw_bytes,
+            raw_bytes,
+            encoded_bytes: raw_bytes,
+            meta_raw_bytes,
+            meta_encoded_bytes: meta_raw_bytes,
+            total_raw_bytes: raw_bytes,
+            total_encoded_bytes: raw_bytes,
+            data_blobs,
+            meta_blobs,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let snapshot_bytes = serde_json::to_vec(&snapshot)
+        .map_err(|e| BundleError::BundleFailed(format!("failed to serialize snapshot: {}", e)))?;
+
+    let (snapshot_id, _size) = repo
+        .save_file(
+            &SaveID::CalculateID,
+            &snapshot_bytes,
+            StorageHint {
+                file_type: ContentIdType::Snapshot,
+                is_metadata: true,
+            },
+            None,
+        )
+        .await
+        .map_err(|e| BundleError::BundleFailed(format!("failed to save snapshot: {}", e)))?;
+
+    if !global.json {
+        cli::log!(
+            "{} Created snapshot {}",
+            "[3/3]".bold().cyan(),
+            snapshot_id
+                .to_short_hex(SHORT_SNAPSHOT_ID_LEN)
+                .bold()
+                .green()
+        );
+    }
+
+    Ok(snapshot_id)
+}
+
+async fn import_impl(
+    repo: Arc<Repository>,
+    lock_handle: Option<LockHandle>,
+    password: &zeroize::Zeroizing<String>,
+    global: &GlobalArgs,
+    args: &CmdArgs,
+) -> Result<(), BundleError> {
+    let cleanup_handler = CleanupHandler::new();
+    cleanup_handler.add_lock(lock_handle);
+
+    repo.reload_master_index().await?;
+    repo.init_pack_saver(args.readers)?;
+
+    for bundle_path in &args.input {
+        run_import_bundle(&repo, bundle_path, password, global, args).await?;
+    }
+
+    // Flush pack saver
+    if !global.json {
+        cli::log!(
+            "{} Persisting repository index...",
+            "[finalize]".bold().cyan()
+        );
+    }
+    repo.flush_and_finalize_pack_saver().await?;
+
+    if !global.json {
+        cli::log!();
+        if args.input.len() > 1 {
+            cli::log!("All {} bundles imported successfully.", args.input.len());
+        } else {
+            cli::log!("Bundle imported successfully.");
+        }
+    }
+
+    tracing::info!(target: "bundle", "Bundle import completed for {} bundles", args.input.len());
+    Ok(())
+}
+
+async fn run_import(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
+    if args.input.is_empty() {
+        return Err(BundleError::BundleFailed(
+            "import mode requires at least one bundle file as input".to_string(),
+        ));
+    }
+
+    if global.repo.is_empty() {
+        return Err(BundleError::Config(
+            "Repository path is required for import mode. Use -r, set MAPACHE_REPOSITORY, or add it to config file.".to_string(),
+        ));
+    }
+
+    tracing::info!(target: "bundle", "Starting bundle import: {} files to repo {}", args.input.len(), global.repo);
+
+    let password = match &args.internal_password {
+        Some(p) => zeroize::Zeroizing::new(p.clone()),
+        None => cli::request_password("Enter bundle password")
+            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
+    };
+
+    with_repository_lock(
+        global.auth_file.as_ref(),
+        global.key.as_ref(),
+        backend::new_backend_with_prompt(global.backend_options(false))
+            .await
+            .map_err(|e| {
+                BundleError::BundleFailed(format!(
+                    "failed to initialize repository backend: {}",
+                    e.inner()
+                ))
+            })?,
+        global.to_repo_config(),
+        false, // non-exclusive lock is used for snapshot/backup
+        global.retry_lock_duration,
+        global.no_lock,
+        |repo, _secure_storage, lock_handle| {
+            let password = password.clone();
+            async move { import_impl(repo, lock_handle, &password, global, args).await }
+        },
+    )
+    .await?;
 
     Ok(())
 }
@@ -686,7 +1416,7 @@ async fn writer_finalize(
     ]);
 
     cli::log!("{}", data_table.render());
-    cli::log!("{}", "Bundle completed successfully!".green().bold());
+    cli::log!("Bundle completed successfully");
     tracing::info!(target: "bundle", "Bundle creation completed (size={})", final_size);
 
     Ok(())

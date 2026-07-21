@@ -41,7 +41,8 @@ Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.githu
   filesystem (Unix).
 - **Bundles:** self-contained encrypted `.mapache` files with
   deduplication. Usable for transfer, shipping, or cold storage without
-  access to the repository.
+  access to the repository. Export snapshots to bundles and import them
+  into other repositories for cross-system deduplication.
 - **Multi-client:** non-exclusive locking allows multiple hosts to back up
   to the same repository simultaneously.
 - **Retention policies:** keep what matters with hourly, daily, weekly,

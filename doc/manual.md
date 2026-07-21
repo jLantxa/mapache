@@ -1163,8 +1163,8 @@ later with `--key-file` to authenticate without username/password.
 
 ## 14. Bundle Files
 
-The `bundle` command creates, extracts, or mounts self-contained `.mapache`
-bundle files. Bundles are encrypted, deduplicated archives that can be
+The `bundle` command creates, extracts, imports, exports, or mounts self-contained
+`.mapache` bundle files. Bundles are encrypted, deduplicated archives that can be
 transferred to other systems.
 
 ### Create a Bundle
@@ -1188,6 +1188,34 @@ mapache bundle -x bundle.mapache -o /tmp/extract
 
 If `-o` is omitted, extracts to the current directory.
 
+### Export a Snapshot to a Bundle
+
+```bash
+# Export the latest snapshot
+mapache bundle --export-snapshot latest -o backup.mapache -r /path/to/repo
+
+# Export by snapshot ID prefix
+mapache bundle --export-snapshot a1b2c3d4 -o backup.mapache -r /path/to/repo
+```
+
+The exported bundle contains all data from the snapshot. The bundle's blob IDs
+match the repository, so importing the bundle into the same (or another)
+repository will deduplicate automatically against existing blobs.
+
+### Import a Bundle as a Snapshot
+
+```bash
+# Import a bundle as a snapshot into the repository
+mapache bundle -i bundle.mapache -r /path/to/repo
+
+# Import multiple bundles at once (each becomes a separate snapshot)
+mapache bundle -i bundle1.mapache bundle2.mapache -r /path/to/repo
+```
+
+Blobs already present in the repository are skipped, making this efficient for
+cross-repo transfers. Each imported snapshot appears in `log` with a description
+recording which bundle file it came from.
+
 ### Mount a Bundle (FUSE, Unix only)
 
 ```bash
@@ -1200,7 +1228,8 @@ Bundle-specific options:
 
 | Flag | Description |
 |---|---|
-| `--compression LEVEL` | Compression level (bundle mode only) |
+| `--export-snapshot <ID>` | Export mode: export snapshot to a bundle (requires `-r`) |
+| `-i, --import` | Import mode: import bundle as snapshot (requires `-r`) |
 | `-e, --exclude <GLOB>` | Glob patterns to exclude (bundle mode only) |
 | `--readers <N>` | Parallel readers (default: 4) |
 | `-c, --create` | Create mountpoint if it does not exist (mount mode) |
@@ -1596,19 +1625,22 @@ mapache key export <KEY_ID> -r <URL> [-o <PATH>]
 
 ### `mapache bundle`
 
-Create, extract, or mount `.mapache` bundle files.
+Create, extract, import, export, or mount `.mapache` bundle files.
 
 ```
 mapache bundle -a <INPUT...> -o <OUTPUT.mapache> [OPTIONS]
 mapache bundle -x <INPUT.mapache> [-o <DIR>] [OPTIONS]
+mapache bundle --export-snapshot <SNAPSHOT> -o <OUTPUT.mapache> -r <URL>
+mapache bundle -i <INPUT.mapache...> -r <URL>
 mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
 
   -a, --bundle            Create mode
   -x, --extract           Extract mode
+  -i, --import            Import mode: one or more bundle files (requires -r)
+  --export-snapshot <SNAPSHOT>  Export mode: export snapshot (latest, prefix, or ID; requires -r)
   -m, --mount             Mount mode (FUSE, Unix only)
-  -o, --output <PATH>     Bundle file (-a) or destination (-x)
+  -o, --output <PATH>     Bundle file (-a, --export-snapshot) or destination (-x)
   -e, --exclude <GLOB>    Exclude globs (bundle mode)
-  --compression <LEVEL>   Compression level (bundle mode)
   --readers <N>           Parallel readers (default: 4)
   -c, --create            Create mountpoint (mount mode)
   --allow-other           Allow other users (mount mode)

@@ -203,45 +203,41 @@ def pack(ref: str, targets: list[Target]) -> None:
 
     print(f"\n=== Packing build {ref} ===\n")
 
-    # --- bin/ ---
     checksums_bin: list[str] = []
+
     for t in targets:
-        ext = ".exe" if t.is_exe else ""
-        binary = PROJECT_ROOT / "build" / f"target-{t.target_dir}" / t.triple / "release" / f"mapache{ext}"
+        base = f"mapache_{ref}_{t.release_name}"
+        bin_ext = ".exe" if t.is_exe else ""
+        bin_name = f"{base}{bin_ext}"
+
+        binary = PROJECT_ROOT / "build" / f"target-{t.target_dir}" / t.triple / "release" / f"mapache{bin_ext}"
         if not binary.is_file():
             print(f"  skip  {t.release_name}")
             continue
-        full_name = f"mapache_{ref}_{t.release_name}{ext}"
-        dest = bin_dir / full_name
+
+        # copy to bin/
+        dest = bin_dir / bin_name
         shutil.copy2(str(binary), str(dest))
         h = sha256_file(dest)
-        checksums_bin.append(f"{h}  {full_name}")
-        print(f"  bin/{full_name}")
+        checksums_bin.append(f"{h}  {bin_name}")
+        print(f"  bin/{bin_name}")
+
+        # pack into archive
+        arc_ext = ".zip" if t.platform in ("windows", "darwin") else ".tar.xz"
+        archive_name = f"{base}{arc_ext}"
+        archive_path = packed_dir / archive_name
+
+        if t.platform in ("windows", "darwin"):
+            with zipfile.ZipFile(str(archive_path), "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(str(dest), dest.name)
+        else:
+            with tarfile.open(str(archive_path), "w:xz") as tf:
+                tf.add(str(dest), arcname=dest.name)
+
+        print(f"  packed/{archive_name}")
 
     (bin_dir / "checksums.txt").write_text("\n".join(checksums_bin) + "\n")
     print(f"  bin/checksums.txt")
-
-    # --- packed/ ---
-    print()
-    for t in targets:
-        ext = ".exe" if t.is_exe else ""
-        full_name = f"mapache_{ref}_{t.release_name}{ext}"
-        src = bin_dir / full_name
-        if not src.is_file():
-            continue
-
-        if t.platform in ("windows", "darwin"):
-            archive_name = f"{full_name}.zip"
-            archive_path = packed_dir / archive_name
-            with zipfile.ZipFile(str(archive_path), "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.write(str(src), src.name)
-        else:
-            archive_name = f"{full_name}.tar.xz"
-            archive_path = packed_dir / archive_name
-            with tarfile.open(str(archive_path), "w:xz") as tf:
-                tf.add(str(src), arcname=src.name)
-
-        print(f"  packed/{archive_name}")
 
     (packed_dir / "checksums.txt").write_text("\n".join(checksums_bin) + "\n")
 

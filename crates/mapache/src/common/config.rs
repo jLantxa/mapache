@@ -287,6 +287,14 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
         }
     }
 
+    if let Some(global) = &config.global
+        && global.pack_size_mib == Some(0.0)
+    {
+        return Err(MapacheError::Config(
+            "global.pack-size-mib must be greater than 0".into(),
+        ));
+    }
+
     Ok(config)
 }
 
@@ -455,6 +463,27 @@ mod tests {
         match err {
             MapacheError::Config(msg) => assert!(
                 msg.contains("restore_blob_concurrency must be greater than 0"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pack_size_mib_zero_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "mapache-pack-size-zero-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mapache.toml");
+        // CLI rejects --pack-size 0; TOML must not bypass that check.
+        std::fs::write(&path, "[global]\npack-size-mib = 0\n").unwrap();
+        let err = load_config(&path).expect_err("pack-size-mib 0 must be rejected");
+        let _ = std::fs::remove_dir_all(&dir);
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("pack-size-mib must be greater than 0"),
                 "unexpected message: {msg}"
             ),
             other => panic!("unexpected error: {other:?}"),

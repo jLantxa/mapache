@@ -478,7 +478,7 @@ mod tests {
     fn write_global_pack_size(mib: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "mapache-pack-size-{}-{}",
-            mib.replace('.', '_'),
+            mib.replace('.', "_"),
             std::process::id()
         ));
         let _ = std::fs::create_dir_all(&dir);

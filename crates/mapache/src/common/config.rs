@@ -4,7 +4,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     commands,
-    common::error::{MapacheError, Result},
+    common::{
+        defaults::{MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB},
+        error::{MapacheError, Result},
+    },
     fs,
 };
 
@@ -288,11 +291,14 @@ pub fn load_config(path: &PathBuf) -> Result<MapacheConfig> {
     }
 
     if let Some(global) = &config.global
-        && global.pack_size_mib == Some(0.0)
+        && let Some(pack_size_mib) = global.pack_size_mib
+        && !(MIN_CONFIGURABLE_PACK_SIZE_MIB..=MAX_CONFIGURABLE_PACK_SIZE_MIB)
+            .contains(&pack_size_mib)
     {
-        return Err(MapacheError::Config(
-            "global.pack-size-mib must be greater than 0".into(),
-        ));
+        // Match CLI `--pack-size` range (rejects 0 and out-of-range).
+        return Err(MapacheError::Config(format!(
+            "global.pack-size-mib must be between {MIN_CONFIGURABLE_PACK_SIZE_MIB} and {MAX_CONFIGURABLE_PACK_SIZE_MIB} MiB"
+        )));
     }
 
     Ok(config)
@@ -469,24 +475,65 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pack_size_mib_zero_is_rejected() {
+    fn write_global_pack_size(mib: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "mapache-pack-size-zero-{}",
+            "mapache-pack-size-{}-{}",
+            mib.replace('.', '_'),
             std::process::id()
         ));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("mapache.toml");
-        // CLI rejects --pack-size 0; TOML must not bypass that check.
-        std::fs::write(&path, "[global]\npack-size-mib = 0\n").unwrap();
+        std::fs::write(&path, format!("[global]\npack-size-mib = {mib}\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn pack_size_mib_zero_is_rejected() {
+        let path = write_global_pack_size("0");
         let err = load_config(&path).expect_err("pack-size-mib 0 must be rejected");
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
         match err {
             MapacheError::Config(msg) => assert!(
-                msg.contains("pack-size-mib must be greater than 0"),
+                msg.contains("pack-size-mib must be between"),
                 "unexpected message: {msg}"
             ),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn pack_size_mib_below_min_is_rejected() {
+        let path = write_global_pack_size("0.5");
+        let err = load_config(&path).expect_err("pack-size-mib 0.5 must be rejected");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("pack-size-mib must be between"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pack_size_mib_above_max_is_rejected() {
+        let path = write_global_pack_size("8000");
+        let err = load_config(&path).expect_err("pack-size-mib 8000 must be rejected");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        match err {
+            MapacheError::Config(msg) => assert!(
+                msg.contains("pack-size-mib must be between"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pack_size_mib_in_range_is_accepted() {
+        let path = write_global_pack_size("16");
+        let cfg = load_config(&path).expect("pack-size-mib 16 must load");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        assert_eq!(cfg.global.unwrap().pack_size_mib, Some(16.0));
     }
 }

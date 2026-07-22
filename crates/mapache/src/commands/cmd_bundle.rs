@@ -115,8 +115,8 @@ pub struct CmdArgs {
     #[arg(short = 'e', long)]
     pub exclude: Vec<PathBuf>,
 
-    /// Number of parallel readers
-    #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS)]
+    /// Number of parallel readers. Must be greater than 0.
+    #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS, value_parser = parse_readers)]
     pub readers: usize,
 
     /// Create mountpoint if it does not exist (mount mode only, passes to mount -c)
@@ -1491,5 +1491,59 @@ impl BundleScanner {
                 });
             }
         }
+    }
+}
+
+fn parse_readers(s: &str) -> Result<usize, String> {
+    let n = s
+        .parse::<usize>()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
+    if n == 0 {
+        return Err("readers must be greater than 0".to_string());
+    }
+    Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    #[command(no_binary_name = true)]
+    struct BundleArgsParse {
+        #[command(flatten)]
+        args: CmdArgs,
+    }
+
+    #[test]
+    fn readers_rejects_zero() {
+        let err = BundleArgsParse::try_parse_from([
+            "--bundle",
+            "src",
+            "-o",
+            "out.mapache",
+            "--readers",
+            "0",
+        ])
+        .expect_err("--readers 0 must be rejected");
+        assert!(
+            err.to_string().contains("greater than 0"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn readers_accepts_positive() {
+        let parsed = BundleArgsParse::try_parse_from([
+            "--bundle",
+            "src",
+            "-o",
+            "out.mapache",
+            "--readers",
+            "8",
+        ])
+        .expect("--readers 8 must parse");
+        assert_eq!(parsed.args.readers, 8);
     }
 }

@@ -448,7 +448,9 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         .await
         .map_err(|e| BundleError::BundleFailed(format!("process task panicked: {e}")))?;
 
-    let _ = scanner_handle.await;
+    if let Err(e) = scanner_handle.await {
+        tracing::warn!(target: "bundle", "Scanner task panicked: {e}");
+    }
 
     tree_serializer.finalize_root().await?;
     let root_tree_id = tree_serializer

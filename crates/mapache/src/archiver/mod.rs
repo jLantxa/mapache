@@ -148,17 +148,17 @@ pub(crate) async fn snapshot(
 
     let is_stdin = snapshot_options.stdin;
 
-    if !is_stdin {
+    let scanner_handle = if !is_stdin {
         // Start Background Scanner early so it counts files concurrently
         // with the stream setup and the backup pipeline.
         tracing::info!(target: "archiver", "Starting background scanner");
-        spawn_scanner_task(
+        Some(spawn_scanner_task(
             snapshot_options.no_scan,
             snapshot_options.absolute_source_paths.clone(),
             snapshot_options.exclude_paths.clone(),
             status.clone(),
             event_sender.clone(),
-        );
+        ))
     } else {
         tracing::info!(target: "archiver", "Reading backup data from stdin (scanner skipped)");
         emit_event(
@@ -168,7 +168,8 @@ pub(crate) async fn snapshot(
                 total_bytes: 0,
             }),
         );
-    }
+        None
+    };
 
     // ---------------------------------------------------------------------
     // Pipeline Channels & Chunker Pool
@@ -497,7 +498,25 @@ pub(crate) async fn snapshot(
         }
     }
 
-    let _ = tokio::join!(producer_task, coordinator_task, forwarder_task);
+    let results = tokio::join!(producer_task, coordinator_task, forwarder_task);
+    for (name, result) in [
+        ("producer", results.0),
+        ("coordinator", results.1),
+        ("forwarder", results.2),
+    ] {
+        if let Err(e) = result {
+            tracing::error!(target: "archiver", "{name} task panicked: {e}");
+            status.signal_fatal(error::MapacheError::Internal(format!(
+                "{name} task panicked"
+            )));
+        }
+    }
+
+    if let Some(handle) = scanner_handle
+        && let Err(e) = handle.await
+    {
+        tracing::warn!(target: "archiver", "Scanner task panicked: {e}");
+    }
 
     // ---------------------------------------------------------------------
     // Finalization
@@ -549,7 +568,7 @@ fn spawn_scanner_task(
     exclude_paths: Vec<PathBuf>,
     status: Arc<PipelineStatus>,
     event_sender: EventSender,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if no_scan {
             return;
@@ -592,7 +611,7 @@ fn spawn_scanner_task(
                 total_bytes: scan_bytes,
             }),
         );
-    });
+    })
 }
 
 fn scan_recursive(

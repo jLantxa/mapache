@@ -258,7 +258,8 @@ impl LockHandle {
                     break;
                 }
 
-                tracing::debug!(target: "repo", "Refreshing lock {}", lock.lock().id().to_short_hex(8));
+                let lock_id = { lock.lock().id().to_short_hex(8) };
+                tracing::debug!(target: "repo", "Refreshing lock {}", lock_id);
                 if let Err(e) = repo.refresh_lock(&lock).await {
                     ui::cli::warning!("Failed to refresh lock: {}", e);
                     tracing::warn!(target: "repo", "Failed to refresh lock: {}", e);
@@ -270,7 +271,8 @@ impl LockHandle {
     pub async fn unlock(&self) {
         let _guard = self.unlock_mutex.lock().await;
         if self.alive_flag.swap(false, Ordering::SeqCst) && self.alive {
-            tracing::info!(target: "repo", "Releasing lock {}", self.lock.lock().id().to_short_hex(8));
+            let lock_id = { self.lock.lock().id().to_short_hex(8) };
+            tracing::info!(target: "repo", "Releasing lock {}", lock_id);
             self.perform_delete().await;
         }
     }
@@ -304,18 +306,31 @@ impl LockHandle {
             let alive_flag = self.alive_flag.clone();
             let unlock_mutex = self.unlock_mutex.clone();
 
-            handle.spawn(async move {
-                let _guard = unlock_mutex.lock().await;
-                if alive_flag.swap(false, Ordering::SeqCst) {
-                    let lock_id = {
-                        let lock_guard = lock.lock();
-                        *lock_guard.id()
-                    };
+            // Attempt to spawn the cleanup as an async task.
+            // If spawn fails (runtime shutting down), log the issue.
+            // The lock will be cleaned up by the next process via the stale-lock
+            // mechanism (LOCK_EXPIRE_TIMEOUT).
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle.spawn(async move {
+                    let _guard = unlock_mutex.lock().await;
+                    if alive_flag.swap(false, Ordering::SeqCst) {
+                        let lock_id = {
+                            let lock_guard = lock.lock();
+                            *lock_guard.id()
+                        };
 
-                    tracing::info!(target: "repo", "Releasing lock {} (triggered)", lock_id.to_short_hex(8));
-                    Self::delete_lock_file(&repo, &lock).await;
+                        tracing::info!(target: "repo", "Releasing lock {} (triggered)", lock_id.to_short_hex(8));
+                        Self::delete_lock_file(&repo, &lock).await;
+                    }
+                });
+            })) {
+                Ok(_) => {}
+                Err(_) => {
+                    self.alive_flag.store(false, Ordering::SeqCst);
+                    let lock_id = { self.lock.lock().id().to_short_hex(8) };
+                    tracing::warn!(target: "repo", "Runtime shutdown; lock {} may remain stale (will be cleaned up on expiry)", lock_id);
                 }
-            });
+            }
         }
     }
 }

@@ -273,26 +273,27 @@ repo = "s3://my-bucket/backups"
 no-cache = false
 ssh-privatekey = "~/.ssh/id_ed25519"
 ssh-known-hosts = "~/.ssh/known_hosts"
-auth-file = "~/.mapache-auth"
-pack-size = 16
-key-file = "~/.mapache-key"
+auth-file = "~/.mapache/auth"
+pack-size-mib = 16.0
+key-file = "~/.mapache/repo.key"
 quiet = false
-verbosity = 1
-compression = "balanced"
+compression-level = "fast"
 retry-lock = "5m"
-limit-upload = "10MB/s"
-limit-download = "50MB/s"
+limit-upload = "10 MiB/s"
+limit-download = "50 MiB/s"
 
 [snapshot]
-exclude = [".git/", "node_modules/", "target/"]
-readers = 4
-packers = 4
-skip-if-unchanged = true
+paths = ["/home/user/Documents"]
+exclude = ["**/node_modules", "**/.git"]
+tags-str = "work,important"
+skip-if-unchanged = false
+num-readers = 4
+num-packers = 4
 
 [restore]
 strategy = "newer"
 sparse = true
-batch-size = 100000        # Limit memory by restricting files per batch (optional)
+verify = true
 
 [forget]
 keep-daily = 7
@@ -305,6 +306,8 @@ keep-min = 3
 restore-pack-prefetch = 4
 restore-blob-concurrency = 8
 restore-max-open-files = 128
+min-pack-size-factor = 0.05
+gc-repack-concurrency = 2
 blobs-per-index-file = 65535
 index-flush-timeout-secs = 600
 s3-multipart-threshold = 134217728

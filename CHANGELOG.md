@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- On Windows, files modified within the same second as the previous snapshot
+  were misclassified as unchanged, causing stale data on restore with `--verify`.
+  Fixed by using exact timestamp comparison in the archiver.
 - Using `--keep-yearly all` (and `--keep-monthly`, `--keep-weekly`,
   `--keep-daily`, `--keep-hourly`) deleted all snapshots instead of keeping one
   per period. Fixed by short-circuiting the arithmetic overflow caused by the
@@ -18,12 +21,15 @@
   `--packers` (snapshot) caused hangs or panics. Now rejected at parse time
   with a clear error.
 - Setting `gc-repack-concurrency`, `restore-blob-concurrency`,
-  `s3-multipart-part-size`, `snapshot.num-packers`, or
-  `snapshot.num-readers` to `0` in the config file caused hangs or infinite
+  `restore-pack-prefetch`, `s3-multipart-part-size`, `snapshot.num-packers`,
+  or `snapshot.num-readers` to `0` in the config file caused hangs or infinite
   loops. Now rejected at config load with a clear error.
 - Setting `pack-size-mib` to `0` or values outside the supported range was
   silently accepted and could cause panics or misbehavior. Now rejected at
   config load with a clear error.
+- A `MutexGuard` held across an `.await` point in the lock refresh handler
+  could cause deadlocks. Also fixed: spawned tasks panicking silently in
+  `Drop`, and the archiver `join!` discarding task errors.
 
 ### Added
 

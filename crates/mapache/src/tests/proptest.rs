@@ -117,6 +117,7 @@ proptest! {
         blob_type in prop_oneof![
             Just(crate::common::BlobType::Data),
             Just(crate::common::BlobType::Tree),
+            Just(crate::common::BlobType::Zero),
             Just(crate::common::BlobType::Padding),
         ],
         offset in 0u64..u64::MAX,

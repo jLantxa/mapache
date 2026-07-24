@@ -137,9 +137,19 @@ pub enum BlobType {
     Data = 0x00,
     Tree = 0x01,
 
+    /// A zero-filled blob. Used to deduplicate all-zero regions across files
+    /// without storing actual data in packs.
+    Zero = 0x02,
+
     /// A padding blob descriptor used for obfuscation. This blob is fake and must be ignored.
     #[default]
     Padding = 0xff,
+}
+
+impl BlobType {
+    pub fn is_pack_stored(self) -> bool {
+        matches!(self, BlobType::Data | BlobType::Tree)
+    }
 }
 
 impl TryFrom<u8> for BlobType {
@@ -149,6 +159,7 @@ impl TryFrom<u8> for BlobType {
         match v {
             0x00 => Ok(BlobType::Data),
             0x01 => Ok(BlobType::Tree),
+            0x02 => Ok(BlobType::Zero),
             0xff => Ok(BlobType::Padding),
             other => Err(MapacheError::Format(format!(
                 "invalid blob type byte: {other}"

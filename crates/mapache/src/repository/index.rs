@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -155,6 +156,10 @@ pub struct Index {
     data_ids: BlobMap,
     tree_ids: BlobMap,
 
+    /// Zero blobs: ID -> raw_length. These blobs have no pack data;
+    /// during restore, `raw_length` bytes of zeros are produced.
+    zero_ids: HashMap<ID, u32>,
+
     /// The Pack IDs referenced in this index. Using an `IndexSet` allows us
     /// to store a small `usize` index in `BlobLocationInternal` instead of the full `ID`,
     /// significantly reducing memory usage.
@@ -178,6 +183,7 @@ impl Index {
             instance_id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
             data_ids: BlobMap::new_mutable(),
             tree_ids: BlobMap::new_mutable(),
+            zero_ids: HashMap::new(),
             pack_ids: IdIndexSet::new_id_set(),
             status: IndexStatus::Pending,
             create_time: Instant::now(),
@@ -280,6 +286,11 @@ impl Index {
 
         index.data_ids = BlobMap::Immutable(data_entries, data_bf);
         index.tree_ids = BlobMap::Immutable(tree_entries, tree_bf);
+        index.zero_ids = index_file
+            .zero_blobs
+            .into_iter()
+            .map(|zb| (zb.id, zb.raw_length))
+            .collect();
 
         index
     }
@@ -287,7 +298,7 @@ impl Index {
     /// Checks if the index contains the given object ID.
     #[inline]
     pub fn contains(&self, id: &ID) -> bool {
-        self.data_ids.contains(id) || self.tree_ids.contains(id)
+        self.data_ids.contains(id) || self.tree_ids.contains(id) || self.zero_ids.contains_key(id)
     }
 
     /// Helper to resolve internal location to a public BlobLocator.
@@ -315,6 +326,15 @@ impl Index {
                 self.tree_ids
                     .get(id)
                     .and_then(|l| self.resolve_location(l, BlobType::Tree))
+            })
+            .or_else(|| {
+                self.zero_ids.get(id).map(|&raw_length| BlobLocator {
+                    pack_id: ID::default(),
+                    blob_type: BlobType::Zero,
+                    offset: 0,
+                    length: raw_length,
+                    raw_length,
+                })
             })
     }
 
@@ -351,6 +371,11 @@ impl Index {
                 },
             );
         }
+    }
+
+    /// Registers a zero blob (no pack data needed).
+    pub fn add_zero_blob(&mut self, id: ID, raw_length: u32) {
+        self.zero_ids.insert(id, raw_length);
     }
 
     /// Saves the index to the repository.
@@ -400,15 +425,21 @@ impl Index {
         // Sort packs themselves
         pack_entries.sort_unstable_by_key(|p| p.id);
 
+        let zero_entries: Vec<IndexFileZeroBlob> = self
+            .zero_ids
+            .iter()
+            .map(|(&id, &raw_length)| IndexFileZeroBlob { id, raw_length })
+            .collect();
+
         let serialized = if repo.repo_version() >= 2 {
             serialize_index_binary(&IndexFile {
                 packs: pack_entries,
-                zero_blobs: Vec::new(),
+                zero_blobs: zero_entries,
             })
         } else {
             serde_json::to_vec(&IndexFile {
                 packs: pack_entries,
-                zero_blobs: Vec::new(),
+                zero_blobs: zero_entries,
             })?
         };
 
@@ -435,7 +466,7 @@ impl Index {
 
     #[inline]
     pub fn num_blobs(&self) -> usize {
-        self.data_ids.len() + self.tree_ids.len()
+        self.data_ids.len() + self.tree_ids.len() + self.zero_ids.len()
     }
 
     #[inline]
@@ -459,7 +490,23 @@ impl Index {
             .iter()
             .filter_map(|(id, loc)| self.resolve_location(loc, BlobType::Tree).map(|l| (id, l)))
             .collect();
-        data.into_iter().chain(trees)
+        let zeros: Vec<(&ID, BlobLocator)> = self
+            .zero_ids
+            .iter()
+            .map(|(id, &raw_length)| {
+                (
+                    id,
+                    BlobLocator {
+                        pack_id: ID::default(),
+                        blob_type: BlobType::Zero,
+                        offset: 0,
+                        length: raw_length,
+                        raw_length,
+                    },
+                )
+            })
+            .collect();
+        data.into_iter().chain(trees).chain(zeros)
     }
 
     /// Returns a map of Pack ID -> List of descriptors for all packs in this index.
@@ -645,6 +692,31 @@ impl MasterIndex {
 
         // Try to insert into pending_blobs. This is sharded so it's low contention.
         self.pending_blobs.insert(id)
+    }
+
+    /// Registers a zero blob directly in the current pending index.
+    pub fn add_zero_blob(&self, id: ID, raw_length: u32) {
+        {
+            let lock = self.inner.read();
+            if lock.indices.iter().rev().any(|idx| idx.contains(&id)) {
+                return;
+            }
+        }
+
+        {
+            let mut lock = self.inner.write();
+            if !lock.indices.iter().any(|idx| idx.is_pending()) {
+                lock.indices.push(Index::new());
+            }
+            let pending = lock
+                .indices
+                .iter_mut()
+                .find(|idx| idx.is_pending())
+                .expect("just created a pending index");
+            pending.add_zero_blob(id, raw_length);
+        }
+
+        self.pending_blobs.remove(&id);
     }
 
     /// Processes a newly created pack of blobs. It removes these blobs from the
@@ -1614,5 +1686,72 @@ mod tests {
         let s1 = serialize_index_binary(&index_file);
         let s2 = serialize_index_binary(&index_file);
         assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn test_zero_blob_index_roundtrip() {
+        let mut index = Index::new();
+        let id1 = mock_id("zero_1");
+        let id2 = mock_id("zero_2");
+        index.add_zero_blob(id1, 4096);
+        index.add_zero_blob(id2, 8192);
+
+        assert!(index.contains(&id1));
+        assert!(index.contains(&id2));
+
+        let loc1 = index.get(&id1).expect("zero blob 1 should be found");
+        assert_eq!(loc1.blob_type, BlobType::Zero);
+        assert_eq!(loc1.raw_length, 4096);
+        assert_eq!(loc1.length, 4096);
+        assert_eq!(loc1.offset, 0);
+
+        let loc2 = index.get(&id2).expect("zero blob 2 should be found");
+        assert_eq!(loc2.blob_type, BlobType::Zero);
+        assert_eq!(loc2.raw_length, 8192);
+    }
+
+    #[test]
+    fn test_zero_blob_persist_roundtrip() {
+        let index_file = IndexFile {
+            packs: Vec::new(),
+            zero_blobs: vec![
+                IndexFileZeroBlob {
+                    id: mock_id("zero_1"),
+                    raw_length: 100,
+                },
+                IndexFileZeroBlob {
+                    id: mock_id("zero_2"),
+                    raw_length: 200,
+                },
+            ],
+        };
+
+        let binary = serialize_index_binary(&index_file);
+        let restored = deserialize_index_binary(&binary).unwrap();
+        assert_eq!(restored.zero_blobs.len(), 2);
+        assert_eq!(restored.zero_blobs[0].raw_length, 100);
+        assert_eq!(restored.zero_blobs[1].raw_length, 200);
+
+        let idx = Index::from_index_file(restored, mock_id("test"));
+        let loc = idx.get(&mock_id("zero_1")).unwrap();
+        assert_eq!(loc.blob_type, BlobType::Zero);
+        assert_eq!(loc.raw_length, 100);
+        assert_eq!(loc.length, 100);
+        assert_eq!(loc.offset, 0);
+    }
+
+    #[test]
+    fn test_zero_blob_in_iter_ids() {
+        let mut index = Index::new();
+        index.add_zero_blob(mock_id("zero_a"), 500);
+        index.add_pack(
+            &mock_id("pack1"),
+            vec![mock_blob_desc("data_1", BlobType::Data, 0, 100)],
+        );
+        index.finalize();
+
+        let ids: Vec<ID> = index.iter_ids().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&mock_id("zero_a")));
+        assert!(ids.contains(&mock_id("data_1")));
     }
 }

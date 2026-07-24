@@ -168,7 +168,12 @@ mod tests {
 
     #[test]
     fn index_entry_round_trip_all_blob_types() {
-        for blob_type in [BlobType::Data, BlobType::Tree, BlobType::Padding] {
+        for blob_type in [
+            BlobType::Data,
+            BlobType::Tree,
+            BlobType::Zero,
+            BlobType::Padding,
+        ] {
             let entry = BundleIndexEntry {
                 id: ID::new_random(),
                 blob_type,

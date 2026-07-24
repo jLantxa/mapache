@@ -477,6 +477,13 @@ impl Repository {
             return Ok(id);
         }
 
+        // Zero blobs: register directly in index, no pack data
+        if blob_type == BlobType::Zero {
+            let raw_length = data.len() as u32;
+            self.master_index.add_zero_blob(id, raw_length);
+            return Ok(id);
+        }
+
         let raw_length = data.len() as u64;
         let encoded_data = self.secure_storage.encode(&data)?;
 
@@ -510,6 +517,9 @@ impl Repository {
         let blob_entry = self.master_index.get(id);
         match blob_entry {
             Some(locator) => {
+                if locator.blob_type == BlobType::Zero {
+                    return Ok(vec![0u8; locator.raw_length as usize]);
+                }
                 self.load_from_pack(
                     &locator.pack_id,
                     locator.blob_type,

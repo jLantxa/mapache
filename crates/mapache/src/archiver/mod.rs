@@ -485,6 +485,7 @@ pub(crate) async fn snapshot(
     tracing::info!(target: "archiver", "Starting Stage 3: Tree Serializer");
     let mut tree_serializer = TreeSerializer::new(
         repo.clone() as Arc<dyn BlobSaver>,
+        repo.repo_version(),
         snapshot_options.snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,
     );

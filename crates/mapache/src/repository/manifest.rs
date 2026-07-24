@@ -28,6 +28,10 @@ impl Manifest {
         self.version
     }
 
+    pub fn set_version(&mut self, version: u32) {
+        self.version = version;
+    }
+
     pub fn id(&self) -> &ID {
         &self.id
     }

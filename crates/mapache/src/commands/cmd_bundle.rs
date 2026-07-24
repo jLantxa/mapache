@@ -475,6 +475,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
 
     let mut tree_serializer = TreeSerializer::new(
         bundle_writer.clone(),
+        2,
         snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,
     );

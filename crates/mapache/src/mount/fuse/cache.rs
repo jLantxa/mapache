@@ -36,7 +36,7 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
 
         tracing::debug!(target: "fuse", "TreeCache MISS: {}", id.to_short_hex(8));
         let tree_blob = self.loader.load_blob(id).await?;
-        let tree = Arc::new(serde_json::from_slice(&tree_blob)?);
+        let tree = Arc::new(Tree::from_bytes(&tree_blob)?);
 
         {
             let mut inner = self.inner.lock();

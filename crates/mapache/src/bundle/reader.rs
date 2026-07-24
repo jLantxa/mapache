@@ -181,7 +181,7 @@ where
             .load_blob(&current_id)
             .await
             .map_err(|e| MapacheError::Repo(format!("failed to load tree: {e}")))?;
-        let tree: Tree = serde_json::from_slice(&data)
+        let tree: Tree = Tree::from_bytes(&data)
             .map_err(|e| MapacheError::Repo(format!("failed to parse tree: {e}")))?;
 
         for node in tree.nodes {
@@ -229,7 +229,7 @@ where
                     continue;
                 }
             };
-            let tree: Tree = match serde_json::from_slice(&data) {
+            let tree: Tree = match Tree::from_bytes(&data) {
                 Ok(t) => t,
                 Err(e) => {
                     sender_clone(Event::Backup(BackupEvent::Error(format!(

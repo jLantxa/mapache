@@ -17,7 +17,10 @@ use crate::{
         packer::PackedBlobDescriptor,
         repo::{Repository, SizePair},
     },
-    utils::collections::{BloomFilter, IdIndexSet, IdMap, IdSet, ShardedIdSet},
+    utils::{
+        binary::{get_array, get_u32, put_bytes, put_u32},
+        collections::{BloomFilter, IdIndexSet, IdMap, IdSet, ShardedIdSet},
+    },
 };
 
 /// Internal optimized representation of a blob's location.
@@ -397,9 +400,17 @@ impl Index {
         // Sort packs themselves
         pack_entries.sort_unstable_by_key(|p| p.id);
 
-        let serialized = serde_json::to_vec(&IndexFile {
-            packs: pack_entries,
-        })?;
+        let serialized = if repo.repo_version() >= 2 {
+            serialize_index_binary(&IndexFile {
+                packs: pack_entries,
+                zero_blobs: Vec::new(),
+            })
+        } else {
+            serde_json::to_vec(&IndexFile {
+                packs: pack_entries,
+                zero_blobs: Vec::new(),
+            })?
+        };
 
         let (id, size) = repo
             .save_file(
@@ -879,6 +890,15 @@ impl MasterIndex {
 pub struct IndexFile {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packs: Vec<IndexFilePack>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub zero_blobs: Vec<IndexFileZeroBlob>,
+}
+
+/// A zero blob: ID -> raw_length. No pack data.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct IndexFileZeroBlob {
+    pub id: ID,
+    pub raw_length: u32,
 }
 
 /// Represents a pack's entry within an `IndexFile`.
@@ -900,6 +920,88 @@ pub struct IndexFileBlob {
     pub offset: u32,
     pub length: u32,
     pub raw_length: u32,
+}
+
+/// Serialize an `IndexFile` to the binary format.
+pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
+    let total_blobs: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
+    let size =
+        4 + index_file.packs.len() * 36 + total_blobs * 45 + 4 + index_file.zero_blobs.len() * 36;
+    let mut buf = Vec::with_capacity(size);
+
+    // Header
+    put_u32(&mut buf, index_file.packs.len() as u32);
+
+    for pack in &index_file.packs {
+        put_bytes(&mut buf, pack.id.as_slice());
+        put_u32(&mut buf, pack.blobs.len() as u32);
+
+        for blob in &pack.blobs {
+            put_bytes(&mut buf, blob.id.as_slice());
+            buf.push(blob.blob_type as u8);
+            put_u32(&mut buf, blob.offset);
+            put_u32(&mut buf, blob.length);
+            put_u32(&mut buf, blob.raw_length);
+        }
+    }
+
+    // Zero blob section
+    put_u32(&mut buf, index_file.zero_blobs.len() as u32);
+    for zb in &index_file.zero_blobs {
+        put_bytes(&mut buf, zb.id.as_slice());
+        put_u32(&mut buf, zb.raw_length);
+    }
+
+    buf
+}
+
+/// Deserialize an `IndexFile` from the binary format.
+pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
+    let mut cur = data;
+
+    let num_packs = get_u32(&mut cur)? as usize;
+    let mut packs = Vec::with_capacity(num_packs);
+
+    for _ in 0..num_packs {
+        let pack_id = ID::from_bytes(get_array::<32>(&mut cur)?);
+        let blob_count = get_u32(&mut cur)? as usize;
+        let mut blobs = Vec::with_capacity(blob_count);
+
+        for _ in 0..blob_count {
+            let id = ID::from_bytes(get_array::<32>(&mut cur)?);
+            let type_byte = cur[0];
+            cur = &cur[1..];
+            let blob_type = BlobType::try_from(type_byte)?;
+            let offset = get_u32(&mut cur)?;
+            let length = get_u32(&mut cur)?;
+            let raw_length = get_u32(&mut cur)?;
+
+            blobs.push(IndexFileBlob {
+                id,
+                blob_type,
+                offset,
+                length,
+                raw_length,
+            });
+        }
+
+        packs.push(IndexFilePack { id: pack_id, blobs });
+    }
+
+    let zero_blobs = if !cur.is_empty() {
+        let num_zero = get_u32(&mut cur)? as usize;
+        let mut zeros = Vec::with_capacity(num_zero);
+        for _ in 0..num_zero {
+            let id = ID::from_bytes(get_array::<32>(&mut cur)?);
+            let raw_length = get_u32(&mut cur)?;
+            zeros.push(IndexFileZeroBlob { id, raw_length });
+        }
+        zeros
+    } else {
+        Vec::new()
+    };
+
+    Ok(IndexFile { packs, zero_blobs })
 }
 
 #[cfg(test)]
@@ -1106,6 +1208,7 @@ mod tests {
                     raw_length: b1.raw_length,
                 }],
             }],
+            zero_blobs: Vec::new(),
         };
 
         let json = serde_json::to_string(&index_file).unwrap();
@@ -1317,12 +1420,199 @@ mod tests {
                 .collect();
             packs.push(IndexFilePack { id: pack_id, blobs });
         }
-        let index_file = IndexFile { packs };
+        let index_file = IndexFile {
+            packs,
+            zero_blobs: Vec::new(),
+        };
         let json = serde_json::to_string(&index_file).unwrap();
         let deserialized: IndexFile = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.packs.len(), 20);
         for pack in &deserialized.packs {
             assert_eq!(pack.blobs.len(), 10);
         }
+    }
+
+    // ---- Binary index format tests ----
+
+    #[test]
+    fn test_binary_index_roundtrip_empty() {
+        let index_file = IndexFile {
+            packs: vec![],
+            zero_blobs: Vec::new(),
+        };
+        let serialized = serialize_index_binary(&index_file);
+        let deserialized = deserialize_index_binary(&serialized).unwrap();
+        assert!(deserialized.packs.is_empty());
+    }
+
+    #[test]
+    fn test_binary_index_roundtrip_single_pack() {
+        let blobs = vec![
+            IndexFileBlob {
+                id: mock_id("blob_a"),
+                blob_type: BlobType::Data,
+                offset: 0,
+                length: 1024,
+                raw_length: 2048,
+            },
+            IndexFileBlob {
+                id: mock_id("blob_b"),
+                blob_type: BlobType::Tree,
+                offset: 1024,
+                length: 256,
+                raw_length: 512,
+            },
+        ];
+        let index_file = IndexFile {
+            packs: vec![IndexFilePack {
+                id: mock_id("pack_1"),
+                blobs,
+            }],
+            zero_blobs: Vec::new(),
+        };
+
+        let serialized = serialize_index_binary(&index_file);
+        let deserialized = deserialize_index_binary(&serialized).unwrap();
+
+        assert_eq!(deserialized.packs.len(), 1);
+        assert_eq!(deserialized.packs[0].id, mock_id("pack_1"));
+        assert_eq!(deserialized.packs[0].blobs.len(), 2);
+
+        let b0 = &deserialized.packs[0].blobs[0];
+        assert_eq!(b0.id, mock_id("blob_a"));
+        assert_eq!(b0.blob_type, BlobType::Data);
+        assert_eq!(b0.offset, 0);
+        assert_eq!(b0.length, 1024);
+        assert_eq!(b0.raw_length, 2048);
+
+        let b1 = &deserialized.packs[0].blobs[1];
+        assert_eq!(b1.id, mock_id("blob_b"));
+        assert_eq!(b1.blob_type, BlobType::Tree);
+        assert_eq!(b1.offset, 1024);
+        assert_eq!(b1.length, 256);
+        assert_eq!(b1.raw_length, 512);
+    }
+
+    #[test]
+    fn test_binary_index_roundtrip_many_packs() {
+        let mut packs = Vec::new();
+        for i in 0..50 {
+            let blobs: Vec<IndexFileBlob> = (0..100)
+                .map(|j| IndexFileBlob {
+                    id: mock_id(&format!("blob_{i}_{j}")),
+                    blob_type: if j % 3 == 0 {
+                        BlobType::Tree
+                    } else {
+                        BlobType::Data
+                    },
+                    offset: j * 4096,
+                    length: 4096,
+                    raw_length: 8192,
+                })
+                .collect();
+            packs.push(IndexFilePack {
+                id: mock_id(&format!("pack_{i}")),
+                blobs,
+            });
+        }
+        let index_file = IndexFile {
+            packs,
+            zero_blobs: Vec::new(),
+        };
+
+        let serialized = serialize_index_binary(&index_file);
+        let deserialized = deserialize_index_binary(&serialized).unwrap();
+
+        assert_eq!(deserialized.packs.len(), 50);
+        for (i, pack) in deserialized.packs.iter().enumerate() {
+            assert_eq!(pack.blobs.len(), 100);
+            for (j, blob) in pack.blobs.iter().enumerate() {
+                assert_eq!(blob.id, mock_id(&format!("blob_{i}_{j}")));
+                assert_eq!(blob.offset, j as u32 * 4096);
+                assert_eq!(blob.length, 4096);
+                assert_eq!(blob.raw_length, 8192);
+            }
+        }
+    }
+
+    #[test]
+    fn test_binary_index_size_comparison() {
+        let mut packs = Vec::new();
+        for i in 0..10 {
+            let blobs: Vec<IndexFileBlob> = (0..1000)
+                .map(|j| IndexFileBlob {
+                    id: mock_id(&format!("blob_{i}_{j}")),
+                    blob_type: BlobType::Data,
+                    offset: j * 1024,
+                    length: 1024,
+                    raw_length: 2048,
+                })
+                .collect();
+            packs.push(IndexFilePack {
+                id: mock_id(&format!("pack_{i}")),
+                blobs,
+            });
+        }
+        let index_file = IndexFile {
+            packs,
+            zero_blobs: Vec::new(),
+        };
+
+        let json = serde_json::to_vec(&index_file).unwrap();
+        let binary = serialize_index_binary(&index_file);
+
+        // Binary should be significantly smaller than JSON
+        assert!(
+            binary.len() < json.len() / 3,
+            "binary ({}) should be less than 1/3 of JSON ({})",
+            binary.len(),
+            json.len()
+        );
+    }
+
+    #[test]
+    fn test_binary_index_truncated_header() {
+        // Empty data — not enough bytes for num_packs u32
+        assert!(deserialize_index_binary(&[]).is_err());
+    }
+
+    #[test]
+    fn test_binary_index_truncated() {
+        let index_file = IndexFile {
+            packs: vec![IndexFilePack {
+                id: mock_id("pack_1"),
+                blobs: vec![IndexFileBlob {
+                    id: mock_id("blob_1"),
+                    blob_type: BlobType::Data,
+                    offset: 0,
+                    length: 100,
+                    raw_length: 200,
+                }],
+            }],
+            zero_blobs: Vec::new(),
+        };
+        let serialized = serialize_index_binary(&index_file);
+        // Truncate the data
+        assert!(deserialize_index_binary(&serialized[..serialized.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn test_binary_index_deterministic() {
+        let index_file = IndexFile {
+            packs: vec![IndexFilePack {
+                id: mock_id("pack_1"),
+                blobs: vec![IndexFileBlob {
+                    id: mock_id("blob_1"),
+                    blob_type: BlobType::Data,
+                    offset: 0,
+                    length: 100,
+                    raw_length: 200,
+                }],
+            }],
+            zero_blobs: Vec::new(),
+        };
+        let s1 = serialize_index_binary(&index_file);
+        let s2 = serialize_index_binary(&index_file);
+        assert_eq!(s1, s2);
     }
 }

@@ -27,7 +27,13 @@ mod tests {
         auth: &mapache::repository::repo::Auth,
     ) -> Result<()> {
         let backend = Arc::new(LocalFS::new(path.to_path_buf()));
-        let _ = mapache::repository::repo::Repository::init(auth, None, backend).await?;
+        let _ = mapache::repository::repo::Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            auth,
+            None,
+            backend,
+        )
+        .await?;
         Ok(())
     }
 

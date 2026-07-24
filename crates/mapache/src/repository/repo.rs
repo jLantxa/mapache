@@ -223,6 +223,7 @@ impl BlobLoader for Repository {
 impl Repository {
     /// Create and initialize a new repository
     pub async fn init(
+        repo_version: u32,
         auth: &Auth,
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
@@ -295,8 +296,8 @@ impl Repository {
         let locks_path = PathBuf::from(LOCKS_DIR);
 
         // Save new manifest
-        tracing::info!(target: "repo", "Creating manifest v{THIS_REPOSITORY_VERSION}");
-        let manifest = Manifest::new(THIS_REPOSITORY_VERSION);
+        tracing::info!(target: "repo", "Creating manifest v{repo_version}");
+        let manifest = Manifest::new(repo_version);
 
         let manifest_path = Path::new(MANIFEST_PATH);
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
@@ -477,8 +478,8 @@ impl Repository {
             return Ok(id);
         }
 
-        // Zero blobs: register directly in index, no pack data
-        if blob_type == BlobType::Zero {
+        // Zero blobs: register directly in index, no pack data (v2+ only)
+        if blob_type == BlobType::Zero && self.repo_version >= 2 {
             let raw_length = data.len() as u32;
             self.master_index.add_zero_blob(id, raw_length);
             return Ok(id);
@@ -790,8 +791,7 @@ impl Repository {
             index::deserialize_index_binary(&data)
                 .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}")))
         } else {
-            serde_json::from_slice(&data)
-                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}")))
+            super::legacy::deserialize_index_json(&data)
         }
     }
 
@@ -1152,7 +1152,7 @@ impl Repository {
                                 ))
                             })?
                         } else {
-                            serde_json::from_slice(&decoded).map_err(|e| {
+                            super::legacy::deserialize_index_json(&decoded).map_err(|e| {
                                 MapacheError::Format(format!(
                                     "failed to load index file {}: {e}",
                                     id.to_short_hex(4)
@@ -1281,7 +1281,7 @@ mod tests {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
         let (_, _, lock_handle) =
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
@@ -1301,7 +1301,7 @@ mod tests {
         let auth = utils::get_auth(&Some(password_file_path))?.unwrap();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
         let (_, _, lock_handle) =
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
@@ -1315,7 +1315,7 @@ mod tests {
     async fn test_open_with_wrong_password_returns_auth_error() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
 
         let wrong_auth = Auth {
             username: "mapachito".to_string(),
@@ -1343,7 +1343,7 @@ mod tests {
     async fn test_blob_save_and_load_cycle() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
         let (repo, _ss) =
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
 
@@ -1384,7 +1384,7 @@ mod tests {
     async fn test_index_persistence_across_reopen() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
 
         // First session
         let (repo, _ss) =
@@ -1420,7 +1420,7 @@ mod tests {
 
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
         let (repo, _ss) =
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
 
@@ -1522,7 +1522,7 @@ mod tests {
         };
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
@@ -1571,7 +1571,7 @@ mod tests {
         };
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;

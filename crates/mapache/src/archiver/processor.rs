@@ -493,7 +493,7 @@ mod tests {
     use crate::{
         backend::mock::MockBackend,
         common::defaults::TEST_REPO_CONFIG,
-        repository::repo::{Auth, Repository},
+        repository::repo::{Auth, Repository, THIS_REPOSITORY_VERSION},
         ui::events::noop_sender,
         utils::size,
     };
@@ -503,7 +503,7 @@ mod tests {
             password: Zeroizing::new("test".to_string()),
         };
         let backend = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone())
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone())
             .await
             .unwrap();
         let (repo, _) = Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG)

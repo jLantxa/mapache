@@ -36,15 +36,14 @@ impl Tree {
         if repo_version >= 2 {
             self.to_binary()
         } else {
-            serde_json::to_vec(self).map_err(MapacheError::Serialization)
+            crate::repository::legacy::serialize_tree_json(self)
         }
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Tree> {
         // Try JSON first (starts with '{'), fall back to binary.
         if !bytes.is_empty() && bytes[0] == b'{' {
-            serde_json::from_slice(bytes)
-                .map_err(|e| MapacheError::Format(format!("failed to deserialize tree: {e}")))
+            crate::repository::legacy::deserialize_tree_json(bytes)
         } else {
             Self::from_binary(bytes)
         }

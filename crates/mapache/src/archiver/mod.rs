@@ -710,7 +710,7 @@ mod tests {
             mock::{BackendOp, MockBackend, MockEffect},
         },
         common::{ContentIdType, ID, defaults::TEST_REPO_CONFIG},
-        repository::repo::Auth,
+        repository::repo::{Auth, THIS_REPOSITORY_VERSION},
         ui::events::noop_sender,
     };
 
@@ -722,7 +722,7 @@ mod tests {
             password: Zeroizing::new("pass".to_string()),
         };
         let backend = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
 
@@ -807,7 +807,7 @@ mod tests {
             password: Zeroizing::new("pass".to_string()),
         };
         let backend = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
 
@@ -1029,7 +1029,7 @@ mod tests {
             password: Zeroizing::new("stdin_test".to_string()),
         };
         let backend = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone())
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone())
             .await
             .unwrap();
         let (repo, _) =

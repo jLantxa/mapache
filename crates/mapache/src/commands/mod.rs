@@ -15,6 +15,7 @@ pub mod cmd_init;
 pub mod cmd_key;
 pub mod cmd_log;
 pub mod cmd_ls;
+pub mod cmd_migrate;
 #[cfg(all(feature = "mount", unix))]
 pub mod cmd_mount;
 pub mod cmd_rebuild_index;
@@ -105,6 +106,7 @@ pub enum Command {
     Key(WithGlobal<cmd_key::CmdArgs>),
     Log(WithGlobal<cmd_log::CmdArgs>),
     Ls(WithGlobal<cmd_ls::CmdArgs>),
+    Migrate(WithGlobal<cmd_migrate::CmdArgs>),
     #[cfg(all(feature = "mount", unix))]
     Mount(WithGlobal<cmd_mount::CmdArgs>),
     RebuildIndex(WithGlobal<cmd_rebuild_index::CmdArgs>),
@@ -663,6 +665,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Key(cmd) => (resolve_global(&cmd.global, &config), Command::Key(cmd)),
         Command::Log(cmd) => (resolve_global(&cmd.global, &config), Command::Log(cmd)),
         Command::Ls(cmd) => (resolve_global(&cmd.global, &config), Command::Ls(cmd)),
+        Command::Migrate(cmd) => (resolve_global(&cmd.global, &config), Command::Migrate(cmd)),
         #[cfg(all(feature = "mount", unix))]
         Command::Mount(cmd) => (resolve_global(&cmd.global, &config), Command::Mount(cmd)),
         Command::RebuildIndex(cmd) => (
@@ -745,6 +748,9 @@ pub async fn parse_and_run() -> i32 {
             .await
             .map_err(CmdError::new),
         Command::Ls(cmd) => cmd_ls::run(&global, &cmd.args).await.map_err(CmdError::new),
+        Command::Migrate(cmd) => cmd_migrate::run(&global, &cmd.args)
+            .await
+            .map_err(CmdError::new),
         #[cfg(all(feature = "mount", unix))]
         Command::Mount(cmd) => cmd_mount::run(&global, &cmd.args)
             .await

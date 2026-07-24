@@ -28,7 +28,13 @@ mod tests {
         let auth = make_auth();
 
         let backend: Arc<dyn StorageBackend> = Arc::new(LocalFS::new(repo_path.clone()));
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+        )
+        .await?;
 
         // First exclusive lock
         let (_repo1, _ss1, _lock1) = Repository::try_open_with_lock(
@@ -65,7 +71,13 @@ mod tests {
         let auth = make_auth();
 
         let backend: Arc<dyn StorageBackend> = Arc::new(LocalFS::new(repo_path.clone()));
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+        )
+        .await?;
 
         let locks_dir = repo_path.join(LOCKS_DIR);
 
@@ -107,7 +119,13 @@ mod tests {
         let auth = make_auth();
 
         let backend: Arc<dyn StorageBackend> = Arc::new(LocalFS::new(repo_path.clone()));
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+        )
+        .await?;
 
         // Acquire and release
         {
@@ -154,7 +172,13 @@ mod tests {
         let auth = make_auth();
 
         let backend: Arc<dyn StorageBackend> = Arc::new(LocalFS::new(repo_path.clone()));
-        Repository::init(&auth, None, backend.clone()).await?;
+        Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend.clone(),
+        )
+        .await?;
 
         // First lock
         let (_repo1, _ss1, lock1) = Repository::try_open_with_lock(

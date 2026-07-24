@@ -19,12 +19,10 @@ use std::{
     time::SystemTime,
 };
 
-use crate::common::error;
 use chrono::Local;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
     archiver::{
@@ -32,7 +30,12 @@ use crate::{
         progress::SnapshotProgress,
         tree_serializer::TreeSerializer,
     },
-    common::{self, error::Result, global::MAPACHE_VERSION_INFO, traits::BlobSaver},
+    common::{
+        self,
+        error::{self, Result},
+        global::MAPACHE_VERSION_INFO,
+        traits::BlobSaver,
+    },
     fs::{
         filter::PathFilter,
         node::{Metadata, Node, NodeType},
@@ -43,7 +46,7 @@ use crate::{
         snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
     },
     ui::events::{BackupEvent, Event, EventSender, emit_event},
-    utils,
+    utils::{self, stream::ReceiverStream},
 };
 
 /// Options for creating a new snapshot.

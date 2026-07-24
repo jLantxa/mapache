@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::common::error::{MapacheError, Result};
+use crate::{
+    common::error::{MapacheError, Result},
+    utils,
+};
 
 pub const ID_LENGTH: usize = 32;
 pub type Hash256 = [u8; ID_LENGTH];
@@ -26,12 +29,12 @@ impl ID {
 
     /// Converts the ID to a hex String.
     pub fn to_hex(&self) -> String {
-        crate::utils::bytes_to_hex(&self.0)
+        utils::bytes_to_hex(&self.0)
     }
 
     /// Convert to hex String with `len` bytes
     pub fn to_short_hex(&self, len: usize) -> String {
-        crate::utils::bytes_to_hex(&self.0[..len])
+        utils::bytes_to_hex(&self.0[..len])
     }
 
     /// Helper function to convert a hex char into a byte.

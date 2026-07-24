@@ -2110,7 +2110,6 @@ dependencies = [
  "thiserror 2.0.19",
  "tikv-jemallocator",
  "tokio",
- "tokio-stream",
  "toml",
  "tracing",
  "tracing-subscriber",

@@ -2,6 +2,7 @@ pub mod base64;
 pub mod binary;
 pub mod collections;
 pub mod rate_estimator;
+pub(crate) mod stream;
 
 use std::{
     path::{Path, PathBuf},

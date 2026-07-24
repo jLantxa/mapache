@@ -6,7 +6,6 @@ use std::{
     sync::Arc,
 };
 
-use crate::common::error::{MapacheError, Result};
 use argon2::ParamsBuilder;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -17,7 +16,11 @@ use crate::{
         BUNDLE_HEADER_SIZE, BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START,
         BUNDLE_TRAILER_SIZE_LEN, BundleHeader, BundleIndex, BundleTrailer,
     },
-    common::{ID, traits::BlobLoader},
+    common::{
+        ID,
+        error::{MapacheError, Result},
+        traits::BlobLoader,
+    },
     fs::{
         node::Metadata,
         tree::{NodeDiff, Tree},
@@ -28,6 +31,7 @@ use crate::{
         self,
         events::{BackupEvent, Event, EventSender, RestoreEvent},
     },
+    utils::stream::ReceiverStream,
 };
 
 pub struct BundleReader {
@@ -261,7 +265,7 @@ where
     let meta_sender = make_meta_sender();
 
     let process_future = async {
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let stream = ReceiverStream::new(rx);
         stream
             .for_each_concurrent(workers, |(path, node)| {
                 let loader = loader.clone();

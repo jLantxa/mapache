@@ -52,7 +52,6 @@ tokio = { version = "1.53", features = [
   "signal",
   "process",
 ] }
-tokio-stream = "0.1"
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }

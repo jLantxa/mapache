@@ -88,7 +88,7 @@ impl MapacheFS<dyn BlobLoader> {
         config.clone_fd = false;
 
         tracing::debug!(target: "fuse", "Starting FUSE session at {:?}", mountpoint);
-        if let Err(e) = fuser::mount2(filesystem, mountpoint, &config) {
+        if let Err(e) = fuser::mount(filesystem, mountpoint, &config) {
             if let Err(unmount_err) = Self::unmount(mountpoint) {
                 tracing::warn!(target: "fuse", "Failed to unmount after mount error: {unmount_err}");
             }

@@ -765,7 +765,10 @@ mod tests {
             node::{Node, NodeType},
             tree::Tree,
         },
-        repository::{repo::Auth, snapshot::Snapshot},
+        repository::{
+            repo::{Auth, THIS_REPOSITORY_VERSION},
+            snapshot::Snapshot,
+        },
         ui::events::noop_sender,
     };
 
@@ -780,7 +783,7 @@ mod tests {
         let auth = make_auth();
         let backend = Arc::new(MockBackend::new());
         let backend_dyn: Arc<dyn StorageBackend> = backend.clone();
-        Repository::init(&auth, None, backend_dyn.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend_dyn.clone()).await?;
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend_dyn, TEST_REPO_CONFIG).await?;
         Ok((repo, backend))

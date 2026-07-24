@@ -325,7 +325,9 @@ impl InitBuilder {
     pub fn new() -> Self {
         use cmd_init;
         Self {
-            args: cmd_init::CmdArgs {},
+            args: cmd_init::CmdArgs {
+                format: mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            },
         }
     }
 
@@ -949,9 +951,14 @@ impl UnlockBuilder {
 
 async fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
     let backend = Arc::new(LocalFS::new(repo_path));
-    let _ = Repository::init(auth, None, backend)
-        .await
-        .context("Failed to init repo")?;
+    let _ = Repository::init(
+        mapache::repository::repo::THIS_REPOSITORY_VERSION,
+        auth,
+        None,
+        backend,
+    )
+    .await
+    .context("Failed to init repo")?;
     Ok(())
 }
 

@@ -216,7 +216,7 @@ mod tests {
     use crate::common::defaults::TEST_REPO_CONFIG;
     use crate::fs::node::{Metadata, Node, NodeType};
     use crate::repository::index::MasterIndex;
-    use crate::repository::repo::{Auth, Repository};
+    use crate::repository::repo::{Auth, Repository, THIS_REPOSITORY_VERSION};
     use crate::restorer::{RestoreOptions, Restorer, Strategy};
     use crate::ui::events::noop_sender;
 
@@ -232,7 +232,7 @@ mod tests {
     async fn create_restorer(strategy: Strategy, verify: bool) -> (Restorer, tempfile::TempDir) {
         let auth = auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(&auth, None, backend.clone())
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone())
             .await
             .unwrap();
         let (repo, _) = Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG)

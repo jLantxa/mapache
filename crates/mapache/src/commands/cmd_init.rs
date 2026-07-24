@@ -7,7 +7,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode},
     common::{ID, defaults::SHORT_REPO_ID_LEN, error::MapacheError},
-    repository::repo::Repository,
+    repository::repo::{Repository, THIS_REPOSITORY_VERSION},
     ui::{self, json::emit_static},
     utils,
 };
@@ -47,11 +47,22 @@ impl ToExitCode for InitError {
         A repository can be a local directory, an SFTP server, or an S3-compatible\n\
         storage bucket. The storage backend is determined by the --repo URL scheme."
 )]
-pub struct CmdArgs {}
+pub struct CmdArgs {
+    /// Repository format version (1 or 2)
+    #[clap(long, default_value_t = THIS_REPOSITORY_VERSION)]
+    pub format: u32,
+}
 
 const INIT_MSG: &str = "init";
 
-pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), InitError> {
+pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitError> {
+    if args.format < 1 || args.format > 2 {
+        return Err(InitError::RepoInitError(format!(
+            "unsupported repository format: {} (supported: 1, 2)",
+            args.format
+        )));
+    }
+
     tracing::info!(target: "init", "Initializing repository at {}", global_args.repo);
 
     let backend = new_backend_with_prompt(global_args.backend_options(false))
@@ -73,12 +84,17 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), InitEr
 
     tracing::info!(target: "init", "Calling Repository::init");
 
-    let manifest = Repository::init(&auth, global_args.key.as_ref(), backend.clone())
-        .await
-        .map_err(|e| {
-            tracing::error!(target: "init", "Repository::init failed: {e}");
-            InitError::RepoInitError(e.inner())
-        })?;
+    let manifest = Repository::init(
+        args.format,
+        &auth,
+        global_args.key.as_ref(),
+        backend.clone(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(target: "init", "Repository::init failed: {e}");
+        InitError::RepoInitError(e.inner())
+    })?;
 
     tracing::info!(
         target: "init",
@@ -89,7 +105,8 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), InitEr
 
     if !global_args.json {
         ui::cli::log!(
-            "Created repo with id {} at {}\n",
+            "Created repo v{} with id {} at {}\n",
+            args.format,
             manifest.id().to_short_hex(SHORT_REPO_ID_LEN),
             global_args.repo
         );

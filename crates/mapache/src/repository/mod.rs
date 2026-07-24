@@ -1,6 +1,7 @@
 pub mod gc;
 pub mod index;
 pub mod keys;
+pub mod legacy;
 pub mod loader;
 pub mod lock;
 pub mod manifest;

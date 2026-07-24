@@ -437,7 +437,7 @@ impl Index {
                 zero_blobs: zero_entries,
             })
         } else {
-            serde_json::to_vec(&IndexFile {
+            super::legacy::serialize_index_json(&IndexFile {
                 packs: pack_entries,
                 zero_blobs: zero_entries,
             })?

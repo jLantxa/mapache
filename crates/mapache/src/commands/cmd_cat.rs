@@ -105,8 +105,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CatErro
                     let tree = repo.load_blob(&id).await.map_err(|e| {
                         CatError::ObjectNotFound(format!("failed to load tree blob: {}", e.inner()))
                     })?;
-                    let tree: Tree =
-                        serde_json::from_slice(&tree).map_err(MapacheError::Serialization)?;
+                    let tree: Tree = Tree::from_bytes(&tree)?;
                     ui::cli::log!(
                         "{}",
                         serde_json::to_string_pretty(&tree).map_err(MapacheError::Serialization)?

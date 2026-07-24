@@ -18,6 +18,7 @@ use crate::{
     common::{BlobType, ID, SaveID, traits::BlobSaver},
     fs::{calculate_lcp, filter::PathFilter, get_intermediate_paths, node::Node},
     repository::repo::Repository,
+    utils::binary::{get_u32, put_u32},
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -27,21 +28,64 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Creates a new empty tree.
     pub fn new(nodes: Vec<Node>) -> Self {
         Self { nodes }
     }
 
-    /// Saves a tree in the storage. This function should be called when a tree is complete,
-    /// that is, when all the contents and/or tree hashes have been resolved.
-    pub async fn save_to_store(&mut self, blob_saver: Arc<dyn BlobSaver>) -> Result<ID> {
-        let mut owned = std::mem::take(self); // Take ownership
+    pub fn to_bytes(&self, repo_version: u32) -> Result<Vec<u8>> {
+        if repo_version >= 2 {
+            self.to_binary()
+        } else {
+            serde_json::to_vec(self).map_err(MapacheError::Serialization)
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Tree> {
+        // Try JSON first (starts with '{'), fall back to binary.
+        if !bytes.is_empty() && bytes[0] == b'{' {
+            serde_json::from_slice(bytes)
+                .map_err(|e| MapacheError::Format(format!("failed to deserialize tree: {e}")))
+        } else {
+            Self::from_binary(bytes)
+        }
+    }
+
+    fn to_binary(&self) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        put_u32(&mut buf, self.nodes.len() as u32);
+        for node in &self.nodes {
+            node.to_binary(&mut buf);
+        }
+        Ok(buf)
+    }
+
+    fn from_binary(bytes: &[u8]) -> Result<Tree> {
+        let mut r = bytes;
+        let count = get_u32(&mut r)? as usize;
+        let mut nodes = Vec::with_capacity(count);
+        for _ in 0..count {
+            nodes.push(Node::from_binary(&mut r)?);
+        }
+        if !r.is_empty() {
+            return Err(MapacheError::Format(format!(
+                "trailing {} bytes after tree deserialization",
+                r.len()
+            )));
+        }
+        Ok(Tree { nodes })
+    }
+
+    pub async fn save_to_store(
+        &mut self,
+        blob_saver: Arc<dyn BlobSaver>,
+        repo_version: u32,
+    ) -> Result<ID> {
+        let mut owned = std::mem::take(self);
 
         let (tree_id, owned_back) = tokio::task::spawn_blocking(move || {
             owned.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-            let bytes = serde_json::to_vec(&owned).map_err(MapacheError::Serialization)?;
+            let bytes = owned.to_bytes(repo_version)?;
 
-            // Perform the CPU-intensive encryption/saving right here in the worker thread!
             let id = blob_saver.save_blob(
                 BlobType::Tree,
                 WriteContents::Owned(bytes),
@@ -57,13 +101,11 @@ impl Tree {
         Ok(tree_id)
     }
 
-    /// Load a tree from the repository.
     pub async fn load_from_repo(repo: &Repository, root_id: &ID) -> Result<Tree> {
         let tree_object = repo.load_blob(root_id).await?;
-        let tree: Tree = serde_json::from_slice(&tree_object).map_err(|e| {
+        Self::from_bytes(&tree_object).map_err(|e| {
             MapacheError::Format(format!("failed to deserialize tree with ID {root_id}: {e}"))
-        })?;
-        Ok(tree)
+        })
     }
 }
 
@@ -806,6 +848,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::{
+        common::ID,
+        fs::node::{Metadata, NodeType, SymlinkInfo},
+    };
 
     // Create a filesystem tree for testing. root should be the path to a temporary folder
     fn create_tree(root: &Path) -> Result<()> {
@@ -1067,6 +1113,161 @@ mod tests {
         );
         assert!(nodes[5].as_ref().unwrap().1.is_ok());
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_binary_roundtrip_empty() -> Result<()> {
+        let tree = Tree::new(vec![]);
+        let bytes = tree.to_bytes(2)?;
+        let restored = Tree::from_bytes(&bytes)?;
+        assert!(restored.nodes.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_binary_roundtrip_single_file() -> Result<()> {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let tree = Tree::new(vec![Node {
+            name: "hello.txt".to_string(),
+            node_type: NodeType::File,
+            metadata: Metadata {
+                size: 1024,
+                accessed_time: Some(UNIX_EPOCH + Duration::from_secs(1000)),
+                modified_time: Some(UNIX_EPOCH + Duration::from_secs(2000)),
+                mode: Some(0o644),
+                owner_uid: Some(1000),
+                owner_gid: Some(1000),
+                ..Default::default()
+            },
+            blobs: Some(vec![ID::from_bytes([0xAB; 32]), ID::from_bytes([0xCD; 32])]),
+            ..Default::default()
+        }]);
+
+        let bytes = tree.to_bytes(2)?;
+        let restored = Tree::from_bytes(&bytes)?;
+        assert_eq!(restored.nodes.len(), 1);
+        assert_eq!(restored.nodes[0].name, "hello.txt");
+        assert_eq!(restored.nodes[0].node_type, NodeType::File);
+        assert_eq!(restored.nodes[0].metadata.size, 1024);
+        assert_eq!(restored.nodes[0].metadata.mode, Some(0o644));
+        assert_eq!(restored.nodes[0].blobs.as_ref().unwrap().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_binary_roundtrip_directory_with_tree() -> Result<()> {
+        let dir_id = ID::from_bytes([0xFF; 32]);
+        let tree = Tree::new(vec![Node {
+            name: "subdir".to_string(),
+            node_type: NodeType::Directory,
+            tree: Some(dir_id),
+            ..Default::default()
+        }]);
+
+        let bytes = tree.to_bytes(2)?;
+        let restored = Tree::from_bytes(&bytes)?;
+        assert_eq!(restored.nodes.len(), 1);
+        assert_eq!(restored.nodes[0].tree, Some(dir_id));
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_binary_roundtrip_symlink() -> Result<()> {
+        use std::path::PathBuf;
+
+        let tree = Tree::new(vec![Node {
+            name: "link".to_string(),
+            node_type: NodeType::Symlink,
+            symlink_info: Some(SymlinkInfo {
+                target_path: PathBuf::from("/target/file"),
+                target_type: Some(NodeType::File),
+            }),
+            ..Default::default()
+        }]);
+
+        let bytes = tree.to_bytes(2)?;
+        let restored = Tree::from_bytes(&bytes)?;
+        let si = restored.nodes[0].symlink_info.as_ref().unwrap();
+        assert_eq!(si.target_path, PathBuf::from("/target/file"));
+        assert_eq!(si.target_type, Some(NodeType::File));
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_binary_roundtrip_many_nodes() -> Result<()> {
+        let nodes: Vec<Node> = (0..1000)
+            .map(|i| Node {
+                name: format!("file_{i:04}.txt"),
+                node_type: NodeType::File,
+                metadata: Metadata {
+                    size: (i as u64) * 100,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .collect();
+        let tree = Tree::new(nodes);
+        let bytes = tree.to_bytes(2)?;
+        let restored = Tree::from_bytes(&bytes)?;
+        assert_eq!(restored.nodes.len(), 1000);
+        assert_eq!(restored.nodes[0].name, "file_0000.txt");
+        assert_eq!(restored.nodes[999].name, "file_0999.txt");
+        assert_eq!(restored.nodes[999].metadata.size, 99900);
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_binary_deterministic() -> Result<()> {
+        let tree = Tree::new(vec![Node {
+            name: "test".to_string(),
+            ..Default::default()
+        }]);
+        let a = tree.to_bytes(2)?;
+        let b = tree.to_bytes(2)?;
+        assert_eq!(a, b);
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_binary_smaller_than_json() -> Result<()> {
+        let nodes: Vec<Node> = (0..100)
+            .map(|i| Node {
+                name: format!("file_{i:04}.txt"),
+                node_type: NodeType::File,
+                metadata: Metadata {
+                    size: (i as u64) * 100,
+                    mode: Some(0o644),
+                    owner_uid: Some(1000),
+                    owner_gid: Some(1000),
+                    ..Default::default()
+                },
+                blobs: Some(vec![crate::common::ID::from_bytes([i as u8; 32])]),
+                ..Default::default()
+            })
+            .collect();
+        let tree = Tree::new(nodes);
+        let bin = tree.to_bytes(2)?;
+        let json = serde_json::to_vec(&tree).unwrap();
+        assert!(
+            bin.len() < json.len(),
+            "binary {} bytes < JSON {} bytes",
+            bin.len(),
+            json.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_tree_auto_detect_format() -> Result<()> {
+        let tree = Tree::new(vec![]);
+        let bin = tree.to_bytes(2)?;
+        let json = serde_json::to_vec(&tree).unwrap();
+        let restored_bin = Tree::from_bytes(&bin)?;
+        let restored_json = Tree::from_bytes(&json)?;
+        assert!(restored_bin.nodes.is_empty());
+        assert!(restored_json.nodes.is_empty());
         Ok(())
     }
 }

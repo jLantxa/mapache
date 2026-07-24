@@ -22,7 +22,7 @@ use crate::{
         traits::{BlobLoader, BlobSaver},
     },
     repository::{
-        index::{Index, IndexFile, MasterIndex},
+        index::{self, Index, IndexFile, MasterIndex},
         keys::{self, KeyManager},
         lock::{Lock, LockHandle},
         manifest::Manifest,
@@ -34,7 +34,7 @@ use crate::{
     utils::collections::IdSet,
 };
 
-pub const THIS_REPOSITORY_VERSION: u32 = 1;
+pub const THIS_REPOSITORY_VERSION: u32 = 2;
 
 pub const OBJECTS_DIR: &str = "objects";
 pub const SNAPSHOTS_DIR: &str = "snapshots";
@@ -178,6 +178,7 @@ impl RepoStats {
 /// or [Repository::try_open_unlocked].
 pub struct Repository {
     manifest: Manifest,
+    repo_version: u32,
 
     // Storage
     backend: Arc<dyn StorageBackend>,
@@ -400,8 +401,11 @@ impl Repository {
 
         let master_index = Arc::new(MasterIndex::new());
 
+        let repo_version = manifest.version();
+
         let repo = Repository {
             manifest,
+            repo_version,
             backend,
             objects_path: PathBuf::from(OBJECTS_DIR),
             snapshot_path: PathBuf::from(SNAPSHOTS_DIR),
@@ -422,6 +426,24 @@ impl Repository {
     /// Returns a reference to the repo manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// Saves the manifest to the backend.
+    pub async fn save_manifest(&self, manifest: &Manifest) -> Result<()> {
+        let manifest_json = serde_json::to_string_pretty(manifest)?;
+        let encoded = self.secure_storage.encode(manifest_json.as_bytes())?;
+        self.backend
+            .write(
+                &Handle::new(Path::new(MANIFEST_PATH)),
+                WriteContents::Owned(encoded),
+            )
+            .await
+            .map_err(|e| MapacheError::Repo(format!("failed to save manifest: {e}")))
+    }
+
+    /// Returns the repository format version.
+    pub fn repo_version(&self) -> u32 {
+        self.repo_version
     }
 
     /// Get the repository backend
@@ -743,7 +765,24 @@ impl Repository {
 
     /// Loads an index file.
     pub async fn load_index(&self, id: &ID) -> Result<IndexFile> {
-        self.load_deserialized(id, ContentIdType::Index, None).await
+        let data = self
+            .load_file(
+                id,
+                StorageHint {
+                    file_type: ContentIdType::Index,
+                    is_metadata: true,
+                },
+                None,
+            )
+            .await?;
+
+        if self.repo_version >= 2 {
+            index::deserialize_index_binary(&data)
+                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}")))
+        } else {
+            serde_json::from_slice(&data)
+                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}")))
+        }
     }
 
     /// Loads the repository manifest.
@@ -1068,6 +1107,7 @@ impl Repository {
 
         self.master_index.clear();
 
+        let repo_version = self.repo_version;
         let indices = stream::iter(files)
             .map(|file_path| {
                 let backend = self.backend.clone();
@@ -1093,14 +1133,22 @@ impl Repository {
                         .await?;
 
                     let index = tokio::task::spawn_blocking(move || {
-                        let index_file = secure_storage.decode_owned(index_data)?;
-                        let index_file: IndexFile =
-                            serde_json::from_slice(&index_file).map_err(|e| {
+                        let decoded = secure_storage.decode_owned(index_data)?;
+                        let index_file = if repo_version >= 2 {
+                            index::deserialize_index_binary(&decoded).map_err(|e| {
                                 MapacheError::Format(format!(
                                     "failed to load index file {}: {e}",
                                     id.to_short_hex(4)
                                 ))
-                            })?;
+                            })?
+                        } else {
+                            serde_json::from_slice(&decoded).map_err(|e| {
+                                MapacheError::Format(format!(
+                                    "failed to load index file {}: {e}",
+                                    id.to_short_hex(4)
+                                ))
+                            })?
+                        };
                         Ok::<_, MapacheError>(Index::from_index_file(index_file, id))
                     })
                     .await

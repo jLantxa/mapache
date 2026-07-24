@@ -18,6 +18,10 @@ use crate::{
     common::error::{MapacheError, Result},
     ui::cli::color::Colorize,
     utils,
+    utils::binary::{
+        get_array, get_exact, get_string, get_time, get_u8, get_u16, get_u32, get_u64, put_str,
+        put_time, put_u8, put_u16, put_u32, put_u64,
+    },
 };
 
 /// The type of a node (file, directory, symlink, etc.)
@@ -32,6 +36,33 @@ pub enum NodeType {
     CharDevice,
     Fifo,
     Socket,
+}
+
+impl NodeType {
+    pub(crate) fn to_u8(self) -> u8 {
+        match self {
+            NodeType::File => 0,
+            NodeType::Directory => 1,
+            NodeType::Symlink => 2,
+            NodeType::BlockDevice => 3,
+            NodeType::CharDevice => 4,
+            NodeType::Fifo => 5,
+            NodeType::Socket => 6,
+        }
+    }
+
+    pub(crate) fn from_u8(v: u8) -> Result<Self> {
+        match v {
+            0 => Ok(NodeType::File),
+            1 => Ok(NodeType::Directory),
+            2 => Ok(NodeType::Symlink),
+            3 => Ok(NodeType::BlockDevice),
+            4 => Ok(NodeType::CharDevice),
+            5 => Ok(NodeType::Fifo),
+            6 => Ok(NodeType::Socket),
+            _ => Err(MapacheError::Format(format!("invalid NodeType value: {v}"))),
+        }
+    }
 }
 
 /// A node in the file system tree. This struct is serialized; keep field order stable.
@@ -55,12 +86,117 @@ pub struct Node {
     pub tree: Option<ID>, // For directories
 }
 
+impl Node {
+    pub(crate) fn to_binary(&self, buf: &mut Vec<u8>) {
+        put_u8(buf, self.node_type.to_u8());
+        put_str(buf, &self.name);
+
+        let mut flags: u8 = 0;
+        if self.symlink_info.is_some() {
+            flags |= 0x01;
+        }
+        if self.blobs.is_some() {
+            flags |= 0x02;
+        }
+        if self.tree.is_some() {
+            flags |= 0x04;
+        }
+        put_u8(buf, flags);
+
+        if let Some(ref si) = self.symlink_info {
+            si.to_binary(buf);
+        }
+        if let Some(ref blobs) = self.blobs {
+            put_u32(buf, blobs.len() as u32);
+            for id in blobs {
+                buf.extend_from_slice(id.as_slice());
+            }
+        }
+        if let Some(ref tree_id) = self.tree {
+            buf.extend_from_slice(tree_id.as_slice());
+        }
+
+        self.metadata.to_binary(buf);
+    }
+
+    pub(crate) fn from_binary(buf: &mut &[u8]) -> Result<Self> {
+        let node_type = NodeType::from_u8(get_u8(buf)?)?;
+        let name = get_string(buf)?;
+        let flags = get_u8(buf)?;
+
+        let symlink_info = if flags & 0x01 != 0 {
+            Some(SymlinkInfo::from_binary(buf)?)
+        } else {
+            None
+        };
+
+        let blobs = if flags & 0x02 != 0 {
+            let count = get_u32(buf)? as usize;
+            let mut vec = Vec::with_capacity(count);
+            for _ in 0..count {
+                let bytes = get_array::<32>(buf)?;
+                vec.push(ID::from_bytes(bytes));
+            }
+            Some(vec)
+        } else {
+            None
+        };
+
+        let tree = if flags & 0x04 != 0 {
+            let bytes = get_array::<32>(buf)?;
+            Some(ID::from_bytes(bytes))
+        } else {
+            None
+        };
+
+        let metadata = Metadata::from_binary(buf)?;
+
+        Ok(Node {
+            name,
+            node_type,
+            metadata,
+            symlink_info,
+            blobs,
+            tree,
+        })
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SymlinkInfo {
     pub target_path: PathBuf, // Target path
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_type: Option<NodeType>, // Type of node referenced by the symlink (necessary for restoration in Windows)
+}
+
+impl SymlinkInfo {
+    pub(crate) fn to_binary(&self, buf: &mut Vec<u8>) {
+        put_str(buf, &self.target_path.to_string_lossy());
+        match &self.target_type {
+            Some(nt) => {
+                put_u8(buf, 1);
+                put_u8(buf, nt.to_u8());
+            }
+            None => {
+                put_u8(buf, 0);
+            }
+        }
+    }
+
+    pub(crate) fn from_binary(buf: &mut &[u8]) -> Result<Self> {
+        let target_path = PathBuf::from(get_string(buf)?);
+        let has_type = get_u8(buf)?;
+        let target_type = if has_type != 0 {
+            Some(NodeType::from_u8(get_u8(buf)?)?)
+        } else {
+            None
+        };
+        Ok(SymlinkInfo {
+            target_path,
+            target_type,
+        })
+    }
 }
 
 /// Node metadata. This struct is serialized; keep field order stable.
@@ -121,6 +257,210 @@ pub struct Metadata {
     /// Linux file flags (chattr)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linux_flags: Option<u32>,
+}
+
+impl Metadata {
+    const FLAG_ACCESSED_TIME: u16 = 1 << 0;
+    const FLAG_CREATED_TIME: u16 = 1 << 1;
+    const FLAG_MODIFIED_TIME: u16 = 1 << 2;
+    const FLAG_MODE: u16 = 1 << 3;
+    const FLAG_OWNER_UID: u16 = 1 << 4;
+    const FLAG_OWNER_GID: u16 = 1 << 5;
+    const FLAG_INODE: u16 = 1 << 6;
+    const FLAG_DEV: u16 = 1 << 7;
+    const FLAG_NLINK: u16 = 1 << 8;
+    const FLAG_RDEV: u16 = 1 << 9;
+    const FLAG_XATTR: u16 = 1 << 10;
+    const FLAG_WIN_ATTR: u16 = 1 << 11;
+    const FLAG_LINUX_FLAGS: u16 = 1 << 12;
+
+    pub(crate) fn to_binary(&self, buf: &mut Vec<u8>) {
+        put_u64(buf, self.size);
+
+        let mut flags: u16 = 0;
+        if self.accessed_time.is_some() {
+            flags |= Self::FLAG_ACCESSED_TIME;
+        }
+        if self.created_time.is_some() {
+            flags |= Self::FLAG_CREATED_TIME;
+        }
+        if self.modified_time.is_some() {
+            flags |= Self::FLAG_MODIFIED_TIME;
+        }
+        if self.mode.is_some() {
+            flags |= Self::FLAG_MODE;
+        }
+        if self.owner_uid.is_some() {
+            flags |= Self::FLAG_OWNER_UID;
+        }
+        if self.owner_gid.is_some() {
+            flags |= Self::FLAG_OWNER_GID;
+        }
+        if self.inode.is_some() {
+            flags |= Self::FLAG_INODE;
+        }
+        if self.dev.is_some() {
+            flags |= Self::FLAG_DEV;
+        }
+        if self.nlink.is_some() {
+            flags |= Self::FLAG_NLINK;
+        }
+        if self.rdev.is_some() {
+            flags |= Self::FLAG_RDEV;
+        }
+        if self.extended_attributes.is_some() {
+            flags |= Self::FLAG_XATTR;
+        }
+        if self.windows_attributes.is_some() {
+            flags |= Self::FLAG_WIN_ATTR;
+        }
+        if self.linux_flags.is_some() {
+            flags |= Self::FLAG_LINUX_FLAGS;
+        }
+
+        put_u16(buf, flags);
+
+        if let Some(v) = &self.accessed_time {
+            put_time(buf, v);
+        }
+        if let Some(v) = &self.created_time {
+            put_time(buf, v);
+        }
+        if let Some(v) = &self.modified_time {
+            put_time(buf, v);
+        }
+        if let Some(v) = self.mode {
+            put_u32(buf, v);
+        }
+        if let Some(v) = self.owner_uid {
+            put_u32(buf, v);
+        }
+        if let Some(v) = self.owner_gid {
+            put_u32(buf, v);
+        }
+        if let Some(v) = self.inode {
+            put_u64(buf, v);
+        }
+        if let Some(v) = self.dev {
+            put_u64(buf, v);
+        }
+        if let Some(v) = self.nlink {
+            put_u64(buf, v);
+        }
+        if let Some(v) = self.rdev {
+            put_u64(buf, v);
+        }
+        if let Some(ref xattrs) = self.extended_attributes {
+            put_u32(buf, xattrs.len() as u32);
+            for (k, v) in xattrs {
+                put_str(buf, k);
+                put_u32(buf, v.len() as u32);
+                buf.extend_from_slice(v);
+            }
+        }
+        if let Some(v) = self.windows_attributes {
+            put_u32(buf, v);
+        }
+        if let Some(v) = self.linux_flags {
+            put_u32(buf, v);
+        }
+    }
+
+    pub(crate) fn from_binary(buf: &mut &[u8]) -> Result<Self> {
+        let size = get_u64(buf)?;
+        let flags = get_u16(buf)?;
+
+        let accessed_time = if flags & Self::FLAG_ACCESSED_TIME != 0 {
+            Some(get_time(buf)?)
+        } else {
+            None
+        };
+        let created_time = if flags & Self::FLAG_CREATED_TIME != 0 {
+            Some(get_time(buf)?)
+        } else {
+            None
+        };
+        let modified_time = if flags & Self::FLAG_MODIFIED_TIME != 0 {
+            Some(get_time(buf)?)
+        } else {
+            None
+        };
+        let mode = if flags & Self::FLAG_MODE != 0 {
+            Some(get_u32(buf)?)
+        } else {
+            None
+        };
+        let owner_uid = if flags & Self::FLAG_OWNER_UID != 0 {
+            Some(get_u32(buf)?)
+        } else {
+            None
+        };
+        let owner_gid = if flags & Self::FLAG_OWNER_GID != 0 {
+            Some(get_u32(buf)?)
+        } else {
+            None
+        };
+        let inode = if flags & Self::FLAG_INODE != 0 {
+            Some(get_u64(buf)?)
+        } else {
+            None
+        };
+        let dev = if flags & Self::FLAG_DEV != 0 {
+            Some(get_u64(buf)?)
+        } else {
+            None
+        };
+        let nlink = if flags & Self::FLAG_NLINK != 0 {
+            Some(get_u64(buf)?)
+        } else {
+            None
+        };
+        let rdev = if flags & Self::FLAG_RDEV != 0 {
+            Some(get_u64(buf)?)
+        } else {
+            None
+        };
+        let extended_attributes = if flags & Self::FLAG_XATTR != 0 {
+            let count = get_u32(buf)? as usize;
+            let mut map = BTreeMap::new();
+            for _ in 0..count {
+                let key = get_string(buf)?;
+                let val_len = get_u32(buf)? as usize;
+                let val = get_exact(buf, val_len)?.to_vec();
+                map.insert(key, val);
+            }
+            Some(map)
+        } else {
+            None
+        };
+        let windows_attributes = if flags & Self::FLAG_WIN_ATTR != 0 {
+            Some(get_u32(buf)?)
+        } else {
+            None
+        };
+        let linux_flags = if flags & Self::FLAG_LINUX_FLAGS != 0 {
+            Some(get_u32(buf)?)
+        } else {
+            None
+        };
+
+        Ok(Metadata {
+            size,
+            accessed_time,
+            created_time,
+            modified_time,
+            mode,
+            owner_uid,
+            owner_gid,
+            inode,
+            dev,
+            nlink,
+            rdev,
+            extended_attributes,
+            windows_attributes,
+            linux_flags,
+        })
+    }
 }
 
 /// Minimal manual implementation of the Linux `statx` syscall.

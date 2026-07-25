@@ -3,10 +3,10 @@
 #
 # Used by: build-target.sh, pack.sh, Dockerfile (rustup target add)
 
-x86_64-unknown-linux-musl        linux_amd64       "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" ""
-aarch64-unknown-linux-musl       linux_arm64       "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" ""
-armv7-unknown-linux-musleabihf   linux_armv7       "-C target-feature=+crt-static -C relocation-model=pie -C link-arg=-pie" ""
+x86_64-unknown-linux-musl        linux_amd64       "-C target-feature=+crt-static -C relocation-model=pie" ""
+aarch64-unknown-linux-musl       linux_arm64       "-C target-feature=+crt-static -C relocation-model=pie" ""
+armv7-unknown-linux-musleabihf   linux_armv7       "-C target-feature=+crt-static -C relocation-model=pie" ""
 aarch64-linux-android            android_arm64     "" "--no-default-features"
-x86_64-pc-windows-msvc           windows_amd64    "-C target-feature=+crt-static" ""
+x86_64-pc-windows-msvc           windows_amd64     "-C target-feature=+crt-static" ""
 x86_64-apple-darwin              darwin_amd64      "" ""
 aarch64-apple-darwin             darwin_arm64      "" ""

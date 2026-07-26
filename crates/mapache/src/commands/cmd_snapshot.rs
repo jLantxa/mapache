@@ -87,7 +87,12 @@ impl ToExitCode for SnapshotError {
 
 #[derive(Args, Debug, Clone, Serialize, Deserialize, Default)]
 #[clap(group = ArgGroup::new("scan_mode").multiple(false))]
-#[clap(about = "Create a new snapshot")]
+#[clap(
+    about = "Create a new snapshot",
+    long_about = "Create a new snapshot of the given paths.\n\n\
+        Files are split using content-defined chunking, deduplicated across\n\
+        snapshots, compressed with zstd, and encrypted with AES-256-GCM-SIV.\n"
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {
     /// List of paths to backup

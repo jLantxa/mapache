@@ -1,3 +1,19 @@
+//! Storage backend abstraction layer.
+//!
+//! All repository data (pack files, snapshots, index, keys) is stored through
+//! the [`StorageBackend`] trait, enabling transparent support for multiple
+//! storage targets:
+//!
+//! - [`LocalFS`] — local filesystem
+//! - [`SftpBackend`] — SSH/SFTP remote servers
+//! - [`S3Backend`] — S3-compatible object storage (AWS, MinIO, etc.)
+//! - [`DryBackend`] — dry-run wrapper (no I/O)
+//! - [`ThrottledBackend`] — rate-limited wrapper
+//! - [`CacheBackend`] — local metadata cache for remote backends
+//!
+//! The backend is selected at runtime based on the repository URL scheme
+//! (`/path`, `sftp://host/path`, `s3://bucket/path`).
+
 pub mod cache;
 pub mod dry;
 pub mod limiter;

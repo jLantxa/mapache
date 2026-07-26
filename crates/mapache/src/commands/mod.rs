@@ -71,9 +71,11 @@ use crate::{
 #[command(
     name = "mapache",
     version = THIS_MAPACHE_VERSION,
-    about = "🦝 mapache backup program",
-    long_about = "🦝 mapache is a fast, secure, efficient and deduplicating program \
-        to make backup copies of your files."
+    about = "🦝 Fast, encrypted, deduplicating backup tool",
+    long_about = "🦝 mapache — fast, encrypted, deduplicating backup tool\n\n\
+        mapache creates encrypted, compressed, deduplicated backups of your files.\n\
+        Data is split using content-defined chunking (FastCDC), encrypted with\n\
+        AES-256-GCM-SIV, and stored in compact pack files.\n"
 )]
 pub struct Cli {
     /// Path to a TOML configuration file

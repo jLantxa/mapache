@@ -93,10 +93,12 @@ impl std::fmt::Display for Strategy {
 
 #[derive(Args, Debug, Clone, Serialize, Deserialize, Default)]
 #[clap(
-    about = "Restore a snapshot in a target path",
-    long_about = "Restore a snapshot in a target path. Running this command in \
-    --dry-run mode simulates the restoration of a snapshot, and can be used to \
-    detect errors before running the actual restore."
+    about = "Restore a snapshot to a target path",
+    long_about = "Restore a snapshot to a target path.\n\n\
+        By default, restores the most recent snapshot. Specify a snapshot ID\n\
+        or use 'latest' as the first argument.\n\n\
+        Use --dry-run to simulate the restoration and detect errors before\n\
+        writing any files."
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct CmdArgs {

@@ -9,6 +9,16 @@
     )
 )]
 
+//! # mapache
+//!
+//! A fast, encrypted, deduplicating backup tool inspired by [restic](https://restic.net/).
+//!
+//! ## Architecture
+//!
+//! mapache organizes data into **repositories** containing encrypted, compressed **pack files**.
+//! Files are split into content-defined chunks using [FastCDC](https://github.com/jlantxa/mapache/tree/main/crates/chunker),
+//! deduplicated via BLAKE3 content IDs, and stored in packs encrypted with AES-256-GCM-SIV.
+
 pub mod archiver;
 pub mod backend;
 pub mod bundle;

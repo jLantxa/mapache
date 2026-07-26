@@ -39,7 +39,14 @@ impl ToExitCode for InitError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Initialize a new repository")]
+#[clap(
+    about = "Initialize a new repository",
+    long_about = "Initialize a new repository at the path specified by --repo.\n\n\
+        The repository stores encrypted, deduplicated backup data. You will be\n\
+        prompted to set a username and password for authentication.\n\n\
+        A repository can be a local directory, an SFTP server, or an S3-compatible\n\
+        storage bucket. The storage backend is determined by the --repo URL scheme."
+)]
 pub struct CmdArgs {}
 
 const INIT_MSG: &str = "init";

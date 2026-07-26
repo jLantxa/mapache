@@ -31,7 +31,7 @@ use crate::{
         self,
         events::{BackupEvent, Event, EventSender, RestoreEvent},
     },
-    utils::stream::ReceiverStream,
+    utils::{secure_join, stream::ReceiverStream},
 };
 
 pub struct BundleReader {
@@ -241,7 +241,16 @@ where
             };
 
             for node in tree.nodes {
-                let node_path = current_dest.join(&node.name);
+                let node_path = match secure_join(&current_dest, Path::new(&node.name)) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        sender_clone(Event::Backup(BackupEvent::Error(format!(
+                            "skipping node {}: {}",
+                            node.name, e
+                        ))));
+                        continue;
+                    }
+                };
                 if node.is_dir() {
                     if let Err(e) = std::fs::create_dir_all(&node_path) {
                         sender_clone(Event::Backup(BackupEvent::Warning(format!(

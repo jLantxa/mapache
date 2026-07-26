@@ -137,8 +137,15 @@ mod windows {
     const TICKS_PER_SEC: u64 = 10_000_000;
 
     fn unix_to_filetime(ft: FileTime) -> windows_sys::Win32::Foundation::FILETIME {
-        let total = (ft.seconds as u64 + UNIX_TO_FILETIME_SECS as u64) * TICKS_PER_SEC
-            + (ft.nanos as u64) / 100;
+        let secs = ft
+            .seconds
+            .checked_add(UNIX_TO_FILETIME_SECS)
+            .expect("FILETIME overflow: timestamp too large");
+        let total = secs
+            .checked_mul(TICKS_PER_SEC as i64)
+            .and_then(|v| v.checked_add((ft.nanos / 100) as i64))
+            .expect("FILETIME overflow: timestamp too large");
+        let total = total as u64;
         windows_sys::Win32::Foundation::FILETIME {
             dwLowDateTime: total as u32,
             dwHighDateTime: (total >> 32) as u32,

@@ -187,7 +187,13 @@ impl Packer {
         let encoded_footer = self
             .secure_storage
             .encode_managed(&mut self.encoding_context, &footer)?;
-        let footer_len_bytes = (encoded_footer.len() as u32).to_le_bytes();
+        let footer_len: u32 = encoded_footer.len().try_into().map_err(|_| {
+            MapacheError::Internal(format!(
+                "pack footer too large ({} bytes)",
+                encoded_footer.len()
+            ))
+        })?;
+        let footer_len_bytes = footer_len.to_le_bytes();
 
         self.buffer.extend_from_slice(&encoded_footer);
         self.buffer.extend_from_slice(&footer_len_bytes);

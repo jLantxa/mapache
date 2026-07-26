@@ -111,9 +111,13 @@ impl Restorer {
             })
             .await;
 
-        let mut dirs = Arc::into_inner(dirs)
-            .expect("dirs reference count should be 1 after for_each_concurrent")
-            .into_inner();
+        let mut dirs = match Arc::try_unwrap(dirs) {
+            Ok(mutex) => mutex.into_inner(),
+            Err(arc) => {
+                let guard = arc.lock();
+                guard.clone()
+            }
+        };
         dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
         for (p, meta) in dirs {
             if self.shutdown_signal.load(Ordering::Acquire) {

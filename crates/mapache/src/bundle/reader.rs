@@ -432,3 +432,134 @@ fn make_meta_sender() -> EventSender {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use crate::common::ID;
+
+    use super::*;
+
+    struct MockLoader {
+        blobs: HashMap<ID, Vec<u8>>,
+    }
+
+    impl MockLoader {
+        fn from_trees(trees: Vec<(ID, Tree)>) -> Self {
+            let blobs = trees
+                .into_iter()
+                .map(|(id, tree)| (id, serde_json::to_vec(&tree).unwrap()))
+                .collect();
+            Self { blobs }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BlobLoader for MockLoader {
+        async fn load_blob(&self, id: &ID) -> crate::common::error::Result<Vec<u8>> {
+            self.blobs
+                .get(id)
+                .cloned()
+                .ok_or_else(|| crate::common::error::MapacheError::NotInIndex(*id))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_extract_rejects_path_traversal() {
+        let traversal_name = "../../etc/passwd";
+        let mut tree = Tree::default();
+        tree.nodes.push(crate::fs::node::Node {
+            name: traversal_name.to_string(),
+            node_type: crate::fs::node::NodeType::File,
+            metadata: Default::default(),
+            blobs: None,
+            symlink_info: None,
+            tree: None,
+        });
+
+        let tree_id = ID::from_content(serde_json::to_vec(&tree).unwrap());
+        let loader = Arc::new(MockLoader::from_trees(vec![(tree_id, tree)]));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("extract");
+
+        let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let sender: EventSender = Arc::new(move |event| {
+            events_clone.lock().push(event);
+        });
+
+        let result = extract_nodes_parallel(loader, &tree_id, &dest, 2, sender).await;
+        assert!(result.is_ok());
+
+        let traversal_detected = events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, Event::Backup(BackupEvent::Error(msg)) if msg.contains("Path traversal")));
+        assert!(traversal_detected, "should emit error for path traversal");
+    }
+
+    #[tokio::test]
+    async fn test_extract_allows_valid_paths() {
+        let mut tree = Tree::default();
+        tree.nodes.push(crate::fs::node::Node {
+            name: "safe_file.txt".to_string(),
+            node_type: crate::fs::node::NodeType::File,
+            metadata: Default::default(),
+            blobs: None,
+            symlink_info: None,
+            tree: None,
+        });
+
+        let tree_id = ID::from_content(serde_json::to_vec(&tree).unwrap());
+        let loader = Arc::new(MockLoader::from_trees(vec![(tree_id, tree)]));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("extract");
+
+        let sender: EventSender = Arc::new(|_| {});
+
+        let result = extract_nodes_parallel(loader, &tree_id, &dest, 2, sender).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_extract_rejects_absolute_path() {
+        #[cfg(unix)]
+        let absolute_name = "/etc/passwd";
+        #[cfg(windows)]
+        let absolute_name = "C:\\etc\\passwd";
+
+        let mut tree = Tree::default();
+        tree.nodes.push(crate::fs::node::Node {
+            name: absolute_name.to_string(),
+            node_type: crate::fs::node::NodeType::File,
+            metadata: Default::default(),
+            blobs: None,
+            symlink_info: None,
+            tree: None,
+        });
+
+        let tree_id = ID::from_content(serde_json::to_vec(&tree).unwrap());
+        let loader = Arc::new(MockLoader::from_trees(vec![(tree_id, tree)]));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("extract");
+
+        let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let sender: EventSender = Arc::new(move |event| {
+            events_clone.lock().push(event);
+        });
+
+        let result = extract_nodes_parallel(loader, &tree_id, &dest, 2, sender).await;
+        assert!(result.is_ok());
+
+        let error_detected = events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, Event::Backup(BackupEvent::Error(msg)) if msg.contains("cannot be absolute")));
+        assert!(error_detected, "should emit error for absolute path");
+    }
+}

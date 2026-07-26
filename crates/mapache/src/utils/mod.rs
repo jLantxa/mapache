@@ -895,4 +895,76 @@ mod tests {
 
         Ok(())
     }
+
+    #[cfg(unix)]
+    fn test_base() -> PathBuf {
+        PathBuf::from("/tmp/restore")
+    }
+    #[cfg(windows)]
+    fn test_base() -> PathBuf {
+        PathBuf::from("C:\\tmp\\restore")
+    }
+
+    #[test]
+    fn test_secure_join_simple_relative() {
+        let base = test_base();
+        let relative = PathBuf::from("dir/file.txt");
+        let result = secure_join(&base, &relative).unwrap();
+        assert_eq!(result, base.join("dir/file.txt"));
+    }
+
+    #[test]
+    fn test_secure_join_single_dot() {
+        let base = test_base();
+        let relative = PathBuf::from("./file.txt");
+        let result = secure_join(&base, &relative).unwrap();
+        assert_eq!(result, base.join("file.txt"));
+    }
+
+    #[test]
+    fn test_secure_join_rejects_absolute() {
+        let base = test_base();
+        #[cfg(unix)]
+        let relative = PathBuf::from("/etc/passwd");
+        #[cfg(windows)]
+        let relative = PathBuf::from("C:\\etc\\passwd");
+        assert!(secure_join(&base, &relative).is_err());
+    }
+
+    #[test]
+    fn test_secure_join_rejects_single_dotdot() {
+        let base = test_base();
+        let relative = PathBuf::from("../etc/passwd");
+        assert!(secure_join(&base, &relative).is_err());
+    }
+
+    #[test]
+    fn test_secure_join_rejects_nested_dotdot() {
+        let base = test_base().join("data");
+        let relative = PathBuf::from("sub/../../etc/passwd");
+        assert!(secure_join(&base, &relative).is_err());
+    }
+
+    #[test]
+    fn test_secure_join_rejects_deeply_nested_dotdot() {
+        let base = test_base();
+        let relative = PathBuf::from("a/b/c/../../../../etc/shadow");
+        assert!(secure_join(&base, &relative).is_err());
+    }
+
+    #[test]
+    fn test_secure_join_allows_dotdot_within_base() {
+        let base = test_base().join("data");
+        let relative = PathBuf::from("sub/../other.txt");
+        let result = secure_join(&base, &relative).unwrap();
+        assert_eq!(result, base.join("other.txt"));
+    }
+
+    #[test]
+    fn test_secure_join_empty_relative() {
+        let base = test_base();
+        let relative = PathBuf::from("");
+        let result = secure_join(&base, &relative).unwrap();
+        assert_eq!(result, base);
+    }
 }

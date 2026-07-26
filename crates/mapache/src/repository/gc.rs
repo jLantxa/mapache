@@ -601,24 +601,26 @@ async fn get_referenced_blobs_and_packs(
                                 None => continue,
                             };
 
-                            let mut ref_blobs = referenced_blobs.lock();
-                            let mut ref_packs = referenced_packs.lock();
-
                             for blob_id in blobs {
-                                if ref_blobs.insert(blob_id) {
-                                    reporter.update_task(
-                                        GcTaskKind::SearchingReferencedBlobs,
-                                        ref_blobs.len() as u64,
-                                    );
-                                }
+                                {
+                                    let mut ref_blobs = referenced_blobs.lock();
+                                    let mut ref_packs = referenced_packs.lock();
 
-                                if let Some(locator) = index.get(&blob_id) {
-                                    ref_packs.insert(locator.pack_id);
-                                } else {
-                                    reporter.warning(format!(
-                                        "Data blob {} is referenced but not found in index",
-                                        blob_id
-                                    ));
+                                    if ref_blobs.insert(blob_id) {
+                                        reporter.update_task(
+                                            GcTaskKind::SearchingReferencedBlobs,
+                                            ref_blobs.len() as u64,
+                                        );
+                                    }
+
+                                    if let Some(locator) = index.get(&blob_id) {
+                                        ref_packs.insert(locator.pack_id);
+                                    } else {
+                                        reporter.warning(format!(
+                                            "Data blob {} is referenced but not found in index",
+                                            blob_id
+                                        ));
+                                    }
                                 }
                             }
                         }

@@ -243,10 +243,22 @@ where
             for node in tree.nodes {
                 let node_path = current_dest.join(&node.name);
                 if node.is_dir() {
-                    let _ = std::fs::create_dir_all(&node_path);
-                    let _ = dir_tx
+                    if let Err(e) = std::fs::create_dir_all(&node_path) {
+                        sender_clone(Event::Backup(BackupEvent::Warning(format!(
+                            "failed to create directory {}: {}",
+                            node_path.display(),
+                            e
+                        ))));
+                    }
+                    if let Err(e) = dir_tx
                         .send((node_path.clone(), node.metadata.clone()))
-                        .await;
+                        .await
+                    {
+                        sender_clone(Event::Backup(BackupEvent::Warning(format!(
+                            "internal channel error (dir): {}",
+                            e
+                        ))));
+                    }
                     if let Some(subtree_id) = node.tree {
                         stack.push((node_path.clone(), subtree_id));
                     }

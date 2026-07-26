@@ -58,7 +58,7 @@ impl JsonReporter {
         })();
 
         if let Err(e) = res {
-            debug_assert!(false, "JSON Reporter error: {e}");
+            tracing::error!(target: "json", "JSON Reporter error: {e}");
         }
     }
 

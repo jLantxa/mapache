@@ -706,15 +706,20 @@ async fn delete_trash_files(
             let backend = backend.clone();
             async move {
                 let mut found = Vec::new();
-                if let Ok(entries) = backend.list_dir(&dir).await {
-                    for node in entries {
-                        let entry = node.into_path();
-                        if let Some(ext) = entry.extension() {
-                            let ext_str = ext.to_string_lossy();
-                            if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
-                                found.push(entry);
+                match backend.list_dir(&dir).await {
+                    Ok(entries) => {
+                        for node in entries {
+                            let entry = node.into_path();
+                            if let Some(ext) = entry.extension() {
+                                let ext_str = ext.to_string_lossy();
+                                if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
+                                    found.push(entry);
+                                }
                             }
                         }
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "gc", "Failed to list trash directory {:?}: {e}", dir);
                     }
                 }
                 Ok::<Vec<PathBuf>, MapacheError>(found)

@@ -216,9 +216,11 @@ impl StorageBackend for CacheBackend {
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         tracing::debug!(target: "cache", "Cache: rename {:?} -> {:?}", from, to);
-        // Try to rename the cached path. If it failed, it didn't exist.
-        // If this file should be cached, it will be next time it is read.
-        let _ = self.cache.rename(from, to).await;
+        // Try to rename the cached path. On failure, remove the stale entry
+        // so the next read fetches fresh data from the backend.
+        if self.cache.rename(from, to).await.is_err() {
+            let _ = self.cache.remove(from).await;
+        }
 
         self.backend.rename(from, to).await?;
         Ok(())

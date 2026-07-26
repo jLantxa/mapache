@@ -228,7 +228,9 @@ impl StorageBackend for S3Backend {
                     }
                     Err(e) => {
                         // Abort upload on failure
-                        let _ = self.bucket.abort_upload(&key, &upload_id).await;
+                        if let Err(abort_err) = self.bucket.abort_upload(&key, &upload_id).await {
+                            tracing::warn!(target: "backend", "s3: failed to abort multipart upload for {}: {abort_err}", key);
+                        }
                         return Err(MapacheError::Backend(format!(
                             "failed to upload part {}: {}",
                             part_number, e
@@ -269,6 +271,9 @@ impl StorageBackend for S3Backend {
         tracing::debug!(target: "backend", "S3: rename {:?} -> {:?}", from, to);
 
         // S3 rename is COPY + DELETE (not atomic).
+        // If the process crashes between the copy and delete, both copies will
+        // exist until garbage collection cleans up the orphaned source. This is
+        // an inherent S3 limitation — there is no server-side move operation.
         self.retry(|| async {
             let code = self
                 .bucket

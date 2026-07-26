@@ -422,8 +422,13 @@ pub(crate) async fn snapshot(
             let mut batch = batch_lock.lock();
             std::mem::take(&mut *batch)
         };
-        if !remaining.is_empty() {
-            let _ = chunker_pool.sender.send(ChunkerPoolMsg::Batch(remaining));
+        if !remaining.is_empty()
+            && chunker_pool
+                .sender
+                .send(ChunkerPoolMsg::Batch(remaining))
+                .is_err()
+        {
+            tracing::warn!(target: "archiver", "Coordinator flush failed: chunker channel closed");
         }
 
         tracing::trace!(target: "archiver", "Coordinator task finished");

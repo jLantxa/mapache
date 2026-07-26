@@ -316,8 +316,18 @@ pub(crate) fn try_restore_node_metadata(
     {
         // 1. Set owner (uid) and group (gid) — must come first
         // Restoring uid and gid is very likely to fail unless the user is root.
-        if metadata.owner_uid.is_some() || metadata.owner_gid.is_some() {
-            let _ = std::os::unix::fs::chown(dst_path, metadata.owner_uid, metadata.owner_gid);
+        if (metadata.owner_uid.is_some() || metadata.owner_gid.is_some())
+            && let Err(e) =
+                std::os::unix::fs::chown(dst_path, metadata.owner_uid, metadata.owner_gid)
+        {
+            emit_event(
+                event_sender,
+                Event::Restore(RestoreEvent::Warning(format!(
+                    "failed to set ownership of {}: {}",
+                    dst_path.display(),
+                    e
+                ))),
+            );
         }
 
         // 2. Restore extended attributes — before chmod because xattr access may be restricted by mode

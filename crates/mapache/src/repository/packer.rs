@@ -532,7 +532,12 @@ impl PackSaver {
             }
 
             for t in worker_threads {
-                let _ = t.join();
+                if let Err(e) = t.join() {
+                    let mut err = first_err.lock();
+                    if err.is_none() {
+                        *err = Some(MapacheError::Repo(format!("packer thread panicked: {e:?}")));
+                    }
+                }
             }
             first_err.lock().take().map_or(Ok(()), Err)
         });

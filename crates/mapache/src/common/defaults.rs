@@ -192,7 +192,9 @@ static RUNTIME_DEFAULTS: OnceLock<RuntimeDefaults> = OnceLock::new();
 
 /// Initialize the runtime defaults. Must be called once before any use.
 pub fn init_runtime_defaults(config: Option<&config::RuntimeConfig>) {
-    let _ = RUNTIME_DEFAULTS.set(RuntimeDefaults::new(config));
+    if RUNTIME_DEFAULTS.set(RuntimeDefaults::new(config)).is_err() {
+        tracing::warn!(target: "defaults", "Runtime defaults already initialized; ignoring re-initialization with new config");
+    }
 }
 
 /// Get a reference to the runtime defaults. Auto-initializes with compile-time

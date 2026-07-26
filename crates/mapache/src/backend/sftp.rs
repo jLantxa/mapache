@@ -553,7 +553,9 @@ impl SftpBackend {
         })?;
 
         // Set default permissions for new directory (e.g. 0o700)
-        let _ = Self::set_readonly_status_full(sftp, full_path, false).await;
+        if let Err(e) = Self::set_readonly_status_full(sftp, full_path, false).await {
+            tracing::warn!(target: "backend", "sftp: failed to set permissions on new dir {full_path:?}: {e}");
+        }
 
         Ok(())
     }
@@ -594,7 +596,9 @@ impl SftpBackend {
         }
 
         let path_str = full_path.to_string_lossy().to_string();
-        let _ = Self::set_readonly_status_full(sftp, full_path, false).await;
+        if let Err(e) = Self::set_readonly_status_full(sftp, full_path, false).await {
+            tracing::warn!(target: "backend", "sftp: failed to unlock {full_path:?} before recursive remove: {e}");
+        }
 
         let meta = sftp
             .symlink_metadata(&path_str)
@@ -643,11 +647,17 @@ impl SftpBackend {
         let from_str = full_from.to_string_lossy().to_string();
         let to_str = full_to.to_string_lossy().to_string();
 
-        let _ = Self::set_readonly_status_full(sftp, full_from, false).await;
+        if let Err(e) = Self::set_readonly_status_full(sftp, full_from, false).await {
+            tracing::warn!(target: "backend", "sftp: failed to unlock source {:?} before rename: {e}", full_from);
+        }
 
         if Self::exists_exact_full(sftp, full_to).await {
-            let _ = Self::set_readonly_status_full(sftp, full_to, false).await;
-            let _ = sftp.remove_file(&to_str).await;
+            if let Err(e) = Self::set_readonly_status_full(sftp, full_to, false).await {
+                tracing::warn!(target: "backend", "sftp: failed to unlock destination {:?} before remove: {e}", full_to);
+            }
+            if let Err(e) = sftp.remove_file(&to_str).await {
+                tracing::warn!(target: "backend", "sftp: failed to remove existing destination {:?} before rename: {e}", full_to);
+            }
         }
 
         sftp.rename(&from_str, &to_str).await.map_err(|e| {
@@ -657,7 +667,7 @@ impl SftpBackend {
             ))
         })?;
 
-        let _ = Self::set_readonly_status_full(sftp, full_to, true).await;
+        Self::set_readonly_status_full(sftp, full_to, true).await?;
 
         Ok(())
     }
@@ -749,7 +759,7 @@ impl StorageBackend for SftpBackend {
             let conn = self.manager.get_connection().await?;
 
             if let Some(parent) = full_tmp.parent() {
-                let _ = Self::create_dir_all_full(&conn.sftp, parent).await;
+                Self::create_dir_all_full(&conn.sftp, parent).await?;
             }
 
             let file = conn

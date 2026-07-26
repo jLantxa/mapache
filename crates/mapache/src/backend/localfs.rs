@@ -227,11 +227,15 @@ impl StorageBackend for LocalFS {
                 }
             }
 
-            let _ = Self::set_readonly_status_internal(&full_path, false);
+            if let Err(e) = Self::set_readonly_status_internal(&full_path, false) {
+                tracing::warn!(target: "backend", "LocalFS: failed to unlock {:?} before rename: {e}", full_path);
+            }
 
             std::fs::rename(&full_tmp_path, &full_path)?;
 
-            let _ = Self::set_readonly_status_internal(&full_path, true);
+            if let Err(e) = Self::set_readonly_status_internal(&full_path, true) {
+                tracing::warn!(target: "backend", "LocalFS: failed to lock {:?} after rename: {e}", full_path);
+            }
 
             Ok(())
         })
@@ -245,9 +249,13 @@ impl StorageBackend for LocalFS {
         tracing::debug!(target: "backend", "LocalFS: rename {:?} -> {:?}", from, to);
 
         // On Windows, the source must be writable to be renamed/moved
-        let _ = self.set_readonly_status(from, false).await;
+        if let Err(e) = self.set_readonly_status(from, false).await {
+            tracing::warn!(target: "backend", "LocalFS: failed to unlock source {:?} before rename: {e}", from);
+        }
         // The destination must also be writable if it exists and we want to overwrite it
-        let _ = self.set_readonly_status(to, false).await;
+        if let Err(e) = self.set_readonly_status(to, false).await {
+            tracing::warn!(target: "backend", "LocalFS: failed to unlock destination {:?} before rename: {e}", to);
+        }
 
         tokio::fs::rename(&fullpath_from, &fullpath_to)
             .await
@@ -261,7 +269,9 @@ impl StorageBackend for LocalFS {
             })?;
 
         // Repository files are generally treated as immutable once written
-        let _ = self.set_readonly_status(to, true).await;
+        if let Err(e) = self.set_readonly_status(to, true).await {
+            tracing::warn!(target: "backend", "LocalFS: failed to lock destination {:?} after rename: {e}", to);
+        }
 
         Ok(())
     }
@@ -286,7 +296,9 @@ impl StorageBackend for LocalFS {
         match tokio::fs::symlink_metadata(&full_path).await {
             Ok(metadata) => {
                 // Unlock file so it can actually be deleted
-                let _ = self.set_readonly_status(path, false).await;
+                if let Err(e) = self.set_readonly_status(path, false).await {
+                    tracing::warn!(target: "backend", "LocalFS: failed to unlock {:?} before remove: {e}", path);
+                }
 
                 if metadata.is_dir() {
                     tokio::fs::remove_dir_all(&full_path).await.map_err(|e| {

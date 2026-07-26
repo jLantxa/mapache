@@ -411,9 +411,12 @@ impl Repository {
         let all_locks = match self.get_locks().await {
             Ok(locks) => locks,
             Err(e) => {
-                let _ = self
+                if let Err(del_err) = self
                     .delete_file(ContentIdType::Lock, &new_lock_id, None)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(target: "repo", "Failed to clean up lock {} after get_locks error: {del_err}", new_lock_id.to_short_hex(8));
+                }
                 return Err(e);
             }
         };
@@ -427,16 +430,21 @@ impl Repository {
             // Clean up stale locks from other processes.
             // A lock is stale if it's expired OR if the process is dead on the same host.
             if lock.is_stale() {
-                let _ = self.delete_file(ContentIdType::Lock, lock.id(), None).await;
+                if let Err(e) = self.delete_file(ContentIdType::Lock, lock.id(), None).await {
+                    tracing::warn!(target: "repo", "Failed to delete stale lock {}: {e}", lock.id().to_short_hex(8));
+                }
                 continue;
             }
 
             if exclusive || lock.is_exclusive() {
                 // A race condition occurred, or a conflict was already present.
                 // The NEWLY written lock must be cleaned up and the attempt must fail.
-                let _ = self
+                if let Err(e) = self
                     .delete_file(ContentIdType::Lock, &new_lock_id, None)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(target: "repo", "Failed to clean up conflicting lock {}: {e}", new_lock_id.to_short_hex(8));
+                }
 
                 let info = format!(
                     "conflict detected with existing lock.\n\

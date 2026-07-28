@@ -1174,16 +1174,16 @@ transferred to other systems.
 
 ```bash
 # Create a bundle from files/directories
-mapache bundle -a PATH [PATH...] -o bundle.mapache
+mapache bundle -b PATH [PATH...] -o bundle.mapache
 
 # With exclusions
-mapache bundle -a ~/project -o project.mapache -e "*.log" -e "tmp/"
+mapache bundle -b ~/project -o project.mapache -e "*.log" -e "tmp/"
 
 # Custom compression
-mapache bundle -a ~/Documents -o docs.mapache --compression best
+mapache bundle -b ~/Documents -o docs.mapache --compression best
 
 # Use a directory as the bundle root (its children become top-level items)
-mapache bundle -a ~/Photos -o photos.mapache --as-root
+mapache bundle -b ~/Photos -o photos.mapache --as-root
 ```
 
 ### Extract a Bundle
@@ -1635,7 +1635,7 @@ mapache key export <KEY_ID> -r <URL> [-o <PATH>]
 Create, extract, import, export, or mount `.mapache` bundle files.
 
 ```
-mapache bundle -a <INPUT...> -o <OUTPUT.mapache> [OPTIONS]
+mapache bundle -b <INPUT...> -o <OUTPUT.mapache> [OPTIONS]
 mapache bundle -x <INPUT.mapache> [-o <DIR>] [OPTIONS]
 mapache bundle --export-snapshot <SNAPSHOT> -o <OUTPUT.mapache> -r <URL>
 mapache bundle -i <INPUT.mapache...> -r <URL>

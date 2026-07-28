@@ -396,7 +396,7 @@ pub async fn run_with_repo(
                             }
                         }
                     }
-                    Ok::<(), crate::common::error::MapacheError>(())
+                    Ok::<(), MapacheError>(())
                 }
             })
             .buffer_unordered(4)

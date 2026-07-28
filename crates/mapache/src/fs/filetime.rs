@@ -136,20 +136,30 @@ mod windows {
     /// Number of 100-ns ticks in one second.
     const TICKS_PER_SEC: u64 = 10_000_000;
 
-    fn unix_to_filetime(ft: FileTime) -> windows_sys::Win32::Foundation::FILETIME {
+    fn unix_to_filetime(ft: FileTime) -> io::Result<windows_sys::Win32::Foundation::FILETIME> {
         let secs = ft
             .seconds
             .checked_add(UNIX_TO_FILETIME_SECS)
-            .expect("FILETIME overflow: timestamp too large");
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FILETIME overflow: timestamp too large",
+                )
+            })?;
         let total = secs
             .checked_mul(TICKS_PER_SEC as i64)
             .and_then(|v| v.checked_add((ft.nanos / 100) as i64))
-            .expect("FILETIME overflow: timestamp too large");
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FILETIME overflow: timestamp too large",
+                )
+            })?;
         let total = total as u64;
-        windows_sys::Win32::Foundation::FILETIME {
+        Ok(windows_sys::Win32::Foundation::FILETIME {
             dwLowDateTime: total as u32,
             dwHighDateTime: (total >> 32) as u32,
-        }
+        })
     }
 
     pub fn set_file_times_impl(path: &Path, atime: FileTime, mtime: FileTime) -> io::Result<()> {
@@ -177,8 +187,8 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
 
-        let atime_ft = unix_to_filetime(atime);
-        let mtime_ft = unix_to_filetime(mtime);
+        let atime_ft = unix_to_filetime(atime)?;
+        let mtime_ft = unix_to_filetime(mtime)?;
 
         // SAFETY: handle is valid; FILETIME values are properly initialised.
         let ret = unsafe {

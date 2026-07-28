@@ -172,3 +172,77 @@ pub enum RetentionAction {
     Apply,
     Cancel,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_config(keep_last: &str) -> RetentionConfig {
+        let mut rc = RetentionConfig::new(None);
+        // Set the "Keep last" field (index 0) directly
+        let field = &mut rc.form.fields_mut()[0];
+        if let FormFieldType::Text(ref mut input) = field.field_type {
+            *input = TextInput::with_text(keep_last.into());
+        }
+        rc
+    }
+
+    fn make_config_with_field(index: usize, value: &str) -> RetentionConfig {
+        let mut rc = RetentionConfig::new(None);
+        let field = &mut rc.form.fields_mut()[index];
+        if let FormFieldType::Text(ref mut input) = field.field_type {
+            *input = TextInput::with_text(value.into());
+        }
+        rc
+    }
+
+    #[test]
+    fn to_rules_keep_last_all() {
+        let rc = make_config("all");
+        let rules = rc.to_rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0], RetentionRule::KeepLast(usize::MAX));
+    }
+
+    #[test]
+    fn to_rules_keep_last_invalid_ignored() {
+        let rc = make_config("abc");
+        assert!(rc.to_rules().is_empty());
+    }
+
+    #[test]
+    fn to_rules_keep_within_invalid_ignored() {
+        let rc = make_config_with_field(1, "notaduration");
+        assert!(rc.to_rules().is_empty());
+    }
+
+    #[test]
+    fn to_rules_multiple_fields() {
+        let mut rc = RetentionConfig::new(None);
+        // Set keep_last = 3 and keep_daily = 7
+        let fields = rc.form.fields_mut();
+        if let FormFieldType::Text(ref mut input) = fields[0].field_type {
+            *input = TextInput::with_text("3".into());
+        }
+        if let FormFieldType::Text(ref mut input) = fields[3].field_type {
+            *input = TextInput::with_text("7".into());
+        }
+        let rules = rc.to_rules();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0], RetentionRule::KeepLast(3));
+        assert_eq!(rules[1], RetentionRule::KeepDaily(7));
+    }
+
+    #[test]
+    fn to_rules_empty_fields_between_filled_ignored() {
+        let mut rc = RetentionConfig::new(None);
+        // Set only keep_weekly (index 4), leave others empty
+        let field = &mut rc.form.fields_mut()[4];
+        if let FormFieldType::Text(ref mut input) = field.field_type {
+            *input = TextInput::with_text("2".into());
+        }
+        let rules = rc.to_rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0], RetentionRule::KeepWeekly(2));
+    }
+}

@@ -22,7 +22,7 @@ use crate::{
     ui::tui::{
         app::{Screen, Transition},
         theme,
-        widgets::{StateNavigation, TextInput, TextInputAction},
+        widgets::{FilterAction, FilterState, StateNavigation},
     },
     utils,
 };
@@ -62,8 +62,7 @@ pub struct DiffScreen {
     show_all: bool,
     last_height: usize,
     spinner_tick: u8,
-    filter: Option<TextInput>,
-    filter_query: Option<String>,
+    filter: FilterState,
     rx: mpsc::UnboundedReceiver<Result<DiffLoadResult>>,
 }
 
@@ -89,8 +88,7 @@ impl DiffScreen {
             show_all: false,
             last_height: 0,
             spinner_tick: 0,
-            filter: None,
-            filter_query: None,
+            filter: FilterState::new(),
             rx,
         }
     }
@@ -205,9 +203,8 @@ impl DiffScreen {
     fn expand_filter_dirs(&mut self) {
         let filter_text = self
             .filter
-            .as_ref()
-            .map(|f| f.text())
-            .or(self.filter_query.as_deref())
+            .active_text()
+            .or_else(|| self.filter.query())
             .unwrap_or("");
         if filter_text.is_empty() {
             return;
@@ -249,9 +246,8 @@ impl DiffScreen {
     fn build_visible(&mut self) {
         let filter_text = self
             .filter
-            .as_ref()
-            .map(|f| f.text())
-            .or(self.filter_query.as_deref())
+            .active_text()
+            .or_else(|| self.filter.query())
             .unwrap_or("");
         let query = if filter_text.is_empty() {
             None
@@ -489,14 +485,7 @@ impl DiffScreen {
     }
 
     fn render_filter(&self, frame: &mut Frame, area: Rect) {
-        let Some(input) = &self.filter else { return };
-        let filter_text = if input.is_empty() {
-            Line::from(Span::styled(" Filter by path... ", theme::THEME.footer))
-        } else {
-            input.render_line(" ")
-        };
-        let filter_widget = Paragraph::new(filter_text).block(theme::block("Filter"));
-        frame.render_widget(filter_widget, area);
+        self.filter.render(frame, area, "Filter by path");
     }
 
     fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
@@ -646,27 +635,21 @@ impl DiffScreen {
     }
 
     fn handle_filter_key(&mut self, key: KeyCode) {
-        let Some(input) = &mut self.filter else {
-            return;
-        };
-
-        match input.handle_key(key) {
-            TextInputAction::Cancel => {
-                self.filter = None;
-                self.filter_query = None;
+        match self.filter.handle_key(key) {
+            FilterAction::Cancel => {
                 self.build_visible();
             }
-            TextInputAction::Confirm => {
-                self.filter_query = Some(input.text().to_string());
-                self.filter = None;
+            FilterAction::Apply => {
                 self.expand_filter_dirs();
                 self.build_visible();
             }
-            TextInputAction::Edited => {
-                self.expand_filter_dirs();
-                self.build_visible();
+            FilterAction::None => {
+                // Live update while editing
+                if self.filter.is_active() {
+                    self.expand_filter_dirs();
+                    self.build_visible();
+                }
             }
-            TextInputAction::None => {}
         }
     }
 }
@@ -721,7 +704,7 @@ impl Screen for DiffScreen {
         } else {
             1
         };
-        let filter_h = if self.filter.is_some() { 3 } else { 0 };
+        let filter_h = if self.filter.is_active() { 3 } else { 0 };
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -754,7 +737,7 @@ impl Screen for DiffScreen {
             self.render_tree(frame, chunks[3]);
         }
 
-        if self.filter.is_some() {
+        if self.filter.is_active() {
             self.render_filter(frame, chunks[4]);
         }
         self.render_hints(frame, chunks[5]);
@@ -765,15 +748,15 @@ impl Screen for DiffScreen {
             return None;
         }
 
-        if self.filter.is_some() {
+        if self.filter.is_active() {
             self.handle_filter_key(key.code);
             return None;
         }
 
         match key.code {
             KeyCode::Esc => {
-                if self.filter_query.is_some() {
-                    self.filter_query = None;
+                if self.filter.has_query() {
+                    self.filter.clear();
                     self.build_visible();
                     None
                 } else {
@@ -801,8 +784,7 @@ impl Screen for DiffScreen {
                 None
             }
             KeyCode::Char('/') => {
-                let text = self.filter_query.take().unwrap_or_default();
-                self.filter = Some(TextInput::with_text(text));
+                self.filter.open();
                 None
             }
             KeyCode::Char(',') | KeyCode::Char('<') => {

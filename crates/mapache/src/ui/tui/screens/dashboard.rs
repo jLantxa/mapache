@@ -26,7 +26,7 @@ use crate::{
             snapshot::SnapshotCreateScreen, snapshot_detail::SnapshotDetailScreen,
         },
         theme,
-        widgets::{FilterAction, StateNavigation, TextInput},
+        widgets::{FilterAction, FilterState, StateNavigation},
     },
     utils,
 };
@@ -61,7 +61,7 @@ pub struct DashboardScreen {
     filtered_indices: Vec<usize>,
     search_cache: Vec<String>,
     table_state: TableState,
-    filter: Option<TextInput>,
+    filter: FilterState,
     last_height: u16,
     stats: DashboardStats,
     diff_source: Option<usize>,
@@ -88,7 +88,7 @@ impl DashboardScreen {
             filtered_indices: Vec::new(),
             search_cache: Vec::new(),
             table_state: TableState::default(),
-            filter: None,
+            filter: FilterState::new(),
             last_height: 0,
             stats: DashboardStats {
                 total: 0,
@@ -173,16 +173,16 @@ impl DashboardScreen {
     }
 
     fn apply_filter(&mut self) {
-        if let Some(input) = &self.filter {
-            let query = input.text().to_lowercase();
-            if query.is_empty() {
+        if let Some(query) = self.filter.query() {
+            let q = query.to_lowercase();
+            if q.is_empty() {
                 self.filtered_indices = (0..self.snapshots.len()).collect();
             } else {
                 self.filtered_indices = self
                     .search_cache
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.contains(&query))
+                    .filter(|(_, s)| s.contains(&q))
                     .map(|(i, _)| i)
                     .collect();
             }
@@ -207,16 +207,8 @@ impl DashboardScreen {
     }
 
     fn handle_filter_key(&mut self, key: KeyCode) {
-        let Some(input) = &mut self.filter else {
-            return;
-        };
-
-        match input.handle_filter_key(key) {
-            FilterAction::Cancel => {
-                self.filter = None;
-                self.apply_filter();
-            }
-            FilterAction::Apply => {
+        match self.filter.handle_key(key) {
+            FilterAction::Cancel | FilterAction::Apply => {
                 self.apply_filter();
             }
             FilterAction::None => {}
@@ -283,7 +275,7 @@ impl DashboardScreen {
         let max_rows = area.height.saturating_sub(2) as usize;
         let display_len = self.display_len();
 
-        let title = if self.filter.is_some() {
+        let title = if self.filter.is_active() {
             format!(" Snapshots ({}/{}) ", display_len, self.snapshots.len())
         } else {
             format!(" Snapshots ({}) ", self.snapshots.len())
@@ -489,18 +481,8 @@ impl DashboardScreen {
     }
 
     fn render_filter(&self, frame: &mut Frame, area: Rect) {
-        if let Some(input) = &self.filter {
-            let filter_text = if input.is_empty() {
-                Line::from(Span::styled(
-                    "> Filter by host, tag, path, or ID...",
-                    theme::THEME.footer,
-                ))
-            } else {
-                input.render_line("> ")
-            };
-            let filter_widget = Paragraph::new(filter_text).block(theme::block("Filter"));
-            frame.render_widget(filter_widget, area);
-        }
+        self.filter
+            .render(frame, area, "Filter by host, tag, path, or ID");
     }
 
     fn render_menu(&self, frame: &mut Frame, area: Rect) {
@@ -570,7 +552,7 @@ impl Screen for DashboardScreen {
 
         let diff_status_height: u16 = if self.diff_source.is_some() { 2 } else { 1 };
 
-        let has_filter = self.filter.is_some();
+        let has_filter = self.filter.is_active();
         let filter_height = if has_filter { FILTER_INPUT_HEIGHT } else { 0 };
         let info_height = self.selected_info_height();
 
@@ -602,7 +584,7 @@ impl Screen for DashboardScreen {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
-        if self.filter.is_some() {
+        if self.filter.is_active() {
             self.handle_filter_key(key.code);
             return None;
         }
@@ -686,7 +668,7 @@ impl Screen for DashboardScreen {
                 None
             }
             KeyCode::Char('/') => {
-                self.filter = Some(TextInput::new());
+                self.filter.open();
                 None
             }
             key if self.table_state.handle_nav_keys(

@@ -402,9 +402,9 @@ impl PackSaver {
         // We need 'num_packers' for the workers + 2 for the active slots (data/tree) in the main thread.
         for _ in 0..(num_packers + 2) {
             let p = Packer::new(max_packer_size as usize, secure_storage.clone())?;
-            empty_tx
-                .send(p)
-                .expect("channel capacity matches number of packers pre-filled");
+            empty_tx.send(p).map_err(|_| {
+                MapacheError::Repo("failed to send packer to channel during initialization".into())
+            })?;
         }
 
         let first_err = Arc::new(Mutex::new(None));

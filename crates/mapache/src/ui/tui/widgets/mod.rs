@@ -14,7 +14,7 @@ pub use dialog::Dialog;
 pub use form::{Form, FormAction, FormField, FormFieldType};
 pub use progress_bar::ProgressBar;
 pub use task_progress::{TaskProgressState, TaskProgressWidget};
-pub use text_input::{FilterAction, TextInput, TextInputAction};
+pub use text_input::{FilterAction, FilterState, TextInput, TextInputAction};
 pub use toast::Toast;
 
 /// Wraps a single `Line` into multiple lines respecting `max_width` characters.

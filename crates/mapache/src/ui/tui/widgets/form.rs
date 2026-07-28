@@ -278,3 +278,122 @@ impl Form {
         self.editing
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyCode;
+
+    fn key(c: char) -> KeyCode {
+        KeyCode::Char(c)
+    }
+
+    fn make_form() -> Form {
+        let fields = vec![
+            FormField {
+                label: "Name".into(),
+                field_type: FormFieldType::Text(TextInput::with_text("default".into())),
+            },
+            FormField {
+                label: "Flag".into(),
+                field_type: FormFieldType::Toggle(false),
+            },
+            FormField {
+                label: "Mode".into(),
+                field_type: FormFieldType::Choice(0, vec!["A".into(), "B".into(), "C".into()]),
+            },
+            FormField {
+                label: "Count".into(),
+                field_type: FormFieldType::Number(5),
+            },
+            FormField {
+                label: "".into(),
+                field_type: FormFieldType::Action("Go".into()),
+            },
+        ];
+        Form::new(fields, 10)
+    }
+
+    #[test]
+    fn form_tab_cycles_forward() {
+        let mut f = make_form();
+        f.handle_key(KeyCode::Tab);
+        // focus moved to field 1 (verify via get_toggle — only field 1 is a toggle)
+        // We can't directly check focus, but toggling field 1 should work
+        f.handle_key(key(' ')); // toggle field 1
+        assert_eq!(f.get_toggle(1), Some(true));
+    }
+
+    #[test]
+    fn form_backtab_cycles_backward() {
+        let mut f = make_form();
+        f.handle_key(KeyCode::BackTab);
+        // focus should be on last field (Action) — pressing Enter submits
+        assert!(matches!(f.handle_key(KeyCode::Enter), FormAction::Submit));
+    }
+
+    #[test]
+    fn form_choice_left_right() {
+        let mut f = make_form();
+        f.handle_key(KeyCode::Tab);
+        f.handle_key(KeyCode::Tab); // focus on Choice field
+        assert_eq!(f.get_choice(2), Some(0));
+
+        f.handle_key(KeyCode::Right);
+        assert_eq!(f.get_choice(2), Some(1));
+
+        f.handle_key(KeyCode::Right);
+        assert_eq!(f.get_choice(2), Some(2));
+
+        f.handle_key(KeyCode::Right); // wraps around
+        assert_eq!(f.get_choice(2), Some(0));
+
+        f.handle_key(KeyCode::Left); // wraps backward
+        assert_eq!(f.get_choice(2), Some(2));
+    }
+
+    #[test]
+    fn form_text_editing_mode() {
+        let mut f = make_form();
+        // focus on field 0 (Text), Enter to start editing
+        f.handle_key(KeyCode::Enter);
+        assert!(f.is_editing());
+
+        // typing while editing
+        f.handle_key(key('x'));
+        assert!(f.is_editing());
+
+        // Enter confirms editing
+        f.handle_key(KeyCode::Enter);
+        assert!(!f.is_editing());
+        assert_eq!(f.get_text(0), Some("defaultx"));
+    }
+
+    #[test]
+    fn form_text_editing_cancel() {
+        let mut f = make_form();
+        f.handle_key(KeyCode::Enter); // start editing
+        f.handle_key(key('z'));
+        f.handle_key(KeyCode::Esc); // stops editing (text is kept)
+        assert!(!f.is_editing());
+        // TextInput Esc stops editing but doesn't clear the buffer —
+        // the form treats this as Edited (field value changed)
+        assert_eq!(f.get_text(0), Some("defaultz"));
+    }
+
+    #[test]
+    fn form_get_returns_none_for_wrong_type() {
+        let f = make_form();
+        assert!(f.get_text(1).is_none()); // field 1 is Toggle
+        assert!(f.get_toggle(0).is_none()); // field 0 is Text
+        assert!(f.get_choice(0).is_none());
+        assert!(f.get_number(0).is_none());
+    }
+
+    #[test]
+    fn form_out_of_bounds_returns_none() {
+        let f = make_form();
+        assert!(f.get_text(99).is_none());
+        assert!(f.get_toggle(99).is_none());
+    }
+}

@@ -449,3 +449,23 @@ impl Screen for ForgetScreen {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ForgetSelection;
+
+    #[test]
+    fn selection_set_out_of_bounds() {
+        let mut s = ForgetSelection::new(3);
+        s.set(10, true); // no panic
+        assert_eq!(s.count_selected(), 0);
+    }
+
+    #[test]
+    fn selection_toggle_all_partial() {
+        let mut s = ForgetSelection::new(3);
+        s.set(0, true);
+        s.toggle_all(); // all off → all on (because not all were set)
+        assert_eq!(s.count_selected(), 3);
+    }
+}

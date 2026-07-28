@@ -185,3 +185,96 @@ impl RestoreConfig {
         Self::parse_paths(self.form.get_text(6).unwrap_or(""))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::ID;
+    use crate::repository::snapshot::{Snapshot, SnapshotEntry, SnapshotSummary};
+
+    fn zero_id() -> ID {
+        ID::default()
+    }
+
+    fn zero_summary() -> SnapshotSummary {
+        SnapshotSummary {
+            processed_items_count: 0,
+            processed_bytes: 0,
+            raw_bytes: 0,
+            encoded_bytes: 0,
+            meta_raw_bytes: 0,
+            meta_encoded_bytes: 0,
+            total_raw_bytes: 0,
+            total_encoded_bytes: 0,
+            data_blobs: 0,
+            meta_blobs: 0,
+            diff_counts: Default::default(),
+            amends: None,
+        }
+    }
+
+    fn make_snapshot_entry() -> SnapshotEntry {
+        SnapshotEntry {
+            id: zero_id(),
+            snapshot: Snapshot {
+                timestamp: chrono::Local::now(),
+                parent: None,
+                tree: zero_id(),
+                root: PathBuf::from("/"),
+                paths: vec![],
+                hostname: Some("test-host".to_string()),
+                username: None,
+                version: None,
+                tags: std::collections::BTreeSet::new(),
+                description: None,
+                summary: zero_summary(),
+            },
+            active: true,
+        }
+    }
+
+    // --- get_strategy tests ---
+
+    #[test]
+    fn get_strategy_out_of_range_fallback() {
+        let mut rc = RestoreConfig::new(make_snapshot_entry(), None);
+        if let FormFieldType::Choice(idx, _) = &mut rc.form.fields_mut()[4].field_type {
+            *idx = 99;
+        }
+        assert_eq!(rc.get_strategy(), Strategy::Overwrite);
+    }
+
+    // --- get_include tests ---
+
+    #[test]
+    fn get_include_empty_falls_back_to_paths() {
+        let paths = Some(vec![PathBuf::from("/data")]);
+        let rc = RestoreConfig::new(make_snapshot_entry(), paths);
+        let include = rc.get_include().unwrap();
+        assert_eq!(include, vec![PathBuf::from("/data")]);
+    }
+
+    #[test]
+    fn get_include_empty_no_paths_returns_none() {
+        let rc = RestoreConfig::new(make_snapshot_entry(), None);
+        assert!(rc.get_include().is_none());
+    }
+
+    #[test]
+    fn get_include_text_overrides_paths() {
+        let mut rc = RestoreConfig::new(make_snapshot_entry(), Some(vec![PathBuf::from("/data")]));
+        let fields = rc.form.fields_mut();
+        if let FormFieldType::Text(ref mut input) = fields[5].field_type {
+            *input = TextInput::with_text("*.txt".into());
+        }
+        let include = rc.get_include().unwrap();
+        assert_eq!(include, vec![PathBuf::from("*.txt")]);
+    }
+
+    // --- parse_paths tests ---
+
+    #[test]
+    fn parse_paths_whitespace_returns_none() {
+        assert!(RestoreConfig::parse_paths("   ").is_none());
+    }
+}

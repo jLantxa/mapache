@@ -214,3 +214,20 @@ fn format_duration(d: Duration) -> String {
         format!("{}s", secs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_percentage_clamped() {
+        let bar = ProgressBar::new().bytes(200, 100);
+        assert_eq!(bar.percentage, 100.0);
+    }
+
+    #[test]
+    fn builder_zero_expected() {
+        let bar = ProgressBar::new().bytes(50, 0);
+        assert_eq!(bar.percentage, 0.0);
+    }
+}

@@ -211,3 +211,64 @@ fn render_footer(frame: &mut Frame, area: Rect, form: &SnapshotForm) {
     };
     frame.render_widget(Paragraph::new(footer), area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_form_with(field_index: usize, value: &str) -> SnapshotForm {
+        let mut form = SnapshotForm::new(None);
+        let fields = form.form.fields_mut();
+        if let FormFieldType::Text(ref mut input) = fields[field_index].field_type {
+            *input = TextInput::with_text(value.into());
+        }
+        form
+    }
+
+    #[test]
+    fn to_snapshot_options_newline_separated_paths() {
+        let tmp = TempDir::new().unwrap();
+        let d1 = tmp.path().join("a");
+        let d2 = tmp.path().join("b");
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::create_dir_all(&d2).unwrap();
+        let value = format!("{}\n{}", d1.to_str().unwrap(), d2.to_str().unwrap());
+        let form = make_form_with(0, &value);
+        let opts = form.to_snapshot_options();
+        assert_eq!(opts.paths.len(), 2);
+    }
+
+    #[test]
+    fn to_snapshot_options_comma_separated_paths() {
+        let tmp = TempDir::new().unwrap();
+        let d1 = tmp.path().join("x");
+        let d2 = tmp.path().join("y");
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::create_dir_all(&d2).unwrap();
+        let value = format!("{}, {}", d1.to_str().unwrap(), d2.to_str().unwrap());
+        let form = make_form_with(0, &value);
+        let opts = form.to_snapshot_options();
+        assert_eq!(opts.paths.len(), 2);
+    }
+
+    #[test]
+    fn to_snapshot_options_whitespace_trimmed() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().to_str().unwrap();
+        let value = format!("  {}  \n  ", p);
+        let form = make_form_with(0, &value);
+        let opts = form.to_snapshot_options();
+        assert_eq!(opts.paths[0], PathBuf::from(p));
+    }
+
+    #[test]
+    fn to_snapshot_options_exclude_parsed() {
+        let form = make_form_with(3, "*.log, target/");
+        let opts = form.to_snapshot_options();
+        let exclude = opts.exclude.unwrap();
+        assert_eq!(exclude.len(), 2);
+        assert!(exclude.contains(&"*.log".to_string()));
+        assert!(exclude.contains(&"target/".to_string()));
+    }
+}

@@ -457,11 +457,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl BlobLoader for MockLoader {
-        async fn load_blob(&self, id: &ID) -> crate::common::error::Result<Vec<u8>> {
+        async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
             self.blobs
                 .get(id)
                 .cloned()
-                .ok_or_else(|| crate::common::error::MapacheError::NotInIndex(*id))
+                .ok_or_else(|| MapacheError::NotInIndex(*id))
         }
     }
 

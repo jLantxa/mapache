@@ -46,13 +46,13 @@ pub fn run(args: &CmdArgs) -> Result<(), CompletionError> {
     let bin_name = &cmd.get_name().to_string();
     clap_complete::generate_to(args.shell, &mut cmd, bin_name, &args.path).map_err(|e| {
         CompletionError::Io(io::Error::other(format!(
-            "failed to generate completion for {:?}: {}",
+            "failed to generate completion for {}: {}",
             args.shell, e
         )))
     })?;
 
     ui::cli::log!(
-        "Completion script for {:?} written to {}",
+        "Completion script for {} written to {}",
         args.shell,
         args.path.display()
     );

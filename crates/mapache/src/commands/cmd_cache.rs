@@ -115,10 +115,10 @@ fn list(cache_base: &Path) -> Result<(), CacheError> {
     }
 
     ui::cli::log!(
-        "{} ({}) in {:?}",
+        "{} ({}) in {}",
         utils::format_count(num_directories, "directory", "directories"),
         utils::format_size_binary(total_cache_size, 3),
-        cache_base
+        cache_base.display()
     );
 
     Ok(())

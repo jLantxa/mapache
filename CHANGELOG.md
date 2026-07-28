@@ -30,6 +30,16 @@
 - A `MutexGuard` held across an `.await` point in the lock refresh handler
   could cause deadlocks. Also fixed: spawned tasks panicking silently in
   `Drop`, and the archiver `join!` discarding task errors.
+- `--sample` in `verify` now requires `--read-packs` to take effect.
+- Error messages in `verify`, `snapshot`, `completion`, and `cache` used Debug
+  format (`{:?}`) for paths and error types, producing ugly output for users.
+  Now uses Display format throughout.
+- The `--keep-yearly` / `--keep-monthly` / `--keep-weekly` / `--keep-daily` /
+  `--keep-hourly` help text incorrectly stated N must be "greater than 1".
+  Corrected to "greater than 0", matching actual validation.
+- `mount` interrupt message was inconsistent with other commands (missing
+  "by user" suffix).
+- Error message in `forget` number parser was inconsistent with other commands.
 
 ### Added
 
@@ -456,14 +466,14 @@
 ### Changes
 
 - Added a `rechunk` command to reprocess all files in all snapshot and rechunk
-  them with the current chunker and parameters. The snapshots are rewriten,
+  them with the current chunker and parameters. The snapshots are rewritten,
   but the old chunks will be left unreferenced and deleted by the next run on
   the garbage collector.
 - The custom chunker is now the default and only chunker. Use the `rechunk`
   command to run the deduplication on older repositories. The old chunks will
   be removed by the garbage collector the next time `clean` is called.
 - The period-based retention rules (`keep-daily`, `keep-weekly`, `keep-monthly`
-  and `keey-yearly`) now keep one snapshot per period for the last N periods
+  and `keep-yearly`) now keep one snapshot per period for the last N periods
   instead of the last N snapshots.
 - Added a `--skip-if-unchanged` flag to `mapache snapshot` to skip saving
   snapshots without new changes.
@@ -472,7 +482,7 @@
 
 ### Changes
 
-- Abort snapshot early if a fatal error occurrs.
+- Abort snapshot early if a fatal error occurs.
 - Run file system scan concurrently with the snapshot task.
 - Added a new experimental chunker. This chunker is not used by default. To
   enable the new chunker, build mapache with the `custom-chunker` feature.

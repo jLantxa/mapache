@@ -88,7 +88,7 @@ Requires the [Rust toolchain](https://rustup.rs/).
 cargo build --release
 
 # Install to cargo bin path
-cargo install --path core
+cargo install --path crates/mapache
 ```
 
 For a statically-linked build:
@@ -99,7 +99,7 @@ make release-static
 
 ### Feature Flags
 
-- `fuse` (default on Linux) — FUSE mount support. Requires `libfuse` headers at
+- `mount` (default on Linux) — FUSE mount support. Requires `libfuse` headers at
   build time.
 
 
@@ -1251,7 +1251,7 @@ from the repository password.
 
 ## 15. FUSE Mount
 
-### Mount a Repository (Unix only, `fuse` feature)
+### Mount a Repository (Unix only, `mount` feature)
 
 ```bash
 mapache mount /mnt/backup -r <URL>

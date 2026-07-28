@@ -296,19 +296,20 @@ pub async fn run(
         for path in &args.paths {
             let normalized = fs::get_absolute_normalized_path(path).map_err(|e| {
                 SnapshotError::SourcePathError(format!(
-                    "error processing path {:?}: {}",
-                    path,
+                    "error processing path {}: {}",
+                    path.display(),
                     e.inner()
                 ))
             })?;
             if !normalized.try_exists().map_err(|e| {
                 SnapshotError::SourcePathError(format!(
-                    "error accessing path {:?}: {}",
-                    normalized, e
+                    "error accessing path {}: {}",
+                    normalized.display(),
+                    e
                 ))
             })? {
                 return Err(SnapshotError::SourcePathError(format!(
-                    "source path does not exist: {:?}",
+                    "source path does not exist: {}",
                     normalized.display()
                 )));
             }
@@ -518,8 +519,8 @@ pub(crate) async fn run_with_repo(
             }
             Err(e) => {
                 return Err(SnapshotError::SourcePathError(format!(
-                    "error processing path {:?}: {}",
-                    path,
+                    "error processing path {}: {}",
+                    path.display(),
                     e.inner()
                 )));
             }

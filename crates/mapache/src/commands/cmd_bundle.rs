@@ -334,7 +334,14 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         exclude_paths: exclude_paths.clone(),
         parent_snapshot: None,
         tags: Default::default(),
-        description: Some(format!("Bundle of {:?}", args.input)),
+        description: Some(format!(
+            "Bundle of {}",
+            args.input
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
         no_scan: false,
         with_atime: false,
         stdin: false,
@@ -1355,7 +1362,7 @@ async fn run_mount(args: &CmdArgs) -> Result<(), BundleError> {
 #[cfg(not(all(feature = "mount", unix)))]
 async fn run_mount(_args: &CmdArgs) -> Result<(), BundleError> {
     Err(BundleError::BundleFailed(
-        "Mount mode requires FUSE support on Unix systems. Compile with the 'fuse' feature."
+        "Mount mode requires FUSE support on Unix systems. Compile with the 'mount' feature."
             .to_string(),
     ))
 }

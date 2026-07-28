@@ -90,27 +90,27 @@ pub struct CmdArgs {
     #[serde(deserialize_with = "deserialize_duration_opt")]
     pub keep_within: Option<chrono::Duration>,
 
-    /// Keep N yearly snapshots. N must be greater than 1 or "all".
+    /// Keep N yearly snapshots. N must be greater than 0 or "all".
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     #[serde(deserialize_with = "deserialize_retention_opt")]
     pub keep_yearly: Option<usize>,
 
-    /// Keep N monthly snapshots. N must be greater than 1 or "all".
+    /// Keep N monthly snapshots. N must be greater than 0 or "all".
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     #[serde(deserialize_with = "deserialize_retention_opt")]
     pub keep_monthly: Option<usize>,
 
-    /// Keep N weekly snapshots. N must be greater than 1 or "all".
+    /// Keep N weekly snapshots. N must be greater than 0 or "all".
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     #[serde(deserialize_with = "deserialize_retention_opt")]
     pub keep_weekly: Option<usize>,
 
-    /// Keep N daily snapshots. N must be greater than 1 or "all".
+    /// Keep N daily snapshots. N must be greater than 0 or "all".
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     #[serde(deserialize_with = "deserialize_retention_opt")]
     pub keep_daily: Option<usize>,
 
-    /// Keep N hourly snapshots. N must be greater than 1 or "all".
+    /// Keep N hourly snapshots. N must be greater than 0 or "all".
     #[arg(long, value_parser = parse_retention_number, group = "retention_rules")]
     #[serde(deserialize_with = "deserialize_retention_opt")]
     pub keep_hourly: Option<usize>,
@@ -239,11 +239,11 @@ pub fn parse_retention_number(s: &str) -> std::result::Result<usize, String> {
     } else {
         let n = s
             .parse::<isize>()
-            .map_err(|_| format!("{s} is not a number"))?;
+            .map_err(|_| format!("'{s}' is not a valid number"))?;
         if n > 0 {
             Ok(n as usize)
         } else {
-            Err("n must be greater than 0".to_string())
+            Err("retention number must be greater than 0".to_string())
         }
     }
 }

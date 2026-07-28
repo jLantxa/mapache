@@ -96,7 +96,7 @@ pub struct CmdArgs {
     pub fail_early: bool,
 
     /// Verify only a random percentage of packs (e.g. 10.5%)
-    #[clap(long, value_parser = parse_sample_percentage)]
+    #[clap(long, value_parser = parse_sample_percentage, requires = "read_packs")]
     pub sample: Option<f64>,
 
     #[clap(flatten)]
@@ -737,7 +737,7 @@ async fn verify_snapshots_logically(
         match res {
             Ok((id, snapshot)) => snapshots.push((id, snapshot.timestamp)),
             Err(e) => {
-                ui::cli::error!("Failed to load snapshot: {:?}", e);
+                ui::cli::error!("Failed to load snapshot: {}", e);
 
                 if json_out {
                     #[derive(Serialize)]
@@ -747,7 +747,7 @@ async fn verify_snapshots_logically(
                     ui::json::emit_static(
                         "verify_error",
                         &VerifyErrorMsg {
-                            error: format!("failed to load snapshot: {:?}", e),
+                            error: format!("failed to load snapshot: {}", e),
                         },
                     );
                 }
@@ -800,7 +800,7 @@ async fn verify_snapshots_logically(
             }
             Err(e) => {
                 ui::cli::log!("{} {}", msg, "[ERROR]".bold().red());
-                ui::cli::error!("{:?}", e);
+                ui::cli::error!("{}", e);
 
                 if json_out {
                     #[derive(Serialize)]
@@ -812,7 +812,7 @@ async fn verify_snapshots_logically(
                         "verify_error",
                         &VerifyErrorMsg {
                             snapshot: snapshot_id.to_short_hex(12),
-                            error: format!("{:?}", e),
+                            error: format!("{}", e),
                         },
                     );
                 }

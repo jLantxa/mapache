@@ -23,7 +23,7 @@ pub enum MountError {
     RepoOpenFail(String),
     #[error("mount failed: {0}")]
     MountFailed(String),
-    #[error("mount interrupted")]
+    #[error("mount interrupted by user")]
     Interrupted,
     #[error(transparent)]
     Repo(#[from] MapacheError),

@@ -408,7 +408,7 @@ the index file itself is the hash of its encoded content.
           "offset": 73520,
           "length": 2462,
           "raw_length": 7515
-        },
+        }
       ]
     },
     {
@@ -457,7 +457,7 @@ its ID, even though the timestamp will change.
 ```json
 {
   "id": "3468acbec193d65560c8ff16fea30e2c566d48ddf1234aefa9b1bac09c1cf71f",
-  "timestamp": "2025-11-20:00:00.390485800+01:00",
+  "timestamp": "2025-11-20T00:00:00.390485800+01:00",
   "exclusive": false,
   "hostname": "cocoon",
   "username": "mapache",

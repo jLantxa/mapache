@@ -683,6 +683,11 @@ impl BundleBuilder {
         self
     }
 
+    pub fn root(mut self, as_root: bool) -> Self {
+        self.args.as_root = Some(as_root);
+        self
+    }
+
     pub fn export_snapshot(mut self, snapshot: mapache::commands::UseSnapshot) -> Self {
         self.args.export_snapshot = Some(snapshot);
         self

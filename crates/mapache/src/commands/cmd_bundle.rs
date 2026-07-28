@@ -47,6 +47,7 @@ use crate::{
     },
     utils::{self, collections::IdSet, format_size_binary, rate_estimator::RateEstimator},
 };
+
 #[cfg(all(feature = "mount", unix))]
 use crate::{
     fs::path_exists,
@@ -115,6 +116,10 @@ pub struct CmdArgs {
     #[arg(short = 'e', long)]
     pub exclude: Vec<PathBuf>,
 
+    /// Use a single directory path as the bundle root (bundle mode only)
+    #[clap(long = "as-root", value_parser, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    pub as_root: Option<bool>,
+
     /// Number of parallel readers. Must be greater than 0.
     #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS, value_parser = parse_readers)]
     pub readers: usize,
@@ -155,6 +160,7 @@ impl Default for CmdArgs {
             input: vec![],
             output: None,
             exclude: vec![],
+            as_root: None,
             readers: DEFAULT_SNAPSHOT_READERS,
             create: false,
             allow_other: false,
@@ -176,6 +182,7 @@ impl Default for CmdArgs {
             input: vec![],
             output: None,
             exclude: vec![],
+            as_root: None,
             readers: DEFAULT_SNAPSHOT_READERS,
             internal_password: None,
         }
@@ -183,6 +190,12 @@ impl Default for CmdArgs {
 }
 
 pub async fn run(global: &crate::commands::GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
+    if args.as_root.is_some() && !args.bundle {
+        return Err(BundleError::Config(
+            "--as-root can only be used with bundle mode".to_string(),
+        ));
+    }
+
     if args.export_snapshot.is_some() {
         run_export_snapshot(global, args).await
     } else if args.import {
@@ -257,6 +270,27 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
             }
         })
         .collect();
+
+    // If --as-root is set, expand a single directory into its children
+    if args.as_root.unwrap_or(false) {
+        if absolute_source_paths.len() != 1 {
+            return Err(BundleError::Config(
+                "bundle mode --as-root requires exactly one input path".to_string(),
+            ));
+        }
+        let root = &absolute_source_paths[0];
+        if !root.is_dir() {
+            return Err(BundleError::Config(
+                "bundle mode --as-root input must be a directory".to_string(),
+            ));
+        }
+        let mut dir = tokio::fs::read_dir(root).await?;
+        let mut children = Vec::new();
+        while let Some(entry) = dir.next_entry().await? {
+            children.push(entry.path());
+        }
+        absolute_source_paths = children;
+    }
 
     let snapshot_root_path = if absolute_source_paths.len() == 1 {
         let p = &absolute_source_paths[0];

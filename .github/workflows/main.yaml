@@ -54,13 +54,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
 
-      - name: Test
-        shell: bash
+      - name: Install FUSE-T (macOS)
+        if: matrix.os == 'macos-latest'
         run: |
-          if [ "${{ matrix.os }}" = "macos-latest" ]; then
-            cargo test --verbose --no-default-features
-          else
-            cargo test --verbose
-          fi
+          brew tap macos-fuse-t/homebrew-cask
+          brew install fuse-t
+          sudo sh -c 'sed "s/^Version:.*/Version: 2.9.9/" /usr/local/lib/pkgconfig/fuse-t.pc > /usr/local/lib/pkgconfig/fuse.pc'
+      - name: Test
+        run: cargo test --verbose
 
 

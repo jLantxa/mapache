@@ -1181,6 +1181,9 @@ mapache bundle -a ~/project -o project.mapache -e "*.log" -e "tmp/"
 
 # Custom compression
 mapache bundle -a ~/Documents -o docs.mapache --compression best
+
+# Use a directory as the bundle root (its children become top-level items)
+mapache bundle -a ~/Photos -o photos.mapache --as-root
 ```
 
 ### Extract a Bundle
@@ -1234,6 +1237,7 @@ Bundle-specific options:
 | `--export-snapshot <ID>` | Export mode: export snapshot to a bundle (requires `-r`) |
 | `-i, --import` | Import mode: import bundle as snapshot (requires `-r`) |
 | `-e, --exclude <GLOB>` | Glob patterns to exclude (bundle mode only) |
+| `--as-root` | Use a single directory as the bundle root (bundle mode only) |
 | `--readers <N>` | Parallel readers (default: 4) |
 | `-c, --create` | Create mountpoint if it does not exist (mount mode) |
 | `--allow-other` | Allow other users to access the mount |
@@ -1644,6 +1648,7 @@ mapache bundle -m <INPUT.mapache> <MOUNTPOINT> [OPTIONS]
   -m, --mount             Mount mode (FUSE, Unix only)
   -o, --output <PATH>     Bundle file (-a, --export-snapshot) or destination (-x)
   -e, --exclude <GLOB>    Exclude globs (bundle mode)
+  --as-root               Use a single directory as the bundle root (bundle mode)
   --readers <N>           Parallel readers (default: 4)
   -c, --create            Create mountpoint (mount mode)
   --allow-other           Allow other users (mount mode)

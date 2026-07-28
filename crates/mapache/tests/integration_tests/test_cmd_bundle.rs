@@ -249,3 +249,49 @@ async fn test_import_dedup() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_bundle_with_as_root() -> Result<()> {
+    let mut ctx = TestContext::new().await?;
+    let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+    let synthetic = SyntheticData::new(dataset);
+    let backup_data_path = ctx.setup_backup_data(&synthetic)?;
+
+    let bundle_path = ctx._tmp_dir.path().join("as_root_bundle.mapache");
+    let extract_path = ctx._tmp_dir.path().join("extracted_as_root");
+
+    ctx.bundle_builder()
+        .bundle(true)
+        .input(vec![backup_data_path.join("0")])
+        .output(bundle_path.clone())
+        .password("test_password".to_string())
+        .root(true)
+        .run(&ctx.global.clone())
+        .await?;
+
+    assert!(bundle_path.exists());
+
+    ctx.bundle_builder()
+        .extract(true)
+        .input(vec![bundle_path.clone()])
+        .output(extract_path.clone())
+        .password("test_password".to_string())
+        .run(&ctx.global.clone())
+        .await?;
+
+    // With --as-root, the bundle root is the children of "0",
+    // so extract_path should contain file0.txt, 00/, 01/ etc. directly.
+    assert!(extract_path.join("file0.txt").exists());
+    assert!(extract_path.join("00").exists());
+    assert!(extract_path.join("00/file00.txt").exists());
+    assert!(extract_path.join("01").exists());
+    assert!(extract_path.join("01/file01a.txt").exists());
+    assert!(extract_path.join("01/file01b.txt").exists());
+
+    // Verify file contents match originals
+    let original = backup_data_path.join("0/file0.txt");
+    let extracted = extract_path.join("file0.txt");
+    assert_eq!(std::fs::read(&extracted)?, std::fs::read(&original)?);
+
+    Ok(())
+}

@@ -45,6 +45,9 @@
 - **`bundle --import`**: Import a `.mapache` bundle file as a new snapshot
   into the repository. Already-present blobs are skipped automatically
   (cross-repo deduplication). Requires `-r` / `--repo`.
+- **`bundle --as-root`**: Use a single directory as the bundle root in bundle
+  mode. The directory's children become the top-level items in the bundle,
+  matching the behavior of `snapshot --as-root`.
 
 ### Changed
 

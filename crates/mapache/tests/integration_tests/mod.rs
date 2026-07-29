@@ -16,7 +16,10 @@ use mapache::{
         cmd_snapshot, cmd_stats, cmd_sync, cmd_unlock, cmd_verify,
     },
     common::{defaults::DEFAULT_PACK_SIZE_MIB, global::set_global_opts_with_args},
-    repository::repo::{Auth, Repository},
+    repository::{
+        index::IndexMode,
+        repo::{Auth, Repository},
+    },
 };
 
 use crate::{
@@ -152,6 +155,7 @@ impl TestContext {
             compression_level: Compression::Fastest,
             limit_upload: None,
             limit_download: None,
+            index_mode: IndexMode::Eager,
             no_lock: false,
         };
         set_global_opts_with_args(&global);

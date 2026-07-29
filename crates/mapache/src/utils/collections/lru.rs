@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 /// A generic LRU (Least Recently Used) cache.
 ///
@@ -7,6 +7,18 @@ pub struct Lru<K, V> {
     entries: BTreeMap<K, (Arc<V>, u64)>,
     order_map: BTreeMap<u64, K>,
     next_timestamp: u64,
+}
+
+impl<K, V> fmt::Debug for Lru<K, V>
+where
+    K: Ord + Copy + fmt::Debug,
+    V: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lru")
+            .field("len", &self.entries.len())
+            .finish()
+    }
 }
 
 impl<K, V> Lru<K, V>

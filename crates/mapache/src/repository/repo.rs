@@ -22,7 +22,7 @@ use crate::{
         traits::{BlobLoader, BlobSaver},
     },
     repository::{
-        index::{self, Index, IndexFile, MasterIndex},
+        index::{self, Index, IndexFile, IndexMode, MasterIndex},
         keys::{self, KeyManager},
         lock::{Lock, LockHandle},
         manifest::Manifest,
@@ -105,6 +105,8 @@ pub struct RepoConfig {
     pub use_cache: bool,
     /// Compression level to use for new data.
     pub(crate) compression: Compression,
+    /// Index loading mode: eager (all in RAM) or lazy (hot + cold).
+    pub index_mode: IndexMode,
 }
 
 /// Thread-safe statistics for a repository.
@@ -400,7 +402,7 @@ impl Repository {
             false => backend,
         };
 
-        let master_index = Arc::new(MasterIndex::new());
+        let master_index = Arc::new(MasterIndex::new(config.index_mode));
 
         let repo_version = manifest.version();
 
@@ -515,9 +517,8 @@ impl Repository {
 
     /// Loads a blob from the repository.
     pub async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
-        let blob_entry = self.master_index.get(id);
-        match blob_entry {
-            Some(locator) => {
+        match self.master_index.get_with_cold(id) {
+            index::LookupResult::Found(locator) => {
                 if locator.blob_type == BlobType::Zero {
                     return Ok(vec![0u8; locator.raw_length as usize]);
                 }
@@ -529,8 +530,72 @@ impl Repository {
                 )
                 .await
             }
-            None => Err(MapacheError::NotInIndex(*id))?,
+            index::LookupResult::ColdHit(cold_idx) => {
+                tracing::debug!(target: "repo", "Blob {} in cold index, loading on demand", id.to_short_hex(8));
+                // Load the cold index from disk
+                if let Some(meta) = self.master_index.load_cold_index(cold_idx) {
+                    let loaded_index = self.load_index_from_file(meta.file_id).await?;
+                    self.master_index.promote_to_hot(loaded_index);
+                    // Retry lookup in hot
+                    match self.master_index.get(id) {
+                        Some(locator) => {
+                            if locator.blob_type == BlobType::Zero {
+                                return Ok(vec![0u8; locator.raw_length as usize]);
+                            }
+                            self.load_from_pack(
+                                &locator.pack_id,
+                                locator.blob_type,
+                                locator.offset,
+                                locator.length,
+                            )
+                            .await
+                        }
+                        None => Err(MapacheError::NotInIndex(*id))?,
+                    }
+                } else {
+                    Err(MapacheError::NotInIndex(*id))?
+                }
+            }
+            index::LookupResult::NotFound => Err(MapacheError::NotInIndex(*id))?,
         }
+    }
+
+    /// Load a single index file from disk by its ID.
+    async fn load_index_from_file(&self, file_id: ID) -> Result<Index> {
+        let object_path = Self::get_object_path(&self.index_path, &file_id);
+        let index_data = self
+            .backend
+            .read(
+                &Handle::new_with_hint(&object_path, ContentIdType::Index, true),
+                0,
+                0,
+            )
+            .await?;
+
+        let secure_storage = self.secure_storage.clone();
+        let repo_version = self.repo_version;
+
+        tokio::task::spawn_blocking(move || {
+            let decoded = secure_storage.decode(&index_data)?;
+            let index_file = if repo_version >= 2 {
+                index::deserialize_index_binary(&decoded).map_err(|e| {
+                    MapacheError::Format(format!(
+                        "failed to load index file {}: {e}",
+                        file_id.to_short_hex(4)
+                    ))
+                })?
+            } else {
+                super::legacy::deserialize_index_json(&decoded).map_err(|e| {
+                    MapacheError::Format(format!(
+                        "failed to load index file {}: {e}",
+                        file_id.to_short_hex(4)
+                    ))
+                })?
+            };
+            Ok(Index::from_index_file(index_file, file_id))
+        })
+        .await
+        .map_err(|e| MapacheError::task_panicked("index loading", e))?
     }
 
     /// Saves a file to the repository
@@ -1109,15 +1174,28 @@ impl Repository {
         self.list_files_with_extension(file_type, None).await
     }
 
-    /// Load the master index from file
+    /// Load the master index from file.
     pub async fn reload_master_index(&self) -> Result<()> {
-        tracing::info!(target: "repo", "Reloading master index");
+        self.reload_master_index_with_mode(common::defaults::DEFAULT_INDEX_MODE)
+            .await
+    }
+
+    /// Load the master index from file with the specified mode.
+    /// - Eager: loads all indices into RAM (~50 bytes/blob, fastest lookups)
+    /// - Lazy: loads only N most recent indices (hot), rest use cold metadata (~2 bytes/blob)
+    pub async fn reload_master_index_with_mode(&self, index_mode: IndexMode) -> Result<()> {
+        tracing::info!(target: "repo", "Reloading master index (mode: {:?})", index_mode);
         let mut files = self.list_files(ContentIdType::Index).await?;
         files.sort_unstable(); // Ensure deterministic order
 
         self.master_index.clear();
 
         let repo_version = self.repo_version;
+        let hot_count = match index_mode {
+            IndexMode::Eager => usize::MAX, // Load all
+            IndexMode::Lazy => common::defaults::INDEX_HOT_COUNT,
+        };
+
         let indices = stream::iter(files)
             .map(|file_path| {
                 let backend = self.backend.clone();
@@ -1159,7 +1237,11 @@ impl Repository {
                                 ))
                             })?
                         };
-                        Ok::<_, MapacheError>(Index::from_index_file(index_file, id))
+                        Ok::<_, MapacheError>((
+                            Index::from_index_file(index_file.clone(), id),
+                            index_file,
+                            id,
+                        ))
                     })
                     .await
                     .map_err(|e| MapacheError::task_panicked("index loading", e))??;
@@ -1168,19 +1250,34 @@ impl Repository {
                 }
             })
             .buffered(16)
-            .collect::<Vec<Result<Option<Index>>>>()
+            .collect::<Vec<Result<Option<(Index, index::IndexFile, ID)>>>>()
             .await;
 
-        let mut num_index_files = 0;
-        for res in indices {
-            if let Some(index) = res? {
-                self.master_index.add_index(index);
-                num_index_files += 1;
+        let mut num_hot = 0;
+        let mut num_cold = 0;
+        let total_indices: usize = indices
+            .iter()
+            .filter(|r| r.as_ref().is_ok_and(|o| o.is_some()))
+            .count();
+
+        for (i, res) in indices.into_iter().enumerate() {
+            if let Some((index, index_file, file_id)) = res? {
+                if i >= total_indices.saturating_sub(hot_count) {
+                    // Hot: load fully into RAM
+                    self.master_index.add_index(index);
+                    num_hot += 1;
+                } else {
+                    // Cold: only store metadata for lazy loading
+                    let bf = index::IndexMetadata::bloom_filter_from_index_file(&index_file);
+                    let meta = index::IndexMetadata::from_index_file(index_file, bf, file_id);
+                    self.master_index.add_cold_metadata(meta);
+                    num_cold += 1;
+                }
             }
         }
 
-        tracing::info!(target: "repo", "Loaded {num_index_files} index files");
-        ui::cli::verbose_1!("Loaded {} index files", num_index_files);
+        tracing::info!(target: "repo", "Loaded {num_hot} hot + {num_cold} cold index files");
+        ui::cli::verbose_1!("Loaded {} hot + {} cold index files", num_hot, num_cold);
 
         let total_blobs = self.master_index.num_blobs();
         if total_blobs > 0 {

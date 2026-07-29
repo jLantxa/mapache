@@ -13,7 +13,10 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ContentIdType, error::MapacheError},
     repository::{
-        index::MasterIndex, manifest::Manifest, packer::Packer, repo::THIS_REPOSITORY_VERSION,
+        index::{IndexMode, MasterIndex},
+        manifest::Manifest,
+        packer::Packer,
+        repo::THIS_REPOSITORY_VERSION,
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils,
@@ -98,7 +101,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
 
             let all_pack_ids = repo.list_packs().await?;
             let old_index_ids = repo.list_index_ids().await?;
-            let mut new_master_index = MasterIndex::new();
+            let mut new_master_index = MasterIndex::new(IndexMode::Eager);
             new_master_index.set_autosave(false);
             ui::cli::log!("Found {} packs", all_pack_ids.len());
 

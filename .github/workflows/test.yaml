@@ -1,8 +1,8 @@
-name: pr-main
+name: test
 
 on:
   pull_request:
-    branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -45,7 +45,7 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # Keeps other OS tests running even if one fails
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
@@ -62,5 +62,3 @@ jobs:
           else
             cargo test --verbose
           fi
-
-

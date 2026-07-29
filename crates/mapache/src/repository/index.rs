@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -20,9 +21,43 @@ use crate::{
     },
     utils::{
         binary::{get_array, get_u32, put_bytes, put_u32},
-        collections::{BloomFilter, IdIndexSet, IdMap, IdSet, ShardedIdSet},
+        collections::{BloomFilter, IdIndexSet, IdMap, IdSet, Lru, ShardedIdSet},
     },
 };
+
+/// Index loading mode: eager (load all) or lazy (hot + cold).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexMode {
+    /// Load all indices into RAM. Fastest lookups, ~50 bytes/blob.
+    Eager,
+    /// Only load N most recent indices (hot), rest use lazy loading (cold).
+    /// Saves memory (~2 bytes/blob for cold), cold lookups re-decrypt index (~12ms).
+    Lazy,
+}
+
+impl std::fmt::Display for IndexMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Eager => write!(f, "eager"),
+            Self::Lazy => write!(f, "lazy"),
+        }
+    }
+}
+
+impl FromStr for IndexMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "eager" => Ok(Self::Eager),
+            "lazy" => Ok(Self::Lazy),
+            _ => Err(format!(
+                "Invalid index mode: '{s}'. Valid values: eager, lazy"
+            )),
+        }
+    }
+}
 
 /// Internal optimized representation of a blob's location.
 #[derive(Debug, Clone, Copy)]
@@ -131,6 +166,116 @@ pub struct BlobLocator {
     pub blob_type: BlobType,
 }
 
+/// Result of a blob lookup in the master index.
+#[derive(Debug, Clone, Copy)]
+pub enum LookupResult {
+    /// Blob found in a hot index.
+    Found(BlobLocator),
+    /// Blob not found in any index.
+    NotFound,
+    /// Blob might be in a cold index. Contains the cold metadata index.
+    /// Caller must load the index file and retry.
+    ColdHit(usize),
+}
+
+/// Lightweight metadata for a cold (lazy-loaded) index file.
+/// Contains only the BloomFilter + pack IDs + zero blob info needed
+/// to determine if a blob lookup requires loading the full index.
+#[derive(Debug, Clone)]
+pub struct IndexMetadata {
+    /// The file ID of this index file (for loading from disk).
+    pub file_id: ID,
+    /// BloomFilter for fast negative lookups (~2 bytes/blob in RAM).
+    pub bloom_filter: BloomFilter,
+    /// Pack IDs referenced by this index file.
+    pub pack_ids: Vec<ID>,
+    /// Zero blobs: ID -> raw_length (usually empty, small even when populated).
+    pub zero_blobs: Vec<(ID, u32)>,
+    /// Number of blobs in this index (for statistics).
+    pub blob_count: usize,
+}
+
+impl IndexMetadata {
+    /// Create IndexMetadata from an existing `Index`.
+    pub fn from_index(index: &Index, file_id: ID) -> Self {
+        // Create a combined bloom filter from both data_ids and tree_ids
+        let total_blobs = index.num_blobs();
+        let mut bloom_filter = BloomFilter::new(total_blobs, 0.01);
+        for (id, _) in index.iter_ids() {
+            bloom_filter.insert(id);
+        }
+
+        let pack_ids: Vec<ID> = index.pack_ids.iter().copied().collect();
+        let zero_blobs: Vec<(ID, u32)> = index
+            .zero_ids
+            .iter()
+            .map(|(&id, &raw_length)| (id, raw_length))
+            .collect();
+        let blob_count = index.num_blobs();
+
+        Self {
+            file_id,
+            bloom_filter,
+            pack_ids,
+            zero_blobs,
+            blob_count,
+        }
+    }
+
+    /// Create IndexMetadata directly from an `IndexFile` (without building a full Index).
+    pub fn from_index_file(
+        index_file: IndexFile,
+        bloom_filter: BloomFilter,
+        file_id: ID,
+    ) -> Self {
+        let blob_count: usize = index_file
+            .packs
+            .iter()
+            .map(|p| p.blobs.len())
+            .sum::<usize>()
+            + index_file.zero_blobs.len();
+        let pack_ids: Vec<ID> = index_file.packs.iter().map(|p| p.id).collect();
+        let zero_blobs: Vec<(ID, u32)> = index_file
+            .zero_blobs
+            .into_iter()
+            .map(|z| (z.id, z.raw_length))
+            .collect();
+
+        Self {
+            file_id,
+            bloom_filter,
+            pack_ids,
+            zero_blobs,
+            blob_count,
+        }
+    }
+
+    /// Create a BloomFilter from an `IndexFile` for cold index metadata.
+    pub fn bloom_filter_from_index_file(index_file: &IndexFile) -> BloomFilter {
+        let total_blobs: usize = index_file
+            .packs
+            .iter()
+            .map(|p| p.blobs.len())
+            .sum::<usize>()
+            + index_file.zero_blobs.len();
+        let mut bf = BloomFilter::new(total_blobs, 0.01);
+        for pack in &index_file.packs {
+            for blob in &pack.blobs {
+                bf.insert(&blob.id);
+            }
+        }
+        for zero in &index_file.zero_blobs {
+            bf.insert(&zero.id);
+        }
+        bf
+    }
+
+    /// Check if a blob might be in this index (no false negatives).
+    pub fn might_contain(&self, id: &ID) -> bool {
+        self.bloom_filter.contains(id)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum IndexStatus {
     /// The index is still accepting entries.
@@ -149,6 +294,9 @@ static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 pub struct Index {
     /// Unique internal ID to identify this specific instance in memory.
     instance_id: u64,
+
+    /// The file ID of this index on disk (None for pending indices).
+    file_id: Option<ID>,
 
     /// blob ID -> BlobLocationInternal map. This is the core lookup table.
     /// Uses `BlobMap` which is a HashMap while mutable and a sorted Vec
@@ -181,6 +329,7 @@ impl Index {
     pub fn new() -> Self {
         Self {
             instance_id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
+            file_id: None,
             data_ids: BlobMap::new_mutable(),
             tree_ids: BlobMap::new_mutable(),
             zero_ids: HashMap::new(),
@@ -241,6 +390,7 @@ impl Index {
     pub fn from_index_file(index_file: IndexFile, id: ID) -> Self {
         let mut index = Self::new();
         tracing::debug!(target: "index", "Loading index {} into instance #{}", id.to_short_hex(8), index.instance_id);
+        index.file_id = Some(id);
         index.set_status(IndexStatus::Persisted(id));
 
         let mut data_entries = Vec::new();
@@ -559,6 +709,8 @@ pub struct MasterIndex {
     /// This is sharded to reduce contention during parallel snapshotting.
     pending_blobs: Arc<ShardedIdSet>,
     auto_save: bool,
+    /// Index loading mode: eager (keep all in RAM) or lazy (move persisted to cold).
+    index_mode: IndexMode,
 }
 
 #[derive(Debug)]
@@ -567,24 +719,32 @@ struct MasterIndexInner {
     indices: Vec<Index>,
     /// Bloom Filter for fast deduplication checks.
     bloom_filter: Option<BloomFilter>,
+    /// Cold (lazy-loaded) index metadata: BloomFilter + pack IDs for indices not loaded into RAM.
+    cold_metadata: Vec<IndexMetadata>,
+    /// LRU cache for cold indices that have been loaded on demand.
+    /// Key: index into `cold_metadata`, Value: the loaded `Index`.
+    lru: Lru<usize, Index>,
 }
 
 impl Default for MasterIndex {
     fn default() -> Self {
-        Self::new()
+        Self::new(common::defaults::DEFAULT_INDEX_MODE)
     }
 }
 
 impl MasterIndex {
     /// Creates a new, empty `MasterIndex`.
-    pub fn new() -> Self {
+    pub fn new(index_mode: IndexMode) -> Self {
         Self {
             inner: Arc::new(RwLock::new(MasterIndexInner {
                 indices: Vec::with_capacity(1),
                 bloom_filter: None,
+                cold_metadata: Vec::new(),
+                lru: Lru::new(),
             })),
             pending_blobs: Arc::new(ShardedIdSet::new()),
             auto_save: true,
+            index_mode,
         }
     }
 
@@ -592,13 +752,23 @@ impl MasterIndex {
         let mut lock = self.inner.write();
         lock.indices.clear();
         lock.bloom_filter = None;
+        lock.cold_metadata.clear();
+        lock.lru = Lru::new();
         self.pending_blobs.clear();
     }
 
-    /// Returns the total number of blobs in all finalized indices.
+    /// Returns the total number of blobs in all finalized indices (hot only).
     pub fn num_blobs(&self) -> usize {
         let lock = self.inner.read();
         lock.indices.iter().map(|idx| idx.num_blobs()).sum()
+    }
+
+    /// Returns the total number of blobs in all indices (hot + cold).
+    pub fn num_blobs_total(&self) -> usize {
+        let lock = self.inner.read();
+        let hot: usize = lock.indices.iter().map(|idx| idx.num_blobs()).sum();
+        let cold: usize = lock.cold_metadata.iter().map(|meta| meta.blob_count).sum();
+        hot + cold
     }
 
     /// Returns `true` if the object ID is known either in a finalized index
@@ -629,6 +799,7 @@ impl MasterIndex {
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
+    /// Only searches hot (fully loaded) indices for fast, lock-free lookups.
     pub fn get(&self, id: &ID) -> Option<BlobLocator> {
         let lock = self.inner.read();
 
@@ -636,13 +807,93 @@ impl MasterIndex {
 
         if let Some(locator) = res {
             tracing::trace!(target: "index",
-                "Lookup blob {}: found in pack {}",
+                "Lookup blob {}: found in hot index in pack {}",
                 id.to_short_hex(8), locator.pack_id.to_short_hex(8));
         } else {
-            tracing::trace!(target: "index", "Lookup blob {}: not found", id.to_short_hex(8));
+            tracing::trace!(target: "index", "Lookup blob {}: not found in hot indices", id.to_short_hex(8));
         }
 
         res
+    }
+
+    /// Retrieves a blob with cold index loading support.
+    /// Returns `LookupResult::ColdHit(cold_idx)` when the blob is in a cold index
+    /// and needs to be loaded from disk. Caller must load the index and call
+    /// `load_cold_index()` then retry.
+    pub fn get_with_cold(&self, id: &ID) -> LookupResult {
+        // Fast path: search hot indices
+        if let Some(locator) = self.get(id) {
+            return LookupResult::Found(locator);
+        }
+
+        if self.index_mode == IndexMode::Eager {
+            return LookupResult::NotFound;
+        }
+
+        // Search cold metadata
+        let lock = self.inner.read();
+        for (i, meta) in lock.cold_metadata.iter().enumerate().rev() {
+            if !meta.might_contain(id) {
+                continue;
+            }
+            // Check zero blobs directly (no full load needed)
+            if let Some(&(_, raw_length)) = meta.zero_blobs.iter().find(|&&(zid, _)| zid == *id) {
+                return LookupResult::Found(BlobLocator {
+                    pack_id: ID::default(),
+                    blob_type: BlobType::Zero,
+                    offset: 0,
+                    length: raw_length,
+                    raw_length,
+                });
+            }
+            // Need full index load
+            return LookupResult::ColdHit(i);
+        }
+
+        LookupResult::NotFound
+    }
+
+    /// Loads a cold index from metadata and promotes it to hot.
+    /// The loaded index is returned so the caller can retry the lookup.
+    /// Caller is responsible for calling `load_cold_index` and then `get` again.
+    pub fn load_cold_index(&self, cold_idx: usize) -> Option<IndexMetadata> {
+        let mut lock = self.inner.write();
+        if cold_idx < lock.cold_metadata.len() {
+            let meta = lock.cold_metadata.swap_remove(cold_idx);
+            tracing::debug!(target: "index", "Loading cold index {} (file {}) into hot",
+                cold_idx, meta.file_id.to_short_hex(8));
+            Some(meta)
+        } else {
+            None
+        }
+    }
+
+    /// Promotes a loaded cold index to hot.
+    pub fn promote_to_hot(&self, index: Index) {
+        let mut lock = self.inner.write();
+        lock.indices.push(index);
+        if self.index_mode == IndexMode::Lazy {
+            self.enforce_hot_limit(&mut lock);
+        }
+    }
+
+    /// Check if a blob might be in any index (hot or cold).
+    /// Returns `true` if the blob might exist (no false negatives).
+    pub fn might_contain(&self, id: &ID) -> bool {
+        let lock = self.inner.read();
+        if lock.indices.iter().rev().any(|idx| idx.contains(id)) {
+            return true;
+        }
+        lock.cold_metadata
+            .iter()
+            .rev()
+            .any(|meta| meta.might_contain(id))
+    }
+
+    /// Adds a cold index metadata entry for lazy loading.
+    pub fn add_cold_metadata(&self, meta: IndexMetadata) {
+        let mut lock = self.inner.write();
+        lock.cold_metadata.push(meta);
     }
 
     /// Adds a fully constructed `Index` to the master index.
@@ -657,9 +908,37 @@ impl MasterIndex {
         }
 
         lock.indices.push(index);
+
+        // In lazy mode, enforce hot limit by evicting oldest non-pending to cold
+        if self.index_mode == IndexMode::Lazy {
+            self.enforce_hot_limit(&mut lock);
+        }
     }
 
-    /// Initializes a Bloom Filter for all blobs currently in the master index.
+    /// Enforce the maximum number of hot indices by evicting the oldest
+    /// non-pending finalized index to cold metadata.
+    fn enforce_hot_limit(&self, lock: &mut MasterIndexInner) {
+        let hot_limit = common::defaults::INDEX_HOT_COUNT;
+
+        // Count non-pending indices (pending always stays hot)
+        let non_pending_count = lock.indices.iter().filter(|i| !i.is_pending()).count();
+
+        if non_pending_count <= hot_limit {
+            return;
+        }
+
+        // Find the oldest non-pending index to evict
+        if let Some(pos) = lock.indices.iter().position(|i| !i.is_pending()) {
+            let file_id = lock.indices[pos].file_id.unwrap_or_default();
+            tracing::debug!(target: "index", "Evicting hot index {} (file {}) to cold (hot limit: {})",
+                lock.indices[pos].instance_id, file_id.to_short_hex(8), hot_limit);
+            let cold_meta = IndexMetadata::from_index(&lock.indices[pos], file_id);
+            lock.cold_metadata.push(cold_meta);
+            lock.indices.swap_remove(pos);
+        }
+    }
+
+    /// Initializes a Bloom Filter for all blobs currently in the master index (hot only).
     pub fn initialize_bloom_filter(&self, total_blobs: usize) {
         const BLOOM_FILTER_FALSE_POSITIVE_RATE: f64 = 0.01;
 
@@ -785,12 +1064,12 @@ impl MasterIndex {
             let size = idx.persist(repo).await?;
             // Update the status in the actual list
             let mut lock = self.inner.write();
-            if let Some(actual_idx) = lock
+            if let Some(pos) = lock
                 .indices
-                .iter_mut()
-                .find(|i| i.instance_id == target_instance_id)
+                .iter()
+                .position(|i| i.instance_id == target_instance_id)
             {
-                actual_idx.status = idx.status;
+                lock.indices[pos].status = idx.status;
             }
             Ok(size)
         } else {
@@ -957,7 +1236,7 @@ impl MasterIndex {
 }
 
 /// Represents the on-disk format for an index file.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndexFile {
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -974,7 +1253,7 @@ pub struct IndexFileZeroBlob {
 }
 
 /// Represents a pack's entry within an `IndexFile`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IndexFilePack {
     pub id: ID,
@@ -1171,7 +1450,7 @@ mod tests {
 
     #[test]
     fn test_master_index_basic() {
-        let mi = MasterIndex::new();
+        let mi = MasterIndex::default();
         let id1 = mock_id("blob1");
         let id2 = mock_id("blob2");
 
@@ -1200,7 +1479,7 @@ mod tests {
 
     #[test]
     fn test_master_index_cleanup_and_merge() {
-        let mi = MasterIndex::new();
+        let mi = MasterIndex::default();
 
         // Setup: Multiple small indices with various packs
         let pack1 = mock_id("pack1");
@@ -1297,7 +1576,7 @@ mod tests {
 
     #[test]
     fn test_master_index_bloom_filter() {
-        let mi = MasterIndex::new();
+        let mi = MasterIndex::default();
         let pack1 = mock_id("pack1");
         let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
         let b2 = mock_blob_desc("b2", BlobType::Data, 100, 100);
@@ -1326,7 +1605,7 @@ mod tests {
 
     #[test]
     fn test_master_index_merge_deduplication() {
-        let mi = MasterIndex::new();
+        let mi = MasterIndex::default();
 
         let pack1 = mock_id("pack1");
         let b1 = mock_blob_desc("b1", BlobType::Data, 0, 100);
@@ -1394,7 +1673,7 @@ mod tests {
 
     #[test]
     fn test_master_index_pending_blob_priority() {
-        let mi = MasterIndex::new();
+        let mi = MasterIndex::default();
         let id = mock_id("blob");
 
         // Add pending blob first
@@ -1451,7 +1730,7 @@ mod tests {
 
     #[test]
     fn test_master_index_clear_removes_everything() {
-        let mi = MasterIndex::new();
+        let mi = MasterIndex::default();
 
         // Add pending blobs
         let id1 = mock_id("pending1");

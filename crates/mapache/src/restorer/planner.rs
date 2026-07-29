@@ -290,7 +290,7 @@ mod tests {
         ] {
             let (restorer, _tmp) = create_restorer(strategy.clone(), false).await;
             let path = PathBuf::from("/does/not/exist");
-            let index = Arc::new(MasterIndex::new());
+            let index = Arc::new(MasterIndex::default());
             assert!(
                 matches!(
                     restorer
@@ -309,7 +309,7 @@ mod tests {
         let (restorer, tmp) = create_restorer(Strategy::Overwrite, false).await;
         let path = tmp.path().join("existing.txt");
         std::fs::write(&path, "data")?;
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer
                 .should_restore_node(&file_node(999), &path, index)
@@ -324,7 +324,7 @@ mod tests {
         let (restorer, tmp) = create_restorer(Strategy::Skip, false).await;
         let path = tmp.path().join("existing.txt");
         std::fs::write(&path, "data")?;
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer
                 .should_restore_node(&file_node(999), &path, index)
@@ -339,7 +339,7 @@ mod tests {
         let (restorer, tmp) = create_restorer(Strategy::Fail, false).await;
         let path = tmp.path().join("existing.txt");
         std::fs::write(&path, "data")?;
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(
             restorer
                 .should_restore_node(&file_node(999), &path, index)
@@ -354,7 +354,7 @@ mod tests {
         let (restorer, tmp) = create_restorer(Strategy::Fail, false).await;
         let path = tmp.path().join("existing_dir");
         std::fs::create_dir(&path)?;
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer
                 .should_restore_node(&dir_node(), &path, index)
@@ -382,7 +382,7 @@ mod tests {
             blobs: Some(vec![]),
             ..Default::default()
         };
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::Skip
@@ -408,7 +408,7 @@ mod tests {
             blobs: Some(vec![]),
             ..Default::default()
         };
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::FullRestore
@@ -440,7 +440,7 @@ mod tests {
             blobs: Some(vec![]),
             ..Default::default()
         };
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::FullRestore
@@ -466,7 +466,7 @@ mod tests {
             blobs: Some(vec![]),
             ..Default::default()
         };
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::Skip
@@ -492,7 +492,7 @@ mod tests {
             blobs: Some(vec![]),
             ..Default::default()
         };
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::FullRestore
@@ -518,7 +518,7 @@ mod tests {
             blobs: Some(vec![]),
             ..Default::default()
         };
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::Skip
@@ -543,7 +543,7 @@ mod tests {
             blobs: Some(vec![]),
             ..Default::default()
         };
-        let index = Arc::new(MasterIndex::new());
+        let index = Arc::new(MasterIndex::default());
         assert!(matches!(
             restorer.should_restore_node(&node, &path, index).await?,
             RestorePlan::FullRestore

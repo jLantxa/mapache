@@ -147,6 +147,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
         pack_size: DEFAULT_PACK_SIZE,
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
+        index_mode: global_args.index_mode,
     };
 
     let (_src_repo, _src_ss, src_lock) = if global_args.no_lock {

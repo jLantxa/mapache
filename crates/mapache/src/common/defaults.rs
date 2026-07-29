@@ -2,7 +2,12 @@ use std::{sync::OnceLock, time::Duration};
 
 use mapache_chunker::Normalization;
 
-use crate::{commands::Compression, common::config, repository::repo::RepoConfig, utils::size};
+use crate::{
+    commands::Compression,
+    common::config,
+    repository::{index::IndexMode, repo::RepoConfig},
+    utils::size,
+};
 
 pub(crate) const APP_NAME: &str = "mapache";
 
@@ -21,6 +26,12 @@ pub(crate) const DEFAULT_RESTORE_PACK_SEGMENT_MAX_SIZE: u64 = 32 * size::MiB;
 // --- Index ---
 pub(crate) const INDEX_FLUSH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub(crate) const BLOBS_PER_INDEX_FILE: usize = 65535;
+
+/// Number of most recent index files to keep fully loaded in RAM (hot indices).
+pub(crate) const INDEX_HOT_COUNT: usize = 8;
+
+/// Default index loading mode: eager (all in RAM, fastest lookups).
+pub const DEFAULT_INDEX_MODE: IndexMode = IndexMode::Eager;
 
 // --- Packing ---
 pub(crate) const MIN_CONFIGURABLE_PACK_SIZE_MIB: f32 = 1.0_f32;
@@ -94,6 +105,7 @@ pub const TEST_REPO_CONFIG: RepoConfig = RepoConfig {
     pack_size: DEFAULT_PACK_SIZE,
     use_cache: false,
     compression: Compression::Fastest,
+    index_mode: IndexMode::Eager,
 };
 
 // --- Runtime defaults (configurable via TOML) ---

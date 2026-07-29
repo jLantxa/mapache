@@ -48,13 +48,14 @@ use crate::{
         ContentIdType, ID,
         config::{MapacheConfig, load_config},
         defaults::{
-            DEFAULT_COMPRESSION, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
+            DEFAULT_COMPRESSION, DEFAULT_INDEX_MODE, DEFAULT_PACK_SIZE_MIB, DEFAULT_VERBOSITY,
             MAX_CONFIGURABLE_PACK_SIZE_MIB, MIN_CONFIGURABLE_PACK_SIZE_MIB, init_runtime_defaults,
         },
         error::{MapacheError, Result},
         global::{MAPACHE_VERSION_INFO, THIS_MAPACHE_VERSION, set_global_opts_with_args},
     },
     repository::{
+        index::IndexMode,
         lock::LockHandle,
         repo::{Auth, RepoConfig, Repository},
         snapshot::{Snapshot, SnapshotStream},
@@ -230,6 +231,11 @@ pub struct CliGlobalArgs {
     )]
     pub limit_download: Option<u64>,
 
+    /// Index loading mode: eager (load all, ~50 bytes/blob) or lazy (hot+cold, ~2 bytes/blob)
+    #[clap(long = "index-mode", value_parser = parse_index_mode)]
+    #[serde(rename = "index-mode")]
+    pub index_mode: Option<IndexMode>,
+
     /// Disable repository locking (read-only operations)
     #[clap(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub no_lock: Option<bool>,
@@ -252,6 +258,7 @@ impl CliGlobalArgs {
             retry_lock_duration: Some(Duration::minutes(5)),
             limit_upload: Some(10 * 1024 * 1024),
             limit_download: Some(50 * 1024 * 1024),
+            index_mode: Some(DEFAULT_INDEX_MODE),
             no_lock: Some(false),
         }
     }
@@ -287,6 +294,7 @@ impl Merge for CliGlobalArgs {
         merge_opt(&mut self.retry_lock_duration, other.retry_lock_duration);
         merge_opt(&mut self.limit_upload, other.limit_upload);
         merge_opt(&mut self.limit_download, other.limit_download);
+        merge_opt(&mut self.index_mode, other.index_mode);
         merge_opt(&mut self.no_lock, other.no_lock);
     }
 }
@@ -379,6 +387,7 @@ pub struct GlobalArgs {
     pub retry_lock_duration: Option<Duration>,
     pub limit_upload: Option<u64>,
     pub limit_download: Option<u64>,
+    pub index_mode: IndexMode,
     pub no_lock: bool,
 }
 
@@ -399,6 +408,7 @@ impl GlobalArgs {
             pack_size: (self.pack_size_mib * size::MiB as f32) as u64,
             use_cache: !self.no_cache,
             compression: self.compression_level,
+            index_mode: self.index_mode,
         }
     }
 }
@@ -430,12 +440,17 @@ fn cli_to_global_args(cli: &CliGlobalArgs) -> std::result::Result<GlobalArgs, St
         retry_lock_duration: cli.retry_lock_duration,
         limit_upload: cli.limit_upload,
         limit_download: cli.limit_download,
+        index_mode: cli.index_mode.unwrap_or(DEFAULT_INDEX_MODE),
         no_lock: cli.no_lock.unwrap_or(false),
     })
 }
 
 fn parse_bandwidth(s: &str) -> std::result::Result<u64, String> {
     utils::parse_bandwidth(s).map_err(|e| e.to_string())
+}
+
+fn parse_index_mode(s: &str) -> std::result::Result<IndexMode, String> {
+    IndexMode::from_str(s)
 }
 
 fn pack_size_parser(s: &str) -> std::result::Result<f32, String> {
@@ -830,6 +845,7 @@ impl GlobalArgs {
             retry_lock_duration: None,
             limit_upload: None,
             limit_download: None,
+            index_mode: DEFAULT_INDEX_MODE,
             no_lock: false,
         }
     }

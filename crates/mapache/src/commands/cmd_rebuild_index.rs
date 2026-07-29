@@ -12,7 +12,10 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ContentIdType, ID, error::MapacheError},
-    repository::{index::MasterIndex, packer::Packer},
+    repository::{
+        index::{IndexMode, MasterIndex},
+        packer::Packer,
+    },
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils::{self},
 };
@@ -78,7 +81,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Rebuild
 
             let all_pack_ids = repo.list_packs().await?;
             let old_index_ids = repo.list_index_ids().await?;
-            let mut new_master_index = MasterIndex::new();
+            let mut new_master_index = MasterIndex::new(IndexMode::Eager);
             new_master_index.set_autosave(false);
             ui::cli::log!("Found {} packs", all_pack_ids.len());
             tracing::info!(target: "rebuild-index", "Found {} packs and {} indices", all_pack_ids.len(), old_index_ids.len());

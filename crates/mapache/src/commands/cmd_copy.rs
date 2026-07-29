@@ -108,6 +108,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
         pack_size: DEFAULT_PACK_SIZE,
         use_cache: !global_args.no_cache,
         compression: global_args.compression_level,
+        index_mode: global_args.index_mode,
     };
 
     let src_backend = backend::new_backend_with_prompt(BackendOptions {

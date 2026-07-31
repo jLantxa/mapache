@@ -56,7 +56,7 @@ Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.githu
 
 This is a non-exhaustive set of benchmarks run on my development hardware.
 They serve as a baseline for comparing performance between versions, using
-restic v0.19.0 as a base.
+restic v0.19.1 as a base.
 
 **Test environment:** Fedora 44, AMD Ryzen 9 3900X (24 threads), SanDisk
 Extreme PRO NVMe.

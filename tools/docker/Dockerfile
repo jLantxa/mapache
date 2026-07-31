@@ -7,7 +7,7 @@
 #   # Build a single target (source mounted from host)
 #   docker run --rm -v $(pwd):/mapache mapache-builder \
 #     sh /build-target.sh x86_64-unknown-linux-musl \
-#       "-C target-feature=+crt-static -C relocation-model=pie" \
+#       "-C target-feature=+crt-static" \
 #       build
 #
 #   # Interactive development shell

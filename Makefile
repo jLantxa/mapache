@@ -35,12 +35,12 @@ endif
 
 release-linux-static:
 	$(BUILD_SH) x86_64-unknown-linux-musl \
-		"-C target-feature=+crt-static -C relocation-model=pie" \
+		"-C target-feature=+crt-static" \
 		"--features $(FEATURES)" build
 
 release-arm64:
 	$(BUILD_SH) aarch64-unknown-linux-musl \
-		"-C target-feature=+crt-static -C relocation-model=pie" \
+		"-C target-feature=+crt-static" \
 		"--features $(FEATURES)" zigbuild
 
 release-android-arm64:
@@ -52,7 +52,7 @@ endif
 
 release-armv7:
 	$(BUILD_SH) armv7-unknown-linux-musleabihf \
-		"-C target-feature=+crt-static -C relocation-model=pie" \
+		"-C target-feature=+crt-static" \
 		"--features $(FEATURES)" zigbuild
 
 release-windows:

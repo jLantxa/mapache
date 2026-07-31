@@ -81,7 +81,7 @@ anyhow = "1.0"
 proptest = "1.11"
 rstest = "0.26"
 scopeguard = "1.2"
-serial_test = "3.5"
+serial_test = "4.0"
 tempfile = "3.27"
 
 [features]

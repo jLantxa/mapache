@@ -145,7 +145,7 @@ impl Chunker {
     /// # Examples
     ///
     /// ```
-    /// use chunker::{Chunker, Normalization};
+    /// use mapache_chunker::{Chunker, Normalization};
     ///
     /// let chunker = Chunker::new(
     ///     512 * 1024,

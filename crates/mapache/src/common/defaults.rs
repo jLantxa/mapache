@@ -1,6 +1,6 @@
 use std::{sync::OnceLock, time::Duration};
 
-use chunker::Normalization;
+use mapache_chunker::Normalization;
 
 use crate::{commands::Compression, common::config, repository::repo::RepoConfig, utils::size};
 

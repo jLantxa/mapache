@@ -9,7 +9,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-chunker = { path = ".." }
+chunker = { package = "mapache-chunker", path = ".." }
 libfuzzer-sys = "0.4"
 
 [[bin]]

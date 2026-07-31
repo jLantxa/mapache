@@ -535,20 +535,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "chunker"
-version = "0.2.5"
-dependencies = [
- "blake3",
- "rand 0.10.2",
- "rstest",
-]
-
-[[package]]
 name = "chunker-fuzz"
 version = "0.1.0"
 dependencies = [
- "chunker",
  "libfuzzer-sys",
+ "mapache-chunker",
 ]
 
 [[package]]
@@ -2083,7 +2074,6 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
- "chunker",
  "clap",
  "clap_complete",
  "crossbeam-channel",
@@ -2092,6 +2082,7 @@ dependencies = [
  "futures",
  "indicatif",
  "libc",
+ "mapache-chunker",
  "parking_lot",
  "percent-encoding",
  "proptest",
@@ -2118,6 +2109,15 @@ dependencies = [
  "xattr",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "mapache-chunker"
+version = "0.2.4"
+dependencies = [
+ "blake3",
+ "rand 0.10.2",
+ "rstest",
 ]
 
 [[package]]

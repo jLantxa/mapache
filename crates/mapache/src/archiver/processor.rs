@@ -11,7 +11,7 @@ use std::{
     thread,
 };
 
-use chunker::Chunker;
+use mapache_chunker::Chunker;
 
 use crate::{
     archiver::SnapshotProgress,
@@ -343,7 +343,8 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
             let _guard = rt_handle.as_ref().map(|h| h.enter());
 
             let initial_capacity = usize::try_from(file_size).unwrap_or(0);
-            let stream = chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, initial_capacity);
+            let stream =
+                mapache_chunker::ChunkStream::new(reader, &DEFAULT_CHUNKER, initial_capacity);
             for result in stream {
                 let chunk = match result {
                     Ok(c) => c,

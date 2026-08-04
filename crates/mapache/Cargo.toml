@@ -2,7 +2,7 @@
 name = "mapache"
 version = "0.6.0"
 edition = "2024"
-rust-version = "1.91.1"
+rust-version = "1.93.1"
 description = "Fast, secure, deduplicating, incremental backup tool"
 license = "GPL-3.0-only"
 repository.workspace = true
@@ -37,7 +37,7 @@ russh = { version = "0.62", default-features = false, features = [
   "flate2",
   "ring",
 ] }
-russh-sftp = "2.3"
+russh-sftp = "2.4"
 rust-s3 = { version = "0.37", default-features = false, features = [
   "with-tokio",
 ] }

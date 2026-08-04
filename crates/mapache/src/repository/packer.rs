@@ -271,6 +271,7 @@ impl Packer {
         backend: &dyn StorageBackend,
         secure_storage: &SecureStorage,
         pack_id: &ID,
+        nonce_at_end: bool,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         let pack_path = repo.get_path(ContentIdType::Pack, pack_id);
 
@@ -294,7 +295,7 @@ impl Packer {
             )
             .await?;
 
-        Self::parse_footer(secure_storage, &footer_data)
+        Self::parse_footer(secure_storage, &footer_data, nonce_at_end)
     }
 
     /// Decodes a slice of footer bytes into a list of descriptors.
@@ -304,6 +305,7 @@ impl Packer {
     pub fn parse_footer(
         secure_storage: &SecureStorage,
         footer_data: &[u8],
+        nonce_at_end: bool,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         use crate::utils::binary::{get_array, get_u8, get_u32};
 
@@ -323,9 +325,13 @@ impl Packer {
             )));
         }
 
-        let footer_blob_info = secure_storage.decode(
-            &footer_data[(footer_data.len() - encoded_footer_length - 4)..footer_data.len() - 4],
-        )?;
+        let footer_slice =
+            &footer_data[(footer_data.len() - encoded_footer_length - 4)..footer_data.len() - 4];
+        let decrypted = match secure_storage.decrypt_inner(footer_slice, nonce_at_end)? {
+            crate::backend::WriteContents::Owned(v) => v,
+            crate::backend::WriteContents::Borrowed(b) => b.to_vec(),
+        };
+        let footer_blob_info = secure_storage.decompress(&decrypted)?;
         let mut cur = footer_blob_info.as_slice();
         let mut blob_descriptors = Vec::new();
         let mut offset: u32 = 0;
@@ -752,7 +758,7 @@ mod tests {
         assert!(!result.data.is_empty());
 
         // If you want to verify the "round-trip" through the parser:
-        let parsed_descriptors = Packer::parse_footer(&secure_storage, &result.data)?;
+        let parsed_descriptors = Packer::parse_footer(&secure_storage, &result.data, true)?;
         // The parser filters out Padding, so we should get exactly 2 back
         assert_eq!(parsed_descriptors.len(), 2);
 

@@ -59,7 +59,11 @@ impl MapacheFS<dyn BlobLoader> {
         let stash = Stash::new(options.created_time.into());
         let rt_handle = tokio::runtime::Handle::current();
 
-        let tree_cache = TreeCache::new(loader.clone(), 512);
+        let tree_cache = TreeCache::new(
+            loader.clone(),
+            repo.as_ref().map_or(2, |r| r.repo_version()),
+            512,
+        );
         let blob_cache = BlobCache::new(loader.clone(), options.data_cache_size);
 
         let filesystem: MapacheFS<L> = MapacheFS {

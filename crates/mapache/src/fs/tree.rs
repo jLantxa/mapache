@@ -32,24 +32,17 @@ impl Tree {
         Self { nodes }
     }
 
-    pub fn to_bytes(&self, repo_version: u32) -> Result<Vec<u8>> {
-        if repo_version >= 2 {
-            self.to_binary()
-        } else {
-            crate::repository::legacy::serialize_tree_json(self)
-        }
+    /// Deserialize a tree from the legacy JSON format (v1 repositories).
+    pub fn from_json(bytes: &[u8]) -> Result<Tree> {
+        crate::repository::legacy::deserialize_tree_json(bytes)
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Tree> {
-        // Try JSON first (starts with '{'), fall back to binary.
-        if !bytes.is_empty() && bytes[0] == b'{' {
-            crate::repository::legacy::deserialize_tree_json(bytes)
-        } else {
-            Self::from_binary(bytes)
-        }
+    /// Serialize a tree to JSON (v1 repositories).
+    pub fn to_json(&self) -> Result<Vec<u8>> {
+        crate::repository::legacy::serialize_tree_json(self)
     }
 
-    fn to_binary(&self) -> Result<Vec<u8>> {
+    pub fn to_binary(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
         put_u32(&mut buf, self.nodes.len() as u32);
         for node in &self.nodes {
@@ -58,9 +51,15 @@ impl Tree {
         Ok(buf)
     }
 
-    fn from_binary(bytes: &[u8]) -> Result<Tree> {
+    pub fn from_binary(bytes: &[u8]) -> Result<Tree> {
         let mut r = bytes;
         let count = get_u32(&mut r)? as usize;
+        if count > r.len() {
+            return Err(MapacheError::Format(format!(
+                "unreasonable node count {count} for {remaining} remaining bytes",
+                remaining = r.len(),
+            )));
+        }
         let mut nodes = Vec::with_capacity(count);
         for _ in 0..count {
             nodes.push(Node::from_binary(&mut r)?);
@@ -83,7 +82,11 @@ impl Tree {
 
         let (tree_id, owned_back) = tokio::task::spawn_blocking(move || {
             owned.nodes.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-            let bytes = owned.to_bytes(repo_version)?;
+            let bytes = if repo_version >= 2 {
+                owned.to_binary()?
+            } else {
+                owned.to_json()?
+            };
 
             let id = blob_saver.save_blob(
                 BlobType::Tree,
@@ -102,7 +105,14 @@ impl Tree {
 
     pub async fn load_from_repo(repo: &Repository, root_id: &ID) -> Result<Tree> {
         let tree_object = repo.load_blob(root_id).await?;
-        Self::from_bytes(&tree_object).map_err(|e| {
+        // Try binary first (v2+). Fall back to JSON for v1 blobs that haven't been
+        // re-encoded. When v1 is deprecated, remove the fallback.
+        if repo.repo_version() >= 2
+            && let Ok(tree) = Self::from_binary(&tree_object)
+        {
+            return Ok(tree);
+        }
+        Self::from_json(&tree_object).map_err(|e| {
             MapacheError::Format(format!("failed to deserialize tree with ID {root_id}: {e}"))
         })
     }
@@ -1118,8 +1128,8 @@ mod tests {
     #[test]
     fn test_tree_binary_roundtrip_empty() -> Result<()> {
         let tree = Tree::new(vec![]);
-        let bytes = tree.to_bytes(2)?;
-        let restored = Tree::from_bytes(&bytes)?;
+        let bytes = tree.to_binary()?;
+        let restored = Tree::from_binary(&bytes)?;
         assert!(restored.nodes.is_empty());
         Ok(())
     }
@@ -1144,8 +1154,8 @@ mod tests {
             ..Default::default()
         }]);
 
-        let bytes = tree.to_bytes(2)?;
-        let restored = Tree::from_bytes(&bytes)?;
+        let bytes = tree.to_binary()?;
+        let restored = Tree::from_binary(&bytes)?;
         assert_eq!(restored.nodes.len(), 1);
         assert_eq!(restored.nodes[0].name, "hello.txt");
         assert_eq!(restored.nodes[0].node_type, NodeType::File);
@@ -1165,8 +1175,8 @@ mod tests {
             ..Default::default()
         }]);
 
-        let bytes = tree.to_bytes(2)?;
-        let restored = Tree::from_bytes(&bytes)?;
+        let bytes = tree.to_binary()?;
+        let restored = Tree::from_binary(&bytes)?;
         assert_eq!(restored.nodes.len(), 1);
         assert_eq!(restored.nodes[0].tree, Some(dir_id));
         Ok(())
@@ -1186,8 +1196,8 @@ mod tests {
             ..Default::default()
         }]);
 
-        let bytes = tree.to_bytes(2)?;
-        let restored = Tree::from_bytes(&bytes)?;
+        let bytes = tree.to_binary()?;
+        let restored = Tree::from_binary(&bytes)?;
         let si = restored.nodes[0].symlink_info.as_ref().unwrap();
         assert_eq!(si.target_path, PathBuf::from("/target/file"));
         assert_eq!(si.target_type, Some(NodeType::File));
@@ -1208,8 +1218,8 @@ mod tests {
             })
             .collect();
         let tree = Tree::new(nodes);
-        let bytes = tree.to_bytes(2)?;
-        let restored = Tree::from_bytes(&bytes)?;
+        let bytes = tree.to_binary()?;
+        let restored = Tree::from_binary(&bytes)?;
         assert_eq!(restored.nodes.len(), 1000);
         assert_eq!(restored.nodes[0].name, "file_0000.txt");
         assert_eq!(restored.nodes[999].name, "file_0999.txt");
@@ -1223,8 +1233,8 @@ mod tests {
             name: "test".to_string(),
             ..Default::default()
         }]);
-        let a = tree.to_bytes(2)?;
-        let b = tree.to_bytes(2)?;
+        let a = tree.to_binary()?;
+        let b = tree.to_binary()?;
         assert_eq!(a, b);
         Ok(())
     }
@@ -1247,7 +1257,7 @@ mod tests {
             })
             .collect();
         let tree = Tree::new(nodes);
-        let bin = tree.to_bytes(2)?;
+        let bin = tree.to_binary()?;
         let json = serde_json::to_vec(&tree).unwrap();
         assert!(
             bin.len() < json.len(),
@@ -1255,18 +1265,6 @@ mod tests {
             bin.len(),
             json.len()
         );
-        Ok(())
-    }
-
-    #[test]
-    fn test_tree_auto_detect_format() -> Result<()> {
-        let tree = Tree::new(vec![]);
-        let bin = tree.to_bytes(2)?;
-        let json = serde_json::to_vec(&tree).unwrap();
-        let restored_bin = Tree::from_bytes(&bin)?;
-        let restored_json = Tree::from_bytes(&json)?;
-        assert!(restored_bin.nodes.is_empty());
-        assert!(restored_json.nodes.is_empty());
         Ok(())
     }
 }

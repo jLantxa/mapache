@@ -754,7 +754,7 @@ impl Repository {
         let manifest = backend
             .read(&Handle::new(Path::new(MANIFEST_PATH)), 0, 0)
             .await?;
-        let manifest = secure_storage.decode(&manifest)?;
+        let manifest = secure_storage.decode_owned(manifest)?;
         let manifest = serde_json::from_slice(&manifest)?;
         Ok(manifest)
     }
@@ -1093,7 +1093,7 @@ impl Repository {
                         .await?;
 
                     let index = tokio::task::spawn_blocking(move || {
-                        let index_file = secure_storage.decode(&index_data)?;
+                        let index_file = secure_storage.decode_owned(index_data)?;
                         let index_file: IndexFile =
                             serde_json::from_slice(&index_file).map_err(|e| {
                                 MapacheError::Format(format!(

@@ -517,7 +517,7 @@ impl Repository {
             else {
                 continue;
             };
-            let Some(decoded) = self.secure_storage().decode(&data).ok() else {
+            let Some(decoded) = self.secure_storage().decode_owned(data).ok() else {
                 continue;
             };
             if let Ok(lock) = serde_json::from_slice::<Lock>(&decoded) {

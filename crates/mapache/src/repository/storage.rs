@@ -1,4 +1,5 @@
-use aes_gcm_siv::{AeadInPlace, Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
+use aes_gcm_siv::aead::{AeadInOut, inout::InOutBuf};
+use aes_gcm_siv::{Aes256GcmSiv, Key as AesKey, KeyInit, Nonce, aead::Aead};
 use argon2::Argon2;
 use parking_lot::Mutex;
 use zeroize::Zeroizing;
@@ -49,8 +50,9 @@ impl SecureStorage {
             )));
         }
 
-        let aes_key = AesKey::<Aes256GcmSiv>::from_slice(key);
-        self.cipher = Some(Aes256GcmSiv::new(aes_key));
+        let aes_key = AesKey::<Aes256GcmSiv>::try_from(key)
+            .map_err(|e| MapacheError::Internal(format!("invalid AES key: {e}")))?;
+        self.cipher = Some(Aes256GcmSiv::new(&aes_key));
         Ok(self)
     }
 
@@ -84,9 +86,8 @@ impl SecureStorage {
 
         let mut out = Vec::with_capacity(prefix_len + bound + suffix_len);
 
-        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
         if has_cipher {
-            nonce_bytes = rand::random();
+            let nonce_bytes: [u8; AES_GCM_NONCE_LEN] = rand::random();
             out.extend_from_slice(&nonce_bytes);
         }
 
@@ -113,9 +114,11 @@ impl SecureStorage {
         }
 
         if let Some(cipher) = &self.cipher {
-            let payload_mut = &mut out[data_start..];
+            let nonce =
+                Nonce::try_from(&out[..AES_GCM_NONCE_LEN]).expect("nonce length is always 12");
+            // InOutBuf shares input/output memory — zero-copy in-place encryption.
             let tag = cipher
-                .encrypt_in_place_detached(Nonce::from_slice(&nonce_bytes), b"", payload_mut)
+                .encrypt_inout_detached(&nonce, b"", InOutBuf::from(&mut out[data_start..]))
                 .map_err(|_| MapacheError::Crypto("encryption failed".to_string()))?;
             out.extend_from_slice(tag.as_slice());
         }
@@ -180,9 +183,11 @@ impl SecureStorage {
             Err(MapacheError::Integrity("invalid ciphertext".to_string()))?;
         }
 
-        let (nonce, ciphertext_and_tag) = data.split_at(AES_GCM_NONCE_LEN);
+        let (nonce_bytes, ciphertext_and_tag) = data.split_at(AES_GCM_NONCE_LEN);
+        let nonce = Nonce::try_from(nonce_bytes)
+            .map_err(|_| MapacheError::Crypto("invalid nonce".to_string()))?;
         let decrypted = cipher
-            .decrypt(Nonce::from_slice(nonce), ciphertext_and_tag)
+            .decrypt(&nonce, ciphertext_and_tag)
             .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))?;
         Ok(WriteContents::Owned(decrypted))
     }
@@ -197,19 +202,18 @@ impl SecureStorage {
             Err(MapacheError::Integrity("invalid ciphertext".to_string()))?;
         }
 
-        let nonce = Nonce::clone_from_slice(&data[..AES_GCM_NONCE_LEN]);
-        let payload_len = data.len() - AES_GCM_NONCE_LEN - AES_GCM_TAG_LEN;
+        let nonce = Nonce::try_from(&data[..AES_GCM_NONCE_LEN])
+            .map_err(|_| MapacheError::Crypto("invalid nonce".to_string()))?;
 
-        // Move payload to the beginning
-        data.copy_within(AES_GCM_NONCE_LEN..AES_GCM_NONCE_LEN + payload_len, 0);
+        // Strip nonce prefix — move ciphertext+tag to front of the buffer.
+        let ct_tag_len = data.len() - AES_GCM_NONCE_LEN;
+        data.copy_within(AES_GCM_NONCE_LEN.., 0);
+        data.truncate(ct_tag_len);
 
-        let tag_offset = AES_GCM_NONCE_LEN + payload_len;
-        let tag = aes_gcm_siv::Tag::clone_from_slice(&data[tag_offset..]);
-
-        data.truncate(payload_len);
-
+        // decrypt_in_place (Buffer trait) decrypts and truncates in-place —
+        // no manual tag extraction or temporary allocations needed.
         cipher
-            .decrypt_in_place_detached(&nonce, b"", &mut data, &tag)
+            .decrypt_in_place(&nonce, b"", &mut data)
             .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))?;
 
         Ok(data)

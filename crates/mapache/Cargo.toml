@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "filesystem"]
 workspace = true
 
 [dependencies]
-aes-gcm-siv = "0.11"
+aes-gcm-siv = "0.12"
 argon2 = "0.5"
 async-stream = "0.3"
 async-trait = "0.1"

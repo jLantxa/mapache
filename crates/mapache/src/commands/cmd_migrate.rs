@@ -11,11 +11,10 @@ use indicatif::ProgressBar;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, error::MapacheError},
+    common::{ContentIdType, ID, error::MapacheError},
     repository::{
         index::{IndexMode, MasterIndex},
-        manifest::Manifest,
-        packer::Packer,
+        migration,
         repo::THIS_REPOSITORY_VERSION,
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
@@ -43,7 +42,7 @@ impl ToExitCode for MigrateError {
 }
 
 #[derive(Args, Debug, Clone)]
-#[clap(about = "Migrate repository format from v1 to v2 (binary index)")]
+#[clap(about = "Migrate repository format from v1 to v2 (binary index, nonce at end)")]
 pub struct CmdArgs {
     /// Dry run
     #[clap(long, default_value_t = false)]
@@ -95,54 +94,173 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             );
             tracing::info!(target: "migrate", "Migrating from v{} to v{}", current_version, THIS_REPOSITORY_VERSION);
 
-            // Step 1: Rebuild index (converts JSON index files to binary format)
-            ui::cli::log!("\nStep 1/2: Rebuilding index...");
-            tracing::info!(target: "migrate", "Step 1: Rebuilding index");
+            // v1 → v2: nonce moves from start to end
+            let old_nonce_at_end = false;
+            let new_nonce_at_end = true;
 
+            // Collect old IDs for cleanup AFTER manifest update.
+            let mut old_pack_ids: Vec<ID> = Vec::new();
+            let mut old_snapshot_ids: Vec<ID> = Vec::new();
+            let mut new_snapshot_ids: Vec<ID> = Vec::new();
+
+            // ── Step 1: Re-encrypt packs ──────────────────────────────
             let all_pack_ids = repo.list_packs().await?;
-            let old_index_ids = repo.list_index_ids().await?;
-            let mut new_master_index = MasterIndex::new(IndexMode::Eager);
-            new_master_index.set_autosave(false);
-            ui::cli::log!("Found {} packs", all_pack_ids.len());
+            old_pack_ids.extend(all_pack_ids.iter().copied());
+            ui::cli::log!("\nStep 1/4: Re-encrypting {} packs...", all_pack_ids.len());
+            tracing::info!(target: "migrate", "Step 1: Re-encrypting {} packs", all_pack_ids.len());
 
-            let scan_bar = ProgressBar::with_draw_target(
+            let reenc_bar = ProgressBar::with_draw_target(
                 Some(all_pack_ids.len() as u64),
                 default_bar_draw_target(),
             )
             .with_style(
                 default_progress_style()
-                    .template("[{bar:20.cyan/white}] Scanning packs: {pos}/{len}")
+                    .template("[{bar:20.cyan/white}] Re-encrypting packs: {pos}/{len}")
                     .expect("invalid progress bar template"),
             );
+
+            // Mapping from old pack_id → (new_pack_id, descriptors)
+            let mut pack_map: Vec<(ID, ID, Vec<_>)> = Vec::new();
 
             let results: Vec<_> = futures::stream::iter(all_pack_ids.iter())
                 .map(|pack_id| {
                     let repo = repo.clone();
                     let backend = backend.clone();
                     let secure_storage = secure_storage.clone();
-                    let scan_bar = scan_bar.clone();
+                    let reenc_bar = reenc_bar.clone();
 
                     async move {
-                        let res = Packer::parse_pack_footer(
+                        let res = migration::re_encrypt_pack(
                             repo.as_ref(),
                             backend.as_ref(),
                             secure_storage.as_ref(),
                             pack_id,
+                            old_nonce_at_end,
+                            new_nonce_at_end,
                         )
                         .await;
 
-                        scan_bar.inc(1);
+                        reenc_bar.inc(1);
                         (pack_id, res)
                     }
                 })
-                .buffered(8)
+                .buffered(4)
                 .collect()
                 .await;
 
-            scan_bar.finish_and_clear();
+            reenc_bar.finish_and_clear();
 
-            let populate_bar = ProgressBar::with_draw_target(
-                Some(all_pack_ids.len() as u64),
+            let mut error_count = 0;
+            for (old_id, res) in results {
+                match res {
+                    Ok((new_id, descriptors)) => {
+                        pack_map.push((*old_id, new_id, descriptors));
+                    }
+                    Err(e) => {
+                        error_count += 1;
+                        ui::cli::error!("error re-encrypting pack {old_id}: {e}");
+                    }
+                }
+            }
+
+            ui::cli::log!("Re-encrypted {} packs successfully", pack_map.len());
+            if error_count > 0 {
+                ui::cli::warning!("Skipped {} packs due to errors", error_count);
+            }
+
+            // ── Step 2: Re-encrypt snapshots ──────────────────────────
+            let snapshot_ids = repo.list_snapshot_ids().await?;
+            let dropped_ids = repo.list_dropped_snapshot_ids().await?;
+            old_snapshot_ids.extend(snapshot_ids.iter().copied());
+            old_snapshot_ids.extend(dropped_ids.iter().copied());
+            let total_files = snapshot_ids.len() + dropped_ids.len();
+
+            if total_files > 0 {
+                ui::cli::log!("\nStep 2/4: Re-encrypting {} snapshots...", total_files);
+                tracing::info!(target: "migrate", "Step 2: Re-encrypting {} snapshots", total_files);
+
+                let file_bar = ProgressBar::with_draw_target(
+                    Some(total_files as u64),
+                    default_bar_draw_target(),
+                )
+                .with_style(
+                    default_progress_style()
+                        .template("[{bar:20.cyan/white}] Re-encrypting snapshots: {pos}/{len}")
+                        .expect("invalid progress bar template"),
+                );
+
+                // Re-encrypt active snapshots
+                for old_id in &snapshot_ids {
+                    if cleanup_handler.is_interrupted() {
+                        return Err(MigrateError::Interrupted);
+                    }
+                    if !args.dry_run {
+                        match migration::re_encrypt_file(
+                            repo.as_ref(),
+                            backend.as_ref(),
+                            secure_storage.as_ref(),
+                            ContentIdType::Snapshot,
+                            old_id,
+                            old_nonce_at_end,
+                            new_nonce_at_end,
+                        )
+                        .await
+                        {
+                            Ok(new_id) => {
+                            new_snapshot_ids.push(new_id);
+                        }
+                            Err(e) => {
+                                ui::cli::error!("error re-encrypting snapshot {old_id}: {e}");
+                            }
+                        }
+                    }
+                    file_bar.inc(1);
+                }
+
+                // Re-encrypt dropped snapshots
+                for old_id in &dropped_ids {
+                    if cleanup_handler.is_interrupted() {
+                        return Err(MigrateError::Interrupted);
+                    }
+                    if !args.dry_run {
+                        match migration::re_encrypt_file(
+                            repo.as_ref(),
+                            backend.as_ref(),
+                            secure_storage.as_ref(),
+                            ContentIdType::Snapshot,
+                            old_id,
+                            old_nonce_at_end,
+                            new_nonce_at_end,
+                        )
+                        .await
+                        {
+                            Ok(new_id) => {
+                            new_snapshot_ids.push(new_id);
+                        }
+                            Err(e) => {
+                                ui::cli::error!("error re-encrypting dropped snapshot {old_id}: {e}");
+                            }
+                        }
+                    }
+                    file_bar.inc(1);
+                }
+
+                file_bar.finish_and_clear();
+                ui::cli::log!("Re-encrypted {} snapshot files", total_files);
+            } else {
+                ui::cli::log!("\nStep 2/4: No snapshots to re-encrypt");
+            }
+
+            // ── Step 3: Rebuild index and persist ──────────────────────
+            // This step writes NEW index files without touching old ones.
+            ui::cli::log!("\nStep 3/4: Rebuilding index...");
+            tracing::info!(target: "migrate", "Step 3: Rebuilding index");
+
+            let mut new_master_index = MasterIndex::new(IndexMode::Eager);
+            new_master_index.set_autosave(false);
+
+            let scan_bar = ProgressBar::with_draw_target(
+                Some(pack_map.len() as u64),
                 default_bar_draw_target(),
             )
             .with_style(
@@ -152,96 +270,113 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             );
 
             let mut blob_count = 0;
-            let mut error_count = 0;
-
-            for (pack_id, res) in results {
+            for (_old_id, new_id, descriptors) in &pack_map {
                 if cleanup_handler.is_interrupted() {
-                    tracing::info!(target: "migrate", "Migration interrupted by user");
                     return Err(MigrateError::Interrupted);
                 }
-
-                match res {
-                    Ok(descriptors) => {
-                        blob_count += descriptors.len();
-                        new_master_index
-                            .add_pack(repo.as_ref(), pack_id, descriptors)
-                            .await?;
-                    }
-                    Err(e) => {
-                        error_count += 1;
-                        ui::cli::error!("error reading pack {pack_id}: {e}");
-                    }
-                }
-                populate_bar.inc(1);
+                blob_count += descriptors.len();
+                new_master_index
+                    .add_pack(repo.as_ref(), new_id, descriptors.clone())
+                    .await?;
+                scan_bar.inc(1);
             }
+            scan_bar.finish_and_clear();
 
-            populate_bar.finish_and_clear();
+            ui::cli::log!("Index covers {} blobs across {} packs", blob_count, pack_map.len());
 
-            ui::cli::log!("Found {} blobs", blob_count);
-            if error_count > 0 {
-                ui::cli::warning!("Skipped {} packs due to errors", error_count);
-            }
+            let old_index_ids = repo.list_index_ids().await?;
+
+
+
+            // ── Step 4: Update manifest (atomic commit point) ──────────
+            // Everything before this point writes NEW data without touching OLD data.
+            // After this point, the repo is v2 and consistent.
+            ui::cli::log!("\nStep 4/4: Updating manifest and cleaning up...");
+            tracing::info!(target: "migrate", "Step 4: Updating manifest and cleaning up");
 
             if !args.dry_run {
-                // Persist new binary index
-                let new_index_size = new_master_index.persist(repo.as_ref()).await?;
+                // Flip to v2 nonce position (at end) before writing new data.
+                secure_storage.set_nonce_at_end(new_nonce_at_end);
+
+                // Re-save manifest with new nonce position (nonce at end).
+                let mut manifest = repo.manifest().clone();
+                manifest.set_version(THIS_REPOSITORY_VERSION);
+
+                // Persist new binary index BEFORE updating manifest.
+                let new_index_size = new_master_index
+                    .persist_with_version(repo.as_ref(), Some(THIS_REPOSITORY_VERSION))
+                    .await?;
                 let new_index_ids = new_master_index.ids();
                 ui::cli::log!("Persisted {} new binary index files", new_index_ids.len());
 
-                // Delete old JSON index files
+                // NOW update the manifest — this is the atomic commit point.
+                repo.save_manifest(&manifest).await?;
+                ui::cli::log!("Manifest updated to v{}", THIS_REPOSITORY_VERSION);
+
+                // ── Cleanup: delete old data ────────────────────────────
+                // From here on, failure is safe: the repo is consistent (v2),
+                // orphaned files are just wasted space.
+
+                // Delete ALL old packs — every pack was re-encrypted into a new file.
+                // The new pack has a different ID (different nonce → different hash).
+                let mut deleted_pack_count = 0u64;
+                for (old_id, new_id, _) in &pack_map {
+                    if old_id == new_id {
+                        continue;
+                    }
+
+                    match repo.delete_file(ContentIdType::Pack, old_id, None).await {
+                        Ok(_) => {
+                            deleted_pack_count += 1;
+                        }
+                        Err(e) => {
+                            ui::cli::warning!("failed to delete old pack {}: {}", old_id, e);
+                        }
+                    }
+                }
+                ui::cli::log!("Deleted {} old pack files", deleted_pack_count);
+
+                // Delete ALL old snapshots — every snapshot was re-encrypted into a new file.
+                let new_snapshot_set: std::collections::HashSet<ID> =
+                    new_snapshot_ids.iter().copied().collect();
+                let mut deleted_snap_count = 0u64;
+                for old_id in &old_snapshot_ids {
+                    if new_snapshot_set.contains(old_id) {
+                        continue;
+                    }
+
+                    match repo.delete_file(ContentIdType::Snapshot, old_id, None).await {
+                        Ok(_) => {
+                            deleted_snap_count += 1;
+                        }
+                        Err(e) => {
+                            ui::cli::warning!("failed to delete old snapshot {}: {}", old_id, e);
+                        }
+                    }
+                }
+                ui::cli::log!("Deleted {} old snapshot files", deleted_snap_count);
+
+                // Delete old index files
+                let deleted_index_size = AtomicU64::new(0);
                 let old_index_ids: Vec<_> = old_index_ids
                     .into_iter()
                     .filter(|id| !new_index_ids.contains(id))
                     .collect();
 
-                let deleted_size = AtomicU64::new(0);
                 for id in &old_index_ids {
                     match repo.delete_file(ContentIdType::Index, id, None).await {
                         Ok(size) => {
-                            deleted_size.fetch_add(size, Ordering::AcqRel);
+                            deleted_index_size.fetch_add(size, Ordering::AcqRel);
                         }
                         Err(e) => {
                             ui::cli::error!("failed to delete index {}: {}", id, e);
                         }
                     }
                 }
-
                 ui::cli::log!("Deleted {} old index files", old_index_ids.len());
 
-                // Step 2: Update manifest version
-                ui::cli::log!("\nStep 2/2: Updating manifest version...");
-                tracing::info!(target: "migrate", "Step 2: Updating manifest version to {}", THIS_REPOSITORY_VERSION);
-
-                let mut manifest = Manifest::new(THIS_REPOSITORY_VERSION);
-                // Preserve original ID and creation time
-                manifest.set_version(THIS_REPOSITORY_VERSION);
-
-                // We need to reconstruct the manifest with the original ID and time.
-                // Since we can't mutate the existing one easily (it's behind Arc in the repo),
-                // we'll load it, modify, and save.
-                let manifest_data = backend
-                    .read(
-                        &crate::backend::Handle::new(std::path::Path::new(
-                            crate::repository::repo::MANIFEST_PATH,
-                        )),
-                        0,
-                        0,
-                    )
-                    .await
-                    .map_err(|e| MapacheError::Repo(format!("failed to read manifest: {e}")))?;
-                let decoded = secure_storage.decode(&manifest_data)?;
-                let mut manifest: Manifest =
-                    serde_json::from_slice(&decoded).map_err(MapacheError::Serialization)?;
-                manifest.set_version(THIS_REPOSITORY_VERSION);
-
-                repo.save_manifest(&manifest).await?;
-                ui::cli::log!(
-                    "Manifest updated to v{}",
-                    THIS_REPOSITORY_VERSION
-                );
-
                 let added_size: i64 = new_index_size.encoded as i64
-                    - deleted_size.load(Ordering::Relaxed) as i64;
+                    - deleted_index_size.load(Ordering::Relaxed) as i64;
                 if added_size >= 0 {
                     ui::cli::log!(
                         "Index space change: +{}",
@@ -258,7 +393,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     );
                 }
             } else {
-                ui::cli::log!("\nStep 2/2: Would update manifest version to {}", THIS_REPOSITORY_VERSION);
+                ui::cli::log!("[DRY RUN] Would update manifest to v{}", THIS_REPOSITORY_VERSION);
+                ui::cli::log!("[DRY RUN] Would rebuild index with {} packs", pack_map.len());
             }
 
             let prefix = super::dry_run_prefix(args.dry_run);

@@ -54,6 +54,7 @@ mod test_corrupt_repo;
 mod test_hooks;
 mod test_lock_cleanup;
 mod test_permission_denied;
+mod test_v1;
 mod test_zeroize;
 
 #[cfg(all(feature = "mount", unix))]
@@ -333,6 +334,11 @@ impl InitBuilder {
                 format: mapache::repository::repo::THIS_REPOSITORY_VERSION,
             },
         }
+    }
+
+    pub fn format(mut self, format: u32) -> Self {
+        self.args.format = format;
+        self
     }
 
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {

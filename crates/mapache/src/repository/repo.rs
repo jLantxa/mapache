@@ -301,6 +301,8 @@ impl Repository {
         tracing::info!(target: "repo", "Creating manifest v{repo_version}");
         let manifest = Manifest::new(repo_version);
 
+        // Nonce position depends on repo version: v1 = start, v2 = end.
+        secure_storage.set_nonce_at_end(repo_version >= 2);
         let manifest_path = Path::new(MANIFEST_PATH);
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
@@ -374,11 +376,17 @@ impl Repository {
         tracing::info!(target: "repo", "Repository opened");
 
         let version = repo.manifest().version();
+        tracing::info!(target: "repo", "Repository version: {version}");
         if version > THIS_REPOSITORY_VERSION {
             return Err(MapacheError::Repo(format!(
                 "invalid repository version '{version}'"
             )));
         }
+
+        // Nonce position depends solely on repo version: v1 = start, v2 = end.
+        let nonce_at_end = version >= 2;
+        tracing::info!(target: "repo", "Nonce position: {}", if nonce_at_end { "end" } else { "start" });
+        secure_storage.set_nonce_at_end(nonce_at_end);
 
         Ok((repo, secure_storage))
     }
@@ -389,7 +397,7 @@ impl Repository {
         secure_storage: Arc<SecureStorage>,
         config: RepoConfig,
     ) -> Result<Arc<Self>> {
-        let manifest: Manifest =
+        let (manifest, _manifest_nonce_at_end) =
             Self::load_manifest(secure_storage.clone(), backend.clone()).await?;
 
         // If use cache, wrap the backend in a cache
@@ -577,21 +585,13 @@ impl Repository {
 
         tokio::task::spawn_blocking(move || {
             let decoded = secure_storage.decode(&index_data)?;
-            let index_file = if repo_version >= 2 {
-                index::deserialize_index_binary(&decoded).map_err(|e| {
+            let index_file =
+                index::IndexFile::deserialize(&decoded, repo_version).map_err(|e| {
                     MapacheError::Format(format!(
                         "failed to load index file {}: {e}",
                         file_id.to_short_hex(4)
                     ))
-                })?
-            } else {
-                super::legacy::deserialize_index_json(&decoded).map_err(|e| {
-                    MapacheError::Format(format!(
-                        "failed to load index file {}: {e}",
-                        file_id.to_short_hex(4)
-                    ))
-                })?
-            };
+                })?;
             Ok(Index::from_index_file(index_file, file_id))
         })
         .await
@@ -852,25 +852,32 @@ impl Repository {
             )
             .await?;
 
-        if self.repo_version >= 2 {
-            index::deserialize_index_binary(&data)
-                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}")))
-        } else {
-            super::legacy::deserialize_index_json(&data)
-        }
+        index::IndexFile::deserialize(&data, self.repo_version)
     }
 
     /// Loads the repository manifest.
+    ///
+    /// Tries decoding with nonce-at-end first, then nonce-at-start, to support
+    /// both v1 (nonce at start) and v2 (nonce at end) manifests. The returned
+    /// `bool` indicates which nonce position was used.
     async fn load_manifest(
         secure_storage: Arc<SecureStorage>,
         backend: Arc<dyn StorageBackend>,
-    ) -> Result<Manifest> {
-        let manifest = backend
+    ) -> Result<(Manifest, bool)> {
+        let raw = backend
             .read(&Handle::new(Path::new(MANIFEST_PATH)), 0, 0)
             .await?;
-        let manifest = secure_storage.decode_owned(manifest)?;
-        let manifest = serde_json::from_slice(&manifest)?;
-        Ok(manifest)
+
+        // Try nonce-at-end first, then nonce-at-start.
+        if let Ok(decoded) = secure_storage.decrypt_inner(&raw, true) {
+            let decompressed = secure_storage.decompress(&decoded)?;
+            let manifest = serde_json::from_slice(&decompressed)?;
+            return Ok((manifest, true));
+        }
+        let decoded = secure_storage.decrypt_inner(&raw, false)?;
+        let decompressed = secure_storage.decompress(&decoded)?;
+        let manifest = serde_json::from_slice(&decompressed)?;
+        Ok((manifest, false))
     }
 
     /// Loads a lock file.
@@ -1222,21 +1229,13 @@ impl Repository {
 
                     let index = tokio::task::spawn_blocking(move || {
                         let decoded = secure_storage.decode_owned(index_data)?;
-                        let index_file = if repo_version >= 2 {
-                            index::deserialize_index_binary(&decoded).map_err(|e| {
+                        let index_file = index::IndexFile::deserialize(&decoded, repo_version)
+                            .map_err(|e| {
                                 MapacheError::Format(format!(
                                     "failed to load index file {}: {e}",
                                     id.to_short_hex(4)
                                 ))
-                            })?
-                        } else {
-                            super::legacy::deserialize_index_json(&decoded).map_err(|e| {
-                                MapacheError::Format(format!(
-                                    "failed to load index file {}: {e}",
-                                    id.to_short_hex(4)
-                                ))
-                            })?
-                        };
+                            })?;
                         Ok::<_, MapacheError>((
                             Index::from_index_file(index_file.clone(), id),
                             index_file,

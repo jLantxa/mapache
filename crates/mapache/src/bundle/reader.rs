@@ -181,7 +181,7 @@ where
             .load_blob(&current_id)
             .await
             .map_err(|e| MapacheError::Repo(format!("failed to load tree: {e}")))?;
-        let tree: Tree = Tree::from_bytes(&data)
+        let tree: Tree = Tree::from_binary(&data)
             .map_err(|e| MapacheError::Repo(format!("failed to parse tree: {e}")))?;
 
         for node in tree.nodes {
@@ -229,7 +229,7 @@ where
                     continue;
                 }
             };
-            let tree: Tree = match Tree::from_bytes(&data) {
+            let tree: Tree = match Tree::from_binary(&data) {
                 Ok(t) => t,
                 Err(e) => {
                     sender_clone(Event::Backup(BackupEvent::Error(format!(
@@ -449,7 +449,7 @@ mod tests {
         fn from_trees(trees: Vec<(ID, Tree)>) -> Self {
             let blobs = trees
                 .into_iter()
-                .map(|(id, tree)| (id, serde_json::to_vec(&tree).unwrap()))
+                .map(|(id, tree)| (id, tree.to_binary().unwrap()))
                 .collect();
             Self { blobs }
         }
@@ -478,7 +478,7 @@ mod tests {
             tree: None,
         });
 
-        let tree_id = ID::from_content(serde_json::to_vec(&tree).unwrap());
+        let tree_id = ID::from_content(tree.to_binary().unwrap());
         let loader = Arc::new(MockLoader::from_trees(vec![(tree_id, tree)]));
 
         let tmp = tempfile::tempdir().unwrap();
@@ -512,7 +512,7 @@ mod tests {
             tree: None,
         });
 
-        let tree_id = ID::from_content(serde_json::to_vec(&tree).unwrap());
+        let tree_id = ID::from_content(tree.to_binary().unwrap());
         let loader = Arc::new(MockLoader::from_trees(vec![(tree_id, tree)]));
 
         let tmp = tempfile::tempdir().unwrap();
@@ -541,7 +541,7 @@ mod tests {
             tree: None,
         });
 
-        let tree_id = ID::from_content(serde_json::to_vec(&tree).unwrap());
+        let tree_id = ID::from_content(tree.to_binary().unwrap());
         let loader = Arc::new(MockLoader::from_trees(vec![(tree_id, tree)]));
 
         let tmp = tempfile::tempdir().unwrap();

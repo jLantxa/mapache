@@ -403,7 +403,7 @@ mod tests {
         ts.finalize_root().await?;
         let root_id = ts.root_tree().expect("root tree should be set");
         let bytes = saver.get(&root_id).expect("root tree blob should exist");
-        let tree: Tree = Tree::from_bytes(&bytes)?;
+        let tree: Tree = Tree::from_binary(&bytes)?;
         assert!(tree.nodes.is_empty(), "empty snapshot has no nodes");
         Ok(())
     }
@@ -424,7 +424,7 @@ mod tests {
 
         let root_id = ts.root_tree().expect("root should be finalized");
         let bytes = saver.get(&root_id).unwrap();
-        let tree: Tree = Tree::from_bytes(&bytes)?;
+        let tree: Tree = Tree::from_binary(&bytes)?;
         assert_eq!(tree.nodes.len(), 1);
         assert_eq!(tree.nodes[0].name, "file.txt");
         assert_eq!(tree.nodes[0].node_type, NodeType::File);
@@ -473,14 +473,14 @@ mod tests {
 
         let root_id = ts.root_tree().expect("root tree should be set");
         let bytes = saver.get(&root_id).unwrap();
-        let tree: Tree = Tree::from_bytes(&bytes)?;
+        let tree: Tree = Tree::from_binary(&bytes)?;
         assert_eq!(tree.nodes.len(), 1);
         assert_eq!(tree.nodes[0].name, "dir");
 
         // Verify the dir's tree was saved
         let dir_tree_id = tree.nodes[0].tree.expect("dir should have a tree");
         let dir_bytes = saver.get(&dir_tree_id).unwrap();
-        let dir_tree: Tree = Tree::from_bytes(&dir_bytes)?;
+        let dir_tree: Tree = Tree::from_binary(&dir_bytes)?;
         assert_eq!(dir_tree.nodes.len(), 2);
         assert_eq!(dir_tree.nodes[0].name, "a.txt");
         assert_eq!(dir_tree.nodes[1].name, "b.txt");
@@ -534,26 +534,26 @@ mod tests {
 
         let root_id = ts.root_tree().expect("root tree");
         let root_bytes = saver.get(&root_id).unwrap();
-        let root_tree: Tree = Tree::from_bytes(&root_bytes)?;
+        let root_tree: Tree = Tree::from_binary(&root_bytes)?;
         assert_eq!(root_tree.nodes.len(), 1);
         assert_eq!(root_tree.nodes[0].name, "a");
 
         // Walk down: a → b → c → file.txt
         let a_id = root_tree.nodes[0].tree.unwrap();
         let a_bytes = saver.get(&a_id).unwrap();
-        let a_tree: Tree = Tree::from_bytes(&a_bytes)?;
+        let a_tree: Tree = Tree::from_binary(&a_bytes)?;
         assert_eq!(a_tree.nodes.len(), 1);
         assert_eq!(a_tree.nodes[0].name, "b");
 
         let b_id = a_tree.nodes[0].tree.unwrap();
         let b_bytes = saver.get(&b_id).unwrap();
-        let b_tree: Tree = Tree::from_bytes(&b_bytes)?;
+        let b_tree: Tree = Tree::from_binary(&b_bytes)?;
         assert_eq!(b_tree.nodes.len(), 1);
         assert_eq!(b_tree.nodes[0].name, "c");
 
         let c_id = b_tree.nodes[0].tree.unwrap();
         let c_bytes = saver.get(&c_id).unwrap();
-        let c_tree: Tree = Tree::from_bytes(&c_bytes)?;
+        let c_tree: Tree = Tree::from_binary(&c_bytes)?;
         assert_eq!(c_tree.nodes.len(), 1);
         assert_eq!(c_tree.nodes[0].name, "file.txt");
         assert_eq!(c_tree.nodes[0].node_type, NodeType::File);
@@ -594,7 +594,7 @@ mod tests {
 
         let root_id = ts.root_tree().expect("root tree");
         let bytes = saver.get(&root_id).unwrap();
-        let tree: Tree = Tree::from_bytes(&bytes)?;
+        let tree: Tree = Tree::from_binary(&bytes)?;
         assert_eq!(tree.nodes.len(), 3);
         assert_eq!(tree.nodes[0].name, "a.txt");
         assert_eq!(tree.nodes[1].name, "b.txt");
@@ -617,13 +617,13 @@ mod tests {
         .await?;
 
         let root_id = ts.root_tree().expect("root tree");
-        let root_tree: Tree = Tree::from_bytes(&saver.get(&root_id).unwrap())?;
+        let root_tree: Tree = Tree::from_binary(&saver.get(&root_id).unwrap())?;
         assert_eq!(root_tree.nodes.len(), 1);
         assert_eq!(root_tree.nodes[0].name, "empty_dir");
 
         // Empty dir tree should have no nodes
         let dir_id = root_tree.nodes[0].tree.unwrap();
-        let dir_tree: Tree = Tree::from_bytes(&saver.get(&dir_id).unwrap())?;
+        let dir_tree: Tree = Tree::from_binary(&saver.get(&dir_id).unwrap())?;
         assert!(dir_tree.nodes.is_empty());
         Ok(())
     }

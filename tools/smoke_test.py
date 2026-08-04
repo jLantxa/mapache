@@ -130,9 +130,14 @@ def main():
         "--bin", type=Path, default=default_bin,
         help="Path to mapache binary (default: target/release/mapache)",
     )
+    parser.add_argument(
+        "--format", type=int, default=2, choices=[1, 2],
+        help="Repository format version (default: 2)",
+    )
     args = parser.parse_args()
 
     mapache = args.bin
+    repo_format = args.format
     work_dir = Path(tempfile.gettempdir()) / "mapache_smoke"
     repo_dir = work_dir / "repo"
     restore_dir = work_dir / "restored"
@@ -208,7 +213,7 @@ def main():
         # 1. Init
         def test_init():
             cleanup()
-            run_mapache(mapache, ["init"] + r)
+            run_mapache(mapache, ["init", "--format", str(repo_format)] + r)
             if not repo_dir.exists():
                 raise RuntimeError("repo dir not created")
 

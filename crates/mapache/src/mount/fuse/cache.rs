@@ -12,14 +12,16 @@ use crate::{
 /// A cache for `Tree` objects that uses a Least Recently Used (LRU) eviction policy.
 pub(super) struct TreeCache<L: BlobLoader + ?Sized> {
     loader: Arc<L>,
+    repo_version: u32,
     capacity: usize,
     inner: Mutex<Lru<ID, Tree>>,
 }
 
 impl<L: BlobLoader + ?Sized> TreeCache<L> {
-    pub(super) fn new(loader: Arc<L>, capacity: usize) -> Self {
+    pub(super) fn new(loader: Arc<L>, repo_version: u32, capacity: usize) -> Self {
         Self {
             loader,
+            repo_version,
             capacity,
             inner: Mutex::new(Lru::new()),
         }
@@ -36,7 +38,13 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
 
         tracing::debug!(target: "fuse", "TreeCache MISS: {}", id.to_short_hex(8));
         let tree_blob = self.loader.load_blob(id).await?;
-        let tree = Arc::new(Tree::from_bytes(&tree_blob)?);
+        // Try binary first (v2+). Fall back to JSON for v1 blobs. When v1 is deprecated, remove the fallback.
+        let tree = if self.repo_version >= 2 {
+            Tree::from_binary(&tree_blob).or_else(|_| Tree::from_json(&tree_blob))
+        } else {
+            Tree::from_json(&tree_blob)
+        }
+        .map(Arc::new)?;
 
         {
             let mut inner = self.inner.lock();

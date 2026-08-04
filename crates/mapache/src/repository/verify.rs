@@ -74,7 +74,8 @@ async fn verify_pack_inline(
         let file_hash = ID::from_content(&raw_data);
         let bit_rot = file_hash != pack_id;
 
-        let pack_header = Packer::parse_footer(&secure_storage, &raw_data)?;
+        let pack_header =
+            Packer::parse_footer(&secure_storage, &raw_data, secure_storage.nonce_at_end())?;
 
         let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
             .par_iter()
@@ -154,7 +155,8 @@ async fn verify_pack_streaming(
         .await
         .map_err(|e| MapacheError::Backend(format!("failed to read pack footer: {}", e.inner())))?;
 
-    let pack_header = Packer::parse_footer(&secure_storage, &footer_raw)?;
+    let pack_header =
+        Packer::parse_footer(&secure_storage, &footer_raw, secure_storage.nonce_at_end())?;
 
     let data_end = pack_header
         .last()

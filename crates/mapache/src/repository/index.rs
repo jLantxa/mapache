@@ -223,11 +223,7 @@ impl IndexMetadata {
     }
 
     /// Create IndexMetadata directly from an `IndexFile` (without building a full Index).
-    pub fn from_index_file(
-        index_file: IndexFile,
-        bloom_filter: BloomFilter,
-        file_id: ID,
-    ) -> Self {
+    pub fn from_index_file(index_file: IndexFile, bloom_filter: BloomFilter, file_id: ID) -> Self {
         let blob_count: usize = index_file
             .packs
             .iter()
@@ -530,7 +526,11 @@ impl Index {
 
     /// Saves the index to the repository.
     /// Returns the total uncompressed and compressed sizes of the saved index files.
-    pub async fn persist(&mut self, repo: &Repository) -> Result<SizePair> {
+    pub async fn persist(
+        &mut self,
+        repo: &Repository,
+        repo_version: Option<u32>,
+    ) -> Result<SizePair> {
         self.finalize();
 
         if self.is_empty() {
@@ -581,17 +581,12 @@ impl Index {
             .map(|(&id, &raw_length)| IndexFileZeroBlob { id, raw_length })
             .collect();
 
-        let serialized = if repo.repo_version() >= 2 {
-            serialize_index_binary(&IndexFile {
-                packs: pack_entries,
-                zero_blobs: zero_entries,
-            })
-        } else {
-            super::legacy::serialize_index_json(&IndexFile {
-                packs: pack_entries,
-                zero_blobs: zero_entries,
-            })?
-        };
+        let effective_version = repo_version.unwrap_or(repo.repo_version());
+        let serialized = IndexFile {
+            packs: pack_entries,
+            zero_blobs: zero_entries,
+        }
+        .serialize(effective_version)?;
 
         let (id, size) = repo
             .save_file(
@@ -788,13 +783,35 @@ impl MasterIndex {
     }
 
     /// Search backwards for Data blobs specifically.
+    /// Falls back to tree_ids and zero_ids if not found in data_ids.
     pub fn get_data(&self, id: &ID) -> Option<BlobLocator> {
         let lock = self.inner.read();
 
-        lock.indices.iter().rev().find_map(|idx| {
-            idx.get_data_location(id)
-                .and_then(|l| idx.resolve_location(l, BlobType::Data))
-        })
+        lock.indices
+            .iter()
+            .rev()
+            .find_map(|idx| {
+                idx.get_data_location(id)
+                    .and_then(|l| idx.resolve_location(l, BlobType::Data))
+            })
+            .or_else(|| {
+                lock.indices.iter().rev().find_map(|idx| {
+                    idx.tree_ids
+                        .get(id)
+                        .and_then(|l| idx.resolve_location(l, BlobType::Tree))
+                })
+            })
+            .or_else(|| {
+                lock.indices.iter().rev().find_map(|idx| {
+                    idx.zero_ids.get(id).map(|&raw_length| BlobLocator {
+                        pack_id: ID::default(),
+                        blob_type: BlobType::Zero,
+                        offset: 0,
+                        length: raw_length,
+                        raw_length,
+                    })
+                })
+            })
     }
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
@@ -1061,7 +1078,7 @@ impl MasterIndex {
         }
 
         if let Some(mut idx) = index_to_persist {
-            let size = idx.persist(repo).await?;
+            let size = idx.persist(repo, None).await?;
             // Update the status in the actual list
             let mut lock = self.inner.write();
             if let Some(pos) = lock
@@ -1078,6 +1095,14 @@ impl MasterIndex {
     }
 
     pub async fn persist(&self, repo: &Repository) -> Result<SizePair> {
+        self.persist_with_version(repo, None).await
+    }
+
+    pub async fn persist_with_version(
+        &self,
+        repo: &Repository,
+        repo_version: Option<u32>,
+    ) -> Result<SizePair> {
         let mut total_size = SizePair::zero();
 
         // Collect all indices that need persisting
@@ -1099,7 +1124,7 @@ impl MasterIndex {
         }
 
         for mut idx in indices_to_persist {
-            let size = idx.persist(repo).await?;
+            let size = idx.persist(repo, repo_version).await?;
             total_size += size;
 
             // Update the status in the master index
@@ -1243,6 +1268,27 @@ pub struct IndexFile {
     pub packs: Vec<IndexFilePack>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub zero_blobs: Vec<IndexFileZeroBlob>,
+}
+
+impl IndexFile {
+    /// Serialize the `IndexFile` based on the repository version.
+    pub fn serialize(&self, repo_version: u32) -> Result<Vec<u8>> {
+        if repo_version >= 2 {
+            Ok(serialize_index_binary(self))
+        } else {
+            super::legacy::serialize_index_json(self)
+        }
+    }
+
+    /// Deserialize an `IndexFile` based on the repository version.
+    pub fn deserialize(data: &[u8], repo_version: u32) -> Result<Self> {
+        if repo_version >= 2 {
+            deserialize_index_binary(data)
+                .map_err(|e| MapacheError::Format(format!("failed to deserialize index: {e}")))
+        } else {
+            super::legacy::deserialize_index_json(data)
+        }
+    }
 }
 
 /// A zero blob: ID -> raw_length. No pack data.

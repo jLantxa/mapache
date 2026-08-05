@@ -8,7 +8,6 @@ use std::{
 
 use serde::de::DeserializeOwned;
 
-use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use chrono::Duration;
 use futures::{StreamExt, stream};
@@ -19,6 +18,7 @@ use crate::{
     commands::Compression,
     common::{
         self, BlobType, ContentIdType, ID, SaveID,
+        error::{MapacheError, Result},
         traits::{BlobLoader, BlobSaver},
     },
     repository::{
@@ -50,6 +50,13 @@ pub(crate) type OpenResult = (Arc<Repository>, Arc<SecureStorage>);
 pub(crate) type OpenWithLockResult = (Arc<Repository>, Arc<SecureStorage>, LockHandle);
 
 const OBJECTS_DIR_FANOUT: usize = 2;
+
+pub fn warn_v1_deprecated() {
+    ui::cli::warning!(
+        "Repository format v1 is deprecated and will be unsupported in a future release.\n\
+        Consider migrating to v2: `mapache migrate --repo <repo-path>`\n"
+    );
+}
 
 /// A pair of sizes representing raw and encoded (compressed/encrypted) bytes.
 #[derive(Debug, Default, Copy, Clone)]
@@ -387,6 +394,10 @@ impl Repository {
         let nonce_at_end = version >= 2;
         tracing::info!(target: "repo", "Nonce position: {}", if nonce_at_end { "end" } else { "start" });
         secure_storage.set_nonce_at_end(nonce_at_end);
+
+        if version == 1 {
+            warn_v1_deprecated();
+        }
 
         Ok((repo, secure_storage))
     }

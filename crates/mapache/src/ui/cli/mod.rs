@@ -262,5 +262,4 @@ pub use log;
 pub use log_with_level;
 pub use verbose_1;
 pub use verbose_2;
-
 pub use warning;

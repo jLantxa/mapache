@@ -109,19 +109,27 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             ui::cli::log!("\nStep 1/4: Re-encrypting {} packs...", all_pack_ids.len());
             tracing::info!(target: "migrate", "Step 1: Re-encrypting {} packs", all_pack_ids.len());
 
+            let reenc_label = if args.dry_run {
+                "Scanning packs"
+            } else {
+                "Re-encrypting packs"
+            };
             let reenc_bar = ProgressBar::with_draw_target(
                 Some(all_pack_ids.len() as u64),
                 default_bar_draw_target(),
             )
             .with_style(
                 default_progress_style()
-                    .template("[{bar:20.cyan/white}] Re-encrypting packs: {pos}/{len}")
+                    .template(&format!(
+                        "[{{bar:20.cyan/white}}] {reenc_label}: {{pos}}/{{len}}"
+                    ))
                     .expect("invalid progress bar template"),
             );
 
             // Mapping from old pack_id → (new_pack_id, descriptors)
             let mut pack_map: Vec<(ID, ID, Vec<_>)> = Vec::new();
 
+            let dry = args.dry_run;
             let results: Vec<_> = futures::stream::iter(all_pack_ids.iter())
                 .map(|pack_id| {
                     let repo = repo.clone();
@@ -130,15 +138,21 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     let reenc_bar = reenc_bar.clone();
 
                     async move {
-                        let res = migration::re_encrypt_pack(
-                            repo.as_ref(),
-                            backend.as_ref(),
-                            secure_storage.as_ref(),
-                            pack_id,
-                            old_nonce_at_end,
-                            new_nonce_at_end,
-                        )
-                        .await;
+                        let res = if !dry {
+                            Some(
+                                migration::re_encrypt_pack(
+                                    repo.as_ref(),
+                                    backend.as_ref(),
+                                    secure_storage.as_ref(),
+                                    pack_id,
+                                    old_nonce_at_end,
+                                    new_nonce_at_end,
+                                )
+                                .await,
+                            )
+                        } else {
+                            None
+                        };
 
                         reenc_bar.inc(1);
                         (pack_id, res)
@@ -153,19 +167,30 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             let mut error_count = 0;
             for (old_id, res) in results {
                 match res {
-                    Ok((new_id, descriptors)) => {
+                    None => {
+                        // Dry run: record pack as-is
+                        pack_map.push((*old_id, *old_id, Vec::new()));
+                    }
+                    Some(Ok((new_id, descriptors))) => {
                         pack_map.push((*old_id, new_id, descriptors));
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         error_count += 1;
                         ui::cli::error!("error re-encrypting pack {old_id}: {e}");
                     }
                 }
             }
 
-            ui::cli::log!("Re-encrypted {} packs successfully", pack_map.len());
-            if error_count > 0 {
-                ui::cli::warning!("Skipped {} packs due to errors", error_count);
+            if dry {
+                ui::cli::log!(
+                    "[DRY RUN] Would re-encrypt {} packs",
+                    all_pack_ids.len()
+                );
+            } else {
+                ui::cli::log!("Re-encrypted {} packs successfully", pack_map.len());
+                if error_count > 0 {
+                    ui::cli::warning!("Skipped {} packs due to errors", error_count);
+                }
             }
 
             // ── Step 2: Re-encrypt snapshots ──────────────────────────
@@ -179,13 +204,20 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 ui::cli::log!("\nStep 2/4: Re-encrypting {} snapshots...", total_files);
                 tracing::info!(target: "migrate", "Step 2: Re-encrypting {} snapshots", total_files);
 
+                let file_label = if args.dry_run {
+                    "Scanning snapshots"
+                } else {
+                    "Re-encrypting snapshots"
+                };
                 let file_bar = ProgressBar::with_draw_target(
                     Some(total_files as u64),
                     default_bar_draw_target(),
                 )
                 .with_style(
                     default_progress_style()
-                        .template("[{bar:20.cyan/white}] Re-encrypting snapshots: {pos}/{len}")
+                        .template(&format!(
+                            "[{{bar:20.cyan/white}}] {file_label}: {{pos}}/{{len}}"
+                        ))
                         .expect("invalid progress bar template"),
                 );
 

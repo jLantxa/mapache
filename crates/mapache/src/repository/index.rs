@@ -20,7 +20,7 @@ use crate::{
         repo::{Repository, SizePair},
     },
     utils::{
-        binary::{get_array, get_u32, put_bytes, put_u32},
+        binary::{get_array, get_u8, get_u32, put_bytes, put_u32},
         collections::{BloomFilter, IdIndexSet, IdMap, IdSet, Lru, ShardedIdSet},
     },
 };
@@ -1366,8 +1366,7 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
 
         for _ in 0..blob_count {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);
-            let type_byte = cur[0];
-            cur = &cur[1..];
+            let type_byte = get_u8(&mut cur)?;
             let blob_type = BlobType::try_from(type_byte)?;
             let offset = get_u32(&mut cur)?;
             let length = get_u32(&mut cur)?;

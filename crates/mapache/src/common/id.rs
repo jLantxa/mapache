@@ -137,18 +137,41 @@ pub enum BlobType {
     Data = 0x00,
     Tree = 0x01,
 
-    /// A zero-filled blob. Used to deduplicate all-zero regions across files
-    /// without storing actual data in packs.
-    Zero = 0x02,
-
     /// A padding blob descriptor used for obfuscation. This blob is fake and must be ignored.
     #[default]
-    Padding = 0xff,
+    Padding = 0x02,
+
+    /// A zero-filled blob. Used to deduplicate all-zero regions across files
+    /// without storing actual data in packs.
+    Zero = 0x03,
 }
 
 impl BlobType {
     pub fn is_pack_stored(self) -> bool {
         matches!(self, BlobType::Data | BlobType::Tree)
+    }
+
+    /// Encodes this type into its on-disk byte, setting the high bit when the
+    /// blob's payload is zstd-compressed.
+    ///
+    /// The compression *algorithm* is repo-wide (declared in the manifest), so
+    /// a single compressed/uncompressed bit is enough here.
+    #[inline]
+    pub(crate) fn to_byte(self, compressed: bool) -> u8 {
+        self as u8 | ((compressed as u8) << 7)
+    }
+
+    /// Decodes a type byte written by [`BlobType::to_byte`], returning the
+    /// type and whether the payload is compressed.
+    #[inline]
+    pub(crate) fn from_byte(byte: u8) -> Result<(Self, bool)> {
+        // TODO(v1-removal): legacy alias — v1 footers wrote Padding as 0xff.
+        // Remove this branch together with all v1 support.
+        if byte == 0xff {
+            return Ok((BlobType::Padding, false));
+        }
+        let compressed = byte & 0x80 != 0;
+        Ok((Self::try_from(byte & 0x7f)?, compressed))
     }
 }
 
@@ -159,8 +182,8 @@ impl TryFrom<u8> for BlobType {
         match v {
             0x00 => Ok(BlobType::Data),
             0x01 => Ok(BlobType::Tree),
-            0x02 => Ok(BlobType::Zero),
-            0xff => Ok(BlobType::Padding),
+            0x02 => Ok(BlobType::Padding),
+            0x03 => Ok(BlobType::Zero),
             other => Err(MapacheError::Format(format!(
                 "invalid blob type byte: {other}"
             ))),

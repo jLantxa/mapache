@@ -193,6 +193,9 @@ pub struct Repository {
     backend: Arc<dyn StorageBackend>,
     secure_storage: Arc<SecureStorage>,
 
+    /// Compression preset for new blobs (None = store blobs uncompressed).
+    compression: Compression,
+
     // Paths
     objects_path: PathBuf,
     snapshot_path: PathBuf,
@@ -390,6 +393,16 @@ impl Repository {
             )));
         }
 
+        // The v1 format has no per-blob compression marker: blobs are always
+        // zstd-compressed, so `--compression none` cannot be honored.
+        if version < 2 && matches!(config.compression, Compression::None) {
+            return Err(MapacheError::Repo(
+                "compression 'none' is not supported in repository format v1; \
+                 migrate the repository to v2 first"
+                    .to_string(),
+            ));
+        }
+
         // Nonce position depends solely on repo version: v1 = start, v2 = end.
         let nonce_at_end = version >= 2;
         tracing::info!(target: "repo", "Nonce position: {}", if nonce_at_end { "end" } else { "start" });
@@ -436,6 +449,7 @@ impl Repository {
             locks_path: PathBuf::from(LOCKS_DIR),
             secure_storage,
             max_packer_size: config.pack_size,
+            compression: config.compression,
             master_index,
             pack_saver_tx: parking_lot::RwLock::new(None),
             pack_saver_handle: parking_lot::RwLock::new(None),
@@ -507,7 +521,12 @@ impl Repository {
         }
 
         let raw_length = data.len() as u64;
-        let encoded_data = self.secure_storage.encode(&data)?;
+        let compressed = !matches!(self.compression, Compression::None);
+        let encoded_data = if compressed {
+            self.secure_storage.encode(&data)?
+        } else {
+            self.secure_storage.encrypt(&data)?
+        };
 
         let tx = {
             let tx_guard = self.pack_saver_tx.read();
@@ -524,6 +543,7 @@ impl Repository {
             blob_type,
             data: encoded_data,
             raw_length,
+            compressed,
         })
         .map_err(|_| MapacheError::Repo("packer channel closed".to_string()))?;
 
@@ -546,6 +566,7 @@ impl Repository {
                     locator.blob_type,
                     locator.offset,
                     locator.length,
+                    locator.compressed,
                 )
                 .await
             }
@@ -566,6 +587,7 @@ impl Repository {
                                 locator.blob_type,
                                 locator.offset,
                                 locator.length,
+                                locator.compressed,
                             )
                             .await
                         }
@@ -1305,6 +1327,7 @@ impl Repository {
         blob_type: BlobType,
         offset: u32,
         length: u32,
+        compressed: bool,
     ) -> Result<Vec<u8>> {
         let object_path = Self::get_object_path(&self.objects_path, id);
         let data = self
@@ -1319,7 +1342,7 @@ impl Repository {
                 length as usize,
             )
             .await?;
-        self.secure_storage.decode_owned(data)
+        self.secure_storage.decode_blob_owned(data, compressed)
     }
 
     pub fn pack_size(&self) -> u64 {

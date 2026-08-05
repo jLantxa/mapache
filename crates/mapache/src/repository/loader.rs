@@ -197,7 +197,10 @@ impl BlobLoader {
                     )));
                 }
 
-                let decoded = self.repo.secure_storage().decode(&data[start..end])?;
+                let decoded = self
+                    .repo
+                    .secure_storage()
+                    .decode_blob(&data[start..end], loc.compressed)?;
 
                 result.insert(id, decoded);
             }

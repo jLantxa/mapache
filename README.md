@@ -20,6 +20,7 @@ Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.githu
 
 - [Manual](https://jlantxa.github.io/mapache/manual.html) — complete usage reference
 - [Design](https://jlantxa.github.io/mapache/design.html) — repository format and architecture
+- [Design v1 (Deprecated)](https://jlantxa.github.io/mapache/design_v1.html) — legacy v1 format specification
 
 ## Key Features
 

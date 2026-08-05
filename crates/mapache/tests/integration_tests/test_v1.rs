@@ -172,4 +172,31 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_v1_rejects_compression_none() -> Result<()> {
+        let ctx = TestContext::new().await?;
+
+        ctx.init_builder()
+            .format(1)
+            .run(&ctx.global)
+            .await
+            .context("Failed to init v1 repo")?;
+
+        // `--compression none` is not representable in v1 (no per-blob marker).
+        let mut global = ctx.global.clone();
+        global.compression_level = mapache::commands::Compression::None;
+
+        let res = ctx
+            .snapshot_builder(vec![ctx.repo_path.join("manifest")])
+            .run(&global)
+            .await;
+
+        assert!(
+            res.is_err(),
+            "snapshotting a v1 repo with --compression none should fail"
+        );
+
+        Ok(())
+    }
 }

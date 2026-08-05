@@ -321,6 +321,17 @@ impl SecureStorage {
         self.transform_into(Some(ctx), data)
     }
 
+    /// Encode (compress + encrypt) with an explicit nonce position.
+    /// Used by migration to write metadata in the target format.
+    pub fn encode_with_nonce_position(
+        &self,
+        ctx: &mut EncodingContext,
+        data: &[u8],
+        nonce_at_end: bool,
+    ) -> Result<Vec<u8>> {
+        self.transform_into_inner(Some(ctx), data, nonce_at_end)
+    }
+
     pub fn take_encoding_context(&self) -> Result<EncodingContext> {
         if let Some(ctx) = self.compressor_pool.lock().pop() {
             return Ok(ctx);
@@ -340,6 +351,29 @@ impl SecureStorage {
     pub fn decode_owned(&self, data: Vec<u8>) -> Result<Vec<u8>> {
         let decrypted = self.decrypt_in_place(data)?;
         self.decompress(&decrypted)
+    }
+
+    /// Decodes a blob (decrypt, then optional decompress based on the
+    /// per-blob compression marker stored in the blob descriptor).
+    pub fn decode_blob(&self, data: &[u8], compressed: bool) -> Result<Vec<u8>> {
+        let decrypted = self.decrypt(data)?;
+        if compressed {
+            self.decompress(&decrypted)
+        } else {
+            Ok(match decrypted {
+                WriteContents::Owned(v) => v,
+                WriteContents::Borrowed(b) => b.to_vec(),
+            })
+        }
+    }
+
+    /// Decodes an owned blob buffer (decrypt, then optional decompress).
+    pub fn decode_blob_owned(&self, data: Vec<u8>, compressed: bool) -> Result<Vec<u8>> {
+        if compressed {
+            self.decode_owned(data)
+        } else {
+            self.decrypt_in_place(data)
+        }
     }
 
     pub fn derive_key<const KEY_LEN: usize>(

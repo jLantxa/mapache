@@ -198,7 +198,7 @@ pub struct CliGlobalArgs {
     #[clap(short, long, group = "verbosity_group")]
     pub verbosity: Option<u32>,
 
-    /// Compression level [fastest|fast|balanced|better|best|level:val]
+    /// Compression level [none|fastest|fast|balanced|better|best|level:val]
     #[clap(long = "compression", value_parser = parse_compression_level)]
     #[serde(deserialize_with = "deserialize_compression_opt")]
     pub compression_level: Option<Compression>,
@@ -469,6 +469,7 @@ fn pack_size_parser(s: &str) -> std::result::Result<f32, String> {
 #[serde(rename_all = "lowercase")]
 pub enum Compression {
     Manual(i32),
+    None,
     Fastest,
     Fast,
     Balanced,
@@ -480,6 +481,9 @@ impl Compression {
     pub fn to_level(&self) -> i32 {
         match self {
             Self::Manual(level) => *level,
+            // `None` disables blob compression; metadata is still compressed
+            // with the default level.
+            Self::None => DEFAULT_COMPRESSION.to_level(),
             Self::Fastest => 1,
             Self::Fast => 3,
             Self::Balanced => 5,
@@ -494,6 +498,7 @@ impl FromStr for Compression {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let result = match s.to_lowercase().as_str() {
+            "none" => Some(Self::None),
             "fastest" => Some(Self::Fastest),
             "fast" => Some(Self::Fast),
             "balanced" => Some(Self::Balanced),
@@ -519,6 +524,7 @@ impl FromStr for Compression {
 impl std::fmt::Display for Compression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::None => write!(f, "none"),
             Self::Fastest => write!(f, "fastest"),
             Self::Fast => write!(f, "fast"),
             Self::Balanced => write!(f, "balanced"),

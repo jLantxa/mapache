@@ -74,8 +74,12 @@ async fn verify_pack_inline(
         let file_hash = ID::from_content(&raw_data);
         let bit_rot = file_hash != pack_id;
 
-        let pack_header =
-            Packer::parse_footer(&secure_storage, &raw_data, secure_storage.nonce_at_end())?;
+        let pack_header = Packer::parse_footer(
+            &secure_storage,
+            &raw_data,
+            secure_storage.nonce_at_end(),
+            repo.repo_version(),
+        )?;
 
         let (verified_blobs, corrupt_blobs, bytes_processed) = pack_header
             .par_iter()
@@ -90,7 +94,7 @@ async fn verify_pack_inline(
                         return (v, corrupt, bytes);
                     }
 
-                    match secure_storage.decode(&raw_data[start..end]) {
+                    match secure_storage.decode_blob(&raw_data[start..end], desc.compressed) {
                         Ok(plaintext) => {
                             if ID::from_content(&plaintext) != desc.id {
                                 corrupt.push(desc.id);
@@ -155,8 +159,12 @@ async fn verify_pack_streaming(
         .await
         .map_err(|e| MapacheError::Backend(format!("failed to read pack footer: {}", e.inner())))?;
 
-    let pack_header =
-        Packer::parse_footer(&secure_storage, &footer_raw, secure_storage.nonce_at_end())?;
+    let pack_header = Packer::parse_footer(
+        &secure_storage,
+        &footer_raw,
+        secure_storage.nonce_at_end(),
+        repo.repo_version(),
+    )?;
 
     let data_end = pack_header
         .last()
@@ -165,7 +173,7 @@ async fn verify_pack_streaming(
 
     let mut bit_rot_hasher = common::hash::Hasher::new();
 
-    let (batch_tx, mut batch_rx) = mpsc::channel::<Vec<(ID, Vec<u8>)>>(8);
+    let (batch_tx, mut batch_rx) = mpsc::channel::<Vec<(ID, Vec<u8>, bool)>>(8);
 
     let ss = secure_storage.clone();
     let verifier_handle = tokio::spawn(async move {
@@ -253,7 +261,7 @@ async fn verify_pack_streaming(
                 let end = (be - cs) as usize;
                 let data = chunk[start..end].to_vec();
                 pending_blobs_size += data.len();
-                pending_blobs.push((desc.id, data));
+                pending_blobs.push((desc.id, data, desc.compressed));
                 next_blob += 1;
             } else {
                 let is = bs.max(cs);
@@ -264,7 +272,7 @@ async fn verify_pack_streaming(
 
                 if blob_acc.len() == blob_len {
                     pending_blobs_size += blob_acc.len();
-                    pending_blobs.push((desc.id, std::mem::take(&mut blob_acc)));
+                    pending_blobs.push((desc.id, std::mem::take(&mut blob_acc), desc.compressed));
                     // Pre-allocate for next potentially multi-chunk blob
                     blob_acc = Vec::with_capacity(CHUNK_SIZE.min(size::MiB as usize));
                     next_blob += 1;
@@ -315,13 +323,16 @@ async fn verify_pack_streaming(
     })
 }
 
-fn batch_verify(batch: &[(ID, Vec<u8>)], secure_storage: &SecureStorage) -> (usize, Vec<ID>, u64) {
+fn batch_verify(
+    batch: &[(ID, Vec<u8>, bool)],
+    secure_storage: &SecureStorage,
+) -> (usize, Vec<ID>, u64) {
     batch
         .par_iter()
         .fold(
             || (0usize, Vec::new(), 0u64),
-            |(mut v, mut corrupt, mut bytes), (id, data)| {
-                match secure_storage.decode(data) {
+            |(mut v, mut corrupt, mut bytes), (id, data, compressed)| {
+                match secure_storage.decode_blob(data, *compressed) {
                     Ok(plain) => {
                         if ID::from_content(&plain) != *id {
                             corrupt.push(*id);
@@ -429,9 +440,9 @@ mod tests {
     fn batch_verify_all_valid() {
         let storage = storage_with_key();
         let plaintexts: Vec<Vec<u8>> = (0..5).map(|i| format!("blob-{i}").into_bytes()).collect();
-        let batch: Vec<(ID, Vec<u8>)> = plaintexts
+        let batch: Vec<(ID, Vec<u8>, bool)> = plaintexts
             .iter()
-            .map(|p| (ID::from_content(p), storage.encode(p).unwrap()))
+            .map(|p| (ID::from_content(p), storage.encode(p).unwrap(), true))
             .collect();
 
         let (verified, corrupt, bytes) = batch_verify(&batch, &storage);
@@ -444,12 +455,12 @@ mod tests {
     fn batch_verify_all_corrupt_wrong_id() {
         let storage = storage_with_key();
         let plaintexts: Vec<Vec<u8>> = (0..3).map(|i| format!("blob-{i}").into_bytes()).collect();
-        let batch: Vec<(ID, Vec<u8>)> = plaintexts
+        let batch: Vec<(ID, Vec<u8>, bool)> = plaintexts
             .iter()
             .map(|p| {
                 // Use a wrong ID (hash of different content)
                 let wrong_id = ID::from_content(b"wrong");
-                (wrong_id, storage.encode(p).unwrap())
+                (wrong_id, storage.encode(p).unwrap(), true)
             })
             .collect();
 
@@ -462,11 +473,11 @@ mod tests {
     #[test]
     fn batch_verify_all_corrupt_garbage_data() {
         let storage = storage_with_key();
-        let batch: Vec<(ID, Vec<u8>)> = (0..3)
+        let batch: Vec<(ID, Vec<u8>, bool)> = (0..3)
             .map(|i| {
                 let id = ID::from_content(format!("blob-{i}").as_bytes());
                 // Random garbage that won't decrypt
-                (id, vec![0xff; 100])
+                (id, vec![0xff; 100], false)
             })
             .collect();
 
@@ -482,21 +493,28 @@ mod tests {
         let valid_plain = b"valid-data";
         let corrupt_plain = b"corrupt-data";
 
-        let batch: Vec<(ID, Vec<u8>)> = vec![
+        let batch: Vec<(ID, Vec<u8>, bool)> = vec![
             (
                 ID::from_content(valid_plain),
                 storage.encode(valid_plain).unwrap(),
+                true,
             ),
             (
                 ID::from_content(b"wrong"),
                 storage.encode(corrupt_plain).unwrap(),
+                true,
             ),
             (
                 ID::from_content(valid_plain),
                 storage.encode(valid_plain).unwrap(),
+                true,
             ),
             // garbage data
-            (ID::from_content(b"another"), vec![0xde, 0xad, 0xbe, 0xef]),
+            (
+                ID::from_content(b"another"),
+                vec![0xde, 0xad, 0xbe, 0xef],
+                false,
+            ),
         ];
 
         let (verified, corrupt, bytes) = batch_verify(&batch, &storage);
@@ -510,7 +528,7 @@ mod tests {
         let storage = storage_with_key();
         let data = vec![0xaa; 1000];
         let encoded = storage.encode(&data).unwrap();
-        let batch = vec![(ID::from_content(&data), encoded.clone())];
+        let batch = vec![(ID::from_content(&data), encoded.clone(), true)];
 
         let (_, _, bytes) = batch_verify(&batch, &storage);
         assert_eq!(bytes, encoded.len() as u64);

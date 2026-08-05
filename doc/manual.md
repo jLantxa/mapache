@@ -46,7 +46,8 @@ Key properties:
   variable-size chunks; only new chunks are stored.
 - **Encryption** — Mandatory AES-GCM-SIV authenticated encryption. Data is
   never stored or transmitted in cleartext.
-- **Compression** — Zstd compression with adjustable levels.
+- **Compression** — Zstd compression with adjustable levels, or no compression
+  at all for already-compressed data (video, photos).
 - **Snapshots** — Every backup is a point-in-time snapshot. Snapshots are
   logically independent (no "full vs. incremental" chain) but share underlying
   data blobs.
@@ -1442,7 +1443,7 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 | `-k, --key-file <PATH>` | Path to an external key file |
 | `--quiet` | Suppress all logging output (verbosity = 0) |
 | `-v, --verbosity <0-3>` | Verbosity level (0 = quiet, 3 = most verbose) |
-| `--compression <LEVEL>` | Compression: `fastest`, `fast` (default), `balanced`, `better`, `best`, or `level:N` (N = 1–19) |
+| `--compression <LEVEL>` | Compression: `none`, `fastest`, `fast` (default), `balanced`, `better`, `best`, or `level:N` (N = 1–19) |
 | `--retry-lock <DUR>` | Retry acquiring a lock for a duration (e.g., `5m`, `30s`, `5m30s`) |
 | `--limit-upload <SPEED>` | Upload bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
 | `--limit-download <SPEED>` | Download bandwidth limit (e.g., `10MB/s`, `500KB/s`, `1G`) |
@@ -1454,12 +1455,25 @@ These options are available on most commands (exceptions: `bundle`, `cache`,
 
 | Preset | zstd Level | Use Case |
 |---|---|---|
+| `none` | — | No compression; store blobs as-is (still encrypted). Use for already-compressed content (video, photos, archives) |
 | `fastest` | 1 | Maximum speed, minimum CPU |
 | `fast` (default) | 3 | Good balance |
 | `balanced` | 5 | Balanced speed/ratio |
 | `better` | 10 | Better compression, slower |
 | `best` | 19 | Maximum compression, slowest |
 | `level:N` | N | Custom zstd level (1–19) |
+
+With `none`, data and tree blobs are stored uncompressed, which saves CPU and
+avoids wasting space on content that does not compress. Each blob stores a
+single *compressed/uncompressed* marker, so restoring, verifying, or migrating
+the repository requires no extra configuration. Metadata (footers, index,
+snapshots) is always compressed regardless of this setting. `none` is also
+available in the TOML config as `compression-level = "none"`.
+
+> **Note:** `none` requires repository format v2. The v1 format always stores
+> blobs zstd-compressed and has no per-blob compression marker, so using
+> `--compression none` (or `compression-level = "none"`) against a v1
+> repository fails — migrate it to v2 first (`mapache migrate -r <URL>`).
 
 ### Bandwidth Limit Format
 

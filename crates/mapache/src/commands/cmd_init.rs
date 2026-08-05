@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::{
     backend::new_backend_with_prompt,
-    commands::{GlobalArgs, ToExitCode},
+    commands::{Compression, GlobalArgs, ToExitCode},
     common::{ID, defaults::SHORT_REPO_ID_LEN, error::MapacheError},
     repository::repo::{Repository, THIS_REPOSITORY_VERSION, warn_v1_deprecated},
     ui::{self, json::emit_static},
@@ -61,6 +61,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
             "unsupported repository format: {} (supported: 1, 2)",
             args.format
         )));
+    }
+
+    // The v1 format has no per-blob compression marker: blobs are always
+    // zstd-compressed, so `--compression none` cannot be honored.
+    if args.format < 2 && matches!(global_args.compression_level, Compression::None) {
+        return Err(InitError::RepoInitError(
+            "compression 'none' is not supported in repository format v1; \
+             use format 2 or a compression preset"
+                .to_string(),
+        ));
     }
 
     tracing::info!(target: "init", "Initializing repository at {}", global_args.repo);

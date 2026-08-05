@@ -70,6 +70,8 @@ struct BlobLocationInternal {
     pub length: u32,
     /// The raw sized (uncompressed, unencrypted) of the blob
     pub raw_length: u32,
+    /// Whether the blob's encoded payload is zstd-compressed.
+    pub compressed: bool,
 }
 
 /// Internal representation of blob ID to location mappings.
@@ -164,6 +166,7 @@ pub struct BlobLocator {
     pub length: u32,
     pub raw_length: u32,
     pub blob_type: BlobType,
+    pub compressed: bool,
 }
 
 /// Result of a blob lookup in the master index.
@@ -413,6 +416,7 @@ impl Index {
                         offset: blob.offset,
                         length: blob.length,
                         raw_length: blob.raw_length,
+                        compressed: blob.compressed,
                     },
                 ));
             }
@@ -461,6 +465,7 @@ impl Index {
             offset: loc.offset,
             length: loc.length,
             raw_length: loc.raw_length,
+            compressed: loc.compressed,
         })
     }
 
@@ -480,6 +485,7 @@ impl Index {
                     offset: 0,
                     length: raw_length,
                     raw_length,
+                    compressed: false,
                 })
             })
     }
@@ -514,6 +520,7 @@ impl Index {
                     offset: blob.offset,
                     length: blob.length,
                     raw_length: blob.raw_length,
+                    compressed: blob.compressed,
                 },
             );
         }
@@ -557,6 +564,7 @@ impl Index {
                         offset: loc.offset,
                         length: loc.length,
                         raw_length: loc.raw_length,
+                        compressed: loc.compressed,
                     });
             }
         };
@@ -647,6 +655,7 @@ impl Index {
                         offset: 0,
                         length: raw_length,
                         raw_length,
+                        compressed: false,
                     },
                 )
             })
@@ -683,6 +692,7 @@ impl Index {
                         offset: loc.offset,
                         length: loc.length,
                         raw_length: loc.raw_length,
+                        compressed: loc.compressed,
                     });
             }
         };
@@ -809,6 +819,7 @@ impl MasterIndex {
                         offset: 0,
                         length: raw_length,
                         raw_length,
+                        compressed: false,
                     })
                 })
             })
@@ -861,6 +872,7 @@ impl MasterIndex {
                     offset: 0,
                     length: raw_length,
                     raw_length,
+                    compressed: false,
                 });
             }
             // Need full index load
@@ -1317,6 +1329,8 @@ pub struct IndexFileBlob {
     pub offset: u32,
     pub length: u32,
     pub raw_length: u32,
+    /// Whether the blob's encoded payload is zstd-compressed (high bit of the type byte).
+    pub compressed: bool,
 }
 
 /// Serialize an `IndexFile` to the binary format.
@@ -1335,7 +1349,7 @@ pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
 
         for blob in &pack.blobs {
             put_bytes(&mut buf, blob.id.as_slice());
-            buf.push(blob.blob_type as u8);
+            buf.push(blob.blob_type.to_byte(blob.compressed));
             put_u32(&mut buf, blob.offset);
             put_u32(&mut buf, blob.length);
             put_u32(&mut buf, blob.raw_length);
@@ -1366,8 +1380,7 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
 
         for _ in 0..blob_count {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);
-            let type_byte = get_u8(&mut cur)?;
-            let blob_type = BlobType::try_from(type_byte)?;
+            let (blob_type, compressed) = BlobType::from_byte(get_u8(&mut cur)?)?;
             let offset = get_u32(&mut cur)?;
             let length = get_u32(&mut cur)?;
             let raw_length = get_u32(&mut cur)?;
@@ -1378,6 +1391,7 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
                 offset,
                 length,
                 raw_length,
+                compressed,
             });
         }
 
@@ -1422,6 +1436,7 @@ mod tests {
             offset,
             length,
             raw_length: length * 2, // Example raw length
+            compressed: true,
         }
     }
 
@@ -1602,6 +1617,7 @@ mod tests {
                     offset: b1.offset,
                     length: b1.length,
                     raw_length: b1.raw_length,
+                    compressed: true,
                 }],
             }],
             zero_blobs: Vec::new(),
@@ -1732,6 +1748,7 @@ mod tests {
             offset: 999,
             length: 100,
             raw_length: 200,
+            compressed: true,
         };
         let mut idx = Index::new();
         idx.add_pack(&pack, vec![blob_desc]);
@@ -1757,6 +1774,7 @@ mod tests {
                     offset: blob_idx * 100,
                     length: 100,
                     raw_length: 200,
+                    compressed: true,
                 });
                 all_ids.push(id);
             }
@@ -1812,6 +1830,7 @@ mod tests {
                     offset: j * 100,
                     length: 100,
                     raw_length: 200,
+                    compressed: true,
                 })
                 .collect();
             packs.push(IndexFilePack { id: pack_id, blobs });
@@ -1850,6 +1869,7 @@ mod tests {
                 offset: 0,
                 length: 1024,
                 raw_length: 2048,
+                compressed: true,
             },
             IndexFileBlob {
                 id: mock_id("blob_b"),
@@ -1857,6 +1877,7 @@ mod tests {
                 offset: 1024,
                 length: 256,
                 raw_length: 512,
+                compressed: true,
             },
         ];
         let index_file = IndexFile {
@@ -1904,6 +1925,7 @@ mod tests {
                     offset: j * 4096,
                     length: 4096,
                     raw_length: 8192,
+                    compressed: true,
                 })
                 .collect();
             packs.push(IndexFilePack {
@@ -1942,6 +1964,7 @@ mod tests {
                     offset: j * 1024,
                     length: 1024,
                     raw_length: 2048,
+                    compressed: true,
                 })
                 .collect();
             packs.push(IndexFilePack {
@@ -1983,6 +2006,7 @@ mod tests {
                     offset: 0,
                     length: 100,
                     raw_length: 200,
+                    compressed: true,
                 }],
             }],
             zero_blobs: Vec::new(),
@@ -2003,6 +2027,7 @@ mod tests {
                     offset: 0,
                     length: 100,
                     raw_length: 200,
+                    compressed: true,
                 }],
             }],
             zero_blobs: Vec::new(),

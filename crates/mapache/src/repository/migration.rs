@@ -14,13 +14,14 @@ use crate::repository::storage::SecureStorage;
 /// Re-encrypt a single pack from `old_nonce_at_end` to `new_nonce_at_end` position.
 ///
 /// Reads the pack, decrypts every blob with the old nonce layout, re-encrypts
-/// with the new layout, and re-encrypts the footer. On success returns
+/// with the new layout, and writes a fresh v2 footer. On success returns
 /// `(new_id, descriptors)` where `descriptors` only includes non-padding entries
 /// with correct offsets for the new data section.
 ///
 /// The data section only contains non-padding blobs (padding blobs in the footer
 /// have random offset/length — they are noise only, no data in the pack's data
-/// section). The footer is re-encrypted with the new nonce position.
+/// section). The footer is rebuilt so the per-blob compression marker (the high
+/// bit of the type byte) is set for v2; v1 blobs are always zstd-compressed.
 pub async fn re_encrypt_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
@@ -50,7 +51,7 @@ pub async fn re_encrypt_pack(
     let data_section_end = total_len - 4 - encoded_footer_length;
 
     // Parse footer with old nonce position to get descriptors (non-padding only, correct offsets).
-    let descriptors = Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end)?;
+    let descriptors = Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end, 1)?;
 
     tracing::debug!(target: "migrate", "Pack {}: {} blobs, data_section={} bytes, footer={} bytes",
         old_pack_id.to_short_hex(8), descriptors.len(), data_section_end, encoded_footer_length);
@@ -66,14 +67,24 @@ pub async fn re_encrypt_pack(
         new_data.extend_from_slice(&re_encrypted);
     }
 
-    // Re-encrypt the existing footer with the new nonce position.
-    let footer_encrypted = &pack_data[data_section_end..total_len - 4];
-    let re_encrypted_footer =
-        secure_storage.re_encrypt(footer_encrypted, old_nonce_at_end, new_nonce_at_end)?;
+    // Rebuild the footer: v1 blobs were always zstd-compressed, so every
+    // descriptor carries `compressed: true` and gets the compression bit set.
+    let mut footer_descriptors = descriptors.clone();
+    let footer_bytes = Packer::generate_footer(&mut footer_descriptors);
+    let mut ctx = secure_storage.get_encoding_context()?;
+    let new_footer =
+        secure_storage.encode_with_nonce_position(&mut ctx, &footer_bytes, new_nonce_at_end)?;
+    let new_footer_len = u32::try_from(new_footer.len()).map_err(|_| {
+        MapacheError::Internal(format!(
+            "rebuilt pack footer too large ({} bytes)",
+            new_footer.len()
+        ))
+    })?;
+    let footer_len_bytes = new_footer_len.to_le_bytes();
 
-    // Assemble the new pack: [re-encrypted blobs | re-encrypted footer | footer length].
+    // Assemble the new pack: [re-encrypted blobs | new footer | footer length].
     let mut new_pack = new_data;
-    new_pack.extend_from_slice(&re_encrypted_footer);
+    new_pack.extend_from_slice(&new_footer);
     new_pack.extend_from_slice(&footer_len_bytes);
 
     let new_id = ID::from_content(&new_pack);

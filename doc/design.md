@@ -119,6 +119,22 @@ compress **almost** all the data stored in the repository, including data and
 tree blobs. The compression level can be configured, affecting the compression
 ratio and the total time needed to take a snapshot.
 
+Compression is a per-repository policy, not a per-blob algorithm choice: the
+whole repository uses a single algorithm (currently `zstd`). If additional
+algorithms are added in the future, the algorithm will be declared in the
+manifest. Individual blobs are only marked as *compressed* or *uncompressed*
+(see the [pack footer format](#pack-footer-format)).
+
+Compression can be disabled with the `--compression none` flag. In that mode,
+data and tree blobs are stored **without** compression (still encrypted), which
+is useful for content that is already compressed (video, photos, archives).
+Metadata (footers, index, snapshots) is always compressed with the default
+level, regardless of this flag.
+
+`none` requires repository format **v2**: the v1 format has no per-blob
+compression marker and always stores zstd-compressed blobs, so `none` is
+rejected for v1 repositories (migrate to v2 first).
+
 Security is a non-negotiable aspect of mapache by design. **Everything** except
 for a handful of bytes is encrypted. Encryption cannot be disabled or opted-out.
 Mapache implements AES-GCM-SIV. This is a modern cipher which implements
@@ -360,8 +376,8 @@ path and node type of the target.
 #### Pack footer format
 
 The pack footer consists of a variable-length list of metadata blob entries, each 41 bytes
-long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
-blob type (u8), and both the encoded length and raw length (u32) of the associated
+long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), a blob type
+byte (u8), and both the encoded length and raw length (u32) of the associated
 data blob. The trailer is a single u32 field which stores the total length of the
 entire pack footer, allowing a parser to efficiently skip directly to the file's data section.
 All data except the footer length field is encrypted.
@@ -378,7 +394,9 @@ All data except the footer length field is encrypted.
 │────────────────────────┼────────┼────────│
 │ ID (256-bit raw hash)  │   32   │   0    │ Hash of the raw blob data
 │────────────────────────┼────────┼────────│
-│ Blob type (u8)         │    1   │   32   │
+│ Type + Compression     │    1   │   32   │ Low 7 bits: blob type; high
+│ (u8)                   │        │        │ bit: 0 = uncompressed,
+│                        │        │        │ 1 = zstd-compressed
 │────────────────────────┼────────┼────────│
 │ Encoded length (u32)   │    4   │   33   │ Length of the encoded blob
 │────────────────────────┼────────┼────────│
@@ -386,6 +404,28 @@ All data except the footer length field is encrypted.
 └────────────────────────┴────────┴────────┘
   ^ (41 bytes)
 ```
+
+The compression marker is a single bit packed into the high bit of the blob
+type byte. Because the compression *algorithm* is repo-wide (declared in the
+manifest), a per-blob boolean is sufficient. The low 7 bits hold the blob type:
+
+| Value | Type    | Meaning                                  |
+|-------|---------|------------------------------------------|
+| 0x00  | Data    | Content-defined chunk of a file           |
+| 0x01  | Tree    | Serialized directory tree / metadata      |
+| 0x02  | Padding | Fake entry, noise for size obfuscation    |
+| 0x03  | Zero    | Zero-filled region, deduplicated, no data |
+
+When the high bit is set (`0x80 | type`), the blob's payload is zstd-compressed
+and the `encoded length` is the compressed size; when clear, the payload is
+stored as-is (`encoded length == raw length`).
+
+The footer layout is identical in v1 and v2. Legacy v1 blobs were always
+zstd-compressed, so their entries carry no meaningful marker; the reader treats
+every v1 blob as compressed regardless of the bit. Legacy v1 entries also wrote
+`Padding` as the byte `0xff`, which the decoder still maps to `Padding` for
+backward compatibility during migration (to be removed together with v1
+support).
 
 ### Index
 

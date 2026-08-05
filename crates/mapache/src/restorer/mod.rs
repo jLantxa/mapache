@@ -141,6 +141,7 @@ pub(crate) struct BlobRestoreRequest {
     pub(crate) blob_offset: u32,
     pub(crate) blob_length: u32,
     pub(crate) raw_length: u32,
+    pub(crate) compressed: bool,
 }
 
 /// A cache for open file handles during restoration.
@@ -746,6 +747,7 @@ impl Restorer {
                                             blob_offset: locator.offset,
                                             blob_length: locator.length,
                                             raw_length: locator.raw_length,
+                                            compressed: locator.compressed,
                                         },
                                     ));
                                 }
@@ -857,6 +859,7 @@ impl Restorer {
                                 blob_offset: locator.offset,
                                 blob_length: locator.length,
                                 raw_length: locator.raw_length,
+                                compressed: locator.compressed,
                             },
                         ));
                     }

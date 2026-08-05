@@ -114,6 +114,7 @@ pub(crate) async fn restore_packs(
                         length: t0.blob_length,
                         raw_length: t0.raw_length,
                         blob_type: BlobType::Data,
+                        compressed: t0.compressed,
                     };
                     (id, locator, targets)
                 })
@@ -201,8 +202,9 @@ pub(crate) async fn restore_packs(
                                 }
                                 let encoded_blob = &data_arc_inner[start..end];
 
-                                let decoded_data =
-                                    secure_storage_inner.decode(encoded_blob).map_err(|e| {
+                                let decoded_data = secure_storage_inner
+                                    .decode_blob(encoded_blob, locator.compressed)
+                                    .map_err(|e| {
                                         MapacheError::Internal(format!(
                                             "failed to decode blob {blob_id}: {e}"
                                         ))

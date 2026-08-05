@@ -23,12 +23,14 @@ use crate::{
 
 //   Pack footer format:
 //
-//   The pack footer consists of a variable-length list of metadata blob entries, each 41 bytes
-//   long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
-//   blob type (u8), and both the encoded length and raw length (u32) of the associated
-//   data blob. The trailer is a single u32 field which stores the total length of the
-//   entire pack footer, allowing a parser to efficiently skip directly to the file's data section.
-//   All data except the footer length field is encrypted.
+//   The pack footer consists of a variable-length list of metadata blob entries, each
+//   `FOOTER_BLOB_LEN` (41) bytes long, followed by a fixed-size trailer. Each entry
+//   contains an ID (32 bytes), a blob type byte (u8) whose high bit doubles as the
+//   compression marker (0 = stored uncompressed, 1 = zstd-compressed), and both the
+//   encoded length and raw length (u32) of the associated data blob. The trailer is a
+//   single u32 field which stores the total length of the entire pack footer, allowing a
+//   parser to efficiently skip directly to the file's data section. All data except the
+//   footer length field is encrypted.
 //
 //   ┌────────┬────────┬─────┬────────┬─────────────────────┐
 //   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │
@@ -41,7 +43,8 @@ use crate::{
 //   │────────────────────────┼────────┼────────│
 //   │ ID (256-bit raw hash)  │   32   │   0    │  Hash of the raw blob data
 //   │────────────────────────┼────────┼────────│
-//   │ Blob type (u8)         │    1   │   32   │
+//   │ Type + Compression     │    1   │   32   │  Low 7 bits: blob type; high bit:
+//   │ (u8)                   │        │        │  0 = uncompressed, 1 = compressed (v2+ marker)
 //   │────────────────────────┼────────┼────────│
 //   │ Encoded length (u32)   │    4   │   33   │  Length of the encoded blob (in-pack)
 //   │────────────────────────┼────────┼────────│
@@ -49,6 +52,9 @@ use crate::{
 //   └────────────────────────┴────────┴────────┘
 //     ^ (41 bytes)
 //
+//   The compression algorithm is repo-wide (declared in the manifest), so a single
+//   bit suffices per blob. Legacy v1 entries also use this 41-byte layout, but the
+//   high bit is not meaningful there: v1 blobs are always zstd-compressed.
 
 static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -62,6 +68,8 @@ pub struct PackedBlobDescriptor {
     pub offset: u32,
     pub length: u32,
     pub raw_length: u32,
+    /// Whether the blob's encoded payload is zstd-compressed (v2+ marker).
+    pub compressed: bool,
 }
 
 /// A structure representing the completely processed and flushed contents of a `Packer`.
@@ -137,6 +145,7 @@ impl Packer {
         blob_type: BlobType,
         encoded_data: &[u8],
         raw_size: u64,
+        compressed: bool,
     ) -> Result<()> {
         let offset = u32::try_from(self.buffer.len()).map_err(|e| {
             MapacheError::Integrity(format!("pack buffer offset exceeds u32::MAX: {e}"))
@@ -155,6 +164,7 @@ impl Packer {
             offset,
             length,
             raw_length,
+            compressed,
         });
 
         self.raw_size += raw_size;
@@ -235,7 +245,11 @@ impl Packer {
     ///
     /// It automatically inserts random "Padding" blobs to ensure the footer
     /// length is a multiple of `FOOTER_BLOB_MULTIPLE`, hindering size analysis.
-    fn generate_footer(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
+    ///
+    /// Each entry is `FOOTER_BLOB_LEN` (41) bytes; the high bit of the type
+    /// byte carries the per-blob compression marker. Padding entries carry no
+    /// payload, so their compression bit is meaningless noise.
+    pub(crate) fn generate_footer(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
         let mut pack_footer = Vec::with_capacity(FOOTER_BLOB_LEN * descriptors.len());
         let mut rng = rng();
 
@@ -249,13 +263,14 @@ impl Packer {
                     offset: rng.random::<u32>(),
                     length: rng.random::<u32>(),
                     raw_length: rng.random::<u32>(),
+                    compressed: rng.random::<bool>(),
                 });
             }
         }
 
         for blob in descriptors {
             put_bytes(&mut pack_footer, blob.id.as_slice());
-            put_u8(&mut pack_footer, blob.blob_type as u8);
+            put_u8(&mut pack_footer, blob.blob_type.to_byte(blob.compressed));
             put_u32(&mut pack_footer, blob.length);
             put_u32(&mut pack_footer, blob.raw_length);
         }
@@ -295,17 +310,27 @@ impl Packer {
             )
             .await?;
 
-        Self::parse_footer(secure_storage, &footer_data, nonce_at_end)
+        Self::parse_footer(
+            secure_storage,
+            &footer_data,
+            nonce_at_end,
+            repo.repo_version(),
+        )
     }
 
     /// Decodes a slice of footer bytes into a list of descriptors.
     ///
     /// This function validates the trailer length, decrypts the footer,
     /// and filters out any "Padding" blobs used during the packing process.
+    ///
+    /// `repo_version` decides whether the high bit of the type byte is a
+    /// meaningful compression marker: v2 honors it, while v1 entries always
+    /// decode as zstd-compressed (the bit is not meaningful there).
     pub fn parse_footer(
         secure_storage: &SecureStorage,
         footer_data: &[u8],
         nonce_at_end: bool,
+        repo_version: u32,
     ) -> Result<Vec<PackedBlobDescriptor>> {
         use crate::utils::binary::{get_array, get_u8, get_u32};
 
@@ -335,10 +360,16 @@ impl Packer {
         let mut cur = footer_blob_info.as_slice();
         let mut blob_descriptors = Vec::new();
         let mut offset: u32 = 0;
+        let has_compression_marker = repo_version >= 2;
 
         while !cur.is_empty() {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);
-            let blob_type = BlobType::try_from(get_u8(&mut cur)?)?;
+            let (blob_type, compressed) = BlobType::from_byte(get_u8(&mut cur)?)?;
+            let compressed = if has_compression_marker {
+                compressed
+            } else {
+                true
+            };
             let length = get_u32(&mut cur)?;
             let raw_length = get_u32(&mut cur)?;
 
@@ -349,6 +380,7 @@ impl Packer {
                     offset,
                     length,
                     raw_length,
+                    compressed,
                 });
                 offset += length;
             }
@@ -386,6 +418,7 @@ pub(crate) enum PackSaverRequest {
         blob_type: BlobType,
         data: Vec<u8>,
         raw_length: u64,
+        compressed: bool,
     },
 }
 
@@ -592,12 +625,13 @@ impl PackSaver {
                     blob_type,
                     data,
                     raw_length,
+                    compressed,
                 } => {
                     let Some(packer) = self.packer_for(blob_type) else {
                         continue;
                     };
 
-                    packer.add_blob(id, blob_type, &data, raw_length)?;
+                    packer.add_blob(id, blob_type, &data, raw_length, compressed)?;
 
                     if packer.size() >= self.max_packer_size {
                         self.dispatch_packer(blob_type)?;
@@ -718,6 +752,7 @@ mod tests {
             BlobType::Data,
             &encoded_data,
             raw_size,
+            true,
         )?;
         Ok(())
     }
@@ -758,7 +793,7 @@ mod tests {
         assert!(!result.data.is_empty());
 
         // If you want to verify the "round-trip" through the parser:
-        let parsed_descriptors = Packer::parse_footer(&secure_storage, &result.data, true)?;
+        let parsed_descriptors = Packer::parse_footer(&secure_storage, &result.data, true, 2)?;
         // The parser filters out Padding, so we should get exactly 2 back
         assert_eq!(parsed_descriptors.len(), 2);
 
@@ -784,6 +819,7 @@ mod tests {
             BlobType::Data,
             &encoded1,
             data1.len() as u64,
+            true,
         )?;
 
         assert_eq!(packer.size(), encoded1.len() as u64);
@@ -796,6 +832,7 @@ mod tests {
             BlobType::Data,
             &encoded2,
             data2.len() as u64,
+            true,
         )?;
 
         assert_eq!(packer.size(), (encoded1.len() + encoded2.len()) as u64);

@@ -1,4 +1,9 @@
-# Design
+# Design (Repository Format v1 — Deprecated)
+
+> **⚠ Deprecated:** This document describes repository format v1, which is
+> deprecated and will be unsupported in a future release. For the current
+> format, see [design.md](design.md). To migrate a v1 repository, run
+> `mapache migrate --repo <path>`.
 
 ## Introduction
 
@@ -126,10 +131,6 @@ encryption and authentication of data with a key. AES-GCM-SIV not only encrypts
 the data, it adds an authentication layer that allows mapache to detect when an
 object has been altered or manipulated.
 
-In v2, the AES-GCM-SIV nonce is placed at the **end** of each encrypted blob
-(`[ciphertext | tag | nonce]`) instead of the start (`[nonce | ciphertext | tag]`
-as in v1).
-
 #### Master key and key files
 
 All the encrypted content in the mapache repository is encrypted with a unique
@@ -196,9 +197,7 @@ external entity with access to the storage medium.
 
 ## Repository format
 
-The current repository format is **v2**. Format v1 is deprecated (see
-[design_v1.md](design_v1.md) for its specification). The `mapache migrate`
-command converts v1 repositories to v2.
+The mapache repository stores metadata in JSON format.
 
 ### Manifest
 
@@ -210,7 +209,7 @@ The `manifest` file is compressed and encrypted with the master key.
 
 ```json
 {
-  "version": 2,
+  "version": 1,
   "id": "b7468f6331331302b06c63b98a14e50107f9cc26683afd064c0af84eec53b3e7",
   "created_time": "2025-11-20T13:06:52.266751300+01:00"
 }
@@ -277,13 +276,6 @@ The blobs are encoded and appended to the pack. Their ID is the hash of their
 raw content. The pack footer describes the blobs contained in the pack footer.
 This footer includes a 4-byte field which is the length of the total footer. The
 pack footer is encoded, except for the length field.
-
-In v2, each encrypted blob has its AES-GCM-SIV nonce appended at the end (`[ct |
-tag | nonce]`), whereas v1 placed it at the start (`[nonce | ct | tag]`). This
-change eliminates an extra allocation and memory copy during encryption — the
-ciphertext is encrypted in-place and the tag and nonce are appended to the same
-buffer. This is transparent to the pack format — the footer stores encoded
-length and raw length as before.
 
 #### Trees
 
@@ -402,11 +394,50 @@ not referenced by an index is considered non-existent and subject to garbage
 collection, which is key to mapache's atomic append mechanism. The filename of
 the index file itself is the hash of its encoded content.
 
-In v2, index files use a compact **binary format** instead of the JSON format
-used in v1. This reduces index size and improves parsing speed. The binary
-format encodes pack IDs, blob descriptors (ID, type, offset, encoded length,
-raw length) and optional zero-blob entries in a dense binary layout. Mapache
-can still read v1 JSON index files for backward compatibility during migration.
+```json
+{
+  "packs": [
+    {
+      "id": "c2334c5e29563850cb254b63fba125bb1b60e860b1886fae7bd4f5e5a637f4c0",
+      "blobs": [
+        {
+          "id": "22bb6896db82b2fcc2d8057d6e16298e8318a04d1e0dd5b6c84fadc46a234f4c",
+          "type": "Data",
+          "offset": 25763,
+          "length": 3265,
+          "raw_length": 12108
+        },
+        {
+          "id": "99ce77389066f2982e8350eefdbf21ccef026d94fc4827dbc24cd52d77e25e7f",
+          "type": "Data",
+          "offset": 73520,
+          "length": 2462,
+          "raw_length": 7515
+        }
+      ]
+    },
+    {
+      "id": "9a2ad285d1dd3d9fd7ca7b8fc8bcbcbd62ef9871bbf1f74757ad392a58e4d71e",
+      "blobs": [
+        {
+          "id": "ffcdcfc7ac3832168c952f4e396588b7cb523e009c0abf776c46806468146985",
+          "type": "Tree",
+          "offset": 3188,
+          "length": 897,
+          "raw_length": 3514
+        },
+        {
+          "id": "23f87643e00c9f7c498c057a58ed2f38af22402eaab9e7b58a8bfa505b11756b",
+          "type": "Tree",
+          "offset": 5206,
+          "length": 863,
+          "raw_length": 3475
+        },
+      ]
+    }
+  ]
+}
+```
 
 ### Locks
 

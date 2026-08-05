@@ -449,6 +449,8 @@ command = "/usr/local/bin/maintenance-end.sh"
 
 ```bash
 mapache init -r <URL>
+mapache init --format 2 -r <URL>   # Explicit v2 (default)
+mapache init --format 1 -r <URL>   # Legacy v1 (deprecated)
 ```
 
 Creates a new empty repository at the given location. Supported URL schemes:
@@ -457,6 +459,10 @@ Creates a new empty repository at the given location. Supported URL schemes:
 - SFTP: `sftp://user@host:port/path`
 - S3: `s3://bucket-name/path`
 
+| Flag | Description |
+|---|---|
+| `--format <1\|2>` | Repository format version (default: 2) |
+
 > **SSH key support:** mapache supports Ed25519 and ECDSA keys for SFTP
 > authentication. RSA keys are **not** supported — use `ssh-keygen -t ed25519`
 > to generate a compatible key pair.
@@ -464,6 +470,10 @@ Creates a new empty repository at the given location. Supported URL schemes:
 You will be prompted for a username and password. A manifest file is created
 with a unique repository ID and the current mapache version. **Do not lose
 your password** — there is no password recovery mechanism.
+
+> **Note:** Format v1 is deprecated and will be unsupported in a future release.
+> New repositories should use v2 (the default). To migrate an existing v1
+> repository, see [`migrate`](#migrate--migrate-repository-format).
 
 ---
 
@@ -576,6 +586,38 @@ The command will:
 3. Build a new master index
 4. Persist the new index
 5. Delete old/replaced index files
+
+---
+
+### `migrate` — Migrate Repository Format
+
+```bash
+mapache migrate -r <URL>
+mapache migrate --dry-run -r <URL>
+```
+
+Migrates a repository from format v1 to v2. The migration performs four steps:
+
+1. **Re-encrypt packs** — Every pack file is re-encrypted with the nonce placed
+   at the end (v2) instead of the start (v1). This changes each pack's ID
+   (the hash depends on the ciphertext).
+2. **Re-encrypt snapshots** — Snapshot metadata files are re-encrypted with the
+   new nonce position.
+3. **Rebuild index** — A new binary index (v2 format) is built from the
+   re-encrypted packs, replacing the old JSON index files.
+4. **Update manifest** — The manifest version is updated to `2`, completing the
+   migration atomically.
+
+After each step completes, old files are deleted. The migration is safe to
+interrupt — all new data is written before old data is removed.
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Simulate the migration without making changes |
+
+> **Important:** Back up your repository before migrating. While the migration
+> is designed to be safe, having a backup is always recommended for
+> destructive operations.
 
 ---
 
@@ -1453,6 +1495,7 @@ Initialize a new backup repository.
 
 ```
 mapache init -r <URL>
+  --format <1|2>         Repository format version (default: 2)
 ```
 
 ### `mapache snapshot`
@@ -1711,6 +1754,15 @@ Rebuild the index by scanning all packs.
 
 ```
 mapache rebuild-index -r <URL>
+  --dry-run               Simulate without making changes
+```
+
+### `mapache migrate`
+
+Migrate repository format from v1 to v2.
+
+```
+mapache migrate -r <URL>
   --dry-run               Simulate without making changes
 ```
 

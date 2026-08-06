@@ -209,11 +209,12 @@ impl IndexMetadata {
         }
 
         let pack_ids: Vec<ID> = index.pack_ids.iter().copied().collect();
-        let zero_blobs: Vec<(ID, u32)> = index
+        let mut zero_blobs: Vec<(ID, u32)> = index
             .zero_ids
             .iter()
             .map(|(&id, &raw_length)| (id, raw_length))
             .collect();
+        zero_blobs.sort_unstable_by_key(|(id, _)| *id);
         let blob_count = index.num_blobs();
 
         Self {
@@ -234,11 +235,12 @@ impl IndexMetadata {
             .sum::<usize>()
             + index_file.zero_blobs.len();
         let pack_ids: Vec<ID> = index_file.packs.iter().map(|p| p.id).collect();
-        let zero_blobs: Vec<(ID, u32)> = index_file
+        let mut zero_blobs: Vec<(ID, u32)> = index_file
             .zero_blobs
             .into_iter()
             .map(|z| (z.id, z.raw_length))
             .collect();
+        zero_blobs.sort_unstable_by_key(|(id, _)| *id);
 
         Self {
             file_id,
@@ -865,7 +867,8 @@ impl MasterIndex {
                 continue;
             }
             // Check zero blobs directly (no full load needed)
-            if let Some(&(_, raw_length)) = meta.zero_blobs.iter().find(|&&(zid, _)| zid == *id) {
+            if let Ok(i) = meta.zero_blobs.binary_search_by_key(id, |(zid, _)| *zid) {
+                let &(_, raw_length) = &meta.zero_blobs[i];
                 return LookupResult::Found(BlobLocator {
                     pack_id: ID::default(),
                     blob_type: BlobType::Zero,
@@ -1204,39 +1207,49 @@ impl MasterIndex {
         // Sort by instance_id to ensure deterministic merge order.
         old_indices.sort_by_key(|idx| idx.instance_id);
 
-        // Gather descriptors for all packs from all indices.
-        // We use a sequential fold to maintain perfect determinism.
-        let all_pack_descriptors: IdMap<ID, IdMap<ID, PackedBlobDescriptor>> =
-            old_indices.iter().fold(IdMap::default(), |mut acc, idx| {
-                let pack_map = idx.get_pack_descriptors(obsolete_packs);
-                for (pack_id, descriptors) in pack_map {
-                    let entry = acc.entry(pack_id).or_default();
-                    for desc in descriptors {
-                        entry.insert(desc.id, desc);
-                    }
-                }
-                acc
-            });
+        // Flatten all descriptors into a single Vec, preserving iteration order
+        // (oldest index first) so that dedup keeps the newest occurrence.
+        let mut all: Vec<(ID, PackedBlobDescriptor)> = old_indices
+            .iter()
+            .flat_map(|idx| idx.get_pack_descriptors(obsolete_packs))
+            .flat_map(|(pack_id, descs)| descs.into_iter().map(move |d| (pack_id, d)))
+            .collect();
 
-        // Convert to sorted vector of (pack_id, descriptors) for deterministic index building
-        let mut sorted_packs: Vec<_> = all_pack_descriptors.into_iter().collect();
-        sorted_packs.sort_by_key(|(pack_id, _)| *pack_id);
+        // Sort by (pack_id, blob_id) for deterministic dedup and pack grouping.
+        all.sort_unstable_by_key(|(pack_id, desc)| (*pack_id, desc.id));
+
+        // Dedup: keep last occurrence per (pack_id, blob_id) — the newest index wins.
+        // swap a↔b so that dedup_by (which keeps a) retains the newer entry.
+        all.dedup_by(|a, b| {
+            if a.0 == b.0 && a.1.id == b.1.id {
+                std::mem::swap(a, b);
+                true
+            } else {
+                false
+            }
+        });
 
         let mut new_indices = Vec::new();
         let mut current_index = Index::new();
+        let mut current_pack_id = None;
+        let mut current_blobs: Vec<PackedBlobDescriptor> = Vec::new();
 
-        // Rebuild indices sequentially
-        for (pack_id, descriptors_map) in sorted_packs {
-            let mut descriptors: Vec<_> = descriptors_map.into_values().collect();
-            descriptors.sort_by_key(|d| d.offset); // Deterministic blob order within pack
-
-            current_index.add_pack(&pack_id, descriptors);
-
-            if current_index.is_full() {
-                current_index.set_status(IndexStatus::Finalized);
-                new_indices.push(current_index);
-                current_index = Index::new();
+        for (pack_id, desc) in all {
+            if current_pack_id != Some(pack_id) {
+                if let Some(pid) = current_pack_id.take() {
+                    current_index.add_pack(&pid, current_blobs);
+                    current_blobs = Vec::new();
+                    if current_index.is_full() {
+                        current_index.set_status(IndexStatus::Finalized);
+                        new_indices.push(std::mem::take(&mut current_index));
+                    }
+                }
+                current_pack_id = Some(pack_id);
             }
+            current_blobs.push(desc);
+        }
+        if let Some(pid) = current_pack_id {
+            current_index.add_pack(&pid, current_blobs);
         }
 
         if !current_index.is_empty() {
@@ -1694,6 +1707,61 @@ mod tests {
         assert_eq!(merged.num_packs(), 1);
         assert_eq!(merged.num_blobs(), 1);
         assert!(merged.contains(&b1.id));
+    }
+
+    #[test]
+    fn test_master_index_merge_multiple_packs() {
+        let mi = MasterIndex::default();
+
+        let pack_a = mock_id("pack_a");
+        let pack_b = mock_id("pack_b");
+        let pack_c = mock_id("pack_c");
+
+        // Index 0: pack_a {b1, b2}, pack_b {b3}
+        let mut idx0 = Index::new();
+        idx0.add_pack(
+            &pack_a,
+            vec![
+                mock_blob_desc("b1", BlobType::Data, 0, 100),
+                mock_blob_desc("b2", BlobType::Data, 100, 50),
+            ],
+        );
+        idx0.add_pack(&pack_b, vec![mock_blob_desc("b3", BlobType::Tree, 0, 200)]);
+        mi.add_index(idx0);
+
+        // Index 1: pack_a {b1 (overwritten), b4}, pack_c {b5}
+        let mut idx1 = Index::new();
+        idx1.add_pack(
+            &pack_a,
+            vec![
+                mock_blob_desc("b1", BlobType::Data, 0, 90), // same ID, different length → overwrites
+                mock_blob_desc("b4", BlobType::Data, 200, 80),
+            ],
+        );
+        idx1.add_pack(&pack_c, vec![mock_blob_desc("b5", BlobType::Data, 0, 60)]);
+        mi.add_index(idx1);
+
+        assert_eq!(mi.inner.read().indices.len(), 2);
+
+        mi.cleanup(None);
+
+        let inner = mi.inner.read();
+        assert_eq!(inner.indices.len(), 1);
+        let merged = &inner.indices[0];
+
+        // 3 packs: a, b, c
+        assert_eq!(merged.num_packs(), 3);
+        // 5 unique blobs: b1, b2, b3, b4, b5
+        assert_eq!(merged.num_blobs(), 5);
+
+        // b1 should have the overwritten length (90, from index 1)
+        let loc = merged.get(&mock_id("b1")).unwrap();
+        assert_eq!(loc.length, 90);
+
+        // All blobs present
+        for name in &["b1", "b2", "b3", "b4", "b5"] {
+            assert!(merged.contains(&mock_id(name)));
+        }
     }
 
     #[test]

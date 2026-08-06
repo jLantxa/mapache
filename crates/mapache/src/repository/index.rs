@@ -1354,7 +1354,15 @@ pub struct IndexFileBlob {
     pub length: u32,
     pub raw_length: u32,
     /// Whether the blob's encoded payload is zstd-compressed (high bit of the type byte).
+    ///
+    /// Defaults to `true` because v1 repos (whose index files may lack this
+    /// field) always store zstd-compressed blobs.
+    #[serde(default = "default_true")]
     pub compressed: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Serialize an `IndexFile` to the binary format.

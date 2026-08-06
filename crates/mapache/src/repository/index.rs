@@ -635,34 +635,31 @@ impl Index {
     }
 
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
-        let data: Vec<(&ID, BlobLocator)> = self
-            .data_ids
-            .iter()
-            .filter_map(|(id, loc)| self.resolve_location(loc, BlobType::Data).map(|l| (id, l)))
-            .collect();
-        let trees: Vec<(&ID, BlobLocator)> = self
-            .tree_ids
-            .iter()
-            .filter_map(|(id, loc)| self.resolve_location(loc, BlobType::Tree).map(|l| (id, l)))
-            .collect();
-        let zeros: Vec<(&ID, BlobLocator)> = self
-            .zero_ids
-            .iter()
-            .map(|(id, &raw_length)| {
-                (
-                    id,
-                    BlobLocator {
-                        pack_id: ID::default(),
-                        blob_type: BlobType::Zero,
-                        offset: 0,
-                        length: raw_length,
-                        raw_length,
-                        compressed: false,
-                    },
-                )
-            })
-            .collect();
-        data.into_iter().chain(trees).chain(zeros)
+        let mut result: Vec<(&ID, BlobLocator)> = Vec::with_capacity(self.num_blobs());
+        for (id, loc) in self.data_ids.iter() {
+            if let Some(locator) = self.resolve_location(loc, BlobType::Data) {
+                result.push((id, locator));
+            }
+        }
+        for (id, loc) in self.tree_ids.iter() {
+            if let Some(locator) = self.resolve_location(loc, BlobType::Tree) {
+                result.push((id, locator));
+            }
+        }
+        for (id, &raw_length) in &self.zero_ids {
+            result.push((
+                id,
+                BlobLocator {
+                    pack_id: ID::default(),
+                    blob_type: BlobType::Zero,
+                    offset: 0,
+                    length: raw_length,
+                    raw_length,
+                    compressed: false,
+                },
+            ));
+        }
+        result.into_iter()
     }
 
     /// Returns a map of Pack ID -> List of descriptors for all packs in this index.
@@ -729,8 +726,9 @@ struct MasterIndexInner {
     /// Cold (lazy-loaded) index metadata: BloomFilter + pack IDs for indices not loaded into RAM.
     cold_metadata: Vec<IndexMetadata>,
     /// LRU cache for cold indices that have been loaded on demand.
-    /// Key: index into `cold_metadata`, Value: the loaded `Index`.
-    lru: Lru<usize, Index>,
+    /// Key: file_id of the index, Value: the loaded `Index`.
+    /// Wrapped in its own RwLock so it can be mutated independently of the main index lock.
+    lru: RwLock<Lru<ID, Index>>,
 }
 
 impl Default for MasterIndex {
@@ -747,7 +745,7 @@ impl MasterIndex {
                 indices: Vec::with_capacity(1),
                 bloom_filter: None,
                 cold_metadata: Vec::new(),
-                lru: Lru::new(),
+                lru: RwLock::new(Lru::new()),
             })),
             pending_blobs: Arc::new(ShardedIdSet::new()),
             auto_save: true,
@@ -760,7 +758,7 @@ impl MasterIndex {
         lock.indices.clear();
         lock.bloom_filter = None;
         lock.cold_metadata.clear();
-        lock.lru = Lru::new();
+        *lock.lru.write() = Lru::new();
         self.pending_blobs.clear();
     }
 
@@ -878,7 +876,16 @@ impl MasterIndex {
                     compressed: false,
                 });
             }
-            // Need full index load
+            // Check LRU cache before returning ColdHit
+            let cached = lock.lru.write().remove(&meta.file_id);
+            if let Some(cached) = cached {
+                drop(lock);
+                self.promote_to_hot((*cached).clone());
+                return match self.get(id) {
+                    Some(locator) => LookupResult::Found(locator),
+                    None => LookupResult::NotFound,
+                };
+            }
             return LookupResult::ColdHit(i);
         }
 
@@ -894,6 +901,8 @@ impl MasterIndex {
             let meta = lock.cold_metadata.swap_remove(cold_idx);
             tracing::debug!(target: "index", "Loading cold index {} (file {}) into hot",
                 cold_idx, meta.file_id.to_short_hex(8));
+            // Remove from LRU cache since it's being promoted to hot
+            lock.lru.write().remove(&meta.file_id);
             Some(meta)
         } else {
             None
@@ -965,8 +974,10 @@ impl MasterIndex {
             tracing::debug!(target: "index", "Evicting hot index {} (file {}) to cold (hot limit: {})",
                 lock.indices[pos].instance_id, file_id.to_short_hex(8), hot_limit);
             let cold_meta = IndexMetadata::from_index(&lock.indices[pos], file_id);
+            // Cache the evicted index in the LRU so it can be reused without disk I/O
+            let evicted = lock.indices.swap_remove(pos);
+            lock.lru.write().insert(file_id, Arc::new(evicted));
             lock.cold_metadata.push(cold_meta);
-            lock.indices.swap_remove(pos);
         }
     }
 

@@ -65,6 +65,13 @@ where
         self.order_map.insert(ts, key);
     }
 
+    /// Removes an entry by key. Returns the value if it existed.
+    pub fn remove(&mut self, key: &K) -> Option<Arc<V>> {
+        let (value, ts) = self.entries.remove(key)?;
+        self.order_map.remove(&ts);
+        Some(value)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -179,5 +186,23 @@ mod tests {
         lru.insert("x", Arc::new(42));
         let val = lru.record_hit(&"x");
         assert_eq!(*val.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_lru_remove() {
+        let mut lru = Lru::new();
+        lru.insert(1, Arc::new("a".to_string()));
+        lru.insert(2, Arc::new("b".to_string()));
+
+        let removed = lru.remove(&1);
+        assert_eq!(*removed.unwrap(), "a");
+        assert_eq!(lru.len(), 1);
+
+        // Removing non-existent key returns None
+        assert!(lru.remove(&99).is_none());
+
+        // Remaining entry still works
+        let val = lru.record_hit(&2);
+        assert_eq!(*val.unwrap(), "b");
     }
 }

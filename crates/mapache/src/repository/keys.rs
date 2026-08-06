@@ -241,8 +241,13 @@ impl KeyManager {
         Ok(Zeroizing::new(decrypted))
     }
 
-    /// Generates a new KeyFile for the master key with a new password
-    pub fn generate_key_file(auth: &Auth, master_key: &[u8]) -> Result<KeyFile> {
+    /// Generates a new KeyFile for the master key with a new password.
+    ///
+    /// `repo_version` controls the nonce position used to encrypt the master key
+    /// inside the keyfile: v1 uses nonce-at-start, v2+ uses nonce-at-end. This
+    /// ensures old v1 binaries (which only try nonce-at-start) can still open
+    /// keyfiles produced by the current code.
+    pub fn generate_key_file(auth: &Auth, master_key: &[u8], repo_version: u32) -> Result<KeyFile> {
         tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
         let create_time = Local::now();
         let argon2_params = argon2::Params::default();
@@ -255,6 +260,9 @@ impl KeyManager {
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&*intermediate_key)?;
+        // v1 binaries only try nonce-at-start; use that position for v1 repos
+        // so they remain backward-compatible.
+        ss.set_nonce_at_end(repo_version >= 2);
 
         let encrypted_key = ss.encrypt(master_key)?;
 
@@ -492,7 +500,7 @@ mod tests {
         };
         let master_key = KeyManager::generate_new_master_key();
 
-        let key_file = KeyManager::generate_key_file(&auth, &master_key)?;
+        let key_file = KeyManager::generate_key_file(&auth, &master_key, 2)?;
         assert_eq!(key_file.username, "test_user");
 
         let decoded_master_key = KeyManager::decode_master_key(&auth.password, &key_file)?;

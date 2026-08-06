@@ -262,7 +262,7 @@ impl Repository {
         // Create new key
         tracing::info!(target: "repo", "Generating master key and keyfile");
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(auth, &master_key)
+        let keyfile = KeyManager::generate_key_file(auth, &master_key, repo_version)
             .inspect_err(|e| tracing::error!(target: "repo", "Key generation failed: {e}"))
             .map_err(|e| MapacheError::Crypto(format!("could not generate key: {e}")))?;
         tracing::info!(
@@ -911,6 +911,23 @@ impl Repository {
         let decompressed = secure_storage.decompress(&decoded)?;
         let manifest = serde_json::from_slice(&decompressed)?;
         Ok((manifest, false))
+    }
+
+    /// Load the manifest to determine the repository version.
+    ///
+    /// This is useful for commands (like `key add`) that need to know the
+    /// repository version without opening the full repository.
+    pub async fn load_manifest_version(
+        master_key: &[u8],
+        backend: Arc<dyn StorageBackend>,
+    ) -> Result<u32> {
+        let secure_storage = Arc::new(
+            SecureStorage::new()
+                .with_compression(Compression::Fast.to_level())
+                .with_key(master_key)?,
+        );
+        let (manifest, _) = Self::load_manifest(secure_storage, backend).await?;
+        Ok(manifest.version())
     }
 
     /// Loads a lock file.
@@ -1618,7 +1635,7 @@ mod tests {
             password: Zeroizing::new("password".to_string()),
         };
         let master_key = KeyManager::generate_new_master_key();
-        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone())?;
+        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 2)?;
 
         let salt = utils::base64::decode(&keyfile.salt)?;
         let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
@@ -1628,6 +1645,33 @@ mod tests {
         let ss = SecureStorage::new()
             .with_compression(Compression::Fast.to_level())
             .with_key(&*intermediate_key)?;
+
+        let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();
+
+        assert_eq!(*master_key, decrypted_key.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_key_file_v1() -> Result<()> {
+        let auth = Auth {
+            username: "mapachito".to_string(),
+            password: Zeroizing::new("password".to_string()),
+        };
+        let master_key = KeyManager::generate_new_master_key();
+        let keyfile = KeyManager::generate_key_file(&auth, &master_key.clone(), 1)?;
+
+        let salt = utils::base64::decode(&keyfile.salt)?;
+        let encrypted_key = utils::base64::decode(&keyfile.encrypted_key)?;
+
+        let intermediate_key =
+            SecureStorage::derive_key::<32>("password", &salt, keyfile.argon2_params()?)?;
+        let ss = SecureStorage::new()
+            .with_compression(Compression::Fast.to_level())
+            .with_key(&*intermediate_key)?;
+        // v1 keyfiles use nonce-at-start
+        ss.set_nonce_at_end(false);
 
         let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();
 

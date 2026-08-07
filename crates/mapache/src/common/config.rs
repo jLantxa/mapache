@@ -23,13 +23,13 @@ where
         v.into_iter()
             .map(|s| {
                 if let Some(rest) = s.strip_prefix("~/")
-                    && let Ok(home) = std::env::var("HOME")
+                    && let Some(home) = home_dir()
                 {
-                    format!("{}/{}", home, rest)
+                    format!("{}/{}", home.display(), rest)
                 } else if s == "~"
-                    && let Ok(home) = std::env::var("HOME")
+                    && let Some(home) = home_dir()
                 {
-                    home
+                    home.display().to_string()
                 } else {
                     s
                 }
@@ -325,18 +325,18 @@ mod tests {
     #[test]
     #[serial]
     fn test_config_path_tilde_slash() {
-        let home = std::env::var("HOME").unwrap();
+        let home = home_dir().unwrap();
         let result = config_path("~/Documents").unwrap();
-        let expected = PathBuf::from(&home).join("Documents");
+        let expected = home.join("Documents");
         assert_eq!(result, expected);
     }
 
     #[test]
     #[serial]
     fn test_config_path_tilde_only() {
-        let home = std::env::var("HOME").unwrap();
+        let home = home_dir().unwrap();
         let result = config_path("~").unwrap();
-        assert_eq!(result, PathBuf::from(home));
+        assert_eq!(result, home);
     }
 
     struct EnvRestoreGuard {

@@ -151,7 +151,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                                 .await,
                             )
                         } else {
-                            None
+                            // Dry run: validate pack can be read and decrypted.
+                            Some(
+                                migration::validate_pack(
+                                    repo.as_ref(),
+                                    backend.as_ref(),
+                                    secure_storage.as_ref(),
+                                    pack_id,
+                                    old_nonce_at_end,
+                                )
+                                .await
+                                .map(|_blob_count| (*pack_id, Vec::new())),
+                            )
                         };
 
                         reenc_bar.inc(1);
@@ -168,8 +179,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             for (old_id, res) in results {
                 match res {
                     None => {
-                        // Dry run: record pack as-is
-                        pack_map.push((*old_id, *old_id, Vec::new()));
+                        // Cannot happen: both branches return Some.
                     }
                     Some(Ok((new_id, descriptors))) => {
                         pack_map.push((*old_id, new_id, descriptors));
@@ -186,10 +196,17 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     "[DRY RUN] Would re-encrypt {} packs",
                     all_pack_ids.len()
                 );
+                if error_count > 0 {
+                    ui::cli::warning!(
+                        "[DRY RUN] {error_count} pack(s) failed validation — migration would fail"
+                    );
+                }
             } else {
                 ui::cli::log!("Re-encrypted {} packs successfully", pack_map.len());
                 if error_count > 0 {
-                    ui::cli::warning!("Skipped {} packs due to errors", error_count);
+                    return Err(MigrateError::Repo(MapacheError::Format(format!(
+                        "aborting migration: {error_count} pack(s) failed to re-encrypt"
+                    ))));
                 }
             }
 
@@ -222,6 +239,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 );
 
                 // Re-encrypt active snapshots
+                let mut snapshot_error_count = 0;
                 for old_id in &snapshot_ids {
                     if cleanup_handler.is_interrupted() {
                         return Err(MigrateError::Interrupted);
@@ -242,6 +260,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                             new_snapshot_ids.push(new_id);
                         }
                             Err(e) => {
+                                snapshot_error_count += 1;
                                 ui::cli::error!("error re-encrypting snapshot {old_id}: {e}");
                             }
                         }
@@ -270,6 +289,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                             new_snapshot_ids.push(new_id);
                         }
                             Err(e) => {
+                                snapshot_error_count += 1;
                                 ui::cli::error!("error re-encrypting dropped snapshot {old_id}: {e}");
                             }
                         }
@@ -278,6 +298,13 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 }
 
                 file_bar.finish_and_clear();
+
+                if !args.dry_run && snapshot_error_count > 0 {
+                    return Err(MigrateError::Repo(MapacheError::Format(format!(
+                        "aborting migration: {snapshot_error_count} snapshot(s) failed to re-encrypt"
+                    ))));
+                }
+
                 ui::cli::log!("Re-encrypted {} snapshot files", total_files);
             } else {
                 ui::cli::log!("\nStep 2/4: No snapshots to re-encrypt");

@@ -102,6 +102,32 @@ pub async fn re_encrypt_pack(
     Ok((new_id, descriptors))
 }
 
+/// Validate that a pack can be read and decrypted.
+///
+/// Reads the full pack and parses the footer with the given nonce position.
+/// Returns the number of blobs found, or an error if the pack is corrupt,
+/// unreadable, or cannot be decrypted with the current key.
+pub async fn validate_pack(
+    repo: &Repository,
+    backend: &dyn StorageBackend,
+    secure_storage: &SecureStorage,
+    pack_id: &ID,
+    nonce_at_end: bool,
+) -> Result<usize> {
+    use crate::repository::packer::Packer;
+
+    let path = repo.get_path(ContentIdType::Pack, pack_id);
+    let handle = Handle::new(&path);
+
+    // Read the full pack.
+    let pack_data = backend.read(&handle, 0, 0).await?;
+
+    // Parse footer — this decrypts and validates the pack.
+    let descriptors = Packer::parse_footer(secure_storage, &pack_data, nonce_at_end, 1)?;
+
+    Ok(descriptors.len())
+}
+
 /// Re-encrypt a standalone file (snapshot, index, etc.) from one nonce position to another.
 ///
 /// The file ID is the content hash of the encrypted bytes, so re-encryption

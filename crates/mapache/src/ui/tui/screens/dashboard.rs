@@ -244,6 +244,7 @@ impl DashboardScreen {
                 theme::THEME.snap_id,
             ),
             Span::styled("]", theme::THEME.footer),
+            Span::styled(format!(" v{}", self.repo.repo_version()), theme::THEME.teal),
         ]))
         .style(theme::THEME.footer);
         frame.render_widget(info, row1[1]);

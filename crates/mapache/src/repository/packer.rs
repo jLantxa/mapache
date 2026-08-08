@@ -326,6 +326,7 @@ impl Packer {
     /// `repo_version` decides whether the high bit of the type byte is a
     /// meaningful compression marker: v2 honors it, while v1 entries always
     /// decode as zstd-compressed (the bit is not meaningful there).
+    // TODO(v1-removal): Remove repo_version parameter, always honor the marker.
     pub fn parse_footer(
         secure_storage: &SecureStorage,
         footer_data: &[u8],
@@ -360,7 +361,7 @@ impl Packer {
         let mut cur = footer_blob_info.as_slice();
         let mut blob_descriptors = Vec::new();
         let mut offset: u32 = 0;
-        let has_compression_marker = repo_version >= 2;
+        let has_compression_marker = repo_version >= 2; // TODO(v1-removal): always true
 
         while !cur.is_empty() {
             let id = ID::from_bytes(get_array::<32>(&mut cur)?);

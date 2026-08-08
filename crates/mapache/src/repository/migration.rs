@@ -1,6 +1,7 @@
 //! Migration utilities for upgrading repository format versions.
 //!
 //! All items in this module are temporary and should be removed when v1 is deprecated.
+// TODO(v1-removal): Remove this entire module.
 
 use crate::backend::{Handle, StorageBackend};
 use crate::common::{

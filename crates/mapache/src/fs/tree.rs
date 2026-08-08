@@ -33,11 +33,13 @@ impl Tree {
     }
 
     /// Deserialize a tree from the legacy JSON format (v1 repositories).
+    // TODO(v1-removal): Remove this method.
     pub fn from_json(bytes: &[u8]) -> Result<Tree> {
         crate::repository::legacy::deserialize_tree_json(bytes)
     }
 
     /// Serialize a tree to JSON (v1 repositories).
+    // TODO(v1-removal): Remove this method.
     pub fn to_json(&self) -> Result<Vec<u8>> {
         crate::repository::legacy::serialize_tree_json(self)
     }
@@ -76,7 +78,7 @@ impl Tree {
     pub async fn save_to_store(
         &mut self,
         blob_saver: Arc<dyn BlobSaver>,
-        repo_version: u32,
+        repo_version: u32, // TODO(v1-removal): Remove this parameter
     ) -> Result<ID> {
         let mut owned = std::mem::take(self);
 
@@ -85,7 +87,7 @@ impl Tree {
             let bytes = if repo_version >= 2 {
                 owned.to_binary()?
             } else {
-                owned.to_json()?
+                owned.to_json()? // TODO(v1-removal): Remove v1 branch
             };
 
             let id = blob_saver.save_blob(
@@ -107,6 +109,7 @@ impl Tree {
         let tree_object = repo.load_blob(root_id).await?;
         // Try binary first (v2+). Fall back to JSON for v1 blobs that haven't been
         // re-encoded. When v1 is deprecated, remove the fallback.
+        // TODO(v1-removal): Remove the JSON fallback, always use from_binary.
         if repo.repo_version() >= 2
             && let Ok(tree) = Self::from_binary(&tree_object)
         {

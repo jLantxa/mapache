@@ -1,3 +1,4 @@
+// TODO(v1-removal): Remove this entire command.
 use std::{
     io,
     sync::atomic::{AtomicU64, Ordering},

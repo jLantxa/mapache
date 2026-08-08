@@ -535,6 +535,7 @@ impl Index {
 
     /// Saves the index to the repository.
     /// Returns the total uncompressed and compressed sizes of the saved index files.
+    // TODO(v1-removal): Remove `repo_version` parameter.
     pub async fn persist(
         &mut self,
         repo: &Repository,
@@ -592,6 +593,7 @@ impl Index {
             .collect();
 
         let effective_version = repo_version.unwrap_or(repo.repo_version());
+        // TODO(v1-removal): Remove effective_version, always use binary serialization.
         let serialized = IndexFile {
             packs: pack_entries,
             zero_blobs: zero_entries,
@@ -1124,6 +1126,7 @@ impl MasterIndex {
         self.persist_with_version(repo, None).await
     }
 
+    // TODO(v1-removal): Remove `repo_version` parameter.
     pub async fn persist_with_version(
         &self,
         repo: &Repository,
@@ -1308,6 +1311,7 @@ pub struct IndexFile {
 
 impl IndexFile {
     /// Serialize the `IndexFile` based on the repository version.
+    // TODO(v1-removal): Remove the v1 JSON branch.
     pub fn serialize(&self, repo_version: u32) -> Result<Vec<u8>> {
         if repo_version >= 2 {
             Ok(serialize_index_binary(self))
@@ -1317,6 +1321,7 @@ impl IndexFile {
     }
 
     /// Deserialize an `IndexFile` based on the repository version.
+    // TODO(v1-removal): Remove the v1 JSON branch.
     pub fn deserialize(data: &[u8], repo_version: u32) -> Result<Self> {
         if repo_version >= 2 {
             deserialize_index_binary(data)
@@ -1357,6 +1362,7 @@ pub struct IndexFileBlob {
     ///
     /// Defaults to `true` because v1 repos (whose index files may lack this
     /// field) always store zstd-compressed blobs.
+    // TODO(v1-removal): Remove the default and always read from the marker.
     #[serde(default = "default_true")]
     pub compressed: bool,
 }

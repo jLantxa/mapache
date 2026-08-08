@@ -311,7 +311,7 @@ impl Repository {
         tracing::info!(target: "repo", "Creating manifest v{repo_version}");
         let manifest = Manifest::new(repo_version);
 
-        // Nonce position depends on repo version: v1 = start, v2 = end.
+        // TODO(v1-removal): Nonce position depends on repo version.
         secure_storage.set_nonce_at_end(repo_version >= 2);
         let manifest_path = Path::new(MANIFEST_PATH);
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
@@ -393,8 +393,7 @@ impl Repository {
             )));
         }
 
-        // The v1 format has no per-blob compression marker: blobs are always
-        // zstd-compressed, so `--compression none` cannot be honored.
+        // TODO(v1-removal): The v1 format has no per-blob compression marker.
         if version < 2 && matches!(config.compression, Compression::None) {
             return Err(MapacheError::Repo(
                 "compression 'none' is not supported in repository format v1; \
@@ -403,7 +402,7 @@ impl Repository {
             ));
         }
 
-        // Nonce position depends solely on repo version: v1 = start, v2 = end.
+        // TODO(v1-removal): Nonce position depends on repo version.
         let nonce_at_end = version >= 2;
         tracing::info!(target: "repo", "Nonce position: {}", if nonce_at_end { "end" } else { "start" });
         secure_storage.set_nonce_at_end(nonce_at_end);
@@ -482,6 +481,37 @@ impl Repository {
         self.repo_version
     }
 
+    // ── v1/v2 format helpers ──────────────────────────────────────────────
+    // Use these instead of `repo_version >= 2` checks so that v1 removal is
+    // a single-point edit.  Every site guarded by these helpers is tagged
+    // `TODO(v1-removal)`.
+
+    /// v2: nonce at end `[ct | tag | nonce]`.  v1: nonce at start.
+    pub fn nonce_at_end(&self) -> bool {
+        self.repo_version >= 2
+    }
+
+    /// v2: compact binary index.  v1: JSON index.
+    pub fn uses_binary_index(&self) -> bool {
+        self.repo_version >= 2
+    }
+
+    /// v2: zero-blob dedup (store length only, no pack data).
+    pub fn supports_zero_blobs(&self) -> bool {
+        self.repo_version >= 2
+    }
+
+    /// v2: high bit of type byte is a compression marker.
+    /// v1: always zstd-compressed, bit is not meaningful.
+    pub fn has_compression_marker(&self) -> bool {
+        self.repo_version >= 2
+    }
+
+    /// v2: `--compression none` is supported.
+    pub fn supports_compression_none(&self) -> bool {
+        self.repo_version >= 2
+    }
+
     /// Get the repository backend
     pub fn backend(&self) -> Arc<dyn StorageBackend> {
         self.backend.clone()
@@ -513,7 +543,7 @@ impl Repository {
             return Ok(id);
         }
 
-        // Zero blobs: register directly in index, no pack data (v2+ only)
+        // TODO(v1-removal): Zero blobs: register directly in index, no pack data (v2+ only).
         if blob_type == BlobType::Zero && self.repo_version >= 2 {
             let raw_length = data.len() as u32;
             self.master_index.add_zero_blob(id, raw_length);
@@ -614,7 +644,7 @@ impl Repository {
             .await?;
 
         let secure_storage = self.secure_storage.clone();
-        let repo_version = self.repo_version;
+        let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
 
         tokio::task::spawn_blocking(move || {
             let decoded = secure_storage.decode(&index_data)?;
@@ -885,6 +915,7 @@ impl Repository {
             )
             .await?;
 
+        // TODO(v1-removal): Remove repo_version parameter after v1 support is dropped.
         index::IndexFile::deserialize(&data, self.repo_version)
     }
 
@@ -893,6 +924,7 @@ impl Repository {
     /// Tries decoding with nonce-at-end first, then nonce-at-start, to support
     /// both v1 (nonce at start) and v2 (nonce at end) manifests. The returned
     /// `bool` indicates which nonce position was used.
+    // TODO(v1-removal): Remove the nonce-at-start fallback.
     async fn load_manifest(
         secure_storage: Arc<SecureStorage>,
         backend: Arc<dyn StorageBackend>,
@@ -1247,7 +1279,7 @@ impl Repository {
 
         self.master_index.clear();
 
-        let repo_version = self.repo_version;
+        let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
         let hot_count = match index_mode {
             IndexMode::Eager => usize::MAX, // Load all
             IndexMode::Lazy => common::defaults::INDEX_HOT_COUNT,
@@ -1671,6 +1703,7 @@ mod tests {
             .with_compression(Compression::Fast.to_level())
             .with_key(&*intermediate_key)?;
         // v1 keyfiles use nonce-at-start
+        // TODO(v1-removal): Remove this test or adapt to only test v2.
         ss.set_nonce_at_end(false);
 
         let decrypted_key = ss.decrypt(&encrypted_key)?.to_vec();

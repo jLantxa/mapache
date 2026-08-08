@@ -1,3 +1,5 @@
+// TODO(v1-removal): Remove this entire module. It only provides JSON
+// serialization for the deprecated v1 repository format.
 use crate::{
     common::error::{MapacheError, Result},
     fs::tree::Tree,

@@ -146,6 +146,7 @@ impl SecureStorage {
                 out.extend_from_slice(tag.as_slice());
                 out.extend_from_slice(&nonce_bytes);
             } else {
+                // TODO(v1-removal): Remove the v1 nonce-at-start branch.
                 let mut prefixed =
                     Vec::with_capacity(AES_GCM_NONCE_LEN + out.len() + AES_GCM_TAG_LEN);
                 prefixed.extend_from_slice(&nonce_bytes);
@@ -255,6 +256,7 @@ impl SecureStorage {
     /// the repo is in a transitional state (v1 data with v2 config), falls back
     /// to the other position. This fallback should be removed when v1 is
     /// deprecated.
+    // TODO(v1-removal): Remove the fallback branch.
     pub fn decrypt_in_place(&self, mut data: Vec<u8>) -> Result<Vec<u8>> {
         let Some(cipher) = &self.cipher else {
             return Ok(data);
@@ -280,6 +282,7 @@ impl SecureStorage {
     /// Extracts the nonce and ciphertext+tag according to the nonce position layout.
     /// v2 uses nonce at end: `[ciphertext | tag | nonce]`
     /// Legacy v1 uses nonce at start: `[nonce | ciphertext | tag]`
+    // TODO(v1-removal): Remove the v1 branch (nonce at start).
     fn extract_nonce_and_ct(data: &[u8], nonce_at_end: bool) -> Result<(Nonce, &[u8])> {
         if nonce_at_end {
             let nonce_start = data.len() - AES_GCM_NONCE_LEN;

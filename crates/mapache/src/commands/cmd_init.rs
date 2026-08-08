@@ -49,6 +49,7 @@ impl ToExitCode for InitError {
 )]
 pub struct CmdArgs {
     /// Repository format version (1 or 2)
+    // TODO(v1-removal): Remove --format flag, always use v2.
     #[clap(long, default_value_t = THIS_REPOSITORY_VERSION)]
     pub format: u32,
 }
@@ -56,6 +57,7 @@ pub struct CmdArgs {
 const INIT_MSG: &str = "init";
 
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitError> {
+    // TODO(v1-removal): Remove format validation and the v1 branch.
     if args.format < 1 || args.format > 2 {
         return Err(InitError::RepoInitError(format!(
             "unsupported repository format: {} (supported: 1, 2)",
@@ -63,8 +65,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
         )));
     }
 
-    // The v1 format has no per-blob compression marker: blobs are always
-    // zstd-compressed, so `--compression none` cannot be honored.
+    // TODO(v1-removal): The v1 format has no per-blob compression marker.
     if args.format < 2 && matches!(global_args.compression_level, Compression::None) {
         return Err(InitError::RepoInitError(
             "compression 'none' is not supported in repository format v1; \
@@ -122,7 +123,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
         );
 
         if args.format == 1 {
-            warn_v1_deprecated();
+            warn_v1_deprecated(); // TODO(v1-removal): Remove v1 branch
         }
 
         ui::cli::warning!(

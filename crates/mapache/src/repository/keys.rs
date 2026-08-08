@@ -222,7 +222,7 @@ impl KeyManager {
             .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&*intermediate_key)?;
 
-        // Try the default nonce position (v2: nonce at end). If that fails,
+        // TODO(v1-removal): Try the default nonce position (v2: nonce at end). If that fails,
         // fall back to the other position (v1: nonce at start).
         let decrypted = match ss.decrypt(&encrypted_key) {
             Ok(c) => c.into_owned(),
@@ -247,6 +247,7 @@ impl KeyManager {
     /// inside the keyfile: v1 uses nonce-at-start, v2+ uses nonce-at-end. This
     /// ensures old v1 binaries (which only try nonce-at-start) can still open
     /// keyfiles produced by the current code.
+    // TODO(v1-removal): Remove repo_version parameter, always use nonce-at-end.
     pub fn generate_key_file(auth: &Auth, master_key: &[u8], repo_version: u32) -> Result<KeyFile> {
         tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
         let create_time = Local::now();
@@ -260,7 +261,7 @@ impl KeyManager {
         let ss = SecureStorage::new()
             .with_compression(DEFAULT_COMPRESSION.to_level())
             .with_key(&*intermediate_key)?;
-        // v1 binaries only try nonce-at-start; use that position for v1 repos
+        // TODO(v1-removal): v1 binaries only try nonce-at-start; use that position for v1 repos
         // so they remain backward-compatible.
         ss.set_nonce_at_end(repo_version >= 2);
 

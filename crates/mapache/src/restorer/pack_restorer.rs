@@ -16,7 +16,9 @@ use crate::{
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
 
-use super::{BlobRestoreRequest, FileRestorePlan, PackMap, Restorer, ShardedFileHandleCache};
+use super::{
+    BlobRestoreRequest, FileRestorePlan, PackMap, Restorer, ShardedFileHandleCache, ZeroBatchMap,
+};
 
 struct DecodedBlob {
     data: Vec<u8>,
@@ -97,18 +99,19 @@ pub(crate) async fn restore_packs(
 
     let packs_map = Arc::try_unwrap(packs).unwrap_or_else(|arc| (*arc).clone());
 
-    // Handle zero blobs separately: they have no pack data, write zeros directly.
-    let mut zero_file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
-    let mut regular_packs: HashMap<ID, Vec<(ID, BlobRestoreRequest)>> = HashMap::new();
+    // Split blobs into two streams:
+    // - Zero blobs: no pack data to download, just N bytes of zeros to write directly.
+    // - Regular blobs: need to be fetched from pack files on storage.
+    let mut zero_file_batches: ZeroBatchMap = HashMap::new();
+    let mut regular_packs: PackMap = HashMap::new();
 
     for (pack_id, blob_requests) in packs_map {
         for (blob_id, req) in blob_requests {
             if matches!(req.blob_type, BlobType::Zero) {
-                let zeros = vec![0u8; req.raw_length as usize];
                 zero_file_batches
                     .entry(req.file_idx)
                     .or_default()
-                    .push((zeros, req.offset_in_file));
+                    .push((req.offset_in_file, req.raw_length));
             } else {
                 regular_packs
                     .entry(pack_id)
@@ -119,7 +122,7 @@ pub(crate) async fn restore_packs(
     }
 
     if !zero_file_batches.is_empty() {
-        flush_file_batches(
+        flush_zero_batches(
             &mut zero_file_batches,
             &ctx,
             defaults.restore_blob_concurrency,
@@ -350,6 +353,97 @@ async fn flush_file_batches(
                     }
                     Err(e) => {
                         let err_msg = format!("failed to write to file index {file_idx}: {e}");
+                        if ctx.quit_on_error {
+                            return Err(MapacheError::Internal(err_msg));
+                        }
+                        emit_event(
+                            &ctx.event_sender,
+                            Event::Restore(RestoreEvent::Error(err_msg)),
+                        );
+                    }
+                }
+
+                Ok::<(), MapacheError>(())
+            }
+        })
+        .buffer_unordered(concurrency);
+
+    while let Some(res) = batch_stream.next().await {
+        res?;
+    }
+
+    Ok(())
+}
+
+/// Chunk size for writing zeros — avoids allocating the full zero blob in memory.
+const ZERO_WRITE_CHUNK: usize = 64 * 1024;
+
+/// Flush zero blob batches: write zeros directly to files in chunks,
+/// without materializing the full zero content in memory.
+async fn flush_zero_batches(
+    zero_batches: &mut ZeroBatchMap,
+    ctx: &Arc<RestoreContext>,
+    concurrency: usize,
+) -> Result<()> {
+    let batches = std::mem::take(zero_batches);
+
+    let mut batch_stream = futures::stream::iter(batches)
+        .map(|(file_idx, writes)| {
+            let num_blobs = writes.len().min(u32::MAX as usize) as u32;
+            let total_bytes: u64 = writes.iter().map(|&(_, len)| len as u64).sum();
+            let ctx = ctx.clone();
+
+            async move {
+                let file_path = ctx.files[file_idx].path.clone();
+                let file_path_for_write = file_path.clone();
+                let ctx_inner = ctx.clone();
+                let write_result = spawn_blocking(move || -> Result<u64> {
+                    let mut cache_guard = ctx_inner.handle_cache.get_shard(file_idx).lock();
+                    let file = cache_guard.get_handle(
+                        file_idx,
+                        &file_path_for_write,
+                        &ctx_inner.files[file_idx],
+                        &ctx_inner.initialized[file_idx],
+                        &ctx_inner.restorer,
+                    )?;
+                    let zeros = [0u8; ZERO_WRITE_CHUNK];
+                    let mut written = 0u64;
+                    for (offset, length) in writes {
+                        let mut remaining = length as u64;
+                        let mut write_offset = offset;
+                        while remaining > 0 {
+                            let chunk = remaining.min(ZERO_WRITE_CHUNK as u64) as usize;
+                            let slice = &zeros[..chunk];
+                            #[cfg(unix)]
+                            let n = file.write_at(slice, write_offset)?;
+                            #[cfg(windows)]
+                            let n = file.seek_write(slice, write_offset)?;
+                            if n == 0 {
+                                return Err(MapacheError::Internal(
+                                    "failed to write zeros: wrote 0 bytes".to_string(),
+                                ));
+                            }
+                            remaining -= n as u64;
+                            write_offset += n as u64;
+                        }
+                        written += length as u64;
+                    }
+                    Ok(written)
+                })
+                .await
+                .map_err(|e| MapacheError::task_panicked("zero blob restore", e))?;
+
+                match write_result {
+                    Ok(_bytes) => {
+                        emit_event(
+                            &ctx.event_sender,
+                            Event::Restore(RestoreEvent::BytesProcessed(total_bytes)),
+                        );
+                        ctx.remaining[file_idx].fetch_sub(num_blobs, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        let err_msg =
+                            format!("failed to write zeros to file index {file_idx}: {e}");
                         if ctx.quit_on_error {
                             return Err(MapacheError::Internal(err_msg));
                         }

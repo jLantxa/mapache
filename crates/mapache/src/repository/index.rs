@@ -421,7 +421,7 @@ impl Index {
             }
         }
 
-        // Backward compat: old index format stored zero blobs in a separate section
+        // TODO(v1-removal): Backward compat: old index format stored zero blobs in a separate section
         // without pack info. Create synthetic entries (load_blob ignores pack_id for zeros).
         // Dedup against zero_entries already populated from pack blobs.
         let existing_zeros: std::collections::HashSet<ID> =
@@ -1282,6 +1282,7 @@ pub struct IndexFile {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packs: Vec<IndexFilePack>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    // TODO(v1-removal): Remove zero_blobs field — v2 stores zero blobs in pack footers.
     pub zero_blobs: Vec<IndexFileZeroBlob>,
 }
 
@@ -1309,6 +1310,7 @@ impl IndexFile {
 }
 
 /// A zero blob: ID -> raw_length. No pack data.
+// TODO(v1-removal): Remove IndexFileZeroBlob — v2 stores zero blobs in pack footers.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct IndexFileZeroBlob {
     pub id: ID,
@@ -2207,5 +2209,113 @@ mod tests {
         let ids: Vec<ID> = index.iter_ids().map(|(id, _)| *id).collect();
         assert!(ids.contains(&mock_id("zero_a")));
         assert!(ids.contains(&mock_id("data_1")));
+    }
+
+    #[test]
+    fn test_zero_blob_backward_compat_old_format() {
+        let index_file = IndexFile {
+            packs: Vec::new(),
+            zero_blobs: vec![
+                IndexFileZeroBlob {
+                    id: mock_id("old_zero_1"),
+                    raw_length: 4096,
+                },
+                IndexFileZeroBlob {
+                    id: mock_id("old_zero_2"),
+                    raw_length: 8192,
+                },
+            ],
+        };
+
+        let idx = Index::from_index_file(index_file, mock_id("test"));
+        assert!(idx.contains(&mock_id("old_zero_1")));
+        assert!(idx.contains(&mock_id("old_zero_2")));
+
+        let loc1 = idx.get(&mock_id("old_zero_1")).unwrap();
+        assert_eq!(loc1.blob_type, BlobType::Zero);
+        assert_eq!(loc1.raw_length, 4096);
+        assert_eq!(loc1.length, 0);
+        assert_eq!(loc1.pack_id, ID::default());
+
+        let loc2 = idx.get(&mock_id("old_zero_2")).unwrap();
+        assert_eq!(loc2.blob_type, BlobType::Zero);
+        assert_eq!(loc2.raw_length, 8192);
+    }
+
+    #[test]
+    fn test_zero_blob_metadata_from_index() {
+        let mut index = Index::new();
+        let pack_id = mock_id("pack_meta");
+        let id1 = mock_id("zero_m1");
+        let id2 = mock_id("zero_m2");
+        index.add_pack(
+            &pack_id,
+            vec![
+                PackedBlobDescriptor {
+                    id: id1,
+                    blob_type: BlobType::Zero,
+                    offset: 0,
+                    length: 0,
+                    raw_length: 1024,
+                    compressed: false,
+                },
+                PackedBlobDescriptor {
+                    id: id2,
+                    blob_type: BlobType::Zero,
+                    offset: 0,
+                    length: 0,
+                    raw_length: 2048,
+                    compressed: false,
+                },
+                mock_blob_desc("data_x", BlobType::Data, 0, 512),
+            ],
+        );
+        index.finalize();
+
+        let meta = IndexMetadata::from_index(&index, mock_id("file_meta"));
+        assert_eq!(meta.zero_blobs.len(), 2);
+
+        let (z1_id, z1_len) = meta.zero_blobs.iter().find(|(id, _)| *id == id1).unwrap();
+        assert_eq!(*z1_id, id1);
+        assert_eq!(*z1_len, 1024);
+
+        let (z2_id, z2_len) = meta.zero_blobs.iter().find(|(id, _)| *id == id2).unwrap();
+        assert_eq!(*z2_id, id2);
+        assert_eq!(*z2_len, 2048);
+    }
+
+    #[test]
+    fn test_zero_blob_cold_lookup() {
+        let mi = MasterIndex::new(IndexMode::Lazy);
+
+        let mut index = Index::new();
+        let pack_id = mock_id("pack_cold");
+        let zero_id = mock_id("cold_zero");
+        index.add_pack(
+            &pack_id,
+            vec![PackedBlobDescriptor {
+                id: zero_id,
+                blob_type: BlobType::Zero,
+                offset: 0,
+                length: 0,
+                raw_length: 16384,
+                compressed: false,
+            }],
+        );
+        index.finalize();
+
+        let file_id = mock_id("cold_file");
+        let meta = IndexMetadata::from_index(&index, file_id);
+        mi.add_cold_metadata(meta);
+
+        match mi.get_with_cold(&zero_id) {
+            LookupResult::Found(locator) => {
+                assert_eq!(locator.blob_type, BlobType::Zero);
+                assert_eq!(locator.raw_length, 16384);
+                assert_eq!(locator.length, 0);
+                assert_eq!(locator.pack_id, ID::default());
+            }
+            other => panic!("expected Found for cold zero blob, got {:?}", other),
+        }
     }
 }

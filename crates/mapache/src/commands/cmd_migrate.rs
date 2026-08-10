@@ -336,7 +336,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     return Err(MigrateError::Interrupted);
                 }
 
-                // Zero blobs are now in pack footers as BlobType::Zero with length=0.
+                // Zero blobs are registered in pack footers as BlobType::Zero with length=0.
                 // They go through add_pack like data/tree blobs.
                 // parse_footer already filters out Padding entries.
                 zero_blob_count += descriptors

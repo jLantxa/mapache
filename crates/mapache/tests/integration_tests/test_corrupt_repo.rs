@@ -153,10 +153,13 @@ mod tests {
             }
         }
 
-        // Second backup with new data should still succeed
+        // Second backup with new data should still succeed.
+        // Use no_parent(true) so the backup doesn't need to read old tree blobs
+        // from potentially corrupted packs — only new packs are written.
         fs::write(backup_data_tmp_path.join("new_file.txt"), b"brand new data")?;
 
         ctx.snapshot_builder(vec![backup_data_tmp_path.clone()])
+            .no_parent(true)
             .run(&ctx.global)
             .await?;
 

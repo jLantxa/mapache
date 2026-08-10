@@ -121,6 +121,8 @@ pub(crate) struct Restorer {
 }
 
 pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
+/// file_idx -> list of (offset_in_file, raw_length) for zero blobs
+pub(crate) type ZeroBatchMap = HashMap<usize, Vec<(u64, u32)>>;
 type HardlinkByPath = (PathBuf, PathBuf);
 type PrimaryHardlinks = Arc<Mutex<HashMap<(u64, u64), (PathBuf, [u8; 32])>>>;
 

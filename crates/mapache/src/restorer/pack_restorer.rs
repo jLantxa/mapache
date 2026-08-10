@@ -97,7 +97,40 @@ pub(crate) async fn restore_packs(
 
     let packs_map = Arc::try_unwrap(packs).unwrap_or_else(|arc| (*arc).clone());
 
-    let mut download_stream = futures::stream::iter(packs_map)
+    // Handle zero blobs separately: they have no pack data, write zeros directly.
+    let zero_pack_id = ID::default();
+    let mut zero_file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
+    let mut regular_packs: HashMap<ID, Vec<(ID, BlobRestoreRequest)>> = HashMap::new();
+
+    for (pack_id, blob_requests) in packs_map {
+        if pack_id == zero_pack_id {
+            for (_blob_id, req) in blob_requests {
+                let zeros = vec![0u8; req.raw_length as usize];
+                zero_file_batches
+                    .entry(req.file_idx)
+                    .or_default()
+                    .push((zeros, req.offset_in_file));
+            }
+        } else {
+            for (blob_id, req) in blob_requests {
+                regular_packs
+                    .entry(pack_id)
+                    .or_default()
+                    .push((blob_id, req));
+            }
+        }
+    }
+
+    if !zero_file_batches.is_empty() {
+        flush_file_batches(
+            &mut zero_file_batches,
+            &ctx,
+            defaults.restore_blob_concurrency,
+        )
+        .await?;
+    }
+
+    let mut download_stream = futures::stream::iter(regular_packs)
         .flat_map(|(pack_id, blob_requests)| {
             let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
             for (blob_id, req) in blob_requests {

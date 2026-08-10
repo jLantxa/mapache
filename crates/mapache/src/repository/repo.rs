@@ -543,7 +543,7 @@ impl Repository {
             return Ok(id);
         }
 
-        // TODO(v1-removal): Zero blobs: register directly in index, no pack data (v2+ only).
+        // Zero blobs (v2+): register directly in index without pack data.
         if blob_type == BlobType::Zero && self.repo_version >= 2 {
             let raw_length = data.len() as u32;
             self.master_index.add_zero_blob(id, raw_length);

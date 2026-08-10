@@ -155,8 +155,8 @@ mod tests {
         // Create file A (512KiB) and file B (512KiB). Total ~1MiB, should fit in one or two packs.
         let file_a = backup_path.join("file_a.bin");
         let file_b = backup_path.join("file_b.bin");
-        let data_a = vec![0u8; 512 * 1024];
-        let data_b = vec![1u8; 512 * 1024];
+        let data_a = vec![0xAAu8; 512 * 1024];
+        let data_b = vec![0x55u8; 512 * 1024];
         std::fs::write(&file_a, &data_a)?;
         std::fs::write(&file_b, &data_b)?;
 
@@ -246,8 +246,8 @@ mod tests {
         // Create file A (1MiB) and file B (1MiB).
         let file_a = backup_path.join("file_a.bin");
         let file_b = backup_path.join("file_b.bin");
-        let data_a = vec![0u8; 1024 * 1024];
-        let data_b = vec![1u8; 1024 * 1024];
+        let data_a = vec![0xAAu8; 1024 * 1024];
+        let data_b = vec![0x55u8; 1024 * 1024];
         std::fs::write(&file_a, &data_a)?;
         std::fs::write(&file_b, &data_b)?;
 

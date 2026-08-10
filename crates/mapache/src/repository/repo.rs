@@ -543,10 +543,32 @@ impl Repository {
             return Ok(id);
         }
 
-        // Zero blobs (v2+): register directly in index without pack data.
-        if blob_type == BlobType::Zero && self.repo_version >= 2 {
-            let raw_length = data.len() as u32;
-            self.master_index.add_zero_blob(id, raw_length);
+        // Zero blobs: send to packer with empty encoded data (no bytes in pack data section).
+        // They appear in the pack footer as BlobType::Zero with length=0, raw_length=N.
+        if blob_type == BlobType::Zero {
+            let raw_length = data.len() as u64;
+
+            let tx = {
+                let tx_guard = self.pack_saver_tx.read();
+                tx_guard
+                    .as_ref()
+                    .ok_or_else(|| {
+                        MapacheError::Repo("packer is stopped or not initialized".to_string())
+                    })?
+                    .clone()
+            };
+
+            tx.send(PackSaverRequest::SaveBlob {
+                id,
+                blob_type,
+                data: Vec::new(),
+                raw_length,
+                compressed: false,
+            })
+            .map_err(|_| MapacheError::Repo("packer channel closed".to_string()))?;
+
+            self.master_index.add_pending_blob(id);
+
             return Ok(id);
         }
 

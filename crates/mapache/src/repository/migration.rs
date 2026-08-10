@@ -92,11 +92,11 @@ pub async fn re_encrypt_pack(
         }
     }
 
-    // Rebuild the footer: only non-zero blobs go in the pack footer.
+    // Rebuild the footer: zero blobs appear as BlobType::Zero with length=0.
     // v1 blobs were always zstd-compressed, so compressed: true.
     let mut footer_descriptors: Vec<_> = descriptors
         .iter()
-        .filter(|d| !matches!(d.blob_type, BlobType::Zero | BlobType::Padding))
+        .filter(|d| !matches!(d.blob_type, BlobType::Padding))
         .cloned()
         .collect();
     let footer_bytes = Packer::generate_footer(&mut footer_descriptors);

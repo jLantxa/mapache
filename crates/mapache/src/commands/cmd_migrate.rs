@@ -336,21 +336,18 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     return Err(MigrateError::Interrupted);
                 }
 
-                // Separate zero blobs from pack blobs.
+                // Zero blobs are now in pack footers as BlobType::Zero with length=0.
+                // They go through add_pack like data/tree blobs.
                 let pack_descriptors: Vec<_> = descriptors
                     .iter()
-                    .filter(|d| {
-                        if matches!(d.blob_type, BlobType::Zero) {
-                            new_master_index.add_zero_blob(d.id, d.raw_length);
-                            zero_blob_count += 1;
-                            false
-                        } else {
-                            true
-                        }
-                    })
+                    .filter(|d| !matches!(d.blob_type, BlobType::Padding))
                     .cloned()
                     .collect();
 
+                zero_blob_count += pack_descriptors
+                    .iter()
+                    .filter(|d| matches!(d.blob_type, BlobType::Zero))
+                    .count();
                 blob_count += pack_descriptors.len();
                 new_master_index
                     .add_pack(repo.as_ref(), new_id, pack_descriptors)

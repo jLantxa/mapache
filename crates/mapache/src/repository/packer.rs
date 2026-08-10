@@ -156,7 +156,9 @@ impl Packer {
         let raw_length = u32::try_from(raw_size)
             .map_err(|e| MapacheError::Integrity(format!("blob raw size exceeds u32::MAX: {e}")))?;
 
-        self.buffer.extend_from_slice(encoded_data);
+        if !encoded_data.is_empty() {
+            self.buffer.extend_from_slice(encoded_data);
+        }
 
         self.descriptors.push(PackedBlobDescriptor {
             id,
@@ -609,7 +611,7 @@ impl PackSaver {
 
     fn packer_for(&mut self, blob_type: BlobType) -> Option<&mut Packer> {
         match blob_type {
-            BlobType::Data => Some(&mut self.data_packer),
+            BlobType::Data | BlobType::Zero => Some(&mut self.data_packer),
             BlobType::Tree => Some(&mut self.tree_packer),
             _ => None,
         }
@@ -661,7 +663,7 @@ impl PackSaver {
     /// and sends the full one to the workers.
     fn dispatch_packer(&mut self, blob_type: BlobType) -> Result<()> {
         let packer_ref = match blob_type {
-            BlobType::Data => &mut self.data_packer,
+            BlobType::Data | BlobType::Zero => &mut self.data_packer,
             BlobType::Tree => &mut self.tree_packer,
             _ => return Ok(()),
         };
@@ -697,7 +699,7 @@ impl PackSaver {
         blob_type: BlobType,
     ) {
         match blob_type {
-            BlobType::Data => {
+            BlobType::Data | BlobType::Zero => {
                 // For Data packs, the 'raw' and 'encoded' sizes correspond to the blobs themselves.
                 // The 'meta' sizes correspond to the pack footer.
                 repo.stats.raw_bytes.fetch_add(raw_size, Ordering::Relaxed);

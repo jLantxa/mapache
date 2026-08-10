@@ -98,21 +98,18 @@ pub(crate) async fn restore_packs(
     let packs_map = Arc::try_unwrap(packs).unwrap_or_else(|arc| (*arc).clone());
 
     // Handle zero blobs separately: they have no pack data, write zeros directly.
-    let zero_pack_id = ID::default();
     let mut zero_file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
     let mut regular_packs: HashMap<ID, Vec<(ID, BlobRestoreRequest)>> = HashMap::new();
 
     for (pack_id, blob_requests) in packs_map {
-        if pack_id == zero_pack_id {
-            for (_blob_id, req) in blob_requests {
+        for (blob_id, req) in blob_requests {
+            if matches!(req.blob_type, BlobType::Zero) {
                 let zeros = vec![0u8; req.raw_length as usize];
                 zero_file_batches
                     .entry(req.file_idx)
                     .or_default()
                     .push((zeros, req.offset_in_file));
-            }
-        } else {
-            for (blob_id, req) in blob_requests {
+            } else {
                 regular_packs
                     .entry(pack_id)
                     .or_default()

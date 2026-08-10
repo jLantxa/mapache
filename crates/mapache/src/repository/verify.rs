@@ -86,6 +86,12 @@ async fn verify_pack_inline(
             .fold(
                 || (0usize, Vec::new(), 0u64),
                 |(mut v, mut corrupt, mut bytes), desc| {
+                    // Zero blobs have no data in the pack (length=0); skip physical verification.
+                    if matches!(desc.blob_type, BlobType::Zero) {
+                        v += 1;
+                        return (v, corrupt, bytes);
+                    }
+
                     let start = desc.offset as usize;
                     let end = start + desc.length as usize;
 

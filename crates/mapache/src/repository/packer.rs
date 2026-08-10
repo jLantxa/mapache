@@ -126,10 +126,10 @@ impl Packer {
         self.buffer.len() as u64
     }
 
-    /// Returns true if no data have been added to the packer.
+    /// Returns true if no blobs (including zero-length) have been added to the packer.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
+        self.descriptors.is_empty()
     }
 
     /// Returns the number of blobs currently staged in the packer.
@@ -186,7 +186,7 @@ impl Packer {
     /// The internal buffer is essentially "stolen" by the result and must be
     /// returned via `recycle_buffer` later.
     fn finalize_and_extract(&mut self) -> Result<Option<PackFinalizationResult>> {
-        if self.buffer.is_empty() {
+        if self.descriptors.is_empty() {
             return Ok(None);
         }
 

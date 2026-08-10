@@ -209,11 +209,17 @@ impl IndexMetadata {
         let pack_ids: Vec<ID> = index.pack_ids.iter().copied().collect();
         let blob_count = index.num_blobs();
 
+        let zero_blobs: Vec<(ID, u32)> = index
+            .zero_ids
+            .iter()
+            .map(|(id, loc)| (*id, loc.raw_length))
+            .collect();
+
         Self {
             file_id,
             bloom_filter,
             pack_ids,
-            zero_blobs: Vec::new(),
+            zero_blobs,
             blob_count,
         }
     }
@@ -688,6 +694,7 @@ impl Index {
 
         process_map(&self.data_ids, BlobType::Data);
         process_map(&self.tree_ids, BlobType::Tree);
+        process_map(&self.zero_ids, BlobType::Zero);
 
         pack_descriptors
     }
@@ -856,7 +863,7 @@ impl MasterIndex {
                     pack_id: ID::default(),
                     blob_type: BlobType::Zero,
                     offset: 0,
-                    length: raw_length,
+                    length: 0,
                     raw_length,
                     compressed: false,
                 });

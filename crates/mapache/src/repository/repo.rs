@@ -496,11 +496,6 @@ impl Repository {
         self.repo_version >= 2
     }
 
-    /// v2: zero-blob dedup (store length only, no pack data).
-    pub fn supports_zero_blobs(&self) -> bool {
-        self.repo_version >= 2
-    }
-
     /// v2: high bit of type byte is a compression marker.
     /// v1: always zstd-compressed, bit is not meaningful.
     pub fn has_compression_marker(&self) -> bool {

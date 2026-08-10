@@ -12,7 +12,17 @@ approach to incremental backups.
 Mapache is a feature-complete backup solution. While the architecture is
 designed for reliability and has extensive test coverage, it is a relatively
 new project. As with any tool managing critical data, users should perform
-their own validation before relying on it for primary backups.
+their own validation before relying it for primary backups.
+
+> **⚠️ Development build warning:** The `main` branch contains active
+> development towards the new **v2 repository format**. This format is
+> **unstable and may change without notice** until the next release. Support
+> for **v1 repositories may be incomplete or broken** in development builds.
+> A migration command (`mapache migrate`) will be provided to upgrade v1
+> repositories to v2 in a future release.
+>
+> **If you are building from source, use a tagged release or an official
+> binary instead of `main` unless you are prepared for breaking changes.**
 
 ## Documentation
 

@@ -3,6 +3,7 @@
 //! All items in this module are temporary and should be removed when v1 is deprecated.
 // TODO(v1-removal): Remove this entire module.
 
+use crate::archiver::processor::is_all_zero;
 use crate::backend::{Handle, StorageBackend};
 use crate::common::{
     BlobType, ContentIdType, ID,
@@ -71,12 +72,13 @@ pub async fn re_encrypt_pack(
         let blob_encrypted = &pack_data[start..end];
 
         // Decrypt to check for zero content.
+        // Fast path: first byte non-zero (common case) skips the full iter().all() scan.
         let plaintext = match secure_storage.decrypt_inner(blob_encrypted, old_nonce_at_end)? {
             crate::backend::WriteContents::Owned(v) => v,
             crate::backend::WriteContents::Borrowed(b) => b.to_vec(),
         };
 
-        if plaintext.iter().all(|&b| b == 0) {
+        if is_all_zero(&plaintext) {
             // Zero blob: mark but don't include in new pack.
             desc.blob_type = BlobType::Zero;
             desc.offset = 0;

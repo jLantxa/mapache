@@ -153,6 +153,7 @@ mod tests {
         std::fs::create_dir(&backup_path)?;
 
         // Create file A (512KiB) and file B (512KiB). Total ~1MiB, should fit in one or two packs.
+        // Use non-zero patterns to avoid triggering zero-blob deduplication.
         let file_a = backup_path.join("file_a.bin");
         let file_b = backup_path.join("file_b.bin");
         let data_a = vec![0xAAu8; 512 * 1024];
@@ -244,6 +245,7 @@ mod tests {
         std::fs::create_dir(&backup_path)?;
 
         // Create file A (1MiB) and file B (1MiB).
+        // Use non-zero patterns to avoid triggering zero-blob deduplication.
         let file_a = backup_path.join("file_a.bin");
         let file_b = backup_path.join("file_b.bin");
         let data_a = vec![0xAAu8; 1024 * 1024];

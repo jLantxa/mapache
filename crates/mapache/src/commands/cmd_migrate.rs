@@ -338,19 +338,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
 
                 // Zero blobs are now in pack footers as BlobType::Zero with length=0.
                 // They go through add_pack like data/tree blobs.
-                let pack_descriptors: Vec<_> = descriptors
-                    .iter()
-                    .filter(|d| !matches!(d.blob_type, BlobType::Padding))
-                    .cloned()
-                    .collect();
-
-                zero_blob_count += pack_descriptors
+                // parse_footer already filters out Padding entries.
+                zero_blob_count += descriptors
                     .iter()
                     .filter(|d| matches!(d.blob_type, BlobType::Zero))
                     .count();
-                blob_count += pack_descriptors.len();
+                blob_count += descriptors.len();
                 new_master_index
-                    .add_pack(repo.as_ref(), new_id, pack_descriptors)
+                    .add_pack(repo.as_ref(), new_id, descriptors.clone())
                     .await?;
                 scan_bar.inc(1);
             }

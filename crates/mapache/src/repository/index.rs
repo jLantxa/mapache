@@ -423,8 +423,11 @@ impl Index {
 
         // Backward compat: old index format stored zero blobs in a separate section
         // without pack info. Create synthetic entries (load_blob ignores pack_id for zeros).
+        // Dedup against zero_entries already populated from pack blobs.
+        let existing_zeros: std::collections::HashSet<ID> =
+            zero_entries.iter().map(|(id, _)| *id).collect();
         for zb in index_file.zero_blobs {
-            if !zero_entries.iter().any(|(id, _)| *id == zb.id) {
+            if !existing_zeros.contains(&zb.id) {
                 zero_entries.push((
                     zb.id,
                     BlobLocationInternal {
@@ -496,9 +499,16 @@ impl Index {
                     .and_then(|l| self.resolve_location(l, BlobType::Tree))
             })
             .or_else(|| {
-                self.zero_ids
-                    .get(id)
-                    .and_then(|l| self.resolve_location(l, BlobType::Zero))
+                // Zero blobs don't live in packs — synthesize a locator directly.
+                // resolve_location would fail because pack_array_index is synthetic.
+                self.zero_ids.get(id).map(|l| BlobLocator {
+                    pack_id: ID::default(),
+                    blob_type: BlobType::Zero,
+                    offset: 0,
+                    length: 0,
+                    raw_length: l.raw_length,
+                    compressed: false,
+                })
             })
     }
 
@@ -694,7 +704,8 @@ impl Index {
 
         process_map(&self.data_ids, BlobType::Data);
         process_map(&self.tree_ids, BlobType::Tree);
-        process_map(&self.zero_ids, BlobType::Zero);
+        // Zero blobs don't live in packs (stored in footer with length=0).
+        // Skip them to avoid phantom descriptors from backward-compat synthetic entries.
 
         pack_descriptors
     }
@@ -1339,8 +1350,7 @@ fn default_true() -> bool {
 /// Serialize an `IndexFile` to the binary format.
 pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
     let total_blobs: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
-    let size =
-        4 + index_file.packs.len() * 36 + total_blobs * 45 + 4 + index_file.zero_blobs.len() * 36;
+    let size = 4 + index_file.packs.len() * 36 + total_blobs * 45 + 4;
     let mut buf = Vec::with_capacity(size);
 
     // Header

@@ -60,6 +60,10 @@ static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 
 pub const FOOTER_BLOB_LEN: usize = 41;
 
+/// Maximum descriptors per pack before flushing. Guards against unbounded
+/// accumulation when a pack contains only zero blobs (which don't grow `buffer`).
+const MAX_DESCRIPTORS_PER_PACK: usize = 4096;
+
 /// Describes a single blob's location and size within a packed file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackedBlobDescriptor {
@@ -156,7 +160,7 @@ impl Packer {
         let raw_length = u32::try_from(raw_size)
             .map_err(|e| MapacheError::Integrity(format!("blob raw size exceeds u32::MAX: {e}")))?;
 
-        if !encoded_data.is_empty() {
+        if blob_type != BlobType::Zero {
             self.buffer.extend_from_slice(encoded_data);
         }
 
@@ -630,13 +634,15 @@ impl PackSaver {
                     raw_length,
                     compressed,
                 } => {
+                    let max_size = self.max_packer_size;
                     let Some(packer) = self.packer_for(blob_type) else {
                         continue;
                     };
 
                     packer.add_blob(id, blob_type, &data, raw_length, compressed)?;
 
-                    if packer.size() >= self.max_packer_size {
+                    if packer.size() >= max_size || packer.num_objects() >= MAX_DESCRIPTORS_PER_PACK
+                    {
                         self.dispatch_packer(blob_type)?;
                     }
                 }

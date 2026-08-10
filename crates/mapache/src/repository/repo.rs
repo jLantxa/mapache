@@ -541,7 +541,9 @@ impl Repository {
         // Zero blobs: send to packer with empty encoded data (no bytes in pack data section).
         // They appear in the pack footer as BlobType::Zero with length=0, raw_length=N.
         if blob_type == BlobType::Zero {
-            let raw_length = data.len() as u64;
+            let raw_length = u32::try_from(data.len()).map_err(|e| {
+                MapacheError::Integrity(format!("zero blob raw size exceeds u32::MAX: {e}"))
+            })? as u64;
 
             let tx = {
                 let tx_guard = self.pack_saver_tx.read();

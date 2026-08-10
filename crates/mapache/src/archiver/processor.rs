@@ -28,7 +28,7 @@ use crate::{
 /// Returns `true` if every byte in `data` is zero.
 /// Fast path: O(1) when first byte is non-zero (the common case).
 #[inline]
-fn is_all_zero(data: &[u8]) -> bool {
+pub(crate) fn is_all_zero(data: &[u8]) -> bool {
     data.first().is_some_and(|&b| b == 0) && data.iter().all(|&b| b == 0)
 }
 

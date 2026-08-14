@@ -58,7 +58,7 @@ impl BlobLoader for BundleReader {
 
         let data = self
             .storage
-            .decode_owned(encoded_data)
+            .decode_blob_owned(encoded_data, entry.compressed)
             .map_err(|e| MapacheError::Crypto(format!("failed to decode blob data: {e}")))?;
 
         if data.len() != entry.raw_length as usize {

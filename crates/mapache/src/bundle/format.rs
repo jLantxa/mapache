@@ -44,6 +44,9 @@ pub struct BundleTrailer {
 pub struct BundleIndexEntry {
     pub id: ID,
     pub blob_type: BlobType,
+    /// Whether the blob payload is zstd-compressed. Encoded in the high bit of
+    /// the type byte on disk (same as pack footers and the repository index).
+    pub compressed: bool,
     pub offset: u64,
     pub length: u32,
     pub raw_length: u32,
@@ -108,7 +111,7 @@ impl BundleIndexEntry {
     pub fn to_binary(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         put_bytes(&mut buf, self.id.as_slice());
-        put_u8(&mut buf, self.blob_type as u8);
+        put_u8(&mut buf, self.blob_type.to_byte(self.compressed));
         put_u64(&mut buf, self.offset);
         put_u32(&mut buf, self.length);
         put_u32(&mut buf, self.raw_length);
@@ -117,12 +120,18 @@ impl BundleIndexEntry {
 
     pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let mut cur = bytes;
+        let id = ID::from_bytes(get_array(&mut cur)?);
+        let (blob_type, compressed) = BlobType::from_byte(get_u8(&mut cur)?)?;
+        let offset = get_u64(&mut cur)?;
+        let length = get_u32(&mut cur)?;
+        let raw_length = get_u32(&mut cur)?;
         Ok(Self {
-            id: ID::from_bytes(get_array(&mut cur)?),
-            blob_type: BlobType::try_from(get_u8(&mut cur)?)?,
-            offset: get_u64(&mut cur)?,
-            length: get_u32(&mut cur)?,
-            raw_length: get_u32(&mut cur)?,
+            id,
+            blob_type,
+            compressed,
+            offset,
+            length,
+            raw_length,
         })
     }
 }
@@ -177,6 +186,7 @@ mod tests {
             let entry = BundleIndexEntry {
                 id: ID::new_random(),
                 blob_type,
+                compressed: true,
                 offset: 12345,
                 length: 500,
                 raw_length: 480,
@@ -186,6 +196,7 @@ mod tests {
             let restored = BundleIndexEntry::from_binary(&bytes).unwrap();
             assert_eq!(restored.id, entry.id);
             assert_eq!(restored.blob_type, entry.blob_type);
+            assert_eq!(restored.compressed, entry.compressed);
             assert_eq!(restored.offset, entry.offset);
             assert_eq!(restored.length, entry.length);
             assert_eq!(restored.raw_length, entry.raw_length);
@@ -217,6 +228,7 @@ mod tests {
         let entry = BundleIndexEntry {
             id: ID::new_random(),
             blob_type: BlobType::Data,
+            compressed: true,
             offset: 0,
             length: 100,
             raw_length: 90,

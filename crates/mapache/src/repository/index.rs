@@ -1336,7 +1336,9 @@ pub struct IndexFileBlob {
     pub offset: u32,
     pub length: u32,
     pub raw_length: u32,
-    /// Whether the blob's encoded payload is zstd-compressed (high bit of the type byte).
+    /// Whether the blob's encoded payload is zstd-compressed. Encoded in the
+    /// high bit of the type byte on disk (same as pack footers and bundle
+    /// index entries).
     ///
     /// Defaults to `true` because v1 repos (whose index files may lack this
     /// field) always store zstd-compressed blobs.
@@ -1352,7 +1354,7 @@ fn default_true() -> bool {
 /// Serialize an `IndexFile` to the binary format.
 pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
     let total_blobs: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
-    let size = 4 + index_file.packs.len() * 36 + total_blobs * 45 + 4;
+    let size = 4 + index_file.packs.len() * 36 + total_blobs * 45;
     let mut buf = Vec::with_capacity(size);
 
     // Header
@@ -1369,13 +1371,6 @@ pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
             put_u32(&mut buf, blob.length);
             put_u32(&mut buf, blob.raw_length);
         }
-    }
-
-    // Zero blob section
-    put_u32(&mut buf, index_file.zero_blobs.len() as u32);
-    for zb in &index_file.zero_blobs {
-        put_bytes(&mut buf, zb.id.as_slice());
-        put_u32(&mut buf, zb.raw_length);
     }
 
     buf
@@ -1413,20 +1408,10 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
         packs.push(IndexFilePack { id: pack_id, blobs });
     }
 
-    let zero_blobs = if !cur.is_empty() {
-        let num_zero = get_u32(&mut cur)? as usize;
-        let mut zeros = Vec::with_capacity(num_zero);
-        for _ in 0..num_zero {
-            let id = ID::from_bytes(get_array::<32>(&mut cur)?);
-            let raw_length = get_u32(&mut cur)?;
-            zeros.push(IndexFileZeroBlob { id, raw_length });
-        }
-        zeros
-    } else {
-        Vec::new()
-    };
-
-    Ok(IndexFile { packs, zero_blobs })
+    Ok(IndexFile {
+        packs,
+        zero_blobs: Vec::new(),
+    })
 }
 
 #[cfg(test)]

@@ -105,6 +105,7 @@ impl BundleWriter {
         inner.index.entries.push(BundleIndexEntry {
             id,
             blob_type,
+            compressed: true,
             offset,
             length,
             raw_length,

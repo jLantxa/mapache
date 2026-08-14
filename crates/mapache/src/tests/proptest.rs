@@ -120,19 +120,21 @@ proptest! {
             Just(crate::common::BlobType::Zero),
             Just(crate::common::BlobType::Padding),
         ],
+        compressed in prop::bool::ANY,
         offset in 0u64..u64::MAX,
         length in 0u32..u32::MAX,
         raw_length in 0u32..u32::MAX,
     ) {
         use crate::bundle::format::BundleIndexEntry;
 
-        let entry = BundleIndexEntry { id, blob_type, offset, length, raw_length };
+        let entry = BundleIndexEntry { id, blob_type, compressed, offset, length, raw_length };
         let bytes = entry.to_binary();
         prop_assert_eq!(bytes.len(), 49); // 32 + 1 + 8 + 4 + 4
         let restored = BundleIndexEntry::from_binary(&bytes)
             .map_err(|e| proptest::test_runner::TestCaseError::Fail(e.to_string().into()))?;
         prop_assert_eq!(entry.id, restored.id);
         prop_assert_eq!(entry.blob_type as u8, restored.blob_type as u8);
+        prop_assert_eq!(entry.compressed, restored.compressed);
         prop_assert_eq!(entry.offset, restored.offset);
         prop_assert_eq!(entry.length, restored.length);
         prop_assert_eq!(entry.raw_length, restored.raw_length);

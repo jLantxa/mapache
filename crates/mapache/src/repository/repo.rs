@@ -314,12 +314,12 @@ impl Repository {
         // TODO(v1-removal): Nonce position depends on repo version.
         secure_storage.set_nonce_at_end(repo_version >= 2);
         let manifest_path = Path::new(MANIFEST_PATH);
-        let manifest_json = serde_json::to_string_pretty(&manifest)?;
-        let manifest_json = secure_storage.encode(manifest_json.as_bytes())?;
+        let manifest_bytes = serde_json::to_string_pretty(&manifest)?.into_bytes();
+        let encoded_manifest = secure_storage.encode(&manifest_bytes)?;
         backend
             .write(
                 &Handle::new(manifest_path),
-                WriteContents::Owned(manifest_json),
+                WriteContents::Owned(encoded_manifest),
             )
             .await
             .inspect_err(|e| tracing::error!(target: "repo", "Failed to write manifest: {e}"))?;
@@ -465,8 +465,8 @@ impl Repository {
 
     /// Saves the manifest to the backend.
     pub async fn save_manifest(&self, manifest: &Manifest) -> Result<()> {
-        let manifest_json = serde_json::to_string_pretty(manifest)?;
-        let encoded = self.secure_storage.encode(manifest_json.as_bytes())?;
+        let manifest_bytes = serde_json::to_string_pretty(manifest)?.into_bytes();
+        let encoded = self.secure_storage.encode(&manifest_bytes)?;
         self.backend
             .write(
                 &Handle::new(Path::new(MANIFEST_PATH)),

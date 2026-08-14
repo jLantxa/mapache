@@ -224,6 +224,8 @@ creation.
 
 The `manifest` file is compressed and encrypted with the master key.
 
+The manifest is serialized as JSON:
+
 ```json
 {
   "version": 2,
@@ -231,6 +233,9 @@ The `manifest` file is compressed and encrypted with the master key.
   "created_time": "2025-11-20T13:06:52.266751300+01:00"
 }
 ```
+
+JSON is used instead of a binary format to allow extending the manifest with
+new fields without breaking format compatibility within the same version.
 
 ### Snapshots
 
@@ -444,8 +449,8 @@ the index file itself is the hash of its encoded content.
 
 In v2, index files use a compact **binary format** instead of the JSON format
 used in v1. This reduces index size and improves parsing speed. The binary
-format encodes pack IDs, blob descriptors (ID, type, offset, encoded length,
-raw length) and optional zero-blob entries in a dense binary layout. Mapache
+format encodes pack IDs and blob descriptors (ID, type with compression marker,
+offset, encoded length, raw length) in a dense binary layout. Mapache
 can still read v1 JSON index files for backward compatibility during migration.
 
 ### Locks
@@ -518,6 +523,47 @@ A bundle file (`.mapache`) is a self-contained, encrypted archive that stores
 the same blob types used inside a repository: tree blobs, metadata blobs, and
 data blobs. The bundle uses its own independent encryption key derived from the
 bundle password (not the repository key).
+
+### Bundle layout
+
+```text
+┌─────────────────────────────────┐
+│ BundleHeader (60 bytes, plain)  │
+├─────────────────────────────────┤
+│ Encrypted blob data sections... │
+├─────────────────────────────────┤
+│ Encrypted BundleIndex           │
+├─────────────────────────────────┤
+│ Encrypted Manifest              │
+├─────────────────────────────────┤
+│ Encrypted BundleTrailer         │
+├─────────────────────────────────┤
+│ Trailer size (u32, LE, plain)   │
+└─────────────────────────────────┘
+```
+
+The header and trailer size are stored unencrypted to allow efficient random
+access. All other sections are encrypted with AES-256-GCM-SIV using a key
+derived from the bundle password via Argon2id.
+
+### Bundle index
+
+The bundle index maps blob IDs to their physical location within the bundle
+file. Each index entry is **49 bytes**:
+
+```text
+┌──────────────────────────────────┬───────┬──────────────────┬────────┬────────────┐
+│ Blob ID (32 bytes)               │ Type  │ Offset           │ Length │ Raw Length │
+│                                  │+Comp  │ (u64, LE)        │(u32,LE)│ (u32, LE)  │
+│                                  │ (u8)  │                  │        │            │
+└──────────────────────────────────┴───────┴──────────────────┴────────┴────────────┘
+   32 bytes                          1        8 bytes          4 bytes    4 bytes
+```
+
+The type byte uses the same encoding as pack footers: the low 7 bits hold the
+blob type (`0x00`=Data, `0x01`=Tree, `0x02`=Padding, `0x03`=Zero), and the
+high bit indicates whether the blob is zstd-compressed (`1`) or uncompressed
+(`0`).
 
 ### Export and import
 

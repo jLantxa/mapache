@@ -60,6 +60,10 @@ static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 
 pub const FOOTER_BLOB_LEN: usize = 41;
 
+/// Maximum descriptors per pack before flushing. Guards against unbounded
+/// accumulation when a pack contains only zero blobs (which don't grow `buffer`).
+const MAX_DESCRIPTORS_PER_PACK: usize = 4096;
+
 /// Describes a single blob's location and size within a packed file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackedBlobDescriptor {
@@ -126,10 +130,10 @@ impl Packer {
         self.buffer.len() as u64
     }
 
-    /// Returns true if no data have been added to the packer.
+    /// Returns true if no blobs (including zero-length) have been added to the packer.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
+        self.descriptors.is_empty()
     }
 
     /// Returns the number of blobs currently staged in the packer.
@@ -156,7 +160,9 @@ impl Packer {
         let raw_length = u32::try_from(raw_size)
             .map_err(|e| MapacheError::Integrity(format!("blob raw size exceeds u32::MAX: {e}")))?;
 
-        self.buffer.extend_from_slice(encoded_data);
+        if blob_type != BlobType::Zero {
+            self.buffer.extend_from_slice(encoded_data);
+        }
 
         self.descriptors.push(PackedBlobDescriptor {
             id,
@@ -184,7 +190,7 @@ impl Packer {
     /// The internal buffer is essentially "stolen" by the result and must be
     /// returned via `recycle_buffer` later.
     fn finalize_and_extract(&mut self) -> Result<Option<PackFinalizationResult>> {
-        if self.buffer.is_empty() {
+        if self.descriptors.is_empty() {
             return Ok(None);
         }
 
@@ -609,7 +615,7 @@ impl PackSaver {
 
     fn packer_for(&mut self, blob_type: BlobType) -> Option<&mut Packer> {
         match blob_type {
-            BlobType::Data => Some(&mut self.data_packer),
+            BlobType::Data | BlobType::Zero => Some(&mut self.data_packer),
             BlobType::Tree => Some(&mut self.tree_packer),
             _ => None,
         }
@@ -628,13 +634,15 @@ impl PackSaver {
                     raw_length,
                     compressed,
                 } => {
+                    let max_size = self.max_packer_size;
                     let Some(packer) = self.packer_for(blob_type) else {
                         continue;
                     };
 
                     packer.add_blob(id, blob_type, &data, raw_length, compressed)?;
 
-                    if packer.size() >= self.max_packer_size {
+                    if packer.size() >= max_size || packer.num_objects() >= MAX_DESCRIPTORS_PER_PACK
+                    {
                         self.dispatch_packer(blob_type)?;
                     }
                 }
@@ -661,7 +669,7 @@ impl PackSaver {
     /// and sends the full one to the workers.
     fn dispatch_packer(&mut self, blob_type: BlobType) -> Result<()> {
         let packer_ref = match blob_type {
-            BlobType::Data => &mut self.data_packer,
+            BlobType::Data | BlobType::Zero => &mut self.data_packer,
             BlobType::Tree => &mut self.tree_packer,
             _ => return Ok(()),
         };
@@ -697,7 +705,7 @@ impl PackSaver {
         blob_type: BlobType,
     ) {
         match blob_type {
-            BlobType::Data => {
+            BlobType::Data | BlobType::Zero => {
                 // For Data packs, the 'raw' and 'encoded' sizes correspond to the blobs themselves.
                 // The 'meta' sizes correspond to the pack footer.
                 repo.stats.raw_bytes.fetch_add(raw_size, Ordering::Relaxed);

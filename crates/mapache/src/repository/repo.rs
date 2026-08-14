@@ -496,11 +496,6 @@ impl Repository {
         self.repo_version >= 2
     }
 
-    /// v2: zero-blob dedup (store length only, no pack data).
-    pub fn supports_zero_blobs(&self) -> bool {
-        self.repo_version >= 2
-    }
-
     /// v2: high bit of type byte is a compression marker.
     /// v1: always zstd-compressed, bit is not meaningful.
     pub fn has_compression_marker(&self) -> bool {
@@ -543,10 +538,34 @@ impl Repository {
             return Ok(id);
         }
 
-        // TODO(v1-removal): Zero blobs: register directly in index, no pack data (v2+ only).
-        if blob_type == BlobType::Zero && self.repo_version >= 2 {
-            let raw_length = data.len() as u32;
-            self.master_index.add_zero_blob(id, raw_length);
+        // Zero blobs: send to packer with empty encoded data (no bytes in pack data section).
+        // They appear in the pack footer as BlobType::Zero with length=0, raw_length=N.
+        if blob_type == BlobType::Zero {
+            let raw_length = u32::try_from(data.len()).map_err(|e| {
+                MapacheError::Integrity(format!("zero blob raw size exceeds u32::MAX: {e}"))
+            })? as u64;
+
+            let tx = {
+                let tx_guard = self.pack_saver_tx.read();
+                tx_guard
+                    .as_ref()
+                    .ok_or_else(|| {
+                        MapacheError::Repo("packer is stopped or not initialized".to_string())
+                    })?
+                    .clone()
+            };
+
+            tx.send(PackSaverRequest::SaveBlob {
+                id,
+                blob_type,
+                data: Vec::new(),
+                raw_length,
+                compressed: false,
+            })
+            .map_err(|_| MapacheError::Repo("packer channel closed".to_string()))?;
+
+            self.master_index.add_pending_blob(id);
+
             return Ok(id);
         }
 

@@ -36,7 +36,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::{ID, defaults},
+    common::{BlobType, ID, defaults},
     fs::{node::Node, tree::SerializedNodeStream},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
@@ -121,6 +121,8 @@ pub(crate) struct Restorer {
 }
 
 pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
+/// file_idx -> list of (offset_in_file, raw_length) for zero blobs
+pub(crate) type ZeroBatchMap = HashMap<usize, Vec<(u64, u32)>>;
 type HardlinkByPath = (PathBuf, PathBuf);
 type PrimaryHardlinks = Arc<Mutex<HashMap<(u64, u64), (PathBuf, [u8; 32])>>>;
 
@@ -142,6 +144,7 @@ pub(crate) struct BlobRestoreRequest {
     pub(crate) blob_length: u32,
     pub(crate) raw_length: u32,
     pub(crate) compressed: bool,
+    pub(crate) blob_type: BlobType,
 }
 
 /// A cache for open file handles during restoration.
@@ -748,6 +751,7 @@ impl Restorer {
                                             blob_length: locator.length,
                                             raw_length: locator.raw_length,
                                             compressed: locator.compressed,
+                                            blob_type: locator.blob_type,
                                         },
                                     ));
                                 }
@@ -860,6 +864,7 @@ impl Restorer {
                                 blob_length: locator.length,
                                 raw_length: locator.raw_length,
                                 compressed: locator.compressed,
+                                blob_type: locator.blob_type,
                             },
                         ));
                     }

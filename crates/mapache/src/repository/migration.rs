@@ -3,9 +3,10 @@
 //! All items in this module are temporary and should be removed when v1 is deprecated.
 // TODO(v1-removal): Remove this entire module.
 
+use crate::archiver::processor::is_all_zero;
 use crate::backend::{Handle, StorageBackend};
 use crate::common::{
-    ContentIdType, ID,
+    BlobType, ContentIdType, ID,
     error::{MapacheError, Result},
 };
 use crate::repository::packer::{PackedBlobDescriptor, Packer};
@@ -52,25 +53,54 @@ pub async fn re_encrypt_pack(
     let data_section_end = total_len - 4 - encoded_footer_length;
 
     // Parse footer with old nonce position to get descriptors (non-padding only, correct offsets).
-    let descriptors = Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end, 1)?;
+    let mut descriptors = Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end, 1)?;
 
     tracing::debug!(target: "migrate", "Pack {}: {} blobs, data_section={} bytes, footer={} bytes",
         old_pack_id.to_short_hex(8), descriptors.len(), data_section_end, encoded_footer_length);
 
     // Re-encrypt each non-padding blob and build the new data section.
+    // Zero blobs are detected and marked with BlobType::Zero (no pack data).
     let mut new_data = Vec::with_capacity(data_section_end);
-    for desc in &descriptors {
+    let mut new_offset = 0u32;
+    for desc in &mut descriptors {
+        if matches!(desc.blob_type, BlobType::Padding) {
+            continue;
+        }
+
         let start = desc.offset as usize;
         let end = start + desc.length as usize;
         let blob_encrypted = &pack_data[start..end];
-        let re_encrypted =
-            secure_storage.re_encrypt(blob_encrypted, old_nonce_at_end, new_nonce_at_end)?;
-        new_data.extend_from_slice(&re_encrypted);
+
+        // Decrypt to check for zero content.
+        // Fast path: first byte non-zero (common case) skips the full iter().all() scan.
+        let plaintext = match secure_storage.decrypt_inner(blob_encrypted, old_nonce_at_end)? {
+            crate::backend::WriteContents::Owned(v) => v,
+            crate::backend::WriteContents::Borrowed(b) => b.to_vec(),
+        };
+
+        if is_all_zero(&plaintext) {
+            // Zero blob: mark but don't include in new pack.
+            desc.blob_type = BlobType::Zero;
+            desc.offset = 0;
+            desc.length = 0;
+        } else {
+            // Non-zero: re-encrypt with new nonce position.
+            let re_encrypted =
+                secure_storage.re_encrypt(blob_encrypted, old_nonce_at_end, new_nonce_at_end)?;
+            desc.offset = new_offset;
+            desc.length = re_encrypted.len() as u32;
+            new_offset += desc.length;
+            new_data.extend_from_slice(&re_encrypted);
+        }
     }
 
-    // Rebuild the footer: v1 blobs were always zstd-compressed, so every
-    // descriptor carries `compressed: true` and gets the compression bit set.
-    let mut footer_descriptors = descriptors.clone();
+    // Rebuild the footer: zero blobs appear as BlobType::Zero with length=0.
+    // v1 blobs were always zstd-compressed, so compressed: true.
+    let mut footer_descriptors: Vec<_> = descriptors
+        .iter()
+        .filter(|d| !matches!(d.blob_type, BlobType::Padding))
+        .cloned()
+        .collect();
     let footer_bytes = Packer::generate_footer(&mut footer_descriptors);
     let mut ctx = secure_storage.get_encoding_context()?;
     let new_footer =

@@ -25,6 +25,13 @@ use crate::{
     ui::events::{BackupEvent, Event, EventSender, emit_event},
 };
 
+/// Returns `true` if every byte in `data` is zero.
+/// Fast path: O(1) when first byte is non-zero (the common case).
+#[inline]
+pub(crate) fn is_all_zero(data: &[u8]) -> bool {
+    data.first().is_some_and(|&b| b == 0) && data.iter().all(|&b| b == 0)
+}
+
 /// Reusable buffers that persist across processing calls in a pool thread.
 #[derive(Default)]
 pub(crate) struct ReusableBuffers {
@@ -370,8 +377,14 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
 
             let chunk_len = chunk_data.len() as u64;
 
+            let blob_type = if is_all_zero(&chunk_data) {
+                BlobType::Zero
+            } else {
+                BlobType::Data
+            };
+
             let id = blob_saver.save_blob(
-                BlobType::Data,
+                blob_type,
                 WriteContents::Borrowed(&chunk_data),
                 SaveID::CalculateID,
             )?;
@@ -422,8 +435,14 @@ fn store_small_file<R: Read>(
     }
 
     // Perform the intensive save_blob directly in the worker thread.
+    let blob_type = if is_all_zero(&buf[..]) {
+        BlobType::Zero
+    } else {
+        BlobType::Data
+    };
+
     let id = blob_saver.save_blob(
-        BlobType::Data,
+        blob_type,
         WriteContents::Borrowed(&buf[..]),
         SaveID::CalculateID,
     )?;

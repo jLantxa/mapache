@@ -12,7 +12,7 @@ use indicatif::ProgressBar;
 use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
-    common::{ContentIdType, ID, error::MapacheError},
+    common::{BlobType, ContentIdType, ID, error::MapacheError},
     repository::{
         index::{IndexMode, MasterIndex},
         migration,
@@ -330,10 +330,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             );
 
             let mut blob_count = 0;
+            let mut zero_blob_count = 0;
             for (_old_id, new_id, descriptors) in &pack_map {
                 if cleanup_handler.is_interrupted() {
                     return Err(MigrateError::Interrupted);
                 }
+
+                // Zero blobs are registered in pack footers as BlobType::Zero with length=0.
+                // They go through add_pack like data/tree blobs.
+                // parse_footer already filters out Padding entries.
+                zero_blob_count += descriptors
+                    .iter()
+                    .filter(|d| matches!(d.blob_type, BlobType::Zero))
+                    .count();
                 blob_count += descriptors.len();
                 new_master_index
                     .add_pack(repo.as_ref(), new_id, descriptors.clone())
@@ -342,7 +351,11 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             }
             scan_bar.finish_and_clear();
 
-            ui::cli::log!("Index covers {} blobs across {} packs", blob_count, pack_map.len());
+            if zero_blob_count > 0 {
+                ui::cli::log!("Index covers {} blobs ({} zero) across {} packs", blob_count, zero_blob_count, pack_map.len());
+            } else {
+                ui::cli::log!("Index covers {} blobs across {} packs", blob_count, pack_map.len());
+            }
 
             let old_index_ids = repo.list_index_ids().await?;
 

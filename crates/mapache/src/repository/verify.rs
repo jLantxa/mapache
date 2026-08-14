@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     backend::{Handle, StorageBackend},
-    common::{self, ContentIdType, ID},
+    common::{self, BlobType, ContentIdType, ID},
     fs::tree::Tree,
     repository::{packer::Packer, repo::Repository, storage::SecureStorage},
     utils::{
@@ -86,6 +86,12 @@ async fn verify_pack_inline(
             .fold(
                 || (0usize, Vec::new(), 0u64),
                 |(mut v, mut corrupt, mut bytes), desc| {
+                    // Zero blobs have no data in the pack (length=0); skip physical verification.
+                    if matches!(desc.blob_type, BlobType::Zero) {
+                        v += 1;
+                        return (v, corrupt, bytes);
+                    }
+
                     let start = desc.offset as usize;
                     let end = start + desc.length as usize;
 
@@ -391,7 +397,9 @@ pub async fn verify_snapshot_refs(
             for id in referenced_ids {
                 match index.get(id) {
                     Some(blob_locator) => {
-                        if !existing_packs.contains(&blob_locator.pack_id) {
+                        if blob_locator.blob_type != BlobType::Zero
+                            && !existing_packs.contains(&blob_locator.pack_id)
+                        {
                             return Err(MapacheError::Integrity(format!(
                                 "broken reference: Pack {} referenced by blob {} is missing from storage",
                                 blob_locator.pack_id, id

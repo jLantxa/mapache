@@ -5,7 +5,11 @@ mod tests {
 
     use anyhow::{Context, Result};
 
-    use mapache::{commands::UseSnapshot, repository::repo::SNAPSHOTS_DIR, utils};
+    use mapache::{
+        commands::{Compression, UseSnapshot},
+        repository::repo::SNAPSHOTS_DIR,
+        utils,
+    };
 
     use crate::{
         integration_tests::{INTEGRATION_TEST_DATA, TestContext, assert_times_equal},
@@ -715,6 +719,360 @@ mod tests {
             0,
             "index should have been created"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compression_none_snapshot_restore() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        let mut global = ctx.global.clone();
+        global.compression_level = Compression::None;
+
+        ctx.snapshot_builder(vec![
+            backup_data_path.join("file.txt"),
+            backup_data_path.join("0"),
+            backup_data_path.join("1"),
+            backup_data_path.join("2"),
+        ])
+        .run(&global)
+        .await
+        .context("snapshot with --compression none failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&global)
+            .await
+            .context("restore after --compression none failed")?;
+
+        let paths = vec![
+            PathBuf::from("file.txt"),
+            PathBuf::from("0/file0.txt"),
+            PathBuf::from("0/00/file00.txt"),
+            PathBuf::from("0/01/file01a.txt"),
+            PathBuf::from("0/01/file01b.txt"),
+            PathBuf::from("1/10/file10.txt"),
+        ];
+
+        for path in &paths {
+            let backup_file = backup_data_path.join(path);
+            let restored_file = restore_path.join(path);
+            assert!(
+                restored_file.exists(),
+                "missing after restore: {}",
+                path.display()
+            );
+            assert_eq!(
+                std::fs::read(&backup_file)?,
+                std::fs::read(&restored_file)?,
+                "content mismatch: {}",
+                path.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compression_none_empty_file() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        let mut global = ctx.global.clone();
+        global.compression_level = Compression::None;
+
+        ctx.snapshot_builder(vec![backup_data_path.join("empty.txt")])
+            .run(&global)
+            .await
+            .context("snapshot empty file with --compression none failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&global)
+            .await
+            .context("restore empty file with --compression none failed")?;
+
+        let restored = std::fs::read(restore_path.join("empty.txt"))?;
+        assert!(
+            restored.is_empty(),
+            "empty file should remain empty after restore"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compression_none_large_file() -> Result<()> {
+        let ctx = TestContext::new().await?;
+
+        let data_dir = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&data_dir)?;
+        let pattern = b"ABCDEFGHIJKLMNOP";
+        let mut content = Vec::with_capacity(pattern.len() * 10_000);
+        for _ in 0..10_000 {
+            content.extend_from_slice(pattern);
+        }
+        std::fs::write(data_dir.join("large.bin"), &content)?;
+
+        ctx.init_repo().await?;
+
+        let mut global = ctx.global.clone();
+        global.compression_level = Compression::None;
+
+        ctx.snapshot_builder(vec![data_dir.join("large.bin")])
+            .run(&global)
+            .await
+            .context("snapshot large file with --compression none failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&global)
+            .await
+            .context("restore large file with --compression none failed")?;
+
+        assert_eq!(std::fs::read(restore_path.join("large.bin"))?, content);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compression_none_unicode_paths() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        let mut global = ctx.global.clone();
+        global.compression_level = Compression::None;
+
+        ctx.snapshot_builder(vec![
+            backup_data_path.join("🚀"),
+            backup_data_path.join("日本語"),
+        ])
+        .run(&global)
+        .await
+        .context("snapshot unicode paths with --compression none failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&global)
+            .await
+            .context("restore unicode paths with --compression none failed")?;
+
+        assert_eq!(
+            std::fs::read(restore_path.join("🚀/mañana.txt"))?,
+            "UTF-8 content: ñáóú\n".as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(restore_path.join("日本語/こんにちは.txt"))?,
+            "こんにちは、世界！\n".as_bytes()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compression_none_multiple_snapshots() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        let mut global = ctx.global.clone();
+        global.compression_level = Compression::None;
+
+        ctx.snapshot_builder(vec![backup_data_path.join("file.txt")])
+            .run(&global)
+            .await
+            .context("first snapshot failed")?;
+
+        ctx.snapshot_builder(vec![backup_data_path.join("file.txt")])
+            .run(&global)
+            .await
+            .context("second snapshot failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&global)
+            .await
+            .context("restore failed")?;
+
+        assert_eq!(
+            std::fs::read(restore_path.join("file.txt"))?,
+            b"This is a test file.\n"
+        );
+
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&global)
+            .await
+            .context("verify failed")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mixed_compression_across_snapshots() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_path = ctx.setup_backup_data(&synthetic)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![
+            backup_data_path.join("file.txt"),
+            backup_data_path.join("0"),
+            backup_data_path.join("1"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await
+        .context("snapshot with compression failed")?;
+
+        let restore1 = ctx._tmp_dir.path().join("restore1");
+        ctx.restore_builder(restore1.clone())
+            .run(&ctx.global)
+            .await
+            .context("restore first snapshot failed")?;
+        assert_eq!(
+            std::fs::read(restore1.join("file.txt"))?,
+            b"This is a test file.\n"
+        );
+
+        let mut global_no_comp = ctx.global.clone();
+        global_no_comp.compression_level = Compression::None;
+
+        ctx.snapshot_builder(vec![
+            backup_data_path.join("file.txt"),
+            backup_data_path.join("0"),
+            backup_data_path.join("1"),
+        ])
+        .no_scan(true)
+        .run(&global_no_comp)
+        .await
+        .context("snapshot without compression failed")?;
+
+        let restore2 = ctx._tmp_dir.path().join("restore2");
+        ctx.restore_builder(restore2.clone())
+            .run(&ctx.global)
+            .await
+            .context("restore second snapshot failed")?;
+
+        assert_eq!(
+            std::fs::read(restore2.join("file.txt"))?,
+            b"This is a test file.\n"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_zero_blob_dedup() -> Result<()> {
+        let ctx = TestContext::new().await?;
+
+        let data_dir = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&data_dir)?;
+
+        let zeros_small = vec![0u8; 4096];
+        std::fs::write(data_dir.join("zeros_small.bin"), &zeros_small)?;
+
+        let zeros_large = vec![0u8; 65536];
+        std::fs::write(data_dir.join("zeros_large.bin"), &zeros_large)?;
+
+        std::fs::write(data_dir.join("normal.bin"), b"normal content\n")?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![
+            data_dir.join("zeros_small.bin"),
+            data_dir.join("zeros_large.bin"),
+            data_dir.join("normal.bin"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await
+        .context("snapshot with zero blobs failed")?;
+
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&ctx.global)
+            .await
+            .context("verify failed with zero blobs")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await
+            .context("restore with zero blobs failed")?;
+
+        assert_eq!(
+            std::fs::read(restore_path.join("zeros_small.bin"))?,
+            zeros_small
+        );
+        assert_eq!(
+            std::fs::read(restore_path.join("zeros_large.bin"))?,
+            zeros_large
+        );
+        assert_eq!(
+            std::fs::read(restore_path.join("normal.bin"))?,
+            b"normal content\n"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_zero_blob_dedup_across_snapshots() -> Result<()> {
+        let ctx = TestContext::new().await?;
+
+        let data_dir = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&data_dir)?;
+
+        let zeros = vec![0u8; 8192];
+        std::fs::write(data_dir.join("zeros.bin"), &zeros)?;
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![data_dir.join("zeros.bin")])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await
+            .context("first snapshot failed")?;
+
+        ctx.snapshot_builder(vec![data_dir.join("zeros.bin")])
+            .no_scan(true)
+            .run(&ctx.global)
+            .await
+            .context("second snapshot failed")?;
+
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&ctx.global)
+            .await
+            .context("verify failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await
+            .context("restore failed")?;
+
+        assert_eq!(std::fs::read(restore_path.join("zeros.bin"))?, zeros);
 
         Ok(())
     }

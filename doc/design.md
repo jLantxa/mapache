@@ -546,6 +546,12 @@ The header and trailer size are stored unencrypted to allow efficient random
 access. All other sections are encrypted with AES-256-GCM-SIV using a key
 derived from the bundle password via Argon2id.
 
+Blob data sections are compressed with zstd and then encrypted by default.
+Compression can be disabled with `--compression none`, in which case blobs are
+only encrypted (still protected by AES-256-GCM-SIV). The per-blob compression
+marker in the index tracks whether each blob is compressed, so bundles with
+mixed compression can be read correctly.
+
 ### Bundle index
 
 The bundle index maps blob IDs to their physical location within the bundle

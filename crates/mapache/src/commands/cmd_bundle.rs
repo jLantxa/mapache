@@ -23,8 +23,8 @@ use crate::{
         writer::BundleWriter,
     },
     commands::{
-        GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler, find_use_snapshot,
-        with_repository_lock,
+        Compression, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
+        find_use_snapshot, with_repository_lock,
     },
     common::{
         BlobType, ContentIdType, ID, SaveID,
@@ -238,8 +238,13 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     };
 
     let bundle_writer = Arc::new(
-        BundleWriter::new(output, &password, global.compression_level.to_level())
-            .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
+        BundleWriter::new(
+            output,
+            &password,
+            global.compression_level.to_level(),
+            !matches!(global.compression_level, Compression::None),
+        )
+        .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     );
     let shutdown_signal = Arc::new(AtomicBool::new(false));
     let progress = Arc::new(SnapshotProgress::new());
@@ -623,8 +628,13 @@ async fn export_snapshot_impl(
 
     // Create bundle writer
     let bundle_writer = Arc::new(
-        BundleWriter::new(output, password, global.compression_level.to_level())
-            .map_err(|e| MapacheError::Repo(e.to_string()))?,
+        BundleWriter::new(
+            output,
+            password,
+            global.compression_level.to_level(),
+            !matches!(global.compression_level, Compression::None),
+        )
+        .map_err(|e| MapacheError::Repo(e.to_string()))?,
     );
 
     // Collect all blob IDs from the snapshot tree

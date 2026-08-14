@@ -21,6 +21,7 @@ use crate::{
 
 pub struct BundleWriter {
     storage: SecureStorage,
+    compress: bool,
     inner: Mutex<BundleWriterInner>,
 }
 
@@ -42,14 +43,23 @@ impl BlobSaver for BundleWriter {
 }
 
 impl BundleWriter {
-    pub fn new<P: AsRef<Path>>(path: P, password: &str, compression_level: i32) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(
+        path: P,
+        password: &str,
+        compression_level: i32,
+        compress: bool,
+    ) -> Result<Self> {
         let salt = SecureStorage::generate_salt::<BUNDLE_SALT_LEN>();
         let params = Params::default();
         let key = SecureStorage::derive_key::<BUNDLE_KEY_LEN>(password, &salt, params.clone())?;
 
-        let storage = SecureStorage::new()
-            .with_compression(compression_level)
-            .with_key(&*key)?;
+        let storage = if compress {
+            SecureStorage::new()
+                .with_compression(compression_level)
+                .with_key(&*key)?
+        } else {
+            SecureStorage::new().with_key(&*key)?
+        };
 
         let mut file = File::create(path)?;
 
@@ -67,6 +77,7 @@ impl BundleWriter {
 
         Ok(Self {
             storage,
+            compress,
             inner: Mutex::new(BundleWriterInner {
                 file,
                 index: BundleIndex::default(),
@@ -87,10 +98,15 @@ impl BundleWriter {
         };
 
         let raw_length = data.len() as u32;
-        let encoded_data = self
-            .storage
-            .encode(data.as_ref())
-            .map_err(|e| MapacheError::Crypto(format!("failed to encode blob data: {e}")))?;
+        let encoded_data = if self.compress {
+            self.storage
+                .encode(data.as_ref())
+                .map_err(|e| MapacheError::Crypto(format!("failed to encode blob data: {e}")))?
+        } else {
+            self.storage
+                .encrypt(data.as_ref())
+                .map_err(|e| MapacheError::Crypto(format!("failed to encrypt blob data: {e}")))?
+        };
         let length = encoded_data.len() as u32;
 
         let mut inner = self.inner.lock();
@@ -105,7 +121,7 @@ impl BundleWriter {
         inner.index.entries.push(BundleIndexEntry {
             id,
             blob_type,
-            compressed: true,
+            compressed: self.compress,
             offset,
             length,
             raw_length,

@@ -208,9 +208,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-darwin-arm64
       - name: Install macFUSE
         run: |
           brew tap homebrew/cask

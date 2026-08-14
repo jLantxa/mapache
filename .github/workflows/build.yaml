@@ -154,9 +154,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-android-arm64
       - name: Install Android NDK
         run: |
           curl -L https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -o /tmp/ndk.zip
@@ -187,9 +184,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-windows-amd64
       - name: Install LLVM + cargo-xwin
         run: |
           sudo apt-get update -qq

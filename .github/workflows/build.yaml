@@ -113,9 +113,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: armv7-unknown-linux-musleabihf
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-linux-armv7
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -148,9 +145,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-android-arm64
       - name: Install Android NDK
         run: |
           curl -L https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -o /tmp/ndk.zip

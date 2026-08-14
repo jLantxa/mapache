@@ -37,6 +37,10 @@ jobs:
       - id: ref
         run: |
           ref="${{ inputs.ref || github.ref_name }}"
+          if ! [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Invalid ref '$ref'. Only full 40-character commit SHAs are allowed." >&2
+            exit 1
+          fi
           echo "value=$ref" >> "$GITHUB_OUTPUT"
           safe="${ref//\//-}"
           echo "safe=$safe" >> "$GITHUB_OUTPUT"

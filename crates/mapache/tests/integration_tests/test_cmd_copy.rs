@@ -32,6 +32,7 @@ mod tests {
             auth,
             None,
             backend,
+            None,
         )
         .await?;
         Ok(())

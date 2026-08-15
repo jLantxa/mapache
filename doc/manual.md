@@ -239,6 +239,28 @@ All data (packs, indices, snapshots, manifest) is encrypted with AES-GCM-SIV
 using a randomly-generated 256-bit master key. User passwords are derived via
 Argon2id to produce wrapping keys that encrypt the master key.
 
+### Error Correction (ECC)
+
+Mapache supports optional Reed-Solomon erasure coding to protect pack files
+against bit-rot and silent data corruption. When enabled, each pack file gets
+a parity-only sidecar (`.ecc` file) that stores redundant parity shards.
+
+Key properties:
+
+- **No data duplication** — sidecars store only parity shards, not the original
+  data. A 50% ECC overhead adds ~25% storage cost.
+- **Per-stripe processing** — data is split into stripes of up to 200 shards.
+  Each stripe is independently encoded, limiting memory to ~800 KB regardless
+  of pack size.
+- **Transparent to hashing** — the BLAKE3 hash is computed on the original pack
+  content. ECC sidecars are invisible to the content-addressable layer.
+- **Compressed and encrypted** — like all repository objects, ECC sidecars are
+  compressed and encrypted on disk.
+- **Repair on verify** — `verify --repair` detects corruption via parity mismatch
+  and reconstructs data using the remaining intact shards.
+
+ECC is configured per-repository at initialization time with `--ecc <PERCENT>`.
+
 ---
 
 ## 5. Configuration
@@ -452,6 +474,7 @@ command = "/usr/local/bin/maintenance-end.sh"
 mapache init -r <URL>
 mapache init --format 2 -r <URL>   # Explicit v2 (default)
 mapache init --format 1 -r <URL>   # Legacy v1 (deprecated)
+mapache init --ecc 50 -r <URL>     # Enable ECC with 50% overhead
 ```
 
 Creates a new empty repository at the given location. Supported URL schemes:
@@ -463,6 +486,7 @@ Creates a new empty repository at the given location. Supported URL schemes:
 | Flag | Description |
 |---|---|
 | `--format <1\|2>` | Repository format version (default: 2) |
+| `--ecc <0-100>` | Enable ECC with given overhead percentage (0 disables) |
 
 > **SSH key support:** mapache supports Ed25519 and ECDSA keys for SFTP
 > authentication. RSA keys are **not** supported — use `ssh-keygen -t ed25519`
@@ -1101,6 +1125,7 @@ mapache verify -r <URL>                    # Logical consistency check
 mapache verify --read-packs -r <URL>       # Full physical verification
 mapache verify --read-packs --sample 10%   # Verify 10% of packs
 mapache verify --read-packs --parallel 8   # Parallel verification
+mapache verify --repair                    # Repair corrupt packs via ECC
 mapache verify --fail-early                # Stop on first error
 mapache verify --with-cache                # Use local cache
 ```
@@ -1116,6 +1141,26 @@ mapache verify --with-cache                # Use local cache
 - Reads, decrypts, and hashes every blob in every pack (or a sample).
 - Detects bit-rot (pack file hash mismatch) and individual blob corruption.
 - Reports corrupt blobs and the files/snapshots they affect.
+
+#### ECC Repair (`--repair`)
+
+When ECC is enabled on the repository, `--repair` checks each pack against
+its parity sidecar. The sidecar is decoded (decompressed + decrypted) before
+use. Corrupt data shards are reconstructed from the remaining intact shards
+using Reed-Solomon erasure coding. Repair reports all results but never aborts
+early — it attempts to repair every pack regardless of individual failures.
+
+Seven outcome cases per pack:
+
+| Outcome | Description |
+|---|---|
+| OK | Pack verified, ECC sidecar intact |
+| OK + missing sidecar | Pack verified, no `.ecc` file found |
+| OK + corrupt sidecar | Pack verified, ECC sidecar corrupted |
+| Repaired | Pack had corruption, successfully repaired |
+| Irrecoverable | Pack corrupted beyond RS recovery capability |
+| Corrupt + missing sidecar | Pack corrupted, no ECC data available |
+| Corrupt + corrupt sidecar | Pack and sidecar both corrupted |
 
 #### Sampling
 
@@ -1510,6 +1555,7 @@ Initialize a new backup repository.
 ```
 mapache init -r <URL>
   --format <1|2>         Repository format version (default: 2)
+  --ecc <0-100>          Enable ECC with given overhead percentage (0 disables)
 ```
 
 ### `mapache snapshot`
@@ -1667,6 +1713,7 @@ Verify repository integrity.
 ```
 mapache verify -r <URL>
   --read-packs            Read, decrypt, hash all data (slow)
+  --repair                Repair corrupt packs via ECC sidecars
   -p, --parallel <N>      Parallel pack reading (default: 4)
   --with-cache            Use local cache (disabled by default)
   --fail-early            Stop on first error

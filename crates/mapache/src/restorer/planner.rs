@@ -232,7 +232,7 @@ mod tests {
     async fn create_restorer(strategy: Strategy, verify: bool) -> (Restorer, tempfile::TempDir) {
         let auth = auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone())
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None)
             .await
             .unwrap();
         let (repo, _) = Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG)

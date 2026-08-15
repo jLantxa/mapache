@@ -722,7 +722,7 @@ mod tests {
             password: Zeroizing::new("pass".to_string()),
         };
         let backend = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
 
@@ -807,7 +807,7 @@ mod tests {
             password: Zeroizing::new("pass".to_string()),
         };
         let backend = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
 
@@ -1029,7 +1029,7 @@ mod tests {
             password: Zeroizing::new("stdin_test".to_string()),
         };
         let backend = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone())
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None)
             .await
             .unwrap();
         let (repo, _) =

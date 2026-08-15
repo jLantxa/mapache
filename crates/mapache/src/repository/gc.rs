@@ -19,7 +19,7 @@ use crate::{
     repository::{
         index::BlobLocator,
         loader,
-        repo::{REPO_DROPPED_EXTENSION, REPO_TMP_EXTENSION, Repository},
+        repo::{REPO_DROPPED_EXTENSION, REPO_ECC_EXTENSION, REPO_TMP_EXTENSION, Repository},
         snapshot::SnapshotStream,
     },
     ui::events::{Event, EventSender, GcEvent, GcTaskKind},
@@ -716,6 +716,12 @@ async fn delete_trash_files(
                                 let ext_str = ext.to_string_lossy();
                                 if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
                                     found.push(entry);
+                                } else if ext_str == REPO_ECC_EXTENSION {
+                                    // Orphaned .ecc: base file doesn't exist.
+                                    let base = entry.with_extension("");
+                                    if !backend.path_exists(&base).await {
+                                        found.push(entry);
+                                    }
                                 }
                             }
                         }
@@ -783,7 +789,14 @@ mod tests {
         let auth = make_auth();
         let backend = Arc::new(MockBackend::new());
         let backend_dyn: Arc<dyn StorageBackend> = backend.clone();
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend_dyn.clone()).await?;
+        Repository::init(
+            THIS_REPOSITORY_VERSION,
+            &auth,
+            None,
+            backend_dyn.clone(),
+            None,
+        )
+        .await?;
         let (repo, _) =
             Repository::try_open_unlocked(&auth, None, backend_dyn, TEST_REPO_CONFIG).await?;
         Ok((repo, backend))

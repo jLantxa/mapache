@@ -2027,6 +2027,7 @@ dependencies = [
  "indicatif",
  "libc",
  "mapache-chunker",
+ "mapache-ecc",
  "parking_lot",
  "percent-encoding",
  "proptest",

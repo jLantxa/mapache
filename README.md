@@ -59,7 +59,8 @@ Full documentation is available at **[mapache.jlantxa.dev](https://jlantxa.githu
 - **Retention policies:** keep what matters with hourly, daily, weekly,
   monthly, and yearly rules. Filter by host and tag.
 - **Integrity verification:** end-to-end check of snapshots, packs, and
-  individual blobs.
+  individual blobs. Optional Reed-Solomon ECC sidecars detect and repair
+  bit-rot.
 - **Portable:** Linux, macOS, Windows and Android — single binary for each
   platform.
 

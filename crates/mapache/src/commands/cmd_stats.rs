@@ -16,7 +16,7 @@ use crate::{
     fs::{node::NodeType, tree::SerializedNodeStream},
     repository::{
         packer::Packer,
-        repo::{MANIFEST_PATH, Repository},
+        repo::{MANIFEST_PATH, REPO_ECC_EXTENSION, Repository},
         snapshot::SnapshotStream,
         storage::SecureStorage,
     },
@@ -53,6 +53,8 @@ pub struct CmdArgs {
 struct PacksOutput {
     count: usize,
     total_bytes: u64,
+    ecc_count: usize,
+    ecc_bytes: u64,
     parsed_footer: bool,
     footer_blob_count: Option<usize>,
     footer_encoded_bytes: Option<u64>,
@@ -178,6 +180,24 @@ async fn stats_repository(
     let num_packs = packs.len();
     let total_pack_size = sum_sizes(&spinner, backend.as_ref(), "packs", &packs).await?;
 
+    // ECC sidecars
+    spinner.set_message("ecc");
+    let objects_path = repo.objects_path();
+    let ecc_entries = backend.list_dir_recursive(objects_path).await?;
+    let mut ecc_files: Vec<PathBuf> = Vec::new();
+    for node in ecc_entries {
+        let path = node.into_path();
+        if path
+            .extension()
+            .map(|e| e == REPO_ECC_EXTENSION)
+            .unwrap_or(false)
+        {
+            ecc_files.push(path);
+        }
+    }
+    let num_ecc = ecc_files.len();
+    let total_ecc_size = sum_sizes(&spinner, backend.as_ref(), "ecc", &ecc_files).await?;
+
     // Indices
     let indices = repo.list_all_files(ContentIdType::Index).await?;
     let num_indices = indices.len();
@@ -202,6 +222,7 @@ async fn stats_repository(
         .unwrap_or(0);
 
     let total_size = total_pack_size
+        .saturating_add(total_ecc_size)
         .saturating_add(total_index_size)
         .saturating_add(total_snapshot_size)
         .saturating_add(total_key_size)
@@ -287,6 +308,13 @@ async fn stats_repository(
             "\tTotal pack size: {}",
             utils::format_size_binary(total_pack_size, 3)
         );
+        if num_ecc > 0 {
+            ui::cli::log!(
+                "\tECC sidecars: {} ({})",
+                utils::format_count(num_ecc, "file", "files"),
+                utils::format_size_binary(total_ecc_size, 3)
+            );
+        }
         if args.full {
             ui::cli::log!("\tPack footers parsed: yes");
             if let Some(cnt) = pack_footer_blob_count {
@@ -428,6 +456,8 @@ async fn stats_repository(
             packs: PacksOutput {
                 count: num_packs,
                 total_bytes: total_pack_size,
+                ecc_count: num_ecc,
+                ecc_bytes: total_ecc_size,
                 parsed_footer: args.full,
                 footer_blob_count: pack_footer_blob_count,
                 footer_encoded_bytes: pack_footer_encoded_bytes,

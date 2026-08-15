@@ -229,6 +229,7 @@ pub struct SnapshotSummary {
     pub total_encoded_bytes: u64, // Total bytes after encoding
     pub data_blobs: u64,
     pub meta_blobs: u64,
+    pub ecc_bytes: u64, // ECC sidecar bytes on disk
 
     #[serde(flatten)]
     pub diff_counts: DiffCounts,
@@ -491,6 +492,7 @@ mod tests {
             total_encoded_bytes: 8332,
             data_blobs: 10,
             meta_blobs: 5,
+            ecc_bytes: 0,
             diff_counts: DiffCounts {
                 new_files: 1,
                 deleted_files: 0,

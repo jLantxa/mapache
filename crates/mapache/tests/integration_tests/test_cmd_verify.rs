@@ -11,8 +11,12 @@ mod tests {
     use anyhow::{Context, Ok, Result};
 
     use mapache::{
-        backend::{BackendNode, localfs::LocalFS, read_backend_dir},
-        repository::repo::{INDEX_DIR, OBJECTS_DIR},
+        backend::{BackendNode, Handle, StorageBackend, localfs::LocalFS, read_backend_dir},
+        repository::{
+            manifest::EccConfig,
+            repo::Repository,
+            repo::{INDEX_DIR, OBJECTS_DIR},
+        },
     };
 
     use crate::{
@@ -331,6 +335,86 @@ mod tests {
             .run(&global)
             .await
             .context("verify failed after --compression none snapshot")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_verify_ecc_repair() -> Result<()> {
+        let mut ctx = TestContext::new().await?;
+        let dataset = Dataset::new().with_structure(INTEGRATION_TEST_DATA);
+        let synthetic = SyntheticData::new(dataset);
+        let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
+
+        // Init repo with ECC enabled (50% overhead).
+        let ecc_config = Some(EccConfig::from_overhead(50));
+        let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
+        let _ = Repository::init(
+            mapache::repository::repo::THIS_REPOSITORY_VERSION,
+            &ctx.auth,
+            None,
+            backend.clone(),
+            ecc_config,
+        )
+        .await
+        .context("Failed to init repo with ECC")?;
+
+        // Snapshot some data.
+        ctx.snapshot_builder(vec![
+            backup_data_tmp_path.join("file.txt"),
+            backup_data_tmp_path.join("0"),
+            backup_data_tmp_path.join("1"),
+        ])
+        .no_scan(true)
+        .run(&ctx.global)
+        .await
+        .context("snapshot failed")?;
+
+        // Verify should pass initially.
+        ctx.verify_builder()
+            .read_packs(true)
+            .run(&ctx.global)
+            .await
+            .context("initial verify should pass")?;
+
+        // Find a pack file and corrupt it.
+        let objects_dir = PathBuf::from(mapache::repository::repo::OBJECTS_DIR);
+        let entries = read_backend_dir(backend.as_ref(), &objects_dir).await?;
+        let mut pack_path: Option<PathBuf> = None;
+        for entry in entries {
+            if let BackendNode::File(path, _) = entry {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string());
+                if let Some(name) = name
+                    && !name.ends_with(".ecc")
+                    && !name.ends_with(".tmp")
+                {
+                    pack_path = Some(path);
+                    break;
+                }
+            }
+        }
+        let pack_path = pack_path.context("no pack file found")?;
+
+        // Corrupt the first byte of the pack.
+        let handle = Handle::new(&pack_path);
+        let mut data = backend.read(&handle, 0, 0).await?.to_vec();
+        assert!(!data.is_empty(), "pack file should not be empty");
+        data[0] ^= 0xFF;
+        backend
+            .write(&handle, std::borrow::Cow::Owned(data))
+            .await?;
+
+        // Verify without repair should fail (bit-rot).
+        let result = ctx.verify_builder().read_packs(true).run(&ctx.global).await;
+        assert!(result.is_err(), "verify should fail after corruption");
+
+        // Verify with repair should succeed (ECC fixes the corruption).
+        ctx.verify_builder()
+            .read_packs(true)
+            .repair(true)
+            .run(&ctx.global)
+            .await
+            .context("verify --repair should succeed after ECC repair")?;
 
         Ok(())
     }

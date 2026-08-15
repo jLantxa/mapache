@@ -25,7 +25,7 @@ use crate::{
         index::{self, Index, IndexFile, IndexMode, MasterIndex},
         keys::{self, KeyManager},
         lock::{Lock, LockHandle},
-        manifest::Manifest,
+        manifest::{EccConfig, Manifest},
         packer::{PackSaver, PackSaverRequest},
         snapshot::Snapshot,
         storage::{EncodingContext, SecureStorage},
@@ -45,6 +45,7 @@ pub const LOCKS_DIR: &str = "locks";
 
 pub(crate) const REPO_TMP_EXTENSION: &str = "tmp";
 pub(crate) const REPO_DROPPED_EXTENSION: &str = "dropped";
+pub(crate) const REPO_ECC_EXTENSION: &str = "ecc";
 
 pub(crate) type OpenResult = (Arc<Repository>, Arc<SecureStorage>);
 pub(crate) type OpenWithLockResult = (Arc<Repository>, Arc<SecureStorage>, LockHandle);
@@ -129,6 +130,8 @@ pub struct RepoStats {
 
     pub index_raw_bytes: AtomicU64,
     pub index_meta_bytes: AtomicU64,
+
+    pub ecc_bytes: AtomicU64,
 }
 
 /// A snapshot of repository statistics at a point in time.
@@ -140,6 +143,7 @@ pub struct RepoStatsSnapshot {
     pub blobs: u64,
     pub meta_blobs: u64,
     pub index: SizePair,
+    pub ecc: u64,
 }
 
 impl RepoStats {
@@ -152,6 +156,7 @@ impl RepoStats {
         self.meta_blobs.store(0, Ordering::Relaxed);
         self.index_raw_bytes.store(0, Ordering::Relaxed);
         self.index_meta_bytes.store(0, Ordering::Relaxed);
+        self.ecc_bytes.store(0, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> RepoStatsSnapshot {
@@ -163,6 +168,7 @@ impl RepoStats {
         let meta_blobs = self.meta_blobs.load(Ordering::Relaxed);
         let index_raw = self.index_raw_bytes.load(Ordering::Relaxed);
         let index_meta = self.index_meta_bytes.load(Ordering::Relaxed);
+        let ecc = self.ecc_bytes.load(Ordering::Relaxed);
 
         RepoStatsSnapshot {
             data: SizePair::new(rb, eb),
@@ -171,6 +177,7 @@ impl RepoStats {
             blobs,
             meta_blobs,
             index: SizePair::new(index_raw, index_meta),
+            ecc,
         }
     }
 }
@@ -239,6 +246,7 @@ impl Repository {
         auth: &Auth,
         keyfile_path: Option<&PathBuf>,
         backend: Arc<dyn StorageBackend>,
+        ecc_config: Option<EccConfig>,
     ) -> Result<Manifest> {
         tracing::info!(target: "repo", "Checking for existing repository");
         if backend.path_exists(Path::new(MANIFEST_PATH)).await {
@@ -309,7 +317,10 @@ impl Repository {
 
         // Save new manifest
         tracing::info!(target: "repo", "Creating manifest v{repo_version}");
-        let manifest = Manifest::new(repo_version);
+        let manifest = match ecc_config {
+            Some(ecc) => Manifest::new_with_ecc(repo_version, ecc),
+            None => Manifest::new(repo_version),
+        };
 
         // TODO(v1-removal): Nonce position depends on repo version.
         secure_storage.set_nonce_at_end(repo_version >= 2);
@@ -721,6 +732,29 @@ impl Repository {
             hint: Some(hint),
         };
 
+        // Compute ECC sidecar before moving encoded_data.
+        let ecc_payload = if file_type == ContentIdType::Pack {
+            if let Some(ecc_config) = self.manifest.ecc() {
+                let k = ecc_config.data_shards as usize;
+                let p = ecc_config.parity_shards as usize;
+                let pack_data = bytes_to_write.to_vec();
+                let raw_ecc =
+                    tokio::task::spawn_blocking(move || mapache_ecc::ecc_encode(&pack_data, k, p))
+                        .await
+                        .map_err(|e| MapacheError::Internal(format!("ECC task failed: {e}")))?;
+                if raw_ecc.is_empty() {
+                    None
+                } else {
+                    let encoded_ecc = self.secure_storage.encode(&raw_ecc)?;
+                    Some((raw_ecc.len() as u64, encoded_ecc))
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let cow_data = match encoded_data {
             Some(d) => WriteContents::Owned(d),
             None => WriteContents::Borrowed(data),
@@ -737,6 +771,22 @@ impl Repository {
         }
 
         self.backend.write(&handle, cow_data).await?;
+
+        // Write ECC sidecar for packs when ECC is enabled.
+        if let Some((_raw_len, encoded_ecc)) = ecc_payload {
+            let ecc_path = path.with_extension(REPO_ECC_EXTENSION);
+            let ecc_handle = Handle {
+                path: &ecc_path,
+                hint: Some(hint),
+            };
+            let ecc_encoded_len = encoded_ecc.len() as u64;
+            self.backend
+                .write(&ecc_handle, WriteContents::Owned(encoded_ecc))
+                .await?;
+            self.stats
+                .ecc_bytes
+                .fetch_add(ecc_encoded_len, Ordering::Relaxed);
+        }
 
         Ok((*id, SizePair::new(raw_size, encoded_size)))
     }
@@ -799,6 +849,16 @@ impl Repository {
         tracing::info!(target: "repo", "Deleting {file_type} at {}", path.display());
         let size = self.backend.lstat(&path).await?.size;
         self.backend.remove(&path).await?;
+
+        // Also delete .ecc sidecar if it exists (best-effort).
+        if with_extension.is_none() && file_type == ContentIdType::Pack {
+            let ecc_path = path.with_extension(REPO_ECC_EXTENSION);
+            if self.backend.path_exists(&ecc_path).await
+                && let Err(e) = self.backend.remove(&ecc_path).await
+            {
+                tracing::warn!(target: "repo", "Failed to delete ECC sidecar {}: {e}", ecc_path.display());
+            }
+        }
 
         Ok(size.unwrap_or(0))
     }
@@ -1154,7 +1214,11 @@ impl Repository {
         Ok(packs)
     }
 
-    /// Lists all packs and trash files (.tmp, .dropped) in the objects directory.
+    /// Lists all packs and trash files (.tmp, .dropped, orphaned .ecc) in the
+    /// objects directory.
+    ///
+    /// An `.ecc` file is considered orphaned (and thus trash) if the
+    /// corresponding pack file does not exist.
     pub async fn list_packs_and_trash(&self) -> Result<(IdSet<ID>, Vec<PathBuf>)> {
         let mut packs = IdSet::default();
         let mut trash = Vec::new();
@@ -1171,6 +1235,26 @@ impl Repository {
             } else if let Some(ext) = path.extension() {
                 let ext_str = ext.to_string_lossy();
                 if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
+                    trash.push(path);
+                }
+            }
+        }
+
+        // Second pass: collect orphaned .ecc files (base pack not present).
+        let entries = self.backend.list_dir_recursive(&self.objects_path).await?;
+        for node in entries {
+            let path = node.into_path();
+            let Some(filename) = path.file_name() else {
+                continue;
+            };
+            let filename = filename.to_string_lossy().to_string();
+            if let Some(stem) = filename.strip_suffix(".ecc") {
+                if let Ok(id) = ID::from_hex(stem) {
+                    if !packs.contains(&id) {
+                        trash.push(path);
+                    }
+                } else {
+                    // Not a valid pack name at all → orphaned
                     trash.push(path);
                 }
             }
@@ -1479,7 +1563,7 @@ mod tests {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
         let (_, _, lock_handle) =
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
@@ -1499,7 +1583,7 @@ mod tests {
         let auth = utils::get_auth(&Some(password_file_path))?.unwrap();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
         let (_, _, lock_handle) =
             Repository::try_open_with_lock(&auth, None, backend, TEST_REPO_CONFIG, false, None)
                 .await?;
@@ -1513,7 +1597,7 @@ mod tests {
     async fn test_open_with_wrong_password_returns_auth_error() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
 
         let wrong_auth = Auth {
             username: "mapachito".to_string(),
@@ -1541,7 +1625,7 @@ mod tests {
     async fn test_blob_save_and_load_cycle() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
         let (repo, _ss) =
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
 
@@ -1582,7 +1666,7 @@ mod tests {
     async fn test_index_persistence_across_reopen() -> Result<()> {
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
 
         // First session
         let (repo, _ss) =
@@ -1618,7 +1702,7 @@ mod tests {
 
         let auth = make_auth();
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
         let (repo, _ss) =
             Repository::try_open_unlocked(&auth, None, backend, TEST_REPO_CONFIG).await?;
 
@@ -1748,7 +1832,7 @@ mod tests {
         };
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;
@@ -1797,7 +1881,7 @@ mod tests {
         };
         let backend: Arc<dyn StorageBackend> = Arc::new(MockBackend::new());
 
-        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone()).await?;
+        Repository::init(THIS_REPOSITORY_VERSION, &auth, None, backend.clone(), None).await?;
 
         let (r0, _ss0) =
             Repository::try_open_unlocked(&auth, None, backend.clone(), TEST_REPO_CONFIG).await?;

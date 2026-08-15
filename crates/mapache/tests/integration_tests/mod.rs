@@ -332,6 +332,7 @@ impl InitBuilder {
         Self {
             args: cmd_init::CmdArgs {
                 format: mapache::repository::repo::THIS_REPOSITORY_VERSION,
+                ecc: None,
             },
         }
     }
@@ -361,6 +362,7 @@ impl VerifyBuilder {
                 with_cache: false,
                 fail_early: false,
                 sample: None,
+                repair: false,
                 hook_args: Default::default(),
             },
         }
@@ -383,6 +385,11 @@ impl VerifyBuilder {
 
     pub fn sample(mut self, sample: Option<f64>) -> Self {
         self.args.sample = sample;
+        self
+    }
+
+    pub fn repair(mut self, repair: bool) -> Self {
+        self.args.repair = repair;
         self
     }
 
@@ -966,6 +973,7 @@ async fn init_repo(auth: &Auth, repo_path: PathBuf) -> Result<()> {
         auth,
         None,
         backend,
+        None,
     )
     .await
     .context("Failed to init repo")?;

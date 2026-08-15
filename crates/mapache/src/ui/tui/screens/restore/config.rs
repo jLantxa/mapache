@@ -208,6 +208,7 @@ mod tests {
             total_encoded_bytes: 0,
             data_blobs: 0,
             meta_blobs: 0,
+            ecc_bytes: 0,
             diff_counts: Default::default(),
             amends: None,
         }

@@ -230,9 +230,19 @@ The manifest is serialized as JSON:
 {
   "version": 2,
   "id": "b7468f6331331302b06c63b98a14e50107f9cc26683afd064c0af84eec53b3e7",
-  "created_time": "2025-11-20T13:06:52.266751300+01:00"
+  "created_time": "2025-11-20T13:06:52.266751300+01:00",
+  "ecc": {
+    "data_shards": 100,
+    "parity_shards": 2
+  }
 }
 ```
+
+The `ecc` field is optional. When present, it indicates that ECC sidecars are
+enabled for this repository. `data_shards` (K) and `parity_shards` (P) are
+the Reed-Solomon parameters stored for forward compatibility: if the formula
+that maps user configuration to K/P changes in the future, old repositories
+still decode correctly using the stored values.
 
 JSON is used instead of a binary format to allow extending the manifest with
 new fields without breaking format compatibility within the same version.
@@ -452,6 +462,98 @@ used in v1. This reduces index size and improves parsing speed. The binary
 format encodes pack IDs and blob descriptors (ID, type with compression marker,
 offset, encoded length, raw length) in a dense binary layout. Mapache
 can still read v1 JSON index files for backward compatibility during migration.
+
+### Error correction (ECC)
+
+Mapache supports optional Reed-Solomon erasure coding to protect pack files
+against bit-rot and silent data corruption. ECC is configured per-repository
+via the `--ecc <PERCENT>` flag during `init` (0–100% overhead, 0 disables).
+
+The `ecc` crate is a pure Reed-Solomon implementation with no knowledge of
+overhead percentages or repository concepts. It exposes a K/P-based API:
+`ecc_encode(data, k, p)` and `ecc_decode(data, ecc_payload)`. Mapache
+decides the K and P values (currently K=100, P=overhead) and stores them
+in the manifest. This separation allows changing the K/P strategy (presets,
+adaptive overhead, etc.) without modifying the ecc crate.
+
+#### Parity-only sidecars
+
+ECC sidecars store **only parity shards** — the original pack data is never
+uplicated on disk. The sidecar file is compressed, encrypted, and stored
+alongside the pack with the same ID and a `.ecc` extension:
+
+```text
+objects/
+├── 00
+│   └── 00ab12...cd pack file
+│   └── 00ab12...cd.ecc  ← parity-only sidecar
+├── 01
+│   └── 01cd34...ef pack file
+└── ff
+    └── ff5678...ab pack file
+```
+
+#### MECP wire format
+
+Sidecars use the `MECP` (Mapache ECC Parity) format:
+
+```text
+Header (22 bytes):
+┌──────────┬─────────┬──────────┬───────────┬───────────────┬──────────────┐
+│ MAGIC    │ VERSION │ reserved │ K (u16)   │ original_len  │ stripe_count │
+│ b"MECP"  │ u8      │ 0        │ P (u16)   │ u64 LE        │ u32 LE       │
+└──────────┴─────────┴──────────┴───────────┴───────────────┴──────────────┘
+  4 bytes    1 byte    1 byte     2+2 bytes    8 bytes         4 bytes
+
+Parity shards (one per stripe):
+┌─────────────────────┬─────────────────────┬─────┐
+│ stripe 0 parity     │ stripe 1 parity     │ ... │
+│ (p × SHARD_SIZE)    │ (p × SHARD_SIZE)    │     │
+└─────────────────────┴─────────────────────┴─────┘
+```
+
+K and P are stored in the header for forward compatibility: if the formula
+that maps overhead to K/P changes in the future, old sidecars still decode
+correctly using the stored values.
+
+Each shard is `SHARD_SIZE` = 4096 bytes (matching the OS page size and
+mapache block size). The last shard in each stripe may be zero-padded.
+
+#### Striped encoding
+
+For large packs, data is split into stripes of K data shards each (K=100 by
+default). Each stripe is independently encoded, so the maximum memory per stripe
+is ~400 KB (100 shards × 4096 bytes). This allows ECC processing of multi-gigabyte
+packs without loading the entire file into memory.
+
+```text
+Data (1 GB pack, 5% overhead):
+┌─────────────────────────┬─────────────────────────┬─────┐
+│ stripe 0 (100 shards)   │ stripe 1 (100 shards)   │ ... │
+│ → 5 parity shards       │ → 5 parity shards       │     │
+└─────────────────────────┴─────────────────────────┴─────┘
+```
+
+The last stripe may have fewer data bytes but uses the same K and P, so the
+ReedSolomon codec is built once and reused across all stripes.
+
+#### Repair
+
+During `verify --repair`, mapache reads the pack file and its `.ecc` sidecar.
+The sidecar is decoded (decompressed + decrypted) before use. For each stripe,
+it recomputes expected parity from the data shards and compares with the stored
+parity. If corruption is detected, the Reed-Solomon codec reconstructs the
+original data from the remaining intact shards.
+
+The hash (BLAKE3) is always computed on the **original pack content** without
+ECC. The sidecar is transparent to the content-addressable storage layer.
+Like all repository objects, the sidecar is compressed and encrypted on disk.
+
+#### Garbage collection
+
+When GC deletes a pack file, it also deletes the corresponding `.ecc` sidecar.
+Orphaned `.ecc` files (where the base pack no longer exists) are detected and
+cleaned up automatically.
 
 ### Locks
 

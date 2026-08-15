@@ -662,14 +662,15 @@ pub(crate) async fn run_with_repo(
     // Fill snapshot summary from repo stats
     new_snapshot.summary.raw_bytes = repo_stats.data.raw;
     new_snapshot.summary.encoded_bytes = repo_stats.data.encoded;
-    new_snapshot.summary.meta_raw_bytes = repo_stats.meta.raw;
-    new_snapshot.summary.meta_encoded_bytes = repo_stats.meta.encoded;
+    new_snapshot.summary.meta_raw_bytes = repo_stats.meta.raw + repo_stats.ecc;
+    new_snapshot.summary.meta_encoded_bytes = repo_stats.meta.encoded + repo_stats.ecc;
     new_snapshot.summary.total_raw_bytes =
         new_snapshot.summary.raw_bytes + new_snapshot.summary.meta_raw_bytes;
     new_snapshot.summary.total_encoded_bytes =
         new_snapshot.summary.encoded_bytes + new_snapshot.summary.meta_encoded_bytes;
     new_snapshot.summary.data_blobs = repo_stats.blobs;
     new_snapshot.summary.meta_blobs = repo_stats.meta_blobs;
+    new_snapshot.summary.ecc_bytes = repo_stats.ecc;
 
     let should_save_snapshot = if !skip_if_unchanged {
         true

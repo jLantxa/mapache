@@ -7,7 +7,10 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{Compression, GlobalArgs, ToExitCode},
     common::{ID, defaults::SHORT_REPO_ID_LEN, error::MapacheError},
-    repository::repo::{Repository, THIS_REPOSITORY_VERSION, warn_v1_deprecated},
+    repository::{
+        manifest::EccConfig,
+        repo::{Repository, THIS_REPOSITORY_VERSION, warn_v1_deprecated},
+    },
     ui::{self, json::emit_static},
     utils,
 };
@@ -52,6 +55,14 @@ pub struct CmdArgs {
     // TODO(v1-removal): Remove --format flag, always use v2.
     #[clap(long, default_value_t = THIS_REPOSITORY_VERSION)]
     pub format: u32,
+
+    /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
+    ///
+    /// A value of 0 disables ECC. When set, all repo files (packs, index,
+    /// snapshots, manifest) are protected by erasure codes stored as `.ecc`
+    /// sidecar files. Fixed K=100, P=overhead.
+    #[clap(long, value_parser = clap::value_parser!(u32).range(0..=100))]
+    pub ecc: Option<u32>,
 }
 
 const INIT_MSG: &str = "init";
@@ -73,6 +84,21 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
                 .to_string(),
         ));
     }
+
+    // ECC is only supported on v2+ repos.
+    if args.format < 2 && args.ecc.is_some() {
+        return Err(InitError::RepoInitError(
+            "ECC is not supported in repository format v1; use format 2".to_string(),
+        ));
+    }
+
+    let ecc_config = args.ecc.and_then(|pct| {
+        if pct == 0 {
+            None
+        } else {
+            Some(EccConfig::from_overhead(pct))
+        }
+    });
 
     tracing::info!(target: "init", "Initializing repository at {}", global_args.repo);
 
@@ -100,6 +126,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
         &auth,
         global_args.key.as_ref(),
         backend.clone(),
+        ecc_config,
     )
     .await
     .map_err(|e| {

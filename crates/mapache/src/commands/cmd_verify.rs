@@ -99,6 +99,11 @@ pub struct CmdArgs {
     #[clap(long, value_parser = parse_sample_percentage, requires = "read_packs")]
     pub sample: Option<f64>,
 
+    /// Attempt to repair corrupt packs using ECC sidecars.
+    /// Requires the repository to have ECC enabled (`--ecc` at init time).
+    #[clap(long, default_value_t = false)]
+    pub repair: bool,
+
     #[clap(flatten)]
     pub hook_args: HookArgs,
 }
@@ -131,6 +136,7 @@ fn parse_parallel(s: &str) -> Result<usize, String> {
 struct VerifyStats {
     packs_processed: AtomicUsize,
     packs_corrupt: AtomicUsize,
+    packs_repaired: AtomicUsize,
     blobs_verified: AtomicUsize,
     blobs_dangling: AtomicUsize,
 }
@@ -140,6 +146,7 @@ impl VerifyStats {
         Self {
             packs_processed: AtomicUsize::new(0),
             packs_corrupt: AtomicUsize::new(0),
+            packs_repaired: AtomicUsize::new(0),
             blobs_verified: AtomicUsize::new(0),
             blobs_dangling: AtomicUsize::new(0),
         }
@@ -156,6 +163,7 @@ struct VerifyCtx<'a> {
     parallel: usize,
     fail_early: bool,
     is_sampled: bool,
+    repair: bool,
 }
 
 struct VerifyReport<'a> {
@@ -167,6 +175,7 @@ struct VerifyReport<'a> {
     logical_failed_early: bool,
     read_packs: bool,
     json_out: bool,
+    repair: bool,
 }
 
 pub async fn run(
@@ -246,6 +255,14 @@ pub async fn run_with_repo(
     });
     cleanup_handler.add_lock(lock_handle);
 
+    if args.repair && repo.manifest().ecc().is_none() {
+        return Err(VerifyError::VerifyFailed(
+            "ECC is not enabled on this repository. \
+             Use --ecc <PERCENT> when initializing to enable error correction."
+                .to_string(),
+        ));
+    }
+
     let start = Instant::now();
 
     if json_out {
@@ -301,6 +318,7 @@ pub async fn run_with_repo(
             parallel: args.parallel,
             fail_early: args.fail_early,
             is_sampled: args.sample.is_some(),
+            repair: args.repair,
         };
         let failed_early = verify_packs_physically(&verify_ctx, &packs_to_verify).await?;
         if cleanup_handler.is_interrupted() {
@@ -413,6 +431,7 @@ pub async fn run_with_repo(
         logical_failed_early,
         read_packs: args.read_packs,
         json_out,
+        repair: args.repair,
     };
     emit_final_report(&final_report)?;
 
@@ -548,7 +567,15 @@ async fn verify_packs_physically(
             let corrupt_blobs = ctx.corrupt_blobs.clone();
 
             async move {
-                match verify_pack(repo.clone(), backend.clone(), secure.clone(), *pack_id).await {
+                match verify_pack(
+                    repo.clone(),
+                    backend.clone(),
+                    secure.clone(),
+                    *pack_id,
+                    ctx.repair,
+                )
+                .await
+                {
                     Ok(pack_stats) => {
                         stats.packs_processed.fetch_add(1, Ordering::Relaxed);
                         stats
@@ -558,7 +585,16 @@ async fn verify_packs_physically(
                             .blobs_dangling
                             .fetch_add(pack_stats.dangling, Ordering::Relaxed);
 
-                        if pack_stats.bit_rot || !pack_stats.corrupt_blobs.is_empty() {
+                        if pack_stats.repaired {
+                            stats.packs_repaired.fetch_add(1, Ordering::Relaxed);
+                            bar.suspend(|| {
+                                ui::cli::log!(
+                                    "{} Pack {} REPAIRED via ECC.",
+                                    "[REPAIRED]".green().bold(),
+                                    pack_id
+                                );
+                            });
+                        } else if pack_stats.bit_rot || !pack_stats.corrupt_blobs.is_empty() {
                             bar.suspend(|| {
                                 if pack_stats.bit_rot {
                                     ui::cli::error!(
@@ -859,6 +895,7 @@ async fn verify_snapshots_logically(
 fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
     if report.json_out {
         let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
+        let packs_repaired_count = report.stats.packs_repaired.load(Ordering::Relaxed);
         let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
         let passed = packs_corrupt_count == 0 && report.snapshots_corrupt == 0;
 
@@ -867,6 +904,7 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
             duration_seconds: f64,
             packs_processed: usize,
             packs_corrupt: usize,
+            packs_repaired: usize,
             blobs_verified: usize,
             blobs_dangling: usize,
             snapshots_verified: usize,
@@ -881,6 +919,7 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
                 duration_seconds: report.start.elapsed().as_secs_f64(),
                 packs_processed: report.stats.packs_processed.load(Ordering::Relaxed),
                 packs_corrupt: packs_corrupt_count,
+                packs_repaired: packs_repaired_count,
                 blobs_verified: report.stats.blobs_verified.load(Ordering::Relaxed),
                 blobs_dangling: dangling_count,
                 snapshots_verified: report.num_snapshots_total,
@@ -893,6 +932,7 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
     }
 
     let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
+    let packs_repaired_count = report.stats.packs_repaired.load(Ordering::Relaxed);
     let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
 
     if packs_corrupt_count > 0 || report.snapshots_corrupt > 0 {
@@ -924,6 +964,14 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
         });
     }
 
+    if packs_repaired_count > 0 {
+        ui::cli::log!(
+            "{} {} (ECC repair successful).",
+            "[INFO]".green(),
+            utils::format_count(packs_repaired_count, "pack was", "packs were")
+        );
+    }
+
     if dangling_count > 0 {
         ui::cli::log!(
             "{} Found {} (run 'prune' to clean up).",
@@ -953,6 +1001,16 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
         ),
         utils::pretty_print_duration(report.start.elapsed())
     );
+    if report.repair {
+        let repaired = report.stats.packs_repaired.load(Ordering::Relaxed);
+        if repaired > 0 {
+            ui::cli::log!(
+                "{} {} repaired via ECC.",
+                "[INFO]".green(),
+                utils::format_count(repaired, "pack was", "packs were")
+            );
+        }
+    }
     tracing::info!(
         target: "verify",
         "Verify command completed successfully in {:?}",

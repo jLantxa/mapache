@@ -9,7 +9,9 @@ use crate::{
     backend::{Handle, StorageBackend},
     common::{self, BlobType, ContentIdType, ID},
     fs::tree::Tree,
-    repository::{packer::Packer, repo::Repository, storage::SecureStorage},
+    repository::{
+        packer::Packer, repo::REPO_ECC_EXTENSION, repo::Repository, storage::SecureStorage,
+    },
     utils::{
         collections::{IdSet, ShardedIdSet},
         size,
@@ -22,6 +24,7 @@ pub struct PackStats {
     pub corrupt_blobs: Vec<ID>,
     pub bytes_processed: u64,
     pub bit_rot: bool,
+    pub repaired: bool,
 }
 
 const CHUNK_SIZE: usize = 64 * size::MiB as usize;
@@ -32,11 +35,15 @@ const MAX_VERIFICATION_BATCH_SIZE: usize = 64 * size::MiB as usize;
 /// If the pack fits in one chunk, reads it in one shot and verifies
 /// all blobs in parallel. For larger packs, streams in chunks
 /// with batched parallel verification (constant memory).
+///
+/// When `repair` is true and bit-rot is detected, attempts to repair the pack
+/// using the ECC sidecar (requires the repo to have ECC enabled).
 pub async fn verify_pack(
     repo: Arc<Repository>,
     backend: Arc<dyn StorageBackend>,
     secure_storage: Arc<SecureStorage>,
     pack_id: ID,
+    repair: bool,
 ) -> Result<PackStats> {
     tracing::debug!(target: "verify", "Verifying pack {}", pack_id.to_short_hex(8));
     let pack_path = repo.get_path(ContentIdType::Pack, &pack_id);
@@ -45,13 +52,129 @@ pub async fn verify_pack(
         .size
         .ok_or_else(|| MapacheError::Internal("pack size unknown".to_string()))?;
 
-    if pack_size <= CHUNK_SIZE as u64 {
+    let mut stats = if pack_size <= CHUNK_SIZE as u64 {
         tracing::trace!(target: "verify", "Using inline verification for pack {}", pack_id.to_short_hex(8));
-        verify_pack_inline(repo, backend, secure_storage, pack_id, pack_path).await
+        verify_pack_inline(
+            repo.clone(),
+            backend.clone(),
+            secure_storage.clone(),
+            pack_id,
+            pack_path.clone(),
+        )
+        .await?
     } else {
         tracing::trace!(target: "verify", "Using streaming verification for pack {}", pack_id.to_short_hex(8));
-        verify_pack_streaming(repo, backend, secure_storage, pack_id, pack_path).await
+        verify_pack_streaming(
+            repo.clone(),
+            backend.clone(),
+            secure_storage.clone(),
+            pack_id,
+            pack_path.clone(),
+        )
+        .await?
+    };
+
+    // Attempt ECC repair when bit-rot is detected and repair is requested.
+    if repair && stats.bit_rot {
+        match repo.manifest().ecc() {
+            Some(_ecc_config) => {
+                tracing::info!(target: "verify", "Bit-rot detected in pack {}, attempting ECC repair", pack_id.to_short_hex(8));
+                let sidecar_path = pack_path.with_extension(REPO_ECC_EXTENSION);
+                match repair_pack_with_ecc(
+                    &repo,
+                    &backend,
+                    &secure_storage,
+                    pack_id,
+                    &pack_path,
+                    &sidecar_path,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        tracing::info!(target: "verify", "ECC repair succeeded for pack {}, re-verifying", pack_id.to_short_hex(8));
+                        // Re-verify the repaired pack to get correct blob stats.
+                        stats = if pack_size <= CHUNK_SIZE as u64 {
+                            verify_pack_inline(repo, backend, secure_storage, pack_id, pack_path)
+                                .await?
+                        } else {
+                            verify_pack_streaming(repo, backend, secure_storage, pack_id, pack_path)
+                                .await?
+                        };
+                        stats.repaired = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "verify", "ECC repair failed for pack {}: {}", pack_id.to_short_hex(8), e);
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(target: "verify", "Bit-rot detected in pack {} but ECC is not enabled, cannot repair", pack_id.to_short_hex(8));
+            }
+        }
     }
+
+    Ok(stats)
+}
+
+/// Read the pack + sidecar, run ECC decode (which verifies parity and repairs),
+/// then write the repaired data back to disk.
+async fn repair_pack_with_ecc(
+    _repo: &Repository,
+    backend: &Arc<dyn StorageBackend>,
+    secure_storage: &SecureStorage,
+    pack_id: ID,
+    pack_path: &std::path::Path,
+    sidecar_path: &std::path::Path,
+) -> Result<()> {
+    // Read the full pack data.
+    let handle = Handle::new(pack_path);
+    let attr = backend.lstat(pack_path).await?;
+    let pack_size = attr
+        .size
+        .ok_or_else(|| MapacheError::Internal("pack size unknown for repair".to_string()))?;
+    let raw_data = backend
+        .read(&handle, 0, pack_size as usize)
+        .await
+        .map_err(|e| {
+            MapacheError::Backend(format!("failed to read pack for ECC repair: {}", e.inner()))
+        })?;
+
+    // Read and decode the ECC sidecar (encoded = compressed + encrypted).
+    let sidecar_handle = Handle::new(sidecar_path);
+    let sidecar_encoded = backend
+        .read(&sidecar_handle, 0, 0)
+        .await
+        .map_err(|e| MapacheError::Backend(format!("failed to read ECC sidecar: {}", e.inner())))?;
+    let sidecar_data = secure_storage
+        .decode(&sidecar_encoded)
+        .map_err(|e| MapacheError::Repo(format!("failed to decode ECC sidecar: {}", e)))?;
+
+    // Run ECC decode (verifies + repairs in-place) on a blocking thread.
+    let (decoded, was_repaired) = tokio::task::spawn_blocking(move || {
+        let decoded = mapache_ecc::ecc_decode(&raw_data, &sidecar_data)?;
+        let repaired = decoded != raw_data;
+        Ok::<_, mapache_ecc::EccDecodeError>((decoded, repaired))
+    })
+    .await
+    .map_err(|e| MapacheError::Internal(format!("ECC decode task failed: {e}")))?
+    .map_err(|e| {
+        MapacheError::Repo(format!(
+            "ECC decode failed for pack {}: {}",
+            pack_id.to_short_hex(8),
+            e
+        ))
+    })?;
+
+    if was_repaired {
+        backend
+            .write(&handle, std::borrow::Cow::Borrowed(&decoded))
+            .await
+            .map_err(|e| {
+                MapacheError::Backend(format!("failed to write repaired pack: {}", e.inner()))
+            })?;
+        tracing::info!(target: "verify", "Repaired pack {} ({} bytes)", pack_id.to_short_hex(8), decoded.len());
+    }
+    Ok(())
 }
 
 /// Fast path for packs ≤ CHUNK_SIZE: one read, parallel verify.
@@ -134,6 +257,7 @@ async fn verify_pack_inline(
             corrupt_blobs,
             bytes_processed,
             bit_rot,
+            repaired: false,
         })
     })
     .await
@@ -326,6 +450,7 @@ async fn verify_pack_streaming(
         corrupt_blobs,
         bytes_processed,
         bit_rot,
+        repaired: false,
     })
 }
 

@@ -105,9 +105,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CatErro
                     let tree_data = repo.load_blob(&id).await.map_err(|e| {
                         CatError::ObjectNotFound(format!("failed to load tree blob: {}", e.inner()))
                     })?;
-                    // TODO(v1-removal): Remove the JSON fallback, always use from_binary.
                     let tree: Tree = if repo.repo_version() >= 2 {
-                        Tree::from_binary(&tree_data).or_else(|_| Tree::from_json(&tree_data))
+                        Tree::from_binary(&tree_data)
                     } else {
                         Tree::from_json(&tree_data)
                     }

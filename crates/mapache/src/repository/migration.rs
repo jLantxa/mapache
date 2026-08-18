@@ -3,27 +3,25 @@
 //! All items in this module are temporary and should be removed when v1 is deprecated.
 // TODO(v1-removal): Remove this entire module.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::archiver::processor::is_all_zero;
 use crate::backend::{Handle, StorageBackend};
 use crate::common::{
     BlobType, ContentIdType, ID,
     error::{MapacheError, Result},
 };
+use crate::fs::tree::Tree;
 use crate::repository::packer::{PackedBlobDescriptor, Packer};
 use crate::repository::repo::Repository;
 use crate::repository::storage::SecureStorage;
 
 /// Re-encrypt a single pack from `old_nonce_at_end` to `new_nonce_at_end` position.
 ///
-/// Reads the pack, decrypts every blob with the old nonce layout, re-encrypts
-/// with the new layout, and writes a fresh v2 footer. On success returns
-/// `(new_id, descriptors)` where `descriptors` only includes non-padding entries
-/// with correct offsets for the new data section.
-///
-/// The data section only contains non-padding blobs (padding blobs in the footer
-/// have random offset/length — they are noise only, no data in the pack's data
-/// section). The footer is rebuilt so the per-blob compression marker (the high
-/// bit of the type byte) is set for v2; v1 blobs are always zstd-compressed.
+/// Tree blobs are NOT re-serialized here (JSON→binary is handled separately in
+/// `update_tree_hierarchy`) because re-serialization changes blob IDs, which
+/// cascades through the tree hierarchy. Instead, tree plaintext data is collected
+/// in the returned HashMap for later processing.
 pub async fn re_encrypt_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
@@ -31,37 +29,31 @@ pub async fn re_encrypt_pack(
     old_pack_id: &ID,
     old_nonce_at_end: bool,
     new_nonce_at_end: bool,
-) -> Result<(ID, Vec<PackedBlobDescriptor>)> {
+) -> Result<(ID, Vec<PackedBlobDescriptor>, HashMap<ID, Vec<u8>>)> {
     let old_path = repo.get_path(ContentIdType::Pack, old_pack_id);
     let old_handle = Handle::new(&old_path);
 
-    // Read footer length (last 4 bytes, unencrypted).
-    let footer_len_bytes: [u8; 4] = backend
-        .read(&old_handle, -4, 4)
-        .await?
-        .as_slice()
-        .try_into()
-        .map_err(|e: std::array::TryFromSliceError| {
-            MapacheError::Format(format!("invalid footer length bytes: {e}"))
-        })?;
-    let encoded_footer_length = u32::from_le_bytes(footer_len_bytes) as usize;
-
-    // Read the full pack.
     let pack_data = backend.read(&old_handle, 0, 0).await?;
+
+    let footer_len_bytes: [u8; 4] = pack_data[pack_data.len() - 4..].try_into().map_err(
+        |e: std::array::TryFromSliceError| {
+            MapacheError::Format(format!("invalid footer length bytes: {e}"))
+        },
+    )?;
+    let encoded_footer_length = u32::from_le_bytes(footer_len_bytes) as usize;
 
     let total_len = pack_data.len();
     let data_section_end = total_len - 4 - encoded_footer_length;
 
-    // Parse footer with old nonce position to get descriptors (non-padding only, correct offsets).
     let mut descriptors = Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end, 1)?;
 
     tracing::debug!(target: "migrate", "Pack {}: {} blobs, data_section={} bytes, footer={} bytes",
         old_pack_id.to_short_hex(8), descriptors.len(), data_section_end, encoded_footer_length);
 
-    // Re-encrypt each non-padding blob and build the new data section.
-    // Zero blobs are detected and marked with BlobType::Zero (no pack data).
     let mut new_data = Vec::with_capacity(data_section_end);
     let mut new_offset = 0u32;
+    let mut tree_plaintexts: HashMap<ID, Vec<u8>> = HashMap::new();
+
     for desc in &mut descriptors {
         if matches!(desc.blob_type, BlobType::Padding) {
             continue;
@@ -71,20 +63,20 @@ pub async fn re_encrypt_pack(
         let end = start + desc.length as usize;
         let blob_encrypted = &pack_data[start..end];
 
-        // Decrypt to check for zero content.
-        // Fast path: first byte non-zero (common case) skips the full iter().all() scan.
-        let plaintext = match secure_storage.decrypt_inner(blob_encrypted, old_nonce_at_end)? {
-            crate::backend::WriteContents::Owned(v) => v,
-            crate::backend::WriteContents::Borrowed(b) => b.to_vec(),
-        };
+        let plaintext = secure_storage
+            .decrypt_inner(blob_encrypted, old_nonce_at_end)?
+            .into_owned();
 
         if is_all_zero(&plaintext) {
-            // Zero blob: mark but don't include in new pack.
             desc.blob_type = BlobType::Zero;
             desc.offset = 0;
             desc.length = 0;
         } else {
-            // Non-zero: re-encrypt with new nonce position.
+            if matches!(desc.blob_type, BlobType::Tree) {
+                let decompressed = secure_storage.decompress(&plaintext)?;
+                tree_plaintexts.insert(desc.id, decompressed);
+            }
+
             let re_encrypted =
                 secure_storage.re_encrypt(blob_encrypted, old_nonce_at_end, new_nonce_at_end)?;
             desc.offset = new_offset;
@@ -94,8 +86,6 @@ pub async fn re_encrypt_pack(
         }
     }
 
-    // Rebuild the footer: zero blobs appear as BlobType::Zero with length=0.
-    // v1 blobs were always zstd-compressed, so compressed: true.
     let mut footer_descriptors: Vec<_> = descriptors
         .iter()
         .filter(|d| !matches!(d.blob_type, BlobType::Padding))
@@ -113,31 +103,20 @@ pub async fn re_encrypt_pack(
     })?;
     let footer_len_bytes = new_footer_len.to_le_bytes();
 
-    // Assemble the new pack: [re-encrypted blobs | new footer | footer length].
     let mut new_pack = new_data;
     new_pack.extend_from_slice(&new_footer);
     new_pack.extend_from_slice(&footer_len_bytes);
 
     let new_id = ID::from_content(&new_pack);
 
-    // Write the new pack.
     let new_path = repo.get_path(ContentIdType::Pack, &new_id);
     let new_handle = Handle::new(&new_path);
     backend.write(&new_handle, new_pack.into()).await?;
 
-    // NOTE: Old pack is NOT deleted here. Caller is responsible for cleanup
-    // after the manifest is updated, ensuring atomic migration.
-
-    // Descriptors already have correct offsets for the new data section
-    // (since data section layout is preserved — only non-padding blobs).
-    Ok((new_id, descriptors))
+    Ok((new_id, descriptors, tree_plaintexts))
 }
 
 /// Validate that a pack can be read and decrypted.
-///
-/// Reads the full pack and parses the footer with the given nonce position.
-/// Returns the number of blobs found, or an error if the pack is corrupt,
-/// unreadable, or cannot be decrypted with the current key.
 pub async fn validate_pack(
     repo: &Repository,
     backend: &dyn StorageBackend,
@@ -145,24 +124,12 @@ pub async fn validate_pack(
     pack_id: &ID,
     nonce_at_end: bool,
 ) -> Result<usize> {
-    use crate::repository::packer::Packer;
-
-    let path = repo.get_path(ContentIdType::Pack, pack_id);
-    let handle = Handle::new(&path);
-
-    // Read the full pack.
-    let pack_data = backend.read(&handle, 0, 0).await?;
-
-    // Parse footer — this decrypts and validates the pack.
-    let descriptors = Packer::parse_footer(secure_storage, &pack_data, nonce_at_end, 1)?;
-
+    let descriptors =
+        Packer::parse_pack_footer(repo, backend, secure_storage, pack_id, nonce_at_end).await?;
     Ok(descriptors.len())
 }
 
-/// Re-encrypt a standalone file (snapshot, index, etc.) from one nonce position to another.
-///
-/// The file ID is the content hash of the encrypted bytes, so re-encryption
-/// produces a new ID. Returns `new_id`.
+/// Re-encrypt a standalone file (snapshot, index, etc.).
 pub async fn re_encrypt_file(
     repo: &Repository,
     backend: &dyn StorageBackend,
@@ -174,17 +141,143 @@ pub async fn re_encrypt_file(
 ) -> Result<ID> {
     let old_path = repo.get_path(file_type, old_id);
     let data = backend.read(&Handle::new(&old_path), 0, 0).await?;
-
     let re_encrypted = secure_storage.re_encrypt(&data, old_nonce_at_end, new_nonce_at_end)?;
-
     let new_id = ID::from_content(&re_encrypted);
     let new_path = repo.get_path(file_type, &new_id);
-    backend
-        .write(&Handle::new(&new_path), re_encrypted.into())
-        .await?;
-
-    // NOTE: Old file is NOT deleted here. Caller is responsible for cleanup
-    // after the manifest is updated, ensuring atomic migration.
-
+    let new_handle = Handle::new(&new_path);
+    backend.write(&new_handle, re_encrypted.into()).await?;
     Ok(new_id)
+}
+
+/// Re-encrypt a snapshot and update its root tree ID.
+#[allow(clippy::too_many_arguments)]
+pub async fn re_encrypt_snapshot(
+    repo: &Repository,
+    backend: &dyn StorageBackend,
+    secure_storage: &SecureStorage,
+    old_id: &ID,
+    new_root_tree_id: ID,
+    old_nonce_at_end: bool,
+    new_nonce_at_end: bool,
+) -> Result<ID> {
+    let old_path = repo.get_path(ContentIdType::Snapshot, old_id);
+    let data = backend.read(&Handle::new(&old_path), 0, 0).await?;
+
+    let decrypted = secure_storage
+        .decrypt_inner(&data, old_nonce_at_end)?
+        .into_owned();
+    let decompressed = secure_storage.decompress(&decrypted)?;
+    let mut snapshot: crate::repository::snapshot::Snapshot =
+        serde_json::from_slice(&decompressed)?;
+    snapshot.tree = new_root_tree_id;
+
+    let reserialized = serde_json::to_vec(&snapshot)?;
+    let mut ctx = secure_storage.get_encoding_context()?;
+    let re_encrypted =
+        secure_storage.encode_with_nonce_position(&mut ctx, &reserialized, new_nonce_at_end)?;
+
+    let new_id = ID::from_content(&re_encrypted);
+    let new_path = repo.get_path(ContentIdType::Snapshot, &new_id);
+    let new_handle = Handle::new(&new_path);
+    backend.write(&new_handle, re_encrypted.into()).await?;
+    Ok(new_id)
+}
+
+/// Re-serialize a tree hierarchy from JSON to binary.
+///
+/// Uses DFS post-order traversal: children are always re-serialized before
+/// their parents, so sub-tree references can be updated in a single pass.
+///
+/// Returns:
+/// - `root_map`: old root tree ID → new root tree ID (both are plaintext-hash IDs)
+/// - `trees`: (new_id, binary_data) for each re-serialized tree
+#[allow(clippy::type_complexity)]
+pub fn update_tree_hierarchy(
+    tree_plaintexts: &HashMap<ID, Vec<u8>>,
+    root_tree_ids: &[ID],
+) -> Result<(HashMap<ID, ID>, Vec<(ID, Vec<u8>)>)> {
+    let mut id_map: HashMap<ID, ID> = HashMap::new();
+    let mut new_trees: Vec<(ID, Vec<u8>)> = Vec::new();
+    let mut visited: HashSet<ID> = HashSet::new();
+
+    fn dfs(
+        tree_id: ID,
+        tree_plaintexts: &HashMap<ID, Vec<u8>>,
+        id_map: &mut HashMap<ID, ID>,
+        new_trees: &mut Vec<(ID, Vec<u8>)>,
+        visited: &mut HashSet<ID>,
+    ) -> Result<()> {
+        if !visited.insert(tree_id) {
+            return Ok(());
+        }
+        let Some(plaintext) = tree_plaintexts.get(&tree_id) else {
+            return Ok(());
+        };
+        let mut tree: Tree = serde_json::from_slice(plaintext)?;
+
+        for node in &tree.nodes {
+            if let Some(sub_id) = node.tree {
+                dfs(sub_id, tree_plaintexts, id_map, new_trees, visited)?;
+            }
+        }
+
+        for node in &mut tree.nodes {
+            if let Some(sub_id) = &node.tree
+                && let Some(&new_sub_id) = id_map.get(sub_id)
+            {
+                node.tree = Some(new_sub_id);
+            }
+        }
+
+        let binary = tree.to_binary()?;
+        let new_id = ID::from_content(&binary);
+        id_map.insert(tree_id, new_id);
+        new_trees.push((new_id, binary));
+        Ok(())
+    }
+
+    for &root_id in root_tree_ids {
+        if let Err(e) = dfs(
+            root_id,
+            tree_plaintexts,
+            &mut id_map,
+            &mut new_trees,
+            &mut visited,
+        ) {
+            tracing::warn!(target: "migrate", "Failed to re-serialize tree {}: {e}", root_id.to_short_hex(8));
+        }
+    }
+
+    let mut root_map = HashMap::new();
+    for &root_id in root_tree_ids {
+        if let Some(&new_id) = id_map.get(&root_id) {
+            root_map.insert(root_id, new_id);
+        }
+    }
+
+    new_trees.sort_by_key(|(id, _)| *id);
+    Ok((root_map, new_trees))
+}
+
+/// Create a pack from pre-encoded blobs, write it to the backend, and return
+/// the pack id + descriptors for index registration.
+pub async fn create_pack_from_blobs(
+    repo: &Repository,
+    backend: &dyn StorageBackend,
+    secure_storage: &std::sync::Arc<SecureStorage>,
+    blobs: &[(ID, BlobType, Vec<u8>, u64)],
+) -> Result<Option<(ID, Vec<PackedBlobDescriptor>)>> {
+    let mut packer = Packer::new(16 * 1024 * 1024, secure_storage.clone())?;
+    for (id, blob_type, encoded, raw_size) in blobs {
+        packer.add_blob(*id, *blob_type, encoded, *raw_size, true)?;
+    }
+    let flushed = match packer.finalize()? {
+        Some(f) => f,
+        None => return Ok(None),
+    };
+    let path = repo.get_path(ContentIdType::Pack, &flushed.id);
+    backend
+        .write(&Handle::new(&path), flushed.data.into())
+        .await?;
+    Ok(Some((flushed.id, flushed.descriptors)))
 }

@@ -1013,12 +1013,20 @@ impl Repository {
             .await?;
 
         // Try nonce-at-end first, then nonce-at-start.
-        if let Ok(decoded) = secure_storage.decrypt_inner(&raw, true) {
-            let decompressed = secure_storage.decompress(&decoded)?;
-            let manifest = serde_json::from_slice(&decompressed)?;
-            return Ok((manifest, true));
-        }
-        let decoded = secure_storage.decrypt_inner(&raw, false)?;
+        let primary_err = match secure_storage.decrypt_inner(&raw, true) {
+            Ok(decoded) => {
+                let decompressed = secure_storage.decompress(&decoded)?;
+                let manifest = serde_json::from_slice(&decompressed)?;
+                return Ok((manifest, true));
+            }
+            Err(e) => e,
+        };
+        let decoded = secure_storage.decrypt_inner(&raw, false).map_err(|e| {
+            MapacheError::Crypto(format!(
+                "failed to decrypt manifest with both nonce positions \
+                 (primary: {primary_err}, fallback: {e})"
+            ))
+        })?;
         let decompressed = secure_storage.decompress(&decoded)?;
         let manifest = serde_json::from_slice(&decompressed)?;
         Ok((manifest, false))
@@ -1222,6 +1230,7 @@ impl Repository {
     pub async fn list_packs_and_trash(&self) -> Result<(IdSet<ID>, Vec<PathBuf>)> {
         let mut packs = IdSet::default();
         let mut trash = Vec::new();
+        let mut ecc_files: Vec<(ID, PathBuf)> = Vec::new();
 
         let entries = self.backend.list_dir_recursive(&self.objects_path).await?;
         for node in entries {
@@ -1232,6 +1241,12 @@ impl Repository {
             let filename = filename.to_string_lossy().to_string();
             if let Ok(id) = ID::from_hex(&filename) {
                 packs.insert(id);
+            } else if let Some(stem) = filename.strip_suffix(".ecc") {
+                if let Ok(id) = ID::from_hex(stem) {
+                    ecc_files.push((id, path));
+                } else {
+                    trash.push(path);
+                }
             } else if let Some(ext) = path.extension() {
                 let ext_str = ext.to_string_lossy();
                 if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
@@ -1240,23 +1255,10 @@ impl Repository {
             }
         }
 
-        // Second pass: collect orphaned .ecc files (base pack not present).
-        let entries = self.backend.list_dir_recursive(&self.objects_path).await?;
-        for node in entries {
-            let path = node.into_path();
-            let Some(filename) = path.file_name() else {
-                continue;
-            };
-            let filename = filename.to_string_lossy().to_string();
-            if let Some(stem) = filename.strip_suffix(".ecc") {
-                if let Ok(id) = ID::from_hex(stem) {
-                    if !packs.contains(&id) {
-                        trash.push(path);
-                    }
-                } else {
-                    // Not a valid pack name at all → orphaned
-                    trash.push(path);
-                }
+        // Collect orphaned .ecc files (base pack not present).
+        for (id, path) in ecc_files {
+            if !packs.contains(&id) {
+                trash.push(path);
             }
         }
 

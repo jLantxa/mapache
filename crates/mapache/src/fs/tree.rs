@@ -107,17 +107,15 @@ impl Tree {
 
     pub async fn load_from_repo(repo: &Repository, root_id: &ID) -> Result<Tree> {
         let tree_object = repo.load_blob(root_id).await?;
-        // Try binary first (v2+). Fall back to JSON for v1 blobs that haven't been
-        // re-encoded. When v1 is deprecated, remove the fallback.
-        // TODO(v1-removal): Remove the JSON fallback, always use from_binary.
-        if repo.repo_version() >= 2
-            && let Ok(tree) = Self::from_binary(&tree_object)
-        {
-            return Ok(tree);
+        if repo.repo_version() >= 2 {
+            Self::from_binary(&tree_object).map_err(|e| {
+                MapacheError::Format(format!("failed to deserialize tree with ID {root_id}: {e}"))
+            })
+        } else {
+            Self::from_json(&tree_object).map_err(|e| {
+                MapacheError::Format(format!("failed to deserialize tree with ID {root_id}: {e}"))
+            })
         }
-        Self::from_json(&tree_object).map_err(|e| {
-            MapacheError::Format(format!("failed to deserialize tree with ID {root_id}: {e}"))
-        })
     }
 }
 

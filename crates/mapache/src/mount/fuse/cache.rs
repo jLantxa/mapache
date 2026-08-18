@@ -38,10 +38,8 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
 
         tracing::debug!(target: "fuse", "TreeCache MISS: {}", id.to_short_hex(8));
         let tree_blob = self.loader.load_blob(id).await?;
-        // Try binary first (v2+). Fall back to JSON for v1 blobs.
-        // TODO(v1-removal): Remove the JSON fallback, always use from_binary.
         let tree = if self.repo_version >= 2 {
-            Tree::from_binary(&tree_blob).or_else(|_| Tree::from_json(&tree_blob))
+            Tree::from_binary(&tree_blob)
         } else {
             Tree::from_json(&tree_blob)
         }

@@ -268,13 +268,18 @@ impl SecureStorage {
 
         // Try the configured nonce position first.
         let primary = self.nonce_at_end();
-        if Self::try_decrypt_in_place(cipher, &mut data, primary).is_ok() {
-            return Ok(data);
-        }
+        let primary_err = match Self::try_decrypt_in_place(cipher, &mut data, primary) {
+            Ok(()) => return Ok(data),
+            Err(e) => e,
+        };
 
         // Fallback: try the other nonce position (needed for v1 data after migration).
-        Self::try_decrypt_in_place(cipher, &mut data, !primary)
-            .map_err(|_| MapacheError::Crypto("decryption failed".to_string()))?;
+        Self::try_decrypt_in_place(cipher, &mut data, !primary).map_err(|e| {
+            MapacheError::Crypto(format!(
+                "decryption failed with both nonce positions \
+                 (primary: {primary_err}, fallback: {e})"
+            ))
+        })?;
 
         Ok(data)
     }

@@ -121,7 +121,12 @@ impl BlobMap {
             BlobMap::Immutable(_, _) => {
                 // This is a programming error — insert is only called during
                 // snapshotting on pending indices, which are always Mutable.
-                tracing::error!(target: "index", "Attempted insert into immutable BlobMap");
+                debug_assert!(
+                    false,
+                    "insert into immutable BlobMap for id={}",
+                    id.to_short_hex(8)
+                );
+                tracing::error!(target: "index", "Attempted insert into immutable BlobMap for id={}", id.to_short_hex(8));
             }
         }
     }

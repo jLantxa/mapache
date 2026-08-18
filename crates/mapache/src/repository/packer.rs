@@ -237,6 +237,19 @@ impl Packer {
         }))
     }
 
+    /// Finalize the pack and return the result (public for migration use).
+    pub(crate) fn finalize(&mut self) -> Result<Option<FlushedPack>> {
+        self.finalize_and_extract().map(|opt| {
+            opt.map(|r| FlushedPack {
+                id: r.id,
+                data: r.data,
+                descriptors: r.descriptors,
+                raw_size: r.raw_size,
+                meta_size: r.meta_size,
+            })
+        })
+    }
+
     /// Restore the internal buffer from a processed operation.
     /// This allows us to reuse the heap allocation (zero-copy / zero-alloc).
     pub fn recycle_buffer(&mut self, mut old_buffer: Vec<u8>) {

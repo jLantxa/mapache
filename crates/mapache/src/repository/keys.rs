@@ -224,21 +224,19 @@ impl KeyManager {
 
         // TODO(v1-removal): Try the default nonce position (v2: nonce at end). If that fails,
         // fall back to the other position (v1: nonce at start).
-        let decrypted = match ss.decrypt(&encrypted_key) {
-            Ok(c) => c.into_owned(),
-            Err(_) => {
-                ss.set_nonce_at_end(!ss.nonce_at_end());
-                ss.decrypt(&encrypted_key)
-                    .map(|c| c.into_owned())
-                    .map_err(|e| {
-                        MapacheError::Crypto(format!(
-                            "could not retrieve master key from this keyfile: {e}"
-                        ))
-                    })?
-            }
+        let primary_err = match ss.decrypt(&encrypted_key) {
+            Ok(c) => return Ok(Zeroizing::new(c.into_owned())),
+            Err(e) => e,
         };
-
-        Ok(Zeroizing::new(decrypted))
+        ss.set_nonce_at_end(!ss.nonce_at_end());
+        ss.decrypt(&encrypted_key)
+            .map(|c| Zeroizing::new(c.into_owned()))
+            .map_err(|e| {
+                MapacheError::Crypto(format!(
+                    "could not retrieve master key from this keyfile \
+                     (primary: {primary_err}, fallback: {e})"
+                ))
+            })
     }
 
     /// Generates a new KeyFile for the master key with a new password.

@@ -3,7 +3,6 @@ resolver = "3"
 members = [
     "crates/chunker",
     "crates/chunker/fuzz",
-    "crates/ecc",
     "crates/mapache"
 ]
 

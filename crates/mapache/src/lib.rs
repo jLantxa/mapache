@@ -24,6 +24,7 @@ pub mod backend;
 pub mod bundle;
 pub mod commands;
 pub mod common;
+mod ecc;
 pub mod fs;
 pub mod repository;
 pub mod restorer;

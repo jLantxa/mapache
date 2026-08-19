@@ -2027,7 +2027,6 @@ dependencies = [
  "indicatif",
  "libc",
  "mapache-chunker",
- "mapache-ecc",
  "parking_lot",
  "percent-encoding",
  "proptest",
@@ -2063,13 +2062,6 @@ dependencies = [
  "blake3",
  "rand 0.10.2",
  "rstest",
-]
-
-[[package]]
-name = "mapache-ecc"
-version = "0.1.0"
-dependencies = [
- "rayon",
 ]
 
 [[package]]

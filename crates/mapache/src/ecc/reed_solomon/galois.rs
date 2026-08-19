@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! GF(2^8) field arithmetic with reduction polynomial 0x11D (x^8 + x^4 + x^3 + x^2 + 1).
 //!
 //! Lookup-table based implementation. Tables are generated at compile time
@@ -29,11 +27,11 @@ const fn generate_tables() -> ([u8; 512], [u8; 256]) {
 }
 
 const TABLES: ([u8; 512], [u8; 256]) = generate_tables();
-pub const EXP: [u8; 512] = TABLES.0;
-pub const LOG: [u8; 256] = TABLES.1;
+pub(super) const EXP: [u8; 512] = TABLES.0;
+pub(super) const LOG: [u8; 256] = TABLES.1;
 
 /// Galois field GF(2^8) arithmetic.
-pub struct Galois;
+pub(super) struct Galois;
 
 impl Galois {
     /// Multiply two elements in GF(2^8).

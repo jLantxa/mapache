@@ -739,7 +739,7 @@ impl Repository {
                 let p = ecc_config.parity_shards as usize;
                 let pack_data = bytes_to_write.to_vec();
                 let raw_ecc =
-                    tokio::task::spawn_blocking(move || mapache_ecc::ecc_encode(&pack_data, k, p))
+                    tokio::task::spawn_blocking(move || crate::ecc::ecc_encode(&pack_data, k, p))
                         .await
                         .map_err(|e| MapacheError::Internal(format!("ECC task failed: {e}")))?;
                 if raw_ecc.is_empty() {

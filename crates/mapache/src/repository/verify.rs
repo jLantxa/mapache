@@ -151,9 +151,9 @@ async fn repair_pack_with_ecc(
 
     // Run ECC decode (verifies + repairs in-place) on a blocking thread.
     let (decoded, was_repaired) = tokio::task::spawn_blocking(move || {
-        let decoded = mapache_ecc::ecc_decode(&raw_data, &sidecar_data)?;
+        let decoded = crate::ecc::ecc_decode(&raw_data, &sidecar_data)?;
         let repaired = decoded != raw_data;
-        Ok::<_, mapache_ecc::EccDecodeError>((decoded, repaired))
+        Ok::<_, crate::ecc::EccDecodeError>((decoded, repaired))
     })
     .await
     .map_err(|e| MapacheError::Internal(format!("ECC decode task failed: {e}")))?

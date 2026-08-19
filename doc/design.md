@@ -395,7 +395,7 @@ long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), a 
 byte (u8), and both the encoded length and raw length (u32) of the associated
 data blob. The trailer is a single u32 field which stores the total length of the
 entire pack footer, allowing a parser to efficiently skip directly to the file's data section.
-All data except the footer length field is encrypted.
+All data except the footer length field is zstd-compressed then encrypted.
 
 ```text
 ┌────────┬────────┬─────┬────────┬─────────────────────┐

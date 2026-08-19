@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Repository format v2**: New repository format with compact binary serialization
+  for index files and tree blobs, replacing JSON from v1. Reduces metadata size and
+  improves parsing speed. v1 is deprecated and will be removed in a future release.
+- **`mapache migrate`**: New command to convert v1 repositories to v2 format. Handles
+  re-encryption of packs, file re-indexing, and tree re-serialization. Supports
+  `--dry-run` for preview.
+- **`--repo-version`**: New flag in `init` to select repository format version.
+- **`--compression none`**: Per-blob compression marker in v2 enables storing
+  already-compressed content (video, photos, archives) without zstd overhead.
+- **Zero blob deduplication**: New `BlobType::Zero` deduplicates zero-filled regions
+  across snapshots. Zero blobs are stored in pack footers with length=0, consuming
+  no pack space.
+- **ECC (Reed-Solomon error correction)**: Optional parity-only sidecars (`.ecc` files)
+  for pack files, configured via `--ecc <PERCENT>` during `init`. Striped encoding
+  handles multi-gigabyte packs without loading the entire file into memory.
+- **Lazy index loading**: Index files are now loaded on demand, reducing RAM usage
+  for commands that don't need the full index.
+
+### Changed
+
+- **AES-GCM-SIV nonce position**: In v2, encrypted blobs place the nonce at the end
+  (`[ct | tag | nonce]`) instead of the start. Eliminates an extra allocation and
+  memory copy during encryption.
+- **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn when
+  operating on v1 repositories. Consider migrating with `mapache migrate`.
+
+### Fixed
+
+- Reduced lock hold time in GC referenced blob scanning for better concurrency.
+- Windows: expand `~` when `HOME` is not set.
+
 ## v0.6.0 (2026-07-31)
 
 ### Fixed

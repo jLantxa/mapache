@@ -30,7 +30,7 @@ use crate::{
 //   encoded length and raw length (u32) of the associated data blob. The trailer is a
 //   single u32 field which stores the total length of the entire pack footer, allowing a
 //   parser to efficiently skip directly to the file's data section. All data except the
-//   footer length field is encrypted.
+//   footer length field is zstd-compressed then encrypted.
 //
 //   ┌────────┬────────┬─────┬────────┬─────────────────────┐
 //   │ Blob 1 │ Blob 2 │ ... │ Blob N │ Footer length (u32) │

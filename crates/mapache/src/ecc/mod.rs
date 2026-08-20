@@ -131,14 +131,19 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Vec<u8> {
             shard_buf[..copy_len].copy_from_slice(&data[data_offset..data_offset + copy_len]);
 
             // Build shard references from the contiguous buffer.
-            let data_refs: Vec<&[u8]> = shard_buf.chunks_exact(SHARD_SIZE).take(k).collect();
+            let (data_shards, _remainder) = shard_buf.as_chunks::<SHARD_SIZE>();
+            let data_refs: Vec<&[u8]> = data_shards.iter().take(k).map(|s| s.as_slice()).collect();
 
             // Encode directly into a single parity buffer.
             let parity_bytes = p * SHARD_SIZE;
             let mut parity_buf = vec![0u8; parity_bytes];
             {
-                let mut parity_refs: Vec<&mut [u8]> =
-                    parity_buf.chunks_exact_mut(SHARD_SIZE).take(p).collect();
+                let (parity_shards, _remainder) = parity_buf.as_chunks_mut::<SHARD_SIZE>();
+                let mut parity_refs: Vec<&mut [u8]> = parity_shards
+                    .iter_mut()
+                    .take(p)
+                    .map(|s| s.as_mut_slice())
+                    .collect();
                 rs.encode_into(&data_refs, &mut parity_refs)
                     .expect("encode succeeds");
             }

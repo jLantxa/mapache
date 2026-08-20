@@ -1272,6 +1272,9 @@ mapache bundle -b ~/Documents -o docs.mapache --compression best
 
 # Use a directory as the bundle root (its children become top-level items)
 mapache bundle -b ~/Photos -o photos.mapache --as-root
+
+# Enable ECC protection (10% overhead)
+mapache bundle -b ~/Documents -o docs.mapache --ecc 10
 ```
 
 ### Extract a Bundle
@@ -1280,7 +1283,9 @@ mapache bundle -b ~/Photos -o photos.mapache --as-root
 mapache bundle -x bundle.mapache -o /tmp/extract
 ```
 
-If `-o` is omitted, extracts to the current directory.
+If `-o` is omitted, extracts to the current directory. If the bundle was created
+with ECC (`--ecc`), corrupted blobs are automatically repaired during extraction
+using Reed-Solomon erasure coding — no manual intervention needed.
 
 ### Export a Snapshot to a Bundle
 
@@ -1327,6 +1332,8 @@ Bundle-specific options:
 | `-e, --exclude <GLOB>` | Glob patterns to exclude (bundle mode only) |
 | `--as-root` | Use a single directory as the bundle root (bundle mode only) |
 | `--readers <N>` | Parallel readers (default: 4) |
+| `--format <1\|2>` | Bundle format version (default: 2). v2 supports ECC |
+| `--ecc <0-100>` | Enable Reed-Solomon ECC with given overhead percentage (v2 only) |
 | `-c, --create` | Create mountpoint if it does not exist (mount mode) |
 | `--allow-other` | Allow other users to access the mount |
 | `--metadata-only` | Display file listing without loading contents |

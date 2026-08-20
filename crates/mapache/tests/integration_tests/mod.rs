@@ -717,6 +717,16 @@ impl BundleBuilder {
         self
     }
 
+    pub fn format(mut self, format: u32) -> Self {
+        self.args.format = format;
+        self
+    }
+
+    pub fn ecc(mut self, ecc: Option<u32>) -> Self {
+        self.args.ecc = ecc;
+        self
+    }
+
     pub async fn run(self, global: &GlobalArgs) -> Result<()> {
         cmd_bundle::run(global, &self.args)
             .await

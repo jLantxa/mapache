@@ -39,7 +39,7 @@ use crate::{
         node::Node,
         tree::{FSNodeStream, NodeDiff, StreamNode, Tree},
     },
-    repository::{lock::LockHandle, repo::Repository},
+    repository::{self, lock::LockHandle, manifest::EccConfig, repo::Repository},
     ui::{
         cli::{self, color::Colorize},
         default_bar_draw_target, default_progress_style,
@@ -73,9 +73,17 @@ impl ToExitCode for BundleError {
             BundleError::BundleFailed(_) => 20,
             BundleError::Io(_) => 1,
             BundleError::Repo(_) => 1,
-            BundleError::Config(_) => 10,
+            BundleError::Config(_) => 2,
         }
     }
+}
+
+/// TODO(v1-removal): Remove this function when v1 support is dropped.
+fn warn_v1_bundle() {
+    cli::warning!(
+        "Bundle format v1 is deprecated and will be unsupported in a future release.\n\
+        Consider using v2 (default) which includes ECC protection: `mapache bundle --format 2`\n"
+    );
 }
 
 #[derive(Args, Debug, Clone)]
@@ -124,6 +132,18 @@ pub struct CmdArgs {
     #[clap(long, default_value_t = DEFAULT_SNAPSHOT_READERS, value_parser = parse_readers)]
     pub readers: usize,
 
+    /// Bundle format version (1 or 2). v2 includes ECC protection.
+    // TODO(v1-removal): Remove --format flag, always use v2.
+    #[clap(long, default_value_t = repository::repo::THIS_REPOSITORY_VERSION)]
+    pub format: u32,
+
+    /// Enable Reed-Solomon ECC with the given overhead percentage (0–100).
+    ///
+    /// A value of 0 disables ECC. When set, the bundle data section is
+    /// protected by erasure codes. Fixed K=100, P=overhead.
+    #[clap(long, value_parser = clap::value_parser!(u32).range(0..=100))]
+    pub ecc: Option<u32>,
+
     /// Create mountpoint if it does not exist (mount mode only, passes to mount -c)
     #[cfg(all(feature = "mount", unix))]
     #[arg(short, long, default_value_t = false)]
@@ -166,6 +186,8 @@ impl Default for CmdArgs {
             allow_other: false,
             metadata_only: false,
             data_cache_size_mib: 256.0,
+            format: crate::repository::repo::THIS_REPOSITORY_VERSION,
+            ecc: None,
             internal_password: None,
         }
     }
@@ -184,12 +206,28 @@ impl Default for CmdArgs {
             exclude: vec![],
             as_root: None,
             readers: DEFAULT_SNAPSHOT_READERS,
+            format: crate::repository::repo::THIS_REPOSITORY_VERSION,
+            ecc: None,
             internal_password: None,
         }
     }
 }
 
 pub async fn run(global: &crate::commands::GlobalArgs, args: &CmdArgs) -> Result<(), BundleError> {
+    // TODO(v1-removal): Remove format validation and the v1 branch.
+    if args.format < 1 || args.format > 2 {
+        return Err(BundleError::Config(format!(
+            "unsupported bundle format: {} (supported: 1, 2)",
+            args.format
+        )));
+    }
+
+    if args.format < 2 && args.ecc.is_some() {
+        return Err(BundleError::Config(
+            "ECC is not supported in bundle format v1; use format 2".to_string(),
+        ));
+    }
+
     if args.as_root.is_some() && !args.bundle {
         return Err(BundleError::Config(
             "--as-root can only be used with bundle mode".to_string(),
@@ -237,12 +275,24 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
             .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     };
 
+    // TODO(v1-removal): Remove v1 branch, always use ECC.
+    if args.format < 2 {
+        warn_v1_bundle();
+    }
+
+    let ecc_config = args
+        .ecc
+        .filter(|&pct| pct > 0)
+        .map(EccConfig::from_overhead);
+
     let bundle_writer = Arc::new(
         BundleWriter::new(
             output,
             &password,
             global.compression_level.to_level(),
             !matches!(global.compression_level, Compression::None),
+            args.format as u16,
+            ecc_config,
         )
         .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     );
@@ -528,6 +578,10 @@ async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
 
     let reader = BundleReader::open(bundle, &password)
         .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+    // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
+    if reader.version < 2 {
+        warn_v1_bundle();
+    }
     let root_tree_id = reader.trailer.root_tree;
     let loader = Arc::new(reader);
 
@@ -604,6 +658,15 @@ async fn export_snapshot_impl(
     let cleanup_handler = CleanupHandler::new();
     cleanup_handler.add_lock(lock_handle);
 
+    // Block exporting v2 repos to v1 bundles and vice versa.
+    let repo_version = repo.repo_version();
+    if args.format != repo_version {
+        return Err(BundleError::Config(format!(
+            "cannot export v{} repository to a v{} bundle",
+            repo_version, args.format
+        )));
+    }
+
     repo.reload_master_index().await?;
 
     // Resolve snapshot (supports "latest", prefix, or full ID)
@@ -627,12 +690,22 @@ async fn export_snapshot_impl(
     }
 
     // Create bundle writer
+    // TODO(v1-removal): Remove v1 branch, always use ECC.
+    if args.format < 2 {
+        warn_v1_bundle();
+    }
+    let ecc_config = args
+        .ecc
+        .filter(|&pct| pct > 0)
+        .map(EccConfig::from_overhead);
     let bundle_writer = Arc::new(
         BundleWriter::new(
             output,
             password,
             global.compression_level.to_level(),
             !matches!(global.compression_level, Compression::None),
+            args.format as u16,
+            ecc_config,
         )
         .map_err(|e| MapacheError::Repo(e.to_string()))?,
     );
@@ -917,6 +990,21 @@ async fn run_import_bundle(
             e
         ))
     })?;
+
+    // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
+    if reader.version < 2 {
+        warn_v1_bundle();
+    }
+
+    // Block importing v1 bundles into v2 repos and vice versa.
+    let repo_version = repo.repo_version();
+    if reader.version != repo_version as u16 {
+        return Err(BundleError::Config(format!(
+            "bundle format v{} cannot be imported into a v{} repository",
+            reader.version, repo_version
+        )));
+    }
+
     let root_tree_id = reader.trailer.root_tree;
     let bundle_index = reader.index().clone();
 
@@ -1330,6 +1418,10 @@ async fn run_mount(args: &CmdArgs) -> Result<(), BundleError> {
 
     let reader = BundleReader::open(bundle, &password)
         .map_err(|e| BundleError::BundleFailed(e.to_string()))?;
+    // TODO(v1-removal): Remove v1 warning when v1 support is dropped.
+    if reader.version < 2 {
+        warn_v1_bundle();
+    }
     let root_tree_id = reader.trailer.root_tree;
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 

@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
-    fs::File,
-    io::{Seek, Write},
+    fs::{File, OpenOptions},
+    io::{Read, Seek, Write},
     path::Path,
 };
 
@@ -11,22 +11,29 @@ use parking_lot::Mutex;
 use crate::{
     backend::WriteContents,
     bundle::format::{
-        BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BUNDLE_SALT_LEN, BUNDLE_VERSION,
-        BundleHeader, BundleIndex, BundleIndexEntry, BundleTrailer,
+        BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BUNDLE_SALT_LEN, BundleHeader,
+        BundleIndex, BundleIndexEntry, BundleTrailer,
     },
     common::error::{MapacheError, Result},
     common::{BlobType, ID, SaveID, traits::BlobSaver},
-    repository::{manifest::Manifest, storage::SecureStorage},
+    ecc,
+    repository::{
+        manifest::{EccConfig, Manifest},
+        storage::SecureStorage,
+    },
 };
 
 pub struct BundleWriter {
     storage: SecureStorage,
     compress: bool,
+    format_version: u16,
+    ecc_config: Option<EccConfig>,
     inner: Mutex<BundleWriterInner>,
 }
 
 struct BundleWriterInner {
     file: File,
+    data_start: u64,
     index: BundleIndex,
     seen: HashSet<ID>,
 }
@@ -48,6 +55,8 @@ impl BundleWriter {
         password: &str,
         compression_level: i32,
         compress: bool,
+        format_version: u16,
+        ecc_config: Option<EccConfig>,
     ) -> Result<Self> {
         let salt = SecureStorage::generate_salt::<BUNDLE_SALT_LEN>();
         let params = Params::default();
@@ -61,11 +70,16 @@ impl BundleWriter {
             SecureStorage::new().with_key(&*key)?
         };
 
-        let mut file = File::create(path)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
 
         let header = BundleHeader {
             magic: *BUNDLE_MAGIC_START,
-            version: BUNDLE_VERSION,
+            version: format_version,
             salt,
             argon2_t: params.t_cost(),
             argon2_m: params.m_cost(),
@@ -73,13 +87,17 @@ impl BundleWriter {
         };
 
         let header_bytes = header.to_binary();
+        let data_start = header_bytes.len() as u64;
         file.write_all(&header_bytes)?;
 
         Ok(Self {
             storage,
             compress,
+            format_version,
+            ecc_config,
             inner: Mutex::new(BundleWriterInner {
                 file,
+                data_start,
                 index: BundleIndex::default(),
                 seen: HashSet::new(),
             }),
@@ -133,6 +151,37 @@ impl BundleWriter {
     pub fn finalize(&self, root_tree_id: ID) -> Result<()> {
         let mut inner = self.inner.lock();
 
+        // --- ECC section (between blob data and index) ---
+        let has_ecc = self.ecc_config.is_some();
+        let mut ecc_offset: u64 = 0;
+        let mut ecc_len: u32 = 0;
+
+        if let Some(ecc_cfg) = &self.ecc_config {
+            // Read back the blob data section to compute ECC parity.
+            let data_end = inner.file.stream_position()?;
+            let data_start = inner.data_start;
+            let data_len = (data_end - data_start) as usize;
+
+            let mut data_section = vec![0u8; data_len];
+            inner.file.seek(std::io::SeekFrom::Start(data_start))?;
+            inner.file.read_exact(&mut data_section)?;
+
+            let k = ecc_cfg.data_shards as usize;
+            let p = ecc_cfg.parity_shards as usize;
+            let ecc_payload = ecc::ecc_encode(&data_section, k, p);
+
+            // ECC payload is encrypted before writing so parity is also protected.
+            let encrypted_ecc = self
+                .storage
+                .encrypt(&ecc_payload)
+                .map_err(|e| MapacheError::Crypto(format!("failed to encrypt ECC section: {e}")))?;
+
+            ecc_offset = inner.file.stream_position()?;
+            ecc_len = encrypted_ecc.len() as u32;
+            inner.file.write_all(&encrypted_ecc)?;
+        }
+
+        // --- Index ---
         let index_offset = inner.file.stream_position()?;
         let index_bytes = inner.index.to_binary();
         let encrypted_index = self
@@ -142,8 +191,12 @@ impl BundleWriter {
         let index_len = encrypted_index.len() as u32;
         inner.file.write_all(&encrypted_index)?;
 
+        // --- Manifest ---
         let manifest_offset = inner.file.stream_position()?;
-        let manifest = Manifest::new(BUNDLE_VERSION as u32);
+        let mut manifest = Manifest::new(self.format_version as u32);
+        if let Some(ecc_cfg) = &self.ecc_config {
+            manifest.set_ecc(Some(ecc_cfg.clone()));
+        }
         let manifest_bytes = manifest.to_binary();
         let encrypted_manifest = self
             .storage
@@ -152,16 +205,19 @@ impl BundleWriter {
         let manifest_len = encrypted_manifest.len() as u32;
         inner.file.write_all(&encrypted_manifest)?;
 
+        // --- Trailer ---
         let trailer = BundleTrailer {
             root_tree: root_tree_id,
             index_offset,
             index_len,
             manifest_offset,
             manifest_len,
+            ecc_offset,
+            ecc_len,
             magic_end: *BUNDLE_MAGIC_END,
         };
 
-        let trailer_bytes = trailer.to_binary();
+        let trailer_bytes = trailer.to_binary(has_ecc);
         let encrypted_trailer = self
             .storage
             .encrypt(&trailer_bytes)

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    fs::File,
-    io::{Read, Seek, SeekFrom},
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -21,11 +21,12 @@ use crate::{
         error::{MapacheError, Result},
         traits::BlobLoader,
     },
+    ecc,
     fs::{
         node::Metadata,
         tree::{NodeDiff, Tree},
     },
-    repository::storage::SecureStorage,
+    repository::{manifest::Manifest, storage::SecureStorage},
     restorer::node_restorer,
     ui::{
         self,
@@ -40,6 +41,10 @@ pub struct BundleReader {
     index: BundleIndex,
     index_map: HashMap<ID, usize>,
     pub trailer: BundleTrailer,
+    pub version: u16,
+    ecc_config: Option<crate::repository::manifest::EccConfig>,
+    data_start: u64,
+    data_end: u64,
 }
 
 #[async_trait]
@@ -55,27 +60,60 @@ impl BlobLoader for BundleReader {
         file.seek(SeekFrom::Start(entry.offset))?;
         let mut encoded_data = vec![0u8; entry.length as usize];
         file.read_exact(&mut encoded_data)?;
+        drop(file);
 
-        let data = self
+        match self
             .storage
             .decode_blob_owned(encoded_data, entry.compressed)
-            .map_err(|e| MapacheError::Crypto(format!("failed to decode blob data: {e}")))?;
+        {
+            Ok(data) => {
+                if data.len() != entry.raw_length as usize {
+                    return Err(MapacheError::Integrity(format!(
+                        "decoded blob length mismatch: expected {}, got {}",
+                        entry.raw_length,
+                        data.len()
+                    )));
+                }
+                Ok(data)
+            }
+            Err(MapacheError::Crypto(_)) if self.ecc_config.is_some() => {
+                // Decryption failed — attempt ECC repair on the full data section,
+                // then retry reading this specific blob.
+                self.try_ecc_repair()?;
+                let mut file = self.file.lock();
+                file.seek(SeekFrom::Start(entry.offset))?;
+                let mut encoded_data = vec![0u8; entry.length as usize];
+                file.read_exact(&mut encoded_data)?;
+                drop(file);
 
-        if data.len() != entry.raw_length as usize {
-            return Err(MapacheError::Integrity(format!(
-                "decoded blob length mismatch: expected {}, got {}",
-                entry.raw_length,
-                data.len()
-            )));
+                let data = self
+                    .storage
+                    .decode_blob_owned(encoded_data, entry.compressed)
+                    .map_err(|e| {
+                        MapacheError::Crypto(format!(
+                            "failed to decode blob data after ECC repair: {e}"
+                        ))
+                    })?;
+
+                if data.len() != entry.raw_length as usize {
+                    return Err(MapacheError::Integrity(format!(
+                        "decoded blob length mismatch after ECC repair: expected {}, got {}",
+                        entry.raw_length,
+                        data.len()
+                    )));
+                }
+                Ok(data)
+            }
+            Err(e) => Err(MapacheError::Crypto(format!(
+                "failed to decode blob data: {e}"
+            ))),
         }
-
-        Ok(data)
     }
 }
 
 impl BundleReader {
     pub fn open<P: AsRef<Path>>(path: P, password: &str) -> Result<Self> {
-        let mut file = File::open(path)?;
+        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
 
         let mut header_bytes = vec![0u8; BUNDLE_HEADER_SIZE];
         file.read_exact(&mut header_bytes)
@@ -110,11 +148,13 @@ impl BundleReader {
             })?;
         let storage = SecureStorage::new().with_key(&*key)?;
 
+        // Read trailer size (last 4 bytes, plaintext).
         file.seek(SeekFrom::End(-(BUNDLE_TRAILER_SIZE_LEN as i64)))?;
         let mut size_bytes = [0u8; BUNDLE_TRAILER_SIZE_LEN];
         file.read_exact(&mut size_bytes)?;
         let encrypted_trailer_size = u32::from_le_bytes(size_bytes);
 
+        // Read and decrypt the trailer.
         file.seek(SeekFrom::End(
             -(BUNDLE_TRAILER_SIZE_LEN as i64) - encrypted_trailer_size as i64,
         ))?;
@@ -125,7 +165,9 @@ impl BundleReader {
                 "failed to decrypt bundle trailer: incorrect password or corrupted data: {e}"
             ))
         })?;
-        let trailer = BundleTrailer::from_binary(&decrypted_trailer).map_err(|e| {
+
+        // Auto-detect ECC by trying the larger format first.
+        let trailer = BundleTrailer::from_binary_auto(&decrypted_trailer).map_err(|e| {
             MapacheError::Format(format!(
                 "invalid bundle format: failed to parse trailer: {e}"
             ))
@@ -137,6 +179,7 @@ impl BundleReader {
             ));
         }
 
+        // Read and decrypt the index.
         file.seek(SeekFrom::Start(trailer.index_offset))?;
         let mut encrypted_index = vec![0u8; trailer.index_len as usize];
         file.read_exact(&mut encrypted_index)?;
@@ -149,10 +192,34 @@ impl BundleReader {
             MapacheError::Format(format!("invalid bundle format: failed to parse index: {e}"))
         })?;
 
+        // Read and decrypt the manifest to check for ECC config.
+        file.seek(SeekFrom::Start(trailer.manifest_offset))?;
+        let mut encrypted_manifest = vec![0u8; trailer.manifest_len as usize];
+        file.read_exact(&mut encrypted_manifest)?;
+        let decrypted_manifest = storage.decrypt(&encrypted_manifest).map_err(|e| {
+            MapacheError::Crypto(format!(
+                "failed to decrypt bundle manifest: incorrect password or corrupted data: {e}"
+            ))
+        })?;
+        let manifest = Manifest::from_binary(&decrypted_manifest).map_err(|e| {
+            MapacheError::Format(format!(
+                "invalid bundle format: failed to parse manifest: {e}"
+            ))
+        })?;
+
+        let ecc_config = manifest.ecc().cloned();
+
         let mut index_map = HashMap::new();
         for (i, entry) in index.entries.iter().enumerate() {
             index_map.insert(entry.id, i);
         }
+
+        let data_start = BUNDLE_HEADER_SIZE as u64;
+        let data_end = if trailer.ecc_len > 0 {
+            trailer.ecc_offset
+        } else {
+            trailer.index_offset
+        };
 
         Ok(Self {
             file: Mutex::new(file),
@@ -160,7 +227,59 @@ impl BundleReader {
             index,
             index_map,
             trailer,
+            version: header.version,
+            ecc_config,
+            data_start,
+            data_end,
         })
+    }
+
+    /// Attempt to repair the blob data section using ECC parity.
+    ///
+    /// Reads the entire data section and ECC section, runs Reed-Solomon
+    /// repair, and writes the corrected data back to the file.
+    fn try_ecc_repair(&self) -> Result<()> {
+        if self.ecc_config.is_none() {
+            return Err(MapacheError::Integrity(
+                "no ECC config in bundle".to_string(),
+            ));
+        }
+
+        if self.trailer.ecc_len == 0 {
+            return Err(MapacheError::Integrity(
+                "no ECC section in bundle".to_string(),
+            ));
+        }
+
+        let mut file = self.file.lock();
+
+        // Read the blob data section.
+        let data_len = (self.data_end - self.data_start) as usize;
+        file.seek(SeekFrom::Start(self.data_start))?;
+        let mut data_section = vec![0u8; data_len];
+        file.read_exact(&mut data_section)?;
+
+        // Read and decrypt the ECC section.
+        file.seek(SeekFrom::Start(self.trailer.ecc_offset))?;
+        let mut encrypted_ecc = vec![0u8; self.trailer.ecc_len as usize];
+        file.read_exact(&mut encrypted_ecc)?;
+        drop(file);
+
+        let ecc_payload = self
+            .storage
+            .decrypt_in_place(encrypted_ecc)
+            .map_err(|e| MapacheError::Crypto(format!("failed to decrypt ECC section: {e}")))?;
+
+        // Run ECC decode (verify + repair).
+        let repaired = ecc::ecc_decode(&data_section, &ecc_payload)
+            .map_err(|e| MapacheError::Integrity(format!("ECC decode failed: {e}")))?;
+
+        // Write repaired data back.
+        let mut file = self.file.lock();
+        file.seek(SeekFrom::Start(self.data_start))?;
+        file.write_all(&repaired)?;
+
+        Ok(())
     }
 
     pub fn index(&self) -> &BundleIndex {

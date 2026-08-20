@@ -60,9 +60,7 @@ impl ForgetSelection {
 
     fn toggle_all(&mut self) {
         let all_set = self.bits.iter().all(|&v| v);
-        for bit in &mut self.bits {
-            *bit = !all_set;
-        }
+        self.bits.fill(!all_set);
     }
 
     fn count_selected(&self) -> usize {

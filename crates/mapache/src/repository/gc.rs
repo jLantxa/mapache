@@ -257,7 +257,7 @@ impl Plan {
         gc_sizes.deleted_bytes += remove_expired_locks(&self.repo, reporter.0.clone()).await?;
         delete_trash_files(
             &self.repo,
-            Some(self.object_trash.drain(..).collect()),
+            Some(std::mem::take(&mut self.object_trash)),
             reporter.0.clone(),
         )
         .await?;

@@ -1,6 +1,13 @@
+use chrono::TimeZone;
 use proptest::prelude::*;
 
-use crate::common::ID;
+use crate::{
+    bundle::format::{
+        BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BundleHeader, BundleIndexEntry, BundleTrailer,
+    },
+    common::{BlobType, ID},
+    repository::{snapshot::Snapshot, storage::SecureStorage},
+};
 
 fn arb_id() -> impl Strategy<Value = ID> {
     prop::array::uniform32(0u8..=255u8).prop_map(ID::from_bytes)
@@ -31,11 +38,9 @@ proptest! {
         hostname in "[a-z]{1,10}",
         username in "[a-z]{1,10}",
     ) {
-        use crate::repository::snapshot::Snapshot;
-        use chrono::{TimeZone, Local};
 
         let snapshot = Snapshot {
-            timestamp: Local.timestamp_opt(timestamp_secs, 0).unwrap(),
+            timestamp: chrono::Local.timestamp_opt(timestamp_secs, 0).unwrap(),
             parent: None,
             tree: ID::from_content(b"test-tree"),
             root: "/".into(),
@@ -61,7 +66,6 @@ proptest! {
         argon2_m in 1u32..1000,
         argon2_p in 1u32..4,
     ) {
-        use crate::bundle::format::{BundleHeader, BUNDLE_MAGIC_START};
 
         let header = BundleHeader {
             magic: *BUNDLE_MAGIC_START,
@@ -71,9 +75,11 @@ proptest! {
             argon2_m,
             argon2_p,
         };
+
         let bytes = header.to_binary();
         let restored = BundleHeader::from_binary(&bytes)
             .map_err(|e| proptest::test_runner::TestCaseError::Fail(e.to_string().into()))?;
+
         prop_assert_eq!(header.magic, restored.magic);
         prop_assert_eq!(header.version, restored.version);
         prop_assert_eq!(header.salt, restored.salt);
@@ -89,8 +95,14 @@ proptest! {
         index_len in 0u32..u32::MAX,
         manifest_offset in 0u64..u64::MAX,
         manifest_len in 0u32..u32::MAX,
+        has_ecc in prop::bool::ANY,
     ) {
-        use crate::bundle::format::{BundleTrailer, BUNDLE_MAGIC_END};
+
+        let (ecc_offset, ecc_len) = if has_ecc {
+            (index_offset.saturating_sub(1), 81u32)
+        } else {
+            (0, 0)
+        };
 
         let trailer = BundleTrailer {
             root_tree: root_id,
@@ -98,10 +110,12 @@ proptest! {
             index_len,
             manifest_offset,
             manifest_len,
+            ecc_offset,
+            ecc_len,
             magic_end: *BUNDLE_MAGIC_END,
         };
-        let bytes = trailer.to_binary();
-        let restored = BundleTrailer::from_binary(&bytes)
+        let bytes = trailer.to_binary(has_ecc);
+        let restored = BundleTrailer::from_binary_auto(&bytes)
             .map_err(|e| proptest::test_runner::TestCaseError::Fail(e.to_string().into()))?;
         prop_assert_eq!(trailer.root_tree, restored.root_tree);
         prop_assert_eq!(trailer.index_offset, restored.index_offset);
@@ -109,23 +123,24 @@ proptest! {
         prop_assert_eq!(trailer.manifest_offset, restored.manifest_offset);
         prop_assert_eq!(trailer.manifest_len, restored.manifest_len);
         prop_assert_eq!(trailer.magic_end, restored.magic_end);
+        prop_assert_eq!(trailer.ecc_offset, restored.ecc_offset);
+        prop_assert_eq!(trailer.ecc_len, restored.ecc_len);
     }
 
     #[test]
     fn bundle_index_entry_roundtrip(
         id in arb_id(),
         blob_type in prop_oneof![
-            Just(crate::common::BlobType::Data),
-            Just(crate::common::BlobType::Tree),
-            Just(crate::common::BlobType::Zero),
-            Just(crate::common::BlobType::Padding),
+            Just(BlobType::Data),
+            Just(BlobType::Tree),
+            Just(BlobType::Zero),
+            Just(BlobType::Padding),
         ],
         compressed in prop::bool::ANY,
         offset in 0u64..u64::MAX,
         length in 0u32..u32::MAX,
         raw_length in 0u32..u32::MAX,
     ) {
-        use crate::bundle::format::BundleIndexEntry;
 
         let entry = BundleIndexEntry { id, blob_type, compressed, offset, length, raw_length };
         let bytes = entry.to_binary();
@@ -142,7 +157,7 @@ proptest! {
 
     #[test]
     fn storage_encode_decode_no_key(data in prop::collection::vec(any::<u8>(), 0..10_000)) {
-        use crate::repository::storage::SecureStorage;
+
 
         let ss = SecureStorage::new();
         let encoded = ss.encode(&data)
@@ -154,7 +169,6 @@ proptest! {
 
     #[test]
     fn storage_encode_decode_with_key(data in prop::collection::vec(any::<u8>(), 0..10_000)) {
-        use crate::repository::storage::SecureStorage;
 
         let key = [0x42u8; 32];
         let ss = SecureStorage::new().with_key(&key).unwrap();

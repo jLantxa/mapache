@@ -19,6 +19,9 @@
 - **ECC (Reed-Solomon error correction)**: Optional parity-only sidecars (`.ecc` files)
   for pack files, configured via `--ecc <PERCENT>` during `init`. Striped encoding
   handles multi-gigabyte packs without loading the entire file into memory.
+- **ECC in bundle format v2**: Bundle files now support inline Reed-Solomon ECC
+  protecting the blob data section. Enabled with `--ecc <PERCENT>` during bundle
+  creation. Corrupted blobs are automatically repaired during extraction.
 - **Lazy index loading**: Index files are now loaded on demand, reducing RAM usage
   for commands that don't need the full index.
 

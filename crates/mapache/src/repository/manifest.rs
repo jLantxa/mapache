@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common::ID,
-    utils::binary::{get_array, get_i64, get_u32, put_bytes, put_i64, put_u32},
+    utils::binary::{get_array, get_i64, get_u8, get_u32, put_bytes, put_i64, put_u32},
 };
 
 /// ECC configuration for the repository.
@@ -95,6 +95,19 @@ impl Manifest {
         put_bytes(&mut buf, self.id.as_slice());
         put_i64(&mut buf, self.created_time.timestamp());
         put_u32(&mut buf, self.created_time.timestamp_subsec_nanos());
+        // ECC config: present if enabled. Format:
+        //   u8 flag (1 = has ecc, 0 = no ecc)
+        //   if 1: u32 data_shards + u32 parity_shards
+        match &self.ecc {
+            Some(ecc) => {
+                buf.push(1);
+                put_u32(&mut buf, ecc.data_shards);
+                put_u32(&mut buf, ecc.parity_shards);
+            }
+            None => {
+                buf.push(0);
+            }
+        }
         buf
     }
 
@@ -109,11 +122,29 @@ impl Manifest {
             .single()
             .ok_or_else(|| MapacheError::Format("invalid manifest timestamp".to_string()))?;
         let created_time = utc.with_timezone(&Local);
+
+        // ECC config: optional, forward-compatible.
+        let ecc = if !cur.is_empty() {
+            let flag = get_u8(&mut cur)?;
+            if flag == 1 && cur.len() >= 8 {
+                let data_shards = get_u32(&mut cur)?;
+                let parity_shards = get_u32(&mut cur)?;
+                Some(EccConfig {
+                    data_shards,
+                    parity_shards,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             version,
             id,
             created_time,
-            ecc: None,
+            ecc,
         })
     }
 }

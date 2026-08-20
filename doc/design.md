@@ -630,9 +630,11 @@ bundle password (not the repository key).
 
 ```text
 ┌─────────────────────────────────┐
-│ BundleHeader (60 bytes, plain)  │
+│ BundleHeader (58 bytes, plain)  │
 ├─────────────────────────────────┤
 │ Encrypted blob data sections... │
+├─────────────────────────────────┤
+│ Encrypted ECC section (v2 only) │
 ├─────────────────────────────────┤
 │ Encrypted BundleIndex           │
 ├─────────────────────────────────┤
@@ -653,6 +655,24 @@ Compression can be disabled with `--compression none`, in which case blobs are
 only encrypted (still protected by AES-256-GCM-SIV). The per-blob compression
 marker in the index tracks whether each blob is compressed, so bundles with
 mixed compression can be read correctly.
+
+### ECC in bundle format v2
+
+When `--ecc <PERCENT>` is passed during bundle creation, the data section is
+protected by inline Reed-Solomon erasure coding. The ECC section is placed
+between the blob data and the index:
+
+- **Data section** is split into K=100 data shards of 4096 bytes each.
+- **P=percent parity shards** are computed per stripe using Reed-Solomon.
+- The ECC payload (header + parity shards) is encrypted with AES-256-GCM-SIV
+  before being written to the bundle.
+- The `BundleTrailer` gains two extra fields: `ecc_offset` (u64) and `ecc_len`
+  (u32), increasing the trailer from 68 to 80 bytes.
+
+During extraction, if a blob fails to decrypt (corruption), the reader
+automatically reads the full data section + ECC section, runs Reed-Solomon
+decode to repair the data, and writes the corrected bytes back to the file.
+The repaired blob is then re-read and decoded successfully.
 
 ### Bundle index
 

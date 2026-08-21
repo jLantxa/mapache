@@ -231,45 +231,26 @@ impl IndexMetadata {
 
     /// Create IndexMetadata directly from an `IndexFile` (without building a full Index).
     pub fn from_index_file(index_file: IndexFile, bloom_filter: BloomFilter, file_id: ID) -> Self {
-        let blob_count: usize = index_file
-            .packs
-            .iter()
-            .map(|p| p.blobs.len())
-            .sum::<usize>()
-            + index_file.zero_blobs.len();
+        let blob_count: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
         let pack_ids: Vec<ID> = index_file.packs.iter().map(|p| p.id).collect();
-        let mut zero_blobs: Vec<(ID, u32)> = index_file
-            .zero_blobs
-            .into_iter()
-            .map(|z| (z.id, z.raw_length))
-            .collect();
-        zero_blobs.sort_unstable_by_key(|(id, _)| *id);
 
         Self {
             file_id,
             bloom_filter,
             pack_ids,
-            zero_blobs,
+            zero_blobs: Vec::new(),
             blob_count,
         }
     }
 
     /// Create a BloomFilter from an `IndexFile` for cold index metadata.
     pub fn bloom_filter_from_index_file(index_file: &IndexFile) -> BloomFilter {
-        let total_blobs: usize = index_file
-            .packs
-            .iter()
-            .map(|p| p.blobs.len())
-            .sum::<usize>()
-            + index_file.zero_blobs.len();
+        let total_blobs: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
         let mut bf = BloomFilter::new(total_blobs, 0.01);
         for pack in &index_file.packs {
             for blob in &pack.blobs {
                 bf.insert(&blob.id);
             }
-        }
-        for zero in &index_file.zero_blobs {
-            bf.insert(&zero.id);
         }
         bf
     }
@@ -423,26 +404,6 @@ impl Index {
                     BlobType::Zero => zero_entries.push((blob.id, loc)),
                     _ => {}
                 }
-            }
-        }
-
-        // TODO(v1-removal): Backward compat: old index format stored zero blobs in a separate section
-        // without pack info. Create synthetic entries (load_blob ignores pack_id for zeros).
-        // Dedup against zero_entries already populated from pack blobs.
-        let existing_zeros: std::collections::HashSet<ID> =
-            zero_entries.iter().map(|(id, _)| *id).collect();
-        for zb in index_file.zero_blobs {
-            if !existing_zeros.contains(&zb.id) {
-                zero_entries.push((
-                    zb.id,
-                    BlobLocationInternal {
-                        pack_array_index: 0,
-                        offset: 0,
-                        length: 0,
-                        raw_length: zb.raw_length,
-                        compressed: false,
-                    },
-                ));
             }
         }
 
@@ -609,10 +570,8 @@ impl Index {
         pack_entries.sort_unstable_by_key(|p| p.id);
 
         let effective_version = repo_version.unwrap_or(repo.repo_version());
-        // TODO(v1-removal): Remove effective_version, always use binary serialization.
         let serialized = IndexFile {
             packs: pack_entries,
-            zero_blobs: Vec::new(),
         }
         .serialize(effective_version)?;
 
@@ -1286,9 +1245,6 @@ impl MasterIndex {
 pub struct IndexFile {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packs: Vec<IndexFilePack>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    // TODO(v1-removal): Remove zero_blobs field — v2 stores zero blobs in pack footers.
-    pub zero_blobs: Vec<IndexFileZeroBlob>,
 }
 
 impl IndexFile {
@@ -1312,14 +1268,6 @@ impl IndexFile {
             super::legacy::deserialize_index_json(data)
         }
     }
-}
-
-/// A zero blob: ID -> raw_length. No pack data.
-// TODO(v1-removal): Remove IndexFileZeroBlob — v2 stores zero blobs in pack footers.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct IndexFileZeroBlob {
-    pub id: ID,
-    pub raw_length: u32,
 }
 
 /// Represents a pack's entry within an `IndexFile`.
@@ -1413,10 +1361,7 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
         packs.push(IndexFilePack { id: pack_id, blobs });
     }
 
-    Ok(IndexFile {
-        packs,
-        zero_blobs: Vec::new(),
-    })
+    Ok(IndexFile { packs })
 }
 
 #[cfg(test)]
@@ -1625,7 +1570,6 @@ mod tests {
                     compressed: true,
                 }],
             }],
-            zero_blobs: Vec::new(),
         };
 
         let json = serde_json::to_string(&index_file).unwrap();
@@ -1895,10 +1839,7 @@ mod tests {
                 .collect();
             packs.push(IndexFilePack { id: pack_id, blobs });
         }
-        let index_file = IndexFile {
-            packs,
-            zero_blobs: Vec::new(),
-        };
+        let index_file = IndexFile { packs };
         let json = serde_json::to_string(&index_file).unwrap();
         let deserialized: IndexFile = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.packs.len(), 20);
@@ -1911,10 +1852,7 @@ mod tests {
 
     #[test]
     fn test_binary_index_roundtrip_empty() {
-        let index_file = IndexFile {
-            packs: vec![],
-            zero_blobs: Vec::new(),
-        };
+        let index_file = IndexFile { packs: vec![] };
         let serialized = serialize_index_binary(&index_file);
         let deserialized = deserialize_index_binary(&serialized).unwrap();
         assert!(deserialized.packs.is_empty());
@@ -1945,7 +1883,6 @@ mod tests {
                 id: mock_id("pack_1"),
                 blobs,
             }],
-            zero_blobs: Vec::new(),
         };
 
         let serialized = serialize_index_binary(&index_file);
@@ -1993,10 +1930,7 @@ mod tests {
                 blobs,
             });
         }
-        let index_file = IndexFile {
-            packs,
-            zero_blobs: Vec::new(),
-        };
+        let index_file = IndexFile { packs };
 
         let serialized = serialize_index_binary(&index_file);
         let deserialized = deserialize_index_binary(&serialized).unwrap();
@@ -2032,10 +1966,7 @@ mod tests {
                 blobs,
             });
         }
-        let index_file = IndexFile {
-            packs,
-            zero_blobs: Vec::new(),
-        };
+        let index_file = IndexFile { packs };
 
         let json = serde_json::to_vec(&index_file).unwrap();
         let binary = serialize_index_binary(&index_file);
@@ -2069,7 +2000,6 @@ mod tests {
                     compressed: true,
                 }],
             }],
-            zero_blobs: Vec::new(),
         };
         let serialized = serialize_index_binary(&index_file);
         // Truncate the data
@@ -2090,7 +2020,6 @@ mod tests {
                     compressed: true,
                 }],
             }],
-            zero_blobs: Vec::new(),
         };
         let s1 = serialize_index_binary(&index_file);
         let s2 = serialize_index_binary(&index_file);
@@ -2162,7 +2091,6 @@ mod tests {
                     },
                 ],
             }],
-            zero_blobs: Vec::new(),
         };
 
         let binary = serialize_index_binary(&index_file);
@@ -2199,37 +2127,6 @@ mod tests {
         let ids: Vec<ID> = index.iter_ids().map(|(id, _)| *id).collect();
         assert!(ids.contains(&mock_id("zero_a")));
         assert!(ids.contains(&mock_id("data_1")));
-    }
-
-    #[test]
-    fn test_zero_blob_backward_compat_old_format() {
-        let index_file = IndexFile {
-            packs: Vec::new(),
-            zero_blobs: vec![
-                IndexFileZeroBlob {
-                    id: mock_id("old_zero_1"),
-                    raw_length: 4096,
-                },
-                IndexFileZeroBlob {
-                    id: mock_id("old_zero_2"),
-                    raw_length: 8192,
-                },
-            ],
-        };
-
-        let idx = Index::from_index_file(index_file, mock_id("test"));
-        assert!(idx.contains(&mock_id("old_zero_1")));
-        assert!(idx.contains(&mock_id("old_zero_2")));
-
-        let loc1 = idx.get(&mock_id("old_zero_1")).unwrap();
-        assert_eq!(loc1.blob_type, BlobType::Zero);
-        assert_eq!(loc1.raw_length, 4096);
-        assert_eq!(loc1.length, 0);
-        assert_eq!(loc1.pack_id, ID::default());
-
-        let loc2 = idx.get(&mock_id("old_zero_2")).unwrap();
-        assert_eq!(loc2.blob_type, BlobType::Zero);
-        assert_eq!(loc2.raw_length, 8192);
     }
 
     #[test]

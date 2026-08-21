@@ -4,15 +4,12 @@
 //! (`const fn`) without any runtime overhead, atomic flags, or `unsafe` code.
 //! Primitive element is 0x02.
 
-/// Precomputed exp and log lookup tables for GF(2^8) with polynomial 0x11D.
-const fn generate_tables() -> ([u8; 512], [u8; 256]) {
+const fn generate_exp() -> [u8; 512] {
     let mut exp = [0u8; 512];
-    let mut log = [0u8; 256];
     let mut x: u16 = 1;
     let mut i = 0;
     while i < 255 {
         exp[i] = x as u8;
-        log[x as usize] = i as u8;
         x <<= 1;
         if x & 0x100 != 0 {
             x ^= 0x11D;
@@ -23,12 +20,26 @@ const fn generate_tables() -> ([u8; 512], [u8; 256]) {
         exp[i] = exp[i - 255];
         i += 1;
     }
-    (exp, log)
+    exp
 }
 
-const TABLES: ([u8; 512], [u8; 256]) = generate_tables();
-pub(super) const EXP: [u8; 512] = TABLES.0;
-pub(super) const LOG: [u8; 256] = TABLES.1;
+const fn generate_log() -> [u8; 256] {
+    let mut log = [0u8; 256];
+    let mut x: u16 = 1;
+    let mut i = 0u8;
+    while i < 255 {
+        log[x as usize] = i;
+        x <<= 1;
+        if x & 0x100 != 0 {
+            x ^= 0x11D;
+        }
+        i += 1;
+    }
+    log
+}
+
+pub(super) const EXP: [u8; 512] = generate_exp();
+pub(super) const LOG: [u8; 256] = generate_log();
 
 /// Galois field GF(2^8) arithmetic.
 pub(super) struct Galois;
@@ -67,6 +78,8 @@ impl Galois {
     }
 
     /// Multiply a byte slice by a scalar in GF(2^8), XORing the result into `dst`.
+    ///
+    /// Uses the log/exp tables for O(1) per-element multiplication.
     #[inline]
     pub fn mul_add_scalar(dst: &mut [u8], scalar: u8, src: &[u8]) {
         if scalar == 0 {
@@ -80,15 +93,10 @@ impl Galois {
         }
 
         let log_s = LOG[scalar as usize] as usize;
-        let mut table = [0u8; 256];
-        let mut i = 1;
-        while i < 256 {
-            table[i] = EXP[log_s + LOG[i] as usize];
-            i += 1;
-        }
-
         for (d, s) in dst.iter_mut().zip(src.iter()) {
-            *d ^= table[*s as usize];
+            if *s != 0 {
+                *d ^= EXP[log_s + LOG[*s as usize] as usize];
+            }
         }
     }
 }

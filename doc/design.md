@@ -476,17 +476,17 @@ decides the K and P values (currently K=100, P=overhead) and stores them
 in the manifest. This separation allows changing the K/P strategy (presets,
 adaptive overhead, etc.) without modifying the ecc crate.
 
-#### Parity-only sidecars
+#### Sidecar layout
 
-ECC sidecars store **only parity shards** — the original pack data is never
-uplicated on disk. The sidecar file is compressed, encrypted, and stored
-alongside the pack with the same ID and a `.ecc` extension:
+ECC sidecars store **CRC32 checksums and parity shards** — the original pack
+data is never duplicated on disk. The sidecar file is compressed, encrypted,
+and stored alongside the pack with the same ID and a `.ecc` extension:
 
 ```text
 objects/
 ├── 00
 │   └── 00ab12...cd pack file
-│   └── 00ab12...cd.ecc  ← parity-only sidecar
+│   └── 00ab12...cd.ecc  ← ECC sidecar (CRC32s + parity)
 ├── 01
 │   └── 01cd34...ef pack file
 └── ff
@@ -505,12 +505,21 @@ Header (22 bytes):
 └──────────┴─────────┴──────────┴───────────┴───────────────┴──────────────┘
   4 bytes    1 byte    1 byte     2+2 bytes    8 bytes         4 bytes
 
-Parity shards (one per stripe):
-┌─────────────────────┬─────────────────────┬─────┐
-│ stripe 0 parity     │ stripe 1 parity     │ ... │
-│ (p × SHARD_SIZE)    │ (p × SHARD_SIZE)    │     │
-└─────────────────────┴─────────────────────┴─────┘
+Per stripe:
+┌──────────────────┬──────────────────┬─────────────────────┐
+│ CRC32 data shards│ CRC32 parity     │ raw parity shards   │
+│ (K × 4 bytes)    │ (P × 4 bytes)    │ (P × SHARD_SIZE)    │
+└──────────────────┴──────────────────┴─────────────────────┘
 ```
+
+Each stripe stores a CRC32 checksum (IEEE 802.3) for every data and parity
+shard. This enables per-shard integrity verification: during decode, each
+shard is independently checked against its CRC32. Corrupt shards are marked
+as erasures and reconstructed by Reed-Solomon. This converts error correction
+(floor(P/2) limit) into erasure recovery (up to P shards per stripe).
+
+CRC32 uses a 256-entry lookup table generated at compile time via `const fn`
+(zero runtime overhead, no external dependencies).
 
 K and P are stored in the header for forward compatibility: if the formula
 that maps overhead to K/P changes in the future, old sidecars still decode
@@ -541,9 +550,11 @@ ReedSolomon codec is built once and reused across all stripes.
 
 During `verify --repair`, mapache reads the pack file and its `.ecc` sidecar.
 The sidecar is decoded (decompressed + decrypted) before use. For each stripe,
-it recomputes expected parity from the data shards and compares with the stored
-parity. If corruption is detected, the Reed-Solomon codec reconstructs the
-original data from the remaining intact shards.
+the CRC32 of every data shard (read from the pack) and every parity shard
+(read from the sidecar) is verified against the stored checksums. Corrupt
+shards are marked as erasures. If erasures ≤ P, Reed-Solomon reconstructs the
+missing shards from the remaining intact ones. If erasures > P, the stripe
+cannot be repaired and an error is returned.
 
 The hash (BLAKE3) is always computed on the **original pack content** without
 ECC. The sidecar is transparent to the content-addressable storage layer.
@@ -664,15 +675,15 @@ between the blob data and the index:
 
 - **Data section** is split into K=100 data shards of 4096 bytes each.
 - **P=percent parity shards** are computed per stripe using Reed-Solomon.
-- The ECC payload (header + parity shards) is encrypted with AES-256-GCM-SIV
-  before being written to the bundle.
+- The ECC payload (header + CRC32s + parity shards) is encrypted with
+  AES-256-GCM-SIV before being written to the bundle.
 - The `BundleTrailer` gains two extra fields: `ecc_offset` (u64) and `ecc_len`
   (u32), increasing the trailer from 68 to 80 bytes.
 
 During extraction, if a blob fails to decrypt (corruption), the reader
-automatically reads the full data section + ECC section, runs Reed-Solomon
-decode to repair the data, and writes the corrected bytes back to the file.
-The repaired blob is then re-read and decoded successfully.
+automatically reads the full data section + ECC section, verifies each shard
+via CRC32, and runs Reed-Solomon decode to repair corrupt shards. The repaired
+data is then re-read and decoded successfully.
 
 ### Bundle index
 

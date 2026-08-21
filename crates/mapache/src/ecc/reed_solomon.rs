@@ -5,9 +5,7 @@
 //!
 //! [Vandermonde]: https://en.wikipedia.org/wiki/Vandermonde_matrix
 
-mod galois;
-
-use galois::Galois;
+use super::galois::Galois;
 
 /// Reed-Solomon codec for a fixed data/parity split.
 ///

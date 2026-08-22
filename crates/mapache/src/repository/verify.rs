@@ -153,6 +153,10 @@ async fn repair_pack_with_ecc(
     let (decoded, was_repaired) = tokio::task::spawn_blocking(move || {
         let decoded = crate::ecc::ecc_decode(&raw_data, &sidecar_data)?;
         let repaired = decoded != raw_data;
+        if repaired {
+            crate::ecc::validate_crc(&decoded, &sidecar_data)
+                .map_err(crate::ecc::EccDecodeError::CrcValidationFailed)?;
+        }
         Ok::<_, crate::ecc::EccDecodeError>((decoded, repaired))
     })
     .await

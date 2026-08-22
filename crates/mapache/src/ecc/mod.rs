@@ -492,13 +492,15 @@ pub(crate) fn validate_crc(data: &[u8], ecc_payload: &[u8]) -> Result<(), usize>
                     .expect("slice length is 4"),
             );
 
+            // Compute CRC over a SHARD_SIZE buffer (zero-padded), matching encode.
             let shard_start = data_offset + i * SHARD_SIZE;
             let shard_end = (shard_start + SHARD_SIZE).min(data.len());
-            let actual_crc = if shard_start < data.len() {
-                crc32_ieee(&data[shard_start..shard_end])
-            } else {
-                crc32_ieee(&[])
-            };
+            let mut shard = vec![0u8; SHARD_SIZE];
+            if shard_start < data.len() {
+                let copy_len = shard_end - shard_start;
+                shard[..copy_len].copy_from_slice(&data[shard_start..shard_end]);
+            }
+            let actual_crc = crc32_ieee(&shard);
 
             if actual_crc != expected_crc {
                 return Err(data_offset / SHARD_SIZE + i);
@@ -540,6 +542,7 @@ pub(crate) enum EccDecodeError {
     InvalidHeader,
     TooManyErasures,
     ReconstructFailed,
+    CrcValidationFailed(usize),
 }
 
 impl std::fmt::Display for EccDecodeError {
@@ -549,6 +552,9 @@ impl std::fmt::Display for EccDecodeError {
             Self::InvalidHeader => write!(f, "invalid ECC header"),
             Self::TooManyErasures => write!(f, "too many erasures for recovery"),
             Self::ReconstructFailed => write!(f, "reed-solomon reconstruction failed"),
+            Self::CrcValidationFailed(shard) => {
+                write!(f, "CRC validation failed at shard {shard} after repair")
+            }
         }
     }
 }

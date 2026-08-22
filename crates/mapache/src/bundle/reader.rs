@@ -274,6 +274,14 @@ impl BundleReader {
         let repaired = ecc::ecc_decode(&data_section, &ecc_payload)
             .map_err(|e| MapacheError::Integrity(format!("ECC decode failed: {e}")))?;
 
+        // Validate repaired data CRCs against sidecar before writing back.
+        if let Err(bad_shard) = ecc::validate_crc(&repaired, &ecc_payload) {
+            tracing::warn!(
+                "ECC repair produced invalid CRC at shard {bad_shard}, \
+                 writing repaired data anyway (best-effort)"
+            );
+        }
+
         // Write repaired data back.
         let mut file = self.file.lock();
         file.seek(SeekFrom::Start(self.data_start))?;

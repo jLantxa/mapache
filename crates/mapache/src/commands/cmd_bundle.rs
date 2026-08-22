@@ -280,10 +280,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
         warn_v1_bundle();
     }
 
-    let ecc_config = args
-        .ecc
-        .filter(|&pct| pct > 0)
-        .map(EccConfig::from_overhead);
+    let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
 
     let bundle_writer = Arc::new(
         BundleWriter::new(
@@ -694,10 +691,7 @@ async fn export_snapshot_impl(
     if args.format < 2 {
         warn_v1_bundle();
     }
-    let ecc_config = args
-        .ecc
-        .filter(|&pct| pct > 0)
-        .map(EccConfig::from_overhead);
+    let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
     let bundle_writer = Arc::new(
         BundleWriter::new(
             output,

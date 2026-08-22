@@ -92,13 +92,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), InitErr
         ));
     }
 
-    let ecc_config = args.ecc.and_then(|pct| {
-        if pct == 0 {
-            None
-        } else {
-            Some(EccConfig::from_overhead(pct))
-        }
-    });
+    let ecc_config = args.ecc.and_then(EccConfig::from_overhead);
 
     tracing::info!(target: "init", "Initializing repository at {}", global_args.repo);
 

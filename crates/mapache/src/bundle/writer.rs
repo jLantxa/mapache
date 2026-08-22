@@ -168,7 +168,8 @@ impl BundleWriter {
 
             let k = ecc_cfg.data_shards as usize;
             let p = ecc_cfg.parity_shards as usize;
-            let ecc_payload = ecc::ecc_encode(&data_section, k, p);
+            let ecc_payload = ecc::ecc_encode(&data_section, k, p)
+                .map_err(|e| MapacheError::Crypto(format!("failed to encode ECC section: {e}")))?;
 
             // ECC payload is encrypted before writing so parity is also protected.
             let encrypted_ecc = self

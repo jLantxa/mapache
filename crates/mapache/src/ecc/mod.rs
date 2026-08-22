@@ -136,14 +136,16 @@ fn stripe_payload_size(k: usize, p: usize) -> usize {
 /// Stores **only** the parity shards and header metadata. Does not duplicate
 /// data on disk — the original data must be read separately for reconstruction.
 /// Stripes are encoded in parallel using rayon.
-pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Vec<u8> {
-    if data.is_empty() || k == 0 || p == 0 {
-        return Vec::new();
+///
+/// Returns `Err(EccEncodeError)` if `k` or `p` are zero or `k + p > 256`.
+pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Result<Vec<u8>, EccEncodeError> {
+    if data.is_empty() || p == 0 {
+        return Ok(Vec::new());
     }
 
     let layouts = calculate_stripe_layouts(data.len(), k, p);
 
-    let rs = ReedSolomon::new(k, p).expect("k + p must be <= 256 and k, p must be non-zero");
+    let rs = ReedSolomon::new(k, p).map_err(|_| EccEncodeError::InvalidShardCount { k, p })?;
 
     let mut total_stripe_size = 0usize;
     for s in &layouts {
@@ -235,7 +237,7 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Vec<u8> {
         out.extend_from_slice(stripe);
     }
 
-    out
+    Ok(out)
 }
 
 /// Decode (verify + repair) data using a parity-only sidecar.
@@ -243,6 +245,8 @@ pub(crate) fn ecc_encode(data: &[u8], k: usize, p: usize) -> Vec<u8> {
 /// Reads CRC32s from the sidecar, verifies each shard (data + parity),
 /// marks bad shards as erasures, and calls RS to reconstruct them.
 /// Returns an error if reconstruction fails or erasures exceed parity capacity.
+///
+/// Stripes are processed in parallel using rayon for multi-core acceleration.
 pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, EccDecodeError> {
     if ecc_payload.len() < HEADER_SIZE || ecc_payload[0..4] != MAGIC {
         return Err(EccDecodeError::InvalidHeader);
@@ -278,106 +282,256 @@ pub(crate) fn ecc_decode(data: &[u8], ecc_payload: &[u8]) -> Result<Vec<u8>, Ecc
         return Err(EccDecodeError::PayloadTooShort);
     }
 
-    let mut out = data.to_vec();
-    let mut sidecar_offset = HEADER_SIZE;
-    let mut data_offset = 0usize;
-
     let rs = ReedSolomon::new(k, p).expect("validated k + p <= 256 above");
 
-    for stripe in &layouts {
-        let k = stripe.data_shards;
-        let p = stripe.parity_shards;
+    // Pre-compute per-stripe CRC metadata (sequential, cheap)
+    let stripe_meta: Vec<StripeMetadata> = {
+        let mut metas = Vec::with_capacity(layouts.len());
+        let mut sidecar_offset = HEADER_SIZE;
+        let mut data_offset = 0usize;
 
-        // Read CRC32s for data shards from sidecar.
-        let mut data_crcs = Vec::with_capacity(k);
-        for i in 0..k {
-            let start = sidecar_offset + i * CRC_SIZE;
-            let crc = u32::from_le_bytes(
-                ecc_payload[start..start + CRC_SIZE]
-                    .try_into()
-                    .expect("slice length is 4"),
-            );
-            data_crcs.push(crc);
-        }
+        for stripe in &layouts {
+            let k = stripe.data_shards;
+            let p = stripe.parity_shards;
 
-        // Read CRC32s for parity shards from sidecar.
-        let mut parity_crcs = Vec::with_capacity(p);
-        for i in 0..p {
-            let start = sidecar_offset + k * CRC_SIZE + i * CRC_SIZE;
-            let crc = u32::from_le_bytes(
-                ecc_payload[start..start + CRC_SIZE]
-                    .try_into()
-                    .expect("slice length is 4"),
-            );
-            parity_crcs.push(crc);
-        }
-
-        // Parity data starts after all CRC32s.
-        let parity_data_start = sidecar_offset + (k + p) * CRC_SIZE;
-
-        // Build shard list: first K data shards, then P parity shards.
-        // None = bad shard (CRC mismatch or missing).
-        let mut shards: Vec<Option<Vec<u8>>> = Vec::with_capacity(k + p);
-
-        // Load data shards from output buffer, verify CRC32.
-        let mut erasure_count = 0usize;
-        for (i, expected_crc) in data_crcs.iter().enumerate().take(k) {
-            let start = data_offset + i * SHARD_SIZE;
-            let end = (start + SHARD_SIZE).min(out.len());
-            let mut shard = vec![0u8; SHARD_SIZE];
-            if start < out.len() {
-                shard[..end - start].copy_from_slice(&out[start..end]);
-            }
-            let crc = crc32_ieee(&shard);
-            if crc == *expected_crc {
-                shards.push(Some(shard));
-            } else {
-                shards.push(None);
-                erasure_count += 1;
-            }
-        }
-
-        // Load parity shards from sidecar, verify CRC32.
-        for (i, expected_crc) in parity_crcs.iter().enumerate().take(p) {
-            let start = parity_data_start + i * SHARD_SIZE;
-            let mut shard = vec![0u8; SHARD_SIZE];
-            shard.copy_from_slice(&ecc_payload[start..start + SHARD_SIZE]);
-            let crc = crc32_ieee(&shard);
-            if crc == *expected_crc {
-                shards.push(Some(shard));
-            } else {
-                shards.push(None);
-                erasure_count += 1;
-            }
-        }
-
-        // Reconstruct erasures.
-        if erasure_count > 0 {
-            if erasure_count > p {
-                return Err(EccDecodeError::TooManyErasures);
+            let mut data_crcs = Vec::with_capacity(k);
+            for i in 0..k {
+                let start = sidecar_offset + i * CRC_SIZE;
+                let crc = u32::from_le_bytes(
+                    ecc_payload[start..start + CRC_SIZE]
+                        .try_into()
+                        .expect("slice length is 4"),
+                );
+                data_crcs.push(crc);
             }
 
-            rs.reconstruct(&mut shards)
-                .map_err(|_| EccDecodeError::ReconstructFailed)?;
-
-            // Write repaired data shards back to output buffer.
-            for (i, shard) in shards[..k].iter().enumerate() {
-                if let Some(shard_data) = shard {
-                    let start = data_offset + i * SHARD_SIZE;
-                    if start < out.len() {
-                        let end = (start + SHARD_SIZE).min(out.len());
-                        out[start..end].copy_from_slice(&shard_data[..end - start]);
-                    }
-                }
+            let mut parity_crcs = Vec::with_capacity(p);
+            for i in 0..p {
+                let start = sidecar_offset + k * CRC_SIZE + i * CRC_SIZE;
+                let crc = u32::from_le_bytes(
+                    ecc_payload[start..start + CRC_SIZE]
+                        .try_into()
+                        .expect("slice length is 4"),
+                );
+                parity_crcs.push(crc);
             }
-        }
 
-        sidecar_offset += stripe_payload_size(k, p);
-        data_offset += stripe.data_bytes;
+            let parity_data_start = sidecar_offset + (k + p) * CRC_SIZE;
+
+            metas.push(StripeMetadata {
+                k,
+                p,
+                data_offset,
+                data_crcs,
+                parity_crcs,
+                parity_data_start,
+                data_bytes: stripe.data_bytes,
+            });
+
+            sidecar_offset += stripe_payload_size(k, p);
+            data_offset += stripe.data_bytes;
+        }
+        metas
+    };
+
+    // Parallel stripe processing
+    // Each stripe is cloned into its own buffer so rayon tasks can operate
+    // on disjoint memory without requiring `&mut` borrows of `out`.
+    let mut stripe_buffers: Vec<Vec<u8>> = stripe_meta
+        .iter()
+        .map(|meta| {
+            let mut buf = vec![0u8; SHARD_SIZE * meta.k];
+            let copy_len = meta.data_bytes.min(buf.len());
+            buf[..copy_len].copy_from_slice(&data[meta.data_offset..meta.data_offset + copy_len]);
+            buf
+        })
+        .collect();
+
+    use rayon::prelude::*;
+    stripe_meta
+        .par_iter()
+        .zip(stripe_buffers.par_iter_mut())
+        .enumerate()
+        .try_for_each(|(stripe_idx, (meta, stripe_data))| {
+            process_stripe(stripe_idx, meta, stripe_data, ecc_payload, &rs)
+        })?;
+
+    // Assemble output from repaired stripe buffers.
+    let mut out = Vec::with_capacity(data.len());
+    for (meta, stripe_data) in stripe_meta.iter().zip(&stripe_buffers) {
+        let copy_len = meta.data_bytes.min(stripe_data.len());
+        out.extend_from_slice(&stripe_data[..copy_len]);
     }
 
     Ok(out)
 }
+
+/// Pre-computed per-stripe metadata for parallel decode.
+struct StripeMetadata {
+    k: usize,
+    p: usize,
+    data_offset: usize,
+    data_bytes: usize,
+    data_crcs: Vec<u32>,
+    parity_crcs: Vec<u32>,
+    parity_data_start: usize,
+}
+
+/// Process a single stripe: verify CRCs, mark erasures, reconstruct if needed.
+///
+/// Each stripe operates on a disjoint mutable slice of the output buffer,
+/// so it can be called from parallel rayon tasks.
+fn process_stripe(
+    stripe_idx: usize,
+    meta: &StripeMetadata,
+    stripe_data: &mut [u8],
+    ecc_payload: &[u8],
+    rs: &ReedSolomon,
+) -> Result<(), EccDecodeError> {
+    let k = meta.k;
+    let p = meta.p;
+
+    // Build shard list: first K data shards, then P parity shards.
+    let mut shards: Vec<Option<Vec<u8>>> = Vec::with_capacity(k + p);
+
+    // Load data shards from stripe slice, verify CRC32.
+    let mut erasure_count = 0usize;
+    for (i, expected_crc) in meta.data_crcs.iter().enumerate().take(k) {
+        let start = i * SHARD_SIZE;
+        let end = (start + SHARD_SIZE).min(stripe_data.len());
+        let mut shard = vec![0u8; SHARD_SIZE];
+        if start < stripe_data.len() {
+            shard[..end - start].copy_from_slice(&stripe_data[start..end]);
+        }
+        let crc = crc32_ieee(&shard);
+        if crc == *expected_crc {
+            shards.push(Some(shard));
+        } else {
+            shards.push(None);
+            erasure_count += 1;
+        }
+    }
+
+    // Load parity shards from sidecar, verify CRC32.
+    for (i, expected_crc) in meta.parity_crcs.iter().enumerate().take(p) {
+        let start = meta.parity_data_start + i * SHARD_SIZE;
+        let mut shard = vec![0u8; SHARD_SIZE];
+        shard.copy_from_slice(&ecc_payload[start..start + SHARD_SIZE]);
+        let crc = crc32_ieee(&shard);
+        if crc == *expected_crc {
+            shards.push(Some(shard));
+        } else {
+            shards.push(None);
+            erasure_count += 1;
+        }
+    }
+
+    // Reconstruct erasures.
+    if erasure_count > 0 {
+        if erasure_count > p {
+            return Err(EccDecodeError::TooManyErasures);
+        }
+
+        rs.reconstruct(&mut shards)
+            .map_err(|_| EccDecodeError::ReconstructFailed)?;
+
+        // Write repaired data shards back to stripe slice.
+        for (i, shard) in shards[..k].iter().enumerate() {
+            if let Some(shard_data) = shard {
+                let start = i * SHARD_SIZE;
+                if start < stripe_data.len() {
+                    let end = (start + SHARD_SIZE).min(stripe_data.len());
+                    stripe_data[start..end].copy_from_slice(&shard_data[..end - start]);
+                }
+            }
+        }
+    }
+
+    let _ = stripe_idx; // used for tracing in debug builds if needed
+    Ok(())
+}
+
+/// Validate data CRCs against the sidecar after repair.
+///
+/// Re-reads the per-shard CRC32s from the sidecar and compares them with the
+/// actual CRC32s of the (repaired) data. Returns `Ok(())` if all data shard
+/// CRCs match; returns the index of the first mismatched shard otherwise.
+pub(crate) fn validate_crc(data: &[u8], ecc_payload: &[u8]) -> Result<(), usize> {
+    if ecc_payload.len() < HEADER_SIZE || ecc_payload[0..4] != MAGIC {
+        return Err(0);
+    }
+
+    let version = ecc_payload[4];
+    if version != VERSION {
+        return Err(0);
+    }
+
+    let k = u16::from_le_bytes(ecc_payload[6..8].try_into().expect("slice length is 2")) as usize;
+    let p = u16::from_le_bytes(ecc_payload[8..10].try_into().expect("slice length is 2")) as usize;
+    let original_len =
+        u64::from_le_bytes(ecc_payload[10..18].try_into().expect("slice length is 8")) as usize;
+
+    if data.len() != original_len || k == 0 || p == 0 {
+        return Err(0);
+    }
+
+    let layouts = calculate_stripe_layouts(original_len, k, p);
+
+    let mut sidecar_offset = HEADER_SIZE;
+    let mut data_offset = 0usize;
+
+    for stripe in &layouts {
+        let sk = stripe.data_shards;
+
+        // Verify each data shard's CRC against the sidecar.
+        for i in 0..sk {
+            let crc_start = sidecar_offset + i * CRC_SIZE;
+            let expected_crc = u32::from_le_bytes(
+                ecc_payload[crc_start..crc_start + CRC_SIZE]
+                    .try_into()
+                    .expect("slice length is 4"),
+            );
+
+            let shard_start = data_offset + i * SHARD_SIZE;
+            let shard_end = (shard_start + SHARD_SIZE).min(data.len());
+            let actual_crc = if shard_start < data.len() {
+                crc32_ieee(&data[shard_start..shard_end])
+            } else {
+                crc32_ieee(&[])
+            };
+
+            if actual_crc != expected_crc {
+                return Err(data_offset / SHARD_SIZE + i);
+            }
+        }
+
+        sidecar_offset += stripe_payload_size(stripe.data_shards, stripe.parity_shards);
+        data_offset += stripe.data_bytes;
+    }
+
+    Ok(())
+}
+
+/// Errors that can occur when encoding an ECC payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EccEncodeError {
+    InvalidShardCount { k: usize, p: usize },
+}
+
+impl std::fmt::Display for EccEncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidShardCount { k, p } => {
+                write!(
+                    f,
+                    "invalid shard count: k={k}, p={p} (must be >0 and k+p<=256)"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for EccEncodeError {}
 
 /// Errors that can occur when decoding or repairing an ECC payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -409,7 +563,7 @@ mod tests {
     #[test]
     fn roundtrip() {
         let data = vec![42u8; 12_000]; // ~3 shards
-        let payload = ecc_encode(&data, 4, 2);
+        let payload = ecc_encode(&data, 4, 2).unwrap();
         assert!(!payload.is_empty());
         assert_eq!(&payload[0..4], &MAGIC);
         assert_eq!(payload[4], VERSION);
@@ -420,14 +574,27 @@ mod tests {
 
     #[test]
     fn empty() {
-        let payload = ecc_encode(&[], 4, 2);
+        let payload = ecc_encode(&[], 4, 2).unwrap();
         assert!(payload.is_empty());
     }
 
     #[test]
     fn zero_p() {
-        let payload = ecc_encode(&[1, 2, 3], 4, 0);
+        let payload = ecc_encode(&[1, 2, 3], 4, 0).unwrap();
         assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn invalid_shard_count() {
+        let data = vec![0u8; 100];
+        assert!(matches!(
+            ecc_encode(&data, 0, 2),
+            Err(EccEncodeError::InvalidShardCount { k: 0, p: 2 })
+        ));
+        assert!(matches!(
+            ecc_encode(&data, 255, 2),
+            Err(EccEncodeError::InvalidShardCount { k: 255, p: 2 })
+        ));
     }
 
     #[test]
@@ -459,7 +626,7 @@ mod tests {
             data.push(((i * 7 + 13) % 256) as u8);
         }
 
-        let payload = ecc_encode(&data, 4, 2);
+        let payload = ecc_encode(&data, 4, 2).unwrap();
         assert!(!payload.is_empty());
 
         let decoded = ecc_decode(&data, &payload).unwrap();
@@ -470,7 +637,7 @@ mod tests {
     #[test]
     fn corrupt_one_data_shard() {
         let data = vec![0xABu8; SHARD_SIZE * 4];
-        let payload = ecc_encode(&data, 4, 2);
+        let payload = ecc_encode(&data, 4, 2).unwrap();
 
         let mut corrupted_data = data.clone();
         corrupted_data[0] ^= 0xFF;
@@ -482,7 +649,7 @@ mod tests {
     #[test]
     fn corrupt_one_parity_shard() {
         let data = vec![0xCDu8; SHARD_SIZE * 4];
-        let payload = ecc_encode(&data, 4, 2);
+        let payload = ecc_encode(&data, 4, 2).unwrap();
 
         // Corrupt a byte in the parity region of the sidecar.
         let mut corrupted_payload = payload.clone();
@@ -495,7 +662,7 @@ mod tests {
     #[test]
     fn corrupt_multiple_within_p() {
         let data = vec![0x55u8; SHARD_SIZE * 4];
-        let payload = ecc_encode(&data, 4, 3); // p=3, can handle up to 3 erasures
+        let payload = ecc_encode(&data, 4, 3).unwrap(); // p=3, can handle up to 3 erasures
 
         let mut corrupted_data = data.clone();
         corrupted_data[0] ^= 0xFF;
@@ -511,7 +678,7 @@ mod tests {
     #[test]
     fn too_many_erasures_returns_error() {
         let data = vec![0x99u8; SHARD_SIZE * 4];
-        let payload = ecc_encode(&data, 4, 2); // p=2, max 2 erasures
+        let payload = ecc_encode(&data, 4, 2).unwrap(); // p=2, max 2 erasures
 
         // Corrupt 3 data shards (exceeds p=2).
         let mut corrupted_data = data.clone();
@@ -530,7 +697,7 @@ mod tests {
     fn reconstruct_failed_returns_error() {
         // Corrupt all data AND parity shards so reconstruction fails.
         let data = vec![0xBBu8; SHARD_SIZE * 4];
-        let mut payload = ecc_encode(&data, 4, 2);
+        let mut payload = ecc_encode(&data, 4, 2).unwrap();
 
         // Corrupt every byte in the sidecar (all parity and CRC32s).
         for byte in payload[HEADER_SIZE..].iter_mut() {

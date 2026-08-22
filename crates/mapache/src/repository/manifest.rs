@@ -26,13 +26,17 @@ impl EccConfig {
     /// Create ECC config from an overhead percentage.
     ///
     /// Fixed K=100. P = overhead (1–100).
-    pub fn from_overhead(overhead_percent: u32) -> Self {
+    /// Returns `None` if `overhead_percent` is 0 (ECC disabled).
+    pub fn from_overhead(overhead_percent: u32) -> Option<Self> {
+        if overhead_percent == 0 {
+            return None;
+        }
         let k = 100u32;
-        let p = overhead_percent.max(1);
-        Self {
+        let p = overhead_percent.min(100);
+        Some(Self {
             data_shards: k,
             parity_shards: p,
-        }
+        })
     }
 }
 

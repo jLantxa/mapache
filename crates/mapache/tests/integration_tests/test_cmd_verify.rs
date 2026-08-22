@@ -347,7 +347,7 @@ mod tests {
         let backup_data_tmp_path = ctx.setup_backup_data(&synthetic)?;
 
         // Init repo with ECC enabled (50% overhead).
-        let ecc_config = Some(EccConfig::from_overhead(50));
+        let ecc_config = EccConfig::from_overhead(50);
         let backend = Arc::new(LocalFS::new(ctx.repo_path.clone()));
         let _ = Repository::init(
             mapache::repository::repo::THIS_REPOSITORY_VERSION,

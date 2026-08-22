@@ -741,7 +741,8 @@ impl Repository {
                 let raw_ecc =
                     tokio::task::spawn_blocking(move || crate::ecc::ecc_encode(&pack_data, k, p))
                         .await
-                        .map_err(|e| MapacheError::Internal(format!("ECC task failed: {e}")))?;
+                        .map_err(|e| MapacheError::Internal(format!("ECC task failed: {e}")))?
+                        .map_err(|e| MapacheError::Internal(format!("ECC encode failed: {e}")))?;
                 if raw_ecc.is_empty() {
                     None
                 } else {

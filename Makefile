@@ -22,7 +22,8 @@ check:
 debug:
 	cargo build
 
-release: release-static
+release:
+	cargo build --release
 
 release-static:
 ifeq ($(DETECTED_OS),Windows)

@@ -23,7 +23,7 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
             loader,
             repo_version,
             capacity,
-            inner: Mutex::new(Lru::new()),
+            inner: Mutex::new(Lru::with_max_weight(capacity as u64)),
         }
     }
 
@@ -53,12 +53,12 @@ impl<L: BlobLoader + ?Sized> TreeCache<L> {
             }
 
             if inner.len() >= self.capacity
-                && let Some((lru_id, _)) = inner.evict_one()
+                && let Some((lru_id, _, _)) = inner.evict_one()
             {
                 tracing::debug!(target: "fuse", "TreeCache EVICT: {}", lru_id.to_short_hex(8));
             }
 
-            inner.insert(*id, Arc::clone(&tree));
+            inner.insert(*id, Arc::clone(&tree), 1);
         }
 
         Ok(tree)
@@ -83,7 +83,7 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
             loader,
             capacity,
             inner: Mutex::new(BlobCacheInner {
-                lru: Lru::new(),
+                lru: Lru::with_max_weight(capacity),
                 size: 0,
             }),
         }
@@ -110,7 +110,7 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
             }
 
             while inner.size + blob_len > self.capacity {
-                if let Some((lru_id, evicted)) = inner.lru.evict_one() {
+                if let Some((lru_id, evicted, _)) = inner.lru.evict_one() {
                     tracing::debug!(target: "fuse", "BlobCache EVICT: {}", lru_id.to_short_hex(8));
                     inner.size -= evicted.len() as u64;
                 } else {
@@ -119,7 +119,7 @@ impl<L: BlobLoader + ?Sized> BlobCache<L> {
             }
 
             inner.size += blob_len;
-            inner.lru.insert(*id, Arc::clone(&blob));
+            inner.lru.insert(*id, Arc::clone(&blob), blob_len);
         }
 
         Ok(blob)

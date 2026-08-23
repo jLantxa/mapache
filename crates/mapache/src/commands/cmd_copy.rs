@@ -20,14 +20,12 @@ use crate::{
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, open_repository},
     common::{
         BlobType, ContentIdType, ID, SaveID,
-        defaults::{DEFAULT_PACK_SIZE, SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
+        defaults::{SHORT_SNAPSHOT_ID_LEN, UI_RATE_ESTIMATOR_WINDOW},
         error::MapacheError,
     },
     fs::tree::Tree,
     repository::{
-        repo::{RepoConfig, Repository},
-        retention::filter_snapshots_by_hosts,
-        snapshot::SnapshotStream,
+        repo::Repository, retention::filter_snapshots_by_hosts, snapshot::SnapshotStream,
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
@@ -104,12 +102,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CopyErr
         ui::cli::log!("{} {}", "Source:".bold(), args.from);
     }
 
-    let repo_config = RepoConfig {
-        pack_size: DEFAULT_PACK_SIZE,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-        index_mode: global_args.index_mode,
-    };
+    let repo_config = global_args.to_repo_config();
 
     let src_backend = backend::new_backend_with_prompt(BackendOptions {
         repo_path: args.from.clone(),
@@ -356,6 +349,7 @@ async fn collect_blobs(
     let mut visited_trees: IdSet<ID> = IdSet::default();
     let mut visited_blobs: IdSet<ID> = IdSet::default();
     let mut total_bytes: u64 = 0;
+    let index = src_repo.index();
 
     for (_snap_id, snap) in snapshots {
         tree_stack.push(snap.tree);
@@ -366,7 +360,7 @@ async fn collect_blobs(
             continue;
         }
         blob_list.push((tree_id, BlobType::Tree));
-        if let Some(loc) = src_repo.index().get(&tree_id) {
+        if let Some(loc) = index.get(&tree_id).await {
             total_bytes += loc.raw_length as u64;
         }
 
@@ -382,7 +376,7 @@ async fn collect_blobs(
                                 continue;
                             }
                             blob_list.push((blob_id, BlobType::Data));
-                            if let Some(loc) = src_repo.index().get(&blob_id) {
+                            if let Some(loc) = index.get(&blob_id).await {
                                 total_bytes += loc.raw_length as u64;
                             }
                         }
@@ -441,11 +435,13 @@ async fn copy_snapshots(
         return Ok(());
     }
 
-    let transfer_bytes: u64 = to_copy
-        .iter()
-        .filter_map(|(id, _)| src_repo.index().get(id))
-        .map(|loc| loc.raw_length as u64)
-        .sum();
+    let mut transfer_bytes: u64 = 0;
+    let index = src_repo.index();
+    for (id, _) in &to_copy {
+        if let Some(loc) = index.get(id).await {
+            transfer_bytes += loc.raw_length as u64;
+        }
+    }
 
     if !json_out {
         ui::cli::log!(

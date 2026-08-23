@@ -30,6 +30,10 @@ pub(crate) const BLOBS_PER_INDEX_FILE: usize = 65535;
 /// Number of most recent index files to keep fully loaded in RAM (hot indices).
 pub(crate) const INDEX_HOT_COUNT: usize = 8;
 
+/// Maximum total blob count to keep in the LRU cache (lazy mode).
+/// Each loaded index contributes its blob count; eviction happens by weight, not index count.
+pub const DEFAULT_LRU_MAX_BLOBS: u64 = 1_000_000;
+
 /// Default index loading mode: eager (all in RAM, fastest lookups).
 pub const DEFAULT_INDEX_MODE: IndexMode = IndexMode::Eager;
 
@@ -138,6 +142,7 @@ pub struct RuntimeDefaults {
     // Index
     pub blobs_per_index_file: usize,
     pub index_flush_timeout: Duration,
+    pub lru_max_blobs: u64,
     // S3
     pub s3_multipart_threshold: u64,
     pub s3_multipart_part_size: u64,
@@ -184,6 +189,9 @@ impl RuntimeDefaults {
                 .and_then(|c| c.index_flush_timeout_secs)
                 .map(Duration::from_secs)
                 .unwrap_or(INDEX_FLUSH_TIMEOUT),
+            lru_max_blobs: c
+                .and_then(|c| c.lru_max_blobs)
+                .unwrap_or(DEFAULT_LRU_MAX_BLOBS),
             s3_multipart_threshold: c
                 .and_then(|c| c.s3_multipart_threshold)
                 .unwrap_or(S3_MULTIPART_THRESHOLD),

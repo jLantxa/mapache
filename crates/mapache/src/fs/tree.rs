@@ -45,7 +45,7 @@ impl Tree {
     }
 
     pub fn to_binary(&self) -> Result<Vec<u8>> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(4 + self.nodes.len() * 64);
         put_u32(&mut buf, self.nodes.len() as u32);
         for node in &self.nodes {
             node.to_binary(&mut buf);
@@ -734,7 +734,7 @@ impl SerializedNodeDataReader {
         let mut acc = 0u64;
 
         for id in blobs {
-            let entry = index.get(id).ok_or(MapacheError::NotInIndex(*id))?;
+            let entry = index.get(id).await.ok_or(MapacheError::NotInIndex(*id))?;
             acc += entry.raw_length as u64;
             prefix.push(acc);
         }

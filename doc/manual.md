@@ -333,6 +333,7 @@ min-pack-size-factor = 0.05
 gc-repack-concurrency = 2
 blobs-per-index-file = 65535
 index-flush-timeout-secs = 600
+lru-max-blobs = 1000000
 s3-multipart-threshold = 134217728
 s3-multipart-part-size = 134217728
 

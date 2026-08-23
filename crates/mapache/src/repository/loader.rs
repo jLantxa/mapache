@@ -144,6 +144,7 @@ impl BlobLoader {
                 .repo
                 .index()
                 .get(id)
+                .await
                 .ok_or(MapacheError::NotInIndex(*id))?;
             locators.push((*id, loc));
         }

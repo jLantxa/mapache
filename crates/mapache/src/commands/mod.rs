@@ -404,11 +404,16 @@ impl GlobalArgs {
     }
 
     pub fn to_repo_config(&self) -> RepoConfig {
+        use crate::common::defaults;
+        let index_mode = match self.index_mode {
+            IndexMode::Lazy(_) => IndexMode::Lazy(defaults::runtime().lru_max_blobs),
+            other => other,
+        };
         RepoConfig {
             pack_size: (self.pack_size_mib * size::MiB as f32) as u64,
             use_cache: !self.no_cache,
             compression: self.compression_level,
-            index_mode: self.index_mode,
+            index_mode,
         }
     }
 }

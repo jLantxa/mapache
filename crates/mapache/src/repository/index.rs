@@ -1,12 +1,13 @@
 use std::{
     str::FromStr,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Instant,
 };
 
+use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -25,21 +26,46 @@ use crate::{
 };
 
 /// Index loading mode: eager (load all) or lazy (hot + cold).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IndexMode {
     /// Load all indices into RAM. Fastest lookups, ~50 bytes/blob.
+    #[default]
     Eager,
     /// Only load N most recent indices (hot), rest use lazy loading (cold).
     /// Saves memory (~2 bytes/blob for cold), cold lookups re-decrypt index (~12ms).
-    Lazy,
+    /// The value is the maximum total blob count in the LRU cache.
+    Lazy(u64),
+}
+
+impl IndexMode {
+    pub fn is_eager(&self) -> bool {
+        matches!(self, Self::Eager)
+    }
+}
+
+impl Serialize for IndexMode {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for IndexMode {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(serde::de::Error::custom)
+    }
 }
 
 impl std::fmt::Display for IndexMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Eager => write!(f, "eager"),
-            Self::Lazy => write!(f, "lazy"),
+            Self::Lazy(_) => write!(f, "lazy"),
         }
     }
 }
@@ -50,7 +76,7 @@ impl FromStr for IndexMode {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "eager" => Ok(Self::Eager),
-            "lazy" => Ok(Self::Lazy),
+            "lazy" => Ok(Self::Lazy(common::defaults::DEFAULT_LRU_MAX_BLOBS)),
             _ => Err(format!(
                 "Invalid index mode: '{s}'. Valid values: eager, lazy"
             )),
@@ -173,16 +199,10 @@ pub struct BlobLocator {
     pub compressed: bool,
 }
 
-/// Result of a blob lookup in the master index.
-#[derive(Debug, Clone, Copy)]
-pub enum LookupResult {
-    /// Blob found in a hot index.
-    Found(BlobLocator),
-    /// Blob not found in any index.
-    NotFound,
-    /// Blob might be in a cold index. Contains the cold metadata index.
-    /// Caller must load the index file and retry.
-    ColdHit(usize),
+/// Loader for cold indices. Implemented by Repository to provide async disk I/O.
+#[async_trait]
+pub(crate) trait ColdIndexLoader: Send + Sync {
+    async fn load_index(&self, file_id: &ID) -> Result<Index>;
 }
 
 /// Lightweight metadata for a cold (lazy-loaded) index file.
@@ -677,7 +697,7 @@ impl Index {
 
 /// Manages a collection of `Index` instances, providing a unified view
 /// over all known blobs in the repository.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MasterIndex {
     /// Internal state protected by a read-write lock.
     inner: Arc<RwLock<MasterIndexInner>>,
@@ -687,6 +707,8 @@ pub struct MasterIndex {
     auto_save: bool,
     /// Index loading mode: eager (keep all in RAM) or lazy (move persisted to cold).
     index_mode: IndexMode,
+    /// Async loader for cold indices (provided by Repository).
+    loader: OnceLock<Arc<dyn ColdIndexLoader>>,
 }
 
 #[derive(Debug)]
@@ -712,25 +734,36 @@ impl Default for MasterIndex {
 impl MasterIndex {
     /// Creates a new, empty `MasterIndex`.
     pub fn new(index_mode: IndexMode) -> Self {
+        let lru = match &index_mode {
+            IndexMode::Lazy(lru_max_blobs) => Lru::with_max_weight(*lru_max_blobs),
+            IndexMode::Eager => Lru::new(),
+        };
         Self {
             inner: Arc::new(RwLock::new(MasterIndexInner {
                 indices: Vec::with_capacity(1),
                 bloom_filter: None,
                 cold_metadata: Vec::new(),
-                lru: RwLock::new(Lru::new()),
+                lru: RwLock::new(lru),
             })),
             pending_blobs: Arc::new(ShardedIdSet::new()),
             auto_save: true,
             index_mode,
+            loader: OnceLock::new(),
         }
+    }
+
+    /// Set the async loader for cold indices. Must be called before any lookups.
+    pub(crate) fn set_loader(&self, loader: Arc<dyn ColdIndexLoader>) {
+        let _ = self.loader.set(loader);
     }
 
     pub fn clear(&self) {
         let mut lock = self.inner.write();
+        let max_weight = lock.lru.read().max_weight;
         lock.indices.clear();
         lock.bloom_filter = None;
         lock.cold_metadata.clear();
-        *lock.lru.write() = Lru::new();
+        *lock.lru.write() = Lru::with_max_weight(max_weight);
         self.pending_blobs.clear();
     }
 
@@ -794,94 +827,94 @@ impl MasterIndex {
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
-    /// Only searches hot (fully loaded) indices for fast, lock-free lookups.
-    pub fn get(&self, id: &ID) -> Option<BlobLocator> {
+    /// Searches hot indices first; in lazy mode, loads cold indices on demand.
+    pub async fn get(&self, id: &ID) -> Option<BlobLocator> {
+        // Single pass: check hot indices and cold metadata under one lock.
+        let cold_idx = {
+            let lock = self.inner.read();
+
+            // Fast path: search hot indices
+            if let Some(locator) = lock.indices.iter().rev().find_map(|idx| idx.get(id)) {
+                return Some(locator);
+            }
+
+            if self.index_mode == IndexMode::Eager {
+                return None;
+            }
+
+            // Check cold metadata bloom filters
+            lock.cold_metadata
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, meta)| meta.might_contain(id))
+                .map(|(i, meta)| {
+                    // Zero blobs are resolved directly from cold metadata
+                    if let Ok(j) = meta.zero_blobs.binary_search_by_key(id, |(zid, _)| *zid) {
+                        let &(_, raw_length) = &meta.zero_blobs[j];
+                        return Err(BlobLocator {
+                            pack_id: ID::default(),
+                            blob_type: BlobType::Zero,
+                            offset: 0,
+                            length: 0,
+                            raw_length,
+                            compressed: false,
+                        });
+                    }
+                    Ok(i)
+                })
+        };
+
+        match cold_idx {
+            Some(Err(zero_locator)) => Some(zero_locator),
+            Some(Ok(idx)) => {
+                if self.load_and_promote(idx).await.is_some() {
+                    self.get_hot(id)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    }
+
+    /// Synchronous hot-only lookup. Used internally by get() and GC.
+    fn get_hot(&self, id: &ID) -> Option<BlobLocator> {
         let lock = self.inner.read();
-
-        let res = lock.indices.iter().rev().find_map(|idx| idx.get(id));
-
-        if let Some(locator) = res {
-            tracing::trace!(target: "index",
-                "Lookup blob {}: found in hot index in pack {}",
-                id.to_short_hex(8), locator.pack_id.to_short_hex(8));
-        } else {
-            tracing::trace!(target: "index", "Lookup blob {}: not found in hot indices", id.to_short_hex(8));
-        }
-
-        res
+        lock.indices.iter().rev().find_map(|idx| idx.get(id))
     }
 
-    /// Retrieves a blob with cold index loading support.
-    /// Returns `LookupResult::ColdHit(cold_idx)` when the blob is in a cold index
-    /// and needs to be loaded from disk. Caller must load the index and call
-    /// `load_cold_index()` then retry.
-    pub fn get_with_cold(&self, id: &ID) -> LookupResult {
-        // Fast path: search hot indices
-        if let Some(locator) = self.get(id) {
-            return LookupResult::Found(locator);
-        }
-
-        if self.index_mode == IndexMode::Eager {
-            return LookupResult::NotFound;
-        }
-
-        // Search cold metadata
-        let lock = self.inner.read();
-        for (i, meta) in lock.cold_metadata.iter().enumerate().rev() {
-            if !meta.might_contain(id) {
-                continue;
+    /// Load a cold index from disk and promote it to hot.
+    async fn load_and_promote(&self, cold_idx: usize) -> Option<()> {
+        let meta = {
+            let mut lock = self.inner.write();
+            if cold_idx < lock.cold_metadata.len() {
+                let meta = lock.cold_metadata.swap_remove(cold_idx);
+                tracing::debug!(target: "index", "Loading cold index {} (file {}) into hot",
+                    cold_idx, meta.file_id.to_short_hex(8));
+                lock.lru.write().remove(&meta.file_id);
+                Some(meta)
+            } else {
+                None
             }
-            // Check zero blobs directly (no full load needed)
-            if let Ok(i) = meta.zero_blobs.binary_search_by_key(id, |(zid, _)| *zid) {
-                let &(_, raw_length) = &meta.zero_blobs[i];
-                return LookupResult::Found(BlobLocator {
-                    pack_id: ID::default(),
-                    blob_type: BlobType::Zero,
-                    offset: 0,
-                    length: 0,
-                    raw_length,
-                    compressed: false,
-                });
+        }?;
+
+        let loader = self.loader.get()?;
+        match loader.load_index(&meta.file_id).await {
+            Ok(index) => {
+                let mut lock = self.inner.write();
+                lock.indices.push(index);
+                if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                    self.enforce_hot_limit(&mut lock);
+                }
+                Some(())
             }
-            // Check LRU cache before returning ColdHit
-            let cached = lock.lru.write().remove(&meta.file_id);
-            if let Some(cached) = cached {
-                drop(lock);
-                self.promote_to_hot((*cached).clone());
-                return match self.get(id) {
-                    Some(locator) => LookupResult::Found(locator),
-                    None => LookupResult::NotFound,
-                };
+            Err(e) => {
+                tracing::warn!(target: "index",
+                    "Failed to load cold index {}: {}",
+                    meta.file_id.to_short_hex(8), e);
+                None
             }
-            return LookupResult::ColdHit(i);
-        }
-
-        LookupResult::NotFound
-    }
-
-    /// Loads a cold index from metadata and promotes it to hot.
-    /// The loaded index is returned so the caller can retry the lookup.
-    /// Caller is responsible for calling `load_cold_index` and then `get` again.
-    pub fn load_cold_index(&self, cold_idx: usize) -> Option<IndexMetadata> {
-        let mut lock = self.inner.write();
-        if cold_idx < lock.cold_metadata.len() {
-            let meta = lock.cold_metadata.swap_remove(cold_idx);
-            tracing::debug!(target: "index", "Loading cold index {} (file {}) into hot",
-                cold_idx, meta.file_id.to_short_hex(8));
-            // Remove from LRU cache since it's being promoted to hot
-            lock.lru.write().remove(&meta.file_id);
-            Some(meta)
-        } else {
-            None
-        }
-    }
-
-    /// Promotes a loaded cold index to hot.
-    pub fn promote_to_hot(&self, index: Index) {
-        let mut lock = self.inner.write();
-        lock.indices.push(index);
-        if self.index_mode == IndexMode::Lazy {
-            self.enforce_hot_limit(&mut lock);
         }
     }
 
@@ -918,8 +951,56 @@ impl MasterIndex {
         lock.indices.push(index);
 
         // In lazy mode, enforce hot limit by evicting oldest non-pending to cold
-        if self.index_mode == IndexMode::Lazy {
+        if matches!(self.index_mode, IndexMode::Lazy { .. }) {
             self.enforce_hot_limit(&mut lock);
+        }
+    }
+
+    /// Iterates over cold indices one at a time, loading each from disk via the
+    /// provided async loader, invoking the callback, and dropping it before loading
+    /// the next. Memory bounded: only one cold index in RAM at a time.
+    /// Caller must hold no locks on `inner` when calling this.
+    pub async fn for_each_cold_index<F, L>(&self, load_index: L, mut f: F)
+    where
+        F: FnMut(&Index),
+        L: FnMut(ID) -> futures::future::BoxFuture<'static, Result<Index>>,
+    {
+        let mut load = load_index;
+
+        loop {
+            // Get next cold index file_id under read lock, then drop lock
+            let next_file_id = {
+                let lock = self.inner.read();
+                lock.cold_metadata.first().map(|m| m.file_id)
+            };
+
+            let file_id = match next_file_id {
+                Some(id) => id,
+                None => break,
+            };
+
+            // Remove from cold_metadata under write lock
+            {
+                let mut lock = self.inner.write();
+                lock.cold_metadata.retain(|m| m.file_id != file_id);
+                lock.lru.write().remove(&file_id);
+            }
+
+            // Load from disk (no lock held)
+            match load(file_id).await {
+                Ok(index) => {
+                    f(&index);
+                    // Evict back to cold instead of keeping hot
+                    let cold_meta = IndexMetadata::from_index(&index, file_id);
+                    let mut lock = self.inner.write();
+                    lock.cold_metadata.push(cold_meta);
+                }
+                Err(e) => {
+                    tracing::warn!(target: "index",
+                        "Failed to load cold index {}: {}",
+                        file_id.to_short_hex(8), e);
+                }
+            }
         }
     }
 
@@ -943,7 +1024,8 @@ impl MasterIndex {
             let cold_meta = IndexMetadata::from_index(&lock.indices[pos], file_id);
             // Cache the evicted index in the LRU so it can be reused without disk I/O
             let evicted = lock.indices.swap_remove(pos);
-            lock.lru.write().insert(file_id, Arc::new(evicted));
+            let weight = evicted.num_blobs() as u64;
+            lock.lru.write().insert(file_id, Arc::new(evicted), weight);
             lock.cold_metadata.push(cold_meta);
         }
     }
@@ -1213,6 +1295,17 @@ impl MasterIndex {
 
         tracing::info!(target: "index", "Indices merged: {} -> {}", num_old_indices, new_indices.len());
         lock.indices = new_indices;
+
+        // Also clean up cold_metadata that references deleted packs.
+        if let Some(obsolete) = obsolete_packs {
+            let before = lock.cold_metadata.len();
+            lock.cold_metadata
+                .retain(|meta| meta.pack_ids.iter().any(|pid| !obsolete.contains(pid)));
+            let removed = before - lock.cold_metadata.len();
+            if removed > 0 {
+                tracing::info!(target: "index", "Removed {removed} cold index entries referencing deleted packs");
+            }
+        }
     }
 
     pub async fn search_prefix(&self, prefix: &str) -> Result<Option<ID>> {
@@ -1334,11 +1427,21 @@ pub fn deserialize_index_binary(data: &[u8]) -> Result<IndexFile> {
     let mut cur = data;
 
     let num_packs = get_u32(&mut cur)? as usize;
+    if num_packs > 1_000_000 {
+        return Err(MapacheError::Integrity(format!(
+            "index claims {num_packs} packs, which exceeds sanity limit"
+        )));
+    }
     let mut packs = Vec::with_capacity(num_packs);
 
     for _ in 0..num_packs {
         let pack_id = ID::from_bytes(get_array::<32>(&mut cur)?);
         let blob_count = get_u32(&mut cur)? as usize;
+        if blob_count > 100_000_000 {
+            return Err(MapacheError::Integrity(format!(
+                "pack {pack_id} claims {blob_count} blobs, which exceeds sanity limit"
+            )));
+        }
         let mut blobs = Vec::with_capacity(blob_count);
 
         for _ in 0..blob_count {
@@ -1458,8 +1561,8 @@ mod tests {
         assert_eq!(index.id(), Some(persisted_id));
     }
 
-    #[test]
-    fn test_master_index_basic() {
+    #[tokio::test]
+    async fn test_master_index_basic() {
         let mi = MasterIndex::default();
         let id1 = mock_id("blob1");
         let id2 = mock_id("blob2");
@@ -1479,7 +1582,7 @@ mod tests {
         mi.add_index(idx);
 
         assert!(mi.contains(&id2));
-        let loc = mi.get(&id2).unwrap();
+        let loc = mi.get(&id2).await.unwrap();
         assert_eq!(loc.pack_id, pack_id);
 
         mi.clear();
@@ -2171,9 +2274,9 @@ mod tests {
         assert_eq!(*z2_len, 2048);
     }
 
-    #[test]
-    fn test_zero_blob_cold_lookup() {
-        let mi = MasterIndex::new(IndexMode::Lazy);
+    #[tokio::test]
+    async fn test_zero_blob_cold_lookup() {
+        let mi = MasterIndex::new(IndexMode::Lazy(common::defaults::DEFAULT_LRU_MAX_BLOBS));
 
         let mut index = Index::new();
         let pack_id = mock_id("pack_cold");
@@ -2195,14 +2298,12 @@ mod tests {
         let meta = IndexMetadata::from_index(&index, file_id);
         mi.add_cold_metadata(meta);
 
-        match mi.get_with_cold(&zero_id) {
-            LookupResult::Found(locator) => {
-                assert_eq!(locator.blob_type, BlobType::Zero);
-                assert_eq!(locator.raw_length, 16384);
-                assert_eq!(locator.length, 0);
-                assert_eq!(locator.pack_id, ID::default());
-            }
-            other => panic!("expected Found for cold zero blob, got {:?}", other),
-        }
+        // Zero blobs are resolved from cold metadata without loading the index,
+        // so no loader is needed for this test.
+        let locator = mi.get(&zero_id).await.expect("zero blob should be found");
+        assert_eq!(locator.blob_type, BlobType::Zero);
+        assert_eq!(locator.raw_length, 16384);
+        assert_eq!(locator.length, 0);
+        assert_eq!(locator.pack_id, ID::default());
     }
 }

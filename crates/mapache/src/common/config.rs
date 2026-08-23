@@ -122,6 +122,7 @@ pub struct RuntimeConfig {
     // Index
     pub blobs_per_index_file: Option<usize>,
     pub index_flush_timeout_secs: Option<u64>,
+    pub lru_max_blobs: Option<u64>,
     // S3
     pub s3_multipart_threshold: Option<u64>,
     pub s3_multipart_part_size: Option<u64>,
@@ -145,6 +146,7 @@ impl RuntimeConfig {
             gc_repack_concurrency: Some(DEFAULT_GC_REPACK_CONCURRENCY),
             blobs_per_index_file: Some(BLOBS_PER_INDEX_FILE),
             index_flush_timeout_secs: Some(INDEX_FLUSH_TIMEOUT.as_secs()),
+            lru_max_blobs: Some(DEFAULT_LRU_MAX_BLOBS),
             s3_multipart_threshold: Some(S3_MULTIPART_THRESHOLD),
             s3_multipart_part_size: Some(S3_MULTIPART_PART_SIZE),
             max_path_display_len: Some(MAX_PATH_DISPLAY_LEN),

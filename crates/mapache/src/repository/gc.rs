@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::common::error::{MapacheError, Result};
-use futures::{FutureExt, StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 
 use crate::{
     backend::WriteContents,
@@ -155,6 +155,33 @@ pub async fn scan(
             reporter.update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
         }
     });
+
+    // Also iterate cold indices, loading one at a time (memory bounded)
+    let repo_clone = repo.clone();
+    repo.index()
+        .for_each_cold_index(
+            |file_id| {
+                let repo = repo_clone.clone();
+                Box::pin(async move { repo.load_index_from_file_public(file_id).await })
+            },
+            |index| {
+                for (id, locator) in index.iter_ids() {
+                    *kept_pack_size.entry(locator.pack_id).or_insert(0) += locator.length as u64;
+
+                    if !plan.referenced_blobs.contains(id) {
+                        pack_garbage
+                            .entry(locator.pack_id)
+                            .and_modify(|size| *size += locator.length as u64)
+                            .or_insert(locator.length as u64);
+                        obsolete_blobs_count += 1;
+                        reporter
+                            .update_task(GcTaskKind::FindingObsoleteBlobs, obsolete_blobs_count);
+                    }
+                }
+            },
+        )
+        .await;
+
     reporter.finish_task(GcTaskKind::FindingObsoleteBlobs);
 
     // Find small packs to repack
@@ -334,6 +361,29 @@ impl Plan {
                 locators_to_repack.push((*id, locator));
             }
         });
+
+        // Also gather locators from cold indices, loading one at a time
+        let repo_clone = self.repo.clone();
+        let referenced_blobs = self.referenced_blobs.clone();
+        let obsolete_packs = self.obsolete_packs.clone();
+        self.repo
+            .index()
+            .for_each_cold_index(
+                |file_id| {
+                    let repo = repo_clone.clone();
+                    Box::pin(async move { repo.load_index_from_file_public(file_id).await })
+                },
+                |index| {
+                    for (id, locator) in index.iter_ids() {
+                        if referenced_blobs.contains(id)
+                            && obsolete_packs.contains(&locator.pack_id)
+                        {
+                            locators_to_repack.push((*id, locator));
+                        }
+                    }
+                },
+            )
+            .await;
 
         if locators_to_repack.is_empty() {
             tracing::debug!(target: "gc", "No blobs to repack");
@@ -547,41 +597,44 @@ async fn get_referenced_blobs_and_packs(
                     let to_fetch: Vec<_> = std::mem::take(&mut stack);
                     let mut fetch_stream = futures::stream::iter(to_fetch)
                         .map(|tree_id| {
-                            let mut seen = verified_trees.lock();
-                            if seen.contains(&tree_id) {
-                                return futures::future::ready(Ok(None)).left_future();
-                            }
-                            seen.insert(tree_id);
-                            drop(seen);
+                            let repo = repo.clone();
+                            let reporter = reporter.clone();
+                            let referenced_blobs = referenced_blobs.clone();
+                            let referenced_packs = referenced_packs.clone();
+                            let verified_trees = verified_trees.clone();
 
-                            {
-                                let mut blobs = referenced_blobs.lock();
-                                if blobs.insert(tree_id) {
-                                    reporter.update_task(
-                                        GcTaskKind::SearchingReferencedBlobs,
-                                        blobs.len() as u64,
-                                    );
+                            async move {
+                                {
+                                    let mut seen = verified_trees.lock();
+                                    if seen.contains(&tree_id) {
+                                        return Ok(None);
+                                    }
+                                    seen.insert(tree_id);
                                 }
-                            }
 
-                            match index.get(&tree_id) {
-                                Some(locator) => {
+                                {
+                                    let mut blobs = referenced_blobs.lock();
+                                    if blobs.insert(tree_id) {
+                                        reporter.update_task(
+                                            GcTaskKind::SearchingReferencedBlobs,
+                                            blobs.len() as u64,
+                                        );
+                                    }
+                                }
+
+                                let index = repo.index();
+                                if let Some(locator) = index.get(&tree_id).await {
                                     referenced_packs.lock().insert(locator.pack_id);
-                                }
-                                None => {
+                                } else {
                                     reporter.warning(format!(
                                         "Snapshot tree {} is referenced but not found in index",
                                         tree_id
                                     ));
                                 }
-                            }
 
-                            let repo = repo.clone();
-                            async move {
                                 let tree = Tree::load_from_repo(repo.as_ref(), &tree_id).await?;
                                 Ok::<_, MapacheError>(Some(tree))
                             }
-                            .right_future()
                         })
                         .buffer_unordered(8);
 
@@ -604,23 +657,16 @@ async fn get_referenced_blobs_and_packs(
                             for blob_id in blobs {
                                 {
                                     let mut ref_blobs = referenced_blobs.lock();
-                                    let mut ref_packs = referenced_packs.lock();
-
                                     if ref_blobs.insert(blob_id) {
                                         reporter.update_task(
                                             GcTaskKind::SearchingReferencedBlobs,
                                             ref_blobs.len() as u64,
                                         );
                                     }
+                                }
 
-                                    if let Some(locator) = index.get(&blob_id) {
-                                        ref_packs.insert(locator.pack_id);
-                                    } else {
-                                        reporter.warning(format!(
-                                            "Data blob {} is referenced but not found in index",
-                                            blob_id
-                                        ));
-                                    }
+                                if let Some(locator) = index.get(&blob_id).await {
+                                    referenced_packs.lock().insert(locator.pack_id);
                                 }
                             }
                         }

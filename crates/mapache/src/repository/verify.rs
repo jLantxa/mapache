@@ -170,12 +170,17 @@ async fn repair_pack_with_ecc(
     })?;
 
     if was_repaired {
+        let tmp_path = pack_path.with_extension("tmp");
+        let tmp_handle = Handle::new(&tmp_path);
         backend
-            .write(&handle, std::borrow::Cow::Borrowed(&decoded))
+            .write(&tmp_handle, std::borrow::Cow::Borrowed(&decoded))
             .await
             .map_err(|e| {
                 MapacheError::Backend(format!("failed to write repaired pack: {}", e.inner()))
             })?;
+        backend.rename(&tmp_path, pack_path).await.map_err(|e| {
+            MapacheError::Backend(format!("failed to rename repaired pack: {}", e.inner()))
+        })?;
         tracing::info!(target: "verify", "Repaired pack {} ({} bytes)", pack_id.to_short_hex(8), decoded.len());
     }
     Ok(())
@@ -380,6 +385,13 @@ async fn verify_pack_streaming(
 
         while next_blob < pack_header.len() {
             let desc = &pack_header[next_blob];
+
+            // Zero blobs have no data in the pack (length=0); skip physical verification.
+            if matches!(desc.blob_type, BlobType::Zero) {
+                next_blob += 1;
+                continue;
+            }
+
             let bs = desc.offset as u64;
             let be = bs + desc.length as u64;
 
@@ -500,9 +512,10 @@ pub async fn verify_snapshot_refs(
     tracing::info!(target: "verify", "Verifying references for snapshot {}", snapshot_id.to_short_hex(8));
     let snapshot = repo.load_snapshot(snapshot_id, None).await?;
     let tree_id = snapshot.tree;
+    let index = repo.index();
 
     // Validate the root tree exists first
-    if repo.index().get(&tree_id).is_none() {
+    if index.get(&tree_id).await.is_none() {
         return Err(MapacheError::Integrity(format!(
             "snapshot root tree {} is missing from index",
             tree_id
@@ -510,7 +523,6 @@ pub async fn verify_snapshot_refs(
     }
 
     let mut stack = vec![tree_id];
-    let index = repo.index();
     let mut verified_count: usize = 0;
 
     while let Some(current_tree_id) = stack.pop() {
@@ -524,7 +536,7 @@ pub async fn verify_snapshot_refs(
             let referenced_ids = node.blobs.iter().flatten().chain(node.tree.as_ref());
 
             for id in referenced_ids {
-                match index.get(id) {
+                match index.get(id).await {
                     Some(blob_locator) => {
                         if blob_locator.blob_type != BlobType::Zero
                             && !existing_packs.contains(&blob_locator.pack_id)

@@ -714,6 +714,7 @@ async fn export_snapshot_impl(
     let mut visited_trees: IdSet<ID> = IdSet::default();
     let mut visited_blobs: IdSet<ID> = IdSet::default();
     let mut total_bytes: u64 = 0;
+    let index = repo.index();
 
     tree_stack.push(snapshot.tree);
 
@@ -722,7 +723,7 @@ async fn export_snapshot_impl(
             continue;
         }
         blob_list.push((tree_id, BlobType::Tree));
-        if let Some(loc) = repo.index().get(&tree_id) {
+        if let Some(loc) = index.get(&tree_id).await {
             total_bytes += loc.raw_length as u64;
         }
 
@@ -738,7 +739,7 @@ async fn export_snapshot_impl(
                                 continue;
                             }
                             blob_list.push((blob_id, BlobType::Data));
-                            if let Some(loc) = repo.index().get(&blob_id) {
+                            if let Some(loc) = index.get(&blob_id).await {
                                 total_bytes += loc.raw_length as u64;
                             }
                         }

@@ -263,6 +263,9 @@ The file name (ID) is the hash of the encoded content.
   ],
   "hostname": "cocoon",
   "username": "mapache",
+  "version": "0.7.0",
+  "tags": ["daily", "critical"],
+  "description": "Full backup of project directory",
   "summary": {
     "processed_items_count": 94,
     "processed_bytes": 744155,
@@ -272,6 +275,9 @@ The file name (ID) is the hash of the encoded content.
     "meta_encoded_bytes": 18639,
     "total_raw_bytes": 786849,
     "total_encoded_bytes": 216289,
+    "data_blobs": 42,
+    "meta_blobs": 12,
+    "ecc_bytes": 10240,
     "new_files": 79,
     "deleted_files": 0,
     "changed_files": 0,
@@ -279,10 +285,17 @@ The file name (ID) is the hash of the encoded content.
     "deleted_dirs": 0,
     "changed_dirs": 0,
     "unchanged_files": 0,
-    "unchanged_dirs": 0
+    "unchanged_dirs": 0,
+    "amends": null
   }
 }
 ```
+
+All fields except `timestamp`, `tree`, `root`, and `summary` are optional and
+omitted from the JSON when not set. The `parent` field (not shown) references
+the previous snapshot ID when this snapshot was created with `--parent`.
+The `amends` field references a snapshot ID when this snapshot was created with
+`--amend`.
 
 ### Packs and blobs
 
@@ -321,12 +334,70 @@ length and raw length as before.
 Mapache stores file contents (data blobs) as well as tree metadata (tree blobs).
 Tree and data blobs are stored in separate packs. The data blobs contain chunks
 of the file contents. The tree blob contain metadata about the file system tree
-nodes in JSON format. Data and tree blobs are stored in pack files in the same
-way. Each tree is stored as a single blob. A tree node can be a file, directory,
+nodes. In v2, trees use a compact **binary format** instead of the JSON format
+used in v1. Data and tree blobs are stored in pack files in the same way. Each
+tree is stored as a single blob. A tree node can be a file, directory,
 symlink, etc. Directories have a `tree` field which points to its subtree. File
 nodes have a `blobs` field which contains a list of its data blobs in order.
 Symlinks have a field `symlink_info` which contains metadata about the target
 path and node type of the target.
+
+##### Tree binary format (v2)
+
+The binary tree format is a dense, compact encoding that replaces the JSON format
+from v1. It uses little-endian byte order throughout.
+
+**Top-level Tree:**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | `node_count` | u32 LE — number of nodes |
+| 4 | var | `nodes[]` | Repeated node encodings |
+
+**Node encoding:**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | `node_type` | u8: 0=File, 1=Dir, 2=Symlink, 3=BlockDev, 4=CharDev, 5=Fifo, 6=Socket |
+| 1 | 4+N | `name` | [u32 LE length][UTF-8 bytes] |
+| 5+N | 1 | `flags` | u8 bitfield: bit 0 = has symlink_info, bit 1 = has blobs, bit 2 = has tree |
+| — | var | optional fields | Present in flag-bit order: symlink_info, then blobs, then tree (see below) |
+| — | var | `metadata` | Always last: see Metadata encoding below |
+
+Optional fields (only present when their flag bit is set):
+
+- **symlink_info** (flag bit 0): `[u32 LE path_len][path UTF-8][u8 has_type][u8 node_type?]`
+- **blobs** (flag bit 1): `[u32 LE count][count × 32-byte blob IDs]`
+- **tree** (flag bit 2): `[32-byte subtree ID]`
+
+**Metadata encoding:**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 8 | `size` | u64 LE — file size in bytes |
+| 8 | 2 | `flags` | u16 LE — bitfield for optional fields |
+| 10 | var | optional fields | Present in bit order, only when flag is set |
+
+Metadata flags (u16 LE bitfield):
+
+| Bit | Field | Size when present |
+|-----|-------|--------------------|
+| 0 | accessed_time | 12 bytes (i64 sec + u32 nanos from UNIX epoch) |
+| 1 | created_time | 12 bytes |
+| 2 | modified_time | 12 bytes |
+| 3 | mode | 4 bytes (u32) |
+| 4 | owner_uid | 4 bytes (u32) |
+| 5 | owner_gid | 4 bytes (u32) |
+| 6 | inode | 8 bytes (u64) |
+| 7 | dev | 8 bytes (u64) |
+| 8 | nlink | 8 bytes (u64) |
+| 9 | rdev | 8 bytes (u64) |
+| 10 | extended_attributes | variable: [u32 count][for each: [u32 key_len][key][u32 val_len][val]] |
+| 11 | windows_attributes | 4 bytes (u32) |
+| 12 | linux_flags | 4 bytes (u32) |
+
+Time values are encoded as `[i64 seconds since UNIX epoch LE][u32 subsec_nanos LE]`
+(12 bytes total). Negative seconds indicate times before the Unix epoch.
 
 ```json
 {
@@ -458,10 +529,38 @@ collection, which is key to mapache's atomic append mechanism. The filename of
 the index file itself is the hash of its encoded content.
 
 In v2, index files use a compact **binary format** instead of the JSON format
-used in v1. This reduces index size and improves parsing speed. The binary
-format encodes pack IDs and blob descriptors (ID, type with compression marker,
-offset, encoded length, raw length) in a dense binary layout. Mapache
+used in v1. This reduces index size and improves parsing speed. Mapache
 can still read v1 JSON index files for backward compatibility during migration.
+
+##### Index binary format (v2)
+
+**Top-level:**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | `num_packs` | u32 LE — number of packs (sanity limit: ≤ 1,000,000) |
+| 4 | var | `packs[]` | Repeated pack encodings |
+
+**Pack encoding (repeated per pack):**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | `pack_id` | Raw 32-byte BLAKE3 hash of the pack content |
+| 32 | 4 | `blob_count` | u32 LE — number of blobs in this pack (sanity limit: ≤ 100,000,000) |
+| 36 | var | `blobs[]` | Repeated blob encodings |
+
+**Blob encoding (45 bytes each, repeated per blob):**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | `id` | Raw 32-byte BLAKE3 hash of the raw blob data |
+| 32 | 1 | `type_byte` | u8: low 7 bits = BlobType (0=Data, 1=Tree, 2=Padding, 3=Zero); high bit (0x80) = compressed |
+| 33 | 4 | `offset` | u32 LE — byte offset within the pack file |
+| 37 | 4 | `length` | u32 LE — encoded (compressed+encrypted) length in the pack |
+| 41 | 4 | `raw_length` | u32 LE — uncompressed, unencrypted length |
+
+The binary format reduces an index entry to 45 bytes (vs ~150+ bytes for JSON),
+and a full index file to roughly 45 bytes per blob plus overhead.
 
 ### Error correction (ECC)
 

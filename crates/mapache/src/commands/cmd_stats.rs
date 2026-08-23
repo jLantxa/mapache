@@ -550,8 +550,6 @@ async fn analyze_snapshots(
 
     let snaps = repo.list_all_files(ContentIdType::Snapshot).await?;
     let num_snapshots = snaps.len();
-
-    // Hold index read-lock once
     let index = repo.index();
 
     let mut snapshot_stream = SnapshotStream::new(repo.clone()).await?;
@@ -570,7 +568,7 @@ async fn analyze_snapshots(
 
         // Count snapshot root tree blob
         if visited_blobs.insert(snapshot.tree)
-            && let Some(locator) = index.get(&snapshot.tree)
+            && let Some(locator) = index.get(&snapshot.tree).await
         {
             total_raw_data_size = total_raw_data_size.saturating_add(locator.raw_length as u64);
             total_encoded_data_size = total_encoded_data_size.saturating_add(locator.length as u64);
@@ -599,7 +597,7 @@ async fn analyze_snapshots(
             // Count tree blob if present
             if let Some(tree_id) = &node.tree
                 && visited_blobs.insert(*tree_id)
-                && let Some(locator) = index.get(tree_id)
+                && let Some(locator) = index.get(tree_id).await
             {
                 total_raw_data_size = total_raw_data_size.saturating_add(locator.raw_length as u64);
                 total_encoded_data_size =
@@ -618,7 +616,7 @@ async fn analyze_snapshots(
             {
                 for blob_id in blobs {
                     if visited_blobs.insert(blob_id)
-                        && let Some(locator) = index.get(&blob_id)
+                        && let Some(locator) = index.get(&blob_id).await
                     {
                         total_raw_data_size =
                             total_raw_data_size.saturating_add(locator.raw_length as u64);

@@ -27,6 +27,11 @@
 
 ### Changed
 
+- **LRU cache evicts by blob count**: In lazy mode, the cold index LRU cache now
+  evicts entries based on total blob count instead of index count. This provides
+  more granular memory control — a single index with 65k blobs costs proportionally
+  more than one with 1k blobs. Configurable via `[runtime] lru-max-blobs` in the
+  TOML config (default: 1,000,000).
 - **AES-GCM-SIV nonce position**: In v2, encrypted blobs place the nonce at the end
   (`[ct | tag | nonce]`) instead of the start. Eliminates an extra allocation and
   memory copy during encryption.

@@ -17,13 +17,9 @@ use serde::Serialize;
 use crate::{
     backend::{self, BackendNode, BackendOptions, Handle, StorageBackend},
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler},
-    common::{
-        defaults::{DEFAULT_PACK_SIZE, UI_RATE_ESTIMATOR_WINDOW},
-        error::MapacheError,
-        global::GlobalOpts,
-    },
+    common::{defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError, global::GlobalOpts},
     repository::lock::{Lock, LockHandle},
-    repository::repo::{self, LOCKS_DIR, RepoConfig, Repository},
+    repository::repo::{self, LOCKS_DIR, Repository},
     ui::{
         self, SPINNER_TICK_CHARS, cli::color::Colorize, default_bar_draw_target,
         default_progress_style,
@@ -143,12 +139,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> std::result::Resul
             .map_err(|e| SyncError::BackendError(format!("failed to get auth: {}", e.inner())))?,
     };
 
-    let repo_config = RepoConfig {
-        pack_size: DEFAULT_PACK_SIZE,
-        use_cache: !global_args.no_cache,
-        compression: global_args.compression_level,
-        index_mode: global_args.index_mode,
-    };
+    let repo_config = global_args.to_repo_config();
 
     let (_src_repo, _src_ss, src_lock) = if global_args.no_lock {
         let (repo, ss) = Repository::try_open_unlocked(

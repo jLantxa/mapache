@@ -14,11 +14,7 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{ContentIdType, ID, error::MapacheError},
-    repository::{
-        index::{IndexMode, MasterIndex},
-        migration,
-        repo::THIS_REPOSITORY_VERSION,
-    },
+    repository::{index::MasterIndex, migration, repo::THIS_REPOSITORY_VERSION},
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils,
 };
@@ -120,7 +116,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             .with_style(
                 default_progress_style()
                     .template(&format!(
-                        "[{{bar:20.cyan/white}}] {reenc_label}: {{pos}}/{{len}}"
+                        "[{{bar:20.cyan/white}}] {reenc_label}: {{pos}}/{{len}} {{elapsed}} {{eta}}"
                     ))
                     .expect("invalid progress bar template"),
             );
@@ -219,13 +215,25 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             let mut tree_pack_descriptor: Option<(ID, Vec<_>)> = None;
 
             if !all_tree_plaintexts.is_empty() && !root_tree_ids.is_empty() {
-                ui::cli::log!("\nStep 2/5: Re-serializing {} tree blobs (JSON → binary)...", all_tree_plaintexts.len());
-                tracing::info!(target: "migrate", "Step 2: Re-serializing {} tree blobs", all_tree_plaintexts.len());
+                let tree_count = all_tree_plaintexts.len();
+                ui::cli::log!("\nStep 2/5: Re-serializing {tree_count} tree blobs (JSON → binary)...");
+                tracing::info!(target: "migrate", "Step 2: Re-serializing {tree_count} tree blobs");
+
+                let tree_bar = ProgressBar::with_draw_target(
+                    Some(tree_count as u64),
+                    default_bar_draw_target(),
+                )
+                .with_style(
+                    default_progress_style()
+                        .template("[{bar:20.cyan/white}] Re-serializing trees: {pos}/{len} {elapsed} {eta}")
+                        .expect("invalid progress bar template"),
+                );
 
                 if !dry {
                     let (rm, serialized_trees) =
                         migration::update_tree_hierarchy(&all_tree_plaintexts, &root_tree_ids)?;
 
+                    tree_bar.finish_and_clear();
                     ui::cli::log!(
                         "Re-serialized {} tree blobs, {} root trees updated",
                         serialized_trees.len(),
@@ -251,7 +259,8 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
 
                     drop(all_tree_plaintexts);
                 } else {
-                    ui::cli::log!("[DRY RUN] Would re-serialize {} tree blobs", all_tree_plaintexts.len());
+                    tree_bar.finish_and_clear();
+                    ui::cli::log!("[DRY RUN] Would re-serialize {tree_count} tree blobs");
                     drop(all_tree_plaintexts);
                 }
             } else {
@@ -280,7 +289,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     .with_style(
                         default_progress_style()
                             .template(&format!(
-                                "[{{bar:20.cyan/white}}] {file_label}: {{pos}}/{{len}}"
+                                "[{{bar:20.cyan/white}}] {file_label}: {{pos}}/{{len}} {{elapsed}} {{eta}}"
                             ))
                             .expect("invalid progress bar template"),
                     );
@@ -342,7 +351,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             ui::cli::log!("\nStep 4/5: Rebuilding index...");
             tracing::info!(target: "migrate", "Step 4: Rebuilding index");
 
-            let mut new_master_index = MasterIndex::new(IndexMode::Eager);
+            let mut new_master_index = MasterIndex::new(global_args.index_mode);
             new_master_index.set_autosave(false);
 
             let scan_bar = ProgressBar::with_draw_target(
@@ -351,7 +360,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             )
             .with_style(
                 default_progress_style()
-                    .template("[{bar:20.cyan/white}] Building index: {pos}/{len}")
+                    .template("[{bar:20.cyan/white}] Building index: {pos}/{len} {elapsed} {eta}")
                     .expect("invalid progress bar template"),
             );
 
@@ -416,13 +425,14 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
 
                 // Cleanup
                 let mut deleted_pack_count = 0u64;
+                let mut deletion_failures = 0u32;
                 for (old_id, new_id, _) in &pack_map {
                     if old_id == new_id {
                         continue;
                     }
                     match repo.delete_file(ContentIdType::Pack, old_id, None).await {
                         Ok(_) => { deleted_pack_count += 1; }
-                        Err(e) => { ui::cli::warning!("failed to delete old pack {}: {}", old_id, e); }
+                        Err(e) => { ui::cli::warning!("failed to delete old pack {}: {}", old_id, e); deletion_failures += 1; }
                     }
                 }
                 ui::cli::log!("Deleted {} old pack files", deleted_pack_count);
@@ -436,7 +446,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     }
                     match repo.delete_file(ContentIdType::Snapshot, old_id, None).await {
                         Ok(_) => { deleted_snap_count += 1; }
-                        Err(e) => { ui::cli::warning!("failed to delete old snapshot {}: {}", old_id, e); }
+                        Err(e) => { ui::cli::warning!("failed to delete old snapshot {}: {}", old_id, e); deletion_failures += 1; }
                     }
                 }
                 ui::cli::log!("Deleted {} old snapshot files", deleted_snap_count);
@@ -449,10 +459,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 for id in &old_index_ids {
                     match repo.delete_file(ContentIdType::Index, id, None).await {
                         Ok(size) => { deleted_index_size.fetch_add(size, Ordering::AcqRel); }
-                        Err(e) => { ui::cli::error!("failed to delete index {}: {}", id, e); }
+                        Err(e) => { ui::cli::error!("failed to delete index {}: {}", id, e); deletion_failures += 1; }
                     }
                 }
                 ui::cli::log!("Deleted {} old index files", old_index_ids.len());
+
+                if deletion_failures > 0 {
+                    return Err(MigrateError::Repo(MapacheError::Repo(format!(
+                        "migration completed but failed to delete {deletion_failures} old files"
+                    ))));
+                }
 
                 let added_size: i64 = new_index_size.encoded as i64
                     - deleted_index_size.load(Ordering::Relaxed) as i64;

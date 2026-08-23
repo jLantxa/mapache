@@ -35,6 +35,14 @@ pub async fn re_encrypt_pack(
 
     let pack_data = backend.read(&old_handle, 0, 0).await?;
 
+    if pack_data.len() < 4 {
+        return Err(MapacheError::Format(format!(
+            "pack {} is too small ({} bytes), expected at least 4 bytes for footer length",
+            old_pack_id.to_short_hex(8),
+            pack_data.len()
+        )));
+    }
+
     let footer_len_bytes: [u8; 4] = pack_data[pack_data.len() - 4..].try_into().map_err(
         |e: std::array::TryFromSliceError| {
             MapacheError::Format(format!("invalid footer length bytes: {e}"))
@@ -43,6 +51,14 @@ pub async fn re_encrypt_pack(
     let encoded_footer_length = u32::from_le_bytes(footer_len_bytes) as usize;
 
     let total_len = pack_data.len();
+    if total_len < 4 + encoded_footer_length {
+        return Err(MapacheError::Format(format!(
+            "pack {} footer length ({}) exceeds pack size ({})",
+            old_pack_id.to_short_hex(8),
+            encoded_footer_length,
+            total_len
+        )));
+    }
     let data_section_end = total_len - 4 - encoded_footer_length;
 
     let mut descriptors = Packer::parse_footer(secure_storage, &pack_data, old_nonce_at_end, 1)?;
@@ -237,15 +253,13 @@ pub fn update_tree_hierarchy(
     }
 
     for &root_id in root_tree_ids {
-        if let Err(e) = dfs(
+        dfs(
             root_id,
             tree_plaintexts,
             &mut id_map,
             &mut new_trees,
             &mut visited,
-        ) {
-            tracing::warn!(target: "migrate", "Failed to re-serialize tree {}: {e}", root_id.to_short_hex(8));
-        }
+        )?;
     }
 
     let mut root_map = HashMap::new();

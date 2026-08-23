@@ -22,7 +22,7 @@ use crate::{
         traits::{BlobLoader, BlobSaver},
     },
     repository::{
-        index::{self, Index, IndexFile, IndexMode, MasterIndex},
+        index::{self, ColdIndexLoader, Index, IndexFile, IndexMode, MasterIndex},
         keys::{self, KeyManager},
         lock::{Lock, LockHandle},
         manifest::{EccConfig, Manifest},
@@ -236,6 +236,13 @@ impl BlobSaver for Repository {
 impl BlobLoader for Repository {
     async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
         self.load_blob(id).await
+    }
+}
+
+#[async_trait]
+impl ColdIndexLoader for Repository {
+    async fn load_index(&self, file_id: &ID) -> Result<Index> {
+        self.load_index_from_file(*file_id).await
     }
 }
 
@@ -465,8 +472,10 @@ impl Repository {
             pack_saver_handle: parking_lot::RwLock::new(None),
             stats: RepoStats::default(),
         };
+        let repo = Arc::new(repo);
+        repo.master_index.set_loader(repo.clone());
 
-        Ok(Arc::new(repo))
+        Ok(repo)
     }
 
     /// Returns a reference to the repo manifest.
@@ -478,13 +487,15 @@ impl Repository {
     pub async fn save_manifest(&self, manifest: &Manifest) -> Result<()> {
         let manifest_bytes = serde_json::to_string_pretty(manifest)?.into_bytes();
         let encoded = self.secure_storage.encode(&manifest_bytes)?;
+        let tmp = Path::new("manifest.tmp");
         self.backend
-            .write(
-                &Handle::new(Path::new(MANIFEST_PATH)),
-                WriteContents::Owned(encoded),
-            )
+            .write(&Handle::new(tmp), WriteContents::Owned(encoded))
             .await
-            .map_err(|e| MapacheError::Repo(format!("failed to save manifest: {e}")))
+            .map_err(|e| MapacheError::Repo(format!("failed to save manifest: {e}")))?;
+        self.backend
+            .rename(tmp, Path::new(MANIFEST_PATH))
+            .await
+            .map_err(|e| MapacheError::Repo(format!("failed to rename manifest: {e}")))
     }
 
     /// Returns the repository format version.
@@ -616,49 +627,27 @@ impl Repository {
 
     /// Loads a blob from the repository.
     pub async fn load_blob(&self, id: &ID) -> Result<Vec<u8>> {
-        match self.master_index.get_with_cold(id) {
-            index::LookupResult::Found(locator) => {
-                if locator.blob_type == BlobType::Zero {
-                    return Ok(vec![0u8; locator.raw_length as usize]);
-                }
-                self.load_from_pack(
-                    &locator.pack_id,
-                    locator.blob_type,
-                    locator.offset,
-                    locator.length,
-                    locator.compressed,
-                )
-                .await
-            }
-            index::LookupResult::ColdHit(cold_idx) => {
-                tracing::debug!(target: "repo", "Blob {} in cold index, loading on demand", id.to_short_hex(8));
-                // Load the cold index from disk
-                if let Some(meta) = self.master_index.load_cold_index(cold_idx) {
-                    let loaded_index = self.load_index_from_file(meta.file_id).await?;
-                    self.master_index.promote_to_hot(loaded_index);
-                    // Retry lookup in hot
-                    match self.master_index.get(id) {
-                        Some(locator) => {
-                            if locator.blob_type == BlobType::Zero {
-                                return Ok(vec![0u8; locator.raw_length as usize]);
-                            }
-                            self.load_from_pack(
-                                &locator.pack_id,
-                                locator.blob_type,
-                                locator.offset,
-                                locator.length,
-                                locator.compressed,
-                            )
-                            .await
-                        }
-                        None => Err(MapacheError::NotInIndex(*id))?,
-                    }
-                } else {
-                    Err(MapacheError::NotInIndex(*id))?
-                }
-            }
-            index::LookupResult::NotFound => Err(MapacheError::NotInIndex(*id))?,
+        let locator = self
+            .master_index
+            .get(id)
+            .await
+            .ok_or(MapacheError::NotInIndex(*id))?;
+        if locator.blob_type == BlobType::Zero {
+            return Ok(vec![0u8; locator.raw_length as usize]);
         }
+        self.load_from_pack(
+            &locator.pack_id,
+            locator.blob_type,
+            locator.offset,
+            locator.length,
+            locator.compressed,
+        )
+        .await
+    }
+
+    /// Load a single index file from disk by its ID (public for cold iteration).
+    pub async fn load_index_from_file_public(&self, file_id: ID) -> Result<Index> {
+        self.load_index_from_file(file_id).await
     }
 
     /// Load a single index file from disk by its ID.
@@ -737,12 +726,8 @@ impl Repository {
             if let Some(ecc_config) = self.manifest.ecc() {
                 let k = ecc_config.data_shards as usize;
                 let p = ecc_config.parity_shards as usize;
-                let pack_data = bytes_to_write.to_vec();
-                let raw_ecc =
-                    tokio::task::spawn_blocking(move || crate::ecc::ecc_encode(&pack_data, k, p))
-                        .await
-                        .map_err(|e| MapacheError::Internal(format!("ECC task failed: {e}")))?
-                        .map_err(|e| MapacheError::Internal(format!("ECC encode failed: {e}")))?;
+                let raw_ecc = crate::ecc::ecc_encode(bytes_to_write, k, p)
+                    .map_err(|e| MapacheError::Internal(format!("ECC encode failed: {e}")))?;
                 if raw_ecc.is_empty() {
                     None
                 } else {
@@ -1388,7 +1373,7 @@ impl Repository {
         let repo_version = self.repo_version; // TODO(v1-removal): remove after v1 support is dropped
         let hot_count = match index_mode {
             IndexMode::Eager => usize::MAX, // Load all
-            IndexMode::Lazy => common::defaults::INDEX_HOT_COUNT,
+            IndexMode::Lazy(_) => common::defaults::INDEX_HOT_COUNT,
         };
 
         let indices = stream::iter(files)

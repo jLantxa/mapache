@@ -479,6 +479,7 @@ pub(crate) fn validate_crc(data: &[u8], ecc_payload: &[u8]) -> Result<(), usize>
 
     let mut sidecar_offset = HEADER_SIZE;
     let mut data_offset = 0usize;
+    let mut shard = vec![0u8; SHARD_SIZE];
 
     for stripe in &layouts {
         let sk = stripe.data_shards;
@@ -492,10 +493,10 @@ pub(crate) fn validate_crc(data: &[u8], ecc_payload: &[u8]) -> Result<(), usize>
                     .expect("slice length is 4"),
             );
 
-            // Compute CRC over a SHARD_SIZE buffer (zero-padded), matching encode.
+            // Zero-pad the shard buffer, then copy available data into it.
+            shard.fill(0);
             let shard_start = data_offset + i * SHARD_SIZE;
             let shard_end = (shard_start + SHARD_SIZE).min(data.len());
-            let mut shard = vec![0u8; SHARD_SIZE];
             if shard_start < data.len() {
                 let copy_len = shard_end - shard_start;
                 shard[..copy_len].copy_from_slice(&data[shard_start..shard_end]);

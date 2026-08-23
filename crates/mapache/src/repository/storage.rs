@@ -250,7 +250,7 @@ impl SecureStorage {
         Ok(WriteContents::Owned(decrypted))
     }
 
-    /// Decrypts the given Vec in-place if possible.
+    /// Decrypts the given data, reusing the input allocation when possible.
     ///
     /// Tries the configured `nonce_at_end` position first. If that fails and
     /// the repo is in a transitional state (v1 data with v2 config), falls back
@@ -348,7 +348,10 @@ impl SecureStorage {
     }
 
     pub fn return_encoding_context(&self, ctx: EncodingContext) {
-        self.compressor_pool.lock().push(ctx);
+        let mut pool = self.compressor_pool.lock();
+        if pool.len() < 16 {
+            pool.push(ctx);
+        }
     }
 
     pub fn decode(&self, data: &[u8]) -> Result<Vec<u8>> {

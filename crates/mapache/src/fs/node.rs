@@ -132,6 +132,11 @@ impl Node {
 
         let blobs = if flags & 0x02 != 0 {
             let count = get_u32(buf)? as usize;
+            if count > buf.len() / 32 + 1 {
+                return Err(MapacheError::Format(format!(
+                    "unreasonable blob count {count} for node"
+                )));
+            }
             let mut vec = Vec::with_capacity(count);
             for _ in 0..count {
                 let bytes = get_array::<32>(buf)?;

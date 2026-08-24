@@ -18,8 +18,8 @@ use crate::{
     backend::new_backend_with_prompt,
     commands::{GlobalArgs, HookArgs, ToExitCode, cleanup::CleanupHandler, with_repository_lock},
     common::{
-        ID, config::CommandHooks, defaults::UI_RATE_ESTIMATOR_WINDOW, error::MapacheError,
-        global::GlobalOpts, hooks,
+        ContentIdType, ID, config::CommandHooks, defaults::UI_RATE_ESTIMATOR_WINDOW,
+        error::MapacheError, global::GlobalOpts, hooks,
     },
     fs::tree::SerializedNodeStream,
     repository::{
@@ -27,7 +27,7 @@ use crate::{
         repo::Repository,
         snapshot::SnapshotStream,
         storage::SecureStorage,
-        verify::{verify_pack, verify_snapshot_refs},
+        verify::{verify_metadata_file, verify_pack, verify_snapshot_refs},
     },
     ui::{self, cli::color::Colorize, default_bar_draw_target, default_progress_style},
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
@@ -99,7 +99,7 @@ pub struct CmdArgs {
     #[clap(long, value_parser = parse_sample_percentage, requires = "read_packs")]
     pub sample: Option<f64>,
 
-    /// Attempt to repair corrupt packs using ECC sidecars.
+    /// Attempt to repair corrupt files using ECC sidecars.
     /// Requires the repository to have ECC enabled (`--ecc` at init time).
     #[clap(long, default_value_t = false)]
     pub repair: bool,
@@ -139,6 +139,9 @@ struct VerifyStats {
     packs_repaired: AtomicUsize,
     blobs_verified: AtomicUsize,
     blobs_dangling: AtomicUsize,
+    metadata_files_processed: AtomicUsize,
+    metadata_files_corrupt: AtomicUsize,
+    metadata_files_repaired: AtomicUsize,
 }
 
 impl VerifyStats {
@@ -149,6 +152,9 @@ impl VerifyStats {
             packs_repaired: AtomicUsize::new(0),
             blobs_verified: AtomicUsize::new(0),
             blobs_dangling: AtomicUsize::new(0),
+            metadata_files_processed: AtomicUsize::new(0),
+            metadata_files_corrupt: AtomicUsize::new(0),
+            metadata_files_repaired: AtomicUsize::new(0),
         }
     }
 }
@@ -175,7 +181,6 @@ struct VerifyReport<'a> {
     logical_failed_early: bool,
     read_packs: bool,
     json_out: bool,
-    repair: bool,
 }
 
 pub async fn run(
@@ -329,7 +334,19 @@ pub async fn run_with_repo(
     } else {
         false
     };
-
+    // Verify metadata files (index, snapshot, manifest).
+    // Always runs; ECC repair only when --repair is set and ECC is enabled.
+    if !cleanup_handler.is_interrupted() {
+        verify_metadata_files(
+            repo.clone(),
+            secure_storage.clone(),
+            &stats,
+            args.repair && repo.manifest().ecc().is_some(),
+            json_out,
+            &cleanup_handler,
+        )
+        .await?;
+    }
     let mut logical_failed_early = false;
     let mut snapshots_corrupt = 0;
     let mut num_snapshots_total = 0;
@@ -431,7 +448,6 @@ pub async fn run_with_repo(
         logical_failed_early,
         read_packs: args.read_packs,
         json_out,
-        repair: args.repair,
     };
     emit_final_report(&final_report)?;
 
@@ -498,6 +514,209 @@ async fn check_index_consistency(
     ui::cli::log!();
 
     Ok(missing_packs)
+}
+
+async fn verify_metadata_files(
+    repo: Arc<Repository>,
+    secure_storage: Arc<SecureStorage>,
+    stats: &VerifyStats,
+    repair: bool,
+    json_out: bool,
+    cleanup_handler: &CleanupHandler,
+) -> Result<(), VerifyError> {
+    ui::cli::log!("{}", "Verifying Metadata Files (ECC)...".bold());
+
+    let mut files_to_verify: Vec<(ContentIdType, Option<ID>, std::path::PathBuf)> = Vec::new();
+
+    if let Ok(index_ids) = repo.list_index_ids().await {
+        for id in index_ids {
+            let path = repo.get_path(ContentIdType::Index, &id);
+            files_to_verify.push((ContentIdType::Index, Some(id), path));
+        }
+    }
+
+    if let Ok(snapshot_ids) = repo.list_snapshot_ids().await {
+        for id in snapshot_ids {
+            let path = repo.get_path(ContentIdType::Snapshot, &id);
+            files_to_verify.push((ContentIdType::Snapshot, Some(id), path));
+        }
+    }
+
+    let total = files_to_verify.len();
+    if total == 0 {
+        ui::cli::log!("No metadata files to verify.");
+        return Ok(());
+    }
+
+    let style = default_progress_style()
+        .template("[{elapsed}] [{bar:25.cyan/white}] {pos}/{len} files ({msg})")
+        .expect("invalid progress bar template for verify metadata");
+
+    let bar = ProgressBar::new(total as u64);
+    bar.set_draw_target(default_bar_draw_target());
+    bar.enable_steady_tick(GlobalOpts::progress_refresh_interval());
+    bar.set_style(style);
+    bar.set_message("OK");
+
+    let interrupted_flag = cleanup_handler.interrupted.clone();
+
+    for (file_type, file_id, file_path) in &files_to_verify {
+        if interrupted_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        match verify_metadata_file(
+            repo.backend(),
+            secure_storage.clone(),
+            repo.repo_version(),
+            *file_type,
+            *file_id,
+            file_path.clone(),
+            repair,
+        )
+        .await
+        {
+            Ok(file_stats) => {
+                stats
+                    .metadata_files_processed
+                    .fetch_add(1, Ordering::Relaxed);
+
+                if file_stats.repaired {
+                    stats
+                        .metadata_files_repaired
+                        .fetch_add(1, Ordering::Relaxed);
+                    let label = file_stats
+                        .file_id
+                        .map(|id| id.to_short_hex(8))
+                        .unwrap_or_else(|| file_path.display().to_string());
+                    bar.suspend(|| {
+                        ui::cli::log!(
+                            "{} {} {} REPAIRED via ECC.",
+                            "[REPAIRED]".green().bold(),
+                            file_stats.file_type,
+                            label
+                        );
+                    });
+                } else if file_stats.bit_rot {
+                    stats.metadata_files_corrupt.fetch_add(1, Ordering::Relaxed);
+                    let label = file_stats
+                        .file_id
+                        .map(|id| id.to_short_hex(8))
+                        .unwrap_or_else(|| file_path.display().to_string());
+                    bar.suspend(|| {
+                        ui::cli::error!(
+                            "{} {} {} CORRUPT: ECC detected bit-rot.",
+                            "[ERROR]".red().bold(),
+                            file_stats.file_type,
+                            label
+                        );
+                    });
+
+                    if json_out {
+                        #[derive(Serialize)]
+                        struct VerifyErrorMsg {
+                            file_type: String,
+                            file_id: String,
+                            error: String,
+                        }
+                        ui::json::emit_static(
+                            "verify_error",
+                            &VerifyErrorMsg {
+                                file_type: format!("{}", file_stats.file_type),
+                                file_id: file_stats
+                                    .file_id
+                                    .map(|id| id.to_hex())
+                                    .unwrap_or_default(),
+                                error: "ECC detected bit-rot".to_string(),
+                            },
+                        );
+                    }
+                } else if !file_stats.readable {
+                    stats.metadata_files_corrupt.fetch_add(1, Ordering::Relaxed);
+                    let label = file_stats
+                        .file_id
+                        .map(|id| id.to_short_hex(8))
+                        .unwrap_or_else(|| file_path.display().to_string());
+                    bar.suspend(|| {
+                        ui::cli::error!(
+                            "{} {} {} CORRUPT: file is unreadable and no ECC sidecar available.",
+                            "[ERROR]".red().bold(),
+                            file_stats.file_type,
+                            label
+                        );
+                    });
+
+                    if json_out {
+                        #[derive(Serialize)]
+                        struct VerifyErrorMsg2 {
+                            file_type: String,
+                            file_id: String,
+                            error: String,
+                        }
+                        ui::json::emit_static(
+                            "verify_error",
+                            &VerifyErrorMsg2 {
+                                file_type: format!("{}", file_stats.file_type),
+                                file_id: file_stats
+                                    .file_id
+                                    .map(|id| id.to_hex())
+                                    .unwrap_or_default(),
+                                error: "file is unreadable and no ECC sidecar available"
+                                    .to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                stats.metadata_files_corrupt.fetch_add(1, Ordering::Relaxed);
+                bar.suspend(|| {
+                    ui::cli::error!("Failed to verify {}: {}", file_path.display(), e);
+                });
+            }
+        }
+
+        let corrupt = stats.metadata_files_corrupt.load(Ordering::Relaxed);
+        if corrupt > 0 {
+            bar.set_message(
+                utils::format_count(corrupt, "ERROR", "ERRORS")
+                    .red()
+                    .to_string(),
+            );
+        } else {
+            bar.set_message("OK".to_string());
+        }
+        bar.inc(1);
+    }
+
+    if cleanup_handler.is_interrupted() {
+        bar.abandon();
+        return Ok(());
+    }
+
+    bar.finish();
+
+    let corrupt = stats.metadata_files_corrupt.load(Ordering::Relaxed);
+    let repaired = stats.metadata_files_repaired.load(Ordering::Relaxed);
+    if corrupt > 0 {
+        ui::cli::error!("Metadata verification failed. {} corrupt file(s).", corrupt);
+    } else {
+        ui::cli::log!(
+            "{} {} metadata files verified.",
+            "Metadata verification passed.".bold().green(),
+            total
+        );
+    }
+    if repaired > 0 {
+        ui::cli::log!(
+            "{} {} repaired via ECC.",
+            "[INFO]".green(),
+            utils::format_count(repaired, "file was", "files were")
+        );
+    }
+    ui::cli::log!();
+
+    Ok(())
 }
 
 async fn verify_packs_physically(
@@ -1001,16 +1220,6 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
         ),
         utils::pretty_print_duration(report.start.elapsed())
     );
-    if report.repair {
-        let repaired = report.stats.packs_repaired.load(Ordering::Relaxed);
-        if repaired > 0 {
-            ui::cli::log!(
-                "{} {} repaired via ECC.",
-                "[INFO]".green(),
-                utils::format_count(repaired, "pack was", "packs were")
-            );
-        }
-    }
     tracing::info!(
         target: "verify",
         "Verify command completed successfully in {:?}",

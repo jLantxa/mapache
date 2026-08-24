@@ -11,7 +11,7 @@ use super::galois::Galois;
 ///
 /// `K` is the number of data shards, `P` is the number of parity shards.
 /// Any `K` of the `K + P` total shards can reconstruct the original data.
-pub(super) struct ReedSolomon {
+pub(crate) struct ReedSolomon {
     k: usize,
     p: usize,
     /// Flat P × K generator matrix stored as a single contiguous vector for cache locality.
@@ -21,7 +21,7 @@ pub(super) struct ReedSolomon {
 
 /// Errors that can occur during encoding or decoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Error {
+pub(crate) enum Error {
     /// Not enough shards provided for reconstruction.
     TooFewShards { have: usize, need: usize },
     /// All shards must have the same length.
@@ -116,7 +116,7 @@ impl ReedSolomon {
     /// standard GF(2^8) Reed-Solomon implementations.
     ///
     /// [Vandermonde]: https://en.wikipedia.org/wiki/Vandermonde_matrix
-    pub(super) fn new(k: usize, p: usize) -> Result<Self, Error> {
+    pub(crate) fn new(k: usize, p: usize) -> Result<Self, Error> {
         if k == 0 || p == 0 || k + p > 256 {
             return Err(Error::InvalidShardCount(k + p));
         }
@@ -149,7 +149,7 @@ impl ReedSolomon {
     ///
     /// `data` must contain exactly `k` shards, each with the same non-zero length.
     /// `parity` must contain exactly `p` mutable shard slices of the same length.
-    pub(super) fn encode_into(
+    pub(crate) fn encode_into(
         &self,
         data: &[&[u8]],
         parity: &mut [&mut [u8]],

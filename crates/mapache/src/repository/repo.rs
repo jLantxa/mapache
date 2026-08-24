@@ -20,6 +20,7 @@ use crate::{
         error::{MapacheError, Result},
         traits::{BlobLoader, BlobSaver},
     },
+    ecc,
     repository::{
         index::{self, ColdIndexLoader, Index, IndexFile, IndexMode, MasterIndex},
         keys::{self, KeyManager},
@@ -739,7 +740,7 @@ impl Repository {
             if let Some(ecc_config) = self.manifest.ecc() {
                 let k = ecc_config.data_shards as usize;
                 let p = ecc_config.parity_shards as usize;
-                let raw_ecc = crate::ecc::ecc_encode(bytes_to_write, k, p)
+                let raw_ecc = ecc::ecc_encode(bytes_to_write, k, p)
                     .map_err(|e| MapacheError::Internal(format!("ECC encode failed: {e}")))?;
                 if raw_ecc.is_empty() {
                     None

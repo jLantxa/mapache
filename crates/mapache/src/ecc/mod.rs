@@ -28,7 +28,7 @@
 //! ```
 
 mod galois;
-mod reed_solomon;
+pub(crate) mod reed_solomon;
 
 use reed_solomon::ReedSolomon;
 
@@ -116,7 +116,7 @@ const fn build_crc32_table() -> [u32; 256] {
 }
 
 /// CRC32 using a 256-entry lookup table generated at compile time.
-fn crc32_ieee(data: &[u8]) -> u32 {
+pub(crate) fn crc32_ieee(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
         crc = CRC32_TABLE[((crc ^ byte as u32) & 0xFF) as usize] ^ (crc >> 8);
@@ -127,7 +127,7 @@ fn crc32_ieee(data: &[u8]) -> u32 {
 /// Size of the sidecar payload for one stripe: CRC32s for all shards plus raw parity.
 ///
 /// Layout: `(K + P) * CRC_SIZE + P * SHARD_SIZE`
-fn stripe_payload_size(k: usize, p: usize) -> usize {
+pub(crate) fn stripe_payload_size(k: usize, p: usize) -> usize {
     (k + p) * CRC_SIZE + p * SHARD_SIZE
 }
 

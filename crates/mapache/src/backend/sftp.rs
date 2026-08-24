@@ -11,7 +11,7 @@ use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use russh::{
     client,
-    keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key},
+    keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key},
 };
 use russh_sftp::{
     client::SftpSession,
@@ -89,8 +89,9 @@ impl client::Handler for MapacheSftpHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> std::result::Result<bool, Self::Error> {
+        let server_public_key = server_public_key.public_key();
         const SSH_KNOWN_HOSTS_PATH: &str = ".ssh/known_hosts";
 
         let known_hosts_path = if let Some(ref path) = self.known_hosts_path {

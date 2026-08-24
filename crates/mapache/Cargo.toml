@@ -33,7 +33,7 @@ percent-encoding = "2.3"
 rand = "0.10"
 ratatui = "0.30"
 rayon = "1.12"
-russh = { version = "0.62", default-features = false, features = [
+russh = { version = "0.63", default-features = false, features = [
   "flate2",
   "ring",
 ] }

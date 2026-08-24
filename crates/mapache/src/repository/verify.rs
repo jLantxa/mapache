@@ -10,6 +10,7 @@ use crate::{
         self, BlobType, ContentIdType, ID,
         error::{MapacheError, Result},
     },
+    ecc,
     fs::tree::Tree,
     repository::{
         packer::Packer,
@@ -157,13 +158,13 @@ async fn repair_pack_with_ecc(
 
     // Run ECC decode (verifies + repairs in-place) on a blocking thread.
     let (decoded, was_repaired) = tokio::task::spawn_blocking(move || {
-        let decoded = crate::ecc::ecc_decode(&raw_data, &sidecar_data)?;
+        let decoded = ecc::ecc_decode(&raw_data, &sidecar_data)?;
         let repaired = decoded != raw_data;
         if repaired {
-            crate::ecc::validate_crc(&decoded, &sidecar_data)
-                .map_err(crate::ecc::EccDecodeError::CrcValidationFailed)?;
+            ecc::validate_crc(&decoded, &sidecar_data)
+                .map_err(ecc::EccDecodeError::CrcValidationFailed)?;
         }
-        Ok::<_, crate::ecc::EccDecodeError>((decoded, repaired))
+        Ok::<_, ecc::EccDecodeError>((decoded, repaired))
     })
     .await
     .map_err(|e| MapacheError::Internal(format!("ECC decode task failed: {e}")))?
@@ -296,13 +297,13 @@ pub async fn verify_metadata_file(
     let file_data_clone = raw_data.clone();
     let sidecar_data_clone = sidecar_data.clone();
     let ecc_result = tokio::task::spawn_blocking(move || {
-        let decoded = crate::ecc::ecc_decode(&file_data_clone, &sidecar_data_clone)?;
+        let decoded = ecc::ecc_decode(&file_data_clone, &sidecar_data_clone)?;
         let repaired = decoded != file_data_clone;
         if repaired {
-            crate::ecc::validate_crc(&decoded, &sidecar_data_clone)
-                .map_err(crate::ecc::EccDecodeError::CrcValidationFailed)?;
+            ecc::validate_crc(&decoded, &sidecar_data_clone)
+                .map_err(ecc::EccDecodeError::CrcValidationFailed)?;
         }
-        Ok::<_, crate::ecc::EccDecodeError>((decoded, repaired))
+        Ok::<_, ecc::EccDecodeError>((decoded, repaired))
     })
     .await
     .map_err(|e| MapacheError::Internal(format!("ECC decode task failed: {e}")))?

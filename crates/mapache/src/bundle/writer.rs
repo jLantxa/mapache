@@ -14,8 +14,11 @@ use crate::{
         BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BUNDLE_SALT_LEN, BundleHeader,
         BundleIndex, BundleIndexEntry, BundleTrailer,
     },
-    common::error::{MapacheError, Result},
-    common::{BlobType, ID, SaveID, traits::BlobSaver},
+    common::{
+        BlobType, ID, SaveID,
+        error::{MapacheError, Result},
+        traits::BlobSaver,
+    },
     ecc,
     repository::{
         manifest::{EccConfig, Manifest},
@@ -157,21 +160,68 @@ impl BundleWriter {
         let mut ecc_len: u32 = 0;
 
         if let Some(ecc_cfg) = &self.ecc_config {
-            // Read back the blob data section to compute ECC parity.
             let data_end = inner.file.stream_position()?;
             let data_start = inner.data_start;
             let data_len = (data_end - data_start) as usize;
 
-            let mut data_section = vec![0u8; data_len];
-            inner.file.seek(std::io::SeekFrom::Start(data_start))?;
-            inner.file.read_exact(&mut data_section)?;
-
             let k = ecc_cfg.data_shards as usize;
             let p = ecc_cfg.parity_shards as usize;
-            let ecc_payload = ecc::ecc_encode(&data_section, k, p)
-                .map_err(|e| MapacheError::Crypto(format!("failed to encode ECC section: {e}")))?;
 
-            // ECC payload is encrypted before writing so parity is also protected.
+            // Build ECC header.
+            let layouts = ecc::calculate_stripe_layouts(data_len, k, p);
+            let mut ecc_payload = Vec::with_capacity(
+                ecc::HEADER_SIZE + layouts.len() * ecc::stripe_payload_size(k, p),
+            );
+            ecc_payload.extend_from_slice(&ecc::MAGIC);
+            ecc_payload.push(ecc::VERSION);
+            ecc_payload.push(0);
+            ecc_payload.extend_from_slice(&(k as u16).to_le_bytes());
+            ecc_payload.extend_from_slice(&(p as u16).to_le_bytes());
+            ecc_payload.extend_from_slice(&(data_len as u64).to_le_bytes());
+            ecc_payload.extend_from_slice(&(layouts.len() as u32).to_le_bytes());
+
+            // Encode stripe-by-stripe: read each stripe's data from the file,
+            // encode parity, and append to ecc_payload. Peak memory is bounded
+            // by one stripe's data+parity instead of the full data section.
+            let rs = ecc::reed_solomon::ReedSolomon::new(k, p).map_err(|_| {
+                MapacheError::Crypto(format!("invalid ECC shard count: k={k}, p={p}"))
+            })?;
+
+            inner.file.seek(std::io::SeekFrom::Start(data_start))?;
+            for stripe in &layouts {
+                let sk = stripe.data_shards;
+                let sp = stripe.parity_shards;
+                let shard_bytes = sk * ecc::SHARD_SIZE;
+
+                let mut shard_buf = vec![0u8; shard_bytes];
+                let copy_len = stripe.data_bytes.min(shard_bytes);
+                inner.file.read_exact(&mut shard_buf[..copy_len])?;
+
+                let data_refs: Vec<&[u8]> = shard_buf.chunks(ecc::SHARD_SIZE).take(sk).collect();
+
+                let parity_bytes = sp * ecc::SHARD_SIZE;
+                let mut parity_buf = vec![0u8; parity_bytes];
+                {
+                    let mut parity_refs: Vec<&mut [u8]> =
+                        parity_buf.chunks_mut(ecc::SHARD_SIZE).take(sp).collect();
+                    rs.encode_into(&data_refs, &mut parity_refs).map_err(|e| {
+                        MapacheError::Crypto(format!("ECC encode failed for stripe: {e}"))
+                    })?;
+                }
+
+                for i in 0..sk {
+                    let start = i * ecc::SHARD_SIZE;
+                    let crc = ecc::crc32_ieee(&shard_buf[start..start + ecc::SHARD_SIZE]);
+                    ecc_payload.extend_from_slice(&crc.to_le_bytes());
+                }
+                for i in 0..sp {
+                    let start = i * ecc::SHARD_SIZE;
+                    let crc = ecc::crc32_ieee(&parity_buf[start..start + ecc::SHARD_SIZE]);
+                    ecc_payload.extend_from_slice(&crc.to_le_bytes());
+                }
+                ecc_payload.extend_from_slice(&parity_buf);
+            }
+
             let encrypted_ecc = self
                 .storage
                 .encrypt(&ecc_payload)

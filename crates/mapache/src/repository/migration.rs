@@ -169,37 +169,48 @@ pub async fn re_encrypt_file(
     Ok(new_id)
 }
 
+/// Parameters for re-encryption during migration.
+pub struct ReEncryptParams<'a> {
+    pub repo: &'a Repository,
+    pub backend: &'a dyn StorageBackend,
+    pub secure_storage: &'a SecureStorage,
+    pub old_nonce_at_end: bool,
+    pub new_nonce_at_end: bool,
+}
+
 /// Re-encrypt a snapshot and update its root tree ID.
-#[allow(clippy::too_many_arguments)]
 pub async fn re_encrypt_snapshot(
-    repo: &Repository,
-    backend: &dyn StorageBackend,
-    secure_storage: &SecureStorage,
+    params: &ReEncryptParams<'_>,
     old_id: &ID,
     new_root_tree_id: ID,
-    old_nonce_at_end: bool,
-    new_nonce_at_end: bool,
 ) -> Result<ID> {
-    let old_path = repo.get_path(ContentIdType::Snapshot, old_id);
-    let data = backend.read(&Handle::new(&old_path), 0, 0).await?;
+    let old_path = params.repo.get_path(ContentIdType::Snapshot, old_id);
+    let data = params.backend.read(&Handle::new(&old_path), 0, 0).await?;
 
-    let decrypted = secure_storage
-        .decrypt_inner(&data, old_nonce_at_end)?
+    let decrypted = params
+        .secure_storage
+        .decrypt_inner(&data, params.old_nonce_at_end)?
         .into_owned();
-    let decompressed = secure_storage.decompress(&decrypted)?;
+    let decompressed = params.secure_storage.decompress(&decrypted)?;
     let mut snapshot: crate::repository::snapshot::Snapshot =
         serde_json::from_slice(&decompressed)?;
     snapshot.tree = new_root_tree_id;
 
     let reserialized = serde_json::to_vec(&snapshot)?;
-    let mut ctx = secure_storage.get_encoding_context()?;
-    let re_encrypted =
-        secure_storage.encode_with_nonce_position(&mut ctx, &reserialized, new_nonce_at_end)?;
+    let mut ctx = params.secure_storage.get_encoding_context()?;
+    let re_encrypted = params.secure_storage.encode_with_nonce_position(
+        &mut ctx,
+        &reserialized,
+        params.new_nonce_at_end,
+    )?;
 
     let new_id = ID::from_content(&re_encrypted);
-    let new_path = repo.get_path(ContentIdType::Snapshot, &new_id);
+    let new_path = params.repo.get_path(ContentIdType::Snapshot, &new_id);
     let new_handle = Handle::new(&new_path);
-    backend.write(&new_handle, re_encrypted.into()).await?;
+    params
+        .backend
+        .write(&new_handle, re_encrypted.into())
+        .await?;
     Ok(new_id)
 }
 

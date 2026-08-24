@@ -163,7 +163,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                         (pack_id, res)
                     }
                 })
-                .buffered(4)
+                .buffered(8)
                 .collect()
                 .await;
 
@@ -312,9 +312,16 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                         let result = if has_tree_changes {
                             let snap = repo.load_snapshot(&old_id, tag).await?;
                             let new_root = root_map.get(&snap.tree).copied().unwrap_or(snap.tree);
+                            let params = migration::ReEncryptParams {
+                                repo: repo.as_ref(),
+                                backend: backend.as_ref(),
+                                secure_storage: secure_storage.as_ref(),
+                                old_nonce_at_end,
+                                new_nonce_at_end,
+                            };
                             migration::re_encrypt_snapshot(
-                                repo.as_ref(), backend.as_ref(), secure_storage.as_ref(),
-                                &old_id, new_root, old_nonce_at_end, new_nonce_at_end,
+                                &params,
+                                &old_id, new_root,
                             ).await
                         } else {
                             migration::re_encrypt_file(

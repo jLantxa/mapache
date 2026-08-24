@@ -862,6 +862,64 @@ impl Repository {
         Ok(size.unwrap_or(0))
     }
 
+    /// Move a file to `.dropped` instead of deleting it, so migration is atomic.
+    /// GC will clean up `.dropped` files later.
+    pub async fn move_to_trash(&self, file_type: ContentIdType, id: &ID) -> Result<u64> {
+        let path = self.get_path(file_type, id);
+        let dropped_path = path.with_extension(REPO_DROPPED_EXTENSION);
+        tracing::info!(target: "repo", "Moving {file_type} {} to trash", path.display());
+
+        let size = self.backend.lstat(&path).await?.size;
+        self.backend.rename(&path, &dropped_path).await?;
+
+        // Also move .ecc sidecar if it exists (best-effort).
+        if Self::supports_ecc(file_type) {
+            let ecc_path = path.with_extension(REPO_ECC_EXTENSION);
+            if self.backend.path_exists(&ecc_path).await {
+                let ecc_dropped = ecc_path.with_extension(REPO_DROPPED_EXTENSION);
+                if let Err(e) = self.backend.rename(&ecc_path, &ecc_dropped).await {
+                    tracing::warn!(target: "repo", "Failed to move ECC sidecar to trash {}: {e}", ecc_path.display());
+                }
+            }
+        }
+
+        Ok(size.unwrap_or(0))
+    }
+
+    /// Clean up all `.dropped` files for a given file type.
+    pub async fn clean_trash(&self, file_type: ContentIdType) -> Result<u64> {
+        let mut total_size = 0u64;
+
+        if matches!(file_type, ContentIdType::Pack) {
+            // Packs use fanout directory structure; use list_packs_and_trash.
+            let (_packs, trash) = self.list_packs_and_trash().await?;
+            for path in trash {
+                if let Some(ext) = path.extension()
+                    && ext.to_string_lossy() == REPO_DROPPED_EXTENSION
+                {
+                    if let Ok(size) = self.backend.lstat(&path).await {
+                        total_size += size.size.unwrap_or(0);
+                    }
+                    self.backend.remove(&path).await?;
+                }
+            }
+        } else if let Some(dir) = self.dir_for_type(file_type) {
+            let entries = self.backend.list_dir(dir).await?;
+            for node in entries {
+                let path = node.into_path();
+                if let Some(ext) = path.extension()
+                    && ext.to_string_lossy() == REPO_DROPPED_EXTENSION
+                {
+                    if let Ok(size) = self.backend.lstat(&path).await {
+                        total_size += size.size.unwrap_or(0);
+                    }
+                    self.backend.remove(&path).await?;
+                }
+            }
+        }
+        Ok(total_size)
+    }
+
     /// Sets an extension to a file.
     pub async fn set_extension(
         &self,

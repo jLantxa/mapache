@@ -37,6 +37,7 @@ use crate::{
 
 pub struct BundleReader {
     file: Mutex<File>,
+    path: PathBuf,
     storage: SecureStorage,
     index: BundleIndex,
     index_map: HashMap<ID, usize>,
@@ -113,7 +114,7 @@ impl BlobLoader for BundleReader {
 
 impl BundleReader {
     pub fn open<P: AsRef<Path>>(path: P, password: &str) -> Result<Self> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+        let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
 
         let mut header_bytes = vec![0u8; BUNDLE_HEADER_SIZE];
         file.read_exact(&mut header_bytes)
@@ -223,6 +224,7 @@ impl BundleReader {
 
         Ok(Self {
             file: Mutex::new(file),
+            path: path.as_ref().to_path_buf(),
             storage,
             index,
             index_map,
@@ -237,7 +239,8 @@ impl BundleReader {
     /// Attempt to repair the blob data section using ECC parity.
     ///
     /// Reads the entire data section and ECC section, runs Reed-Solomon
-    /// repair, and writes the corrected data back to the file.
+    /// repair, and writes the corrected data to a `.repaired` file next to
+    /// the original bundle. The original file is left untouched.
     fn try_ecc_repair(&self) -> Result<()> {
         if self.ecc_config.is_none() {
             return Err(MapacheError::Integrity(
@@ -274,17 +277,52 @@ impl BundleReader {
         let repaired = ecc::ecc_decode(&data_section, &ecc_payload)
             .map_err(|e| MapacheError::Integrity(format!("ECC decode failed: {e}")))?;
 
-        // Validate repaired data CRCs against sidecar before writing back.
+        // Validate repaired data CRCs against sidecar before writing.
         ecc::validate_crc(&repaired, &ecc_payload).map_err(|bad_shard| {
             MapacheError::Integrity(format!(
                 "ECC repair produced invalid CRC at shard {bad_shard}, refusing to write"
             ))
         })?;
 
-        // Write repaired data back.
+        // Write repaired data to a `.repaired` file (never overwrite the original).
+        let repaired_path = self.path.with_extension("repaired");
+        let mut repaired_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&repaired_path)?;
+
+        // Copy header from original.
         let mut file = self.file.lock();
-        file.seek(SeekFrom::Start(self.data_start))?;
-        file.write_all(&repaired)?;
+        file.seek(SeekFrom::Start(0))?;
+        let mut header_buf = vec![0u8; self.data_start as usize];
+        file.read_exact(&mut header_buf)?;
+        drop(file);
+
+        repaired_file.write_all(&header_buf)?;
+
+        // Write repaired data section.
+        repaired_file.write_all(&repaired)?;
+
+        // Copy everything after the data section (ECC section, index, trailer, trailer size).
+        let mut original = OpenOptions::new().read(true).open(&self.path)?;
+        original.seek(SeekFrom::Start(self.data_end))?;
+        let mut remainder = Vec::new();
+        original.take(u64::MAX).read_to_end(&mut remainder)?;
+        repaired_file.write_all(&remainder)?;
+
+        tracing::info!(target: "bundle", "ECC repair written to {}", repaired_path.display());
+        ui::cli::warning!(
+            "Bundle data was corrupted. ECC repair written to: {}",
+            repaired_path.display()
+        );
+
+        // Reopen from the repaired file so subsequent reads use corrected data.
+        let new_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&repaired_path)?;
+        *self.file.lock() = new_file;
 
         Ok(())
     }

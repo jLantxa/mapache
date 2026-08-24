@@ -106,6 +106,30 @@ struct StatsOutput {
     total_repo_bytes: u64,
 }
 
+/// Compute compression ratios (raw / encoded) for total, data, and tree sizes.
+/// Returns `(ratio_total, ratio_data, ratio_tree)`.
+fn compression_ratios(
+    raw_total: u64,
+    enc_total: u64,
+    raw_data: u64,
+    enc_data: u64,
+    raw_tree: u64,
+    enc_tree: u64,
+) -> (f32, f32, f32) {
+    let ratio = |raw: u64, enc: u64| {
+        if enc == 0 {
+            0.0
+        } else {
+            raw as f32 / enc as f32
+        }
+    };
+    (
+        ratio(raw_total, enc_total),
+        ratio(raw_data, enc_data),
+        ratio(raw_tree, enc_tree),
+    )
+}
+
 pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), StatsError> {
     with_repository_lock(
         global_args.auth_file.as_ref(),
@@ -396,23 +420,14 @@ async fn stats_repository(
             utils::format_size_binary(snap_stats.total_encoded_data_size, 3)
         );
         // Compression ratios = raw / encoded
-        let ratio_total = if snap_stats.total_encoded_data_size == 0 {
-            0.0
-        } else {
-            snap_stats.total_raw_data_size as f32 / snap_stats.total_encoded_data_size as f32
-        };
-        let ratio_data = if snap_stats.total_encoded_data_size_data == 0 {
-            0.0
-        } else {
-            snap_stats.total_raw_data_size_data as f32
-                / snap_stats.total_encoded_data_size_data as f32
-        };
-        let ratio_tree = if snap_stats.total_encoded_data_size_tree == 0 {
-            0.0
-        } else {
-            snap_stats.total_raw_data_size_tree as f32
-                / snap_stats.total_encoded_data_size_tree as f32
-        };
+        let (ratio_total, ratio_data, ratio_tree) = compression_ratios(
+            snap_stats.total_raw_data_size,
+            snap_stats.total_encoded_data_size,
+            snap_stats.total_raw_data_size_data,
+            snap_stats.total_encoded_data_size_data,
+            snap_stats.total_raw_data_size_tree,
+            snap_stats.total_encoded_data_size_tree,
+        );
         ui::cli::log!(
             "\tData (raw / encoded): {} / {}",
             utils::format_size_binary(snap_stats.total_raw_data_size_data, 3),
@@ -452,6 +467,14 @@ async fn stats_repository(
         );
     } else {
         // Output JSON if requested
+        let (cr_total, cr_data, cr_tree) = compression_ratios(
+            snap_stats.total_raw_data_size,
+            snap_stats.total_encoded_data_size,
+            snap_stats.total_raw_data_size_data,
+            snap_stats.total_encoded_data_size_data,
+            snap_stats.total_raw_data_size_tree,
+            snap_stats.total_encoded_data_size_tree,
+        );
         let out = StatsOutput {
             packs: PacksOutput {
                 count: num_packs,
@@ -483,24 +506,9 @@ async fn stats_repository(
                 referenced_encoded_bytes_data: snap_stats.total_encoded_data_size_data,
                 referenced_raw_bytes_tree: snap_stats.total_raw_data_size_tree,
                 referenced_encoded_bytes_tree: snap_stats.total_encoded_data_size_tree,
-                compression_ratio_total: if snap_stats.total_encoded_data_size == 0 {
-                    0.0
-                } else {
-                    snap_stats.total_raw_data_size as f32
-                        / snap_stats.total_encoded_data_size as f32
-                },
-                compression_ratio_data: if snap_stats.total_encoded_data_size_data == 0 {
-                    0.0
-                } else {
-                    snap_stats.total_raw_data_size_data as f32
-                        / snap_stats.total_encoded_data_size_data as f32
-                },
-                compression_ratio_tree: if snap_stats.total_encoded_data_size_tree == 0 {
-                    0.0
-                } else {
-                    snap_stats.total_raw_data_size_tree as f32
-                        / snap_stats.total_encoded_data_size_tree as f32
-                },
+                compression_ratio_total: cr_total,
+                compression_ratio_data: cr_data,
+                compression_ratio_tree: cr_tree,
                 total_restorable_bytes: snap_stats.total_restorable_bytes,
             },
             keys: KeysOutput {

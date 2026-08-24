@@ -61,7 +61,8 @@ static NEXT_PACKER_ID: AtomicU64 = AtomicU64::new(1);
 pub const FOOTER_BLOB_LEN: usize = 41;
 
 /// Maximum descriptors per pack before flushing. Guards against unbounded
-/// accumulation when a pack contains only zero blobs (which don't grow `buffer`).
+/// descriptor accumulation when a pack contains only zero blobs (which don't
+/// grow `buffer` but still consume descriptor slots).
 const MAX_DESCRIPTORS_PER_PACK: usize = 4096;
 
 /// Describes a single blob's location and size within a packed file.
@@ -184,7 +185,7 @@ impl Packer {
     /// This includes:
     /// 1. Generating the footer.
     /// 2. Encrypting the footer.
-    /// 3. Hashing the entire 20MB+ buffer.
+    /// 3. Hashing the entire pack buffer.
     ///
     /// Returns the data and metadata required for upload and indexing.
     /// The internal buffer is essentially "stolen" by the result and must be
@@ -269,7 +270,6 @@ impl Packer {
     /// byte carries the per-blob compression marker. Padding entries carry no
     /// payload, so their compression bit is meaningless noise.
     pub(crate) fn generate_footer(descriptors: &mut Vec<PackedBlobDescriptor>) -> Vec<u8> {
-        let mut pack_footer = Vec::with_capacity(FOOTER_BLOB_LEN * descriptors.len());
         let mut rng = rng();
 
         if !descriptors.len().is_multiple_of(FOOTER_BLOB_MULTIPLE) {
@@ -286,6 +286,8 @@ impl Packer {
                 });
             }
         }
+
+        let mut pack_footer = Vec::with_capacity(FOOTER_BLOB_LEN * descriptors.len());
 
         for blob in descriptors {
             put_bytes(&mut pack_footer, blob.id.as_slice());
@@ -719,12 +721,15 @@ impl PackSaver {
     ) {
         match blob_type {
             BlobType::Data | BlobType::Zero => {
-                // For Data packs, the 'raw' and 'encoded' sizes correspond to the blobs themselves.
+                // For Data packs, 'raw' and 'encoded' sizes correspond to the blob data.
                 // The 'meta' sizes correspond to the pack footer.
+                // Note: the raw footer size is not available here; we use the encoded
+                // footer size as a proxy. It will be slightly lower than the true raw
+                // size due to compression, but accounts for the space consumed.
                 repo.stats.raw_bytes.fetch_add(raw_size, Ordering::Relaxed);
                 repo.stats
                     .encoded_bytes
-                    .fetch_add(encoded_size - meta_size, Ordering::Relaxed);
+                    .fetch_add(encoded_size.saturating_sub(meta_size), Ordering::Relaxed);
                 repo.stats
                     .meta_raw_bytes
                     .fetch_add(meta_size, Ordering::Relaxed);

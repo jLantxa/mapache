@@ -5,7 +5,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::common::error::{MapacheError, Result};
 use argon2;
 use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt, future::BoxFuture};
@@ -14,7 +13,11 @@ use zeroize::Zeroizing;
 
 use crate::{
     backend::{Handle, StorageBackend, WriteContents},
-    common::{self, ContentIdType, ID, defaults::DEFAULT_COMPRESSION},
+    common::{
+        self, ContentIdType, ID,
+        defaults::DEFAULT_COMPRESSION,
+        error::{MapacheError, Result},
+    },
     repository::{
         repo::{Auth, KEYS_DIR},
         storage::SecureStorage,
@@ -149,51 +152,53 @@ impl Stream for KeyFileStream {
     type Item = Result<(ID, KeyFile)>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.loading_future.is_none()
-            && let Some(path) = self.entries.pop()
-        {
-            let backend = self.backend.clone();
+        loop {
+            if self.loading_future.is_none()
+                && let Some(path) = self.entries.pop()
+            {
+                let backend = self.backend.clone();
 
-            self.loading_future = Some(Box::pin(async move {
-                if !backend.is_file(&path).await {
-                    Err(MapacheError::Repo("not a file".to_string()))?;
-                }
-
-                let id_str = path
-                    .file_name()
-                    .ok_or_else(|| MapacheError::Format("no filename".to_string()))?
-                    .to_string_lossy();
-                let id = ID::from_hex(&id_str)?;
-
-                let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
-                let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
-
-                let keyfile_data = backend.read(&handle, 0, 0).await?;
-                let decompressed = ss.decompress(&keyfile_data)?;
-                let kf: KeyFile = serde_json::from_slice(&decompressed)?;
-
-                Ok((id, kf))
-            }));
-        }
-
-        if let Some(mut fut) = self.loading_future.take() {
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(Ok(res)) => Poll::Ready(Some(Ok(res))),
-                Poll::Ready(Err(e)) => {
-                    if matches!(e, MapacheError::Serialization(_)) {
-                        ui::cli::warning!("Failed to parse keyfile: {}", e);
-                        self.loading_future = None;
-                        return self.poll_next(cx);
+                self.loading_future = Some(Box::pin(async move {
+                    if !backend.is_file(&path).await {
+                        Err(MapacheError::Repo("not a file".to_string()))?;
                     }
-                    Poll::Ready(Some(Err(e)))
-                }
-                Poll::Pending => {
-                    self.loading_future = Some(fut);
-                    Poll::Pending
-                }
+
+                    let id_str = path
+                        .file_name()
+                        .ok_or_else(|| MapacheError::Format("no filename".to_string()))?
+                        .to_string_lossy();
+                    let id = ID::from_hex(&id_str)?;
+
+                    let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
+                    let handle = Handle::new_with_hint(&path, ContentIdType::Key, true);
+
+                    let keyfile_data = backend.read(&handle, 0, 0).await?;
+                    let decompressed = ss.decompress(&keyfile_data)?;
+                    let kf: KeyFile = serde_json::from_slice(&decompressed)?;
+
+                    Ok((id, kf))
+                }));
             }
-        } else {
-            Poll::Ready(None)
+
+            if let Some(mut fut) = self.loading_future.take() {
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(Ok(res)) => return Poll::Ready(Some(Ok(res))),
+                    Poll::Ready(Err(e)) => {
+                        if matches!(e, MapacheError::Serialization(_)) {
+                            ui::cli::warning!("Failed to parse keyfile: {}", e);
+                            self.loading_future = None;
+                            continue;
+                        }
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    Poll::Pending => {
+                        self.loading_future = Some(fut);
+                        return Poll::Pending;
+                    }
+                }
+            } else {
+                return Poll::Ready(None);
+            }
         }
     }
 }

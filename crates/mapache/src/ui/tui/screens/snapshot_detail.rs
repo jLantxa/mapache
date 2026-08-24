@@ -176,12 +176,12 @@ impl SnapshotDetailScreen {
         )));
 
         lines.push(Line::from(vec![
-            Span::styled("  Size".to_string(), theme::THEME.menu_key),
+            Span::styled("  Size", theme::THEME.menu_key),
             Span::raw("  "),
             Span::raw(utils::format_size_binary(s.size(), 3)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  Items".to_string(), theme::THEME.menu_key),
+            Span::styled("  Items", theme::THEME.menu_key),
             Span::raw(" "),
             Span::raw(s.summary.processed_items_count.to_string()),
         ]));

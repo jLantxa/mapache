@@ -43,6 +43,9 @@ use crate::{
     ui,
 };
 
+/// Maximum number of concurrent subdirectories to explore in `list_dir_recursive`.
+const LIST_DIR_RECURSIVE_CONCURRENCY: usize = 8;
+
 /// Configuration for retry logic.
 #[derive(Debug, Clone)]
 pub struct RetryOptions {
@@ -229,7 +232,7 @@ pub trait StorageBackend: Send + Sync {
                     }
                 }
             })
-            .buffer_unordered(8)
+            .buffer_unordered(LIST_DIR_RECURSIVE_CONCURRENCY)
             .try_collect::<Vec<_>>()
             .await?
             .into_iter()

@@ -28,11 +28,11 @@ use crate::{
 /// Index loading mode: eager (load all) or lazy (hot + cold).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IndexMode {
-    /// Load all indices into RAM. Fastest lookups, ~50 bytes/blob.
+    /// Load all indices into RAM. Fastest lookups.
     #[default]
     Eager,
     /// Only load N most recent indices (hot), rest use lazy loading (cold).
-    /// Saves memory (~2 bytes/blob for cold), cold lookups re-decrypt index (~12ms).
+    /// Saves memory; cold lookups re-load the full index from disk.
     /// The value is the maximum total blob count in the LRU cache.
     Lazy(u64),
 }
@@ -102,7 +102,7 @@ struct BlobLocationInternal {
 /// Internal representation of blob ID to location mappings.
 /// Uses a `HashMap` for mutable indices (under construction) and
 /// a sorted `Vec` with a per-map Bloom filter for immutable indices
-/// (loaded from disk). This reduces memory by ~45% per entry and
+/// (loaded from disk). This reduces memory vs a HashMap and
 /// avoids O(log n) binary search for entries not present in a given index.
 #[derive(Debug, Clone)]
 enum BlobMap {
@@ -212,7 +212,7 @@ pub(crate) trait ColdIndexLoader: Send + Sync {
 pub struct IndexMetadata {
     /// The file ID of this index file (for loading from disk).
     pub file_id: ID,
-    /// BloomFilter for fast negative lookups (~2 bytes/blob in RAM).
+    /// BloomFilter for fast negative lookups.
     pub bloom_filter: BloomFilter,
     /// Pack IDs referenced by this index file.
     pub pack_ids: Vec<ID>,
@@ -305,7 +305,7 @@ pub struct Index {
 
     /// blob ID -> BlobLocationInternal map. This is the core lookup table.
     /// Uses `BlobMap` which is a HashMap while mutable and a sorted Vec
-    /// once persisted, reducing memory by ~45% for on-disk indices.
+    /// once persisted, reducing memory vs a HashMap for on-disk indices.
     data_ids: BlobMap,
     tree_ids: BlobMap,
 
@@ -695,15 +695,41 @@ impl Index {
     }
 }
 
+/// Tracks blob IDs that are waiting to be serialized into a pack file.
+/// Wraps a `ShardedIdSet` for low-contention parallel snapshotting.
+#[derive(Debug, Clone)]
+struct PendingBlobs(Arc<ShardedIdSet>);
+
+impl PendingBlobs {
+    fn new() -> Self {
+        Self(Arc::new(ShardedIdSet::new()))
+    }
+
+    fn contains(&self, id: &ID) -> bool {
+        self.0.contains(id)
+    }
+
+    fn insert(&self, id: ID) -> bool {
+        self.0.insert(id)
+    }
+
+    fn remove(&self, id: &ID) {
+        self.0.remove(id);
+    }
+
+    fn clear(&self) {
+        self.0.clear();
+    }
+}
+
 /// Manages a collection of `Index` instances, providing a unified view
 /// over all known blobs in the repository.
 #[derive(Clone)]
 pub struct MasterIndex {
     /// Internal state protected by a read-write lock.
     inner: Arc<RwLock<MasterIndexInner>>,
-    /// Stores the IDs of blobs that are waiting to be serialized into a pack file.
-    /// This is sharded to reduce contention during parallel snapshotting.
-    pending_blobs: Arc<ShardedIdSet>,
+    /// Blob IDs waiting to be serialized into a pack file.
+    pending_blobs: PendingBlobs,
     auto_save: bool,
     /// Index loading mode: eager (keep all in RAM) or lazy (move persisted to cold).
     index_mode: IndexMode,
@@ -721,8 +747,8 @@ struct MasterIndexInner {
     cold_metadata: Vec<IndexMetadata>,
     /// LRU cache for cold indices that have been loaded on demand.
     /// Key: file_id of the index, Value: the loaded `Index`.
-    /// Wrapped in its own RwLock so it can be mutated independently of the main index lock.
-    lru: RwLock<Lru<ID, Index>>,
+    /// Only accessed while holding a write lock on `inner`.
+    lru: Lru<ID, Index>,
 }
 
 impl Default for MasterIndex {
@@ -743,9 +769,9 @@ impl MasterIndex {
                 indices: Vec::with_capacity(1),
                 bloom_filter: None,
                 cold_metadata: Vec::new(),
-                lru: RwLock::new(lru),
+                lru,
             })),
-            pending_blobs: Arc::new(ShardedIdSet::new()),
+            pending_blobs: PendingBlobs::new(),
             auto_save: true,
             index_mode,
             loader: OnceLock::new(),
@@ -759,11 +785,11 @@ impl MasterIndex {
 
     pub fn clear(&self) {
         let mut lock = self.inner.write();
-        let max_weight = lock.lru.read().max_weight;
+        let max_weight = lock.lru.max_weight;
         lock.indices.clear();
         lock.bloom_filter = None;
         lock.cold_metadata.clear();
-        *lock.lru.write() = Lru::with_max_weight(max_weight);
+        lock.lru = Lru::with_max_weight(max_weight);
         self.pending_blobs.clear();
     }
 
@@ -797,8 +823,10 @@ impl MasterIndex {
         lock.indices.iter().rev().any(|idx| idx.contains(id))
     }
 
-    /// Search backwards for Data blobs specifically.
-    /// Falls back to tree_ids and zero_ids if not found in data_ids.
+    /// Look up a blob by ID, searching data_ids first, then tree_ids, then zero_ids.
+    /// The fallback chain exists because callers (restorer, verify) look up blob IDs
+    /// from file node descriptors without knowing the blob type upfront. A file's
+    /// content may span Data, Tree, or Zero blobs depending on dedup and zero-fill.
     pub fn get_data(&self, id: &ID) -> Option<BlobLocator> {
         let lock = self.inner.read();
 
@@ -892,7 +920,7 @@ impl MasterIndex {
                 let meta = lock.cold_metadata.swap_remove(cold_idx);
                 tracing::debug!(target: "index", "Loading cold index {} (file {}) into hot",
                     cold_idx, meta.file_id.to_short_hex(8));
-                lock.lru.write().remove(&meta.file_id);
+                lock.lru.remove(&meta.file_id);
                 Some(meta)
             } else {
                 None
@@ -983,7 +1011,7 @@ impl MasterIndex {
             {
                 let mut lock = self.inner.write();
                 lock.cold_metadata.retain(|m| m.file_id != file_id);
-                lock.lru.write().remove(&file_id);
+                lock.lru.remove(&file_id);
             }
 
             // Load from disk (no lock held)
@@ -1022,10 +1050,10 @@ impl MasterIndex {
             tracing::debug!(target: "index", "Evicting hot index {} (file {}) to cold (hot limit: {})",
                 lock.indices[pos].instance_id, file_id.to_short_hex(8), hot_limit);
             let cold_meta = IndexMetadata::from_index(&lock.indices[pos], file_id);
-            // Cache the evicted index in the LRU so it can be reused without disk I/O
+            // Cache the evicted index in the LRU so it can be reused if still cached
             let evicted = lock.indices.swap_remove(pos);
             let weight = evicted.num_blobs() as u64;
-            lock.lru.write().insert(file_id, Arc::new(evicted), weight);
+            lock.lru.insert(file_id, Arc::new(evicted), weight);
             lock.cold_metadata.push(cold_meta);
         }
     }
@@ -1077,19 +1105,19 @@ impl MasterIndex {
         descriptors: Vec<PackedBlobDescriptor>,
     ) -> Result<SizePair> {
         let mut index_to_persist = None;
-        let mut target_instance_id = 0;
 
         {
             let num_blobs = descriptors.len();
             let mut lock = self.inner.write();
 
+            // Remove non-Padding blobs from pending set and add to bloom filter.
+            // Padding blobs are synthetic and should not be tracked in pending.
             for blob in &descriptors {
-                self.pending_blobs.remove(&blob.id);
-            }
-
-            if let Some(bf) = &mut lock.bloom_filter {
-                for blob in &descriptors {
-                    bf.insert(&blob.id);
+                if !matches!(blob.blob_type, BlobType::Padding) {
+                    self.pending_blobs.remove(&blob.id);
+                    if let Some(bf) = &mut lock.bloom_filter {
+                        bf.insert(&blob.id);
+                    }
                 }
             }
 
@@ -1097,47 +1125,37 @@ impl MasterIndex {
                 lock.indices.push(Index::new());
             }
 
-            let pending_index = lock
+            let pending_pos = lock
                 .indices
-                .iter_mut()
-                .find(|idx| idx.is_pending())
+                .iter()
+                .position(|idx| idx.is_pending())
                 .ok_or_else(|| {
                     MapacheError::Repo(format!("no pending index available to add pack {pack_id}"))
                 })?;
 
-            tracing::debug!(target: "index", "Adding pack {} ({} blobs) to pending index #{}", pack_id.to_short_hex(8), num_blobs, pending_index.instance_id);
-            pending_index.add_pack(pack_id, descriptors);
+            tracing::debug!(target: "index", "Adding pack {} ({} blobs) to pending index #{}", pack_id.to_short_hex(8), num_blobs, lock.indices[pending_pos].instance_id);
+            lock.indices[pending_pos].add_pack(pack_id, descriptors);
 
-            let is_full = pending_index.is_full();
-            let is_timed_out = pending_index.create_time.elapsed()
+            let is_full = lock.indices[pending_pos].is_full();
+            let is_timed_out = lock.indices[pending_pos].create_time.elapsed()
                 >= common::defaults::runtime().index_flush_timeout;
 
             if self.auto_save && (is_full || is_timed_out) {
                 let reason = if is_full { "full" } else { "timeout" };
-                tracing::info!(target: "index", "Persisting index #{} (reason: {})", pending_index.instance_id, reason);
-                // We must persist this index. To avoid holding the lock during IO,
-                // we'll take it out of the list or mark it as non-pending.
-                // Simplified approach: just finalize it and keep it in the list.
-                pending_index.finalize();
-                target_instance_id = pending_index.instance_id;
-                index_to_persist = Some(pending_index.clone());
+                tracing::info!(target: "index", "Persisting index #{} (reason: {})", lock.indices[pending_pos].instance_id, reason);
+                lock.indices[pending_pos].finalize();
+                index_to_persist = Some(lock.indices.swap_remove(pending_pos));
             } else if is_full {
-                tracing::debug!(target: "index", "Index #{} is full, finalizing", pending_index.instance_id);
-                pending_index.finalize();
+                tracing::debug!(target: "index", "Index #{} is full, finalizing", lock.indices[pending_pos].instance_id);
+                lock.indices[pending_pos].finalize();
             }
         }
 
         if let Some(mut idx) = index_to_persist {
             let size = idx.persist(repo, None).await?;
-            // Update the status in the actual list
+            // Put the persisted index back with updated status.
             let mut lock = self.inner.write();
-            if let Some(pos) = lock
-                .indices
-                .iter()
-                .position(|i| i.instance_id == target_instance_id)
-            {
-                lock.indices[pos].status = idx.status;
-            }
+            lock.indices.push(idx);
             Ok(size)
         } else {
             Ok(SizePair::zero())
@@ -1156,15 +1174,21 @@ impl MasterIndex {
     ) -> Result<SizePair> {
         let mut total_size = SizePair::zero();
 
-        // Collect all indices that need persisting
+        // Collect indices that need persisting, taking them out to avoid holding
+        // the lock during IO. They'll be pushed back after persistence.
         let mut indices_to_persist = Vec::new();
         {
             let mut lock = self.inner.write();
-            for idx in &mut lock.indices {
-                if !matches!(idx.status, IndexStatus::Persisted(_)) && !idx.is_empty() {
-                    tracing::debug!(target: "index", "Marking index #{} for persistence", idx.instance_id);
-                    idx.finalize();
-                    indices_to_persist.push(idx.clone());
+            let mut i = 0;
+            while i < lock.indices.len() {
+                if !matches!(lock.indices[i].status, IndexStatus::Persisted(_))
+                    && !lock.indices[i].is_empty()
+                {
+                    tracing::debug!(target: "index", "Marking index #{} for persistence", lock.indices[i].instance_id);
+                    lock.indices[i].finalize();
+                    indices_to_persist.push(lock.indices.swap_remove(i));
+                } else {
+                    i += 1;
                 }
             }
         }
@@ -1178,15 +1202,9 @@ impl MasterIndex {
             let size = idx.persist(repo, repo_version).await?;
             total_size += size;
 
-            // Update the status in the master index
+            // Put the persisted index back.
             let mut lock = self.inner.write();
-            if let Some(actual_idx) = lock
-                .indices
-                .iter_mut()
-                .find(|i| i.instance_id == idx.instance_id)
-            {
-                actual_idx.status = idx.status;
-            }
+            lock.indices.push(idx);
         }
 
         Ok(total_size)

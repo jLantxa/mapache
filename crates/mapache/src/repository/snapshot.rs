@@ -12,7 +12,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::common::error::Result;
 use async_stream::stream;
 use chrono::{DateTime, Local};
 use futures::{Stream, StreamExt};
@@ -20,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     commands::EMPTY_TAG_MARK,
-    common::ID,
+    common::{ID, error::Result},
     fs::tree::NodeDiff,
     repository::repo::{REPO_DROPPED_EXTENSION, Repository},
 };
@@ -88,7 +87,6 @@ pub struct SnapshotEntry {
 pub type SnapshotEntryList = Vec<SnapshotEntry>;
 
 impl Snapshot {
-    #[inline]
     pub fn size(&self) -> u64 {
         self.summary.processed_bytes
     }
@@ -150,7 +148,7 @@ impl DiffCounts {
     }
 }
 
-/// Concurrent counters. Lock-free.
+/// Concurrent counters using relaxed atomics (approximate, no snapshot consistency).
 #[derive(Debug, Default)]
 pub struct DiffCountsAtomic {
     pub new_files: AtomicU64,
@@ -164,7 +162,6 @@ pub struct DiffCountsAtomic {
 }
 
 impl DiffCountsAtomic {
-    #[inline]
     pub fn increment(&self, is_dir: bool, diff_type: &NodeDiff) {
         match diff_type {
             NodeDiff::New => {
@@ -198,7 +195,6 @@ impl DiffCountsAtomic {
         }
     }
 
-    #[inline]
     pub fn snapshot(&self) -> DiffCounts {
         let o = Ordering::Relaxed;
         DiffCounts {

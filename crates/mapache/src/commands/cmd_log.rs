@@ -71,9 +71,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), LogErro
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(false))
             .await
-            .map_err(|e| {
-                LogError::SnapshotNotFound(format!("failed to initialize backend: {}", e.inner()))
-            })?,
+            .map_err(LogError::Repo)?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,

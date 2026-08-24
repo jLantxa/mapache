@@ -233,7 +233,7 @@ pub(crate) fn pretty_print_duration(duration: std::time::Duration) -> String {
 /// Shows up to `max_parts` most significant units.
 pub(crate) fn pretty_print_duration_chrono(duration: chrono::Duration, max_parts: usize) -> String {
     let total_seconds = duration.num_seconds().unsigned_abs();
-    let millis = (duration.num_milliseconds() as u64) % 1000;
+    let millis = duration.num_milliseconds().unsigned_abs() % 1000;
     let (d, h, m, s, ms) = decompose_duration(total_seconds, millis);
     format_duration_parts(d, h, m, s, ms, max_parts, false)
 }

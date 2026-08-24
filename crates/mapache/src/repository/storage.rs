@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 use crate::{
     backend::WriteContents,
     common::error::{MapacheError, Result},
-    common::{self, defaults::DEFAULT_COMPRESSION},
+    common::{self, defaults},
 };
 
 const AES_GCM_NONCE_LEN: usize = 12;
@@ -32,7 +32,7 @@ impl Default for SecureStorage {
 impl SecureStorage {
     pub fn new() -> Self {
         Self {
-            compression_level: DEFAULT_COMPRESSION.to_level(),
+            compression_level: defaults::DEFAULT_COMPRESSION.to_level(),
             cipher: None,
             nonce_at_end: AtomicBool::new(true),
             compressor_pool: Mutex::new(Vec::new()),
@@ -114,10 +114,6 @@ impl SecureStorage {
         let mut out = Vec::with_capacity(bound + overhead);
 
         if let Some(c) = ctx {
-            if out.capacity() < bound {
-                out.reserve(bound - out.len());
-            }
-
             unsafe {
                 // SAFETY: u8 accepts any bit pattern. We set the length to `bound`
                 // to obtain a mutable slice of the reserved capacity without zero-initializing.
@@ -138,6 +134,7 @@ impl SecureStorage {
             let nonce_bytes: [u8; AES_GCM_NONCE_LEN] = rand::random();
             let nonce = Nonce::try_from(&nonce_bytes[..]).expect("nonce length is always 12");
             // InOutBuf shares input/output memory — zero-copy in-place encryption.
+            // (The nonce-at-start v1 branch below allocates an extra Vec.)
             let tag = cipher
                 .encrypt_inout_detached(&nonce, b"", InOutBuf::from(&mut out[..]))
                 .map_err(|_| MapacheError::Crypto("encryption failed".to_string()))?;
@@ -349,7 +346,7 @@ impl SecureStorage {
 
     pub fn return_encoding_context(&self, ctx: EncodingContext) {
         let mut pool = self.compressor_pool.lock();
-        if pool.len() < 16 {
+        if pool.len() < defaults::DEFAULT_COMPRESSOR_POOL_SIZE {
             pool.push(ctx);
         }
     }
@@ -484,7 +481,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_encode_decode_with_compression_and_key() -> Result<()> {
         let key = TEST_KEY;
         let ss = SecureStorage::new()
-            .with_compression(DEFAULT_COMPRESSION.to_level())
+            .with_compression(defaults::DEFAULT_COMPRESSION.to_level())
             .with_key(&key)
             .unwrap();
 
@@ -510,7 +507,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
         assert!(encrypted_data.len() > original_data.len());
         assert_eq!(
             encrypted_data.len() - original_data.len(),
-            AES_GCM_NONCE_LEN + 16
+            AES_GCM_NONCE_LEN + AES_GCM_TAG_LEN
         );
         assert_eq!(original_data, &*decrypted_data);
         Ok(())
@@ -532,7 +529,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
 
     #[test]
     fn test_encode_decode_no_key_with_compression() -> Result<()> {
-        let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
+        let ss = SecureStorage::new().with_compression(defaults::DEFAULT_COMPRESSION.to_level());
 
         let encoded_data = ss.encode(TEXT)?;
         let decoded_data = ss.decode(&encoded_data)?;
@@ -581,7 +578,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_encode_decode_managed() -> Result<()> {
         let key = TEST_KEY;
         let ss = SecureStorage::new()
-            .with_compression(DEFAULT_COMPRESSION.to_level())
+            .with_compression(defaults::DEFAULT_COMPRESSION.to_level())
             .with_key(&key)
             .unwrap();
 
@@ -612,7 +609,7 @@ cupiditat non proident, sunt in culpa qui officia deserunt mollit anim id est la
     fn test_decode_owned() -> Result<()> {
         let key = TEST_KEY;
         let ss = SecureStorage::new()
-            .with_compression(DEFAULT_COMPRESSION.to_level())
+            .with_compression(defaults::DEFAULT_COMPRESSION.to_level())
             .with_key(&key)
             .unwrap();
 

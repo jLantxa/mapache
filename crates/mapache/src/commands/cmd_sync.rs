@@ -277,7 +277,7 @@ async fn sync_backends(
     shutdown_signal: Arc<AtomicBool>,
     json_out: bool,
 ) -> Result<()> {
-    // Calculate diferences
+    // Calculate differences
     let (to_copy, to_delete) = diff(src_backend, dst_backend).await?;
 
     if json_out {

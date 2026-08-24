@@ -5,16 +5,20 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::archiver::processor::is_all_zero;
-use crate::backend::{Handle, StorageBackend};
-use crate::common::{
-    BlobType, ContentIdType, ID,
-    error::{MapacheError, Result},
+use crate::{
+    archiver::processor::is_all_zero,
+    backend::{Handle, StorageBackend},
+    common::{
+        BlobType, ContentIdType, ID, defaults,
+        error::{MapacheError, Result},
+    },
+    fs::tree::Tree,
+    repository::{
+        packer::{PackedBlobDescriptor, Packer},
+        repo::Repository,
+        storage::SecureStorage,
+    },
 };
-use crate::fs::tree::Tree;
-use crate::repository::packer::{PackedBlobDescriptor, Packer};
-use crate::repository::repo::Repository;
-use crate::repository::storage::SecureStorage;
 
 /// Re-encrypt a single pack from `old_nonce_at_end` to `new_nonce_at_end` position.
 ///
@@ -281,7 +285,7 @@ pub async fn create_pack_from_blobs(
     secure_storage: &std::sync::Arc<SecureStorage>,
     blobs: &[(ID, BlobType, Vec<u8>, u64)],
 ) -> Result<Option<(ID, Vec<PackedBlobDescriptor>)>> {
-    let mut packer = Packer::new(16 * 1024 * 1024, secure_storage.clone())?;
+    let mut packer = Packer::new(defaults::DEFAULT_PACK_SIZE as usize, secure_storage.clone())?;
     for (id, blob_type, encoded, raw_size) in blobs {
         packer.add_blob(*id, *blob_type, encoded, *raw_size, true)?;
     }

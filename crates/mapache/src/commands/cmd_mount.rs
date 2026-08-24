@@ -54,7 +54,7 @@ pub struct CmdArgs {
     #[arg(short, long, default_value_t = false)]
     pub bundle: bool,
 
-    /// Mount point
+    /// Allow other users to access the mount
     #[arg(long, value_parser, default_value_t = false)]
     pub allow_other: bool,
 

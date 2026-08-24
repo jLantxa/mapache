@@ -728,7 +728,7 @@ impl Node {
 
         let name = path
             .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
+            .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| {
                 // If it's a drive root or system root, extract a sensible name.
                 if let Some(std::path::Component::Prefix(p)) = path.components().next() {

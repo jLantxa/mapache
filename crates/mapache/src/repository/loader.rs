@@ -20,8 +20,8 @@ pub struct PackSegment<T> {
 }
 
 impl<T> PackSegment<T> {
-    pub fn source_len(&self) -> usize {
-        (self.max_offset - self.min_offset) as usize
+    pub fn source_len(&self) -> u64 {
+        self.max_offset - self.min_offset
     }
 }
 
@@ -104,7 +104,7 @@ pub async fn download_pack_segments<T: Send + 'static>(
                     .read(
                         &Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
                         segment.min_offset as isize,
-                        segment.source_len(),
+                        segment.source_len() as usize,
                     )
                     .await
                     .map_err(|e| {
@@ -117,7 +117,7 @@ pub async fn download_pack_segments<T: Send + 'static>(
                 Ok::<(_, Vec<u8>), MapacheError>((segment, data))
             }
         })
-        .buffer_unordered(8)
+        .buffer_unordered(defaults::DEFAULT_SNAPSHOT_READERS)
         .collect::<Vec<Result<_>>>()
         .await;
 
@@ -178,7 +178,8 @@ impl BlobLoader {
         let loaded = download_pack_segments(self.repo.clone(), all_segments).await?;
 
         // Extract and Decode
-        let mut result = HashMap::with_capacity(loaded.len());
+        let total_blobs: usize = loaded.iter().map(|(seg, _)| seg.blobs.len()).sum();
+        let mut result = HashMap::with_capacity(total_blobs);
         for (segment, data) in loaded {
             for (id, loc, _) in segment.blobs {
                 let blob_offset = loc.offset as u64;

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
@@ -36,7 +38,7 @@ pub enum SummaryResult {
 
 pub struct ProgressState {
     pub core: TaskProgressState,
-    recent_nodes: Vec<(String, NodeDiff)>,
+    recent_nodes: VecDeque<(String, NodeDiff)>,
     pub spinner_index: usize,
 }
 
@@ -44,7 +46,7 @@ impl ProgressState {
     pub fn new() -> Self {
         Self {
             core: TaskProgressState::new(),
-            recent_nodes: Vec::new(),
+            recent_nodes: VecDeque::new(),
             spinner_index: 0,
         }
     }
@@ -64,9 +66,9 @@ impl ProgressState {
             BackupEvent::NodeProcessing { path, diff, .. } => {
                 let path_str = path.to_string_lossy().to_string();
                 self.core.set_message(path_str.clone());
-                self.recent_nodes.push((path_str, diff));
+                self.recent_nodes.push_back((path_str, diff));
                 if self.recent_nodes.len() > MAX_RECENT_NODES {
-                    self.recent_nodes.remove(0);
+                    self.recent_nodes.pop_front();
                 }
             }
             BackupEvent::NodeProcessed { .. } => {
@@ -102,7 +104,7 @@ impl ProgressState {
         !self.recent_nodes.is_empty()
     }
 
-    pub fn recent_nodes(&self) -> &[(String, NodeDiff)] {
+    pub fn recent_nodes(&self) -> &VecDeque<(String, NodeDiff)> {
         &self.recent_nodes
     }
 

@@ -589,6 +589,17 @@ pub(crate) async fn find_use_snapshot(
 
 pub(crate) const EMPTY_TAG_MARK: &str = "[]";
 
+/// Parse a string as `usize`, rejecting zero values.
+pub(crate) fn parse_positive_usize(s: &str) -> std::result::Result<usize, String> {
+    let n = s
+        .parse::<usize>()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
+    if n == 0 {
+        return Err("value must be greater than 0".to_string());
+    }
+    Ok(n)
+}
+
 pub(crate) fn parse_tags(s: Option<&str>) -> BTreeSet<String> {
     s.unwrap_or("")
         .split(',')
@@ -746,7 +757,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Cat(cmd) => cmd_cat::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args, cmd_hooks.as_ref())
+        Command::Clean(cmd) => cmd_clean::run(&global, &cmd.args, cmd_hooks)
             .await
             .map_err(CmdError::new),
         Command::Copy(cmd) => cmd_copy::run(&global, &cmd.args)
@@ -761,7 +772,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Find(cmd) => cmd_find::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Forget(cmd) => cmd_forget::run(&global, &cmd.args, cmd_hooks.as_ref())
+        Command::Forget(cmd) => cmd_forget::run(&global, &cmd.args, cmd_hooks)
             .await
             .map_err(CmdError::new),
         Command::Init(cmd) => cmd_init::run(&global, &cmd.args)
@@ -790,10 +801,10 @@ pub async fn parse_and_run() -> i32 {
         Command::Rechunk(cmd) => cmd_rechunk::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args, cmd_hooks.as_ref())
+        Command::Restore(cmd) => cmd_restore::run(&global, &cmd.args, cmd_hooks)
             .await
             .map_err(CmdError::new),
-        Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args, cmd_hooks.as_ref())
+        Command::Snapshot(cmd) => cmd_snapshot::run(&global, &cmd.args, cmd_hooks)
             .await
             .map_err(CmdError::new),
         Command::Stats(cmd) => cmd_stats::run(&global, &cmd.args)
@@ -805,7 +816,7 @@ pub async fn parse_and_run() -> i32 {
         Command::Unlock(cmd) => cmd_unlock::run(&global, &cmd.args)
             .await
             .map_err(CmdError::new),
-        Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args, cmd_hooks.as_ref())
+        Command::Verify(cmd) => cmd_verify::run(&global, &cmd.args, cmd_hooks)
             .await
             .map_err(CmdError::new),
     };

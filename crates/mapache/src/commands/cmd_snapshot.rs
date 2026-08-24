@@ -15,7 +15,8 @@ use crate::{
     backend::{StorageHint, new_backend_with_prompt},
     commands::{
         EMPTY_TAG_MARK, GlobalArgs, HookArgs, Merge, ToExitCode, UseSnapshot,
-        cleanup::CleanupHandler, find_use_snapshot, merge_opt, parse_tags, with_repository_lock,
+        cleanup::CleanupHandler, find_use_snapshot, merge_opt, parse_positive_usize, parse_tags,
+        with_repository_lock,
     },
     common::{
         self, ContentIdType, ID,
@@ -835,23 +836,11 @@ fn show_cli_summary(completion: &SnapshotCompletion, dry_run: bool) {
 }
 
 fn parse_packers(s: &str) -> Result<usize, String> {
-    let n = s
-        .parse::<usize>()
-        .map_err(|_| format!("'{s}' is not a valid number"))?;
-    if n == 0 {
-        return Err("packers must be greater than 0".to_string());
-    }
-    Ok(n)
+    parse_positive_usize(s).map_err(|e| e.replace("value", "packers"))
 }
 
 fn parse_readers(s: &str) -> Result<usize, String> {
-    let n = s
-        .parse::<usize>()
-        .map_err(|_| format!("'{s}' is not a valid number"))?;
-    if n == 0 {
-        return Err("readers must be greater than 0".to_string());
-    }
-    Ok(n)
+    parse_positive_usize(s).map_err(|e| e.replace("value", "readers"))
 }
 
 #[cfg(test)]

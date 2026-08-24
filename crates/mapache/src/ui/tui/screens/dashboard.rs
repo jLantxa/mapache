@@ -264,7 +264,7 @@ impl DashboardScreen {
         let stats_right = Paragraph::new(Line::from(vec![
             Span::styled("last ", theme::THEME.footer),
             Span::styled(
-                self.stats.newest.clone().unwrap_or_else(|| "-".into()),
+                self.stats.newest.as_deref().unwrap_or("-"),
                 theme::THEME.teal,
             ),
         ]))

@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
-use crate::common::error::{MapacheError, Result};
 use futures::stream::{self, StreamExt};
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::sync::mpsc;
 
 use crate::{
     backend::{Handle, StorageBackend},
-    common::{self, BlobType, ContentIdType, ID},
+    common::{
+        self, BlobType, ContentIdType, ID,
+        error::{MapacheError, Result},
+    },
     fs::tree::Tree,
     repository::{
         packer::Packer, repo::REPO_ECC_EXTENSION, repo::Repository, storage::SecureStorage,
@@ -29,12 +31,14 @@ pub struct PackStats {
 
 const CHUNK_SIZE: usize = 64 * size::MiB as usize;
 const MAX_VERIFICATION_BATCH_SIZE: usize = 64 * size::MiB as usize;
+/// Concurrency for verification batches (channel buffer and in-flight limit).
+const VERIFY_BATCH_CONCURRENCY: usize = 4;
 
 /// Verify the checksum and contents of a pack.
 ///
 /// If the pack fits in one chunk, reads it in one shot and verifies
 /// all blobs in parallel. For larger packs, streams in chunks
-/// with batched parallel verification (constant memory).
+/// with batched parallel verification.
 ///
 /// When `repair` is true and bit-rot is detected, attempts to repair the pack
 /// using the ECC sidecar (requires the repo to have ECC enabled).
@@ -312,7 +316,8 @@ async fn verify_pack_streaming(
 
     let mut bit_rot_hasher = common::hash::Hasher::new();
 
-    let (batch_tx, mut batch_rx) = mpsc::channel::<Vec<(ID, Vec<u8>, bool)>>(8);
+    let (batch_tx, mut batch_rx) =
+        mpsc::channel::<Vec<(ID, Vec<u8>, bool)>>(VERIFY_BATCH_CONCURRENCY);
 
     let ss = secure_storage.clone();
     let verifier_handle = tokio::spawn(async move {
@@ -324,7 +329,7 @@ async fn verify_pack_streaming(
 
         loop {
             tokio::select! {
-                Some(batch) = batch_rx.recv(), if pending_verifications.len() < 4 => {
+                Some(batch) = batch_rx.recv(), if pending_verifications.len() < VERIFY_BATCH_CONCURRENCY => {
                     let ss = ss.clone();
                     pending_verifications.push(tokio::task::spawn_blocking(move || batch_verify(&batch, &ss)));
                 }
@@ -370,7 +375,7 @@ async fn verify_pack_streaming(
                 Ok::<(u64, Vec<u8>), MapacheError>((offset, data))
             }
         })
-        .buffered(4);
+        .buffered(VERIFY_BATCH_CONCURRENCY);
 
     let mut next_blob = 0usize;
     let mut blob_acc = Vec::with_capacity(CHUNK_SIZE);
@@ -420,7 +425,7 @@ async fn verify_pack_streaming(
                     pending_blobs_size += blob_acc.len();
                     pending_blobs.push((desc.id, std::mem::take(&mut blob_acc), desc.compressed));
                     // Pre-allocate for next potentially multi-chunk blob
-                    blob_acc = Vec::with_capacity(CHUNK_SIZE.min(size::MiB as usize));
+                    blob_acc = Vec::with_capacity(size::MiB as usize);
                     next_blob += 1;
                 } else {
                     break;

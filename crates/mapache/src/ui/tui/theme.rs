@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use ratatui::{
     Frame,
     layout::{Margin, Rect},
@@ -142,7 +140,7 @@ const ELECTRIC: Theme = {
     }
 };
 
-pub(crate) static THEME: LazyLock<Theme> = LazyLock::new(|| ELECTRIC);
+pub(crate) static THEME: Theme = ELECTRIC;
 
 // ── Convenience helpers ─────────────────────────────────────────
 

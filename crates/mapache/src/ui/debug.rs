@@ -97,7 +97,7 @@ pub(crate) fn init_debugger() {
     log_path.push(&log_name);
 
     if log_path.exists() {
-        let mut counter = 1;
+        let mut counter = 1u32;
         loop {
             let mut alt_path = debug_path.clone();
             alt_path.push(format!("mapache_{ts}_{counter}.log"));
@@ -105,7 +105,11 @@ pub(crate) fn init_debugger() {
                 log_path = alt_path;
                 break;
             }
-            counter += 1;
+            counter = counter.saturating_add(1);
+            if counter == 0 {
+                // Wrapped around — give up to avoid infinite loop
+                break;
+            }
         }
     }
 

@@ -20,9 +20,12 @@ use crate::{
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
 
+/// Maximum number of blobs to prefetch in parallel during node restoration.
+const BLOB_PREFETCH_CONCURRENCY: usize = 4;
+
 /// Restores a node to the specified destination path.
 /// This function does not restore file times for directory nodes. This must be
-/// done in a reparate pass.
+/// done in a separate pass.
 pub(crate) async fn restore_node_to_path(
     restorer: &Restorer,
     event_sender: &EventSender,
@@ -68,7 +71,7 @@ pub(crate) async fn restore_node_to_path(
                     });
                     (index, blob_id, res)
                 })
-                .buffered(4); // Prefetch up to 4 blobs in parallel
+                .buffered(BLOB_PREFETCH_CONCURRENCY);
 
             futures::pin_mut!(stream);
             while let Some((index, blob_id, chunk_data)) = stream.next().await {

@@ -24,7 +24,7 @@ use crate::{
     },
     commands::{
         Compression, GlobalArgs, ToExitCode, UseSnapshot, cleanup::CleanupHandler,
-        find_use_snapshot, with_repository_lock,
+        find_use_snapshot, parse_positive_usize, with_repository_lock,
     },
     common::{
         BlobType, ContentIdType, ID, SaveID,
@@ -1636,13 +1636,7 @@ impl BundleScanner {
 }
 
 fn parse_readers(s: &str) -> Result<usize, String> {
-    let n = s
-        .parse::<usize>()
-        .map_err(|_| format!("'{s}' is not a valid number"))?;
-    if n == 0 {
-        return Err("readers must be greater than 0".to_string());
-    }
-    Ok(n)
+    parse_positive_usize(s).map_err(|e| e.replace("value", "readers"))
 }
 
 #[cfg(test)]

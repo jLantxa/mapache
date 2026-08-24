@@ -24,12 +24,12 @@ use crate::{
 const LOCK_REFRESH_PERIOD: std::time::Duration = Duration::from_secs(3 * 60);
 
 // Lock timeout. This is the time a Lock must go without being refreshed to be considered
-// expired. Expired locks can
+// expired. Expired locks can be cleaned up by other processes.
 pub(crate) const LOCK_EXPIRE_TIMEOUT: std::time::Duration = Duration::from_secs(10 * 60);
 
 const _: () = {
     assert!(
-        LOCK_REFRESH_PERIOD.as_secs() < 2 * LOCK_EXPIRE_TIMEOUT.as_secs(),
+        LOCK_REFRESH_PERIOD.as_secs() < LOCK_EXPIRE_TIMEOUT.as_secs(),
         "LOCK_REFRESH_PERIOD must be strictly less than LOCK_EXPIRE_TIMEOUT"
     );
 };

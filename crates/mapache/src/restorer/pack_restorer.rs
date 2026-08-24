@@ -79,7 +79,7 @@ pub(crate) async fn restore_packs(
 
     for (idx, file) in files.iter().enumerate() {
         if !file.is_selective
-            && (file.num_blobs == 0 && !file.is_hardlink && !file.path.exists() || file.size == 0)
+            && ((file.num_blobs == 0 && !file.is_hardlink && !file.path.exists()) || file.size == 0)
         {
             let mut cache_guard = handle_cache.get_shard(idx).lock();
             cache_guard.get_handle(idx, &file.path, file, &initialized[idx], restorer)?;
@@ -178,7 +178,7 @@ pub(crate) async fn restore_packs(
                     .read(
                         &crate::backend::Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
                         segment.min_offset as isize,
-                        segment.source_len(),
+                        segment.source_len() as usize,
                     )
                     .await
                     .map_err(|e| {

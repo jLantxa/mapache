@@ -12,7 +12,7 @@ enum Row {
     Separator,
 }
 
-/// A helper struct to contruct a Table
+/// A helper struct to construct a Table
 pub struct Table {
     headers: Vec<String>,
     data: Vec<Row>,

@@ -6,14 +6,14 @@ use std::{
     },
 };
 
-use crate::common::error::{MapacheError, Result};
 use futures::{StreamExt, TryStreamExt, stream};
 
 use crate::{
     backend::WriteContents,
     common::{
         self, ContentIdType, ID, SaveID,
-        defaults::{self},
+        defaults::{self, DEFAULT_SNAPSHOT_READERS},
+        error::{MapacheError, Result},
     },
     fs::tree::Tree,
     repository::{
@@ -28,6 +28,17 @@ use crate::{
         collections::{IdMap, IdSet},
     },
 };
+
+/// Concurrency for tree traversal during referenced-blob discovery.
+const GC_TREE_FETCH_CONCURRENCY: usize = 8;
+/// Concurrency for snapshot-level processing during referenced-blob discovery.
+const GC_SNAPSHOT_CONCURRENCY: usize = 4;
+/// Concurrency for deleting unused packs from the backend.
+const GC_DELETE_CONCURRENCY: usize = 16;
+/// Concurrency for deleting old indices and obsolete packs.
+const GC_DELETE_SMALL_CONCURRENCY: usize = 8;
+/// Concurrency for listing directories when scanning for trash files.
+const GC_TRASH_SCAN_CONCURRENCY: usize = 4;
 
 #[derive(Clone)]
 struct GcReporter(EventSender);
@@ -113,8 +124,8 @@ pub async fn scan(
         get_referenced_blobs_and_packs(repo.clone(), reporter.0.clone(), shutdown_signal.clone())
             .await?;
 
-    let (keep_packs, object_trash) = repo.list_packs_and_trash().await?;
-    let mut keep_packs = keep_packs;
+    let (mut keep_packs, object_trash) = repo.list_packs_and_trash().await?;
+    let num_total_packs = keep_packs.len(); // Number of total packs in the repository
     let mut unused_packs = keep_packs.clone();
 
     keep_packs.retain(|id| referenced_packs.contains(id));
@@ -123,7 +134,7 @@ pub async fn scan(
 
     let mut plan = Plan {
         repo: repo.clone(),
-        total_packs: keep_packs.len(),
+        total_packs: num_total_packs,
         referenced_blobs,
         referenced_packs,
         obsolete_packs: IdSet::default(),
@@ -188,7 +199,7 @@ pub async fn scan(
     let current_pack_size = repo.pack_size();
     let min_pack_size_factor = defaults::runtime().min_pack_size_factor;
     for (pack_id, size) in kept_pack_size {
-        if (size as f32 / current_pack_size as f32) < min_pack_size_factor {
+        if (size as f64 / current_pack_size as f64) < min_pack_size_factor as f64 {
             plan.small_packs.insert(pack_id);
         }
     }
@@ -208,7 +219,7 @@ pub async fn scan(
     let mut checked_packs_count = 0;
     for (pack_id, garbage_bytes) in pack_garbage.into_iter() {
         check_shutdown(&shutdown_signal)?;
-        if (garbage_bytes as f32 / current_pack_size as f32) > tolerance {
+        if (garbage_bytes as f64 / current_pack_size as f64) > tolerance as f64 {
             tracing::trace!(target: "gc", "Pack {} is obsolete (garbage bytes: {})", pack_id.to_short_hex(8), garbage_bytes);
             keep_packs.remove(&pack_id);
             plan.obsolete_packs.insert(pack_id);
@@ -343,7 +354,7 @@ impl Plan {
             GcTaskKind::DeletingUnusedPacks,
             "unused pack",
             &r,
-            16,
+            GC_DELETE_CONCURRENCY,
         )
         .await
     }
@@ -353,6 +364,10 @@ impl Plan {
     async fn repack(&mut self, event_sender: EventSender) -> Result<()> {
         // Gather locators while the index is still intact.
         // We use a Vec to preserve the exact metadata we need for the loader.
+        // This collects ALL referenced blobs from obsolete packs into memory
+        // upfront so we can chunk them by decoded-byte budget. For repos with
+        // millions of blobs in obsolete packs, this is a significant allocation
+        // (~24 bytes per blob) but is required for the budget-based chunking below.
         let mut locators_to_repack = Vec::new();
 
         self.repo.index().for_each_id(|id, locator| {
@@ -472,7 +487,7 @@ impl Plan {
                     // at any time. The concurrency limit also prevents exhausting the
                     // blocking thread pool (default 512), which would deadlock when
                     // LocalBackend::write calls spawn_blocking internally for file I/O.
-                    let max_concurrent = defaults::DEFAULT_SNAPSHOT_READERS;
+                    let blob_write_concurrency = DEFAULT_SNAPSHOT_READERS;
 
                     stream::iter(loaded_blobs)
                         .map(|(id, data)| {
@@ -505,7 +520,7 @@ impl Plan {
                                 Ok::<(), MapacheError>(())
                             }
                         })
-                        .buffer_unordered(max_concurrent)
+                        .buffer_unordered(blob_write_concurrency)
                         .try_collect::<Vec<_>>()
                         .await?;
 
@@ -541,7 +556,7 @@ impl Plan {
             GcTaskKind::DeletingOldIndices,
             "obsolete index file",
             &r,
-            8,
+            GC_DELETE_SMALL_CONCURRENCY,
         )
         .await
     }
@@ -556,7 +571,7 @@ impl Plan {
             GcTaskKind::DeletingObsoletePacks,
             "obsolete pack",
             &r,
-            8,
+            GC_DELETE_SMALL_CONCURRENCY,
         )
         .await
     }
@@ -636,7 +651,7 @@ async fn get_referenced_blobs_and_packs(
                                 Ok::<_, MapacheError>(Some(tree))
                             }
                         })
-                        .buffer_unordered(8);
+                        .buffer_unordered(GC_TREE_FETCH_CONCURRENCY);
 
                     while let Some(tree_res) = fetch_stream.next().await {
                         let tree = match tree_res? {
@@ -675,7 +690,7 @@ async fn get_referenced_blobs_and_packs(
                 Ok::<(), MapacheError>(())
             }
         })
-        .buffer_unordered(4)
+        .buffer_unordered(GC_SNAPSHOT_CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
 
@@ -779,7 +794,7 @@ async fn delete_trash_files(
                 Ok::<Vec<PathBuf>, MapacheError>(found)
             }
         })
-        .buffer_unordered(4) // Use a small concurrency factor to stay safe
+        .buffer_unordered(GC_TRASH_SCAN_CONCURRENCY)
         .try_collect::<Vec<Vec<PathBuf>>>()
         .await?
         .into_iter()

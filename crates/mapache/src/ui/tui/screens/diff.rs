@@ -690,7 +690,7 @@ impl Screen for DiffScreen {
                     self.loading = false;
                 }
                 Err(e) => {
-                    self.error = Some(format!("{:?}", e));
+                    self.error = Some(format!("{e}"));
                     self.loading = false;
                 }
             }

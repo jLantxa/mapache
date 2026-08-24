@@ -182,13 +182,13 @@ pub async fn run_with_repo(
 
     if !json_output {
         ui::cli::log!();
-        ui::cli::log!("Total packs: {}", total_packs.to_string());
-        ui::cli::log!("Referenced blobs: {}", referenced_blobs.to_string());
-        ui::cli::log!("Referenced packs: {}", referenced_packs.to_string());
-        ui::cli::log!("Unused packs: {}", unused_packs.to_string());
-        ui::cli::log!("Obsolete packs: {}", obsolete_packs.to_string());
-        ui::cli::log!("Small packs: {}", small_packs.to_string());
-        ui::cli::log!("Tolerated packs: {}", tolerated_packs.to_string());
+        ui::cli::log!("Total packs: {}", total_packs);
+        ui::cli::log!("Referenced blobs: {}", referenced_blobs);
+        ui::cli::log!("Referenced packs: {}", referenced_packs);
+        ui::cli::log!("Unused packs: {}", unused_packs);
+        ui::cli::log!("Obsolete packs: {}", obsolete_packs);
+        ui::cli::log!("Small packs: {}", small_packs);
+        ui::cli::log!("Tolerated packs: {}", tolerated_packs);
         ui::cli::log!();
     }
 

@@ -56,12 +56,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), DiffErr
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(false))
             .await
-            .map_err(|e| {
-                DiffError::SnapshotNotFound(format!(
-                    "failed to initialize backend: {}",
-                    e.inner()
-                ))
-            })?,
+            .map_err(DiffError::Repo)?,
         global_args.to_repo_config(),
         false,
         global_args.retry_lock_duration,
@@ -74,10 +69,24 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), DiffErr
 
             let (src_id, _) = repo
                 .find(ContentIdType::Snapshot, &args.source_snapshot_id)
-                .await?;
+                .await
+                .map_err(|e| {
+                    DiffError::SnapshotNotFound(format!(
+                        "{}: {}",
+                        args.source_snapshot_id,
+                        e.inner()
+                    ))
+                })?;
             let (tgt_id, _) = repo
                 .find(ContentIdType::Snapshot, &args.target_snapshot_id)
-                .await?;
+                .await
+                .map_err(|e| {
+                    DiffError::SnapshotNotFound(format!(
+                        "{}: {}",
+                        args.target_snapshot_id,
+                        e.inner()
+                    ))
+                })?;
             let src_snap = repo.load_snapshot(&src_id, None).await?;
             let tgt_snap = repo.load_snapshot(&tgt_id, None).await?;
 

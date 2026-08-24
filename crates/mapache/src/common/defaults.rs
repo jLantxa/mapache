@@ -59,6 +59,9 @@ pub(crate) const CHUNKER_NORMALIZATION: Normalization = Normalization::L2;
 // --- Encoding ---
 pub(crate) const DEFAULT_COMPRESSION: Compression = Compression::Fast;
 
+/// Maximum number of zstd compressor contexts to keep in the pool.
+pub(crate) const DEFAULT_COMPRESSOR_POOL_SIZE: usize = 16;
+
 // --- Display ---
 /// Display length for the repository ID in bytes
 pub(crate) const SHORT_REPO_ID_LEN: usize = 5;

@@ -49,6 +49,8 @@ use crate::{
     utils::{self, stream::ReceiverStream},
 };
 
+const CHUNKER_POOL_CLOSED: &str = "chunker pool channel closed";
+
 /// Options for creating a new snapshot.
 #[derive(Clone)]
 pub struct SnapshotOptions<'a> {
@@ -356,7 +358,7 @@ pub(crate) async fn snapshot(
                                 if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err()
                                     && !status.is_failed() {
                                         status.signal_fatal(error::MapacheError::Chunking(
-                                            "chunker pool channel closed".to_string(),
+                                            CHUNKER_POOL_CLOSED.to_string(),
                                         ));
                                 }
                             }
@@ -370,7 +372,7 @@ pub(crate) async fn snapshot(
                                 && pool_sender.send(ChunkerPoolMsg::Batch(pending)).is_err()
                                 && !status.is_failed() {
                                     status.signal_fatal(error::MapacheError::Chunking(
-                                        "chunker pool channel closed".to_string(),
+                                        CHUNKER_POOL_CLOSED.to_string(),
                                     ));
 
                                 return;
@@ -378,7 +380,7 @@ pub(crate) async fn snapshot(
                             if pool_sender.send(ChunkerPoolMsg::Single(Box::new(job))).is_err()
                                 && !status.is_failed() {
                                     status.signal_fatal(error::MapacheError::Chunking(
-                                        "chunker pool channel closed".to_string(),
+                                        CHUNKER_POOL_CLOSED.to_string(),
                                     ));
                             }
                         }

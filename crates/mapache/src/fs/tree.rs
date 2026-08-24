@@ -754,6 +754,7 @@ impl SerializedNodeDataReader {
     fn blob_at(&self, pos: u64) -> usize {
         match self.blob_prefix.binary_search(&pos) {
             Ok(i) => i,
+            Err(0) => 0,
             Err(i) => i - 1,
         }
     }

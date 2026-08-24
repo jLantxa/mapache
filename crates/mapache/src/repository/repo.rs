@@ -6,11 +6,10 @@ use std::{
     },
 };
 
-use serde::de::DeserializeOwned;
-
 use async_trait::async_trait;
 use chrono::Duration;
 use futures::{StreamExt, stream};
+use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -563,8 +562,11 @@ impl Repository {
         // Zero blobs: send to packer with empty encoded data (no bytes in pack data section).
         // They appear in the pack footer as BlobType::Zero with length=0, raw_length=N.
         if blob_type == BlobType::Zero {
-            let raw_length = u32::try_from(data.len()).map_err(|e| {
-                MapacheError::Integrity(format!("zero blob raw size exceeds u32::MAX: {e}"))
+            let raw_length = u32::try_from(data.len()).map_err(|_| {
+                MapacheError::Integrity(format!(
+                    "zero blob raw size ({}) exceeds u32::MAX",
+                    data.len()
+                ))
             })? as u64;
 
             let tx = {
@@ -777,7 +779,7 @@ impl Repository {
         Ok((*id, SizePair::new(raw_size, encoded_size)))
     }
 
-    /// Loads a file to the repository
+    /// Loads a file from the repository
     pub async fn load_file(
         &self,
         id: &ID,
@@ -1224,18 +1226,25 @@ impl Repository {
             let Some(filename) = path.file_name() else {
                 continue;
             };
-            let filename = filename.to_string_lossy().to_string();
-            if let Ok(id) = ID::from_hex(&filename) {
+            // Try to parse as a hex pack ID first.
+            if let Some(filename_str) = filename.to_str()
+                && let Ok(id) = ID::from_hex(filename_str)
+            {
                 packs.insert(id);
-            } else if let Some(stem) = filename.strip_suffix(".ecc") {
-                if let Ok(id) = ID::from_hex(stem) {
-                    ecc_files.push((id, path));
-                } else {
-                    trash.push(path);
-                }
-            } else if let Some(ext) = path.extension() {
+                continue;
+            }
+            // Check for .ecc, .tmp, .dropped extensions.
+            if let Some(ext) = path.extension() {
                 let ext_str = ext.to_string_lossy();
-                if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
+                if ext_str == "ecc" {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                        && let Ok(id) = ID::from_hex(stem)
+                    {
+                        ecc_files.push((id, path));
+                        continue;
+                    }
+                    trash.push(path);
+                } else if ext_str == REPO_TMP_EXTENSION || ext_str == REPO_DROPPED_EXTENSION {
                     trash.push(path);
                 }
             }

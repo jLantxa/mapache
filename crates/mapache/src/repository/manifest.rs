@@ -1,9 +1,11 @@
-use crate::common::error::{MapacheError, Result};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::ID,
+    common::{
+        ID,
+        error::{MapacheError, Result},
+    },
     utils::binary::{get_array, get_i64, get_u8, get_u32, put_bytes, put_i64, put_u32},
 };
 
@@ -22,6 +24,9 @@ pub struct EccConfig {
     pub parity_shards: u32,
 }
 
+/// Default number of data shards for ECC.
+const DEFAULT_DATA_SHARDS: u32 = 100;
+
 impl EccConfig {
     /// Create ECC config from an overhead percentage.
     ///
@@ -31,10 +36,9 @@ impl EccConfig {
         if overhead_percent == 0 {
             return None;
         }
-        let k = 100u32;
         let p = overhead_percent.min(100);
         Some(Self {
-            data_shards: k,
+            data_shards: DEFAULT_DATA_SHARDS,
             parity_shards: p,
         })
     }
@@ -94,7 +98,8 @@ impl Manifest {
     }
 
     pub fn to_binary(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
+        // 4 (version) + 32 (id) + 8 (timestamp_secs) + 4 (timestamp_nanos) + 1 (ecc flag) + 8 (ecc data)
+        let mut buf = Vec::with_capacity(57);
         put_u32(&mut buf, self.version);
         put_bytes(&mut buf, self.id.as_slice());
         put_i64(&mut buf, self.created_time.timestamp());
@@ -130,15 +135,26 @@ impl Manifest {
         // ECC config: optional, forward-compatible.
         let ecc = if !cur.is_empty() {
             let flag = get_u8(&mut cur)?;
-            if flag == 1 && cur.len() >= 8 {
-                let data_shards = get_u32(&mut cur)?;
-                let parity_shards = get_u32(&mut cur)?;
-                Some(EccConfig {
-                    data_shards,
-                    parity_shards,
-                })
-            } else {
-                None
+            match flag {
+                0 => None,
+                1 => {
+                    if cur.len() < 8 {
+                        return Err(MapacheError::Format(
+                            "manifest ECC config truncated".to_string(),
+                        ));
+                    }
+                    let data_shards = get_u32(&mut cur)?;
+                    let parity_shards = get_u32(&mut cur)?;
+                    Some(EccConfig {
+                        data_shards,
+                        parity_shards,
+                    })
+                }
+                _ => {
+                    return Err(MapacheError::Format(format!(
+                        "unknown manifest ECC flag: {flag}"
+                    )));
+                }
             }
         } else {
             None

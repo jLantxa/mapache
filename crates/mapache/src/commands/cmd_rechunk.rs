@@ -107,7 +107,7 @@ pub async fn run(global_args: &GlobalArgs, _args: &CmdArgs) -> Result<(), Rechun
                 )
                 .await?;
 
-                // Save the amended snapshot and delete the old snapshot file
+                // Save the rechunked snapshot and delete the old snapshot file
                 repo.save_file(
                     &SaveID::CalculateID,
                     serde_json::to_string(&snapshot)

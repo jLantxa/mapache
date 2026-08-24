@@ -109,15 +109,19 @@ impl Form {
             match key {
                 KeyCode::Esc => FormAction::Cancel,
                 KeyCode::Tab | KeyCode::Down => {
-                    self.focus = (self.focus + 1) % self.fields.len();
+                    if !self.fields.is_empty() {
+                        self.focus = (self.focus + 1) % self.fields.len();
+                    }
                     FormAction::None
                 }
                 KeyCode::BackTab | KeyCode::Up => {
-                    self.focus = if self.focus == 0 {
-                        self.fields.len() - 1
-                    } else {
-                        self.focus - 1
-                    };
+                    if !self.fields.is_empty() {
+                        self.focus = if self.focus == 0 {
+                            self.fields.len() - 1
+                        } else {
+                            self.focus - 1
+                        };
+                    }
                     FormAction::None
                 }
                 KeyCode::Left => {

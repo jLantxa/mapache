@@ -11,7 +11,7 @@ use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecallError {
-    #[error("snapshot not found: {0}")]
+    #[error("dropped snapshot not found: {0}")]
     SnapshotNotFound(String),
     #[error(transparent)]
     Repo(#[from] MapacheError),
@@ -29,7 +29,6 @@ impl ToExitCode for RecallError {
     }
 }
 
-// Define argument groups for mutual exclusivity and multiple selection
 #[derive(Parser, Debug, Clone)]
 #[clap(about = "Recall forgotten snapshots")]
 pub struct CmdArgs {
@@ -43,12 +42,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), RecallE
         global_args.key.as_ref(),
         new_backend_with_prompt(global_args.backend_options(false))
             .await
-            .map_err(|e| {
-                RecallError::SnapshotNotFound(format!(
-                    "failed to initialize backend: {}",
-                    e.inner()
-                ))
-            })?,
+            .map_err(RecallError::Repo)?,
         global_args.to_repo_config(),
         true,
         global_args.retry_lock_duration,
@@ -64,7 +58,10 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), RecallE
                     &args.id,
                     Some(REPO_DROPPED_EXTENSION),
                 )
-                .await?;
+                .await
+                .map_err(|e| {
+                    RecallError::SnapshotNotFound(format!("{}: {}", args.id, e.inner()))
+                })?;
 
             tracing::info!(target: "recall", "Recalling snapshot {}", id.to_short_hex(8));
             repo.recall_dropped_snapshot(&id).await?;

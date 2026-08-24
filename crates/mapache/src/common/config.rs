@@ -85,18 +85,17 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
 }
 
+const HOME_EXPAND_ERROR: &str = "cannot expand '~': neither $HOME nor $USERPROFILE is set";
+
 /// Converts a config string to a PathBuf, expanding leading `~` to the user's
 /// home directory and resolving `.`/`..` components.
 pub(crate) fn config_path(s: &str) -> Result<PathBuf> {
     let path = if let Some(rest) = s.strip_prefix("~/") {
-        let home = home_dir().ok_or_else(|| {
-            MapacheError::Config("cannot expand '~': neither $HOME nor $USERPROFILE is set".into())
-        })?;
-        home.join(rest)
+        home_dir()
+            .ok_or_else(|| MapacheError::Config(HOME_EXPAND_ERROR.into()))?
+            .join(rest)
     } else if s == "~" {
-        home_dir().ok_or_else(|| {
-            MapacheError::Config("cannot expand '~': neither $HOME nor $USERPROFILE is set".into())
-        })?
+        home_dir().ok_or_else(|| MapacheError::Config(HOME_EXPAND_ERROR.into()))?
     } else {
         PathBuf::from(s)
     };
@@ -190,13 +189,13 @@ pub struct HooksConfig {
 }
 
 impl HooksConfig {
-    pub(crate) fn get_command(&self, name: &str) -> Option<CommandHooks> {
+    pub(crate) fn get_command(&self, name: &str) -> Option<&CommandHooks> {
         match name {
-            "snapshot" => self.snapshot.clone(),
-            "restore" => self.restore.clone(),
-            "forget" => self.forget.clone(),
-            "clean" => self.clean.clone(),
-            "verify" => self.verify.clone(),
+            "snapshot" => self.snapshot.as_ref(),
+            "restore" => self.restore.as_ref(),
+            "forget" => self.forget.as_ref(),
+            "clean" => self.clean.as_ref(),
+            "verify" => self.verify.as_ref(),
             _ => None,
         }
     }

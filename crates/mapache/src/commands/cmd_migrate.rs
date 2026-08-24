@@ -423,19 +423,19 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 repo.save_manifest(&manifest).await?;
                 ui::cli::log!("Manifest updated to v{}", THIS_REPOSITORY_VERSION);
 
-                // Cleanup
+                // Cleanup: move old files to .dropped (atomic), then clean up
                 let mut deleted_pack_count = 0u64;
                 let mut deletion_failures = 0u32;
                 for (old_id, new_id, _) in &pack_map {
                     if old_id == new_id {
                         continue;
                     }
-                    match repo.delete_file(ContentIdType::Pack, old_id, None).await {
+                    match repo.move_to_trash(ContentIdType::Pack, old_id).await {
                         Ok(_) => { deleted_pack_count += 1; }
-                        Err(e) => { ui::cli::warning!("failed to delete old pack {}: {}", old_id, e); deletion_failures += 1; }
+                        Err(e) => { ui::cli::warning!("failed to move old pack {} to trash: {}", old_id, e); deletion_failures += 1; }
                     }
                 }
-                ui::cli::log!("Deleted {} old pack files", deleted_pack_count);
+                ui::cli::log!("Moved {} old pack files to trash", deleted_pack_count);
 
                 let new_snapshot_set: std::collections::HashSet<ID> =
                     new_snapshot_ids.iter().copied().collect();
@@ -444,12 +444,12 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     if new_snapshot_set.contains(old_id) {
                         continue;
                     }
-                    match repo.delete_file(ContentIdType::Snapshot, old_id, None).await {
+                    match repo.move_to_trash(ContentIdType::Snapshot, old_id).await {
                         Ok(_) => { deleted_snap_count += 1; }
-                        Err(e) => { ui::cli::warning!("failed to delete old snapshot {}: {}", old_id, e); deletion_failures += 1; }
+                        Err(e) => { ui::cli::warning!("failed to move old snapshot {} to trash: {}", old_id, e); deletion_failures += 1; }
                     }
                 }
-                ui::cli::log!("Deleted {} old snapshot files", deleted_snap_count);
+                ui::cli::log!("Moved {} old snapshot files to trash", deleted_snap_count);
 
                 let deleted_index_size = AtomicU64::new(0);
                 let old_index_ids: Vec<_> = old_index_ids
@@ -457,17 +457,22 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     .filter(|id| !new_index_ids.contains(id))
                     .collect();
                 for id in &old_index_ids {
-                    match repo.delete_file(ContentIdType::Index, id, None).await {
+                    match repo.move_to_trash(ContentIdType::Index, id).await {
                         Ok(size) => { deleted_index_size.fetch_add(size, Ordering::AcqRel); }
-                        Err(e) => { ui::cli::error!("failed to delete index {}: {}", id, e); deletion_failures += 1; }
+                        Err(e) => { ui::cli::error!("failed to move index {} to trash: {}", id, e); deletion_failures += 1; }
                     }
                 }
-                ui::cli::log!("Deleted {} old index files", old_index_ids.len());
+                ui::cli::log!("Moved {} old index files to trash", old_index_ids.len());
 
                 if deletion_failures > 0 {
                     return Err(MigrateError::Repo(MapacheError::Repo(format!(
-                        "migration completed but failed to delete {deletion_failures} old files"
+                        "migration completed but failed to move {deletion_failures} old files to trash"
                     ))));
+                }
+
+                // Clean up trash files after successful migration
+                for ct in [ContentIdType::Pack, ContentIdType::Snapshot, ContentIdType::Index] {
+                    let _ = repo.clean_trash(ct).await;
                 }
 
                 let added_size: i64 = new_index_size.encoded as i64

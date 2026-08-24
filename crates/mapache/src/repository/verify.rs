@@ -12,7 +12,9 @@ use crate::{
     },
     fs::tree::Tree,
     repository::{
-        packer::Packer, repo::REPO_ECC_EXTENSION, repo::Repository, storage::SecureStorage,
+        packer::Packer,
+        repo::{REPO_ECC_EXTENSION, Repository},
+        storage::SecureStorage,
     },
     utils::{
         collections::{IdSet, ShardedIdSet},
@@ -188,6 +190,161 @@ async fn repair_pack_with_ecc(
         tracing::info!(target: "verify", "Repaired pack {} ({} bytes)", pack_id.to_short_hex(8), decoded.len());
     }
     Ok(())
+}
+
+/// Result of verifying a non-pack metadata file (index, snapshot, manifest).
+pub struct MetadataFileStats {
+    pub file_type: ContentIdType,
+    pub file_id: Option<ID>,
+    pub file_path: std::path::PathBuf,
+    pub readable: bool,
+    pub bit_rot: bool,
+    pub repaired: bool,
+}
+
+/// Verify a non-pack metadata file by reading it, decrypting, and validating
+/// its content structure. If an ECC sidecar exists, also verifies via ECC
+/// and optionally repairs.
+pub async fn verify_metadata_file(
+    backend: Arc<dyn StorageBackend>,
+    secure_storage: Arc<SecureStorage>,
+    repo_version: u32,
+    file_type: ContentIdType,
+    file_id: Option<ID>,
+    file_path: std::path::PathBuf,
+    repair: bool,
+) -> Result<MetadataFileStats> {
+    let mut stats = MetadataFileStats {
+        file_type,
+        file_id,
+        file_path: file_path.clone(),
+        readable: false,
+        bit_rot: false,
+        repaired: false,
+    };
+
+    // Read the file from disk.
+    let raw_data = match backend.read(&Handle::new(&file_path), 0, 0).await {
+        Ok(d) => d,
+        Err(_) => {
+            // File unreadable — not necessarily bit-rot, could be missing.
+            return Ok(stats);
+        }
+    };
+
+    // Decrypt and validate content structure on a blocking thread.
+    let ss = secure_storage.clone();
+    let ft = file_type;
+    let raw_data_clone = raw_data.clone();
+    let decode_result = tokio::task::spawn_blocking(move || match ft {
+        ContentIdType::Pack => Err(MapacheError::Internal(
+            "use verify_pack for packs".to_string(),
+        )),
+        ContentIdType::Key => {
+            ss.decompress(&raw_data_clone)?;
+            Ok(())
+        }
+        ContentIdType::Snapshot => {
+            let plaintext = ss.decode_owned(raw_data_clone)?;
+            let _snapshot: crate::repository::snapshot::Snapshot =
+                serde_json::from_slice(&plaintext).map_err(|e| {
+                    MapacheError::Format(format!("corrupt snapshot structure: {e}"))
+                })?;
+            Ok(())
+        }
+        ContentIdType::Index => {
+            let plaintext = ss.decode_owned(raw_data_clone)?;
+            crate::repository::index::IndexFile::deserialize(&plaintext, repo_version)
+                .map_err(|e| MapacheError::Format(format!("corrupt index structure: {e}")))?;
+            Ok(())
+        }
+        ContentIdType::Lock => Ok(()),
+    })
+    .await
+    .map_err(|e| MapacheError::task_panicked("metadata verification", e))?;
+
+    match decode_result {
+        Ok(()) => stats.readable = true,
+        Err(_) => {
+            // File is corrupt or unreadable. Fall through to ECC check.
+        }
+    }
+
+    // Check ECC sidecar if present.
+    let sidecar_path = file_path.with_extension(REPO_ECC_EXTENSION);
+    if !backend.path_exists(&sidecar_path).await {
+        return Ok(stats);
+    }
+
+    let sidecar_encoded = match backend.read(&Handle::new(&sidecar_path), 0, 0).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(target: "verify", "Failed to read ECC sidecar {}: {e}", sidecar_path.display());
+            return Ok(stats);
+        }
+    };
+
+    let sidecar_data = match secure_storage.decode(&sidecar_encoded) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(target: "verify", "Failed to decode ECC sidecar {}: {e}", sidecar_path.display());
+            return Ok(stats);
+        }
+    };
+
+    // Run ECC decode on a blocking thread.
+    let file_data_clone = raw_data.clone();
+    let sidecar_data_clone = sidecar_data.clone();
+    let ecc_result = tokio::task::spawn_blocking(move || {
+        let decoded = crate::ecc::ecc_decode(&file_data_clone, &sidecar_data_clone)?;
+        let repaired = decoded != file_data_clone;
+        if repaired {
+            crate::ecc::validate_crc(&decoded, &sidecar_data_clone)
+                .map_err(crate::ecc::EccDecodeError::CrcValidationFailed)?;
+        }
+        Ok::<_, crate::ecc::EccDecodeError>((decoded, repaired))
+    })
+    .await
+    .map_err(|e| MapacheError::Internal(format!("ECC decode task failed: {e}")))?
+    .map_err(|e| {
+        MapacheError::Repo(format!(
+            "ECC decode failed for {}: {}",
+            file_path.display(),
+            e
+        ))
+    })?;
+
+    let (decoded, was_repaired) = ecc_result;
+    if was_repaired {
+        stats.bit_rot = true;
+
+        if repair {
+            // Write repaired data back.
+            let tmp_path = file_path.with_extension("ecc.tmp");
+            let tmp_handle = Handle::new(&tmp_path);
+            backend
+                .write(&tmp_handle, std::borrow::Cow::Borrowed(&decoded))
+                .await
+                .map_err(|e| {
+                    MapacheError::Backend(format!(
+                        "failed to write repaired {}: {}",
+                        file_type,
+                        e.inner()
+                    ))
+                })?;
+            backend.rename(&tmp_path, &file_path).await.map_err(|e| {
+                MapacheError::Backend(format!(
+                    "failed to rename repaired {}: {}",
+                    file_type,
+                    e.inner()
+                ))
+            })?;
+            stats.repaired = true;
+            tracing::info!(target: "verify", "Repaired {} at {}", file_type, file_path.display());
+        }
+    }
+
+    Ok(stats)
 }
 
 /// Fast path for packs ≤ CHUNK_SIZE: one read, parallel verify.

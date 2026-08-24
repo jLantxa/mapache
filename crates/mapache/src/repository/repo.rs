@@ -486,6 +486,7 @@ impl Repository {
     pub async fn save_manifest(&self, manifest: &Manifest) -> Result<()> {
         let manifest_bytes = serde_json::to_string_pretty(manifest)?.into_bytes();
         let encoded = self.secure_storage.encode(&manifest_bytes)?;
+
         let tmp = Path::new("manifest.tmp");
         self.backend
             .write(&Handle::new(tmp), WriteContents::Owned(encoded))
@@ -494,7 +495,9 @@ impl Repository {
         self.backend
             .rename(tmp, Path::new(MANIFEST_PATH))
             .await
-            .map_err(|e| MapacheError::Repo(format!("failed to rename manifest: {e}")))
+            .map_err(|e| MapacheError::Repo(format!("failed to rename manifest: {e}")))?;
+
+        Ok(())
     }
 
     /// Returns the repository format version.
@@ -682,6 +685,14 @@ impl Repository {
         .map_err(|e| MapacheError::task_panicked("index loading", e))?
     }
 
+    /// Returns true if the given file type supports ECC sidecars.
+    fn supports_ecc(file_type: ContentIdType) -> bool {
+        matches!(
+            file_type,
+            ContentIdType::Pack | ContentIdType::Index | ContentIdType::Snapshot
+        )
+    }
+
     /// Saves a file to the repository
     pub async fn save_file(
         &self,
@@ -724,7 +735,7 @@ impl Repository {
         };
 
         // Compute ECC sidecar before moving encoded_data.
-        let ecc_payload = if file_type == ContentIdType::Pack {
+        let ecc_payload = if Self::supports_ecc(file_type) {
             if let Some(ecc_config) = self.manifest.ecc() {
                 let k = ecc_config.data_shards as usize;
                 let p = ecc_config.parity_shards as usize;
@@ -760,7 +771,7 @@ impl Repository {
 
         self.backend.write(&handle, cow_data).await?;
 
-        // Write ECC sidecar for packs when ECC is enabled.
+        // Write ECC sidecar when ECC is enabled.
         if let Some((_raw_len, encoded_ecc)) = ecc_payload {
             let ecc_path = path.with_extension(REPO_ECC_EXTENSION);
             let ecc_handle = Handle {
@@ -839,7 +850,7 @@ impl Repository {
         self.backend.remove(&path).await?;
 
         // Also delete .ecc sidecar if it exists (best-effort).
-        if with_extension.is_none() && file_type == ContentIdType::Pack {
+        if with_extension.is_none() && Self::supports_ecc(file_type) {
             let ecc_path = path.with_extension(REPO_ECC_EXTENSION);
             if self.backend.path_exists(&ecc_path).await
                 && let Err(e) = self.backend.remove(&ecc_path).await

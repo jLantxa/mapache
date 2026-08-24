@@ -139,20 +139,20 @@ impl BlobMap {
         }
     }
 
+    #[allow(clippy::panic)]
     fn insert(&mut self, id: ID, loc: BlobLocationInternal) {
         match self {
             BlobMap::Mutable(map) => {
                 map.insert(id, loc);
             }
             BlobMap::Immutable(_, _) => {
-                // This is a programming error — insert is only called during
-                // snapshotting on pending indices, which are always Mutable.
-                debug_assert!(
-                    false,
-                    "insert into immutable BlobMap for id={}",
+                tracing::error!(target: "index", "Attempted insert into immutable BlobMap for id={}", id.to_short_hex(8));
+
+                // This should never happen, but if it happens, it's a good reason to panic
+                panic!(
+                    "Fatal error: insert into immutable BlobMap for id={}",
                     id.to_short_hex(8)
                 );
-                tracing::error!(target: "index", "Attempted insert into immutable BlobMap for id={}", id.to_short_hex(8));
             }
         }
     }
@@ -633,23 +633,17 @@ impl Index {
     }
 
     pub fn iter_ids(&self) -> impl Iterator<Item = (&ID, BlobLocator)> {
-        let mut result: Vec<(&ID, BlobLocator)> = Vec::with_capacity(self.num_blobs());
-        for (id, loc) in self.data_ids.iter() {
-            if let Some(locator) = self.resolve_location(loc, BlobType::Data) {
-                result.push((id, locator));
-            }
-        }
-        for (id, loc) in self.tree_ids.iter() {
-            if let Some(locator) = self.resolve_location(loc, BlobType::Tree) {
-                result.push((id, locator));
-            }
-        }
-        for (id, loc) in self.zero_ids.iter() {
-            if let Some(locator) = self.resolve_location(loc, BlobType::Zero) {
-                result.push((id, locator));
-            }
-        }
-        result.into_iter()
+        self.data_ids
+            .iter()
+            .filter_map(move |(id, loc)| {
+                self.resolve_location(loc, BlobType::Data).map(|l| (id, l))
+            })
+            .chain(self.tree_ids.iter().filter_map(move |(id, loc)| {
+                self.resolve_location(loc, BlobType::Tree).map(|l| (id, l))
+            }))
+            .chain(self.zero_ids.iter().filter_map(move |(id, loc)| {
+                self.resolve_location(loc, BlobType::Zero).map(|l| (id, l))
+            }))
     }
 
     /// Returns a map of Pack ID -> List of descriptors for all packs in this index.

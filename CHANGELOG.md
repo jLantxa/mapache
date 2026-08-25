@@ -10,7 +10,7 @@
 - **`mapache migrate`**: New command to convert v1 repositories to v2 format. Handles
   re-encryption of packs, file re-indexing, and tree re-serialization. Supports
   `--dry-run` for preview.
-- **`--repo-version`**: New flag in `init` to select repository format version.
+- **`--format`**: New flag in `init` to select repository format version.
 - **`--compression none`**: Per-blob compression marker in v2 enables storing
   already-compressed content (video, photos, archives) without zstd overhead.
 - **Zero blob deduplication**: New `BlobType::Zero` deduplicates zero-filled regions
@@ -22,6 +22,8 @@
 - **ECC in bundle format v2**: Bundle files now support inline Reed-Solomon ECC
   protecting the blob data section. Enabled with `--ecc <PERCENT>` during bundle
   creation. Corrupted blobs are automatically repaired during extraction.
+- *Verify metadata*: `mapache verify` can now check metadata files (index,
+  snapshot, etc.) and repair them if ECC is enabled.
 - **Lazy index loading**: Index files are now loaded on demand, reducing RAM usage
   for commands that don't need the full index.
 
@@ -37,6 +39,7 @@
   memory copy during encryption.
 - **v1 deprecation warning**: `snapshot`, `restore`, and other commands now warn when
   operating on v1 repositories. Consider migrating with `mapache migrate`.
+- **Bundle performance**: Speed up bundle writer and refactor archiver pipeline.
 
 ### Fixed
 

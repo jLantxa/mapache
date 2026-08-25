@@ -71,31 +71,85 @@ pub fn make_event_sender(
         BundleMode::Extract => ("Items", "Data"),
     };
 
+    let base_style = default_progress_style().with_key(
+        "processed_bytes_fmt",
+        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            let bytes = state.pos();
+            let processed_bytes_str = utils::format_size_binary(bytes, 3);
+            match state.len() {
+                None => {
+                    let _ = w.write_str(&processed_bytes_str);
+                }
+                Some(total) => {
+                    if total == 0 || bytes >= total {
+                        let _ = w.write_str(&processed_bytes_str);
+                    } else {
+                        let _ = write!(
+                            w,
+                            "{} / {}",
+                            processed_bytes_str,
+                            utils::format_size_binary(total, 3)
+                        );
+                    }
+                }
+            }
+        },
+    );
+
+    let determined_style = base_style
+        .clone()
+        .template(&format!("{bytes_label:<6} [{{bar:20.cyan/white}}] [{{percent}}%] {{processed_bytes_fmt}} [{{bytes_per_sec}}]"))
+        .expect("invalid progress bar template for bundle bytes (determined)");
+
+    let undetermined_style = base_style
+        .clone()
+        .template(&format!(
+            "{bytes_label:<6} {{processed_bytes_fmt}} [{{bytes_per_sec}}]"
+        ))
+        .expect("invalid progress bar template for bundle bytes (undetermined)");
+
     //  Data Bar
-    let data_bar = mp.add(ProgressBar::new(total_bytes));
-    data_bar.set_style(
-            default_progress_style()
-                .template(&format!("{bytes_label:<6} [{{bar:20.cyan/white}}] [{{percent}}%] {{processed_bytes_fmt}} [{{bytes_per_sec}}]"))
-                .expect("invalid progress bar template for bundle bytes")
-                .with_key("processed_bytes_fmt", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-                    let bytes = state.pos();
-                    let total = state.len().unwrap_or(0);
-                    let _ = write!(
-                        w,
-                        "{} / {}",
-                        utils::format_size_binary(bytes, 3),
-                        utils::format_size_binary(total, 3)
-                    );
-                }),
-        );
+    let data_bar = if total_bytes > 0 {
+        mp.add(ProgressBar::new(total_bytes))
+    } else {
+        mp.add(ProgressBar::no_length())
+    };
+
+    if total_bytes > 0 {
+        data_bar.set_style(determined_style.clone());
+    } else {
+        data_bar.set_style(undetermined_style.clone());
+    }
     data_bar.enable_steady_tick(refresh_interval);
 
     // Items Bar
-    let items_bar = mp.add(ProgressBar::new(total_items));
+    let items_bar = if total_items > 0 {
+        mp.add(ProgressBar::new(total_items))
+    } else {
+        mp.add(ProgressBar::no_length())
+    };
     items_bar.set_style(
         default_progress_style()
-            .template(&format!("{items_label:<6} {{pos}} / {{len}}"))
+            .template(&format!("{items_label:<6} {{items_fmt}}"))
             .expect("invalid progress bar template for bundle items")
+            .with_key(
+                "items_fmt",
+                |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    let pos = state.pos();
+                    match state.len() {
+                        None => {
+                            let _ = write!(w, "{}", pos);
+                        }
+                        Some(len) => {
+                            if len == 0 || pos >= len {
+                                let _ = write!(w, "{}", pos);
+                            } else {
+                                let _ = write!(w, "{} / {}", pos, len);
+                            }
+                        }
+                    }
+                },
+            )
             .tick_chars(SPINNER_TICK_CHARS),
     );
     items_bar.enable_steady_tick(refresh_interval);
@@ -196,6 +250,14 @@ pub fn make_event_sender(
             }
             BackupEvent::Finished(_) => {
                 state.finalize();
+            }
+            BackupEvent::ScanFinished {
+                total_items,
+                total_bytes,
+            } => {
+                state.items_bar.set_length(total_items);
+                state.data_bar.set_style(determined_style.clone());
+                state.data_bar.set_length(total_bytes);
             }
             _ => {}
         }

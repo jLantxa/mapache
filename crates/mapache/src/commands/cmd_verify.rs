@@ -33,6 +33,137 @@ use crate::{
     utils::{self, collections::IdSet, rate_estimator::RateEstimator},
 };
 
+#[derive(Serialize)]
+struct VerifyStartMsg {
+    read_packs: bool,
+    sample: Option<f64>,
+}
+
+#[derive(Serialize, Default)]
+struct VerifyProgressMsg {
+    phase: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing_packs: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    corrupt_blobs: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packs_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packs_processed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packs_corrupt: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blobs_verified: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blobs_dangling: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failed_early: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshots_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshots_processed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshots_corrupt: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct VerifyErrorMsg {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blob_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    error: String,
+}
+
+impl VerifyErrorMsg {
+    fn metadata(file_type: impl std::fmt::Display, file_id: &ID, error: impl Into<String>) -> Self {
+        Self {
+            file_type: Some(file_type.to_string()),
+            file_id: Some(file_id.to_hex()),
+            pack_id: None,
+            snapshot: None,
+            blob_id: None,
+            path: None,
+            error: error.into(),
+        }
+    }
+
+    fn pack(pack_id: &ID, error: impl Into<String>) -> Self {
+        Self {
+            file_type: None,
+            file_id: None,
+            pack_id: Some(pack_id.to_hex()),
+            snapshot: None,
+            blob_id: None,
+            path: None,
+            error: error.into(),
+        }
+    }
+
+    fn snapshot(snapshot_id: &ID, error: impl Into<String>) -> Self {
+        Self {
+            file_type: None,
+            file_id: None,
+            pack_id: None,
+            snapshot: Some(snapshot_id.to_short_hex(12)),
+            blob_id: None,
+            path: None,
+            error: error.into(),
+        }
+    }
+
+    fn blob(blob_id: &ID, path: &Path, snapshot_id: &ID) -> Self {
+        Self {
+            file_type: None,
+            file_id: None,
+            pack_id: None,
+            snapshot: Some(snapshot_id.to_short_hex(12)),
+            blob_id: Some(blob_id.to_short_hex(8)),
+            path: Some(path.display().to_string()),
+            error: "corrupt blob affects this file".to_string(),
+        }
+    }
+
+    fn simple(error: impl Into<String>) -> Self {
+        Self {
+            file_type: None,
+            file_id: None,
+            pack_id: None,
+            snapshot: None,
+            blob_id: None,
+            path: None,
+            error: error.into(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct VerifyCompleteMsg {
+    duration_seconds: f64,
+    packs_processed: usize,
+    packs_corrupt: usize,
+    packs_repaired: usize,
+    blobs_verified: usize,
+    blobs_dangling: usize,
+    snapshots_verified: usize,
+    snapshots_corrupt: usize,
+    passed: bool,
+    failed_early: bool,
+    read_packs: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
     #[error("failed to open repository: {0}")]
@@ -271,11 +402,6 @@ pub async fn run_with_repo(
     let start = Instant::now();
 
     if json_out {
-        #[derive(Serialize)]
-        struct VerifyStartMsg {
-            read_packs: bool,
-            sample: Option<f64>,
-        }
         ui::json::emit_static(
             "verify_start",
             &VerifyStartMsg {
@@ -374,16 +500,12 @@ pub async fn run_with_repo(
         ui::cli::log!("{}", "Analyzing impact of corruption...".bold().red());
 
         if json_out {
-            #[derive(Serialize)]
-            struct VerifyProgressMsg {
-                phase: &'static str,
-                corrupt_blobs: usize,
-            }
             ui::json::emit_static(
                 "verify_progress",
                 &VerifyProgressMsg {
                     phase: "corruption",
-                    corrupt_blobs: corrupt_blobs.lock().len(),
+                    corrupt_blobs: Some(corrupt_blobs.lock().len()),
+                    ..VerifyProgressMsg::default()
                 },
             );
         }
@@ -497,16 +619,12 @@ async fn check_index_consistency(
     }
 
     if json_out {
-        #[derive(Serialize)]
-        struct VerifyProgressMsg {
-            phase: &'static str,
-            missing_packs: usize,
-        }
         ui::json::emit_static(
             "verify_progress",
             &VerifyProgressMsg {
                 phase: "index",
-                missing_packs: missing_packs.len(),
+                missing_packs: Some(missing_packs.len()),
+                ..VerifyProgressMsg::default()
             },
         );
     }
@@ -613,22 +731,13 @@ async fn verify_metadata_files(
                     });
 
                     if json_out {
-                        #[derive(Serialize)]
-                        struct VerifyErrorMsg {
-                            file_type: String,
-                            file_id: String,
-                            error: String,
-                        }
                         ui::json::emit_static(
                             "verify_error",
-                            &VerifyErrorMsg {
-                                file_type: format!("{}", file_stats.file_type),
-                                file_id: file_stats
-                                    .file_id
-                                    .map(|id| id.to_hex())
-                                    .unwrap_or_default(),
-                                error: "ECC detected bit-rot".to_string(),
-                            },
+                            &VerifyErrorMsg::metadata(
+                                file_stats.file_type,
+                                &file_stats.file_id.unwrap_or_default(),
+                                "ECC detected bit-rot",
+                            ),
                         );
                     }
                 } else if !file_stats.readable {
@@ -647,23 +756,13 @@ async fn verify_metadata_files(
                     });
 
                     if json_out {
-                        #[derive(Serialize)]
-                        struct VerifyErrorMsg2 {
-                            file_type: String,
-                            file_id: String,
-                            error: String,
-                        }
                         ui::json::emit_static(
                             "verify_error",
-                            &VerifyErrorMsg2 {
-                                file_type: format!("{}", file_stats.file_type),
-                                file_id: file_stats
-                                    .file_id
-                                    .map(|id| id.to_hex())
-                                    .unwrap_or_default(),
-                                error: "file is unreadable and no ECC sidecar available"
-                                    .to_string(),
-                            },
+                            &VerifyErrorMsg::metadata(
+                                file_stats.file_type,
+                                &file_stats.file_id.unwrap_or_default(),
+                                "file is unreadable and no ECC sidecar available",
+                            ),
                         );
                     }
                 }
@@ -845,17 +944,9 @@ async fn verify_packs_physically(
                                         pack_stats.corrupt_blobs.len()
                                     ));
                                 }
-                                #[derive(Serialize)]
-                                struct VerifyErrorMsg {
-                                    pack_id: String,
-                                    error: String,
-                                }
                                 ui::json::emit_static(
                                     "verify_error",
-                                    &VerifyErrorMsg {
-                                        pack_id: pack_id.to_hex(),
-                                        error: parts.join("; "),
-                                    },
+                                    &VerifyErrorMsg::pack(pack_id, parts.join("; ")),
                                 );
                             }
 
@@ -879,17 +970,9 @@ async fn verify_packs_physically(
                         });
 
                         if json_out {
-                            #[derive(Serialize)]
-                            struct VerifyErrorMsg {
-                                pack_id: String,
-                                error: String,
-                            }
                             ui::json::emit_static(
                                 "verify_error",
-                                &VerifyErrorMsg {
-                                    pack_id: pack_id.to_hex(),
-                                    error: e.to_string(),
-                                },
+                                &VerifyErrorMsg::pack(pack_id, e.to_string()),
                             );
                         }
 
@@ -916,28 +999,18 @@ async fn verify_packs_physically(
                 verify_rate.lock().observe(pos);
 
                 if json_out {
-                    #[derive(Serialize)]
-                    struct VerifyProgressMsg {
-                        phase: &'static str,
-                        pack_id: String,
-                        packs_total: usize,
-                        packs_processed: usize,
-                        packs_corrupt: usize,
-                        blobs_verified: usize,
-                        blobs_dangling: usize,
-                        failed_early: bool,
-                    }
                     ui::json::emit_static(
                         "verify_progress",
                         &VerifyProgressMsg {
                             phase: "physical",
-                            pack_id: pack_id.to_hex(),
-                            packs_total: total_packs,
-                            packs_processed: stats.packs_processed.load(Ordering::Relaxed),
-                            packs_corrupt: stats.packs_corrupt.load(Ordering::Relaxed),
-                            blobs_verified: stats.blobs_verified.load(Ordering::Relaxed),
-                            blobs_dangling: stats.blobs_dangling.load(Ordering::Relaxed),
-                            failed_early: stop_flag.load(Ordering::Relaxed),
+                            pack_id: Some(pack_id.to_hex()),
+                            packs_total: Some(total_packs),
+                            packs_processed: Some(stats.packs_processed.load(Ordering::Relaxed)),
+                            packs_corrupt: Some(stats.packs_corrupt.load(Ordering::Relaxed)),
+                            blobs_verified: Some(stats.blobs_verified.load(Ordering::Relaxed)),
+                            blobs_dangling: Some(stats.blobs_dangling.load(Ordering::Relaxed)),
+                            failed_early: Some(stop_flag.load(Ordering::Relaxed)),
+                            ..VerifyProgressMsg::default()
                         },
                     );
                 }
@@ -995,15 +1068,9 @@ async fn verify_snapshots_logically(
                 ui::cli::error!("Failed to load snapshot: {}", e);
 
                 if json_out {
-                    #[derive(Serialize)]
-                    struct VerifyErrorMsg {
-                        error: String,
-                    }
                     ui::json::emit_static(
                         "verify_error",
-                        &VerifyErrorMsg {
-                            error: format!("failed to load snapshot: {}", e),
-                        },
+                        &VerifyErrorMsg::simple("failed to load snapshot"),
                     );
                 }
 
@@ -1058,17 +1125,9 @@ async fn verify_snapshots_logically(
                 ui::cli::error!("{}", e);
 
                 if json_out {
-                    #[derive(Serialize)]
-                    struct VerifyErrorMsg {
-                        snapshot: String,
-                        error: String,
-                    }
                     ui::json::emit_static(
                         "verify_error",
-                        &VerifyErrorMsg {
-                            snapshot: snapshot_id.to_short_hex(12),
-                            error: format!("{}", e),
-                        },
+                        &VerifyErrorMsg::snapshot(&snapshot_id, format!("{}", e)),
                     );
                 }
 
@@ -1081,22 +1140,15 @@ async fn verify_snapshots_logically(
         }
 
         if json_out {
-            #[derive(Serialize)]
-            struct VerifyProgressMsg {
-                phase: &'static str,
-                snapshot_id: String,
-                snapshots_total: usize,
-                snapshots_processed: usize,
-                snapshots_corrupt: usize,
-            }
             ui::json::emit_static(
                 "verify_progress",
                 &VerifyProgressMsg {
                     phase: "logical",
-                    snapshot_id: snapshot_id.to_short_hex(12),
-                    snapshots_total: num_snapshots_total,
-                    snapshots_processed: i + 1,
-                    snapshots_corrupt: snapshots_corrupt.load(Ordering::Relaxed),
+                    snapshot_id: Some(snapshot_id.to_short_hex(12)),
+                    snapshots_total: Some(num_snapshots_total),
+                    snapshots_processed: Some(i + 1),
+                    snapshots_corrupt: Some(snapshots_corrupt.load(Ordering::Relaxed)),
+                    ..VerifyProgressMsg::default()
                 },
             );
         }
@@ -1118,20 +1170,6 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
         let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
         let passed = packs_corrupt_count == 0 && report.snapshots_corrupt == 0;
 
-        #[derive(Serialize)]
-        struct VerifyCompleteMsg {
-            duration_seconds: f64,
-            packs_processed: usize,
-            packs_corrupt: usize,
-            packs_repaired: usize,
-            blobs_verified: usize,
-            blobs_dangling: usize,
-            snapshots_verified: usize,
-            snapshots_corrupt: usize,
-            passed: bool,
-            failed_early: bool,
-            read_packs: bool,
-        }
         ui::json::emit_static(
             "verify_complete",
             &VerifyCompleteMsg {
@@ -1230,22 +1268,9 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
 }
 
 fn emit_blob_corruption_json(blob_id: &ID, path: &Path, snapshot_id: &ID) {
-    #[derive(Serialize)]
-    struct VerifyErrorMsg {
-        blob_id: String,
-        path: String,
-        snapshot: String,
-        error: String,
-    }
-
     ui::json::emit_static(
         "verify_error",
-        &VerifyErrorMsg {
-            blob_id: blob_id.to_short_hex(8),
-            path: path.display().to_string(),
-            snapshot: snapshot_id.to_short_hex(12),
-            error: "corrupt blob affects this file".to_string(),
-        },
+        &VerifyErrorMsg::blob(blob_id, path, snapshot_id),
     );
 }
 

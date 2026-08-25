@@ -1066,8 +1066,9 @@ fn detect_hardlink(
 
 #[cfg(test)]
 mod tests {
+    use crate::fs::node::{Metadata, NodeType};
+
     use super::*;
-    use crate::fs::node::{Metadata, Node, NodeType};
 
     fn make_file_node(name: &str, blobs: Vec<ID>, dev: u64, inode: u64, nlink: u64) -> Node {
         Node {

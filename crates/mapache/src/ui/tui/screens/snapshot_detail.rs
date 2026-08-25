@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::common::error::Result;
 use async_trait::async_trait;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -12,6 +11,7 @@ use ratatui::{
 };
 
 use crate::{
+    common::error::Result,
     repository::{
         repo::Repository,
         snapshot::{Snapshot, SnapshotEntry, SnapshotEntryList},

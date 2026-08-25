@@ -15,7 +15,8 @@ use ratatui::{
 pub use retention::{RetentionAction, RetentionConfig};
 
 use crate::{
-    common::defaults::SHORT_SNAPSHOT_ID_LEN,
+    commands::cmd_forget,
+    common::{ContentIdType, defaults::SHORT_SNAPSHOT_ID_LEN},
     repository::{
         repo::{REPO_DROPPED_EXTENSION, Repository},
         retention::apply_retention_rules,
@@ -94,7 +95,7 @@ impl ForgetScreen {
     pub fn new(
         repo: Arc<Repository>,
         entries: Arc<SnapshotEntryList>,
-        config: Option<crate::commands::cmd_forget::CmdArgs>,
+        config: Option<cmd_forget::CmdArgs>,
     ) -> Self {
         let len = entries.len();
         let mut selected = ForgetSelection::new(len);
@@ -150,7 +151,7 @@ impl ForgetScreen {
                     if let Err(e) = self
                         .repo
                         .set_extension(
-                            crate::common::ContentIdType::Snapshot,
+                            ContentIdType::Snapshot,
                             &entry.id,
                             Some(REPO_DROPPED_EXTENSION),
                         )

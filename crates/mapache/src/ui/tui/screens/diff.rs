@@ -1,6 +1,5 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use futures::StreamExt;
@@ -14,6 +13,7 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::{
+    common::error::{MapacheError, Result},
     fs::tree::{NodeDiff, create_diff_stream},
     repository::{
         repo::Repository,

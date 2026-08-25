@@ -188,9 +188,12 @@ impl RestoreConfig {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        common::ID,
+        repository::snapshot::{Snapshot, SnapshotSummary},
+    };
+
     use super::*;
-    use crate::common::ID;
-    use crate::repository::snapshot::{Snapshot, SnapshotEntry, SnapshotSummary};
 
     fn zero_id() -> ID {
         ID::default()

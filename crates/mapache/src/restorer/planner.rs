@@ -9,11 +9,13 @@ use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 
-use crate::common::error::{MapacheError, Result};
 use tokio::task::spawn_blocking;
 
 use crate::{
-    common::hash,
+    common::{
+        error::{MapacheError, Result},
+        hash,
+    },
     fs::{self as repo_fs, node::Node},
     repository::index::MasterIndex,
     restorer::{Restorer, Strategy},
@@ -201,26 +203,22 @@ impl Restorer {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::{collections::VecDeque, path::PathBuf, sync::atomic::AtomicBool};
 
-    use crate::common::error::Result;
     use parking_lot::Mutex;
     use tempfile::tempdir;
     use zeroize::Zeroizing;
 
-    use crate::backend::StorageBackend;
-    use crate::backend::mock::MockBackend;
-    use crate::common::defaults::TEST_REPO_CONFIG;
-    use crate::fs::node::{Metadata, Node, NodeType};
-    use crate::repository::index::MasterIndex;
-    use crate::repository::repo::{Auth, Repository, THIS_REPOSITORY_VERSION};
-    use crate::restorer::{RestoreOptions, Restorer, Strategy};
-    use crate::ui::events::noop_sender;
+    use crate::{
+        backend::{StorageBackend, mock::MockBackend},
+        common::defaults::TEST_REPO_CONFIG,
+        fs::node::{Metadata, NodeType},
+        repository::repo::{Auth, Repository, THIS_REPOSITORY_VERSION},
+        restorer::RestoreOptions,
+        ui::events::noop_sender,
+    };
 
-    use super::RestorePlan;
+    use super::*;
 
     fn auth() -> Auth {
         Auth {
@@ -422,10 +420,10 @@ mod tests {
         let path = tmp.path().join("file.txt");
         std::fs::write(&path, "data")?;
         // Set local mtime to the past (1 hour ago)
-        crate::fs::filetime::set_file_times(
+        repo_fs::filetime::set_file_times(
             &path,
-            crate::fs::filetime::FileTime::from_unix_time(1_000_000, 0),
-            crate::fs::filetime::FileTime::from_unix_time(1_000_000, 0),
+            repo_fs::filetime::FileTime::from_unix_time(1_000_000, 0),
+            repo_fs::filetime::FileTime::from_unix_time(1_000_000, 0),
         )?;
         let local_mtime = std::fs::symlink_metadata(&path)?.modified()?;
 

@@ -1,6 +1,5 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::common::error::Result;
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -12,13 +11,14 @@ use ratatui::{
 };
 
 use crate::{
-    common::ID,
+    common::{ID, error::Result},
     fs::{node::Node, tree::Tree},
     repository::{repo::Repository, snapshot::SnapshotEntry},
     ui::tui::{
         app::{Screen, Transition},
         screens::restore::RestoreScreen,
         theme,
+        widgets::StateNavigation,
     },
     utils,
 };
@@ -258,7 +258,6 @@ impl Screen for FileExplorerScreen {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<Transition> {
-        use crate::ui::tui::widgets::StateNavigation;
         match key.code {
             KeyCode::Esc => Some(Transition::Pop),
             KeyCode::Char('q') => Some(Transition::Quit),

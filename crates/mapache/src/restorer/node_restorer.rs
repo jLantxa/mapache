@@ -7,10 +7,10 @@ use std::{fs::OpenOptions, io::Write, path::Path, time::SystemTime};
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
-use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
 
 use crate::{
+    common::error::{MapacheError, Result},
     fs::{
         self,
         filetime::FileTime,

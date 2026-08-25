@@ -1,12 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::common::error::{MapacheError, Result};
 use async_trait::async_trait;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::{Frame, Terminal, backend::Backend, style::Style, widgets::Block};
 
 use crate::{
     commands::{cmd_forget::CmdArgs as ForgetCmdArgs, cmd_snapshot::CmdArgs as SnapshotCmdArgs},
+    common::error::{MapacheError, Result},
     repository::{lock::LockHandle, repo::Repository},
     ui::tui::{screens::dashboard::DashboardScreen, theme},
 };

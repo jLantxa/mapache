@@ -7,11 +7,13 @@ use std::{
     },
 };
 
-use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
 
 use crate::{
-    common::ID,
+    common::{
+        ID,
+        error::{MapacheError, Result},
+    },
     fs::tree::SerializedTreeStream,
     repository::repo::Repository,
     ui::events::{Event, EventSender, RestoreEvent, emit_event},

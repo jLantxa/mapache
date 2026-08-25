@@ -5,7 +5,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::sync::mpsc;
 
 use crate::{
-    backend::{Handle, StorageBackend},
+    backend::{Handle, StorageBackend, WriteContents},
     common::{
         self, BlobType, ContentIdType, ID,
         error::{MapacheError, Result},
@@ -13,8 +13,10 @@ use crate::{
     ecc,
     fs::tree::Tree,
     repository::{
+        index::IndexFile,
         packer::Packer,
         repo::{REPO_ECC_EXTENSION, Repository},
+        snapshot::Snapshot,
         storage::SecureStorage,
     },
     utils::{
@@ -180,7 +182,7 @@ async fn repair_pack_with_ecc(
         let tmp_path = pack_path.with_extension("tmp");
         let tmp_handle = Handle::new(&tmp_path);
         backend
-            .write(&tmp_handle, std::borrow::Cow::Borrowed(&decoded))
+            .write(&tmp_handle, WriteContents::Borrowed(&decoded))
             .await
             .map_err(|e| {
                 MapacheError::Backend(format!("failed to write repaired pack: {}", e.inner()))
@@ -247,15 +249,13 @@ pub async fn verify_metadata_file(
         }
         ContentIdType::Snapshot => {
             let plaintext = ss.decode_owned(raw_data_clone)?;
-            let _snapshot: crate::repository::snapshot::Snapshot =
-                serde_json::from_slice(&plaintext).map_err(|e| {
-                    MapacheError::Format(format!("corrupt snapshot structure: {e}"))
-                })?;
+            let _snapshot: Snapshot = serde_json::from_slice(&plaintext)
+                .map_err(|e| MapacheError::Format(format!("corrupt snapshot structure: {e}")))?;
             Ok(())
         }
         ContentIdType::Index => {
             let plaintext = ss.decode_owned(raw_data_clone)?;
-            crate::repository::index::IndexFile::deserialize(&plaintext, repo_version)
+            IndexFile::deserialize(&plaintext, repo_version)
                 .map_err(|e| MapacheError::Format(format!("corrupt index structure: {e}")))?;
             Ok(())
         }
@@ -332,7 +332,7 @@ pub async fn verify_metadata_file(
         let tmp_path = file_path.with_extension("ecc.tmp");
         let tmp_handle = Handle::new(&tmp_path);
         backend
-            .write(&tmp_handle, std::borrow::Cow::Borrowed(&decoded))
+            .write(&tmp_handle, WriteContents::Borrowed(&decoded))
             .await
             .map_err(|e| {
                 MapacheError::Backend(format!(

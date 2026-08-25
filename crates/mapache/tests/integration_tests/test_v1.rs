@@ -7,8 +7,10 @@ mod tests {
 
     use mapache::commands::cmd_migrate;
 
-    use crate::integration_tests::{INTEGRATION_TEST_DATA, TestContext};
-    use crate::synthetic::{Dataset, SyntheticData};
+    use crate::{
+        integration_tests::{INTEGRATION_TEST_DATA, TestContext},
+        synthetic::{Dataset, SyntheticData},
+    };
 
     #[tokio::test]
     async fn test_v1_init_and_open() -> Result<()> {

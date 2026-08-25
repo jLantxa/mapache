@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use crate::{
     common::global::GlobalOpts,
     ui::{
-        SPINNER_TICK_CHARS, default_bar_draw_target, default_progress_style,
+        self, SPINNER_TICK_CHARS, default_bar_draw_target, default_progress_style,
         events::{Event, EventSender, GcEvent, GcTaskKind},
     },
 };
@@ -49,13 +49,13 @@ pub fn make_event_sender() -> EventSender {
                 *pb_lock = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::hidden());
             }
             GcEvent::Warning(ref msg) => {
-                crate::ui::cli::warning!("{}", msg);
+                ui::cli::warning!("{}", msg);
             }
             GcEvent::Error(ref msg) => {
-                crate::ui::cli::error!("{}", msg);
+                ui::cli::error!("{}", msg);
             }
             GcEvent::Log(ref msg) => {
-                crate::ui::cli::log!("{}", msg);
+                ui::cli::log!("{}", msg);
             }
             GcEvent::Finished { .. } => {
                 let pb = state.pb.lock();

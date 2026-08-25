@@ -5,13 +5,16 @@ use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 
-use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
 use rayon::prelude::*;
 use tokio::task::spawn_blocking;
 
 use crate::{
-    common::{BlobType, ContentIdType, ID, defaults},
+    backend::Handle,
+    common::{
+        BlobType, ContentIdType, ID, defaults,
+        error::{MapacheError, Result},
+    },
     repository::{index::BlobLocator, loader, storage::SecureStorage},
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
@@ -176,7 +179,7 @@ pub(crate) async fn restore_packs(
                 let segment_data = repo
                     .backend()
                     .read(
-                        &crate::backend::Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
+                        &Handle::new_with_hint(&path, ContentIdType::Pack, is_tree),
                         segment.min_offset as isize,
                         segment.source_len() as usize,
                     )

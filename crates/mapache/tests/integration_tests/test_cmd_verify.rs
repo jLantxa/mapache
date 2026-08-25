@@ -11,11 +11,12 @@ mod tests {
     use anyhow::{Context, Ok, Result};
 
     use mapache::{
-        backend::{BackendNode, Handle, StorageBackend, localfs::LocalFS, read_backend_dir},
+        backend::{
+            BackendNode, Handle, StorageBackend, WriteContents, localfs::LocalFS, read_backend_dir,
+        },
         repository::{
             manifest::EccConfig,
-            repo::Repository,
-            repo::{INDEX_DIR, OBJECTS_DIR},
+            repo::{INDEX_DIR, OBJECTS_DIR, Repository},
         },
     };
 
@@ -400,9 +401,7 @@ mod tests {
         let mut data = backend.read(&handle, 0, 0).await?.to_vec();
         assert!(!data.is_empty(), "pack file should not be empty");
         data[0] ^= 0xFF;
-        backend
-            .write(&handle, std::borrow::Cow::Owned(data))
-            .await?;
+        backend.write(&handle, WriteContents::Owned(data)).await?;
 
         // Verify without repair should fail (bit-rot).
         let result = ctx.verify_builder().read_packs(true).run(&ctx.global).await;

@@ -48,7 +48,6 @@ impl ShardedIdSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::ID;
 
     #[test]
     fn test_insert_and_contains() {

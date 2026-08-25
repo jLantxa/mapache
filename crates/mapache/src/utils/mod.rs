@@ -9,12 +9,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::common::error::{MapacheError, Result};
 use chrono::{DateTime, Duration, Local};
 use zeroize::Zeroizing;
 
 use crate::{
-    common::vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
+    common::{
+        error::{MapacheError, Result},
+        vars::{PASSWORD_ENVVAR, USERNAME_ENVVAR, get_envvar},
+    },
     fs,
     repository::repo::Auth,
 };

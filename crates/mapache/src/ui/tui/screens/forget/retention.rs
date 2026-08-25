@@ -2,6 +2,7 @@ use crossterm::event::KeyCode;
 use ratatui::{Frame, layout::Rect};
 
 use crate::{
+    commands::cmd_forget,
     repository::retention::RetentionRule,
     ui::tui::widgets::{Form, FormAction, FormField, FormFieldType, TextInput},
     utils,
@@ -12,7 +13,7 @@ pub struct RetentionConfig {
 }
 
 impl RetentionConfig {
-    pub fn new(config: Option<&crate::commands::cmd_forget::CmdArgs>) -> Self {
+    pub fn new(config: Option<&cmd_forget::CmdArgs>) -> Self {
         let fields = vec![
             FormField {
                 label: "Keep last:".to_string(),

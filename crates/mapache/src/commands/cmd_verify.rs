@@ -642,7 +642,11 @@ async fn verify_metadata_files(
     json_out: bool,
     cleanup_handler: &CleanupHandler,
 ) -> Result<(), VerifyError> {
-    ui::cli::log!("{}", "Verifying Metadata Files (ECC)...".bold());
+    if repair {
+        ui::cli::log!("{}", "Verifying Metadata Files (ECC)...".bold());
+    } else {
+        ui::cli::log!("{}", "Verifying Metadata Files...".bold());
+    }
 
     let mut files_to_verify: Vec<(ContentIdType, Option<ID>, std::path::PathBuf)> = Vec::new();
 
@@ -746,12 +750,18 @@ async fn verify_metadata_files(
                         .file_id
                         .map(|id| id.to_short_hex(8))
                         .unwrap_or_else(|| file_path.display().to_string());
+                    let reason = if repair {
+                        "file is unreadable and no ECC sidecar available"
+                    } else {
+                        "file is unreadable or corrupt"
+                    };
                     bar.suspend(|| {
                         ui::cli::error!(
-                            "{} {} {} CORRUPT: file is unreadable and no ECC sidecar available.",
+                            "{} {} {} CORRUPT: {}.",
                             "[ERROR]".red().bold(),
                             file_stats.file_type,
-                            label
+                            label,
+                            reason
                         );
                     });
 
@@ -761,7 +771,7 @@ async fn verify_metadata_files(
                             &VerifyErrorMsg::metadata(
                                 file_stats.file_type,
                                 &file_stats.file_id.unwrap_or_default(),
-                                "file is unreadable and no ECC sidecar available",
+                                reason,
                             ),
                         );
                     }

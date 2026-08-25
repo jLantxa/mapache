@@ -267,11 +267,20 @@ pub async fn verify_metadata_file(
     match decode_result {
         Ok(()) => stats.readable = true,
         Err(_) => {
-            // File is corrupt or unreadable. Fall through to ECC check.
+            // File is corrupt or unreadable. Fall through to ECC check if repair is enabled.
+            if !repair {
+                return Ok(stats);
+            }
         }
     }
 
-    // Check ECC sidecar if present.
+    // Check ECC sidecar only when repair is requested.
+    // ECC is only supported on v2+ repos with ECC enabled, so this branch
+    // is only reached when both conditions hold.
+    if !repair {
+        return Ok(stats);
+    }
+
     let sidecar_path = file_path.with_extension(REPO_ECC_EXTENSION);
     if !backend.path_exists(&sidecar_path).await {
         return Ok(stats);
@@ -319,30 +328,24 @@ pub async fn verify_metadata_file(
     if was_repaired {
         stats.bit_rot = true;
 
-        if repair {
-            // Write repaired data back.
-            let tmp_path = file_path.with_extension("ecc.tmp");
-            let tmp_handle = Handle::new(&tmp_path);
-            backend
-                .write(&tmp_handle, std::borrow::Cow::Borrowed(&decoded))
-                .await
-                .map_err(|e| {
-                    MapacheError::Backend(format!(
-                        "failed to write repaired {}: {}",
-                        file_type,
-                        e.inner()
-                    ))
-                })?;
-            backend.rename(&tmp_path, &file_path).await.map_err(|e| {
+        // Write repaired data back.
+        let tmp_path = file_path.with_extension("ecc.tmp");
+        let tmp_handle = Handle::new(&tmp_path);
+        backend
+            .write(&tmp_handle, std::borrow::Cow::Borrowed(&decoded))
+            .await
+            .map_err(|e| {
                 MapacheError::Backend(format!(
-                    "failed to rename repaired {}: {}",
+                    "failed to write repaired {}: {}",
                     file_type,
                     e.inner()
                 ))
             })?;
-            stats.repaired = true;
-            tracing::info!(target: "verify", "Repaired {} at {}", file_type, file_path.display());
-        }
+        backend.rename(&tmp_path, &file_path).await.map_err(|e| {
+            MapacheError::Backend(format!("failed to rename repaired {}: {}", file_type, e))
+        })?;
+        stats.repaired = true;
+        tracing::info!(target: "verify", "Repaired {} at {}", file_type, file_path.display());
     }
 
     Ok(stats)

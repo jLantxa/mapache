@@ -12,6 +12,7 @@ use crate::{
 pub mod filetime;
 pub mod filter;
 pub mod node;
+pub mod scanner;
 pub mod tree;
 
 #[cfg(windows)]

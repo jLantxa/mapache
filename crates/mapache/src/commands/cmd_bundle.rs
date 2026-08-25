@@ -12,9 +12,9 @@ use parking_lot::Mutex;
 
 use crate::{
     archiver::{
-        SnapshotOptions, processor,
+        PipelineStatus, SnapshotOptions,
         progress::{SnapshotProcessSummary, SnapshotProgress},
-        tree_serializer::TreeSerializer,
+        run_pipeline, spawn_scanner_task,
     },
     backend::{self, StorageHint, WriteContents},
     bundle::{
@@ -33,17 +33,14 @@ use crate::{
         traits::{BlobLoader, BlobSaver},
     },
     fs::{
-        calculate_lcp,
-        filter::PathFilter,
-        get_absolute_normalized_path,
-        node::Node,
-        tree::{FSNodeStream, NodeDiff, StreamNode, Tree},
+        calculate_lcp, get_absolute_normalized_path,
+        tree::{FSNodeStream, NodeDiff, Tree},
     },
     repository::{self, lock::LockHandle, manifest::EccConfig, repo::Repository},
     ui::{
         cli::{self, color::Colorize},
         default_bar_draw_target, default_progress_style,
-        events::{BackupEvent, Event, EventSender},
+        events::{BackupEvent, Event},
     },
     utils::{self, collections::IdSet, format_size_binary, rate_estimator::RateEstimator},
 };
@@ -84,6 +81,56 @@ fn warn_v1_bundle() {
         "Bundle format v1 is deprecated and will be unsupported in a future release.\n\
         Consider using v2 (default) which includes ECC protection: `mapache bundle --format 2`\n"
     );
+}
+
+/// Creates a progress bar with rate estimation for byte-transfer operations
+/// (bundle export/import). Returns `(progress_bar, rate_estimator)`.
+fn make_transfer_progress_bar(
+    total_bytes: u64,
+    json: bool,
+) -> (Option<ProgressBar>, Arc<Mutex<RateEstimator>>) {
+    let rate = Arc::new(Mutex::new(RateEstimator::new(
+        crate::common::defaults::UI_RATE_ESTIMATOR_WINDOW,
+    )));
+    let bar = if !json {
+        Some(
+            ProgressBar::with_draw_target(Some(total_bytes), default_bar_draw_target()).with_style(
+                default_progress_style()
+                    .template("[{percent}%] [{bar:20.cyan/white}] [{custom_elapsed}] {bytes_fmt} / {total_fmt} [{data_rate}/s] [ETA: {custom_eta}]")
+                    .expect("invalid progress bar template for transfer progress")
+                    .with_key("bytes_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&format_size_binary(state.pos(), 3));
+                    })
+                    .with_key("total_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&format_size_binary(state.len().unwrap_or(0), 3));
+                    })
+                    .with_key("custom_elapsed", |state: &ProgressState, w: &mut dyn fmt::Write| {
+                        let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
+                    })
+                    .with_key("custom_eta", {
+                        let re = rate.clone();
+                        move |state: &ProgressState, w: &mut dyn fmt::Write| {
+                            let pos = state.pos() as f64;
+                            let total = state.len().map(|l| l as f64);
+                            match re.lock().eta(pos, total.unwrap_or(pos)) {
+                                Some(d) => { let _ = w.write_str(&utils::pretty_print_duration(d)); }
+                                None => { let _ = w.write_str("--"); }
+                            }
+                        }
+                    })
+                    .with_key("data_rate", {
+                        let re = rate.clone();
+                        move |_state: &ProgressState, w: &mut dyn fmt::Write| {
+                            let rate = re.lock().rate().floor() as u64;
+                            let _ = w.write_str(&format_size_binary(rate, 1));
+                        }
+                    }),
+            ),
+        )
+    } else {
+        None
+    };
+    (bar, rate)
 }
 
 #[derive(Args, Debug, Clone)]
@@ -366,20 +413,6 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     let event_sender =
         cli::bundle::make_event_sender(cli::bundle::BundleMode::Create, 0, 0, args.readers);
 
-    let scanner_sender = event_sender.clone();
-    let scanner_paths = absolute_source_paths.clone();
-    let scanner_exclude = exclude_paths.clone();
-    let scanner_shutdown = shutdown_signal.clone();
-    let scanner_handle = tokio::spawn(async move {
-        spawn_background_scanner(
-            scanner_paths,
-            scanner_exclude,
-            scanner_sender,
-            scanner_shutdown,
-        )
-        .await;
-    });
-
     let snapshot_options = SnapshotOptions {
         absolute_source_paths,
         snapshot_root_path: snapshot_root_path.clone(),
@@ -406,155 +439,89 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     )
     .await?;
 
-    let (processed_tx, mut processed_rx) = tokio::sync::mpsc::channel(4096);
-
-    let saver: Arc<dyn BlobSaver> = bundle_writer.clone();
-    let process_shutdown = shutdown_signal.clone();
-    let process_progress = progress.clone();
     let process_readers = args.readers;
 
-    let process_sender = event_sender.clone();
-    let process_task = tokio::spawn(async move {
-        fs_stream
-            .for_each_concurrent(process_readers, |item| {
-                let saver = saver.clone();
-                let progress = process_progress.clone();
-                let sender = process_sender.clone();
-                let signal = process_shutdown.clone();
-                let tx = processed_tx.clone();
+    // Pipeline status for coordinating tasks and error propagation.
+    let status = Arc::new(PipelineStatus::new(
+        progress.clone(),
+        event_sender.clone(),
+        shutdown_signal.clone(),
+    ));
 
-                async move {
-                    if signal.load(std::sync::atomic::Ordering::Relaxed) {
-                        return;
-                    }
-
-                    let (path, stream_node_res) = match item {
-                        Ok(v) => v,
-                        Err(e) => {
-                            sender(Event::Backup(BackupEvent::Error(format!(
-                                "scan error: {}",
-                                e
-                            ))));
-                            return;
-                        }
-                    };
-
-                    let stream_node = match stream_node_res {
-                        Ok(v) => v,
-                        Err(e) => {
-                            sender(Event::Backup(BackupEvent::Error(format!(
-                                "node error: {}",
-                                e
-                            ))));
-                            return;
-                        }
-                    };
-
-                    if !stream_node.node.is_dir() {
-                        sender(Event::Backup(BackupEvent::NodeProcessing {
-                            path: path.clone(),
-                            diff: NodeDiff::New,
-                            size_hint: Some(stream_node.node.metadata.size),
-                        }));
-                    }
-
-                    let mut node = stream_node.node;
-                    if node.is_file() {
-                        let file_size = node.metadata.size;
-                        let path_str = path.display().to_string();
-                        let saver_clone = saver.clone();
-                        let progress_clone = progress.clone();
-                        let signal_clone = signal.clone();
-                        let chunk_sender = sender.clone();
-
-                        let blobs_res = match tokio::task::spawn_blocking(move || {
-                            let file = std::fs::File::open(&path_str)?;
-                            processor::chunk_and_store_file(
-                                saver_clone.as_ref(),
-                                file,
-                                file_size,
-                                progress_clone.as_ref(),
-                                &chunk_sender,
-                                signal_clone.as_ref(),
-                            )
-                        })
-                        .await
-                        {
-                            Ok(res) => res,
-                            Err(e) => {
-                                sender(Event::Backup(BackupEvent::Error(format!(
-                                    "chunking task panicked for {}: {}",
-                                    path.display(),
-                                    e
-                                ))));
-                                return;
-                            }
-                        };
-
-                        match blobs_res {
-                            Ok(blobs) => node.blobs = Some(blobs),
-                            Err(e) => {
-                                sender(Event::Backup(BackupEvent::Error(format!(
-                                    "error chunking {}: {}",
-                                    path.display(),
-                                    e
-                                ))));
-                                return;
-                            }
-                        }
-                    }
-
-                    progress.processed_node();
-                    sender(Event::Backup(BackupEvent::NodeProcessed {
-                        path: path.clone(),
-                        diff: NodeDiff::New,
-                        size_hint: Some(node.metadata.size),
-                    }));
-
-                    let _ = tx
-                        .send((
-                            path,
-                            StreamNode {
-                                node,
-                                num_children: stream_node.num_children,
-                            },
-                        ))
-                        .await;
-                }
-            })
-            .await;
-    });
-
-    let mut tree_serializer = TreeSerializer::new(
-        bundle_writer.clone(),
-        2,
-        snapshot_root_path.clone(),
-        &snapshot_options.absolute_source_paths,
+    // Background Scanner (progress estimation, runs concurrently with processing)
+    let scanner_handle = spawn_scanner_task(
+        false,
+        snapshot_options.absolute_source_paths.clone(),
+        exclude_paths.clone(),
+        status.clone(),
+        event_sender.clone(),
     );
 
-    while let Some((path_buf, stream_node)) = processed_rx.recv().await {
-        tree_serializer
-            .handle_processed_item((&path_buf, stream_node))
-            .await?;
+    // Map FSNodeStream output into the DiffTuple format that run_pipeline expects.
+    // Bundle always creates everything new: no previous tree, no diff comparison.
+    let (diff_tx, diff_rx) = tokio::sync::mpsc::channel(4096);
+    let coordinator_status = status.clone();
+    let producer_task = tokio::spawn(async move {
+        use futures::StreamExt;
+        let mut stream = fs_stream;
+        while let Some(item) = stream.next().await {
+            if coordinator_status.is_failed() {
+                break;
+            }
+            match item {
+                Ok((path, Ok(stream_node))) => {
+                    let diff_tuple = (path, None, Some(Ok(stream_node)), NodeDiff::New);
+                    if diff_tx.send(diff_tuple).await.is_err() {
+                        break;
+                    }
+                }
+                Ok((path, Err(e))) => {
+                    tracing::warn!(target: "bundle", "Skipping {:?}: {}", path, e);
+                }
+                Err(e) => {
+                    tracing::error!(target: "bundle", "Stream error: {e}");
+                    coordinator_status.signal_fatal(MapacheError::Internal(e.to_string()));
+                    break;
+                }
+            }
+        }
+    });
+
+    // Run the shared pipeline (coordinator + chunker pool + forwarder + tree serializer)
+    let pipeline_result = run_pipeline(
+        diff_rx,
+        bundle_writer.clone() as Arc<dyn BlobSaver>,
+        2,
+        process_readers,
+        snapshot_root_path.clone(),
+        &snapshot_options.absolute_source_paths,
+        false,
+        status.clone(),
+    )
+    .await;
+
+    // Wait for producer and scanner
+    if let Err(e) = producer_task.await {
+        tracing::error!(target: "bundle", "Producer task panicked: {e}");
     }
-
-    process_task
-        .await
-        .map_err(|e| BundleError::BundleFailed(format!("process task panicked: {e}")))?;
-
     if let Err(e) = scanner_handle.await {
         tracing::warn!(target: "bundle", "Scanner task panicked: {e}");
     }
 
-    tree_serializer.finalize_root().await?;
-    let root_tree_id = tree_serializer
-        .root_tree()
-        .ok_or_else(|| BundleError::BundleFailed("root tree ID not set".to_string()))?;
+    let result = pipeline_result?;
+
+    writer_finalize(
+        bundle_writer.as_ref(),
+        result.root_tree_id,
+        output,
+        &progress,
+    )
+    .await?;
 
     let summary = progress.summary();
     event_sender(Event::Backup(BackupEvent::Finished(summary)));
 
-    writer_finalize(bundle_writer.as_ref(), root_tree_id, output, &progress).await
+    Ok(())
 }
 
 async fn run_extract(args: &CmdArgs) -> Result<(), BundleError> {
@@ -758,47 +725,7 @@ async fn export_snapshot_impl(
     let start = Instant::now();
     let total = blob_list.len();
 
-    let export_rate = Arc::new(Mutex::new(RateEstimator::new(
-        crate::common::defaults::UI_RATE_ESTIMATOR_WINDOW,
-    )));
-    let bar = if !global.json {
-        Some(
-            ProgressBar::with_draw_target(Some(total_bytes), default_bar_draw_target()).with_style(
-                default_progress_style()
-                    .template("[{percent}%] [{bar:20.cyan/white}] [{custom_elapsed}] {bytes_fmt} / {total_fmt} [{data_rate}/s] [ETA: {custom_eta}]")
-                    .expect("invalid progress bar template for bundle export")
-                    .with_key("bytes_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
-                        let _ = w.write_str(&format_size_binary(state.pos(), 3));
-                    })
-                    .with_key("total_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
-                        let _ = w.write_str(&format_size_binary(state.len().unwrap_or(0), 3));
-                    })
-                    .with_key("custom_elapsed", |state: &ProgressState, w: &mut dyn fmt::Write| {
-                        let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
-                    })
-                    .with_key("custom_eta", {
-                        let re = export_rate.clone();
-                        move |state: &ProgressState, w: &mut dyn fmt::Write| {
-                            let pos = state.pos() as f64;
-                            let total = state.len().map(|l| l as f64);
-                            match re.lock().eta(pos, total.unwrap_or(pos)) {
-                                Some(d) => { let _ = w.write_str(&utils::pretty_print_duration(d)); }
-                                None => { let _ = w.write_str("--"); }
-                            }
-                        }
-                    })
-                    .with_key("data_rate", {
-                        let re = export_rate.clone();
-                        move |_state: &ProgressState, w: &mut dyn fmt::Write| {
-                            let rate = re.lock().rate().floor() as u64;
-                            let _ = w.write_str(&format_size_binary(rate, 1));
-                        }
-                    }),
-            ),
-        )
-    } else {
-        None
-    };
+    let (bar, export_rate) = make_transfer_progress_bar(total_bytes, global.json);
 
     let results: Vec<Result<(), MapacheError>> = stream::iter(blob_list)
         .map(|(blob_id, blob_type)| {
@@ -1056,47 +983,7 @@ async fn run_import_bundle(
     // Import blobs concurrently — load from bundle, encode + save to repo
     let loader: Arc<dyn BlobLoader> = Arc::new(reader);
 
-    let import_rate = Arc::new(Mutex::new(RateEstimator::new(
-        crate::common::defaults::UI_RATE_ESTIMATOR_WINDOW,
-    )));
-    let bar = if !global.json {
-        Some(
-            ProgressBar::with_draw_target(Some(import_bytes), default_bar_draw_target()).with_style(
-                default_progress_style()
-                    .template("[{percent}%] [{bar:20.cyan/white}] [{custom_elapsed}] {bytes_fmt} / {total_fmt} [{data_rate}/s] [ETA: {custom_eta}]")
-                    .expect("invalid progress bar template for bundle import")
-                    .with_key("bytes_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
-                        let _ = w.write_str(&format_size_binary(state.pos(), 3));
-                    })
-                    .with_key("total_fmt", |state: &ProgressState, w: &mut dyn fmt::Write| {
-                        let _ = w.write_str(&format_size_binary(state.len().unwrap_or(0), 3));
-                    })
-                    .with_key("custom_elapsed", |state: &ProgressState, w: &mut dyn fmt::Write| {
-                        let _ = w.write_str(&utils::pretty_print_duration(state.elapsed()));
-                    })
-                    .with_key("custom_eta", {
-                        let re = import_rate.clone();
-                        move |state: &ProgressState, w: &mut dyn fmt::Write| {
-                            let pos = state.pos() as f64;
-                            let total = state.len().map(|l| l as f64);
-                            match re.lock().eta(pos, total.unwrap_or(pos)) {
-                                Some(d) => { let _ = w.write_str(&utils::pretty_print_duration(d)); }
-                                None => { let _ = w.write_str("--"); }
-                            }
-                        }
-                    })
-                    .with_key("data_rate", {
-                        let re = import_rate.clone();
-                        move |_state: &ProgressState, w: &mut dyn fmt::Write| {
-                            let rate = re.lock().rate().floor() as u64;
-                            let _ = w.write_str(&format_size_binary(rate, 1));
-                        }
-                    }),
-            ),
-        )
-    } else {
-        None
-    };
+    let (bar, import_rate) = make_transfer_progress_bar(import_bytes, global.json);
 
     let import_start = Instant::now();
     let imported_count = to_import.len();
@@ -1559,80 +1446,6 @@ async fn writer_finalize(
     tracing::info!(target: "bundle", "Bundle creation completed (size={})", final_size);
 
     Ok(())
-}
-
-async fn spawn_background_scanner(
-    paths: Vec<PathBuf>,
-    exclude: Vec<PathBuf>,
-    event_sender: EventSender,
-    shutdown: Arc<AtomicBool>,
-) {
-    let filter = Arc::new(PathFilter::new(None, Some(exclude)));
-    let sender_for_closure = event_sender.clone();
-
-    let res = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
-        paths.into_par_iter().for_each(|path| {
-            let scanner = BundleScanner {
-                event_sender: sender_for_closure.clone(),
-                filter: filter.clone(),
-                shutdown: shutdown.clone(),
-            };
-            scanner.scan_recursive(&path);
-        });
-    })
-    .await;
-
-    if let Err(e) = res {
-        event_sender(Event::Backup(BackupEvent::Error(format!(
-            "background scanner panicked: {}",
-            e
-        ))));
-    }
-
-    event_sender(Event::Backup(BackupEvent::ScanFinished {
-        total_items: 0,
-        total_bytes: 0,
-    }));
-}
-
-struct BundleScanner {
-    event_sender: EventSender,
-    filter: Arc<PathFilter>,
-    shutdown: Arc<AtomicBool>,
-}
-
-impl BundleScanner {
-    fn scan_recursive(&self, path: &std::path::Path) {
-        if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
-        if !self.filter.allow(path) {
-            return;
-        }
-
-        if let Ok(node) = Node::from_path_sync(path, false) {
-            (self.event_sender)(Event::Backup(BackupEvent::ScanProgress {
-                items: 1,
-                bytes: if node.is_file() {
-                    node.metadata.size
-                } else {
-                    0
-                },
-            }));
-
-            if node.is_dir()
-                && let Ok(entries) = std::fs::read_dir(path)
-            {
-                use rayon::prelude::*;
-                entries.par_bridge().for_each(|entry_res| {
-                    if let Ok(entry) = entry_res {
-                        self.scan_recursive(&entry.path());
-                    }
-                });
-            }
-        }
-    }
 }
 
 fn parse_readers(s: &str) -> Result<usize, String> {

@@ -456,7 +456,7 @@ fn store_small_file<R: Read>(
     Ok(vec![id])
 }
 
-fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -508,7 +508,6 @@ mod tests {
 
     use zeroize::Zeroizing;
 
-    use super::*;
     use crate::{
         backend::mock::MockBackend,
         common::defaults::TEST_REPO_CONFIG,
@@ -516,6 +515,9 @@ mod tests {
         ui::events::noop_sender,
         utils::size,
     };
+
+    use super::*;
+
     async fn setup_repo() -> Arc<Repository> {
         let auth = Auth {
             username: "test".to_string(),

@@ -3,16 +3,18 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, Write},
     path::Path,
+    thread::{self, JoinHandle},
 };
 
 use argon2::Params;
-use parking_lot::Mutex;
+use crossbeam_channel::Sender;
+use parking_lot::Mutex as ParkMutex;
 
 use crate::{
     backend::WriteContents,
     bundle::format::{
-        BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BUNDLE_SALT_LEN, BundleHeader,
-        BundleIndex, BundleIndexEntry, BundleTrailer,
+        BUNDLE_HEADER_SIZE, BUNDLE_KEY_LEN, BUNDLE_MAGIC_END, BUNDLE_MAGIC_START, BUNDLE_SALT_LEN,
+        BundleHeader, BundleIndex, BundleIndexEntry, BundleTrailer,
     },
     common::{
         BlobType, ID, SaveID,
@@ -26,19 +28,29 @@ use crate::{
     },
 };
 
+/// Message sent from `save_blob` to the background writer thread.
+struct EncodedBlob {
+    data: Vec<u8>,
+    id: ID,
+    blob_type: BlobType,
+    raw_length: u32,
+}
+
+/// State owned by the background writer thread.
+struct WriterInner {
+    file: File,
+    index: BundleIndex,
+}
+
 pub struct BundleWriter {
     storage: SecureStorage,
     compress: bool,
     format_version: u16,
     ecc_config: Option<EccConfig>,
-    inner: Mutex<BundleWriterInner>,
-}
-
-struct BundleWriterInner {
-    file: File,
-    data_start: u64,
-    index: BundleIndex,
-    seen: HashSet<ID>,
+    /// Concurrent dedup set — checked in `save_blob` before sending to channel.
+    seen: ParkMutex<HashSet<ID>>,
+    tx: ParkMutex<Option<Sender<EncodedBlob>>>,
+    writer_handle: ParkMutex<Option<JoinHandle<Result<WriterInner>>>>,
 }
 
 impl BlobSaver for BundleWriter {
@@ -90,20 +102,41 @@ impl BundleWriter {
         };
 
         let header_bytes = header.to_binary();
-        let data_start = header_bytes.len() as u64;
         file.write_all(&header_bytes)?;
+
+        let (tx, rx) = crossbeam_channel::bounded::<EncodedBlob>(256);
+
+        let writer_handle = thread::spawn(move || {
+            let mut inner = WriterInner {
+                file,
+                index: BundleIndex::default(),
+            };
+
+            while let Ok(blob) = rx.recv() {
+                let offset = inner.file.stream_position()?;
+                inner.file.write_all(&blob.data)?;
+
+                inner.index.entries.push(BundleIndexEntry {
+                    id: blob.id,
+                    blob_type: blob.blob_type,
+                    compressed: compress,
+                    offset,
+                    length: blob.data.len() as u32,
+                    raw_length: blob.raw_length,
+                });
+            }
+
+            Ok(inner)
+        });
 
         Ok(Self {
             storage,
             compress,
             format_version,
             ecc_config,
-            inner: Mutex::new(BundleWriterInner {
-                file,
-                data_start,
-                index: BundleIndex::default(),
-                seen: HashSet::new(),
-            }),
+            seen: ParkMutex::new(HashSet::new()),
+            tx: ParkMutex::new(Some(tx)),
+            writer_handle: ParkMutex::new(Some(writer_handle)),
         })
     }
 
@@ -118,6 +151,10 @@ impl BundleWriter {
             SaveID::WithID(id) => id,
         };
 
+        if self.seen.lock().contains(&id) {
+            return Ok(id);
+        }
+
         let raw_length = data.len() as u32;
         let encoded_data = if self.compress {
             self.storage
@@ -128,46 +165,55 @@ impl BundleWriter {
                 .encrypt(data.as_ref())
                 .map_err(|e| MapacheError::Crypto(format!("failed to encrypt blob data: {e}")))?
         };
-        let length = encoded_data.len() as u32;
 
-        let mut inner = self.inner.lock();
-
-        if !inner.seen.insert(id) {
+        if !self.seen.lock().insert(id) {
             return Ok(id);
         }
 
-        let offset = inner.file.stream_position()?;
-        inner.file.write_all(&encoded_data)?;
+        let tx_lock = self.tx.lock();
+        let tx = tx_lock
+            .as_ref()
+            .ok_or_else(|| MapacheError::Internal("bundle writer already finalized".into()))?;
 
-        inner.index.entries.push(BundleIndexEntry {
+        tx.send(EncodedBlob {
+            data: encoded_data,
             id,
             blob_type,
-            compressed: self.compress,
-            offset,
-            length,
             raw_length,
-        });
+        })
+        .map_err(|_| MapacheError::Internal("bundle writer channel closed".into()))?;
 
         Ok(id)
     }
 
     pub fn finalize(&self, root_tree_id: ID) -> Result<()> {
-        let mut inner = self.inner.lock();
+        drop(self.tx.lock().take());
 
-        // --- ECC section (between blob data and index) ---
+        let writer_inner = {
+            let mut handle_guard = self.writer_handle.lock();
+            handle_guard
+                .take()
+                .ok_or_else(|| MapacheError::Internal("bundle writer already finalized".into()))?
+                .join()
+                .map_err(|_| MapacheError::Internal("bundle writer thread panicked".into()))?
+                .map_err(|e| MapacheError::Internal(format!("bundle writer I/O error: {e}")))?
+        };
+
+        let mut file = writer_inner.file;
+        let index = writer_inner.index;
+
         let has_ecc = self.ecc_config.is_some();
         let mut ecc_offset: u64 = 0;
         let mut ecc_len: u32 = 0;
 
         if let Some(ecc_cfg) = &self.ecc_config {
-            let data_end = inner.file.stream_position()?;
-            let data_start = inner.data_start;
+            let data_end = file.stream_position()?;
+            let data_start = BUNDLE_HEADER_SIZE as u64;
             let data_len = (data_end - data_start) as usize;
 
             let k = ecc_cfg.data_shards as usize;
             let p = ecc_cfg.parity_shards as usize;
 
-            // Build ECC header.
             let layouts = ecc::calculate_stripe_layouts(data_len, k, p);
             let mut ecc_payload = Vec::with_capacity(
                 ecc::HEADER_SIZE + layouts.len() * ecc::stripe_payload_size(k, p),
@@ -180,14 +226,11 @@ impl BundleWriter {
             ecc_payload.extend_from_slice(&(data_len as u64).to_le_bytes());
             ecc_payload.extend_from_slice(&(layouts.len() as u32).to_le_bytes());
 
-            // Encode stripe-by-stripe: read each stripe's data from the file,
-            // encode parity, and append to ecc_payload. Peak memory is bounded
-            // by one stripe's data+parity instead of the full data section.
             let rs = ecc::reed_solomon::ReedSolomon::new(k, p).map_err(|_| {
                 MapacheError::Crypto(format!("invalid ECC shard count: k={k}, p={p}"))
             })?;
 
-            inner.file.seek(std::io::SeekFrom::Start(data_start))?;
+            file.seek(std::io::SeekFrom::Start(data_start))?;
             for stripe in &layouts {
                 let sk = stripe.data_shards;
                 let sp = stripe.parity_shards;
@@ -195,7 +238,7 @@ impl BundleWriter {
 
                 let mut shard_buf = vec![0u8; shard_bytes];
                 let copy_len = stripe.data_bytes.min(shard_bytes);
-                inner.file.read_exact(&mut shard_buf[..copy_len])?;
+                file.read_exact(&mut shard_buf[..copy_len])?;
 
                 let data_refs: Vec<&[u8]> = shard_buf.chunks(ecc::SHARD_SIZE).take(sk).collect();
 
@@ -227,23 +270,21 @@ impl BundleWriter {
                 .encrypt(&ecc_payload)
                 .map_err(|e| MapacheError::Crypto(format!("failed to encrypt ECC section: {e}")))?;
 
-            ecc_offset = inner.file.stream_position()?;
+            ecc_offset = file.stream_position()?;
             ecc_len = encrypted_ecc.len() as u32;
-            inner.file.write_all(&encrypted_ecc)?;
+            file.write_all(&encrypted_ecc)?;
         }
 
-        // --- Index ---
-        let index_offset = inner.file.stream_position()?;
-        let index_bytes = inner.index.to_binary();
+        let index_offset = file.stream_position()?;
+        let index_bytes = index.to_binary();
         let encrypted_index = self
             .storage
             .encrypt(&index_bytes)
             .map_err(|e| MapacheError::Crypto(format!("failed to encrypt index: {e}")))?;
         let index_len = encrypted_index.len() as u32;
-        inner.file.write_all(&encrypted_index)?;
+        file.write_all(&encrypted_index)?;
 
-        // --- Manifest ---
-        let manifest_offset = inner.file.stream_position()?;
+        let manifest_offset = file.stream_position()?;
         let mut manifest = Manifest::new(self.format_version as u32);
         if let Some(ecc_cfg) = &self.ecc_config {
             manifest.set_ecc(Some(ecc_cfg.clone()));
@@ -254,9 +295,8 @@ impl BundleWriter {
             .encrypt(&manifest_bytes)
             .map_err(|e| MapacheError::Crypto(format!("failed to encrypt manifest: {e}")))?;
         let manifest_len = encrypted_manifest.len() as u32;
-        inner.file.write_all(&encrypted_manifest)?;
+        file.write_all(&encrypted_manifest)?;
 
-        // --- Trailer ---
         let trailer = BundleTrailer {
             root_tree: root_tree_id,
             index_offset,
@@ -275,8 +315,8 @@ impl BundleWriter {
             .map_err(|e| MapacheError::Crypto(format!("failed to encrypt trailer: {e}")))?;
         let trailer_size = encrypted_trailer.len() as u32;
 
-        inner.file.write_all(&encrypted_trailer)?;
-        inner.file.write_all(&trailer_size.to_le_bytes())?;
+        file.write_all(&encrypted_trailer)?;
+        file.write_all(&trailer_size.to_le_bytes())?;
 
         Ok(())
     }

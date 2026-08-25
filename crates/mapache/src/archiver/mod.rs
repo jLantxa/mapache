@@ -10,7 +10,7 @@ pub(crate) mod rewrite;
 pub(crate) mod tree_serializer;
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -37,8 +37,8 @@ use crate::{
         traits::BlobSaver,
     },
     fs::{
-        filter::PathFilter,
         node::{Metadata, Node, NodeType},
+        scanner::spawn_background_scanner,
         tree::{FSNodeStream, NodeDiff, NodeDiffStream, SerializedNodeStream, StreamNode},
     },
     repository::{
@@ -46,10 +46,18 @@ use crate::{
         snapshot::{Snapshot, SnapshotPair, SnapshotSummary},
     },
     ui::events::{BackupEvent, Event, EventSender, emit_event},
-    utils::{self, stream::ReceiverStream},
+    utils,
 };
 
 const CHUNKER_POOL_CLOSED: &str = "chunker pool channel closed";
+
+/// A diff tuple: `(path, prev_node, next_node, diff_type)`.
+pub(crate) type DiffItem = (
+    PathBuf,
+    Option<Result<StreamNode>>,
+    Option<Result<StreamNode>>,
+    NodeDiff,
+);
 
 /// Options for creating a new snapshot.
 #[derive(Clone)]
@@ -76,7 +84,7 @@ pub struct SnapshotOptions<'a> {
 
 /// Internal state used to coordinate multiple concurrent tasks in the archiver pipeline.
 /// It tracks progress, completion status, and fatal errors.
-struct PipelineStatus {
+pub(crate) struct PipelineStatus {
     /// Signal that the snapshot is finished.
     finished_flag: AtomicBool,
 
@@ -84,15 +92,15 @@ struct PipelineStatus {
     /// abort execution early. Only fatal, unrecoverable errors should be signaled.
     fatal_error_flag: AtomicBool,
     /// Stores the first error that triggered the shutdown to report back to the user.
-    first_error: Mutex<Option<error::MapacheError>>,
-    shutdown_signal: Arc<AtomicBool>,
+    pub(crate) first_error: Mutex<Option<error::MapacheError>>,
+    pub(crate) shutdown_signal: Arc<AtomicBool>,
 
-    event_sender: EventSender,
-    progress: Arc<SnapshotProgress>,
+    pub(crate) event_sender: EventSender,
+    pub(crate) progress: Arc<SnapshotProgress>,
 }
 
 impl PipelineStatus {
-    fn new(
+    pub(crate) fn new(
         progress: Arc<SnapshotProgress>,
         event_sender: EventSender,
         shutdown_signal: Arc<AtomicBool>,
@@ -107,11 +115,11 @@ impl PipelineStatus {
         }
     }
 
-    fn signal_finished(&self) {
+    pub(crate) fn signal_finished(&self) {
         self.finished_flag.store(true, Ordering::Release);
     }
 
-    fn signal_fatal(&self, err: error::MapacheError) {
+    pub(crate) fn signal_fatal(&self, err: error::MapacheError) {
         let already_errored = self.fatal_error_flag.swap(true, Ordering::Release);
         if !already_errored {
             // Only the first task to "flip" the switch gets to log the error.
@@ -124,18 +132,364 @@ impl PipelineStatus {
         }
     }
 
-    fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         self.finished_flag.load(Ordering::Relaxed)
     }
 
-    fn is_failed(&self) -> bool {
+    pub(crate) fn is_failed(&self) -> bool {
         self.fatal_error_flag.load(Ordering::Acquire)
             || self.shutdown_signal.load(Ordering::Acquire)
     }
 }
 
+/// Result of the archiver pipeline.
+pub(crate) struct PipelineResult {
+    pub root_tree_id: common::ID,
+    pub summary: progress::SnapshotProcessSummary,
+}
+
+/// The core processing pipeline shared between snapshot and bundle creation.
+///
+/// Takes a receiver of `DiffItem` tuples from a producer task (diff producer
+/// for snapshots, FSNodeStream adapter for bundles), routes files through the
+/// chunker pool with small-file batching, and serializes the resulting
+/// directory tree.
+///
+/// Returns the root tree ID and a progress summary on success.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_pipeline(
+    mut diff_rx: mpsc::Receiver<DiffItem>,
+    blob_saver: Arc<dyn BlobSaver>,
+    repo_version: u32,
+    num_readers: usize,
+    snapshot_root_path: PathBuf,
+    absolute_source_paths: &[PathBuf],
+    is_stdin: bool,
+    status: Arc<PipelineStatus>,
+) -> Result<PipelineResult> {
+    let (processed_tx, mut processed_rx) = mpsc::channel(4096);
+
+    tracing::info!(target: "archiver", "Starting chunker pool ({} threads)", num_readers);
+    let chunker_pool = chunker_pool::ChunkerPool::new(num_readers);
+
+    // ------------------------------------------------------------------
+    // Stage 2a: Coordinator Task (lightweight routing)
+    // ------------------------------------------------------------------
+    tracing::info!(target: "archiver", "Starting Stage 2: Coordinator ({} readers)", num_readers);
+    let coordinator_blob_saver = blob_saver.clone();
+    let coordinator_status = status.clone();
+    let coordinator_tx = processed_tx.clone();
+    let forwarder_tx = processed_tx.clone();
+
+    let batch_lock: Arc<Mutex<Vec<chunker_pool::ChunkerJob>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let coordinator_is_stdin = is_stdin;
+    let coordinator_task = tokio::spawn(async move {
+        tracing::trace!(target: "archiver", "Coordinator task started");
+
+        while let Some((path, prev_res, next_res, diff)) = diff_rx.recv().await {
+            let blob_saver = coordinator_blob_saver.clone();
+            let status = coordinator_status.clone();
+            let pool_sender = chunker_pool.sender.clone();
+            let tx = coordinator_tx.clone();
+            let progress = status.progress.clone();
+            let event_sender = status.event_sender.clone();
+            let shutdown_signal = status.shutdown_signal.clone();
+            let batch_lock = batch_lock.clone();
+            let is_stdin = coordinator_is_stdin;
+
+            if status.is_failed() {
+                break;
+            }
+
+            // Resolve result wrappers
+            let next_node = match next_res {
+                Some(Err(e)) => {
+                    emit_event(
+                        &event_sender,
+                        Event::Backup(BackupEvent::Warning(format!(
+                            "Skipping {}: {}",
+                            path.display(),
+                            e
+                        ))),
+                    );
+                    tracing::warn!(target: "archiver", "Skipping {}: {}", path.display(), e);
+                    progress.processed_node();
+                    continue;
+                }
+                Some(Ok(n)) => Some(n),
+                None => None,
+            };
+            let prev_node = match prev_res {
+                Some(Ok(n)) => Some(n),
+                Some(Err(_)) => None,
+                None => None,
+            };
+
+            let needs_chunking = matches!(diff, NodeDiff::New | NodeDiff::Changed)
+                && next_node.as_ref().is_some_and(|n| n.node.is_file());
+
+            if needs_chunking {
+                let is_stdin_item = is_stdin && path == Path::new("/stdin");
+                let is_small = !is_stdin_item
+                    && next_node
+                        .as_ref()
+                        .is_some_and(|n| n.node.metadata.size <= common::defaults::MIN_CHUNK_SIZE);
+
+                let job = chunker_pool::ChunkerJob {
+                    path,
+                    prev_node,
+                    next_node,
+                    diff_type: diff,
+                    blob_saver,
+                    progress,
+                    event_sender,
+                    shutdown_signal,
+                    is_stdin: is_stdin_item,
+                };
+
+                if is_small {
+                    let mut batch = batch_lock.lock();
+                    batch.push(job);
+                    if batch.len() >= BATCH_SIZE {
+                        let to_send = std::mem::take(&mut *batch);
+                        drop(batch);
+                        if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err()
+                            && !status.is_failed()
+                        {
+                            status.signal_fatal(error::MapacheError::Chunking(
+                                CHUNKER_POOL_CLOSED.to_string(),
+                            ));
+                        }
+                    }
+                } else {
+                    let pending = {
+                        let mut batch = batch_lock.lock();
+                        std::mem::take(&mut *batch)
+                    };
+                    if !pending.is_empty()
+                        && pool_sender.send(ChunkerPoolMsg::Batch(pending)).is_err()
+                        && !status.is_failed()
+                    {
+                        status.signal_fatal(error::MapacheError::Chunking(
+                            CHUNKER_POOL_CLOSED.to_string(),
+                        ));
+                        continue;
+                    }
+                    if pool_sender
+                        .send(ChunkerPoolMsg::Single(Box::new(job)))
+                        .is_err()
+                        && !status.is_failed()
+                    {
+                        status.signal_fatal(error::MapacheError::Chunking(
+                            CHUNKER_POOL_CLOSED.to_string(),
+                        ));
+                    }
+                }
+            } else {
+                tracing::trace!(target: "archiver", "Processing item inline: {:?}", path);
+                let mut ctx = processor::ItemContext {
+                    blob_saver,
+                    progress: &progress,
+                    event_sender: &event_sender,
+                    shutdown_signal: &shutdown_signal,
+                    bufs: None,
+                };
+                match processor::process_item_sync(
+                    path.as_path(),
+                    prev_node.as_ref(),
+                    next_node.as_ref(),
+                    diff,
+                    &mut ctx,
+                ) {
+                    Ok(Some(node)) => {
+                        tracing::trace!(target: "archiver", "Item processed inline: {:?}", path);
+                        if tx.send((path, node)).await.is_err() {
+                            tracing::trace!(target: "archiver", "Serializer channel closed");
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::trace!(target: "archiver", "Item skipped (no node): {:?}", path);
+                    }
+                    Err(e) => {
+                        tracing::error!(target: "archiver", "Inline processor error for {:?}: {e}", path);
+                        status.signal_fatal(e);
+                    }
+                }
+            }
+        }
+
+        // Flush any remaining batch
+        let remaining = {
+            let mut batch = batch_lock.lock();
+            std::mem::take(&mut *batch)
+        };
+        if !remaining.is_empty()
+            && chunker_pool
+                .sender
+                .send(ChunkerPoolMsg::Batch(remaining))
+                .is_err()
+        {
+            tracing::warn!(target: "archiver", "Coordinator flush failed: chunker channel closed");
+        }
+
+        tracing::trace!(target: "archiver", "Coordinator task finished");
+    });
+
+    // ------------------------------------------------------------------
+    // Stage 2b: Chunker Result Forwarder
+    // ------------------------------------------------------------------
+    let forwarder_task =
+        spawn_forwarder(chunker_pool.receiver.clone(), forwarder_tx, status.clone());
+
+    drop(processed_tx);
+
+    // ------------------------------------------------------------------
+    // Stage 3: Tree Serializer (Main Loop)
+    // ------------------------------------------------------------------
+    tracing::info!(target: "archiver", "Starting Stage 3: Tree Serializer");
+    let mut tree_serializer = TreeSerializer::new(
+        blob_saver,
+        repo_version,
+        snapshot_root_path,
+        absolute_source_paths,
+    );
+
+    while let Some((path, stream_node)) = processed_rx.recv().await {
+        if status.is_failed() {
+            break;
+        }
+
+        if let Err(e) = tree_serializer
+            .handle_processed_item((path.as_path(), stream_node))
+            .await
+        {
+            status.signal_fatal(error::MapacheError::Repo(format!(
+                "serializer error at {:?}: {}",
+                path, e
+            )));
+            break;
+        }
+    }
+
+    let results = tokio::join!(coordinator_task, forwarder_task);
+    for (name, result) in [("coordinator", results.0), ("forwarder", results.1)] {
+        if let Err(e) = result {
+            tracing::error!(target: "archiver", "{name} task panicked: {e}");
+            status.signal_fatal(error::MapacheError::Internal(format!(
+                "{name} task panicked"
+            )));
+        }
+    }
+
+    if status.is_failed() {
+        if let Some(err) = status.first_error.lock().take() {
+            return Err(err);
+        }
+        return Err(error::MapacheError::Interrupted);
+    }
+
+    tree_serializer.finalize_root().await?;
+    let root_tree_id = tree_serializer
+        .root_tree()
+        .ok_or_else(|| error::MapacheError::Internal("root tree ID not set".to_string()))?;
+
+    status.signal_finished();
+    let summary = status.progress.summary();
+
+    Ok(PipelineResult {
+        root_tree_id,
+        summary,
+    })
+}
+
+/// Spawns a forwarder task that bridges chunker pool results to the processed
+/// item channel.
+fn spawn_forwarder(
+    chunker_receiver: crossbeam_channel::Receiver<chunker_pool::ChunkerResult>,
+    forwarder_tx: mpsc::Sender<(PathBuf, StreamNode)>,
+    status: Arc<PipelineStatus>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tracing::trace!(target: "archiver", "Chunker forwarder task started");
+
+        let result = tokio::task::spawn_blocking(move || {
+            while let Ok(chunker_result) = chunker_receiver.recv() {
+                if status.is_failed() {
+                    return Ok::<(), error::MapacheError>(());
+                }
+
+                match chunker_result.result {
+                    Ok(Some(node)) => {
+                        if forwarder_tx
+                            .blocking_send((chunker_result.path, node))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        status.signal_fatal(e);
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        })
+        .await;
+
+        if let Err(e) = result {
+            tracing::error!(target: "archiver", "Chunker forwarder panicked: {e}");
+        }
+        tracing::trace!(target: "archiver", "Chunker forwarder task finished");
+    })
+}
+
+/// Spawns the background scanner task used for progress estimation.
+pub(crate) fn spawn_scanner_task(
+    no_scan: bool,
+    absolute_source_paths: Vec<PathBuf>,
+    exclude_paths: Vec<PathBuf>,
+    status: Arc<PipelineStatus>,
+    event_sender: EventSender,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if no_scan {
+            return;
+        }
+
+        tracing::info!(target: "archiver", "Starting background scanner");
+        let status_clone = status.clone();
+        let handle = spawn_background_scanner(
+            absolute_source_paths,
+            exclude_paths,
+            event_sender,
+            move || status_clone.is_failed() || status_clone.is_finished(),
+        );
+
+        match handle.await {
+            Ok(Ok(_stats)) => {
+                tracing::info!(target: "archiver", "Background scanner finished");
+            }
+            Ok(Err(e)) => {
+                status.signal_fatal(error::MapacheError::Internal(e));
+            }
+            Err(e) => {
+                status.signal_fatal(error::MapacheError::Internal(format!(
+                    "scanner task join error: {e}"
+                )));
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot entry point
+// ---------------------------------------------------------------------------
+
 /// The main entry point for creating a new snapshot.
-/// This function sets up the processing pipeline and waits for its completion.
+/// Sets up the diff producer and delegates to `run_pipeline`.
 pub(crate) async fn snapshot(
     repo: Arc<Repository>,
     snapshot_options: SnapshotOptions<'_>,
@@ -154,8 +508,6 @@ pub(crate) async fn snapshot(
     let is_stdin = snapshot_options.stdin;
 
     let scanner_handle = if !is_stdin {
-        // Start Background Scanner early so it counts files concurrently
-        // with the stream setup and the backup pipeline.
         tracing::info!(target: "archiver", "Starting background scanner");
         Some(spawn_scanner_task(
             snapshot_options.no_scan,
@@ -176,21 +528,11 @@ pub(crate) async fn snapshot(
         None
     };
 
-    // ---------------------------------------------------------------------
-    // Pipeline Channels & Chunker Pool
-    // ---------------------------------------------------------------------
-    // We use a larger buffer for many small files to reduce backpressure on the producer.
-    let (diff_tx, diff_rx) = mpsc::channel(num_readers * 128);
-    let (processed_tx, mut processed_rx) = mpsc::channel(4096);
-
-    // Dedicated threadpool for CPU-bound chunking work.
-    // This avoids contention with tokio's blocking pool (used by FSNodeStream).
-    tracing::info!(target: "archiver", "Starting chunker pool ({} threads)", num_readers);
-    let chunker_pool = chunker_pool::ChunkerPool::new(num_readers);
-
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------
     // Stage 1: Diff Producer Task
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    let (diff_tx, diff_rx) = mpsc::channel(num_readers * 128);
+
     tracing::info!(target: "archiver", "Starting Stage 1: Diff Producer");
     let producer_status = status.clone();
     let producer_task = if is_stdin {
@@ -200,7 +542,7 @@ pub(crate) async fn snapshot(
                 name: "stdin".to_string(),
                 node_type: NodeType::File,
                 metadata: Metadata {
-                    size: 0, // We don't know the size upfront
+                    size: 0,
                     modified_time: Some(SystemTime::now()),
                     mode: Some(0o100644),
                     ..Default::default()
@@ -223,7 +565,6 @@ pub(crate) async fn snapshot(
             tracing::trace!(target: "archiver", "Stdin Producer task finished");
         })
     } else {
-        // Setup Input Streams
         tracing::info!(target: "archiver", "Setting up input streams");
         let fs_stream = FSNodeStream::from_paths(
             snapshot_options.absolute_source_paths.clone(),
@@ -270,257 +611,27 @@ pub(crate) async fn snapshot(
         })
     };
 
-    // ---------------------------------------------------------------------
-    // Stage 2a: Coordinator Task (lightweight routing)
-    // ---------------------------------------------------------------------
-    // Items that need chunking (new/changed files) are sent to the dedicated
-    // chunker threadpool. Everything else (unchanged, deleted, directories)
-    // is processed inline — no spawn_blocking overhead.
-    tracing::info!(target: "archiver", "Starting Stage 2: Coordinator ({} readers)", num_readers);
-    let coordinator_blob_saver: Arc<dyn BlobSaver> = repo.clone();
-    let coordinator_status = status.clone();
-    let coordinator_tx = processed_tx.clone();
-    let forwarder_tx = processed_tx.clone();
-
-    // Shared batch accumulator for small files.
-    // Pool threads process batches sequentially, amortizing thread handoff overhead.
-    let batch_lock: Arc<Mutex<Vec<chunker_pool::ChunkerJob>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let coordinator_is_stdin = is_stdin;
-    let coordinator_task = tokio::spawn(async move {
-        tracing::trace!(target: "archiver", "Coordinator task started");
-        let stream = ReceiverStream::new(diff_rx);
-
-        stream
-            .for_each_concurrent(num_readers * 2, |(path, prev_res, next_res, diff)| {
-                let blob_saver = coordinator_blob_saver.clone();
-                let status = coordinator_status.clone();
-                let pool_sender = chunker_pool.sender.clone();
-                let tx = coordinator_tx.clone();
-                let progress = status.progress.clone();
-                let event_sender = status.event_sender.clone();
-                let shutdown_signal = status.shutdown_signal.clone();
-                let batch_lock = batch_lock.clone();
-                let is_stdin = coordinator_is_stdin;
-
-                async move {
-                    if status.is_failed() {
-                        return;
-                    }
-
-                    // Resolve result wrappers
-                    let next_node = match next_res {
-                        Some(Err(e)) => {
-                            emit_event(&event_sender, Event::Backup(BackupEvent::Warning(format!("Skipping {}: {}", path.display(), e))));
-                            tracing::warn!(target: "archiver", "Skipping {}: {}", path.display(), e);
-                            progress.processed_node();
-                            return;
-                        }
-                        Some(Ok(n)) => Some(n),
-                        None => None,
-                    };
-                    let prev_node = match prev_res {
-                        Some(Ok(n)) => Some(n),
-                        Some(Err(_)) => None,
-                        None => None,
-                    };
-
-                    let needs_chunking = matches!(diff, NodeDiff::New | NodeDiff::Changed)
-                        && next_node.as_ref().is_some_and(|n| n.node.is_file());
-
-                    if needs_chunking {
-                        let is_stdin_item = is_stdin
-                            && path == Path::new("/stdin");
-                        let is_small = !is_stdin_item
-                            && next_node
-                                .as_ref()
-                                .is_some_and(|n| n.node.metadata.size <= common::defaults::MIN_CHUNK_SIZE);
-
-                        let job = chunker_pool::ChunkerJob {
-                            path,
-                            prev_node,
-                            next_node,
-                            diff_type: diff,
-                            blob_saver,
-                            progress,
-                            event_sender,
-                            shutdown_signal,
-                            is_stdin: is_stdin_item,
-                        };
-
-                        if is_small {
-                            // Accumulate small files into a batch.
-                            let mut batch = batch_lock.lock();
-                            batch.push(job);
-                            if batch.len() >= BATCH_SIZE {
-                                let to_send = std::mem::take(&mut *batch);
-                                drop(batch);
-                                if pool_sender.send(ChunkerPoolMsg::Batch(to_send)).is_err()
-                                    && !status.is_failed() {
-                                        status.signal_fatal(error::MapacheError::Chunking(
-                                            CHUNKER_POOL_CLOSED.to_string(),
-                                        ));
-                                }
-                            }
-                        } else {
-                            // Large file: flush any pending batch first, then send as Single.
-                            let pending = {
-                                let mut batch = batch_lock.lock();
-                                std::mem::take(&mut *batch)
-                            };
-                            if !pending.is_empty()
-                                && pool_sender.send(ChunkerPoolMsg::Batch(pending)).is_err()
-                                && !status.is_failed() {
-                                    status.signal_fatal(error::MapacheError::Chunking(
-                                        CHUNKER_POOL_CLOSED.to_string(),
-                                    ));
-
-                                return;
-                            }
-                            if pool_sender.send(ChunkerPoolMsg::Single(Box::new(job))).is_err()
-                                && !status.is_failed() {
-                                    status.signal_fatal(error::MapacheError::Chunking(
-                                        CHUNKER_POOL_CLOSED.to_string(),
-                                    ));
-                            }
-                        }
-                    } else {
-                        tracing::trace!(target: "archiver", "Processing item inline: {:?}", path);
-                        let mut ctx = processor::ItemContext {
-                            blob_saver,
-                            progress: &progress,
-                            event_sender: &event_sender,
-                            shutdown_signal: &shutdown_signal,
-                            bufs: None,
-                        };
-                        match processor::process_item_sync(
-                            path.as_path(),
-                            prev_node.as_ref(),
-                            next_node.as_ref(),
-                            diff,
-                            &mut ctx,
-                        ) {
-                            Ok(Some(node)) => {
-                                tracing::trace!(target: "archiver", "Item processed inline: {:?}", path);
-                                if tx.send((path, node)).await.is_err() {
-                                    tracing::trace!(target: "archiver", "Serializer channel closed");
-                                }
-                            }
-                            Ok(None) => {
-                                tracing::trace!(target: "archiver", "Item skipped (no node): {:?}", path);
-                            }
-                            Err(e) => {
-                                tracing::error!(target: "archiver", "Inline processor error for {:?}: {e}", path);
-                                status.signal_fatal(e);
-                            }
-                        }
-                    }
-                }
-            })
-            .await;
-
-        // Flush any remaining batch
-        let remaining = {
-            let mut batch = batch_lock.lock();
-            std::mem::take(&mut *batch)
-        };
-        if !remaining.is_empty()
-            && chunker_pool
-                .sender
-                .send(ChunkerPoolMsg::Batch(remaining))
-                .is_err()
-        {
-            tracing::warn!(target: "archiver", "Coordinator flush failed: chunker channel closed");
-        }
-
-        tracing::trace!(target: "archiver", "Coordinator task finished");
-    });
-
-    // ---------------------------------------------------------------------
-    // Stage 2b: Chunker Result Forwarder
-    // ---------------------------------------------------------------------
-    // Forwards processed results from the dedicated chunker pool to the
-    // tree serializer. Runs in a single spawn_blocking (not one per file).
-    let forwarder_status = status.clone();
-    let forwarder_task = tokio::spawn(async move {
-        tracing::trace!(target: "archiver", "Chunker forwarder task started");
-        let receiver = chunker_pool.receiver.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            while let Ok(chunker_result) = receiver.recv() {
-                if forwarder_status.is_failed() {
-                    return Ok::<(), error::MapacheError>(());
-                }
-
-                match chunker_result.result {
-                    Ok(Some(node)) => {
-                        if forwarder_tx
-                            .blocking_send((chunker_result.path, node))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        forwarder_status.signal_fatal(e);
-                        break;
-                    }
-                }
-            }
-            Ok(())
-        })
-        .await;
-
-        if let Err(e) = result {
-            tracing::error!(target: "archiver", "Chunker forwarder panicked: {e}");
-        }
-        tracing::trace!(target: "archiver", "Chunker forwarder task finished");
-    });
-
-    // Drop our sender so the channel closes when all workers finish
-    drop(processed_tx);
-
-    // ---------------------------------------------------------------------
-    // Stage 3: Tree Serializer (Main Loop)
-    // ---------------------------------------------------------------------
-    tracing::info!(target: "archiver", "Starting Stage 3: Tree Serializer");
-    let mut tree_serializer = TreeSerializer::new(
+    // ------------------------------------------------------------------
+    // Run the shared pipeline (coordinator + forwarder + tree serializer)
+    // ------------------------------------------------------------------
+    let pipeline_result = run_pipeline(
+        diff_rx,
         repo.clone() as Arc<dyn BlobSaver>,
         repo.repo_version(),
+        num_readers,
         snapshot_options.snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,
-    );
+        is_stdin,
+        status.clone(),
+    )
+    .await;
 
-    while let Some((path, stream_node)) = processed_rx.recv().await {
-        if status.is_failed() {
-            break;
-        }
-
-        if let Err(e) = tree_serializer
-            .handle_processed_item((path.as_path(), stream_node))
-            .await
-        {
-            status.signal_fatal(error::MapacheError::Repo(format!(
-                "serializer error at {:?}: {}",
-                path, e
-            )));
-            break;
-        }
-    }
-
-    let results = tokio::join!(producer_task, coordinator_task, forwarder_task);
-    for (name, result) in [
-        ("producer", results.0),
-        ("coordinator", results.1),
-        ("forwarder", results.2),
-    ] {
-        if let Err(e) = result {
-            tracing::error!(target: "archiver", "{name} task panicked: {e}");
-            status.signal_fatal(error::MapacheError::Internal(format!(
-                "{name} task panicked"
-            )));
-        }
+    // Wait for the producer and scanner to finish
+    if let Err(e) = producer_task.await {
+        tracing::error!(target: "archiver", "Producer task panicked: {e}");
+        status.signal_fatal(error::MapacheError::Internal(
+            "producer task panicked".to_string(),
+        ));
     }
 
     if let Some(handle) = scanner_handle
@@ -529,36 +640,25 @@ pub(crate) async fn snapshot(
         tracing::warn!(target: "archiver", "Scanner task panicked: {e}");
     }
 
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------
     // Finalization
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------
     tracing::info!(target: "archiver", "Finalizing snapshot tree");
 
-    if status.is_failed() {
-        if let Some(err) = status.first_error.lock().take() {
-            return Err(err);
-        }
-        return Err(error::MapacheError::Interrupted);
-    }
+    let result = pipeline_result?;
 
-    tree_serializer.finalize_root().await?;
-    let root_tree_id = tree_serializer
-        .root_tree()
-        .ok_or_else(|| error::MapacheError::Internal("root tree ID not set".to_string()))?;
-
-    status.signal_finished();
     let summary = progress.summary();
     emit_event(
         &event_sender,
         Event::Backup(BackupEvent::Finished(summary.clone())),
     );
-    tracing::info!(target: "archiver", "Snapshot tree finalized: {root_tree_id}");
+    tracing::info!(target: "archiver", "Snapshot tree finalized: {}", result.root_tree_id);
     let (hostname, username) = utils::get_system_info();
 
     Ok(Snapshot {
         timestamp: Local::now(),
         parent: snapshot_options.parent_snapshot.map(|pair| pair.id),
-        tree: root_tree_id,
+        tree: result.root_tree_id,
         root: snapshot_options.snapshot_root_path,
         paths: snapshot_options.absolute_source_paths,
         hostname,
@@ -566,126 +666,8 @@ pub(crate) async fn snapshot(
         version: Some(MAPACHE_VERSION_INFO.clone()),
         tags: snapshot_options.tags,
         description: snapshot_options.description,
-        summary: summary.into(),
+        summary: result.summary.into(),
     })
-}
-
-/// Spawns a background scanner task to estimate the total size and item count.
-/// This uses a sequential walk so it does not compete with the main backup
-/// pipeline for rayon's global threadpool.
-fn spawn_scanner_task(
-    no_scan: bool,
-    absolute_source_paths: Vec<PathBuf>,
-    exclude_paths: Vec<PathBuf>,
-    status: Arc<PipelineStatus>,
-    event_sender: EventSender,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if no_scan {
-            return;
-        }
-
-        let filter = Arc::new(PathFilter::new(None, Some(exclude_paths)));
-
-        let status_for_blocking = status.clone();
-        let sender_for_blocking = event_sender.clone();
-        let filter_for_blocking = filter.clone();
-
-        let mut scan_items = 0u64;
-        let mut scan_bytes = 0u64;
-
-        let res = tokio::task::spawn_blocking(move || {
-            for path in &absolute_source_paths {
-                scan_recursive(
-                    path,
-                    filter_for_blocking.clone(),
-                    status_for_blocking.clone(),
-                    sender_for_blocking.clone(),
-                    &mut scan_items,
-                    &mut scan_bytes,
-                );
-            }
-        })
-        .await;
-
-        if let Err(e) = res {
-            status.signal_fatal(error::MapacheError::Internal(format!(
-                "scanner panicked or failed: {e}"
-            )));
-        }
-
-        tracing::info!(target: "archiver", "Background scanner finished");
-        emit_event(
-            &event_sender,
-            Event::Backup(BackupEvent::ScanFinished {
-                total_items: scan_items,
-                total_bytes: scan_bytes,
-            }),
-        );
-    })
-}
-
-fn scan_recursive(
-    path: &Path,
-    filter: Arc<PathFilter>,
-    status: Arc<PipelineStatus>,
-    event_sender: EventSender,
-    scan_items: &mut u64,
-    scan_bytes: &mut u64,
-) {
-    let mut stack = VecDeque::new();
-    stack.push_back(path.to_path_buf());
-
-    while let Some(current) = stack.pop_front() {
-        if status.is_failed() || status.is_finished() {
-            return;
-        }
-
-        if !filter.allow(&current) {
-            continue;
-        }
-
-        match Node::from_path_sync(&current, false) {
-            Ok(node) => {
-                *scan_items += 1;
-                let size = if node.is_file() {
-                    node.metadata.size
-                } else {
-                    0
-                };
-                *scan_bytes += size;
-
-                emit_event(
-                    &event_sender,
-                    Event::Backup(BackupEvent::ScanProgress {
-                        items: 1,
-                        bytes: size,
-                    }),
-                );
-
-                if node.is_dir() {
-                    if let Ok(entries) = std::fs::read_dir(&current) {
-                        for entry in entries.flatten() {
-                            stack.push_back(entry.path());
-                        }
-                    } else {
-                        let msg = format!("error reading directory {}", current.display());
-                        emit_event(&event_sender, Event::Backup(BackupEvent::Warning(msg)));
-                    }
-                }
-            }
-            Err(e) => {
-                emit_event(
-                    &event_sender,
-                    Event::Backup(BackupEvent::Warning(format!(
-                        "error scanning {}: {}",
-                        current.display(),
-                        e
-                    ))),
-                );
-            }
-        }
-    }
 }
 
 impl From<progress::SnapshotProcessSummary> for SnapshotSummary {
@@ -717,6 +699,7 @@ mod tests {
     };
 
     use super::*;
+
     #[tokio::test]
     async fn test_archiver_atomic_ordering() -> Result<()> {
         let auth = Auth {

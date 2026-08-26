@@ -104,11 +104,11 @@ fn test_cut_respects_min_size() {
     let data = vec![0u8; data_len];
 
     let tiny_data = &data[..min_size - 1];
-    let cut = chunker.cut(tiny_data);
+    let (_hash, cut) = chunker.cut(tiny_data);
     assert_eq!(cut, min_size - 1, "Should return full length if < MIN_SIZE");
 
     let large_data = &data[..];
-    let cut = chunker.cut(large_data);
+    let (_hash, cut) = chunker.cut(large_data);
     assert_eq!(
         cut, data_len,
         "Should return full length/MAX_CAP if no pattern match"
@@ -123,11 +123,11 @@ fn test_cut_hits_max_size_boundary() {
     let chunker = Chunker::new(min_size, normal_size, max_size, Normalization::None);
 
     let data_max = vec![0u8; max_size];
-    let cut_max = chunker.cut(&data_max);
+    let (_hash, cut_max) = chunker.cut(&data_max);
     assert_eq!(cut_max, max_size, "Should return MAX_SIZE");
 
     let data_too_big = vec![0u8; max_size + 500];
-    let cut_too_big = chunker.cut(&data_too_big);
+    let (_hash, cut_too_big) = chunker.cut(&data_too_big);
     assert_eq!(cut_too_big, max_size, "Should cap at MAX_SIZE limit");
 }
 
@@ -141,7 +141,7 @@ fn test_cut_on_random_data_is_not_max_size() {
     let data_len = 2 * max_size;
     let data = generate_random_data(data_len);
 
-    let cut_point = chunker.cut(&data);
+    let cut_point = chunker.cut(&data).1;
 
     assert!(
         cut_point < data_len,

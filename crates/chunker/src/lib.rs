@@ -190,9 +190,10 @@ impl Chunker {
 
     /// Find a cut point (chunk boundary) in a byte slice.
     ///
-    /// Returns the index of the first byte past the cut. If no boundary is
-    /// found within [`min_size`, `max_size`], returns `max_size` (or the slice
-    /// length if shorter).
+    /// Returns a tuple of `(hash, cut_point)` where `cut_point` is the index
+    /// of the first byte past the cut, and `hash` is the gear fingerprint at
+    /// that position. If no boundary is found within [`min_size`, `max_size`],
+    /// returns `max_size` (or the slice length if shorter).
     ///
     /// ## Algorithm
     ///
@@ -207,10 +208,10 @@ impl Chunker {
     ///    `mask_l` (fewer one-bits → fewer positions pass, guaranteeing
     ///    termination before or at `max_size`).
     /// 5. **Fallback** — Return `max` if no cut point was found.
-    pub fn cut(&self, data: &[u8]) -> usize {
+    pub fn cut(&self, data: &[u8]) -> (u64, usize) {
         let len = data.len();
         if len <= self.min_size {
-            return len;
+            return (0, len);
         }
 
         let max = len.min(self.max_size);
@@ -228,7 +229,7 @@ impl Chunker {
             let b = search_slice[n];
             fp = (fp << 1).wrapping_add(self.gear[b as usize]);
             if fp & self.mask_s == 0 {
-                return n + 1;
+                return (fp, n + 1);
             }
             n += 1;
         }
@@ -238,13 +239,13 @@ impl Chunker {
             let b0 = search_slice[n];
             fp = (fp << 2).wrapping_add(self.gear_ls[b0 as usize]);
             if fp & self.mask_s_ls == 0 {
-                return n;
+                return (fp, n);
             }
 
             let b1 = search_slice[n + 1];
             fp = fp.wrapping_add(self.gear[b1 as usize]);
             if fp & self.mask_s == 0 {
-                return n + 1;
+                return (fp, n + 1);
             }
 
             n += 2;
@@ -255,19 +256,25 @@ impl Chunker {
             let b0 = search_slice[n];
             fp = (fp << 2).wrapping_add(self.gear_ls[b0 as usize]);
             if fp & self.mask_l_ls == 0 {
-                return n;
+                return (fp, n);
             }
 
             let b1 = search_slice[n + 1];
             fp = fp.wrapping_add(self.gear[b1 as usize]);
             if fp & self.mask_l == 0 {
-                return n + 1;
+                return (fp, n + 1);
             }
 
             n += 2;
         }
 
-        max
+        // Fold any trailing odd byte into the hash so the fingerprint
+        // reflects the full chunk (not just the even prefix).
+        if max % 2 == 1 {
+            fp = (fp << 1).wrapping_add(self.gear[data[max - 1] as usize]);
+        }
+
+        (fp, max)
     }
 
     /// Create a [`ChunkStream`] that yields chunks from a [`Read`] source.
@@ -370,7 +377,7 @@ impl<'a, R: Read> Iterator for ChunkStream<'a, R> {
 
         if self.buffer.len() >= min_size {
             let slice = &self.buffer[..self.buffer.len().min(max_size)];
-            let cut_point = self.chunker.cut(slice);
+            let (_hash, cut_point) = self.chunker.cut(slice);
 
             if cut_point > 0 {
                 let data: Vec<u8> = self.buffer.drain(..cut_point).collect();

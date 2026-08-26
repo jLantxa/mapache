@@ -3,4 +3,4 @@
 ## Contents
 
 - [User Manual](manual.md) — Complete command reference and usage guide.
-- [Design](design.md) — In-depth repository architecture and format.
+- [Design](design_v2.md) — In-depth repository architecture and format.

@@ -260,7 +260,7 @@ pub fn update_tree_hierarchy(
             }
         }
 
-        let binary = tree.to_binary()?;
+        let binary = serde_json::to_vec(&tree).map_err(MapacheError::Serialization)?;
         let new_id = ID::from_content(&binary);
         id_map.insert(tree_id, new_id);
         new_trees.push((new_id, binary));

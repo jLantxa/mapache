@@ -491,7 +491,6 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
     let pipeline_result = run_pipeline(
         diff_rx,
         bundle_writer.clone() as Arc<dyn BlobSaver>,
-        2,
         process_readers,
         snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,

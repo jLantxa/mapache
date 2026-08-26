@@ -129,11 +129,8 @@ Compression can be disabled with the `--compression none` flag. In that mode,
 data and tree blobs are stored **without** compression (still encrypted), which
 is useful for content that is already compressed (video, photos, archives).
 Metadata (footers, index, snapshots) is always compressed with the default
-level, regardless of this flag.
-
-`none` requires repository format **v2**: the v1 format has no per-blob
-compression marker and always stores zstd-compressed blobs, so `none` is
-rejected for v1 repositories (migrate to v2 first).
+level, regardless of this flag. `none` requires the per-blob compression
+marker in the pack footer (available in all formats).
 
 Security is a non-negotiable aspect of mapache by design. **Everything** except
 for a handful of bytes is encrypted. Encryption cannot be disabled or opted-out.
@@ -142,9 +139,8 @@ encryption and authentication of data with a key. AES-GCM-SIV not only encrypts
 the data, it adds an authentication layer that allows mapache to detect when an
 object has been altered or manipulated.
 
-In v2, the AES-GCM-SIV nonce is placed at the **end** of each encrypted blob
-(`[ciphertext | tag | nonce]`) instead of the start (`[nonce | ciphertext | tag]`
-as in v1).
+Each encrypted blob has its AES-GCM-SIV nonce appended at the end (`[ciphertext |
+tag | nonce]`) instead of the start.
 
 #### Master key and key files
 
@@ -212,15 +208,11 @@ external entity with access to the storage medium.
 
 ## Repository format
 
-The current repository format is **v2**. Format v1 is deprecated (see
-[design_v1.md](design_v1.md) for its specification). The `mapache migrate`
-command converts v1 repositories to v2.
-
 ### Manifest
 
-The `manifest` file describes the repository: its ID, creation time and version
-number. The ID is a 256-bit identifier generated randomly at the time of
-creation.
+The `manifest` file describes the repository: its ID, creation time, and
+optional ECC parameters. The ID is a 256-bit identifier generated randomly at
+the time of creation.
 
 The `manifest` file is compressed and encrypted with the master key.
 
@@ -245,7 +237,7 @@ that maps user configuration to K/P changes in the future, old repositories
 still decode correctly using the stored values.
 
 JSON is used instead of a binary format to allow extending the manifest with
-new fields without breaking format compatibility within the same version.
+new fields without breaking format compatibility.
 
 ### Snapshots
 
@@ -322,82 +314,32 @@ raw content. The pack footer describes the blobs contained in the pack footer.
 This footer includes a 4-byte field which is the length of the total footer. The
 pack footer is encoded, except for the length field.
 
-In v2, each encrypted blob has its AES-GCM-SIV nonce appended at the end (`[ct |
-tag | nonce]`), whereas v1 placed it at the start (`[nonce | ct | tag]`). This
-change eliminates an extra allocation and memory copy during encryption — the
-ciphertext is encrypted in-place and the tag and nonce are appended to the same
-buffer. This is transparent to the pack format — the footer stores encoded
-length and raw length as before.
+Each encrypted blob has its AES-GCM-SIV nonce appended at the end (`[ct |
+tag | nonce]`). This eliminates an extra allocation and memory copy during
+encryption — the ciphertext is encrypted in-place and the tag and nonce are
+appended to the same buffer. This is transparent to the pack format — the footer
+stores encoded length and raw length as before.
 
 #### Trees
 
 Mapache stores file contents (data blobs) as well as tree metadata (tree blobs).
 Tree and data blobs are stored in separate packs. The data blobs contain chunks
 of the file contents. The tree blob contain metadata about the file system tree
-nodes. In v2, trees use a compact **binary format** instead of the JSON format
-used in v1. Data and tree blobs are stored in pack files in the same way. Each
+nodes. Data and tree blobs are stored in pack files in the same way. Each
 tree is stored as a single blob. A tree node can be a file, directory,
 symlink, etc. Directories have a `tree` field which points to its subtree. File
 nodes have a `blobs` field which contains a list of its data blobs in order.
 Symlinks have a field `symlink_info` which contains metadata about the target
 path and node type of the target.
 
-##### Tree binary format (v2)
+##### Tree format
 
-The binary tree format is a dense, compact encoding that replaces the JSON format
-from v1. It uses little-endian byte order throughout.
+Tree blobs use JSON. JSON is chosen over a binary format for
+trees because it is forward-compatible: serde ignores unknown fields, so new
+metadata attributes can be added to tree nodes without breaking existing parsers.
+Index and packs use binary formats where compactness is critical.
 
-**Top-level Tree:**
-
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 | `node_count` | u32 LE — number of nodes |
-| 4 | var | `nodes[]` | Repeated node encodings |
-
-**Node encoding:**
-
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 1 | `node_type` | u8: 0=File, 1=Dir, 2=Symlink, 3=BlockDev, 4=CharDev, 5=Fifo, 6=Socket |
-| 1 | 4+N | `name` | [u32 LE length][UTF-8 bytes] |
-| 5+N | 1 | `flags` | u8 bitfield: bit 0 = has symlink_info, bit 1 = has blobs, bit 2 = has tree |
-| — | var | optional fields | Present in flag-bit order: symlink_info, then blobs, then tree (see below) |
-| — | var | `metadata` | Always last: see Metadata encoding below |
-
-Optional fields (only present when their flag bit is set):
-
-- **symlink_info** (flag bit 0): `[u32 LE path_len][path UTF-8][u8 has_type][u8 node_type?]`
-- **blobs** (flag bit 1): `[u32 LE count][count × 32-byte blob IDs]`
-- **tree** (flag bit 2): `[32-byte subtree ID]`
-
-**Metadata encoding:**
-
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 8 | `size` | u64 LE — file size in bytes |
-| 8 | 2 | `flags` | u16 LE — bitfield for optional fields |
-| 10 | var | optional fields | Present in bit order, only when flag is set |
-
-Metadata flags (u16 LE bitfield):
-
-| Bit | Field | Size when present |
-|-----|-------|--------------------|
-| 0 | accessed_time | 12 bytes (i64 sec + u32 nanos from UNIX epoch) |
-| 1 | created_time | 12 bytes |
-| 2 | modified_time | 12 bytes |
-| 3 | mode | 4 bytes (u32) |
-| 4 | owner_uid | 4 bytes (u32) |
-| 5 | owner_gid | 4 bytes (u32) |
-| 6 | inode | 8 bytes (u64) |
-| 7 | dev | 8 bytes (u64) |
-| 8 | nlink | 8 bytes (u64) |
-| 9 | rdev | 8 bytes (u64) |
-| 10 | extended_attributes | variable: [u32 count][for each: [u32 key_len][key][u32 val_len][val]] |
-| 11 | windows_attributes | 4 bytes (u32) |
-| 12 | linux_flags | 4 bytes (u32) |
-
-Time values are encoded as `[i64 seconds since UNIX epoch LE][u32 subsec_nanos LE]`
-(12 bytes total). Negative seconds indicate times before the Unix epoch.
+**Node example (directory):**
 
 ```json
 {
@@ -417,6 +359,8 @@ Time values are encoded as `[i64 seconds since UNIX epoch LE][u32 subsec_nanos L
   "tree": "093ca4db9e88163d1e9e815e01d9b3a6e7e7980d21a674e433eb75fdb2f133cd"
 }
 ```
+
+**Full tree example (directory with nodes):**
 
 ```json
 {
@@ -506,13 +450,6 @@ When the high bit is set (`0x80 | type`), the blob's payload is zstd-compressed
 and the `encoded length` is the compressed size; when clear, the payload is
 stored as-is (`encoded length == raw length`).
 
-The footer layout is identical in v1 and v2. Legacy v1 blobs were always
-zstd-compressed, so their entries carry no meaningful marker; the reader treats
-every v1 blob as compressed regardless of the bit. Legacy v1 entries also wrote
-`Padding` as the byte `0xff`, which the decoder still maps to `Padding` for
-backward compatibility during migration (to be removed together with v1
-support).
-
 ### Index
 
 The index files, located in the repo/index directory, are the repository's
@@ -528,11 +465,10 @@ not referenced by an index is considered non-existent and subject to garbage
 collection, which is key to mapache's atomic append mechanism. The filename of
 the index file itself is the hash of its encoded content.
 
-In v2, index files use a compact **binary format** instead of the JSON format
-used in v1. This reduces index size and improves parsing speed. Mapache
-can still read v1 JSON index files for backward compatibility during migration.
+Index files use a compact **binary format**. This reduces index size and improves
+parsing speed.
 
-##### Index binary format (v2)
+##### Index binary format
 
 **Top-level:**
 
@@ -744,7 +680,7 @@ bundle password (not the repository key).
 ├─────────────────────────────────┤
 │ Encrypted blob data sections... │
 ├─────────────────────────────────┤
-│ Encrypted ECC section (v2 only) │
+│ Encrypted ECC section (optional)  │
 ├─────────────────────────────────┤
 │ Encrypted BundleIndex           │
 ├─────────────────────────────────┤
@@ -766,7 +702,7 @@ only encrypted (still protected by AES-256-GCM-SIV). The per-blob compression
 marker in the index tracks whether each blob is compressed, so bundles with
 mixed compression can be read correctly.
 
-### ECC in bundle format v2
+### ECC in bundles
 
 When `--ecc <PERCENT>` is passed during bundle creation, the data section is
 protected by inline Reed-Solomon erasure coding. The ECC section is placed

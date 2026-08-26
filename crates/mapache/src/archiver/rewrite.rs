@@ -56,12 +56,7 @@ pub(crate) async fn rewrite_snapshot_tree(
     let mut paths = snapshot.paths.clone();
     paths.retain(|p| path_filter.allow(p));
 
-    let mut tree_serializer = TreeSerializer::new(
-        repo.clone(),
-        repo.repo_version(),
-        snapshot.root.clone(),
-        &paths,
-    );
+    let mut tree_serializer = TreeSerializer::new(repo.clone(), snapshot.root.clone(), &paths);
 
     // Initialize the stream of nodes from the existing snapshot
     let mut node_stream = SerializedNodeStream::new(

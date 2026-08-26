@@ -5,8 +5,9 @@
 ### Added
 
 - **Repository format v2**: New repository format with compact binary serialization
-  for index files and tree blobs, replacing JSON from v1. Reduces metadata size and
-  improves parsing speed. v1 is deprecated and will be removed in a future release.
+  for index files, replacing JSON from v1. Tree blobs use JSON (same as v1) for
+  forward-compatible extensibility. v1 is deprecated and will be removed in a
+  future release.
 - **`mapache migrate`**: New command to convert v1 repositories to v2 format. Handles
   re-encryption of packs, file re-indexing, and tree re-serialization. Supports
   `--dry-run` for preview.

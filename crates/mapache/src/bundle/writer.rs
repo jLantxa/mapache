@@ -289,7 +289,7 @@ impl BundleWriter {
         if let Some(ecc_cfg) = &self.ecc_config {
             manifest.set_ecc(Some(ecc_cfg.clone()));
         }
-        let manifest_bytes = manifest.to_binary();
+        let manifest_bytes = serde_json::to_vec(&manifest).map_err(MapacheError::Serialization)?;
         let encrypted_manifest = self
             .storage
             .encrypt(&manifest_bytes)

@@ -1,9 +1,8 @@
-# Design (Repository Format v1 — Deprecated)
+# Design (Repository Format v2)
 
-> **⚠ Deprecated:** This document describes repository format v1, which is
-> deprecated and will be unsupported in a future release. For the current
-> format, see [design_v2.md](design_v2.md). To migrate a v1 repository, run
-> `mapache migrate --repo <path>`.
+> **Deprecated format:** For the v1 repository format, see
+> [design_v1.md](design_v1.md). The `mapache migrate` command converts v1
+> repositories to v2.
 
 ## Introduction
 
@@ -124,12 +123,28 @@ compress **almost** all the data stored in the repository, including data and
 tree blobs. The compression level can be configured, affecting the compression
 ratio and the total time needed to take a snapshot.
 
+Compression is a per-repository policy, not a per-blob algorithm choice: the
+whole repository uses a single algorithm (currently `zstd`). If additional
+algorithms are added in the future, the algorithm will be declared in the
+manifest. Individual blobs are only marked as *compressed* or *uncompressed*
+(see the [pack footer format](#pack-footer-format)).
+
+Compression can be disabled with the `--compression none` flag. In that mode,
+data and tree blobs are stored **without** compression (still encrypted), which
+is useful for content that is already compressed (video, photos, archives).
+Metadata (footers, index, snapshots) is always compressed with the default
+level, regardless of this flag. `none` requires the per-blob compression
+marker in the pack footer (available in all formats).
+
 Security is a non-negotiable aspect of mapache by design. **Everything** except
 for a handful of bytes is encrypted. Encryption cannot be disabled or opted-out.
 Mapache implements AES-GCM-SIV. This is a modern cipher which implements
 encryption and authentication of data with a key. AES-GCM-SIV not only encrypts
 the data, it adds an authentication layer that allows mapache to detect when an
 object has been altered or manipulated.
+
+Each encrypted blob has its AES-GCM-SIV nonce appended at the end (`[ciphertext |
+tag | nonce]`) instead of the start.
 
 #### Master key and key files
 
@@ -197,23 +212,36 @@ external entity with access to the storage medium.
 
 ## Repository format
 
-The mapache repository stores metadata in JSON format.
-
 ### Manifest
 
-The `manifest` file describes the repository: its ID, creation time and version
-number. The ID is a 256-bit identifier generated randomly at the time of
-creation.
+The `manifest` file describes the repository: its ID, creation time, and
+optional ECC parameters. The ID is a 256-bit identifier generated randomly at
+the time of creation.
 
 The `manifest` file is compressed and encrypted with the master key.
 
+The manifest is serialized as JSON:
+
 ```json
 {
-  "version": 1,
+  "version": 2,
   "id": "b7468f6331331302b06c63b98a14e50107f9cc26683afd064c0af84eec53b3e7",
-  "created_time": "2025-11-20T13:06:52.266751300+01:00"
+  "created_time": "2025-11-20T13:06:52.266751300+01:00",
+  "ecc": {
+    "data_shards": 100,
+    "parity_shards": 2
+  }
 }
 ```
+
+The `ecc` field is optional. When present, it indicates that ECC sidecars are
+enabled for this repository. `data_shards` (K) and `parity_shards` (P) are
+the Reed-Solomon parameters stored for forward compatibility: if the formula
+that maps user configuration to K/P changes in the future, old repositories
+still decode correctly using the stored values.
+
+JSON is used instead of a binary format to allow extending the manifest with
+new fields without breaking format compatibility.
 
 ### Snapshots
 
@@ -231,6 +259,9 @@ The file name (ID) is the hash of the encoded content.
   ],
   "hostname": "cocoon",
   "username": "mapache",
+  "version": "0.7.0",
+  "tags": ["daily", "critical"],
+  "description": "Full backup of project directory",
   "summary": {
     "processed_items_count": 94,
     "processed_bytes": 744155,
@@ -240,6 +271,9 @@ The file name (ID) is the hash of the encoded content.
     "meta_encoded_bytes": 18639,
     "total_raw_bytes": 786849,
     "total_encoded_bytes": 216289,
+    "data_blobs": 42,
+    "meta_blobs": 12,
+    "ecc_bytes": 10240,
     "new_files": 79,
     "deleted_files": 0,
     "changed_files": 0,
@@ -247,10 +281,17 @@ The file name (ID) is the hash of the encoded content.
     "deleted_dirs": 0,
     "changed_dirs": 0,
     "unchanged_files": 0,
-    "unchanged_dirs": 0
+    "unchanged_dirs": 0,
+    "amends": null
   }
 }
 ```
+
+All fields except `timestamp`, `tree`, `root`, and `summary` are optional and
+omitted from the JSON when not set. The `parent` field (not shown) references
+the previous snapshot ID when this snapshot was created with `--parent`.
+The `amends` field references a snapshot ID when this snapshot was created with
+`--amend`.
 
 ### Packs and blobs
 
@@ -277,17 +318,32 @@ raw content. The pack footer describes the blobs contained in the pack footer.
 This footer includes a 4-byte field which is the length of the total footer. The
 pack footer is encoded, except for the length field.
 
+Each encrypted blob has its AES-GCM-SIV nonce appended at the end (`[ct |
+tag | nonce]`). This eliminates an extra allocation and memory copy during
+encryption — the ciphertext is encrypted in-place and the tag and nonce are
+appended to the same buffer. This is transparent to the pack format — the footer
+stores encoded length and raw length as before.
+
 #### Trees
 
 Mapache stores file contents (data blobs) as well as tree metadata (tree blobs).
 Tree and data blobs are stored in separate packs. The data blobs contain chunks
 of the file contents. The tree blob contain metadata about the file system tree
-nodes in JSON format. Data and tree blobs are stored in pack files in the same
-way. Each tree is stored as a single blob. A tree node can be a file, directory,
+nodes. Data and tree blobs are stored in pack files in the same way. Each
+tree is stored as a single blob. A tree node can be a file, directory,
 symlink, etc. Directories have a `tree` field which points to its subtree. File
 nodes have a `blobs` field which contains a list of its data blobs in order.
 Symlinks have a field `symlink_info` which contains metadata about the target
 path and node type of the target.
+
+##### Tree format
+
+Tree blobs use JSON. JSON is chosen over a binary format for
+trees because it is forward-compatible: serde ignores unknown fields, so new
+metadata attributes can be added to tree nodes without breaking existing parsers.
+Index and packs use binary formats where compactness is critical.
+
+**Node example (directory):**
 
 ```json
 {
@@ -307,6 +363,8 @@ path and node type of the target.
   "tree": "093ca4db9e88163d1e9e815e01d9b3a6e7e7980d21a674e433eb75fdb2f133cd"
 }
 ```
+
+**Full tree example (directory with nodes):**
 
 ```json
 {
@@ -352,11 +410,11 @@ path and node type of the target.
 #### Pack footer format
 
 The pack footer consists of a variable-length list of metadata blob entries, each 41 bytes
-long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), the
-blob type (u8), and both the encoded length and raw length (u32) of the associated
+long, followed by a fixed-size trailer. Each entry contains an ID (32 bytes), a blob type
+byte (u8), and both the encoded length and raw length (u32) of the associated
 data blob. The trailer is a single u32 field which stores the total length of the
 entire pack footer, allowing a parser to efficiently skip directly to the file's data section.
-All data except the footer length field is encrypted.
+All data except the footer length field is zstd-compressed then encrypted.
 
 ```text
 ┌────────┬────────┬─────┬────────┬─────────────────────┐
@@ -370,7 +428,9 @@ All data except the footer length field is encrypted.
 │────────────────────────┼────────┼────────│
 │ ID (256-bit raw hash)  │   32   │   0    │ Hash of the raw blob data
 │────────────────────────┼────────┼────────│
-│ Blob type (u8)         │    1   │   32   │
+│ Type + Compression     │    1   │   32   │ Low 7 bits: blob type; high
+│ (u8)                   │        │        │ bit: 0 = uncompressed,
+│                        │        │        │ 1 = zstd-compressed
 │────────────────────────┼────────┼────────│
 │ Encoded length (u32)   │    4   │   33   │ Length of the encoded blob
 │────────────────────────┼────────┼────────│
@@ -378,6 +438,21 @@ All data except the footer length field is encrypted.
 └────────────────────────┴────────┴────────┘
   ^ (41 bytes)
 ```
+
+The compression marker is a single bit packed into the high bit of the blob
+type byte. Because the compression *algorithm* is repo-wide (declared in the
+manifest), a per-blob boolean is sufficient. The low 7 bits hold the blob type:
+
+| Value | Type    | Meaning                                  |
+|-------|---------|------------------------------------------|
+| 0x00  | Data    | Content-defined chunk of a file           |
+| 0x01  | Tree    | Serialized directory tree / metadata      |
+| 0x02  | Padding | Fake entry, noise for size obfuscation    |
+| 0x03  | Zero    | Zero-filled region, deduplicated, no data |
+
+When the high bit is set (`0x80 | type`), the blob's payload is zstd-compressed
+and the `encoded length` is the compressed size; when clear, the payload is
+stored as-is (`encoded length == raw length`).
 
 ### Index
 
@@ -394,50 +469,141 @@ not referenced by an index is considered non-existent and subject to garbage
 collection, which is key to mapache's atomic append mechanism. The filename of
 the index file itself is the hash of its encoded content.
 
-```json
-{
-  "packs": [
-    {
-      "id": "c2334c5e29563850cb254b63fba125bb1b60e860b1886fae7bd4f5e5a637f4c0",
-      "blobs": [
-        {
-          "id": "22bb6896db82b2fcc2d8057d6e16298e8318a04d1e0dd5b6c84fadc46a234f4c",
-          "type": "Data",
-          "offset": 25763,
-          "length": 3265,
-          "raw_length": 12108
-        },
-        {
-          "id": "99ce77389066f2982e8350eefdbf21ccef026d94fc4827dbc24cd52d77e25e7f",
-          "type": "Data",
-          "offset": 73520,
-          "length": 2462,
-          "raw_length": 7515
-        }
-      ]
-    },
-    {
-      "id": "9a2ad285d1dd3d9fd7ca7b8fc8bcbcbd62ef9871bbf1f74757ad392a58e4d71e",
-      "blobs": [
-        {
-          "id": "ffcdcfc7ac3832168c952f4e396588b7cb523e009c0abf776c46806468146985",
-          "type": "Tree",
-          "offset": 3188,
-          "length": 897,
-          "raw_length": 3514
-        },
-        {
-          "id": "23f87643e00c9f7c498c057a58ed2f38af22402eaab9e7b58a8bfa505b11756b",
-          "type": "Tree",
-          "offset": 5206,
-          "length": 863,
-          "raw_length": 3475
-        },
-      ]
-    }
-  ]
-}
+Index files use a compact **binary format**. This reduces index size and improves
+parsing speed.
+
+##### Index binary format
+
+**Top-level:**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | `num_packs` | u32 LE — number of packs (sanity limit: ≤ 1,000,000) |
+| 4 | var | `packs[]` | Repeated pack encodings |
+
+**Pack encoding (repeated per pack):**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | `pack_id` | Raw 32-byte BLAKE3 hash of the pack content |
+| 32 | 4 | `blob_count` | u32 LE — number of blobs in this pack (sanity limit: ≤ 100,000,000) |
+| 36 | var | `blobs[]` | Repeated blob encodings |
+
+**Blob encoding (45 bytes each, repeated per blob):**
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | `id` | Raw 32-byte BLAKE3 hash of the raw blob data |
+| 32 | 1 | `type_byte` | u8: low 7 bits = BlobType (0=Data, 1=Tree, 2=Padding, 3=Zero); high bit (0x80) = compressed |
+| 33 | 4 | `offset` | u32 LE — byte offset within the pack file |
+| 37 | 4 | `length` | u32 LE — encoded (compressed+encrypted) length in the pack |
+| 41 | 4 | `raw_length` | u32 LE — uncompressed, unencrypted length |
+
+The binary format reduces an index entry to 45 bytes (vs ~150+ bytes for JSON),
+and a full index file to roughly 45 bytes per blob plus overhead.
+
+### Error correction (ECC)
+
+Mapache supports optional Reed-Solomon erasure coding to protect pack files
+against bit-rot and silent data corruption. ECC is configured per-repository
+via the `--ecc <PERCENT>` flag during `init` (0–100% overhead, 0 disables).
+
+The `ecc` crate is a pure Reed-Solomon implementation with no knowledge of
+overhead percentages or repository concepts. It exposes a K/P-based API:
+`ecc_encode(data, k, p)` and `ecc_decode(data, ecc_payload)`. Mapache
+decides the K and P values (currently K=100, P=overhead) and stores them
+in the manifest. This separation allows changing the K/P strategy (presets,
+adaptive overhead, etc.) without modifying the ecc crate.
+
+#### Sidecar layout
+
+ECC sidecars store **CRC32 checksums and parity shards** — the original pack
+data is never duplicated on disk. The sidecar file is compressed, encrypted,
+and stored alongside the pack with the same ID and a `.ecc` extension:
+
+```text
+objects/
+├── 00
+│   └── 00ab12...cd pack file
+│   └── 00ab12...cd.ecc  ← ECC sidecar (CRC32s + parity)
+├── 01
+│   └── 01cd34...ef pack file
+└── ff
+    └── ff5678...ab pack file
 ```
+
+#### MECP wire format
+
+Sidecars use the `MECP` (Mapache ECC Parity) format:
+
+```text
+Header (22 bytes):
+┌──────────┬─────────┬──────────┬───────────┬───────────────┬──────────────┐
+│ MAGIC    │ VERSION │ reserved │ K (u16)   │ original_len  │ stripe_count │
+│ b"MECP"  │ u8      │ 0        │ P (u16)   │ u64 LE        │ u32 LE       │
+└──────────┴─────────┴──────────┴───────────┴───────────────┴──────────────┘
+  4 bytes    1 byte    1 byte     2+2 bytes    8 bytes         4 bytes
+
+Per stripe:
+┌──────────────────┬──────────────────┬─────────────────────┐
+│ CRC32 data shards│ CRC32 parity     │ raw parity shards   │
+│ (K × 4 bytes)    │ (P × 4 bytes)    │ (P × SHARD_SIZE)    │
+└──────────────────┴──────────────────┴─────────────────────┘
+```
+
+Each stripe stores a CRC32 checksum (IEEE 802.3) for every data and parity
+shard. This enables per-shard integrity verification: during decode, each
+shard is independently checked against its CRC32. Corrupt shards are marked
+as erasures and reconstructed by Reed-Solomon. This converts error correction
+(floor(P/2) limit) into erasure recovery (up to P shards per stripe).
+
+CRC32 uses a 256-entry lookup table generated at compile time via `const fn`
+(zero runtime overhead, no external dependencies).
+
+K and P are stored in the header for forward compatibility: if the formula
+that maps overhead to K/P changes in the future, old sidecars still decode
+correctly using the stored values.
+
+Each shard is `SHARD_SIZE` = 4096 bytes (matching the OS page size and
+mapache block size). The last shard in each stripe may be zero-padded.
+
+#### Striped encoding
+
+For large packs, data is split into stripes of K data shards each (K=100 by
+default). Each stripe is independently encoded, so the maximum memory per stripe
+is ~400 KB (100 shards × 4096 bytes). This allows ECC processing of multi-gigabyte
+packs without loading the entire file into memory.
+
+```text
+Data (1 GB pack, 5% overhead):
+┌─────────────────────────┬─────────────────────────┬─────┐
+│ stripe 0 (100 shards)   │ stripe 1 (100 shards)   │ ... │
+│ → 5 parity shards       │ → 5 parity shards       │     │
+└─────────────────────────┴─────────────────────────┴─────┘
+```
+
+The last stripe may have fewer data bytes but uses the same K and P, so the
+ReedSolomon codec is built once and reused across all stripes.
+
+#### Repair
+
+During `verify --repair`, mapache reads the pack file and its `.ecc` sidecar.
+The sidecar is decoded (decompressed + decrypted) before use. For each stripe,
+the CRC32 of every data shard (read from the pack) and every parity shard
+(read from the sidecar) is verified against the stored checksums. Corrupt
+shards are marked as erasures. If erasures ≤ P, Reed-Solomon reconstructs the
+missing shards from the remaining intact ones. If erasures > P, the stripe
+cannot be repaired and an error is returned.
+
+The hash (BLAKE3) is always computed on the **original pack content** without
+ECC. The sidecar is transparent to the content-addressable storage layer.
+Like all repository objects, the sidecar is compressed and encrypted on disk.
+
+#### Garbage collection
+
+When GC deletes a pack file, it also deletes the corresponding `.ecc` sidecar.
+Orphaned `.ecc` files (where the base pack no longer exists) are detected and
+cleaned up automatically.
 
 ### Locks
 
@@ -509,6 +675,73 @@ A bundle file (`.mapache`) is a self-contained, encrypted archive that stores
 the same blob types used inside a repository: tree blobs, metadata blobs, and
 data blobs. The bundle uses its own independent encryption key derived from the
 bundle password (not the repository key).
+
+### Bundle layout
+
+```text
+┌─────────────────────────────────┐
+│ BundleHeader (58 bytes, plain)  │
+├─────────────────────────────────┤
+│ Encrypted blob data sections... │
+├─────────────────────────────────┤
+│ Encrypted ECC section (optional)  │
+├─────────────────────────────────┤
+│ Encrypted BundleIndex           │
+├─────────────────────────────────┤
+│ Encrypted Manifest              │
+├─────────────────────────────────┤
+│ Encrypted BundleTrailer         │
+├─────────────────────────────────┤
+│ Trailer size (u32, LE, plain)   │
+└─────────────────────────────────┘
+```
+
+The header and trailer size are stored unencrypted to allow efficient random
+access. All other sections are encrypted with AES-256-GCM-SIV using a key
+derived from the bundle password via Argon2id.
+
+Blob data sections are compressed with zstd and then encrypted by default.
+Compression can be disabled with `--compression none`, in which case blobs are
+only encrypted (still protected by AES-256-GCM-SIV). The per-blob compression
+marker in the index tracks whether each blob is compressed, so bundles with
+mixed compression can be read correctly.
+
+### ECC in bundles
+
+When `--ecc <PERCENT>` is passed during bundle creation, the data section is
+protected by inline Reed-Solomon erasure coding. The ECC section is placed
+between the blob data and the index:
+
+- **Data section** is split into K=100 data shards of 4096 bytes each.
+- **P=percent parity shards** are computed per stripe using Reed-Solomon.
+- The ECC payload (header + CRC32s + parity shards) is encrypted with
+  AES-256-GCM-SIV before being written to the bundle.
+- The `BundleTrailer` gains two extra fields: `ecc_offset` (u64) and `ecc_len`
+  (u32), increasing the trailer from 68 to 80 bytes.
+
+During extraction, if a blob fails to decrypt (corruption), the reader
+automatically reads the full data section + ECC section, verifies each shard
+via CRC32, and runs Reed-Solomon decode to repair corrupt shards. The repaired
+data is then re-read and decoded successfully.
+
+### Bundle index
+
+The bundle index maps blob IDs to their physical location within the bundle
+file. Each index entry is **49 bytes**:
+
+```text
+┌──────────────────────────────────┬───────┬──────────────────┬────────┬────────────┐
+│ Blob ID (32 bytes)               │ Type  │ Offset           │ Length │ Raw Length │
+│                                  │+Comp  │ (u64, LE)        │(u32,LE)│ (u32, LE)  │
+│                                  │ (u8)  │                  │        │            │
+└──────────────────────────────────┴───────┴──────────────────┴────────┴────────────┘
+   32 bytes                          1        8 bytes          4 bytes    4 bytes
+```
+
+The type byte uses the same encoding as pack footers: the low 7 bits hold the
+blob type (`0x00`=Data, `0x01`=Tree, `0x02`=Padding, `0x03`=Zero), and the
+high bit indicates whether the blob is zstd-compressed (`1`) or uncompressed
+(`0`).
 
 ### Export and import
 

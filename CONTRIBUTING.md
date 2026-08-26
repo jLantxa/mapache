@@ -5,7 +5,7 @@ welcome — bug reports, feature suggestions, documentation improvements, and
 code changes.
 
 If you're new to the project, the [user manual](doc/manual.md) and
-[design document](doc/design.md) are good places to understand how mapache
+[design document](doc/design_v2.md) are good places to understand how mapache
 works.
 
 ---

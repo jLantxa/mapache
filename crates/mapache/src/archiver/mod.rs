@@ -160,7 +160,6 @@ pub(crate) struct PipelineResult {
 pub(crate) async fn run_pipeline(
     mut diff_rx: mpsc::Receiver<DiffItem>,
     blob_saver: Arc<dyn BlobSaver>,
-    repo_version: u32,
     num_readers: usize,
     snapshot_root_path: PathBuf,
     absolute_source_paths: &[PathBuf],
@@ -348,12 +347,8 @@ pub(crate) async fn run_pipeline(
     // Stage 3: Tree Serializer (Main Loop)
     // ------------------------------------------------------------------
     tracing::info!(target: "archiver", "Starting Stage 3: Tree Serializer");
-    let mut tree_serializer = TreeSerializer::new(
-        blob_saver,
-        repo_version,
-        snapshot_root_path,
-        absolute_source_paths,
-    );
+    let mut tree_serializer =
+        TreeSerializer::new(blob_saver, snapshot_root_path, absolute_source_paths);
 
     while let Some((path, stream_node)) = processed_rx.recv().await {
         if status.is_failed() {
@@ -617,7 +612,6 @@ pub(crate) async fn snapshot(
     let pipeline_result = run_pipeline(
         diff_rx,
         repo.clone() as Arc<dyn BlobSaver>,
-        repo.repo_version(),
         num_readers,
         snapshot_options.snapshot_root_path.clone(),
         &snapshot_options.absolute_source_paths,

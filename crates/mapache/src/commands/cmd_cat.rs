@@ -103,12 +103,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), CatErro
                     let tree_data = repo.load_blob(&id).await.map_err(|e| {
                         CatError::ObjectNotFound(format!("failed to load tree blob: {}", e.inner()))
                     })?;
-                    let tree: Tree = if repo.repo_version() >= 2 {
-                        Tree::from_binary(&tree_data)
-                    } else {
-                        Tree::from_json(&tree_data)
-                    }
-                    .map_err(|e| {
+                    let tree: Tree = serde_json::from_slice(&tree_data).map_err(|e| {
                         CatError::ObjectNotFound(format!("failed to deserialize tree: {e}"))
                     })?;
                     ui::cli::log!(

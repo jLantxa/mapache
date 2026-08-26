@@ -923,7 +923,7 @@ mod tests {
         repo.init_pack_saver(2)?;
         let mut tree = Tree::new(vec![make_node("file_a.txt", vec![blob_a])]);
         let tree_id = tree
-            .save_to_store(repo.clone() as Arc<dyn BlobSaver>, repo.repo_version())
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
             .await?;
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree_id).await?;
@@ -1015,7 +1015,7 @@ mod tests {
             make_node("b.txt", vec![blob_b]),
         ]);
         let tree_id = tree
-            .save_to_store(repo.clone() as Arc<dyn BlobSaver>, repo.repo_version())
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
             .await?;
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree_id).await?;
@@ -1069,7 +1069,7 @@ mod tests {
             make_node("b.txt", vec![blob_b]),
         ]);
         let tree1_id = tree1
-            .save_to_store(repo.clone() as Arc<dyn BlobSaver>, repo.repo_version())
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
             .await?;
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree1_id).await?;
@@ -1091,7 +1091,7 @@ mod tests {
             make_node("c.txt", vec![blob_c]),
         ]);
         let tree2_id = tree2
-            .save_to_store(repo.clone() as Arc<dyn BlobSaver>, repo.repo_version())
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
             .await?;
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree2_id).await?;
@@ -1173,7 +1173,7 @@ mod tests {
         )?;
         let mut tree = Tree::new(vec![make_node("a.txt", vec![blob_a, blob_b])]);
         let tree_id = tree
-            .save_to_store(repo.clone() as Arc<dyn BlobSaver>, repo.repo_version())
+            .save_to_store(repo.clone() as Arc<dyn BlobSaver>)
             .await?;
         repo.flush_and_finalize_pack_saver().await?;
         save_snapshot(&repo, tree_id).await?;

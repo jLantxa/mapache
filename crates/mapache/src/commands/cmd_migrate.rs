@@ -116,7 +116,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             .with_style(
                 default_progress_style()
                     .template(&format!(
-                        "[{{bar:20.cyan/white}}] {reenc_label}: {{pos}}/{{len}} {{elapsed}} {{eta}}"
+                        "[{{elapsed}}] [{{bar:20.cyan/white}}] {reenc_label}: {{pos}}/{{len}} [ETA: {{eta}}]"
                     ))
                     .expect("invalid progress bar template"),
             );
@@ -225,7 +225,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                 )
                 .with_style(
                     default_progress_style()
-                        .template("[{bar:20.cyan/white}] Re-serializing trees: {pos}/{len} {elapsed} {eta}")
+                        .template("[{elapsed}] [{bar:20.cyan/white}] Re-serializing trees: {pos}/{len} [ETA: {eta}]")
                         .expect("invalid progress bar template"),
                 );
 
@@ -289,7 +289,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
                     .with_style(
                         default_progress_style()
                             .template(&format!(
-                                "[{{bar:20.cyan/white}}] {file_label}: {{pos}}/{{len}} {{elapsed}} {{eta}}"
+                                "[{{elapsed}}] [{{bar:20.cyan/white}}] {file_label}: {{pos}}/{{len}} [ETA: {{eta}}]"
                             ))
                             .expect("invalid progress bar template"),
                     );
@@ -367,7 +367,7 @@ pub async fn run(global_args: &GlobalArgs, args: &CmdArgs) -> Result<(), Migrate
             )
             .with_style(
                 default_progress_style()
-                    .template("[{bar:20.cyan/white}] Building index: {pos}/{len} {elapsed} {eta}")
+                    .template("[{elapsed}] [{bar:20.cyan/white}] Building index: {pos}/{len} [ETA: {eta}]")
                     .expect("invalid progress bar template"),
             );
 

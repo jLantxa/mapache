@@ -202,15 +202,13 @@ impl Chunker {
     ///
     /// 1. **Sub-minimum skip** — If `len ≤ min_size`, return `len` immediately
     ///    (no hash checks below the minimum).
-    /// 2. **Alignment** — If the start position is odd, a single byte is
-    ///    consumed to align the loop to even indices.
-    /// 3. **Phase 1** (small mask) — From `min_size` up to the normalization
+    /// 2. **Phase 1** (small mask) — From `min_size` up to the normalization
     ///    center, use `mask_s` (more one-bits → more positions pass). Two bytes
     ///    are processed per iteration using both gear and gear_ls tables.
-    /// 4. **Phase 2** (large mask) — From the center up to `max_size`, use
+    /// 3. **Phase 2** (large mask) — From the center up to `max_size`, use
     ///    `mask_l` (fewer one-bits → fewer positions pass, guaranteeing
     ///    termination before or at `max_size`).
-    /// 5. **Fallback** — Return `max` if no cut point was found.
+    /// 4. **Fallback** — Return `max` if no cut point was found.
     pub fn cut(&self, data: &[u8]) -> (u64, usize) {
         let len = data.len();
         if len <= self.min_size {

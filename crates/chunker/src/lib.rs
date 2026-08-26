@@ -165,6 +165,9 @@ impl Chunker {
         assert!(min_size >= TOTAL_MIN_SIZE);
         assert!(max_size <= TOTAL_MAX_SIZE);
         assert!(normal_size <= MAX_NORMAL_SIZE);
+        assert!(min_size.is_multiple_of(2), "min_size must be even");
+        assert!(normal_size.is_multiple_of(2), "normal_size must be even");
+        assert!(max_size.is_multiple_of(2), "max_size must be even");
 
         let normal_bits = normal_size.ilog2() as usize;
         let norm_bits = normalization.bits();
@@ -223,16 +226,6 @@ impl Chunker {
 
         let mut fp: u64 = 0;
         let mut n: usize = self.min_size.min(max);
-
-        // If n is odd, check the first byte to align the loop to even indices
-        if n < end && !n.is_multiple_of(2) {
-            let b = search_slice[n];
-            fp = (fp << 1).wrapping_add(self.gear[b as usize]);
-            if fp & self.mask_s == 0 {
-                return (fp, n + 1);
-            }
-            n += 1;
-        }
 
         // Phase 1 (small masks) up to the normalization center
         while n < mid {

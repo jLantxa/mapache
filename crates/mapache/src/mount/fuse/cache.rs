@@ -4,7 +4,7 @@ use crate::common::error::Result;
 use parking_lot::Mutex;
 
 use crate::{
-    common::{ID, traits::BlobLoader},
+    common::{ID, error::MapacheError, traits::BlobLoader},
     fs::tree::Tree,
     utils::collections::Lru,
 };

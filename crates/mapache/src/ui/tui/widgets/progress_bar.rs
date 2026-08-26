@@ -170,7 +170,7 @@ impl ProgressBar {
             spans.push(Span::styled(format_duration(d), eta_style));
         }
 
-        let rate_str = utils::format_size_binary(self.rate as u64, 3);
+        let rate_str = utils::format_size_binary(self.rate as u64, 2);
         spans.push(Span::raw(spacer));
         spans.push(Span::styled(rate_str, speed_style));
         spans.push(Span::styled("/s", speed_style));

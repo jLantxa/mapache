@@ -172,7 +172,7 @@ pub(crate) fn make_event_sender(
                     let re = rate_estimator.clone();
                     move |_state: &ProgressState, w: &mut dyn std::fmt::Write| {
                         let rate = re.lock().rate().floor() as u64;
-                        let _ = w.write_str(&utils::format_size_binary(rate, 1));
+                        let _ = w.write_str(&utils::format_size_binary(rate, 2));
                     }
                 },
             ),

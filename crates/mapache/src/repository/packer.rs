@@ -12,13 +12,16 @@ use rand::{RngExt, rng};
 
 use crate::{
     backend::{Handle, StorageBackend, StorageHint},
-    common::error::{MapacheError, Result},
-    common::{BlobType, ContentIdType, ID, SaveID, defaults::FOOTER_BLOB_MULTIPLE},
+    common::{
+        BlobType, ContentIdType, ID, SaveID,
+        defaults::FOOTER_BLOB_MULTIPLE,
+        error::{MapacheError, Result},
+    },
     repository::{
         repo::{Repository, SizePair},
         storage::{EncodingContext, SecureStorage},
     },
-    utils::binary::{put_bytes, put_u8, put_u32},
+    utils::binary::{get_array, get_u8, get_u32, put_bytes, put_u8, put_u32},
 };
 
 //   Pack footer format:
@@ -354,8 +357,6 @@ impl Packer {
         nonce_at_end: bool,
         repo_version: u32,
     ) -> Result<Vec<PackedBlobDescriptor>> {
-        use crate::utils::binary::{get_array, get_u8, get_u32};
-
         if footer_data.len() < 4 {
             return Err(MapacheError::Format("pack footer too short".to_string()));
         }

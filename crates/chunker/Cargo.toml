@@ -21,4 +21,9 @@ blake3 = "1.8"
 rand = "0.10"
 
 [dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
 rstest = "0.26"
+
+[[bench]]
+name = "chunking"
+harness = false

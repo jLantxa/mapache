@@ -13,6 +13,7 @@ use tokio::task::spawn_blocking;
 
 use crate::{
     common::{
+        ID,
         error::{MapacheError, Result},
         hash,
     },
@@ -136,11 +137,12 @@ impl Restorer {
         index: Arc<MasterIndex>,
     ) -> Result<Vec<usize>> {
         let blobs = match &node.blobs {
-            Some(b) => b.clone(),
+            Some(b) => b.as_slice(),
             None => return Ok(Vec::new()),
         };
 
         let local_path = local_path.to_path_buf();
+        let blob_ids: Vec<ID> = blobs.to_vec();
         spawn_blocking(move || {
             let file = File::open(&local_path)?;
             let mut offset = 0;
@@ -149,7 +151,7 @@ impl Restorer {
             const VERIFY_BUFFER_SIZE: usize = size::MiB as usize;
             let mut buffer = vec![0u8; VERIFY_BUFFER_SIZE];
 
-            for (idx, blob_id) in blobs.iter().enumerate() {
+            for (idx, blob_id) in blob_ids.iter().enumerate() {
                 let locator = index
                     .get_data(blob_id)
                     .ok_or(MapacheError::NotInIndex(*blob_id))?;

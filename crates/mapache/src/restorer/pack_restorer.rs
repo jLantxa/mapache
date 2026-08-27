@@ -15,13 +15,46 @@ use crate::{
         BlobType, ContentIdType, ID, defaults,
         error::{MapacheError, Result},
     },
-    repository::{index::BlobLocator, loader, storage::SecureStorage},
+    repository::{
+        index::{BlobLocator, MasterIndex},
+        loader,
+        storage::SecureStorage,
+    },
+    restorer::{
+        BlobRestoreRequest, FileRestorePlan, PackMap, Restorer, ShardedFileHandleCache,
+        ZeroBatchMap,
+    },
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
 
-use super::{
-    BlobRestoreRequest, FileRestorePlan, PackMap, Restorer, ShardedFileHandleCache, ZeroBatchMap,
-};
+/// Decoded blob data that may be owned or shared via Arc.
+/// Single-target blobs are moved directly; multi-target blobs are shared.
+enum BlobData {
+    Owned(Vec<u8>),
+    Shared(Arc<Vec<u8>>),
+}
+
+impl BlobData {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            BlobData::Owned(v) => v.as_slice(),
+            BlobData::Shared(a) => a.as_slice(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            BlobData::Owned(v) => v.len(),
+            BlobData::Shared(a) => a.len(),
+        }
+    }
+}
+
+/// A batch of decoded blob data paired with its write offset.
+type BlobWriteBatch = Vec<(BlobData, u64)>;
+
+/// Pre-grouped pack data: pack_id → list of (blob_id, locator, file targets).
+type PackGroup = Vec<(ID, Vec<(ID, BlobLocator, Vec<BlobRestoreRequest>)>)>;
 
 struct DecodedBlob {
     data: Vec<u8>,
@@ -42,17 +75,20 @@ struct RestoreContext {
 pub(crate) async fn restore_packs(
     restorer: &Restorer,
     files: Arc<Vec<FileRestorePlan>>,
-    packs: Arc<PackMap>,
+    packs: PackMap,
+    index: Arc<MasterIndex>,
     secure_storage: Arc<SecureStorage>,
     dry_run: bool,
 ) -> Result<()> {
     if dry_run {
         for blob_requests in packs.values() {
-            for (_, request) in blob_requests.iter() {
-                emit_event(
-                    &restorer.event_sender,
-                    Event::Restore(RestoreEvent::BytesProcessed(request.raw_length as u64)),
-                );
+            for (blob_id, _) in blob_requests.iter() {
+                if let Some(locator) = index.get_data(blob_id) {
+                    emit_event(
+                        &restorer.event_sender,
+                        Event::Restore(RestoreEvent::BytesProcessed(locator.raw_length as u64)),
+                    );
+                }
             }
         }
         for file in files.iter() {
@@ -100,26 +136,21 @@ pub(crate) async fn restore_packs(
         quit_on_error: restorer.opts.quit_on_error,
     });
 
-    let packs_map = Arc::try_unwrap(packs).unwrap_or_else(|arc| (*arc).clone());
-
-    // Split blobs into two streams:
-    // - Zero blobs: no pack data to download, just N bytes of zeros to write directly.
-    // - Regular blobs: need to be fetched from pack files on storage.
+    // Flatten HashMap into a single Vec and split zero vs regular in one pass.
     let mut zero_file_batches: ZeroBatchMap = HashMap::new();
-    let mut regular_packs: PackMap = HashMap::new();
+    let mut regular: Vec<(ID, ID, BlobRestoreRequest)> = Vec::new();
 
-    for (pack_id, blob_requests) in packs_map {
+    for (pack_id, blob_requests) in packs {
         for (blob_id, req) in blob_requests {
-            if matches!(req.blob_type, BlobType::Zero) {
-                zero_file_batches
-                    .entry(req.file_idx)
-                    .or_default()
-                    .push((req.offset_in_file, req.raw_length));
-            } else {
-                regular_packs
-                    .entry(pack_id)
-                    .or_default()
-                    .push((blob_id, req));
+            if let Some(locator) = index.get_data(&blob_id) {
+                if matches!(locator.blob_type, BlobType::Zero) {
+                    zero_file_batches
+                        .entry(req.file_idx)
+                        .or_default()
+                        .push((req.offset_in_file, locator.raw_length));
+                } else {
+                    regular.push((pack_id, blob_id, req));
+                }
             }
         }
     }
@@ -133,29 +164,49 @@ pub(crate) async fn restore_packs(
         .await?;
     }
 
-    let mut download_stream = futures::stream::iter(regular_packs)
-        .flat_map(|(pack_id, blob_requests)| {
-            let mut blob_to_targets: HashMap<ID, Vec<BlobRestoreRequest>> = HashMap::new();
-            for (blob_id, req) in blob_requests {
-                blob_to_targets.entry(blob_id).or_default().push(req);
+    // Sort by (pack_id, blob_id) so packs are contiguous and blobs within
+    // each pack are grouped for dedup during decode.
+    regular.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    // Pre-group into (pack_id, Vec<(blob_id, locator, targets)>) to avoid
+    // per-pack HashMap allocations during the download stream.
+    let mut pack_groups: PackGroup = Vec::new();
+    {
+        let mut i = 0;
+        while i < regular.len() {
+            let pack_id = regular[i].0;
+            let pack_start = i;
+            while i < regular.len() && regular[i].0 == pack_id {
+                i += 1;
             }
 
-            let blobs_vec: Vec<(ID, BlobLocator, Vec<BlobRestoreRequest>)> = blob_to_targets
-                .into_iter()
-                .map(|(id, targets)| {
-                    let t0 = &targets[0];
-                    let locator = BlobLocator {
-                        pack_id,
-                        offset: t0.blob_offset,
-                        length: t0.blob_length,
-                        raw_length: t0.raw_length,
-                        blob_type: BlobType::Data,
-                        compressed: t0.compressed,
-                    };
-                    (id, locator, targets)
-                })
-                .collect();
+            let pack_slice = &regular[pack_start..i];
+            let mut blobs_vec: Vec<(ID, BlobLocator, Vec<BlobRestoreRequest>)> =
+                Vec::with_capacity(pack_slice.len());
 
+            // Group consecutive entries with the same blob_id.
+            let mut j = 0;
+            while j < pack_slice.len() {
+                let blob_id = pack_slice[j].1;
+                let blob_start = j;
+                while j < pack_slice.len() && pack_slice[j].1 == blob_id {
+                    j += 1;
+                }
+                if let Some(locator) = index.get_data(&blob_id) {
+                    let targets: Vec<BlobRestoreRequest> = pack_slice[blob_start..j]
+                        .iter()
+                        .map(|(_, _, req)| req.clone())
+                        .collect();
+                    blobs_vec.push((blob_id, locator, targets));
+                }
+            }
+
+            pack_groups.push((pack_id, blobs_vec));
+        }
+    }
+
+    let mut download_stream = futures::stream::iter(pack_groups)
+        .flat_map(|(pack_id, blobs_vec)| {
             futures::stream::iter(loader::segment_blobs(pack_id, blobs_vec))
         })
         .map(|segment| {
@@ -256,7 +307,7 @@ pub(crate) async fn restore_packs(
                     .await
                     .map_err(|e| MapacheError::task_panicked("pack restore", e))?;
 
-                    let mut file_batches: HashMap<usize, Vec<(Vec<u8>, u64)>> = HashMap::new();
+                    let mut file_batches: HashMap<usize, BlobWriteBatch> = HashMap::new();
                     for res in decoded_results {
                         let decoded = res?;
                         if decoded.targets.len() == 1 {
@@ -264,13 +315,14 @@ pub(crate) async fn restore_packs(
                             file_batches
                                 .entry(target.file_idx)
                                 .or_default()
-                                .push((decoded.data, target.offset_in_file));
+                                .push((BlobData::Owned(decoded.data), target.offset_in_file));
                         } else {
+                            let shared = Arc::new(decoded.data);
                             for target in &decoded.targets {
-                                file_batches
-                                    .entry(target.file_idx)
-                                    .or_default()
-                                    .push((decoded.data.clone(), target.offset_in_file));
+                                file_batches.entry(target.file_idx).or_default().push((
+                                    BlobData::Shared(Arc::clone(&shared)),
+                                    target.offset_in_file,
+                                ));
                             }
                         }
                     }
@@ -297,7 +349,7 @@ pub(crate) async fn restore_packs(
 /// Flush accumulated file batches: write each file's blobs in a single
 /// spawn_blocking, processing files concurrently.
 async fn flush_file_batches(
-    file_batches: &mut HashMap<usize, Vec<(Vec<u8>, u64)>>,
+    file_batches: &mut HashMap<usize, BlobWriteBatch>,
     ctx: &Arc<RestoreContext>,
     concurrency: usize,
 ) -> Result<()> {

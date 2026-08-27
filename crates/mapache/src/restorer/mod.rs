@@ -29,14 +29,16 @@ use std::{
     },
 };
 
-use crate::common::error::{MapacheError, Result};
 use clap::ValueEnum;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::{BlobType, ID, defaults},
+    common::{
+        ID, defaults,
+        error::{MapacheError, Result},
+    },
     fs::{node::Node, tree::SerializedNodeStream},
     repository::{repo::Repository, snapshot::Snapshot},
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
@@ -124,7 +126,7 @@ pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
 /// file_idx -> list of (offset_in_file, raw_length) for zero blobs
 pub(crate) type ZeroBatchMap = HashMap<usize, Vec<(u64, u32)>>;
 type HardlinkByPath = (PathBuf, PathBuf);
-type PrimaryHardlinks = Arc<Mutex<HashMap<(u64, u64), (PathBuf, [u8; 32])>>>;
+type PrimaryHardlinks = Arc<Mutex<HashMap<(u64, u64), (PathBuf, ID)>>>;
 
 pub(crate) struct FileRestorePlan {
     pub(crate) path: PathBuf,
@@ -140,11 +142,6 @@ pub(crate) struct FileRestorePlan {
 pub(crate) struct BlobRestoreRequest {
     pub(crate) file_idx: usize,
     pub(crate) offset_in_file: u64,
-    pub(crate) blob_offset: u32,
-    pub(crate) blob_length: u32,
-    pub(crate) raw_length: u32,
-    pub(crate) compressed: bool,
-    pub(crate) blob_type: BlobType,
 }
 
 /// A cache for open file handles during restoration.
@@ -270,7 +267,7 @@ impl FileHandleCache {
 
 /// A sharded wrapper around FileHandleCache to reduce lock contention.
 pub(crate) struct ShardedFileHandleCache {
-    shards: Vec<Mutex<FileHandleCache>>,
+    shards: Box<[Mutex<FileHandleCache>]>,
     num_shards: usize,
 }
 
@@ -284,10 +281,9 @@ impl ShardedFileHandleCache {
         .min(64);
         let handles_per_shard = (max_total_handles / num_shards).max(1);
 
-        let mut shards = Vec::with_capacity(num_shards);
-        for _ in 0..num_shards {
-            shards.push(Mutex::new(FileHandleCache::new(handles_per_shard)));
-        }
+        let shards: Box<[Mutex<FileHandleCache>]> = (0..num_shards)
+            .map(|_| Mutex::new(FileHandleCache::new(handles_per_shard)))
+            .collect();
 
         Self { shards, num_shards }
     }
@@ -728,14 +724,14 @@ impl Restorer {
                         });
 
                         // Hardlink detection
-                        let is_hardlink_secondary = detect_hardlink(
+                        let (is_secondary, primary_fp) = detect_hardlink(
                             &node,
                             &restore_path,
                             &primary_hardlinks,
                             &pending_hardlinks,
                         );
 
-                        if is_hardlink_secondary {
+                        if is_secondary {
                             chunk_files[file_idx].is_hardlink = true;
                         } else {
                             for &blob_idx in &changed_blobs {
@@ -747,22 +743,15 @@ impl Restorer {
                                         BlobRestoreRequest {
                                             file_idx,
                                             offset_in_file: *offset_in_file,
-                                            blob_offset: locator.offset,
-                                            blob_length: locator.length,
-                                            raw_length: locator.raw_length,
-                                            compressed: locator.compressed,
-                                            blob_type: locator.blob_type,
                                         },
                                     ));
                                 }
                             }
 
-                            if let (Some(dev), Some(inode)) =
-                                (node.metadata.dev, node.metadata.inode)
-                                && node.metadata.nlink.unwrap_or(0) > 1
+                            if let Some(fingerprint) = primary_fp
+                                && let (Some(dev), Some(inode)) =
+                                    (node.metadata.dev, node.metadata.inode)
                             {
-                                let node_blobs = node.blobs.as_deref().unwrap_or(&[]);
-                                let fingerprint = compute_blob_fingerprint(node_blobs);
                                 primary_hardlinks
                                     .lock()
                                     .entry((dev, inode))
@@ -773,11 +762,12 @@ impl Restorer {
                         // Flush if the chunk is full
                         if chunk_files.len() >= batch_size {
                             let chunk_files = Arc::new(std::mem::take(&mut chunk_files));
-                            let chunk_packs = Arc::new(std::mem::take(&mut chunk_packs));
+                            let chunk_packs = std::mem::take(&mut chunk_packs);
                             pack_restorer::restore_packs(
                                 self,
                                 chunk_files,
                                 chunk_packs,
+                                index.clone(),
                                 secure_storage.clone(),
                                 dry_run,
                             )
@@ -834,10 +824,10 @@ impl Restorer {
                 });
 
                 // Hardlink detection with content verification
-                let is_hardlink_secondary =
+                let (is_secondary, _fp) =
                     detect_hardlink(&node, &restore_path, &primary_hardlinks, &pending_hardlinks);
 
-                if is_hardlink_secondary {
+                if is_secondary {
                     chunk_files[file_idx].is_hardlink = true;
                     if !dry_run
                         && let Some(parent) = restore_path.parent()
@@ -860,11 +850,6 @@ impl Restorer {
                             BlobRestoreRequest {
                                 file_idx,
                                 offset_in_file: *offset_in_file,
-                                blob_offset: locator.offset,
-                                blob_length: locator.length,
-                                raw_length: locator.raw_length,
-                                compressed: locator.compressed,
-                                blob_type: locator.blob_type,
                             },
                         ));
                     }
@@ -874,11 +859,12 @@ impl Restorer {
                 // Flush if the chunk is full
                 if chunk_files.len() >= batch_size {
                     let chunk_files = Arc::new(std::mem::take(&mut chunk_files));
-                    let chunk_packs = Arc::new(std::mem::take(&mut chunk_packs));
+                    let chunk_packs = std::mem::take(&mut chunk_packs);
                     pack_restorer::restore_packs(
                         self,
                         chunk_files,
                         chunk_packs,
+                        index.clone(),
                         secure_storage.clone(),
                         dry_run,
                     )
@@ -890,11 +876,12 @@ impl Restorer {
         // Flush remaining chunk
         if !chunk_files.is_empty() {
             let chunk_files = Arc::new(std::mem::take(&mut chunk_files));
-            let chunk_packs = Arc::new(std::mem::take(&mut chunk_packs));
+            let chunk_packs = std::mem::take(&mut chunk_packs);
             pack_restorer::restore_packs(
                 self,
                 chunk_files,
                 chunk_packs,
+                index.clone(),
                 secure_storage.clone(),
                 dry_run,
             )
@@ -1020,23 +1007,24 @@ impl Restorer {
     }
 }
 
-/// Computes a content fingerprint for hardlink verification using blake3 over blob IDs.
-fn compute_blob_fingerprint(blobs: &[ID]) -> [u8; 32] {
+/// Content fingerprint for hardlink verification using blake3 over blob IDs.
+fn compute_blob_fingerprint(blobs: &[ID]) -> ID {
     let mut hasher = blake3::Hasher::new();
     for blob_id in blobs {
         hasher.update(&blob_id.0);
     }
-    hasher.finalize().into()
+    ID(hasher.finalize().into())
 }
 
 /// Detects whether a file node is a hardlink secondary (already seen primary).
-/// Returns `true` if this is a secondary and registers the pending hardlink.
+/// Returns `(is_secondary, primary_fingerprint_if_first_seen)`.
+/// The fingerprint is returned to avoid recomputing it when registering the primary.
 fn detect_hardlink(
     node: &Node,
     restore_path: &Path,
     primary_hardlinks: &PrimaryHardlinks,
     pending_hardlinks: &Arc<Mutex<Vec<HardlinkByPath>>>,
-) -> bool {
+) -> (bool, Option<ID>) {
     if let (Some(dev), Some(inode)) = (node.metadata.dev, node.metadata.inode) {
         let nlink = node.metadata.nlink;
         if nlink.unwrap_or(0) > 1 {
@@ -1045,23 +1033,23 @@ fn detect_hardlink(
             let mut idx = primary_hardlinks.lock();
             if let Some((primary_path, primary_fp)) = idx.get(&(dev, inode)) {
                 if *primary_fp == fingerprint {
-                    pending_hardlinks
-                        .lock()
-                        .push((restore_path.to_path_buf(), primary_path.clone()));
+                    let secondary = restore_path.to_path_buf();
+                    let primary = primary_path.clone();
                     drop(idx);
-                    return true;
+                    pending_hardlinks.lock().push((secondary, primary));
+                    return (true, None);
                 } else {
                     drop(idx);
-                    return false;
+                    return (false, None);
                 }
             } else {
                 idx.insert((dev, inode), (restore_path.to_path_buf(), fingerprint));
                 drop(idx);
-                return false;
+                return (false, Some(fingerprint));
             }
         }
     }
-    false
+    (false, None)
 }
 
 #[cfg(test)]
@@ -1107,8 +1095,9 @@ mod tests {
         let primaries: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
         let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let is_secondary = detect_hardlink(&primary, &path, &primaries, &pending);
+        let (is_secondary, fp) = detect_hardlink(&primary, &path, &primaries, &pending);
         assert!(!is_secondary);
+        assert!(fp.is_some());
         assert!(primaries.lock().contains_key(&(10, 20)));
     }
 
@@ -1122,18 +1111,10 @@ mod tests {
         let primaries: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
         let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
 
-        assert!(!detect_hardlink(
-            &primary,
-            &primary_path,
-            &primaries,
-            &pending
-        ));
-        assert!(detect_hardlink(
-            &secondary,
-            &secondary_path,
-            &primaries,
-            &pending
-        ));
+        let (is_sec1, _) = detect_hardlink(&primary, &primary_path, &primaries, &pending);
+        assert!(!is_sec1);
+        let (is_sec2, _) = detect_hardlink(&secondary, &secondary_path, &primaries, &pending);
+        assert!(is_sec2);
         let p = pending.lock();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].0, secondary_path);
@@ -1150,7 +1131,7 @@ mod tests {
         let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
 
         detect_hardlink(&primary, &primary_path, &primaries, &pending);
-        let is_secondary = detect_hardlink(&different, &different_path, &primaries, &pending);
+        let (is_secondary, _) = detect_hardlink(&different, &different_path, &primaries, &pending);
         assert!(
             !is_secondary,
             "different content should not be detected as hardlink secondary"
@@ -1164,7 +1145,7 @@ mod tests {
         let primaries: PrimaryHardlinks = Arc::new(Mutex::new(HashMap::new()));
         let pending: Arc<Mutex<Vec<HardlinkByPath>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let is_secondary = detect_hardlink(&node, &path, &primaries, &pending);
+        let (is_secondary, _) = detect_hardlink(&node, &path, &primaries, &pending);
         assert!(!is_secondary);
         assert!(
             primaries.lock().is_empty(),

@@ -1,14 +1,13 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, atomic::Ordering},
-};
+use std::{path::PathBuf, sync::atomic::Ordering};
 
-use crate::common::error::{MapacheError, Result};
 use futures::StreamExt;
-use parking_lot::Mutex;
+use tokio::sync::mpsc;
 
 use crate::{
-    common::ID,
+    common::{
+        ID, defaults,
+        error::{MapacheError, Result},
+    },
     fs::{self as repo_fs, node::Metadata, tree::SerializedNodeStream},
     ui::events::{Event, RestoreEvent, emit_event},
     utils,
@@ -36,15 +35,15 @@ impl Restorer {
         )
         .await?;
 
-        let dirs: Arc<Mutex<Vec<(PathBuf, Metadata)>>> = Arc::new(Mutex::new(Vec::new()));
+        let (dir_tx, mut dir_rx) = mpsc::unbounded_channel::<(PathBuf, Metadata)>();
 
-        let d = crate::common::defaults::runtime();
+        let d = defaults::runtime();
         node_stream
             .for_each_concurrent(d.restore_blob_concurrency, |node_res| {
                 let event_sender = self.event_sender.clone();
                 let target_path = self.target_path.clone();
                 let opts_strip_prefix = self.opts.strip_prefix.clone();
-                let dirs = dirs.clone();
+                let dir_tx = dir_tx.clone();
 
                 async move {
                     let (mut path, stream_node_res) = match node_res {
@@ -92,7 +91,7 @@ impl Restorer {
                     };
 
                     if node.is_dir() {
-                        dirs.lock().push((restore_path, node.metadata));
+                        let _ = dir_tx.send((restore_path, node.metadata));
                     } else {
                         if repo_fs::path_exists(&restore_path).await {
                             super::node_restorer::try_restore_node_metadata(
@@ -111,13 +110,13 @@ impl Restorer {
             })
             .await;
 
-        let mut dirs = match Arc::try_unwrap(dirs) {
-            Ok(mutex) => mutex.into_inner(),
-            Err(arc) => {
-                let guard = arc.lock();
-                guard.clone()
-            }
-        };
+        drop(dir_tx);
+
+        let mut dirs = Vec::new();
+        while let Some(entry) = dir_rx.recv().await {
+            dirs.push(entry);
+        }
+
         dirs.sort_unstable_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
         for (p, meta) in dirs {
             if self.shutdown_signal.load(Ordering::Acquire) {

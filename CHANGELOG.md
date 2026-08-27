@@ -30,6 +30,8 @@
 
 ### Changed
 
+- **Restorer memory**: Reduced restore memory usage by compacting the per-blob
+  planning data and eliminating redundant allocations in the pack download pipeline.
 - **LRU cache evicts by blob count**: In lazy mode, the cold index LRU cache now
   evicts entries based on total blob count instead of index count. This provides
   more granular memory control — a single index with 65k blobs costs proportionally

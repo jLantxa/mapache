@@ -182,14 +182,31 @@ pub async fn run_with_repo(
 
     if !json_output {
         ui::cli::log!();
-        ui::cli::log!("Total packs: {}", total_packs);
-        ui::cli::log!("Referenced blobs: {}", referenced_blobs);
-        ui::cli::log!("Referenced packs: {}", referenced_packs);
-        ui::cli::log!("Unused packs: {}", unused_packs);
-        ui::cli::log!("Obsolete packs: {}", obsolete_packs);
-        ui::cli::log!("Small packs: {}", small_packs);
-        ui::cli::log!("Tolerated packs: {}", tolerated_packs);
-        ui::cli::log!();
+        ui::cli::log!("{}", "Repository scan:".bold());
+        ui::cli::log!(
+            "  {} packs total ({} referenced blobs)",
+            total_packs,
+            referenced_blobs
+        );
+        ui::cli::log!(
+            "  Packs: {} referenced, {} unused, {} obsolete, {} small, {} tolerated",
+            referenced_packs,
+            unused_packs,
+            obsolete_packs,
+            small_packs,
+            tolerated_packs
+        );
+        let actionable = unused_packs + obsolete_packs + small_packs;
+        if actionable > 0 {
+            ui::cli::log!(
+                "  Action: removing {} unused, repacking {} obsolete + {} small",
+                unused_packs,
+                obsolete_packs,
+                small_packs
+            );
+        } else {
+            ui::cli::log!("  Action: repository is already clean");
+        }
     }
 
     let (added_bytes, deleted_bytes) = if args.dry_run {
@@ -239,32 +256,30 @@ pub async fn run_with_repo(
     } else {
         let net_deleted_bytes = deleted_bytes as i64 - added_bytes as i64;
 
-        ui::cli::log!(
-            "Written new bytes: {}",
-            utils::format_size_binary(added_bytes, 3)
-        );
-        ui::cli::log!(
-            "Deleted bytes: {}",
-            utils::format_size_binary(deleted_bytes, 3)
-        );
-
-        if net_deleted_bytes >= 0 {
+        if net_deleted_bytes == 0 && added_bytes == 0 {
             ui::cli::log!(
-                "Net freed space: {}",
-                utils::format_size_binary(net_deleted_bytes.unsigned_abs(), 3)
+                "{} Repository is already clean — no action needed",
+                "[SUCCESS]".bold().green()
+            );
+        } else if net_deleted_bytes >= 0 {
+            ui::cli::log!(
+                "{} Cleaned repository in {} — freed {}",
+                "[SUCCESS]".bold().green(),
+                utils::pretty_print_duration(duration),
+                utils::format_size_binary(net_deleted_bytes as u64, 3)
                     .bold()
                     .green()
             );
         } else {
             ui::cli::log!(
-                "Net added space: {}",
+                "{} Cleaned repository in {} — net added {}",
+                "[SUCCESS]".bold().green(),
+                utils::pretty_print_duration(duration),
                 utils::format_size_binary(net_deleted_bytes.unsigned_abs(), 3)
                     .bold()
                     .yellow()
             );
         }
-        ui::cli::log!();
-        ui::cli::log!("Finished in {}", utils::pretty_print_duration(duration));
     }
 
     tracing::info!(target: "clean", "Clean command completed in {:?}", duration);

@@ -81,11 +81,36 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 anyhow = "1.0"
+criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1.11"
 rstest = "0.26"
 scopeguard = "1.2"
 serial_test = "4.0"
 tempfile = "3.27"
+
+[[bench]]
+name = "hashing"
+harness = false
+
+[[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
+name = "collections"
+harness = false
+
+[[bench]]
+name = "index"
+harness = false
+
+[[bench]]
+name = "archiver"
+harness = false
+
+[[bench]]
+name = "packer"
+harness = false
 
 [features]
 default = ["mount"]

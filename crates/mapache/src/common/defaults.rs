@@ -44,6 +44,10 @@ pub const DEFAULT_PACK_SIZE_MIB: f32 = 16.0;
 pub const DEFAULT_PACK_SIZE: u64 = (DEFAULT_PACK_SIZE_MIB * size::MiB as f32) as u64;
 pub(crate) const FOOTER_BLOB_MULTIPLE: usize = 64;
 
+/// Hard limit on pack size in bytes. Blob offsets are encoded as `u32`,
+/// so a pack can never exceed this value.
+pub const MAX_PACK_SIZE: u64 = u32::MAX as u64;
+
 // --- Chunking ---
 // The chunker parameters must remain stable across versions, otherwise
 // same contents will no longer produce same chunks and IDs.

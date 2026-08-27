@@ -25,7 +25,7 @@ use crate::{
 
 /// Size units.
 #[allow(non_upper_case_globals)]
-pub(crate) mod size {
+pub mod size {
     // As of 2025, the TB / TiB units are biggest units that one would
     // normally expect in a backup. Sizes bigger than the TB / TiB will still
     // be represented using those units. If this changes in the future, make

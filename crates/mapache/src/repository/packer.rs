@@ -14,7 +14,7 @@ use crate::{
     backend::{Handle, StorageBackend, StorageHint},
     common::{
         BlobType, ContentIdType, ID, SaveID,
-        defaults::FOOTER_BLOB_MULTIPLE,
+        defaults::{FOOTER_BLOB_MULTIPLE, MAX_PACK_SIZE},
         error::{MapacheError, Result},
     },
     repository::{
@@ -155,9 +155,16 @@ impl Packer {
         raw_size: u64,
         compressed: bool,
     ) -> Result<()> {
-        let offset = u32::try_from(self.buffer.len()).map_err(|e| {
-            MapacheError::Integrity(format!("pack buffer offset exceeds u32::MAX: {e}"))
-        })?;
+        let new_len = self.buffer.len() + encoded_data.len();
+        if new_len > MAX_PACK_SIZE as usize {
+            return Err(MapacheError::Integrity(format!(
+                "pack would exceed {MAX_PACK_SIZE} byte limit: current {} + blob {} = {new_len}",
+                self.buffer.len(),
+                encoded_data.len(),
+            )));
+        }
+
+        let offset = self.buffer.len() as u32;
         let length = u32::try_from(encoded_data.len()).map_err(|e| {
             MapacheError::Integrity(format!("blob encoded length exceeds u32::MAX: {e}"))
         })?;

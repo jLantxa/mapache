@@ -15,7 +15,7 @@ workspace = true
 
 [dependencies]
 aes-gcm-siv = "0.12"
-argon2 = "0.5"
+argon2 = "0.6"
 async-stream = "0.3"
 async-trait = "0.1"
 blake3 = "1.8"

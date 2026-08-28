@@ -112,7 +112,10 @@ pub async fn run(
     )
     .await;
 
-    repo_result.map_err(|e| CleanError::RepoOpenFail(e.to_string()))
+    repo_result.map_err(|e| match e {
+        CleanError::Repo(err) => CleanError::RepoOpenFail(err.inner()),
+        other => other,
+    })
 }
 
 /// Run the garbage collector against an already-locked repository.

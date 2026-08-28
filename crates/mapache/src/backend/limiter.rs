@@ -294,15 +294,48 @@ impl StorageBackend for ThrottledBackend {
     }
 
     async fn read(&self, handle: &Handle, offset: isize, length: usize) -> Result<Vec<u8>> {
-        let contents = self.inner.read(handle, offset, length).await?;
         if self.inner.is_dry_run() {
-            return Ok(contents);
+            return self.inner.read(handle, offset, length).await;
         }
 
-        if let Some(limiter) = &self.download_limiter {
-            for chunk in contents.chunks(DISCRETE_CHUNK_SIZE) {
-                limiter.wait(chunk.len() as u64).await;
+        let Some(limiter) = &self.download_limiter else {
+            return self.inner.read(handle, offset, length).await;
+        };
+
+        // Resolve the byte range from an `lstat` so the limiter shapes the
+        // actual transfer. Throttling after the full download would neither
+        // cap the network usage nor bound memory.
+        let file_size = match self.inner.lstat(handle.path).await {
+            Ok(attr) => attr.size.unwrap_or_default(),
+            Err(_) => {
+                // Backend cannot report the size: apply the limit afterwards
+                // as a best-effort fallback.
+                let contents = self.inner.read(handle, offset, length).await?;
+                limiter.wait(contents.len() as u64).await;
+                return Ok(contents);
             }
+        };
+
+        let start = super::resolve_read_offset(file_size, offset) as usize;
+        let end = if length == 0 {
+            file_size as usize
+        } else {
+            start.saturating_add(length).min(file_size as usize)
+        };
+
+        let mut contents = Vec::with_capacity(end.saturating_sub(start));
+        let mut pos = start;
+        while pos < end {
+            let chunk_len = (end - pos).min(DISCRETE_CHUNK_SIZE);
+            let chunk = self.inner.read(handle, pos as isize, chunk_len).await?;
+            if chunk.is_empty() {
+                // The source shrank or returned fewer bytes than requested;
+                // bail out to avoid spinning forever.
+                break;
+            }
+            contents.extend_from_slice(&chunk);
+            limiter.wait(chunk.len() as u64).await;
+            pos += chunk.len();
         }
         Ok(contents)
     }

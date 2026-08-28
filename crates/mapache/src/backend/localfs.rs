@@ -115,6 +115,37 @@ impl LocalFS {
 
         std::fs::set_permissions(full_path, perms)
     }
+
+    /// Appends a temporary suffix to `path` instead of replacing its extension,
+    /// so the temp file always maps back to its final destination.
+    fn tmp_path(path: &Path) -> PathBuf {
+        let mut os = path.as_os_str().to_os_string();
+        os.push(format!(".{REPO_TMP_EXTENSION}"));
+        PathBuf::from(os)
+    }
+
+    /// Persists the rename into the parent directory so the new entry survives
+    /// a crash or power loss. Best-effort duplicates are handled by callers.
+    fn sync_parent_dir(full_path: &Path) -> std::io::Result<()> {
+        let parent = match full_path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => return Ok(()),
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(parent)?
+                .sync_all()
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::File::open(parent)?.sync_all()
+        }
+    }
 }
 
 #[async_trait]
@@ -200,8 +231,7 @@ impl StorageBackend for LocalFS {
         tracing::trace!(target: "backend", "LocalFS: write {:?} ({} bytes)", path, data.len());
 
         tokio::task::spawn_blocking(move || {
-            let tmp_path = path.with_extension(REPO_TMP_EXTENSION);
-            let full_tmp_path = full_base_path.join(&tmp_path);
+            let full_tmp_path = full_base_path.join(Self::tmp_path(&path));
             let full_path = full_base_path.join(&path);
 
             // Write to temporary file with durability guarantee
@@ -232,6 +262,12 @@ impl StorageBackend for LocalFS {
             }
 
             std::fs::rename(&full_tmp_path, &full_path)?;
+
+            // Persist the rename itself, otherwise the new entry may be lost
+            // even though the file content was synced.
+            if let Err(e) = Self::sync_parent_dir(&full_path) {
+                return Err(MapacheError::Io(e));
+            }
 
             if let Err(e) = Self::set_readonly_status_internal(&full_path, true) {
                 tracing::warn!(target: "backend", "LocalFS: failed to lock {:?} after rename: {e}", full_path);
@@ -267,6 +303,11 @@ impl StorageBackend for LocalFS {
                     e
                 ))
             })?;
+
+        // Persist the rename so it survives a crash before the content write.
+        if let Err(e) = Self::sync_parent_dir(&fullpath_to) {
+            return Err(MapacheError::Io(e));
+        }
 
         // Repository files are generally treated as immutable once written
         if let Err(e) = self.set_readonly_status(to, true).await {

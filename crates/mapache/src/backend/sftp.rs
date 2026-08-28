@@ -318,7 +318,10 @@ trait FileAttributesExt {
 
 impl FileAttributesExt for FileAttributes {
     fn is_file(&self) -> bool {
-        self.permissions.is_some_and(|p| (p & 0o170000) == 0o100000)
+        // Many SFTP servers do not report POSIX mode bits at all, in which case
+        // no S_IFREG bit is available. Treat anything that is not a directory
+        // as a file so such servers (e.g. Windows OpenSSH) classify correctly.
+        !self.is_dir()
     }
 }
 
@@ -421,43 +424,78 @@ impl SftpConnectionManager {
         })
     }
 
-    /// Picks a connection using a round-robin strategy and reconnects if dead.
-    /// Since SftpSession is thread-safe and async, we can use the same
-    /// connection for many concurrent requests.
+    /// Picks a connection via round-robin, reconnecting dead ones.
+    /// Connections are scanned without blocking; a task that finds a busy slot
+    /// simply moves on to the next one, so an in-flight reconnect (up to
+    /// `CONNECTION_TIMEOUT`) does not stall every other operation.
     pub async fn get_connection(&self) -> Result<Arc<SftpConnection>> {
-        let idx = self.next_index.fetch_add(1, Ordering::Relaxed) % self.connections.len();
-        let mut guard = self.connections[idx].lock().await;
+        let n = self.connections.len();
+        let start = self.next_index.fetch_add(1, Ordering::Relaxed) % n;
 
-        if !guard.is_alive() {
-            // Reconnect
-            let conn = timeout(
-                CONNECTION_TIMEOUT,
-                SftpConnection::new(
+        for step in 0..n {
+            let conn = &self.connections[(start + step) % n];
+            if let Ok(mut guard) = conn.try_lock() {
+                if guard.is_alive() {
+                    return Ok(Arc::clone(&guard));
+                }
+                // Dead connection: reconnect while holding its lock so that a
+                // single task performs the handshake for every waiter.
+                let new_conn = Self::connect_with_timeout(
                     &self.username,
                     &self.host,
                     self.port,
                     self.known_hosts.clone(),
                     &self.auth_method,
-                ),
-            )
-            .await
-            .map_err(|e| {
-                MapacheError::Backend(format!("timeout re-establishing SFTP connection: {}", e))
-            })?
-            .map_err(|e| {
-                let detail = match &e {
-                    MapacheError::Backend(s) => s.clone(),
-                    _ => e.to_string(),
-                };
-                MapacheError::Backend(format!(
-                    "failed to re-establish SFTP connection: {}",
-                    detail
-                ))
-            })?;
-            *guard = Arc::new(conn);
+                )
+                .await?;
+                *guard = Arc::new(new_conn);
+                return Ok(Arc::clone(&guard));
+            }
+            // Slot is busy (in use or being reconnected): try the next one.
         }
 
-        Ok(guard.clone())
+        // Everything is busy: block on the next slot in the rotation.
+        let conn = &self.connections[(start + 1) % n];
+        let mut guard = conn.lock().await;
+        if !guard.is_alive() {
+            let new_conn = Self::connect_with_timeout(
+                &self.username,
+                &self.host,
+                self.port,
+                self.known_hosts.clone(),
+                &self.auth_method,
+            )
+            .await?;
+            *guard = Arc::new(new_conn);
+        }
+        Ok(Arc::clone(&guard))
+    }
+
+    async fn connect_with_timeout(
+        username: &str,
+        host: &str,
+        port: u16,
+        known_hosts: Option<PathBuf>,
+        auth_method: &AuthMethod,
+    ) -> Result<SftpConnection> {
+        timeout(
+            CONNECTION_TIMEOUT,
+            SftpConnection::new(username, host, port, known_hosts, auth_method),
+        )
+        .await
+        .map_err(|e| {
+            MapacheError::Backend(format!("timeout re-establishing SFTP connection: {}", e))
+        })?
+        .map_err(|e| {
+            let detail = match &e {
+                MapacheError::Backend(s) => s.clone(),
+                _ => e.to_string(),
+            };
+            MapacheError::Backend(format!(
+                "failed to re-establish SFTP connection: {}",
+                detail
+            ))
+        })
     }
 }
 
@@ -652,6 +690,25 @@ impl SftpBackend {
             tracing::warn!(target: "backend", "sftp: failed to unlock source {:?} before rename: {e}", full_from);
         }
 
+        let rename = || async {
+            sftp.rename(&from_str, &to_str).await.map_err(|e| {
+                MapacheError::Backend(format!(
+                    "failed to rename {:?} -> {:?}: {}",
+                    full_from, full_to, e
+                ))
+            })
+        };
+
+        // Prefer an atomic overwrite-rename: most servers (OpenSSH, vsftpd,
+        // ProFTPD) replace the destination in a single operation, leaving no
+        // window in which the file is missing.
+        if rename().await.is_ok() {
+            Self::set_readonly_status_full(sftp, full_to, true).await?;
+            return Ok(());
+        }
+
+        // The server rejected the overwrite (some implementations do): fall
+        // back to delete-then-rename, keeping the original error handling.
         if Self::exists_exact_full(sftp, full_to).await {
             if let Err(e) = Self::set_readonly_status_full(sftp, full_to, false).await {
                 tracing::warn!(target: "backend", "sftp: failed to unlock destination {:?} before remove: {e}", full_to);
@@ -661,16 +718,8 @@ impl SftpBackend {
             }
         }
 
-        sftp.rename(&from_str, &to_str).await.map_err(|e| {
-            MapacheError::Backend(format!(
-                "failed to rename {:?} -> {:?}: {}",
-                full_from, full_to, e
-            ))
-        })?;
-
-        Self::set_readonly_status_full(sftp, full_to, true).await?;
-
-        Ok(())
+        rename().await?;
+        Self::set_readonly_status_full(sftp, full_to, true).await
     }
 }
 
@@ -750,7 +799,9 @@ impl StorageBackend for SftpBackend {
     }
 
     async fn write(&self, handle: &Handle, contents: WriteContents<'_>) -> Result<()> {
-        let tmp_path = handle.path.with_extension(REPO_TMP_EXTENSION);
+        let mut tmp_os = handle.path.as_os_str().to_os_string();
+        tmp_os.push(format!(".{REPO_TMP_EXTENSION}"));
+        let tmp_path = PathBuf::from(tmp_os);
         let full_tmp = self.full_path(&tmp_path);
         let full_dst = self.full_path(handle.path);
         let limiter = self.upload_limiter.clone();

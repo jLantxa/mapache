@@ -11,16 +11,17 @@ use tokio::sync::Notify;
 
 use crate::{
     backend::{BackendNode, Handle, NodeAttr, StorageBackend, WriteContents, localfs::LocalFS},
-    common::{ContentIdType, defaults::APP_NAME, global::BASE_DIRS},
+    common::{ContentIdType, defaults::APP_NAME, error::MapacheError, global::BASE_DIRS},
 };
 
 /// Represents the state of a file in the download queue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum DownloadState {
     /// The file is currently being downloaded by one thread.
     Downloading,
-    /// The download has failed.
-    Failed,
+    /// The download has failed. The message of the original error is kept so
+    /// that waiters fail fast instead of re-downloading (a retry storm).
+    Failed(String),
 }
 
 /// A cache wrapper for backends. This backend caches selected files from the repository
@@ -79,27 +80,45 @@ impl CacheBackend {
 
         tracing::debug!(target: "cache", "Caching file {:?}", path);
 
-        // Wait until we can claim this file for download
+        // Wait until we can claim this file for download, or learn the outcome
+        // of the in-flight attempt. `enable()` closes the check-then-await race:
+        // a notification sent between `enable()` and `await` is stored as a
+        // permit, so no waiter is left hanging.
         loop {
-            let should_wait = {
+            let notified = self.download_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let (claimable, failure): (bool, Option<String>) = {
                 let mut queue = self.download_queue.lock();
                 match queue.get(&path_buf) {
-                    Some(DownloadState::Downloading) => true,
-                    _ => {
+                    Some(DownloadState::Downloading) => (false, None),
+                    Some(DownloadState::Failed(msg)) => (false, Some(msg.clone())),
+                    None => {
                         queue.insert(path_buf.clone(), DownloadState::Downloading);
-                        false
+                        (true, None)
                     }
                 }
             };
 
-            if should_wait {
-                self.download_notify.notified().await;
-            } else {
-                break;
+            // Fail fast: a previous attempt already failed, so re-downloading
+            // would only repeat the failure for every concurrent caller.
+            if let Some(msg) = failure {
+                return Err(MapacheError::Backend(format!(
+                    "failed to cache file {:?}: {}",
+                    path, msg
+                )));
             }
+
+            if !claimable {
+                notified.await;
+                continue;
+            }
+            break;
         }
 
-        // After waiting, check if another thread finished the download
+        // After claiming, check if another caller completed the download while
+        // we were waiting to claim.
         if self.cache.path_exists(path).await {
             let mut queue = self.download_queue.lock();
             queue.remove(&path_buf);
@@ -107,7 +126,7 @@ impl CacheBackend {
             return Ok(());
         }
 
-        let result = async {
+        let result: Result<()> = async {
             let data = self.backend.read(&handle, 0, 0).await?;
 
             if let Some(parent) = path.parent() {
@@ -130,7 +149,7 @@ impl CacheBackend {
             }
             Err(e) => {
                 tracing::error!(target: "cache", "Failed to cache file {:?}: {}", path, e);
-                queue.insert(path_buf, DownloadState::Failed);
+                queue.insert(path_buf, DownloadState::Failed(e.to_string()));
             }
         }
         drop(queue);
@@ -235,7 +254,11 @@ impl StorageBackend for CacheBackend {
         let path_buf = file_path.to_path_buf();
 
         loop {
-            let should_wait = {
+            let notified = self.download_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let wait = {
                 let mut queue = self.download_queue.lock();
                 if matches!(queue.get(&path_buf), Some(DownloadState::Downloading)) {
                     true
@@ -245,11 +268,11 @@ impl StorageBackend for CacheBackend {
                 }
             };
 
-            if should_wait {
-                self.download_notify.notified().await;
-            } else {
-                break;
+            if wait {
+                notified.await;
+                continue;
             }
+            break;
         }
 
         self.cache.remove(file_path).await?;
@@ -322,6 +345,63 @@ mod tests {
             "Expected only 1 backend read, found {}",
             read_ops
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_failed_download_fails_fast() -> Result<()> {
+        let mock = Arc::new(MockBackend::new());
+        mock.put_file("failing_file", b"data".to_vec());
+
+        mock.add_hook(Arc::new(|op| {
+            if let BackendOp::Read { path, .. } = op
+                && path == Path::new("failing_file")
+            {
+                return MockEffect {
+                    result_override: Some(Err(MapacheError::Backend("injected failure".into()))),
+                    ..Default::default()
+                };
+            }
+            MockEffect::default()
+        }));
+
+        let temp_dir = tempfile::tempdir()?;
+        let cache = Arc::new(CacheBackend::new(
+            temp_dir.path().to_path_buf(),
+            mock.clone(),
+        ));
+
+        let handle = Handle {
+            path: Path::new("failing_file"),
+            hint: Some(StorageHint {
+                file_type: ContentIdType::Snapshot,
+                is_metadata: true,
+            }),
+        };
+
+        // First read fails and records the failure.
+        assert!(cache.read(&handle, 0, 0).await.is_err());
+        // Subsequent reads fail fast without re-downloading (no retry storm).
+        for _ in 0..3 {
+            assert!(cache.read(&handle, 0, 0).await.is_err());
+        }
+
+        let read_ops = mock
+            .history()
+            .iter()
+            .filter(|e| matches!(e.op, BackendOp::Read { .. }))
+            .count();
+        assert_eq!(
+            read_ops, 1,
+            "failed downloads must not be retried, got {read_ops} backend reads"
+        );
+
+        // Clearing the failure (e.g. via remove) allows caching again.
+        cache.remove(Path::new("failing_file")).await?;
+        mock.clear_hooks();
+        mock.put_file("failing_file", b"data".to_vec());
+        assert!(cache.read(&handle, 0, 0).await.is_ok());
 
         Ok(())
     }

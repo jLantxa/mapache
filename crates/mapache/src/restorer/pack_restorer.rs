@@ -151,6 +151,18 @@ pub(crate) async fn restore_packs(
                 } else {
                     regular.push((pack_id, blob_id, req));
                 }
+            } else {
+                emit_event(
+                    &ctx.event_sender,
+                    Event::Restore(RestoreEvent::Error(format!(
+                        "Blob {blob_id} not found in index"
+                    ))),
+                );
+                if ctx.quit_on_error {
+                    return Err(MapacheError::Internal(format!(
+                        "Blob {blob_id} not found in index"
+                    )));
+                }
             }
         }
     }
@@ -198,6 +210,13 @@ pub(crate) async fn restore_packs(
                         .map(|(_, _, req)| req.clone())
                         .collect();
                     blobs_vec.push((blob_id, locator, targets));
+                } else {
+                    emit_event(
+                        &ctx.event_sender,
+                        Event::Restore(RestoreEvent::Error(format!(
+                            "Blob {blob_id} not found in index"
+                        ))),
+                    );
                 }
             }
 
@@ -296,6 +315,14 @@ pub(crate) async fn restore_packs(
                                             "failed to decode blob {blob_id}: {e}"
                                         ))
                                     })?;
+
+                                if decoded_data.len() != locator.raw_length as usize {
+                                    return Err(MapacheError::Format(format!(
+                                        "decoded blob {blob_id} has length {} but expected {}",
+                                        decoded_data.len(),
+                                        locator.raw_length
+                                    )));
+                                }
 
                                 Ok(DecodedBlob {
                                     data: decoded_data,

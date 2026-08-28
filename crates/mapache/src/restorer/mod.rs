@@ -671,6 +671,7 @@ impl Restorer {
                     Ok(RestorePlan::SelectiveRestore { changed_blobs }) => {
                         // Look up all blobs to compute offsets, but only add changed ones to pack map
                         let mut file_blobs = Vec::new();
+                        let mut file_ok = true;
                         if let Some(blobs) = &node.blobs {
                             let mut offset_in_file = 0u64;
                             for blob_id in blobs {
@@ -683,12 +684,18 @@ impl Restorer {
                                         emit_event(
                                             &self.event_sender,
                                             Event::Restore(RestoreEvent::Error(format!(
-                                                "Blob {blob_id} not found in index"
+                                                "Blob {blob_id} not found in index; skipping {}",
+                                                restore_path.display(),
                                             ))),
                                         );
+                                        file_ok = false;
+                                        break;
                                     }
                                 };
                             }
+                        }
+                        if !file_ok {
+                            continue;
                         }
 
                         // Emit BlobsSkipped event for incremental restore progress
@@ -794,6 +801,7 @@ impl Restorer {
 
                 // Full restore: look up all blobs
                 let mut file_blobs = Vec::new();
+                let mut file_ok = true;
                 if let Some(blobs) = &node.blobs {
                     let mut offset_in_file = 0;
                     for blob_id in blobs {
@@ -803,15 +811,20 @@ impl Restorer {
                                 emit_event(
                                     &self.event_sender,
                                     Event::Restore(RestoreEvent::Error(format!(
-                                        "Blob {blob_id} not found in index"
+                                        "Blob {blob_id} not found in index; skipping {}",
+                                        restore_path.display(),
                                     ))),
                                 );
-                                continue;
+                                file_ok = false;
+                                break;
                             }
                         };
                         file_blobs.push((*blob_id, locator, offset_in_file));
                         offset_in_file += locator.raw_length as u64;
                     }
+                }
+                if !file_ok {
+                    continue;
                 }
 
                 let file_idx = chunk_files.len();

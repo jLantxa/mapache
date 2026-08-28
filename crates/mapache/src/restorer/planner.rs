@@ -143,6 +143,18 @@ impl Restorer {
 
         let local_path = local_path.to_path_buf();
         let blob_ids: Vec<ID> = blobs.to_vec();
+
+        // Resolve every blob to its locator up front so lazy/cold index files are
+        // handled; the blocking pass below only hashes the local file contents.
+        let mut locators = Vec::with_capacity(blob_ids.len());
+        for blob_id in &blob_ids {
+            let locator = index
+                .get(blob_id)
+                .await
+                .ok_or(MapacheError::NotInIndex(*blob_id))?;
+            locators.push(locator);
+        }
+
         spawn_blocking(move || {
             let file = File::open(&local_path)?;
             let mut offset = 0;
@@ -151,11 +163,7 @@ impl Restorer {
             const VERIFY_BUFFER_SIZE: usize = size::MiB as usize;
             let mut buffer = vec![0u8; VERIFY_BUFFER_SIZE];
 
-            for (idx, blob_id) in blob_ids.iter().enumerate() {
-                let locator = index
-                    .get_data(blob_id)
-                    .ok_or(MapacheError::NotInIndex(*blob_id))?;
-
+            for (idx, (blob_id, locator)) in blob_ids.iter().zip(locators.iter()).enumerate() {
                 let mut hasher = hash::Hasher::new();
                 let mut remaining = locator.raw_length as u64;
                 let mut blob_offset = offset;

@@ -234,11 +234,15 @@ impl IndexMetadata {
         let pack_ids: Vec<ID> = index.pack_ids.iter().copied().collect();
         let blob_count = index.num_blobs();
 
-        let zero_blobs: Vec<(ID, u32)> = index
+        let mut zero_blobs: Vec<(ID, u32)> = index
             .zero_ids
             .iter()
             .map(|(id, loc)| (*id, loc.raw_length))
             .collect();
+        // `zero_ids` iterates sorted for frozen (Immutable) indices, but a live
+        // (Mutable) index iterates in arbitrary order. Cold lookups binary-search
+        // this vector, so it must be sorted regardless of the source.
+        zero_blobs.sort_unstable_by_key(|(id, _)| *id);
 
         Self {
             file_id,
@@ -253,12 +257,20 @@ impl IndexMetadata {
     pub fn from_index_file(index_file: IndexFile, bloom_filter: BloomFilter, file_id: ID) -> Self {
         let blob_count: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
         let pack_ids: Vec<ID> = index_file.packs.iter().map(|p| p.id).collect();
+        let mut zero_blobs: Vec<(ID, u32)> = index_file
+            .packs
+            .iter()
+            .flat_map(|p| p.blobs.iter())
+            .filter(|blob| matches!(blob.blob_type, BlobType::Zero))
+            .map(|blob| (blob.id, blob.raw_length))
+            .collect();
+        zero_blobs.sort_unstable_by_key(|(id, _)| *id);
 
         Self {
             file_id,
             bloom_filter,
             pack_ids,
-            zero_blobs: Vec::new(),
+            zero_blobs,
             blob_count,
         }
     }
@@ -496,11 +508,6 @@ impl Index {
                     compressed: false,
                 })
             })
-    }
-
-    /// Look up a data blob location directly.
-    fn get_data_location(&self, id: &ID) -> Option<&BlobLocationInternal> {
-        self.data_ids.get(id)
     }
 
     /// Adds all blob descriptors from a specific pack to the index.
@@ -803,16 +810,29 @@ impl MasterIndex {
 
     /// Returns `true` if the object ID is known either in a finalized index
     /// or is currently a pending blob.
+    ///
+    /// In lazy mode, data/tree blobs that only live in cold indices return
+    /// `false`: they cannot be resolved exactly without a disk load, and a
+    /// bloom-only answer risks skipping the storage of a genuinely new blob.
+    /// Zero blobs are resolved exactly from cold metadata.
     pub fn contains(&self, id: &ID) -> bool {
         if self.pending_blobs.contains(id) {
             return true;
         }
 
         let lock = self.inner.read();
-        if let Some(bf) = &lock.bloom_filter
-            && !bf.contains(id)
+        // A master bloom-filter miss (or no master bloom) means the blob is not
+        // in any hot index. Zero blobs can still be resolved exactly from cold
+        // metadata without a disk load, and never produce a false positive.
+        let hot_miss = !lock.bloom_filter.as_ref().is_some_and(|bf| bf.contains(id));
+        if hot_miss
+            && lock.cold_metadata.iter().rev().any(|meta| {
+                meta.zero_blobs
+                    .binary_search_by_key(id, |(zid, _)| *zid)
+                    .is_ok()
+            })
         {
-            return false;
+            return true;
         }
         lock.indices.iter().rev().any(|idx| idx.contains(id))
     }
@@ -821,42 +841,42 @@ impl MasterIndex {
     /// The fallback chain exists because callers (restorer, verify) look up blob IDs
     /// from file node descriptors without knowing the blob type upfront. A file's
     /// content may span Data, Tree, or Zero blobs depending on dedup and zero-fill.
+    ///
+    /// Synchronous hot-only lookup. Cold (lazy) indices are resolved via the async
+    /// [`Self::get`]; this method additionally resolves zero blobs from cold
+    /// metadata exactly, without a disk load.
     pub fn get_data(&self, id: &ID) -> Option<BlobLocator> {
-        let lock = self.inner.read();
+        if let Some(locator) = self.get_hot(id) {
+            return Some(locator);
+        }
 
-        lock.indices
-            .iter()
-            .rev()
-            .find_map(|idx| {
-                idx.get_data_location(id)
-                    .and_then(|l| idx.resolve_location(l, BlobType::Data))
+        let lock = self.inner.read();
+        lock.cold_metadata.iter().rev().find_map(|meta| {
+            let j = meta
+                .zero_blobs
+                .binary_search_by_key(id, |(zid, _)| *zid)
+                .ok()?;
+            let &(_, raw_length) = &meta.zero_blobs[j];
+            Some(BlobLocator {
+                pack_id: ID::default(),
+                blob_type: BlobType::Zero,
+                offset: 0,
+                length: 0,
+                raw_length,
+                compressed: false,
             })
-            .or_else(|| {
-                lock.indices.iter().rev().find_map(|idx| {
-                    idx.tree_ids
-                        .get(id)
-                        .and_then(|l| idx.resolve_location(l, BlobType::Tree))
-                })
-            })
-            .or_else(|| {
-                lock.indices.iter().rev().find_map(|idx| {
-                    idx.zero_ids
-                        .get(id)
-                        .and_then(|l| idx.resolve_location(l, BlobType::Zero))
-                })
-            })
+        })
     }
 
     /// Retrieves an entry for a given blob ID by searching through finalized indices.
     /// Pending blobs (those not yet packed) cannot be retrieved via this method.
     /// Searches hot indices first; in lazy mode, loads cold indices on demand.
+    /// Continues past bloom-filter false positives until the blob is found or no
+    /// cold candidate remains.
     pub async fn get(&self, id: &ID) -> Option<BlobLocator> {
-        // Single pass: check hot indices and cold metadata under one lock.
-        let cold_idx = {
-            let lock = self.inner.read();
-
-            // Fast path: search hot indices
-            if let Some(locator) = lock.indices.iter().rev().find_map(|idx| idx.get(id)) {
+        loop {
+            // Fast path: search hot indices.
+            if let Some(locator) = self.get_hot(id) {
                 return Some(locator);
             }
 
@@ -864,78 +884,105 @@ impl MasterIndex {
                 return None;
             }
 
-            // Check cold metadata bloom filters
-            lock.cold_metadata
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, meta)| meta.might_contain(id))
-                .map(|(i, meta)| {
-                    // Zero blobs are resolved directly from cold metadata
-                    if let Ok(j) = meta.zero_blobs.binary_search_by_key(id, |(zid, _)| *zid) {
-                        let &(_, raw_length) = &meta.zero_blobs[j];
-                        return Err(BlobLocator {
-                            pack_id: ID::default(),
-                            blob_type: BlobType::Zero,
-                            offset: 0,
-                            length: 0,
-                            raw_length,
-                            compressed: false,
-                        });
-                    }
-                    Ok(i)
-                })
-        };
+            // Pick the youngest cold candidate that might contain the blob.
+            // Copy only what is needed out of the lock: either an exact zero-blob
+            // locator, or the candidate's file_id to load.
+            let candidate = {
+                let lock = self.inner.read();
+                lock.cold_metadata
+                    .iter()
+                    .rev()
+                    .find(|meta| meta.might_contain(id))
+                    .map(|meta| {
+                        let zero_locator = meta
+                            .zero_blobs
+                            .binary_search_by_key(id, |(zid, _)| *zid)
+                            .ok()
+                            .map(|j| {
+                                let &(_, raw_length) = &meta.zero_blobs[j];
+                                BlobLocator {
+                                    pack_id: ID::default(),
+                                    blob_type: BlobType::Zero,
+                                    offset: 0,
+                                    length: 0,
+                                    raw_length,
+                                    compressed: false,
+                                }
+                            });
+                        (zero_locator, meta.file_id)
+                    })
+            };
 
-        match cold_idx {
-            Some(Err(zero_locator)) => Some(zero_locator),
-            Some(Ok(idx)) => {
-                if self.load_and_promote(idx).await.is_some() {
-                    self.get_hot(id)
-                } else {
-                    None
+            match candidate {
+                Some((Some(locator), _)) => return Some(locator),
+                Some((None, file_id)) => {
+                    // Promote the candidate and re-scan hot. If another task is
+                    // already loading this exact index (concurrent promotion),
+                    // yield and rescan.
+                    if self.load_and_promote(file_id).await.is_err() {
+                        tokio::task::yield_now().await;
+                    }
                 }
+                None => return None,
             }
-            None => None,
         }
     }
 
-    /// Synchronous hot-only lookup. Used internally by get() and GC.
+    /// Synchronous hot-only lookup. Used internally by get(), get_data() and GC.
     fn get_hot(&self, id: &ID) -> Option<BlobLocator> {
         let lock = self.inner.read();
         lock.indices.iter().rev().find_map(|idx| idx.get(id))
     }
 
     /// Load a cold index from disk and promote it to hot.
-    async fn load_and_promote(&self, cold_idx: usize) -> Option<()> {
+    ///
+    /// Returns `Ok(())` when the index was promoted (from disk or the LRU cache);
+    /// returns `Err(())` when another task is concurrently loading this exact
+    /// index, or the disk load failed (the metadata entry was dropped so the
+    /// caller's candidate survey makes progress).
+    async fn load_and_promote(&self, file_id: ID) -> std::result::Result<(), ()> {
+        // Under the write lock: claim the metadata entry by file_id (never by a
+        // positional index, which can shift under a concurrent promotion), and
+        // reuse a cached copy from the LRU when available.
         let meta = {
             let mut lock = self.inner.write();
-            if cold_idx < lock.cold_metadata.len() {
-                let meta = lock.cold_metadata.swap_remove(cold_idx);
-                tracing::debug!(target: "index", "Loading cold index {} (file {}) into hot",
-                    cold_idx, meta.file_id.to_short_hex(8));
-                lock.lru.remove(&meta.file_id);
-                Some(meta)
-            } else {
-                None
-            }
-        }?;
+            let Some(pos) = lock.cold_metadata.iter().position(|m| m.file_id == file_id) else {
+                return Err(());
+            };
+            let meta = lock.cold_metadata.swap_remove(pos);
 
-        let loader = self.loader.get()?;
+            if let Some(cached) = lock.lru.remove(&file_id) {
+                tracing::debug!(target: "index", "Promoting cached cold index (file {}) into hot",
+                    file_id.to_short_hex(8));
+                lock.indices.push((*cached).clone());
+                if matches!(self.index_mode, IndexMode::Lazy(_)) {
+                    self.enforce_hot_limit(&mut lock);
+                }
+                return Ok(());
+            }
+
+            meta
+        };
+
+        let Some(loader) = self.loader.get() else {
+            return Err(());
+        };
         match loader.load_index(&meta.file_id).await {
             Ok(index) => {
+                tracing::debug!(target: "index", "Loading cold index (file {}) into hot",
+                    meta.file_id.to_short_hex(8));
                 let mut lock = self.inner.write();
                 lock.indices.push(index);
                 if matches!(self.index_mode, IndexMode::Lazy(_)) {
                     self.enforce_hot_limit(&mut lock);
                 }
-                Some(())
+                Ok(())
             }
             Err(e) => {
                 tracing::warn!(target: "index",
                     "Failed to load cold index {}: {}",
                     meta.file_id.to_short_hex(8), e);
-                None
+                Err(())
             }
         }
     }
@@ -2317,5 +2364,232 @@ mod tests {
         assert_eq!(locator.raw_length, 16384);
         assert_eq!(locator.length, 0);
         assert_eq!(locator.pack_id, ID::default());
+    }
+
+    struct MockColdLoader {
+        indices: std::collections::HashMap<ID, Index>,
+    }
+
+    #[async_trait]
+    impl ColdIndexLoader for MockColdLoader {
+        async fn load_index(&self, file_id: &ID) -> Result<Index> {
+            self.indices
+                .get(file_id)
+                .cloned()
+                .ok_or_else(|| MapacheError::Format(format!("no index for {:?}", file_id.to_hex())))
+        }
+    }
+
+    #[test]
+    fn test_contains_and_get_data_resolve_cold_zero_blob() {
+        let mi = MasterIndex::new(IndexMode::Lazy(u64::MAX));
+
+        let mut index = Index::new();
+        let pack_id = mock_id("pack_zero");
+        let zero_id = mock_id("cold_zero_data");
+        index.add_pack(
+            &pack_id,
+            vec![PackedBlobDescriptor {
+                id: zero_id,
+                blob_type: BlobType::Zero,
+                offset: 0,
+                length: 0,
+                raw_length: 4096,
+                compressed: false,
+            }],
+        );
+        index.finalize();
+        let file_id = mock_id("zero_file");
+        mi.add_cold_metadata(IndexMetadata::from_index(&index, file_id));
+
+        // Zero blobs are exact from cold metadata, no disk load required.
+        assert!(
+            mi.contains(&zero_id),
+            "cold zero blobs are resolvable exactly"
+        );
+        let locator = mi
+            .get_data(&zero_id)
+            .expect("cold zero blob should resolve synchronously");
+        assert_eq!(locator.blob_type, BlobType::Zero);
+        assert_eq!(locator.raw_length, 4096);
+    }
+
+    #[test]
+    fn test_cold_metadata_from_index_file_resolves_zero_blobs() {
+        let mi = MasterIndex::new(IndexMode::Lazy(u64::MAX));
+
+        // Simulate an index file read from disk: packs carry zero blobs mixed
+        // with regular blobs and out of order. from_index_file must extract
+        // the zeros in sorted order so cold lookups binary-search correctly.
+        let zero_a = mock_id("zero_a");
+        let zero_b = mock_id("zero_b");
+        let data = mock_id("data");
+        let index_file = IndexFile {
+            packs: vec![IndexFilePack {
+                id: mock_id("pack_from_disk"),
+                blobs: vec![
+                    IndexFileBlob {
+                        id: zero_b,
+                        blob_type: BlobType::Zero,
+                        offset: 0,
+                        length: 0,
+                        raw_length: 8192,
+                        compressed: false,
+                    },
+                    IndexFileBlob {
+                        id: data,
+                        blob_type: BlobType::Data,
+                        offset: 10,
+                        length: 20,
+                        raw_length: 40,
+                        compressed: true,
+                    },
+                    IndexFileBlob {
+                        id: zero_a,
+                        blob_type: BlobType::Zero,
+                        offset: 0,
+                        length: 0,
+                        raw_length: 4096,
+                        compressed: false,
+                    },
+                ],
+            }],
+        };
+        let bf = IndexMetadata::bloom_filter_from_index_file(&index_file);
+        let file_id = mock_id("file_from_disk");
+        let meta = IndexMetadata::from_index_file(index_file, bf, file_id);
+        assert!(
+            meta.zero_blobs.windows(2).all(|w| w[0].0 < w[1].0),
+            "zero_blobs must be sorted for binary search"
+        );
+
+        mi.add_cold_metadata(meta);
+
+        assert!(mi.contains(&zero_a));
+        assert!(mi.contains(&zero_b));
+        let locator = mi
+            .get_data(&zero_a)
+            .expect("cold zero blob from index file should resolve");
+        assert_eq!(locator.blob_type, BlobType::Zero);
+        assert_eq!(locator.raw_length, 4096);
+        let locator = mi
+            .get_data(&zero_b)
+            .expect("cold zero blob from index file should resolve");
+        assert_eq!(locator.raw_length, 8192);
+        assert!(
+            !mi.get_data(&data)
+                .is_some_and(|l| l.blob_type == BlobType::Zero)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_surveys_cold_candidates_past_false_positive() {
+        let mi = MasterIndex::new(IndexMode::Lazy(u64::MAX));
+
+        // Older index: genuinely owns the target data blob.
+        let mut idx_older = Index::new();
+        let pack_older = mock_id("pack_older");
+        let target_id = mock_id("target_blob");
+        idx_older.add_pack(
+            &pack_older,
+            vec![mock_blob_desc("target_blob", BlobType::Data, 0, 100)],
+        );
+        idx_older.finalize();
+        let file_older = mock_id("file_older");
+        let meta_older = IndexMetadata::from_index(&idx_older, file_older);
+
+        // Younger index: does NOT contain the target, but its cold metadata
+        // bloom is made to report a (false) positive for it.
+        let mut idx_younger = Index::new();
+        let pack_younger = mock_id("pack_younger");
+        idx_younger.add_pack(
+            &pack_younger,
+            vec![mock_blob_desc("other_blob", BlobType::Data, 0, 50)],
+        );
+        idx_younger.finalize();
+        let file_younger = mock_id("file_younger");
+        let fake_bloom = {
+            let mut bf = BloomFilter::new(2, 0.01);
+            bf.insert(&mock_id("other_blob"));
+            bf.insert(&target_id);
+            bf
+        };
+        let meta_younger = IndexMetadata {
+            file_id: file_younger,
+            bloom_filter: fake_bloom,
+            pack_ids: vec![pack_younger],
+            zero_blobs: Vec::new(),
+            blob_count: 1,
+        };
+
+        // Youngest first: rev() picks the false-positive candidate before the
+        // real owner.
+        mi.add_cold_metadata(meta_younger.clone());
+        mi.add_cold_metadata(meta_older.clone());
+        mi.set_loader(Arc::new(MockColdLoader {
+            indices: std::collections::HashMap::from([
+                (file_older, idx_older),
+                (file_younger, idx_younger),
+            ]),
+        }));
+
+        let locator = mi.get(&target_id).await.expect("blob should be found");
+        assert_eq!(locator.pack_id, pack_older);
+        assert_eq!(locator.blob_type, BlobType::Data);
+    }
+
+    #[tokio::test]
+    async fn test_get_uses_lru_cache_after_eviction() {
+        struct CountingLoader {
+            index: Index,
+            loads: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl ColdIndexLoader for CountingLoader {
+            async fn load_index(&self, _file_id: &ID) -> Result<Index> {
+                self.loads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(self.index.clone())
+            }
+        }
+
+        let mi = MasterIndex::new(IndexMode::Lazy(u64::MAX));
+
+        let mut index = Index::new();
+        let pack_id = mock_id("pack_lru");
+        let blob_id = mock_id("lru_blob");
+        index.add_pack(
+            &pack_id,
+            vec![mock_blob_desc("lru_blob", BlobType::Data, 0, 100)],
+        );
+        index.finalize();
+        let file_id = mock_id("file_lru");
+        mi.add_cold_metadata(IndexMetadata::from_index(&index, file_id));
+
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        mi.set_loader(Arc::new(CountingLoader {
+            index: index.clone(),
+            loads: loads.clone(),
+        }));
+
+        // First lookup loads from disk.
+        let locator = mi.get(&blob_id).await.expect("blob should be found");
+        assert_eq!(locator.pack_id, pack_id);
+        assert_eq!(loads.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // Evict the (now hot) index back to cold, keeping a cached copy in the LRU.
+        {
+            let mut lock = mi.inner.write();
+            let evicted = lock.indices.pop().expect("an index should be hot");
+            let meta = IndexMetadata::from_index(&evicted, file_id);
+            lock.cold_metadata.push(meta);
+            lock.lru.insert(file_id, Arc::new(evicted), 1);
+        }
+
+        // Second lookup promotes the cached copy without a second disk load.
+        let locator = mi.get(&blob_id).await.expect("blob should be found");
+        assert_eq!(locator.pack_id, pack_id);
+        assert_eq!(loads.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

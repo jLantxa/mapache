@@ -83,7 +83,7 @@ pub(crate) async fn restore_packs(
     if dry_run {
         for blob_requests in packs.values() {
             for (blob_id, _) in blob_requests.iter() {
-                if let Some(locator) = index.get_data(blob_id) {
+                if let Some(locator) = index.get(blob_id).await {
                     emit_event(
                         &restorer.event_sender,
                         Event::Restore(RestoreEvent::BytesProcessed(locator.raw_length as u64)),
@@ -142,7 +142,7 @@ pub(crate) async fn restore_packs(
 
     for (pack_id, blob_requests) in packs {
         for (blob_id, req) in blob_requests {
-            if let Some(locator) = index.get_data(&blob_id) {
+            if let Some(locator) = index.get(&blob_id).await {
                 if matches!(locator.blob_type, BlobType::Zero) {
                     zero_file_batches
                         .entry(req.file_idx)
@@ -204,7 +204,7 @@ pub(crate) async fn restore_packs(
                 while j < pack_slice.len() && pack_slice[j].1 == blob_id {
                     j += 1;
                 }
-                if let Some(locator) = index.get_data(&blob_id) {
+                if let Some(locator) = index.get(&blob_id).await {
                     let targets: Vec<BlobRestoreRequest> = pack_slice[blob_start..j]
                         .iter()
                         .map(|(_, _, req)| req.clone())

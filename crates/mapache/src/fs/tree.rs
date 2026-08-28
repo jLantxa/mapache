@@ -356,7 +356,12 @@ impl SerializedNodeStream {
                 }
 
                 let mut num_children = 0;
-                if let Some(subtree_id) = &node.tree {
+                // A symlink node is a leaf: its stored subtree (if any) must not
+                // be re-emitted, otherwise restore would write through the
+                // restored symlink and potentially escape the target root.
+                if let Some(subtree_id) = &node.tree
+                    && !node.is_symlink()
+                {
                     let subtree = Tree::load_from_repo(&state.repo, subtree_id).await?;
 
                     let shared_parent = Arc::new(path.clone());

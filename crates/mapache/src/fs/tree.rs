@@ -232,17 +232,25 @@ impl FSNodeStream {
                         // We avoid stating everything here, just collecting the names and paths.
                         let entries_vec: Vec<_> = entries.collect::<std::io::Result<Vec<_>>>()?;
 
-                        let children_results: Result<Vec<_>> = entries_vec
+                        // Stat children in parallel. A single child that fails to
+                        // stat (e.g. permission denied) is skipped with a warning
+                        // instead of dropping the whole directory or aborting the
+                        // backup.
+                        let mut children: Vec<(std::ffi::OsString, Node)> = entries_vec
                             .into_par_iter()
                             .filter(|entry| filter.allow(&entry.path()))
-                            .map(|entry| {
+                            .filter_map(|entry| {
                                 let child_path = entry.path();
-                                let child_node = Node::from_path_sync(&child_path, with_atime)?;
-                                Ok((entry.file_name(), child_node))
+                                match Node::from_path_sync(&child_path, with_atime) {
+                                    Ok(child_node) => Some((entry.file_name(), child_node)),
+                                    Err(e) => {
+                                        tracing::warn!(target: "fs", "Failed to stat {}: {}", child_path.display(), e);
+                                        None
+                                    }
+                                }
                             })
                             .collect();
 
-                        let mut children = children_results?;
                         children.sort_unstable_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
                         Ok::<_, MapacheError>(children)
                     })
@@ -265,9 +273,12 @@ impl FSNodeStream {
                             }
                         }
                         Err(e) => {
+                            // The whole directory could not be read. Record it as
+                            // empty (single item, never a duplicate Ok+Err path)
+                            // so the snapshot degrades gracefully instead of
+                            // aborting on one unreadable directory.
                             tracing::warn!(target: "fs", "Failed to scan directory {:?}: {}", path, e);
-                            yield (path.clone(), Ok(StreamNode { node, num_children: 0 }));
-                            yield (path, Err(e));
+                            yield (path, Ok(StreamNode { node, num_children: 0 }));
                         }
                     }
                     continue;

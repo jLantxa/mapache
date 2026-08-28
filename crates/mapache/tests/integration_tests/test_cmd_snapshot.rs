@@ -1076,4 +1076,68 @@ mod tests {
 
         Ok(())
     }
+
+    /// Metadata-only changes (chmod/chown) must be recorded on the next
+    /// incremental snapshot and applied on restore.
+    #[tokio::test]
+    async fn test_snapshot_records_metadata_only_change() -> Result<()> {
+        let ctx = TestContext::new().await?;
+
+        let data_dir = ctx._tmp_dir.path().join("backup");
+        std::fs::create_dir_all(&data_dir)?;
+
+        let file_path = data_dir.join("file.txt");
+        std::fs::write(&file_path, "content")?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        ctx.init_repo().await?;
+
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .run(&ctx.global)
+            .await
+            .context("first snapshot failed")?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o644))?;
+        }
+
+        ctx.snapshot_builder(vec![file_path.clone()])
+            .run(&ctx.global)
+            .await
+            .context("second snapshot failed")?;
+
+        let restore_path = ctx._tmp_dir.path().join("restore");
+        ctx.restore_builder(restore_path.clone())
+            .run(&ctx.global)
+            .await
+            .context("restore failed")?;
+
+        assert_eq!(
+            std::fs::read(restore_path.join("file.txt"))?,
+            b"content",
+            "content must be restored"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let restored_mode = std::fs::metadata(restore_path.join("file.txt"))?
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                restored_mode, 0o644,
+                "chmod on the source must be reflected in the restored file"
+            );
+        }
+
+        Ok(())
+    }
 }

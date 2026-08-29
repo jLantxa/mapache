@@ -213,9 +213,8 @@ impl Restorer {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, path::PathBuf, sync::atomic::AtomicBool};
+    use std::{path::PathBuf, sync::atomic::AtomicBool};
 
-    use parking_lot::Mutex;
     use tempfile::tempdir;
     use zeroize::Zeroizing;
 
@@ -263,7 +262,6 @@ mod tests {
                 exclude: None,
                 batch_size: None,
             },
-            buffers: Arc::new(Mutex::new(VecDeque::new())),
         };
         (restorer, tmp)
     }

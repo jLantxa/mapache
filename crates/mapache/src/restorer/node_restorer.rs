@@ -3,11 +3,9 @@
 
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
-use std::{fs::OpenOptions, io::Write, path::Path, time::SystemTime};
 #[cfg(unix)]
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
-
-use futures::StreamExt;
+use std::{path::Path, time::SystemTime};
 
 use crate::{
     common::error::{MapacheError, Result},
@@ -20,252 +18,81 @@ use crate::{
     ui::events::{Event, EventSender, RestoreEvent, emit_event},
 };
 
-/// Maximum number of blobs to prefetch in parallel during node restoration.
-const BLOB_PREFETCH_CONCURRENCY: usize = 4;
-
 /// Restores a node to the specified destination path.
-/// This function does not restore file times for directory nodes. This must be
-/// done in a separate pass.
+/// Used for symlinks; file content goes through the pack-based restorer.
 pub(crate) async fn restore_node_to_path(
-    restorer: &Restorer,
     event_sender: &EventSender,
     node: &Node,
     dst_path: &Path,
     dry_run: bool,
 ) -> Result<()> {
-    match node.node_type {
-        NodeType::File => {
-            let blocks = node.blobs.as_ref().ok_or_else(|| {
-                MapacheError::Internal("file node must have contents (even if empty)".to_string())
+    let NodeType::Symlink = node.node_type else {
+        return Ok(());
+    };
+
+    let symlink_info = node.symlink_info.as_ref();
+
+    // Show a warning if the symlink metadata is missing and return.
+    let Some(symlink_info) = symlink_info else {
+        emit_event(
+            event_sender,
+            Event::Restore(RestoreEvent::Warning(format!(
+                "Symlink {} does not have a target path",
+                dst_path.display()
+            ))),
+        );
+        return Ok(());
+    };
+
+    if !dry_run {
+        // Create all parent directories before the symlink
+        Restorer::ensure_parent_dir(dst_path)?;
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&symlink_info.target_path, dst_path).map_err(|e| {
+                MapacheError::Internal(format!("could not create symlink {dst_path:?}: {e}"))
             })?;
-
-            let dst_file = if !dry_run {
-                Restorer::ensure_parent_dir(dst_path)?;
-
-                Some(
-                    OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .truncate(true)
-                        .open(dst_path)
+        }
+        #[cfg(windows)]
+        {
+            match symlink_info.target_type {
+                // Directory symlink
+                Some(NodeType::Directory) => {
+                    std::os::windows::fs::symlink_dir(&symlink_info.target_path, dst_path)
                         .map_err(|e| {
                             MapacheError::Internal(format!(
-                                "could not create file {}: {e}",
-                                dst_path.display()
+                                "could not create directory symlink {dst_path:?}: {e}"
                             ))
-                        })?,
-                )
-            } else {
-                None
-            };
-
-            let stream = futures::stream::iter(blocks.iter().cloned().enumerate())
-                .map(|(index, blob_id)| async move {
-                    let res = restorer.repo.load_blob(&blob_id).await.map_err(|e| {
-                        MapacheError::Internal(format!(
-                            "could not load block #{} ({}) for restoring file {}: {e}",
-                            index + 1,
-                            blob_id,
-                            dst_path.display()
-                        ))
-                    });
-                    (index, blob_id, res)
-                })
-                .buffered(BLOB_PREFETCH_CONCURRENCY);
-
-            futures::pin_mut!(stream);
-            while let Some((index, blob_id, chunk_data)) = stream.next().await {
-                let chunk_data = chunk_data?;
-
-                // Get a buffer from the pool
-                let mut buf = restorer.get_buffer(chunk_data.len());
-                buf.clear();
-                buf.extend_from_slice(&chunk_data);
-
-                let chunk_size = buf.len() as u64;
-
-                if !dry_run && let Some(mut file) = dst_file.as_ref() {
-                    file.write_all(&buf).map_err(|e| {
-                        MapacheError::Internal(format!(
-                            "could not restore block #{} ({}) to file {}: {e}",
-                            index + 1,
-                            blob_id,
-                            dst_path.display()
-                        ))
-                    })?;
+                        })?;
                 }
 
-                emit_event(
-                    event_sender,
-                    Event::Restore(RestoreEvent::BytesProcessed(chunk_size)),
-                );
-
-                // Return the buffer to the pool
-                restorer.return_buffer(buf);
-            }
-        }
-
-        NodeType::Directory => {
-            if !dry_run {
-                std::fs::create_dir_all(dst_path).map_err(|e| {
-                    MapacheError::Internal(format!(
-                        "could not create directory {}: {e}",
-                        dst_path.display()
-                    ))
-                })?;
-
-                // We don't restore metadata for directories now, as the filetimes
-                // will change if we touch any children nodes. We will restore the
-                // directory metadata in a second, dedicated bottom-up pass.
-            }
-        }
-
-        NodeType::Symlink => {
-            let symlink_info = node.symlink_info.as_ref();
-
-            // Show a warning if the symlink metadata is missing and return.
-            let Some(symlink_info) = symlink_info else {
-                emit_event(
-                    event_sender,
-                    Event::Restore(RestoreEvent::Warning(format!(
-                        "Symlink {} does not have a target path",
-                        dst_path.display()
-                    ))),
-                );
-                return Ok(());
-            };
-
-            if !dry_run {
-                // Create all parent directories before the symlink
-                Restorer::ensure_parent_dir(dst_path)?;
-
-                #[cfg(unix)]
-                {
-                    std::os::unix::fs::symlink(&symlink_info.target_path, dst_path).map_err(
-                        |e| {
+                // Everything else (not a directory)
+                Some(_) => {
+                    std::os::windows::fs::symlink_file(&symlink_info.target_path, dst_path)
+                        .map_err(|e| {
                             MapacheError::Internal(format!(
-                                "could not create symlink {dst_path:?}: {e}"
+                                "could not create file symlink {dst_path:?}: {e}"
                             ))
-                        },
-                    )?;
+                        })?;
                 }
-                #[cfg(windows)]
-                {
-                    match symlink_info.target_type {
-                        // Directory symlink
-                        Some(NodeType::Directory) => {
-                            std::os::windows::fs::symlink_dir(&symlink_info.target_path, dst_path)
-                                .map_err(|e| {
-                                    MapacheError::Internal(format!(
-                                        "could not create directory symlink {dst_path:?}: {e}"
-                                    ))
-                                })?;
-                        }
-
-                        // Everything else (not a directory)
-                        Some(_) => {
-                            std::os::windows::fs::symlink_file(&symlink_info.target_path, dst_path)
-                                .map_err(|e| {
-                                    MapacheError::Internal(format!(
-                                        "could not create file symlink {dst_path:?}: {e}"
-                                    ))
-                                })?;
-                        }
-                        // No type info. Show warning.
-                        None => {
-                            emit_event(
-                                event_sender,
-                                Event::Restore(RestoreEvent::Warning(format!(
-                                    "Symlink {} has no type info",
-                                    dst_path.display()
-                                ))),
-                            );
-                        }
-                    }
+                // No type info. Show warning.
+                None => {
+                    emit_event(
+                        event_sender,
+                        Event::Restore(RestoreEvent::Warning(format!(
+                            "Symlink {} has no type info",
+                            dst_path.display()
+                        ))),
+                    );
                 }
             }
-
-            // Restore symlink metadata after creation
-            if !dry_run {
-                try_restore_symlink_metadata(&node.metadata, dst_path, event_sender);
-            }
         }
+    }
 
-        NodeType::BlockDevice => {
-            #[cfg(unix)]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "Restoration of block device {} not supported yet.",
-                    dst_path.display()
-                ))),
-            );
-            #[cfg(not(unix))]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "Block device restoration not supported on this operating system: {}",
-                    dst_path.display()
-                ))),
-            );
-        }
-
-        NodeType::CharDevice => {
-            #[cfg(unix)]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "Restoration of character device {} not supported yet.",
-                    dst_path.display()
-                ))),
-            );
-            #[cfg(not(unix))]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "Character device restoration not supported on this operating system: {}",
-                    dst_path.display()
-                ))),
-            );
-        }
-
-        NodeType::Fifo => {
-            #[cfg(unix)]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "Restoration of FIFO (named pipe) {} not supported yet.",
-                    dst_path.display()
-                ))),
-            );
-            #[cfg(not(unix))]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "FIFO restoration not supported on this operating system: {}",
-                    dst_path.display()
-                ))),
-            );
-        }
-
-        NodeType::Socket => {
-            #[cfg(unix)]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "Restoration of socket {} not supported yet.",
-                    dst_path.display()
-                ))),
-            );
-            #[cfg(not(unix))]
-            emit_event(
-                event_sender,
-                Event::Restore(RestoreEvent::Warning(format!(
-                    "Socket restoration not supported on this operating system: {}",
-                    dst_path.display()
-                ))),
-            );
-        }
+    // Restore symlink metadata after creation
+    if !dry_run {
+        try_restore_symlink_metadata(&node.metadata, dst_path, event_sender);
     }
 
     Ok(())

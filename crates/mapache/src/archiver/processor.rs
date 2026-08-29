@@ -144,7 +144,9 @@ pub(crate) fn process_item_sync(
             }
             report_node_diff(&next.node, diff_type, ctx.progress);
 
-            next.node.metadata = prev.node.metadata.clone();
+            // Reuse the stored blobs; keep the freshly scanned metadata so
+            // metadata-only changes (chmod/chown/xattr/flags) are recorded
+            // instead of being clobbered by the previous snapshot.
             if next.node.is_file() {
                 next.node.blobs = prev.node.blobs.clone();
             }
@@ -174,14 +176,30 @@ pub(crate) fn process_item_sync(
                     None => &mut fallback_small,
                 };
 
-                let chunk_result = (|| -> Result<Vec<ID>> {
+                let chunk_result = (|| -> Result<(Vec<ID>, u64)> {
                     let file = open_for_sequential_read(path)?;
 
-                    if file_size <= common::defaults::MIN_CHUNK_SIZE {
+                    // Re-stat the opened file: the size from the directory scan
+                    // may be stale (TOCTOU). Reading a stale size would silently
+                    // truncate a file that grew or error on one that shrank.
+                    let current_size = file.metadata()?.len();
+                    if current_size != file_size {
+                        emit_event(
+                            ctx.event_sender,
+                            Event::Backup(BackupEvent::Warning(format!(
+                                "File {} changed size during backup ({} -> {}); backing up actual contents",
+                                path.display(),
+                                file_size,
+                                current_size
+                            ))),
+                        );
+                    }
+
+                    if current_size <= common::defaults::MIN_CHUNK_SIZE {
                         store_small_file(
                             blob_saver.as_ref(),
                             file,
-                            file_size,
+                            current_size,
                             progress,
                             &event_sender,
                             small_buf,
@@ -190,7 +208,7 @@ pub(crate) fn process_item_sync(
                         chunk_and_store_file(
                             blob_saver.as_ref(),
                             file,
-                            file_size,
+                            current_size,
                             progress,
                             &event_sender,
                             shutdown_signal,
@@ -199,8 +217,9 @@ pub(crate) fn process_item_sync(
                 })();
 
                 match chunk_result {
-                    Ok(ids) => {
+                    Ok((ids, bytes_stored)) => {
                         next.node.blobs = Some(ids);
+                        next.node.metadata.size = bytes_stored;
                     }
                     Err(e) => {
                         emit_event(
@@ -283,7 +302,7 @@ pub(crate) fn process_stdin_sync(
         );
 
         match chunk_result {
-            Ok(ids) => {
+            Ok((ids, _)) => {
                 next.node.blobs = Some(ids);
                 next.node.metadata.size = reader.bytes_read();
             }
@@ -334,6 +353,9 @@ fn report_node_diff(node: &Node, diff_type: NodeDiff, progress: &SnapshotProgres
 /// these chunks and performs the CPU-heavy work (zstd compression + AES encryption)
 /// via `save_blob`. This overlaps file I/O and chunk-boundary scanning with
 /// compression/encryption, improving throughput on multi-core systems.
+///
+/// Returns the stored blob IDs and the number of bytes actually read from the
+/// file (which may differ from the scanned `file_size`).
 pub(crate) fn chunk_and_store_file<R: Read + Send>(
     blob_saver: &dyn BlobSaver,
     reader: R,
@@ -341,7 +363,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
     progress: &SnapshotProgress,
     event_sender: &EventSender,
     shutdown_signal: &AtomicBool,
-) -> Result<Vec<ID>> {
+) -> Result<(Vec<ID>, u64)> {
     let (chunk_tx, chunk_rx) = crossbeam_channel::bounded::<Result<Vec<u8>>>(2);
     let rt_handle = tokio::runtime::Handle::try_current().ok();
 
@@ -367,6 +389,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
         });
 
         let mut ids = Vec::new();
+        let mut total_bytes = 0u64;
 
         for msg in chunk_rx {
             let chunk_data = msg?;
@@ -376,6 +399,7 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
             }
 
             let chunk_len = chunk_data.len() as u64;
+            total_bytes += chunk_len;
 
             let blob_type = if is_all_zero(&chunk_data) {
                 BlobType::Zero
@@ -398,12 +422,15 @@ pub(crate) fn chunk_and_store_file<R: Read + Send>(
             );
         }
 
-        Ok(ids)
+        Ok((ids, total_bytes))
     })
 }
 
 /// Stores a small file as a single blob without chunking.
 /// Uses `buf` for storage to reuse allocations across calls.
+///
+/// Returns the stored blob IDs and the number of bytes actually read from the
+/// file (which may differ from the scanned `file_size`).
 fn store_small_file<R: Read>(
     blob_saver: &dyn BlobSaver,
     mut reader: R,
@@ -411,11 +438,11 @@ fn store_small_file<R: Read>(
     progress: &SnapshotProgress,
     event_sender: &EventSender,
     buf: &mut Vec<u8>,
-) -> Result<Vec<ID>> {
+) -> Result<(Vec<ID>, u64)> {
     if file_size == 0 {
         progress.processed_bytes(0);
         emit_event(event_sender, Event::Backup(BackupEvent::BytesProcessed(0)));
-        return Ok(vec![]); // Empty files produce an empty vector of blobs
+        return Ok((vec![], 0)); // Empty files produce an empty vector of blobs
     }
 
     let size = usize::try_from(file_size)
@@ -423,37 +450,27 @@ fn store_small_file<R: Read>(
     buf.clear();
     buf.reserve(size);
 
-    let buf_dst = unsafe {
-        // SAFETY: u8 accepts any bit pattern; read_exact overwrites the buffer before any reads.
-        std::slice::from_raw_parts_mut(buf.as_mut_ptr(), size)
-    };
-    reader.read_exact(buf_dst)?;
-
-    unsafe {
-        // SAFETY: read_exact wrote `size` bytes.
-        buf.set_len(size);
-    }
+    // Read to EOF instead of exactly `file_size` bytes: a file that grew since
+    // the directory scan would otherwise be silently truncated, and one that
+    // shrank would fail with an unexpected-EOF error.
+    let bytes = reader.read_to_end(buf)? as u64;
 
     // Perform the intensive save_blob directly in the worker thread.
-    let blob_type = if is_all_zero(&buf[..]) {
+    let blob_type = if is_all_zero(buf) {
         BlobType::Zero
     } else {
         BlobType::Data
     };
 
-    let id = blob_saver.save_blob(
-        blob_type,
-        WriteContents::Borrowed(&buf[..]),
-        SaveID::CalculateID,
-    )?;
+    let id = blob_saver.save_blob(blob_type, WriteContents::Borrowed(buf), SaveID::CalculateID)?;
 
-    progress.processed_bytes(file_size);
+    progress.processed_bytes(bytes);
     emit_event(
         event_sender,
-        Event::Backup(BackupEvent::BytesProcessed(file_size)),
+        Event::Backup(BackupEvent::BytesProcessed(bytes)),
     );
 
-    Ok(vec![id])
+    Ok((vec![id], bytes))
 }
 
 pub(crate) fn open_for_sequential_read(path: &Path) -> std::io::Result<std::fs::File> {
@@ -548,11 +565,13 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let data: &[u8] = &[];
-        let ids = chunk_and_store_file(repo.as_ref(), data, 0, &progress, &sender, &shutdown)
-            .expect("chunk_and_store_file should succeed for empty data");
+        let (ids, bytes) =
+            chunk_and_store_file(repo.as_ref(), data, 0, &progress, &sender, &shutdown)
+                .expect("chunk_and_store_file should succeed for empty data");
 
         // Empty input produces no blobs (the chunker yields no chunks for empty input).
         assert!(ids.is_empty(), "empty data should produce no blobs");
+        assert_eq!(bytes, 0, "empty data should store zero bytes");
     }
 
     #[tokio::test]
@@ -561,7 +580,7 @@ mod tests {
         let (progress, sender) = setup_progress();
         let mut buf = Vec::new();
 
-        let ids = store_small_file(
+        let (ids, bytes) = store_small_file(
             repo.as_ref(),
             std::io::empty(),
             0,
@@ -576,6 +595,7 @@ mod tests {
             "empty file should produce no blobs, got {} blob(s)",
             ids.len()
         );
+        assert_eq!(bytes, 0, "empty file should store zero bytes");
     }
 
     #[tokio::test]
@@ -585,7 +605,7 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let data = b"hello world this is test data for stdin chunking";
-        let ids = chunk_and_store_file(
+        let (ids, bytes) = chunk_and_store_file(
             repo.as_ref(),
             data.as_slice(),
             data.len() as u64,
@@ -594,6 +614,8 @@ mod tests {
             &shutdown,
         )
         .expect("chunk_and_store_file should succeed");
+
+        assert_eq!(bytes, data.len() as u64, "all data should be stored");
 
         assert!(
             !ids.is_empty(),
@@ -617,7 +639,7 @@ mod tests {
         for i in 0..4 * size::MiB as usize {
             data.push((i ^ (i >> 8) ^ (i >> 16)) as u8);
         }
-        let ids = chunk_and_store_file(
+        let (ids, bytes) = chunk_and_store_file(
             repo.as_ref(),
             data.as_slice(),
             data.len() as u64,
@@ -626,6 +648,12 @@ mod tests {
             &shutdown,
         )
         .expect("chunk_and_store_file should succeed for large data");
+
+        assert_eq!(
+            bytes,
+            data.len() as u64,
+            "all data should be stored, got {bytes} bytes"
+        );
 
         assert!(
             !ids.is_empty(),

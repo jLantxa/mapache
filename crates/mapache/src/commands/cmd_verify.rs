@@ -159,6 +159,7 @@ struct VerifyCompleteMsg {
     blobs_dangling: usize,
     snapshots_verified: usize,
     snapshots_corrupt: usize,
+    metadata_files_corrupt: usize,
     passed: bool,
     failed_early: bool,
     read_packs: bool,
@@ -172,6 +173,8 @@ pub enum VerifyError {
     CorruptPacks(String),
     #[error("corrupt snapshots detected: {0}")]
     CorruptSnapshots(String),
+    #[error("corrupt metadata files detected: {0}")]
+    CorruptMetadata(String),
     #[error("verification failed: {0}")]
     VerifyFailed(String),
     #[error("verify interrupted by user")]
@@ -188,6 +191,7 @@ impl ToExitCode for VerifyError {
             VerifyError::RepoOpenFail(_) => 10,
             VerifyError::CorruptPacks(_) => 20,
             VerifyError::CorruptSnapshots(_) => 21,
+            VerifyError::CorruptMetadata(_) => 23,
             VerifyError::VerifyFailed(_) => 22,
             VerifyError::Interrupted => 130,
             VerifyError::Repo(_) => 1,
@@ -1174,11 +1178,14 @@ async fn verify_snapshots_logically(
 }
 
 fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
+    let metadata_corrupt_count = report.stats.metadata_files_corrupt.load(Ordering::Relaxed);
     if report.json_out {
         let packs_corrupt_count = report.stats.packs_corrupt.load(Ordering::Relaxed);
         let packs_repaired_count = report.stats.packs_repaired.load(Ordering::Relaxed);
         let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
-        let passed = packs_corrupt_count == 0 && report.snapshots_corrupt == 0;
+        let passed = packs_corrupt_count == 0
+            && report.snapshots_corrupt == 0
+            && metadata_corrupt_count == 0;
 
         ui::json::emit_static(
             "verify_complete",
@@ -1191,6 +1198,7 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
                 blobs_dangling: dangling_count,
                 snapshots_verified: report.num_snapshots_total,
                 snapshots_corrupt: report.snapshots_corrupt,
+                metadata_files_corrupt: metadata_corrupt_count,
                 passed,
                 failed_early: report.physical_failed_early || report.logical_failed_early,
                 read_packs: report.read_packs,
@@ -1202,13 +1210,19 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
     let packs_repaired_count = report.stats.packs_repaired.load(Ordering::Relaxed);
     let dangling_count = report.stats.blobs_dangling.load(Ordering::Relaxed);
 
-    if packs_corrupt_count > 0 || report.snapshots_corrupt > 0 {
+    if packs_corrupt_count > 0 || report.snapshots_corrupt > 0 || metadata_corrupt_count > 0 {
         ui::cli::log!("{}", "VERIFICATION FAILED".bold().on_red());
 
         if packs_corrupt_count > 0 {
             ui::cli::log!(
                 "- {} corrupt/unreadable.",
                 utils::format_count(packs_corrupt_count, "pack", "packs")
+            );
+        }
+        if metadata_corrupt_count > 0 {
+            ui::cli::log!(
+                "- {} with corrupted metadata.",
+                utils::format_count(metadata_corrupt_count, "metadata file", "metadata files")
             );
         }
         if report.snapshots_corrupt > 0 {
@@ -1226,6 +1240,8 @@ fn emit_final_report(report: &VerifyReport<'_>) -> Result<(), VerifyError> {
 
         return Err(if packs_corrupt_count > 0 {
             VerifyError::CorruptPacks("repository integrity check failed".to_string())
+        } else if metadata_corrupt_count > 0 {
+            VerifyError::CorruptMetadata("metadata integrity check failed".to_string())
         } else {
             VerifyError::CorruptSnapshots("repository integrity check failed".to_string())
         });

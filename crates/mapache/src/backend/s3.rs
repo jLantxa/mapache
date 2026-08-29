@@ -6,7 +6,9 @@ use s3::{Bucket, Region, creds::Credentials};
 use zeroize::Zeroizing;
 
 use crate::{
-    backend::{BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry},
+    backend::{
+        BackendNode, Handle, NodeAttr, RetryOptions, StorageBackend, WriteContents, retry_with,
+    },
     common::defaults,
 };
 
@@ -103,13 +105,31 @@ impl S3Backend {
         Ok(())
     }
 
-    /// Internal retry helper.
+    /// Internal retry helper. Permanent client errors (HTTP 4xx) fail
+    /// immediately instead of being retried with exponential backoff, since
+    /// the request can never succeed (404 missing object, 403 auth, ...).
     async fn retry<T, F, Fut>(&self, f: F) -> Result<T>
     where
         F: FnMut() -> Fut + Send + Sync,
         Fut: std::future::Future<Output = Result<T>> + Send,
     {
-        retry("S3", &self.retry_opts, f).await
+        retry_with("S3", &self.retry_opts, f, |e| !Self::is_permanent_status(e)).await
+    }
+
+    /// True when the error wraps an HTTP 4xx status code embedded in its
+    /// message (all call sites report such failures as "HTTP <code>").
+    fn is_permanent_status(e: &MapacheError) -> bool {
+        let msg = e.inner();
+        let Some(idx) = msg.find("HTTP ") else {
+            return false;
+        };
+        let digits: String = msg[idx + "HTTP ".len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        digits
+            .parse::<u16>()
+            .is_ok_and(|code| (400..500).contains(&code))
     }
 }
 

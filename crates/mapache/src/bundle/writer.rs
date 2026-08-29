@@ -116,12 +116,23 @@ impl BundleWriter {
                 let offset = inner.file.stream_position()?;
                 inner.file.write_all(&blob.data)?;
 
+                let data_len_u64 = blob.data.len() as u64;
+                let length = u32::try_from(blob.data.len()).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "encoded blob of {data_len_u64} bytes exceeds the bundle format's maximum length of {} bytes",
+                            u32::MAX
+                        ),
+                    )
+                })?;
+
                 inner.index.entries.push(BundleIndexEntry {
                     id: blob.id,
                     blob_type: blob.blob_type,
                     compressed: compress,
                     offset,
-                    length: blob.data.len() as u32,
+                    length,
                     raw_length: blob.raw_length,
                 });
             }
@@ -155,7 +166,14 @@ impl BundleWriter {
             return Ok(id);
         }
 
-        let raw_length = data.len() as u32;
+        let raw_length_u64 = data.len() as u64;
+        let raw_length = u32::try_from(data.len()).map_err(|_| {
+            MapacheError::Format(format!(
+                "blob of {} bytes exceeds the bundle format's maximum raw length of {} bytes",
+                raw_length_u64,
+                u32::MAX
+            ))
+        })?;
         let encoded_data = if self.compress {
             self.storage
                 .encode(data.as_ref())

@@ -64,7 +64,6 @@ struct DecodedBlob {
 struct RestoreContext {
     handle_cache: Arc<ShardedFileHandleCache>,
     files: Arc<Vec<FileRestorePlan>>,
-    remaining: Arc<Vec<std::sync::atomic::AtomicU32>>,
     initialized: Arc<Vec<std::sync::atomic::AtomicBool>>,
     restorer: Arc<Restorer>,
     event_sender: EventSender,
@@ -83,7 +82,7 @@ pub(crate) async fn restore_packs(
     if dry_run {
         for blob_requests in packs.values() {
             for (blob_id, _) in blob_requests.iter() {
-                if let Some(locator) = index.get_data(blob_id) {
+                if let Some(locator) = index.get(blob_id).await {
                     emit_event(
                         &restorer.event_sender,
                         Event::Restore(RestoreEvent::BytesProcessed(locator.raw_length as u64)),
@@ -99,13 +98,6 @@ pub(crate) async fn restore_packs(
         }
         return Ok(());
     }
-
-    let remaining = Arc::new(
-        files
-            .iter()
-            .map(|f| std::sync::atomic::AtomicU32::new(f.num_blobs))
-            .collect::<Vec<_>>(),
-    );
 
     let initialized = Arc::new(
         (0..files.len())
@@ -129,7 +121,6 @@ pub(crate) async fn restore_packs(
     let ctx = Arc::new(RestoreContext {
         handle_cache,
         files,
-        remaining,
         initialized,
         restorer: restorer_arc,
         event_sender: restorer.event_sender.clone(),
@@ -137,20 +128,44 @@ pub(crate) async fn restore_packs(
     });
 
     // Flatten HashMap into a single Vec and split zero vs regular in one pass.
+    // Each blob ID is looked up once in the master index and reused across all
+    // its targets to avoid re-surveying cold indices repeatedly.
+    let mut locator_cache: HashMap<ID, BlobLocator> = HashMap::new();
     let mut zero_file_batches: ZeroBatchMap = HashMap::new();
-    let mut regular: Vec<(ID, ID, BlobRestoreRequest)> = Vec::new();
+    let mut regular: Vec<(ID, ID, BlobRestoreRequest, BlobLocator)> = Vec::new();
 
     for (pack_id, blob_requests) in packs {
         for (blob_id, req) in blob_requests {
-            if let Some(locator) = index.get_data(&blob_id) {
-                if matches!(locator.blob_type, BlobType::Zero) {
-                    zero_file_batches
-                        .entry(req.file_idx)
-                        .or_default()
-                        .push((req.offset_in_file, locator.raw_length));
-                } else {
-                    regular.push((pack_id, blob_id, req));
-                }
+            let locator = match locator_cache.get(&blob_id) {
+                Some(&locator) => locator,
+                None => match index.get(&blob_id).await {
+                    Some(locator) => {
+                        locator_cache.insert(blob_id, locator);
+                        locator
+                    }
+                    None => {
+                        emit_event(
+                            &ctx.event_sender,
+                            Event::Restore(RestoreEvent::Error(format!(
+                                "Blob {blob_id} not found in index"
+                            ))),
+                        );
+                        if ctx.quit_on_error {
+                            return Err(MapacheError::Internal(format!(
+                                "Blob {blob_id} not found in index"
+                            )));
+                        }
+                        continue;
+                    }
+                },
+            };
+            if matches!(locator.blob_type, BlobType::Zero) {
+                zero_file_batches
+                    .entry(req.file_idx)
+                    .or_default()
+                    .push((req.offset_in_file, locator.raw_length));
+            } else {
+                regular.push((pack_id, blob_id, req, locator));
             }
         }
     }
@@ -188,17 +203,16 @@ pub(crate) async fn restore_packs(
             let mut j = 0;
             while j < pack_slice.len() {
                 let blob_id = pack_slice[j].1;
+                let locator = pack_slice[j].3;
                 let blob_start = j;
                 while j < pack_slice.len() && pack_slice[j].1 == blob_id {
                     j += 1;
                 }
-                if let Some(locator) = index.get_data(&blob_id) {
-                    let targets: Vec<BlobRestoreRequest> = pack_slice[blob_start..j]
-                        .iter()
-                        .map(|(_, _, req)| req.clone())
-                        .collect();
-                    blobs_vec.push((blob_id, locator, targets));
-                }
+                let targets: Vec<BlobRestoreRequest> = pack_slice[blob_start..j]
+                    .iter()
+                    .map(|(_, _, req, _)| req.clone())
+                    .collect();
+                blobs_vec.push((blob_id, locator, targets));
             }
 
             pack_groups.push((pack_id, blobs_vec));
@@ -297,6 +311,14 @@ pub(crate) async fn restore_packs(
                                         ))
                                     })?;
 
+                                if decoded_data.len() != locator.raw_length as usize {
+                                    return Err(MapacheError::Format(format!(
+                                        "decoded blob {blob_id} has length {} but expected {}",
+                                        decoded_data.len(),
+                                        locator.raw_length
+                                    )));
+                                }
+
                                 Ok(DecodedBlob {
                                     data: decoded_data,
                                     targets,
@@ -357,7 +379,6 @@ async fn flush_file_batches(
 
     let mut batch_stream = futures::stream::iter(batches)
         .map(|(file_idx, writes)| {
-            let num_blobs = writes.len().min(u32::MAX as usize) as u32;
             let total_bytes: u64 = writes.iter().map(|(data, _)| data.len() as u64).sum();
             let ctx = ctx.clone();
 
@@ -404,7 +425,6 @@ async fn flush_file_batches(
                             &ctx.event_sender,
                             Event::Restore(RestoreEvent::BytesProcessed(total_bytes)),
                         );
-                        ctx.remaining[file_idx].fetch_sub(num_blobs, Ordering::Relaxed);
                     }
                     Err(e) => {
                         let err_msg = format!("failed to write to file index {file_idx}: {e}");
@@ -444,7 +464,6 @@ async fn flush_zero_batches(
 
     let mut batch_stream = futures::stream::iter(batches)
         .map(|(file_idx, writes)| {
-            let num_blobs = writes.len().min(u32::MAX as usize) as u32;
             let total_bytes: u64 = writes.iter().map(|&(_, len)| len as u64).sum();
             let ctx = ctx.clone();
 
@@ -494,7 +513,6 @@ async fn flush_zero_batches(
                             &ctx.event_sender,
                             Event::Restore(RestoreEvent::BytesProcessed(total_bytes)),
                         );
-                        ctx.remaining[file_idx].fetch_sub(num_blobs, Ordering::Relaxed);
                     }
                     Err(e) => {
                         let err_msg =

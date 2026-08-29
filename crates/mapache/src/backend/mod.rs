@@ -67,7 +67,22 @@ impl Default for RetryOptions {
 }
 
 /// A generic retry wrapper with exponential backoff and per-request timeouts.
-pub async fn retry<T, F, Fut>(name: &str, opts: &RetryOptions, mut op: F) -> Result<T>
+pub async fn retry<T, F, Fut>(name: &str, opts: &RetryOptions, op: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    retry_with(name, opts, op, |_| true).await
+}
+
+/// Like [`retry`] but with an explicit predicate deciding which errors deserve
+/// another attempt. Permanent errors (e.g. HTTP 4xx) return immediately.
+pub async fn retry_with<T, F, Fut>(
+    name: &str,
+    opts: &RetryOptions,
+    mut op: F,
+    should_retry: impl Fn(&MapacheError) -> bool,
+) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
@@ -78,30 +93,31 @@ where
 
         match attempt_res {
             Ok(Ok(val)) => return Ok(val),
-            Ok(Err(e)) if attempts < opts.max_attempts => {
-                tracing::warn!(target: "backend", "{name} attempt {} failed: {e:#}, retrying...", attempts + 1);
-                attempts += 1;
-                let wait = opts.base_delay * (2_u32.pow(attempts - 1));
-                tokio::time::sleep(wait).await;
+            Err(_) if attempts >= opts.max_attempts => {
+                return Err(MapacheError::Backend(format!(
+                    "{name} operation timed out after multiple retries"
+                )));
             }
-            Err(e) if attempts < opts.max_attempts => {
+            Err(e) => {
                 tracing::warn!(target: "backend", "{name} attempt {} timed out: {e:#}, retrying...", attempts + 1);
                 attempts += 1;
                 let wait = opts.base_delay * (2_u32.pow(attempts - 1));
                 tokio::time::sleep(wait).await;
             }
-            Ok(Err(e)) => {
+            Ok(Err(e)) if !should_retry(&e) => {
+                return Err(e);
+            }
+            Ok(Err(e)) if attempts >= opts.max_attempts => {
                 return Err(MapacheError::Backend(format!(
-                    "{} operation failed after multiple retries: {}",
-                    name,
+                    "{name} operation failed after multiple retries: {}",
                     e.inner()
                 )));
             }
-            Err(e) => {
-                return Err(MapacheError::Backend(format!(
-                    "{} operation timed out after multiple retries: {e:#}",
-                    name
-                )));
+            Ok(Err(e)) => {
+                tracing::warn!(target: "backend", "{name} attempt {} failed: {e:#}, retrying...", attempts + 1);
+                attempts += 1;
+                let wait = opts.base_delay * (2_u32.pow(attempts - 1));
+                tokio::time::sleep(wait).await;
             }
         }
     }

@@ -14,7 +14,7 @@ endif
 FEATURES ?= default
 BUILD_SH := sh tools/docker/build-target.sh
 
-all: check fmt clippy test debug
+all: check fmt clippy test debug deny
 
 check:
 	cargo check

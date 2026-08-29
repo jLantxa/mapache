@@ -46,7 +46,28 @@
 
 ### Fixed
 
-- Reduced lock hold time in GC referenced blob scanning for better concurrency.
+- **Data safety**: Skip files with missing blobs instead of silently corrupting
+  them via offset drift. Validate decoded blob lengths against the index.
+- **Incremental metadata**: Record `chmod`/`chown`/`xattr`/flag changes that
+  were silently lost when the `Unchanged` path overwrote fresh metadata.
+- **Crash-safe renames**: Fsync the parent directory after every rename so
+  directory entries survive power loss. Temp files now append `.tmp` instead
+  of replacing the extension, preventing sibling collisions.
+- **Pre-1970 timestamps**: Preserve negative timestamps instead of clamping
+  to epoch, fixing silent metadata loss on old files.
+- **Bundle validation**: Reject blob sizes and trailer fields that overflow
+  `u32` instead of silently truncating.
+- **Verify exit codes**: Detect corrupt metadata files (exit code `23`) and
+  preserve per-error exit codes in `clean`.
+- **Symlink restore safety**: Symlink subtrees no longer emit during tree
+  walk, preventing writes through a symlink from escaping the target root.
+- **Cache race**: Fix missed wakeups in download coalescing; failed downloads
+  now fail fast for all waiters.
+- **Lazy index**: Resolve cold zero blobs without a disk load and sort
+  zero-blob metadata for binary search.
+- **SFTP/S3**: Non-blocking connection acquisition; stop retrying permanent
+  HTTP 4xx errors. Rate limiter now throttles reads in chunks.
+- Reduced lock hold time in GC referenced blob scanning.
 - Windows: expand `~` when `HOME` is not set.
 
 ## v0.6.0 (2026-07-31)

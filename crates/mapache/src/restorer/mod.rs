@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common::{
-        ID, defaults,
+        ID,
         error::{MapacheError, Result},
     },
     fs::{node::Node, tree::SerializedNodeStream},
@@ -119,7 +119,6 @@ pub(crate) struct Restorer {
     pub(crate) shutdown_signal: Arc<AtomicBool>,
     pub(crate) target_path: PathBuf,
     pub(crate) opts: RestoreOptions,
-    pub(crate) buffers: Arc<Mutex<std::collections::VecDeque<Vec<u8>>>>,
 }
 
 pub(crate) type PackMap = HashMap<ID, Vec<(ID, BlobRestoreRequest)>>;
@@ -301,35 +300,13 @@ impl Restorer {
         event_sender: EventSender,
         shutdown_signal: Arc<AtomicBool>,
     ) -> Self {
-        let d = defaults::runtime();
-        let num_buffers = d.restore_max_open_files;
         Self {
             repo,
             target_path,
             opts,
             event_sender,
             shutdown_signal,
-            buffers: Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(
-                num_buffers,
-            ))),
         }
-    }
-
-    fn get_buffer(&self, capacity: usize) -> Vec<u8> {
-        let mut buffers = self.buffers.lock();
-        if let Some(mut buf) = buffers.pop_front() {
-            if buf.capacity() < capacity {
-                buf.reserve(capacity - buf.capacity());
-            }
-            buf
-        } else {
-            Vec::with_capacity(capacity)
-        }
-    }
-
-    pub(crate) fn return_buffer(&self, mut buf: Vec<u8>) {
-        buf.clear();
-        self.buffers.lock().push_back(buf);
     }
 
     /// Handles an error during restoration: if `quit_on_error` is set, returns
@@ -373,7 +350,6 @@ impl Restorer {
                 exclude: self.opts.exclude.clone(),
                 batch_size: self.opts.batch_size,
             },
-            buffers: self.buffers.clone(),
         }
     }
 
@@ -586,7 +562,7 @@ impl Restorer {
                 }
             };
 
-            // Directory: create, save metadata for later
+            // Directory: create, then continue
             if node.is_dir() {
                 if !dry_run && let Err(e) = fs::create_dir_all(&restore_path) {
                     emit_event(
@@ -605,11 +581,10 @@ impl Restorer {
                 continue;
             }
 
-            // Symlink: restore immediately
+            // Symlink: restore immediately (metadata applied in restore_node_to_path)
             if node.is_symlink() {
                 if !dry_run
                     && let Err(_e) = node_restorer::restore_node_to_path(
-                        self,
                         &self.event_sender,
                         &node,
                         &restore_path,
@@ -625,12 +600,10 @@ impl Restorer {
                         ))),
                     );
                 }
-                if dry_run {
-                    emit_event(
-                        &self.event_sender,
-                        Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
-                    );
-                }
+                emit_event(
+                    &self.event_sender,
+                    Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                );
                 continue;
             }
 
@@ -660,21 +633,20 @@ impl Restorer {
                                 );
                             }
                         }
-                        if dry_run {
-                            emit_event(
-                                &self.event_sender,
-                                Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
-                            );
-                        }
+                        emit_event(
+                            &self.event_sender,
+                            Event::Restore(RestoreEvent::ItemProcessed(restore_path)),
+                        );
                         continue;
                     }
                     Ok(RestorePlan::SelectiveRestore { changed_blobs }) => {
                         // Look up all blobs to compute offsets, but only add changed ones to pack map
                         let mut file_blobs = Vec::new();
+                        let mut file_ok = true;
                         if let Some(blobs) = &node.blobs {
                             let mut offset_in_file = 0u64;
                             for blob_id in blobs {
-                                match index.get_data(blob_id) {
+                                match index.get(blob_id).await {
                                     Some(locator) => {
                                         file_blobs.push((*blob_id, locator, offset_in_file));
                                         offset_in_file += locator.raw_length as u64;
@@ -683,12 +655,18 @@ impl Restorer {
                                         emit_event(
                                             &self.event_sender,
                                             Event::Restore(RestoreEvent::Error(format!(
-                                                "Blob {blob_id} not found in index"
+                                                "Blob {blob_id} not found in index; skipping {}",
+                                                restore_path.display(),
                                             ))),
                                         );
+                                        file_ok = false;
+                                        break;
                                     }
                                 };
                             }
+                        }
+                        if !file_ok {
+                            continue;
                         }
 
                         // Emit BlobsSkipped event for incremental restore progress
@@ -758,7 +736,6 @@ impl Restorer {
                                     .or_insert_with(|| (restore_path.clone(), fingerprint));
                             }
                         }
-
                         // Flush if the chunk is full
                         if chunk_files.len() >= batch_size {
                             let chunk_files = Arc::new(std::mem::take(&mut chunk_files));
@@ -794,24 +771,30 @@ impl Restorer {
 
                 // Full restore: look up all blobs
                 let mut file_blobs = Vec::new();
+                let mut file_ok = true;
                 if let Some(blobs) = &node.blobs {
                     let mut offset_in_file = 0;
                     for blob_id in blobs {
-                        let locator = match index.get_data(blob_id) {
+                        let locator = match index.get(blob_id).await {
                             Some(loc) => loc,
                             None => {
                                 emit_event(
                                     &self.event_sender,
                                     Event::Restore(RestoreEvent::Error(format!(
-                                        "Blob {blob_id} not found in index"
+                                        "Blob {blob_id} not found in index; skipping {}",
+                                        restore_path.display(),
                                     ))),
                                 );
-                                continue;
+                                file_ok = false;
+                                break;
                             }
                         };
                         file_blobs.push((*blob_id, locator, offset_in_file));
                         offset_in_file += locator.raw_length as u64;
                     }
+                }
+                if !file_ok {
+                    continue;
                 }
 
                 let file_idx = chunk_files.len();
@@ -946,7 +929,9 @@ impl Restorer {
             }
         }
 
-        // Restore metadata
+        // Second pass: restore metadata by streaming the tree again.
+        // This is cheaper on memory than accumulating metadata during the
+        // first pass, at the cost of re-reading tree blobs.
         tracing::info!(target: "restorer", "Restoring metadata");
         self.restore_metadata(
             tree_id,

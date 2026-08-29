@@ -193,5 +193,5 @@ async fn run_rechunk_task(
     .await
     .map_err(|e| MapacheError::task_panicked("rechunk", e))??;
 
-    Ok(res)
+    Ok(res.0)
 }

@@ -155,6 +155,15 @@ impl BundleReader {
         file.read_exact(&mut size_bytes)?;
         let encrypted_trailer_size = u32::from_le_bytes(size_bytes);
 
+        let file_len = file.metadata()?.len();
+        // The trailer size lives in untrusted file bytes; a corrupt value would
+        // otherwise drive a giant allocation or seek below the file start.
+        if encrypted_trailer_size as u64 + BUNDLE_TRAILER_SIZE_LEN as u64 > file_len {
+            return Err(MapacheError::Format(format!(
+                "invalid bundle format: trailer size {encrypted_trailer_size} exceeds file length {file_len}"
+            )));
+        }
+
         // Read and decrypt the trailer.
         file.seek(SeekFrom::End(
             -(BUNDLE_TRAILER_SIZE_LEN as i64) - encrypted_trailer_size as i64,
@@ -725,5 +734,34 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Event::Backup(BackupEvent::Error(msg)) if msg.contains("cannot be absolute")));
         assert!(error_detected, "should emit error for absolute path");
+    }
+
+    #[test]
+    fn test_open_rejects_trailer_size_beyond_file_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle.b");
+
+        // Valid header, but the plaintext trailer-size field claims far more
+        // bytes than the file actually holds.
+        let header = BundleHeader {
+            magic: *BUNDLE_MAGIC_START,
+            version: 1,
+            salt: [7u8; crate::bundle::format::BUNDLE_SALT_LEN],
+            argon2_t: 3,
+            argon2_m: 65536,
+            argon2_p: 1,
+        };
+        let mut bytes = header.to_binary();
+        bytes.extend_from_slice(&(u32::MAX).to_le_bytes());
+
+        std::fs::write(&path, &bytes).unwrap();
+
+        match BundleReader::open(&path, "password") {
+            Err(err) => assert!(
+                matches!(err, MapacheError::Format(_)),
+                "expected Format error, got: {err}"
+            ),
+            Ok(_) => panic!("expected bundle open to fail"),
+        }
     }
 }

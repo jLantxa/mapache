@@ -63,12 +63,29 @@ impl FileTime {
 
 impl From<SystemTime> for FileTime {
     fn from(time: SystemTime) -> Self {
-        let duration = time
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-        FileTime {
-            seconds: duration.as_secs() as i64,
-            nanos: duration.subsec_nanos(),
+        match time.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(duration) => FileTime {
+                seconds: duration.as_secs() as i64,
+                nanos: duration.subsec_nanos(),
+            },
+            // Pre-epoch times must stay negative instead of clamping to zero,
+            // otherwise restoring old metadata silently rewrites it to 1970.
+            Err(earlier) => {
+                let duration = earlier.duration();
+                let secs = duration.as_secs() as i64;
+                let nanos = duration.subsec_nanos();
+                if nanos == 0 {
+                    FileTime {
+                        seconds: -secs,
+                        nanos: 0,
+                    }
+                } else {
+                    FileTime {
+                        seconds: -secs - 1,
+                        nanos: 1_000_000_000 - nanos,
+                    }
+                }
+            }
         }
     }
 }
@@ -299,8 +316,25 @@ mod tests {
     fn from_system_time_pre_epoch() {
         let early = UNIX_EPOCH - Duration::from_secs(3600);
         let ft = FileTime::from(early);
-        // pre-epoch durations clamp to zero
-        assert_eq!(ft.unix_seconds(), 0);
+        assert_eq!(ft.unix_seconds(), -3600);
+        assert_eq!(ft.unix_nanos(), 0);
+    }
+
+    #[test]
+    fn from_system_time_pre_epoch_with_subsecond() {
+        let early = UNIX_EPOCH - Duration::from_millis(1500);
+        let ft = FileTime::from(early);
+        assert_eq!(ft.unix_seconds(), -2);
+        assert_eq!(ft.unix_nanos(), 500_000_000);
+    }
+
+    #[test]
+    fn from_system_time_pre_1970() {
+        // 1900-01-01 00:00:00 UTC = -2208988800 seconds.
+        let early = UNIX_EPOCH - Duration::from_secs(2_208_988_800);
+        let ft = FileTime::from(early);
+        assert_eq!(ft.unix_seconds(), -2_208_988_800);
+        assert_eq!(ft.unix_nanos(), 0);
     }
 
     #[test]

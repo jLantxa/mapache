@@ -201,6 +201,15 @@ mod linux_statx {
     }
 }
 
+/// Signed whole seconds since the Unix epoch. Negative for pre-1970 times.
+#[cfg(windows)]
+fn signed_unix_seconds(time: SystemTime) -> i64 {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs() as i64,
+        Err(earlier) => -(earlier.duration().as_secs() as i64),
+    }
+}
+
 impl Metadata {
     fn from_fs(meta: &FsMetadata, with_atime: bool) -> Self {
         Self {
@@ -345,10 +354,10 @@ impl Metadata {
                     // On Windows, mtime can have some precision issues or small updates
                     // from the OS (like 100ns vs 1ms vs 15.6ms).
                     // We use a 1-second tolerance, which is common for backup tools on Windows.
-                    let d1 = t1.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                    let d2 = t2.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                    let diff = d1.abs_diff(d2);
-                    diff.as_secs() < 1
+                    // Convert to signed seconds so pre-epoch times compare correctly.
+                    let d1 = signed_unix_seconds(t1);
+                    let d2 = signed_unix_seconds(t2);
+                    d1.abs_diff(d2) < 1
                 }
                 #[cfg(not(windows))]
                 {

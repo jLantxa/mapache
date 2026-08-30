@@ -583,22 +583,38 @@ impl Restorer {
 
             // Symlink: restore immediately (metadata applied in restore_node_to_path)
             if node.is_symlink() {
-                if !dry_run
-                    && let Err(_e) = node_restorer::restore_node_to_path(
+                if !dry_run {
+                    // With --strategy overwrite, remove an existing entry so the
+                    // new symlink can be created (previously EEXIST).
+                    if matches!(self.opts.strategy, Strategy::Overwrite)
+                        && let Err(e) = std::fs::remove_file(&restore_path)
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        emit_event(
+                            &self.event_sender,
+                            Event::Restore(RestoreEvent::Warning(format!(
+                                "Failed to remove existing entry for {}: {}",
+                                restore_path.display(),
+                                e
+                            ))),
+                        );
+                    }
+                    if let Err(_e) = node_restorer::restore_node_to_path(
                         &self.event_sender,
                         &node,
                         &restore_path,
                         false,
                     )
                     .await
-                {
-                    emit_event(
-                        &self.event_sender,
-                        Event::Restore(RestoreEvent::Warning(format!(
-                            "Failed to restore symlink {}",
-                            restore_path.display(),
-                        ))),
-                    );
+                    {
+                        emit_event(
+                            &self.event_sender,
+                            Event::Restore(RestoreEvent::Warning(format!(
+                                "Failed to restore symlink {}",
+                                restore_path.display(),
+                            ))),
+                        );
+                    }
                 }
                 emit_event(
                     &self.event_sender,
@@ -762,7 +778,7 @@ impl Restorer {
                                 e
                             ))),
                         );
-                        if self.opts.quit_on_error {
+                        if self.opts.quit_on_error || matches!(self.opts.strategy, Strategy::Fail) {
                             return Err(MapacheError::Internal(format!("{e}")));
                         }
                         continue;

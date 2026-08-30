@@ -413,15 +413,33 @@ impl StorageBackend for S3Backend {
 
     async fn is_file(&self, path: &Path) -> bool {
         let key = self.key_from_path(path);
-        self.retry(|| async {
-            let (_head, code) = self.bucket.head_object(&key).await?;
-            Ok(code == 200)
-        })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(target: "backend", "s3: is_file check failed for {}: {e}", path.display());
-            false
-        })
+        let result = self
+            .retry(|| async {
+                let (_head, code) = self.bucket.head_object(&key).await?;
+                if code == 404 {
+                    Ok(false)
+                } else if code == 403 {
+                    Err(MapacheError::Backend(
+                        "S3 access forbidden (403)".to_string(),
+                    ))
+                } else if code == 200 {
+                    Ok(true)
+                } else {
+                    Err(MapacheError::Backend(format!(
+                        "S3 is_file failed: HTTP {}",
+                        code
+                    )))
+                }
+            })
+            .await;
+
+        match result {
+            Ok(exists) => exists,
+            Err(e) => {
+                tracing::error!(target: "backend", "s3: is_file check failed for {}: {e}", path.display());
+                false
+            }
+        }
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
@@ -430,24 +448,42 @@ impl StorageBackend for S3Backend {
             prefix.push('/');
         }
 
-        self.retry(|| async {
-            let (result, code) = self
-                .bucket
-                .list_page(
-                    prefix.clone(),
-                    Some("/".to_string()),
-                    None,
-                    Some("1".to_string()),
-                    None,
-                )
-                .await?;
-            Ok(code == 200 && (!result.contents.is_empty() || result.common_prefixes.is_some()))
-        })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(target: "backend", "s3: is_dir check failed for {}: {e}", path.display());
-            false
-        })
+        let result = self
+            .retry(|| async {
+                let (result, code) = self
+                    .bucket
+                    .list_page(
+                        prefix.clone(),
+                        Some("/".to_string()),
+                        None,
+                        Some("1".to_string()),
+                        None,
+                    )
+                    .await?;
+                if code == 404 {
+                    Ok(false)
+                } else if code == 403 {
+                    Err(MapacheError::Backend(
+                        "S3 access forbidden (403)".to_string(),
+                    ))
+                } else if code == 200 {
+                    Ok(!result.contents.is_empty() || result.common_prefixes.is_some())
+                } else {
+                    Err(MapacheError::Backend(format!(
+                        "S3 is_dir failed: HTTP {}",
+                        code
+                    )))
+                }
+            })
+            .await;
+
+        match result {
+            Ok(exists) => exists,
+            Err(e) => {
+                tracing::error!(target: "backend", "s3: is_dir check failed for {}: {e}", path.display());
+                false
+            }
+        }
     }
 
     async fn lstat(&self, path: &Path) -> Result<NodeAttr> {

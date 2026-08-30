@@ -112,12 +112,11 @@ pub(crate) fn process_item_sync(
 
     let out = match diff_type {
         NodeDiff::Deleted => {
-            let prev = prev_node.ok_or_else(|| {
+            let _prev = prev_node.ok_or_else(|| {
                 MapacheError::Internal(format!(
                     "inconsistent state: Deleted diff but no prev_node for {path:?}"
                 ))
             })?;
-            report_node_diff(&prev.node, diff_type, ctx.progress);
             None
         }
 
@@ -142,7 +141,6 @@ pub(crate) fn process_item_sync(
                     Event::Backup(BackupEvent::BytesProcessed(next.node.metadata.size)),
                 );
             }
-            report_node_diff(&next.node, diff_type, ctx.progress);
 
             // Reuse the stored blobs; keep the freshly scanned metadata so
             // metadata-only changes (chmod/chown/xattr/flags) are recorded
@@ -164,12 +162,10 @@ pub(crate) fn process_item_sync(
 
             if next.node.is_file() {
                 let file_size = next.node.metadata.size;
-
                 let blob_saver = ctx.blob_saver.clone();
                 let progress = ctx.progress;
                 let event_sender = ctx.event_sender.clone();
                 let shutdown_signal = ctx.shutdown_signal;
-
                 let mut fallback_small = Vec::new();
                 let small_buf = match ctx.bufs.as_mut() {
                     Some(b) => &mut b.small_buf,
@@ -235,16 +231,33 @@ pub(crate) fn process_item_sync(
                             ctx.event_sender,
                             Event::Backup(BackupEvent::BytesProcessed(file_size)),
                         );
+                        report_node_diff(&next.node, diff_type, ctx.progress);
+                        ctx.progress.processed_node();
+                        emit_event(
+                            ctx.event_sender,
+                            Event::Backup(BackupEvent::NodeProcessed {
+                                path: path.to_path_buf(),
+                                diff: diff_type,
+                                size_hint,
+                            }),
+                        );
+                        return Ok(None);
                     }
                 }
             }
 
-            report_node_diff(&next.node, diff_type, ctx.progress);
             Some(next)
         }
     };
 
     if diff_type != NodeDiff::Deleted {
+        report_node_diff(
+            &out.as_ref()
+                .expect("non-Deleted branch always returns Some")
+                .node,
+            diff_type,
+            ctx.progress,
+        );
         ctx.progress.processed_node();
         emit_event(
             ctx.event_sender,

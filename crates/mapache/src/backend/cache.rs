@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use crate::common::error::Result;
@@ -17,12 +18,22 @@ use crate::{
 /// Represents the state of a file in the download queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DownloadState {
-    /// The file is currently being downloaded by one thread.
-    Downloading,
-    /// The download has failed. The message of the original error is kept so
-    /// that waiters fail fast instead of re-downloading (a retry storm).
-    Failed(String),
+    /// The file is currently being downloaded. The u32 tracks the attempt number.
+    Downloading(u32),
+    /// The download has failed. Stores the error message, time of failure,
+    /// and how many times it has been attempted. After a cooldown period,
+    /// retries are allowed up to `MAX_CACHE_RETRIES` to avoid infinite loops
+    /// for permanently broken files.
+    Failed(String, Instant, u32),
 }
+
+/// How long to wait before retrying a failed download.
+const FAILED_COOLDOWN: Duration = Duration::from_secs(60);
+/// Maximum number of retries before giving up permanently.
+const MAX_CACHE_RETRIES: u32 = 3;
+/// After max retries, how long before the permanent failure expires and a
+/// fresh attempt is allowed (useful for long-running processes like mount).
+const FAILED_EXPIRY: Duration = Duration::from_secs(30 * 60);
 
 /// A cache wrapper for backends. This backend caches selected files from the repository
 /// into a local cache folder to speed up reading and reduce download operations.
@@ -92,10 +103,33 @@ impl CacheBackend {
             let (claimable, failure): (bool, Option<String>) = {
                 let mut queue = self.download_queue.lock();
                 match queue.get(&path_buf) {
-                    Some(DownloadState::Downloading) => (false, None),
-                    Some(DownloadState::Failed(msg)) => (false, Some(msg.clone())),
+                    Some(DownloadState::Downloading(_)) => (false, None),
+                    Some(DownloadState::Failed(msg, since, attempts)) => {
+                        if *attempts >= MAX_CACHE_RETRIES {
+                            if since.elapsed() >= FAILED_EXPIRY {
+                                // Permanent failure expired: allow a fresh attempt.
+                                tracing::debug!(target: "cache",
+                                    "Retrying cached file {:?} after permanent failure expiry",
+                                    path);
+                                queue.insert(path_buf.clone(), DownloadState::Downloading(1));
+                                (true, None)
+                            } else {
+                                (false, Some(msg.clone()))
+                            }
+                        } else if since.elapsed() >= FAILED_COOLDOWN {
+                            // Cooldown expired: allow a retry.
+                            let next = *attempts + 1;
+                            tracing::debug!(target: "cache",
+                                "Retrying cached file {:?} after cooldown (attempt {}/{})",
+                                path, next, MAX_CACHE_RETRIES);
+                            queue.insert(path_buf.clone(), DownloadState::Downloading(next));
+                            (true, None)
+                        } else {
+                            (false, Some(msg.clone()))
+                        }
+                    }
                     None => {
-                        queue.insert(path_buf.clone(), DownloadState::Downloading);
+                        queue.insert(path_buf.clone(), DownloadState::Downloading(1));
                         (true, None)
                     }
                 }
@@ -148,8 +182,21 @@ impl CacheBackend {
                 queue.remove(&path_buf);
             }
             Err(e) => {
-                tracing::error!(target: "cache", "Failed to cache file {:?}: {}", path, e);
-                queue.insert(path_buf, DownloadState::Failed(e.to_string()));
+                // Preserve the attempt count from the Downloading state.
+                let attempts = queue
+                    .get(&path_buf)
+                    .and_then(|s| match s {
+                        DownloadState::Downloading(n) => Some(*n),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                tracing::error!(target: "cache",
+                    "Failed to cache file {:?} (attempt {}/{}): {}",
+                    path, attempts, MAX_CACHE_RETRIES, e);
+                queue.insert(
+                    path_buf,
+                    DownloadState::Failed(e.to_string(), Instant::now(), attempts),
+                );
             }
         }
         drop(queue);
@@ -235,13 +282,15 @@ impl StorageBackend for CacheBackend {
 
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         tracing::debug!(target: "cache", "Cache: rename {:?} -> {:?}", from, to);
-        // Try to rename the cached path. On failure, remove the stale entry
-        // so the next read fetches fresh data from the backend.
+        // Rename on the backend first (source of truth). Only then update the
+        // cache. If the cache rename fails, remove the stale entry so the next
+        // read fetches fresh data from the backend.
+        self.backend.rename(from, to).await?;
+
         if self.cache.rename(from, to).await.is_err() {
             let _ = self.cache.remove(from).await;
         }
 
-        self.backend.rename(from, to).await?;
         Ok(())
     }
 
@@ -260,7 +309,7 @@ impl StorageBackend for CacheBackend {
 
             let wait = {
                 let mut queue = self.download_queue.lock();
-                if matches!(queue.get(&path_buf), Some(DownloadState::Downloading)) {
+                if matches!(queue.get(&path_buf), Some(DownloadState::Downloading(_))) {
                     true
                 } else {
                     queue.remove(&path_buf);

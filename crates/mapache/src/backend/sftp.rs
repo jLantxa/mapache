@@ -772,8 +772,16 @@ impl StorageBackend for SftpBackend {
             let real_offset = super::resolve_read_offset(file_size, offset);
             file.seek(std::io::SeekFrom::Start(real_offset)).await?;
 
+            // Cap the read length to the actual remaining bytes so that
+            // read_exact doesn't fail with UnexpectedEof on short files.
+            let bytes_remaining: usize = file_size.saturating_sub(real_offset) as usize;
+            let read_length: usize = match length {
+                0 => bytes_remaining,
+                _ => std::cmp::min(length, bytes_remaining),
+            };
+
             let mut contents = if length > 0 {
-                vec![0u8; length]
+                vec![0u8; read_length]
             } else {
                 Vec::new()
             };

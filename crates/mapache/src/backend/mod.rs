@@ -93,7 +93,7 @@ where
 
         match attempt_res {
             Ok(Ok(val)) => return Ok(val),
-            Err(_) if attempts >= opts.max_attempts => {
+            Err(_) if attempts + 1 >= opts.max_attempts => {
                 return Err(MapacheError::Backend(format!(
                     "{name} operation timed out after multiple retries"
                 )));
@@ -107,7 +107,7 @@ where
             Ok(Err(e)) if !should_retry(&e) => {
                 return Err(e);
             }
-            Ok(Err(e)) if attempts >= opts.max_attempts => {
+            Ok(Err(e)) if attempts + 1 >= opts.max_attempts => {
                 return Err(MapacheError::Backend(format!(
                     "{name} operation failed after multiple retries: {}",
                     e.inner()
@@ -750,7 +750,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert_eq!(attempts.load(Ordering::SeqCst), 3); // 1 initial + 2 retries
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -774,7 +774,6 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        // 1 initial + 1 retry = 2 attempts
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

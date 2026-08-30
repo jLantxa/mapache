@@ -874,6 +874,7 @@ impl MasterIndex {
     /// Continues past bloom-filter false positives until the blob is found or no
     /// cold candidate remains.
     pub async fn get(&self, id: &ID) -> Option<BlobLocator> {
+        let mut tried = IdSet::default();
         loop {
             // Fast path: search hot indices.
             if let Some(locator) = self.get_hot(id) {
@@ -892,7 +893,7 @@ impl MasterIndex {
                 lock.cold_metadata
                     .iter()
                     .rev()
-                    .find(|meta| meta.might_contain(id))
+                    .find(|meta| meta.might_contain(id) && !tried.contains(&meta.file_id))
                     .map(|meta| {
                         let zero_locator = meta
                             .zero_blobs
@@ -919,6 +920,7 @@ impl MasterIndex {
                     // Promote the candidate and re-scan hot. If another task is
                     // already loading this exact index (concurrent promotion),
                     // yield and rescan.
+                    tried.insert(file_id);
                     if self.load_and_promote(file_id).await.is_err() {
                         tokio::task::yield_now().await;
                     }
@@ -938,8 +940,9 @@ impl MasterIndex {
     ///
     /// Returns `Ok(())` when the index was promoted (from disk or the LRU cache);
     /// returns `Err(())` when another task is concurrently loading this exact
-    /// index, or the disk load failed (the metadata entry was dropped so the
-    /// caller's candidate survey makes progress).
+    /// index, or the disk load failed. On disk failure the metadata entry is
+    /// re-inserted into `cold_metadata` so a future retry can attempt again
+    /// instead of permanently losing the index.
     async fn load_and_promote(&self, file_id: ID) -> std::result::Result<(), ()> {
         // Under the write lock: claim the metadata entry by file_id (never by a
         // positional index, which can shift under a concurrent promotion), and
@@ -965,6 +968,11 @@ impl MasterIndex {
         };
 
         let Some(loader) = self.loader.get() else {
+            // No loader available: put the entry back so it isn't lost.
+            let mut lock = self.inner.write();
+            // Prevent duplicates if the same file_id is pushed repeatedly.
+            lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
+            lock.cold_metadata.push(meta);
             return Err(());
         };
         match loader.load_index(&meta.file_id).await {
@@ -980,8 +988,13 @@ impl MasterIndex {
             }
             Err(e) => {
                 tracing::warn!(target: "index",
-                    "Failed to load cold index {}: {}",
+                    "Failed to load cold index {}: {}; re-inserting into cold metadata",
                     meta.file_id.to_short_hex(8), e);
+                // Re-insert so a future retry can attempt again instead of
+                // permanently losing the blobs that live in this index.
+                let mut lock = self.inner.write();
+                lock.cold_metadata.retain(|m| m.file_id != meta.file_id);
+                lock.cold_metadata.push(meta);
                 Err(())
             }
         }
@@ -1459,7 +1472,9 @@ fn default_true() -> bool {
 /// Serialize an `IndexFile` to the binary format.
 pub fn serialize_index_binary(index_file: &IndexFile) -> Vec<u8> {
     let total_blobs: usize = index_file.packs.iter().map(|p| p.blobs.len()).sum();
-    let size = 4 + index_file.packs.len() * 36 + total_blobs * 45;
+    let size = 4_usize
+        .saturating_add(index_file.packs.len().saturating_mul(36))
+        .saturating_add(total_blobs.saturating_mul(45));
     let mut buf = Vec::with_capacity(size);
 
     // Header

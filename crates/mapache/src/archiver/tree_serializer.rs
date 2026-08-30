@@ -2,7 +2,7 @@
 //! processed nodes and serializes them into repository trees.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -189,15 +189,17 @@ impl TreeSerializer {
             }
         }
 
-        if pending_tree
-            .children
-            .windows(2)
-            .any(|w| w[0].name == w[1].name)
         {
-            return Err(error::MapacheError::Integrity(format!(
-                "duplicate child name in {}",
-                dir_path.display()
-            )));
+            let mut seen = HashSet::new();
+            for child in &pending_tree.children {
+                if !seen.insert(&child.name) {
+                    return Err(error::MapacheError::Integrity(format!(
+                        "duplicate child name '{}' in {}",
+                        child.name,
+                        dir_path.display()
+                    )));
+                }
+            }
         }
 
         let mut completed_tree = Tree::new(pending_tree.children);

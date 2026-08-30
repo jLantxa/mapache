@@ -261,7 +261,11 @@ impl StorageBackend for LocalFS {
                 tracing::warn!(target: "backend", "LocalFS: failed to unlock {:?} before rename: {e}", full_path);
             }
 
-            std::fs::rename(&full_tmp_path, &full_path)?;
+            std::fs::rename(&full_tmp_path, &full_path).map_err(|e| {
+                // Clean up the temp file on rename failure so it doesn't linger.
+                let _ = std::fs::remove_file(&full_tmp_path);
+                MapacheError::Io(e)
+            })?;
 
             // Persist the rename itself, otherwise the new entry may be lost
             // even though the file content was synced.
@@ -269,9 +273,7 @@ impl StorageBackend for LocalFS {
                 return Err(MapacheError::Io(e));
             }
 
-            if let Err(e) = Self::set_readonly_status_internal(&full_path, true) {
-                tracing::warn!(target: "backend", "LocalFS: failed to lock {:?} after rename: {e}", full_path);
-            }
+            Self::set_readonly_status_internal(&full_path, true).map_err(MapacheError::Io)?;
 
             Ok(())
         })

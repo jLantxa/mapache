@@ -578,13 +578,18 @@ impl Node {
 
         // Cross-Platform Support: Windows requires knowing if the target is a dir.
         // We probe the target type only if it exists.
-        if let Some(parent) = path.parent() {
-            let full_target_path = parent.join(&target);
-            if let Ok((_, target_type)) =
-                Self::fetch_metadata_and_type_sync(&full_target_path, true, false)
-            {
-                info.target_type = Some(target_type);
-            }
+        let full_target_path = if target.is_absolute() {
+            target.clone()
+        } else if let Some(parent) = path.parent() {
+            parent.join(&target)
+        } else {
+            target.clone()
+        };
+
+        if let Ok((_, target_type)) =
+            Self::fetch_metadata_and_type_sync(&full_target_path, true, false)
+        {
+            info.target_type = Some(target_type);
         }
 
         self.symlink_info = Some(info);

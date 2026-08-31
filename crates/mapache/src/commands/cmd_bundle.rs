@@ -248,6 +248,13 @@ pub struct CmdArgs {
 
     #[arg(skip)]
     pub internal_password: Option<String>,
+
+    /// Benchmark and tune Argon2id parameters for this hardware.
+    ///
+    /// WARNING: Run this only when the system is idle. High CPU load during
+    /// calibration will produce weaker parameters than intended.
+    #[clap(long)]
+    pub calibrate_kdf: bool,
 }
 
 #[cfg(all(feature = "mount", unix))]
@@ -271,6 +278,7 @@ impl Default for CmdArgs {
             format: crate::repository::repo::THIS_REPOSITORY_VERSION,
             ecc: None,
             internal_password: None,
+            calibrate_kdf: false,
         }
     }
 }
@@ -291,6 +299,7 @@ impl Default for CmdArgs {
             format: crate::repository::repo::THIS_REPOSITORY_VERSION,
             ecc: None,
             internal_password: None,
+            calibrate_kdf: false,
         }
     }
 }
@@ -372,6 +381,7 @@ async fn run_create(global: &GlobalArgs, args: &CmdArgs) -> Result<(), BundleErr
             !matches!(global.compression_level, Compression::None),
             args.format as u16,
             ecc_config,
+            args.calibrate_kdf,
         )
         .map_err(|e| BundleError::BundleFailed(e.to_string()))?,
     );
@@ -694,6 +704,7 @@ async fn export_snapshot_impl(
             !matches!(global.compression_level, Compression::None),
             args.format as u16,
             ecc_config,
+            args.calibrate_kdf,
         )
         .map_err(|e| MapacheError::Repo(e.to_string()))?,
     );

@@ -163,8 +163,10 @@ async fn run_add(global_args: &GlobalArgs, args: &AddArgs) -> Result<(), KeyErro
     ui::cli::log!("\nCreating new user key...");
     let new_auth = request_new_auth()
         .map_err(|e| KeyError::RepoOpenFail(format!("failed to get new auth: {}", e.inner())))?;
-    let new_key_file = KeyManager::generate_key_file(&new_auth, &master_key, repo_version)
-        .map_err(|e| KeyError::RepoOpenFail(format!("could not generate key: {}", e.inner())))?;
+    let new_key_file = KeyManager::generate_key_file(&new_auth, &master_key, repo_version, false)
+        .map_err(|e| {
+        KeyError::RepoOpenFail(format!("could not generate key: {}", e.inner()))
+    })?;
 
     let ss = SecureStorage::new().with_compression(DEFAULT_COMPRESSION.to_level());
 
@@ -253,8 +255,8 @@ async fn run_password_change(
             })?,
     };
 
-    let new_keyfile =
-        KeyManager::generate_key_file(&new_auth, &master_key, repo_version).map_err(|e| {
+    let new_keyfile = KeyManager::generate_key_file(&new_auth, &master_key, repo_version, false)
+        .map_err(|e| {
             KeyError::RepoOpenFail(format!("failed to generate key file: {}", e.inner()))
         })?;
     tracing::info!(target: "key", "Saving updated key file for user {}", auth.username);

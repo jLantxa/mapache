@@ -299,6 +299,7 @@ mod tests {
             None,
             backend.clone(),
             ecc_config,
+            false,
         )
         .await
         .context("Failed to init repo with ECC")?;

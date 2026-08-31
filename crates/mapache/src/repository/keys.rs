@@ -17,6 +17,7 @@ use crate::{
         self, ContentIdType, ID,
         defaults::DEFAULT_COMPRESSION,
         error::{MapacheError, Result},
+        kdf,
     },
     repository::{
         repo::{Auth, KEYS_DIR},
@@ -78,20 +79,6 @@ impl std::fmt::Display for KeyManagerError {
 
 impl std::error::Error for KeyManagerError {}
 
-mod argon2_defaults {
-    pub(crate) const fn default_m() -> u32 {
-        argon2::Params::DEFAULT_M_COST
-    }
-
-    pub(crate) const fn default_t() -> u32 {
-        argon2::Params::DEFAULT_T_COST
-    }
-
-    pub(crate) const fn default_p() -> u32 {
-        argon2::Params::DEFAULT_P_COST
-    }
-}
-
 /// A metadata structure that contains information about a repository key
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KeyFile {
@@ -99,15 +86,12 @@ pub struct KeyFile {
     pub username: String,
 
     /// Argon2 memory size
-    #[serde(default = "argon2_defaults::default_m")]
     pub m: u32,
 
     /// Argon2 iterations
-    #[serde(default = "argon2_defaults::default_t")]
     pub t: u32,
 
     /// Argon2 parallelism
-    #[serde(default = "argon2_defaults::default_p")]
     pub p: u32,
 
     pub salt: String,
@@ -251,10 +235,19 @@ impl KeyManager {
     /// ensures old v1 binaries (which only try nonce-at-start) can still open
     /// keyfiles produced by the current code.
     // TODO(v1-removal): Remove repo_version parameter, always use nonce-at-end.
-    pub fn generate_key_file(auth: &Auth, master_key: &[u8], repo_version: u32) -> Result<KeyFile> {
+    pub fn generate_key_file(
+        auth: &Auth,
+        master_key: &[u8],
+        repo_version: u32,
+        calibrate_kdf: bool,
+    ) -> Result<KeyFile> {
         tracing::info!(target: "keys", "Generating new key file for user: {}", auth.username);
         let create_time = Local::now();
-        let argon2_params = argon2::Params::default();
+        let argon2_params = if calibrate_kdf {
+            kdf::calibrate_params(kdf::CALIBRATE_TARGET, kdf::CALIBRATE_MEMORY_BOUNDS.1)
+        } else {
+            kdf::default_params()
+        };
 
         const SALT_LENGTH: usize = 32;
         let salt = SecureStorage::generate_salt::<SALT_LENGTH>();
@@ -504,7 +497,7 @@ mod tests {
         };
         let master_key = KeyManager::generate_new_master_key();
 
-        let key_file = KeyManager::generate_key_file(&auth, &master_key, 2)?;
+        let key_file = KeyManager::generate_key_file(&auth, &master_key, 2, false)?;
         assert_eq!(key_file.username, "test_user");
 
         let decoded_master_key = KeyManager::decode_master_key(&auth.password, &key_file)?;
